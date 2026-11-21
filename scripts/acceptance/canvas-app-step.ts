@@ -409,6 +409,9 @@ async function blockRow(s: Ctx, cp: CpState): Promise<string> {
   // A bot's block: Open in MOSS (MOSS runs: CA's row 4 started it).
   if (s.mossCdp === undefined) x.fail("MOSS isn't running (CA's row 4 starts it)");
   const bot = await canvas.waitFor<string>("a bot's block", "document.querySelector('.cv-node[data-type=bot]')?.getAttribute('data-block') ?? null", 30_000);
+  // Every block in view (the view is still where the corner control centred it), the bot's among them.
+  await canvas.click(".cv-fit");
+  await canvas.waitFor("the bot's block in view", inView(bot), 10_000);
   await canvas.click(`[data-block="${bot}"] .cv-head`);
   await canvas.click(`[data-block="${bot}"] .cv-button`, "Open in MOSS");
   const mossDoc = new Doc(x, s.mossCdp!, (u) => u.startsWith("moss-app://app/"), "MOSS's window");
