@@ -1,0 +1,26 @@
+{
+  "manifest": 1,
+  "id": "acceptance-cross",
+  "name": "Acceptance Cross",
+  "description": "The session canvas's acceptance fixture (the canvas unit, canvas-step.ts): one ACP backend, acceptance-cross, whose program is the run's fake ACP agent (the one the core's backend conformance suite runs), scripted per coding session to call the bridge's SendMessage and ListSessions. The run writes the program's and its config's absolute paths into this manifest and the quirks file before it installs the plugin.",
+  "version": "0.0.1",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "contributes": {
+    "agentBackends": [
+      {
+        "id": "acceptance-cross",
+        "name": "Acceptance Cross",
+        "protocol": "acp",
+        "command": "__BUN__",
+        "args": [
+          "__FAKE__",
+          "__CONFIG__",
+          "acp"
+        ],
+        "quirks": "quirks.json"
+      }
+    ]
+  }
+}

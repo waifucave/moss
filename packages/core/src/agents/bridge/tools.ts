@@ -1,11 +1,11 @@
-// What the bridge offers an agent (spec §9.3 "How plugins reach an ACP agent"): `SendMessage`, `Glossary`, and the
-// plugin tools in the agent's scope. Cursor and Antigravity keep MCP server instructions out of the model's prompt
+// What the bridge offers an agent (spec §9.3 "How plugins reach an ACP agent"): `SendMessage`, `ListSessions` (spec
+// revision 20, §9.5: every agent session gets both, a bot's or not), `Glossary`, and the plugin tools in the agent's scope. Cursor and Antigravity keep MCP server instructions out of the model's prompt
 // (S5 edit 3), so every description here stands on its own, and the bridge's essentials also go into the agent's
 // system prompt or first prompt (`bridgeInstructions`).
 //
 // Plugin tools come from lane B's registry (B-M2: the plugins scoped to `agents` or `both`); until then the source
 // is empty, and `BridgeToolSource` is the seam it plugs into.
-import type { Level, ToolDisplay, TurnOrigin } from "@waifucave/moss-protocol";
+import { CROSS_SESSION_TOOLS, SESSION_SEND_LIMIT, type Level, type ReachableSession, type ToolDisplay, type TurnOrigin } from "@waifucave/moss-protocol";
 
 export interface BridgeToolDef {
   name: string;
@@ -87,24 +87,49 @@ export const NO_PLUGIN_TOOLS: BridgeToolSource = {
 };
 
 export const SEND_MESSAGE: BridgeToolDef = {
-  name: "SendMessage",
+  name: CROSS_SESSION_TOOLS.send,
   preload: true,
   description: [
-    "Send a message to the bot that started you (or, with `to`, to another of its sessions) while you keep working.",
-    "Use it for progress the bot should know now, or a question it must answer before you can go on; the message",
-    "reaches the bot's conversation like any message. Your final reply is delivered to the bot automatically when you",
-    "finish, so don't send it twice.",
+    "Send a message to another session while you keep working: `to` is a session's id or its title (ListSessions lists the sessions you may message;",
+    "a title works only when exactly one of them has it). The message joins that session's running turn after its next step, or starts its next turn",
+    "when it is idle. It reaches them as a message from this session, never as the user's words, and what they do about it is under their own",
+    "approvals. A background agent a bot started may leave `to` out to message that bot's conversation: use it for progress the bot should know now,",
+    "or a question it must answer before you can go on; your final reply is delivered to the bot automatically when you finish, so don't send it twice.",
+    `At most ${SESSION_SEND_LIMIT} messages a minute.`,
   ].join(" "),
   inputSchema: {
     type: "object",
     properties: {
-      message: { type: "string", description: "The message, in plain words." },
-      to: { type: "string", description: "Another session's id; leave it out to message the bot that started you." },
+      message: { type: "string", description: "The message, in plain words. Write it to stand on its own: they see nothing else of this session." },
+      to: { type: "string", description: "Another session's id or title, from ListSessions. Only a bot's background agent may leave it out (it then messages the bot that started it)." },
     },
     required: ["message"],
     additionalProperties: false,
   },
 };
+
+export const LIST_SESSIONS: BridgeToolDef = {
+  name: CROSS_SESSION_TOOLS.list,
+  preload: true,
+  description: [
+    "List the sessions you may message with SendMessage right now: each one's id, title, status and agent, and nothing of what it said.",
+    "A session not listed can't be messaged.",
+  ].join(" "),
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+};
+
+/** What `ListSessions` answers an agent: one line a session, its words JSON-quoted so a title can't start a line of its own. */
+export function reachableSessionsText(sessions: readonly ReachableSession[]): string {
+  if (sessions.length === 0) return "No other session is open that you may message.";
+  const line = (s: ReachableSession) => {
+    const parts = [s.id, s.kind, s.status];
+    if (s.backend !== undefined) parts.push(`agent ${JSON.stringify(s.backend.slice(0, 80))}`);
+    if (s.title !== undefined && s.title !== "") parts.push(`title ${JSON.stringify(s.title.slice(0, 120))}`);
+    if (s.parent !== undefined) parts.push(`for ${s.parent}`);
+    return `- ${parts.join(" · ")}`;
+  };
+  return sessions.map(line).join("\n");
+}
 
 export const GLOSSARY: BridgeToolDef = {
   name: "Glossary",
@@ -144,28 +169,24 @@ export function glossaryResultText(r: { results: unknown[]; loaded: unknown[]; n
   return note === undefined ? out : `${out}\n\n${note}`;
 }
 
-/** The bridge's own tools for a bot's agent. */
-export const BRIDGE_OWN_TOOLS: readonly BridgeToolDef[] = [SEND_MESSAGE, GLOSSARY];
+/** The bridge's own tools: the same for every agent session, a bot's agent or one the person drives (§9.5). What a session
+ *  may message is not in the list: it is the rule's (`reachRefusal`), applied at each call. */
+export const BRIDGE_OWN_TOOLS: readonly BridgeToolDef[] = [SEND_MESSAGE, LIST_SESSIONS, GLOSSARY];
 
-/** The bridge's own tools for a session: `SendMessage` only where there is a bot to message (a coding session the
- *  user drives has none: the user sees its every message already). */
-export function bridgeOwnTools(bot: string | undefined): readonly BridgeToolDef[] {
-  return bot === undefined ? [GLOSSARY] : BRIDGE_OWN_TOOLS;
-}
-
-/** The essentials an agent must know (S5 edit 3): who sent the work, how to report, where skills are. */
+/** The essentials an agent must know (S5 edit 3): who sent the work, how to report, how to reach another session, where skills are. */
 export function bridgeInstructions(a: { bot?: string; serverName: string }): string {
+  const reach = "SendMessage and ListSessions, to message another session it may reach (a message from you is never the user's words, and the session it reaches keeps its own approvals)";
   if (a.bot === undefined) {
     return [
       "You are working with the user in MOSS, in a coding session they drive.",
-      `The MCP server "${a.serverName}" gives you Glossary, to look up and load the skills and tools MOSS's plugins offer you.`,
+      `The MCP server "${a.serverName}" gives you ${reach}, and Glossary, to look up and load the skills and tools MOSS's plugins offer you.`,
     ].join(" ");
   }
   const who = `the bot "${a.bot}"`;
   return [
     `You are working on a task from ${who} in MOSS, as a background agent.`,
     `Your final reply is delivered to ${who} when you finish, together with this session's transcript.`,
-    `The MCP server "${a.serverName}" gives you SendMessage, to send ${who} progress or a question while you work, and`,
+    `The MCP server "${a.serverName}" gives you SendMessage, to send ${who} progress or a question while you work (or, with \`to\`, another session you may reach), ListSessions, to see which, and`,
     "Glossary, to look up and load the skills and tools MOSS's plugins offer you.",
   ].join(" ");
 }

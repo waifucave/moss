@@ -22,6 +22,7 @@ function boot() {
     tools: async (id) => { calls.push(`tools ${id}`); return { tools: [], instructions: "hi" }; },
     call: async (id) => { calls.push(`call ${id}`); return { content: [], isError: false }; },
     sendMessage: async (id) => { calls.push(`send ${id}`); },
+    listSessions: async (id) => { calls.push(`list ${id}`); return { sessions: [] }; },
     glossary: async (id) => { calls.push(`glossary ${id}`); return { results: [], loaded: [] }; },
   });
   const moss = createMossServer({
@@ -56,11 +57,14 @@ describe("the bridge's live connection on C's server", () => {
     expect(await b.code(b.moss.handle(old, "bridge.call", { callId: "c1", tool: "Render", input: {} }))).toBe(MOSS_ERR.ROLE_REFUSED);
     expect(await b.code(b.moss.handle(old, "bridge.sendMessage", { text: "still here" }))).toBe(MOSS_ERR.ROLE_REFUSED);
     expect(await b.code(b.moss.handle(old, "glossary.query", { query: "pdf" }))).toBe(MOSS_ERR.ROLE_REFUSED);
+    // `ListSessions` is mounted inside the same live-token check (revision 20, §9.5): the old connection can't list what it may message.
+    expect(await b.code(b.moss.handle(old, "bridge.listSessions", {}))).toBe(MOSS_ERR.ROLE_REFUSED);
     const now = await b.hello(fresh);
     expect(now.bridgeConnection).not.toBe(old.bridgeConnection);
     expect(await b.moss.handle(now, "bridge.sendMessage", { text: "done" })).toEqual({ ok: true });
+    expect(await b.moss.handle(now, "bridge.listSessions", {})).toEqual({ sessions: [] });
     expect(await b.code(b.moss.handle(old, "bridge.tools", {}))).toBe(MOSS_ERR.ROLE_REFUSED);
-    expect(b.calls).toEqual(["tools s1", "send s1"]);
+    expect(b.calls).toEqual(["tools s1", "send s1", "list s1"]);
     b.moss.dispose();
   });
 

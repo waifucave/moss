@@ -12,8 +12,9 @@
 // * **The one rule** (the controller's ruling on K-M1's review; this tool is the door, for agents too): a session
 //   reaches another bot only through that bot's own conversation, and otherwise only sessions of its own bot (its
 //   bot's conversation, side threads and background agents), never itself. Another bot's agents and side threads, and
-//   the user's own coding sessions, are refused (`sendMessageRefusal`).
-import { type SessionView } from "@waifucave/moss-protocol";
+//   the user's own coding sessions, are refused (`sendMessageRefusal`, which is the protocol's `reachRefusal`, spec
+//   revision 20, §9.5: the same function the bridge's `SendMessage` of every agent session reads).
+import { reachRefusal, type SessionView } from "@waifucave/moss-protocol";
 import { isContractError } from "../contracts/common";
 import type { DeliveredInput, Disposition } from "../contracts/session-host";
 import type { DurableSessionHost } from "../sessions/durable-host";
@@ -88,14 +89,11 @@ function str(input: unknown, key: string): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
-/** Why `from` may not message `target`, or undefined when it may (the one rule above). */
+/** Why `from` may not message `target`, or undefined when it may (the one rule above): the protocol's `reachRefusal`
+ *  (reach.ts, spec revision 20, §9.5), which the bridge's `SendMessage` for every agent session reads too. For a bot's
+ *  session it answers exactly what this function always has. */
 export function sendMessageRefusal(from: { sessionId: string; bot: string }, target: Pick<SessionView, "id" | "kind" | "bot">): string | undefined {
-  if (target.id === from.sessionId) return "That is this conversation; SendMessage reaches another one.";
-  // Another bot is reached through its own conversation.
-  if (target.kind === "bot") return undefined;
-  if (target.bot === from.bot) return undefined;
-  if (target.bot === undefined) return `${target.id} is the user's own ${target.kind} session; SendMessage reaches only your bot's sessions and other bots' conversations.`;
-  return `${target.id} belongs to the bot ${target.bot}; message that bot's conversation instead (SendMessage with to: "${target.bot}").`;
+  return reachRefusal({ id: from.sessionId, bot: from.bot }, target);
 }
 
 /** Where a `SendMessage` from `sessionId` with this `to` goes: a bot (by its id, or its name when only one bot has it)

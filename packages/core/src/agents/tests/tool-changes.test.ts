@@ -57,6 +57,7 @@ describe.skipIf(!posix)("the bridge process follows the daemon's word that the t
       tools: async () => ({ tools: list, instructions: "hi" }),
       call: async (_s, c) => ({ content: [{ type: "text", text: `ran ${c.tool}` }], isError: false }),
       sendMessage: async () => {},
+      listSessions: async () => ({ sessions: [] }),
       glossary: async () => ({ results: [], loaded: [] }),
       linked: (_s, l) => { link = l; },
     };
@@ -73,7 +74,7 @@ describe.skipIf(!posix)("the bridge process follows the daemon's word that the t
     // Before the agent initializes the bridge has nobody to tell (and the daemon has no link to it yet).
     const init = (await mcp.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } })) as { capabilities: { tools: { listChanged: boolean } } };
     expect(init.capabilities.tools.listChanged).toBe(true);
-    expect(await names()).toEqual(["SendMessage", "Glossary"]);
+    expect(await names()).toEqual(["SendMessage", "ListSessions", "Glossary"]);
     await waitFor(() => link, "the daemon's link to the bridge");
 
     list = [...BRIDGE_OWN_TOOLS, def("plug__a")];
@@ -81,12 +82,12 @@ describe.skipIf(!posix)("the bridge process follows the daemon's word that the t
     await waitFor(() => told.length === 1, "the agent told once");
     expect(told).toEqual(["notifications/tools/list_changed"]);
     // The agent asks again and gets the list as it is now, with no restart.
-    expect(await names()).toEqual(["SendMessage", "Glossary", "plug__a"]);
+    expect(await names()).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__a"]);
     // A call to a name the list no longer has still goes to the daemon, which refuses it there (the handler's own answer here).
     list = [...BRIDGE_OWN_TOOLS];
     link!.notify(BRIDGE_TOOLS_CHANGED_NOTIFICATION, {});
     await waitFor(() => told.length === 2, "the second");
-    expect(await names()).toEqual(["SendMessage", "Glossary"]);
+    expect(await names()).toEqual(["SendMessage", "ListSessions", "Glossary"]);
     expect(await mcp.request("tools/call", { name: "plug__a", arguments: {} })).toEqual({ content: [{ type: "text", text: "ran plug__a" }], isError: false });
     ep.close();
   });
@@ -99,6 +100,7 @@ describe.skipIf(!posix)("the bridge process follows the daemon's word that the t
       tools: async () => ({ tools: [...BRIDGE_OWN_TOOLS], instructions: "" }),
       call: async () => ({ content: [], isError: false }),
       sendMessage: async () => {},
+      listSessions: async () => ({ sessions: [] }),
       glossary: async () => ({ results: [], loaded: [] }),
       linked: (_s, l) => { link = l; },
     };
@@ -172,7 +174,7 @@ describe("the manager tells a running session when its tools change", () => {
     t.m.set([def("plug__a")]);
     await t.settle();
     expect(t.told.length).toBe(1);
-    expect(await t.list()).toEqual(["Glossary", "plug__a"]);
+    expect(await t.list()).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__a"]);
     // An update with a new definition: same name, new words.
     t.m.set([def("plug__a", "The tool, better.")]);
     await t.settle();
@@ -186,7 +188,7 @@ describe("the manager tells a running session when its tools change", () => {
     t.m.set([]);
     await t.settle();
     expect(t.told.length).toBe(4);
-    expect(await t.list()).toEqual(["Glossary"]);
+    expect(await t.list()).toEqual(["SendMessage", "ListSessions", "Glossary"]);
   });
 
   test("a change that touches no tool this session may see is no notification; instructions that changed are one", async () => {
@@ -209,7 +211,7 @@ describe("the manager tells a running session when its tools change", () => {
     await waitFor(() => t.told.length > 0, "the notification");
     await Bun.sleep(600);
     expect(t.told.length).toBe(1);
-    expect(await t.list()).toEqual(["Glossary", "plug__a", "plug__b"]);
+    expect(await t.list()).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__a", "plug__b"]);
   });
 
   test("a session started after the change holds the list a running session was told", async () => {
@@ -266,7 +268,7 @@ describe("an agent that can't take a change live", () => {
     expect(said).toContain("new: plug__late");
     expect(t.m.settledCalls.length).toBeGreaterThan(asked);
     expect(t.m.settledCalls.at(-1)).toBeGreaterThan(0);
-    expect(await t.list()).toEqual(["Glossary", "plug__late"]);
+    expect(await t.list()).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__late"]);
   });
 
   test("next-turn: a change during a turn does not reopen the agent mid-turn; it is reopened at the next turn's start, once", async () => {
@@ -337,7 +339,7 @@ describe("an agent that can't take a change live", () => {
     await waitFor(() => t.w.report("session").length === before + 1, "the agent opened again");
     expect(t.w.report("session")[before]).toMatchObject({ how: "resume" });
     expect(notices(t.w, t.r.sessionId)).toEqual([]);
-    expect(await t.list()).toEqual(["Glossary", "plug__a"]);
+    expect(await t.list()).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__a"]);
   });
 });
 
@@ -403,9 +405,9 @@ describe("generated sequences of installs, removals, updates, enables and tool s
         toldBefore = t.told.length;
         // The agent that follows the notification asks again; it must get what a session started now would.
         if (moved) held = await t.handlers.tools(t.r.sessionId);
-        expect(held.tools.filter((x) => x.name !== "Glossary")).toEqual(want);
+        expect(held.tools.filter((x) => !BRIDGE_OWN_TOOLS.some((o) => o.name === x.name))).toEqual(want);
         const fresh = await t.w.manager.bridgeHandlers().tools("not-a-session"); // the source's list for a session the manager doesn't know: the same plugins' part
-        expect(fresh.tools.filter((x) => x.name !== "Glossary" && x.name !== "SendMessage")).toEqual(want);
+        expect(fresh.tools.filter((x) => !BRIDGE_OWN_TOOLS.some((o) => o.name === x.name))).toEqual(want);
       }
       expect(changes).toBeGreaterThan(5);
       expect(t.told.length).toBe(changes);
@@ -423,6 +425,7 @@ describe("the in-process bridge (MOSS's own coding agent)", () => {
       tools: async () => ({ tools: [...BRIDGE_OWN_TOOLS, ...(await m.source.tools("s"))], instructions: "" }),
       call: async (id, c) => { calls.push(c.tool); return m.source.call(id, c, { computer: "Studio", origin: "user" }); },
       sendMessage: async () => {},
+      listSessions: async () => ({ sessions: [] }),
       glossary: async () => ({ results: [], loaded: [] }),
     };
     return { m, calls, handlers, kill: () => { live = false; }, server: () => inProcessBridgeServer(handlers, { name: "moss_x", sessionId: "s", live: () => live }) };
@@ -433,7 +436,7 @@ describe("the in-process bridge (MOSS's own coding agent)", () => {
     h.m.set([def("plug__a")]);
     const server = await h.server();
     const inst = server.instance as import("@waifucave/clover-agent-sdk").WinterMcpServerInstance;
-    expect(inst.listTools().map((t) => t.name)).toEqual(["SendMessage", "Glossary", "plug__a"]);
+    expect(inst.listTools().map((t) => t.name)).toEqual(["SendMessage", "ListSessions", "Glossary", "plug__a"]);
     // Installed after the session started: not in the list the runtime was given, but a call is not refused for that.
     h.m.set([def("plug__a"), def("plug__b")]);
     expect(await inst.callTool("plug__b", {})).toEqual({ content: [{ type: "text", text: "ran plug__b" }], isError: false });

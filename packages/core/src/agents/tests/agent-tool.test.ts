@@ -733,14 +733,16 @@ describe("check 2's minors", () => {
     expect(items.at(-1)).toBe("… and 1 more");
   });
 
-  test("a coding session's bridge offers no SendMessage, since there is no bot to message (minor 3)", async () => {
+  test("a coding session's bridge offers SendMessage and ListSessions as a bot's agent's does, the instructions naming both (revision 20, §9.5)", async () => {
     const w = make({ script: [[{ say: "hi" }]] });
     const r = await w.manager.start({ caller: { kind: "user", device: "d".repeat(16), clientMessageId: "m1" }, backend: "fake", prompt: "Hi.", root: "home/Studio/project1" });
     const offered = await w.manager.bridgeHandlers().tools(r.sessionId);
-    expect(offered.tools.map((t) => t.name)).toEqual(["Glossary"]);
-    expect(offered.instructions).not.toContain("SendMessage");
+    expect(offered.tools.map((t) => t.name)).toEqual(["SendMessage", "ListSessions", "Glossary"]);
+    expect(offered.instructions).toContain("SendMessage and ListSessions");
     const bot = await w.delegate();
-    expect((await w.manager.bridgeHandlers().tools(bot.sessionId)).tools.map((t) => t.name)).toEqual(["SendMessage", "Glossary"]);
+    const botOffered = await w.manager.bridgeHandlers().tools(bot.sessionId);
+    expect(botOffered.tools.map((t) => t.name)).toEqual(["SendMessage", "ListSessions", "Glossary"]);
+    expect(botOffered.instructions).toContain("ListSessions");
   });
 
   test("a choice a crashed delegation left is set back as soon as the agent's next session opens (minor 4)", async () => {

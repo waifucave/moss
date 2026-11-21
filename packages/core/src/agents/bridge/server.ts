@@ -21,7 +21,8 @@
 import { randomUUID } from "node:crypto";
 import { BRIDGE_TOOLS_CHANGED_NOTIFICATION, MOSS_PROTOCOL_VERSION } from "@waifucave/moss-protocol";
 import { RPC_METHOD_NOT_FOUND, RpcError, RpcPeer } from "@waifucave/clover-agent-sdk/acp";
-import { glossaryResultText, listedBridgeTool, type BridgeToolDef } from "./tools";
+import { CROSS_SESSION_TOOLS, type ReachableSession } from "@waifucave/moss-protocol";
+import { glossaryResultText, listedBridgeTool, reachableSessionsText, type BridgeToolDef } from "./tools";
 
 export const BRIDGE_ENV = { token: "MOSS_BRIDGE_TOKEN", session: "MOSS_BRIDGE_SESSION", socket: "MOSS_BRIDGE_SOCKET" } as const;
 
@@ -131,11 +132,15 @@ export function runBridge(env: Record<string, string | undefined>, io: BridgeIo)
           const name = String(p["name"] ?? "");
           const args = (p["arguments"] ?? {}) as Record<string, unknown>;
           try {
-            if (name === "SendMessage") {
+            if (name === CROSS_SESSION_TOOLS.send) {
               const text = String(args["message"] ?? args["text"] ?? "");
               if (!text) return textResult("SendMessage needs a message.", true);
               await fromDaemon("bridge.sendMessage", { text, ...(typeof args["to"] === "string" && args["to"] ? { to: args["to"] } : {}) });
               return textResult("Sent.", false);
+            }
+            if (name === CROSS_SESSION_TOOLS.list) {
+              const r = (await fromDaemon("bridge.listSessions", {})) as { sessions: ReachableSession[] };
+              return textResult(reachableSessionsText(r.sessions), false);
             }
             if (name === "Glossary") {
               const r = await fromDaemon("glossary.query", { ...(args["query"] === undefined ? {} : { query: args["query"] }), ...(args["load"] === undefined ? {} : { load: args["load"] }) });

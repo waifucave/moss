@@ -61,8 +61,10 @@ export interface CodeAgentServed {
   close(): Promise<void>;
 }
 
-/** The coding agent's tools: the runtime's coding set, with plan mode; the bot's own tools never (messages go through
- *  the bridge). `TaskStop` here is the runtime's own, for the agent's background commands. */
+/** The coding agent's tools: the runtime's coding set, with plan mode; the bot's own tools never. Messages to other sessions
+ *  (`SendMessage`, `ListSessions`: spec revision 20, §9.5) are the bridge's own tools, MCP tools of its in-process server, for
+ *  every session of this agent, a bot's or not: they are no built-in tool and are not listed here. `TaskStop` here is the
+ *  runtime's own, for the agent's background commands. */
 export const MOSS_CODE_TOOLS: readonly string[] = [
   "Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", "TaskStop",
   "Monitor", "EnterPlanMode", "ExitPlanMode",
@@ -378,8 +380,9 @@ export class MossCodeBackend implements AgentBackend {
     // A session on the user's default model starts at the default's effort (the family's, written with it).
     const effort = spec.effort ?? (spec.model === undefined ? deps.defaultEffort?.() : undefined);
     const base = deps.baseOptions({ model, ...(effort === undefined ? {} : { effort }), cwd: spec.root });
-    // The runtime's TaskStop and SendMessage would reach the host's other sessions through host messaging; an agent
-    // reaches its bot through the bridge alone.
+    // The runtime's own TaskStop and SendMessage would reach the host's other sessions through host messaging, outside the
+    // protocol's one reach rule; an agent reaches another session through the bridge's SendMessage alone (§9.5), which that
+    // rule judges, so host messaging stays refused.
     if ((base as { hostMessaging?: unknown }).hostMessaging !== undefined) throw new ContractError("refused", "MOSS's coding agent wasn't started: its options carry host messaging");
     // Each file tool's path as it really is: the deny rules match a path as written, so a link from the root into a
     // denied folder (the MOSS home) would pass them.

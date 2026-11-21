@@ -99,6 +99,7 @@ import { ARRIVALS_STEP, arrivalsStep } from "./arrivals-step";
 import { ADDONS_STEP, addonsStep } from "./addons-step";
 import { ARCHIVE_STEP, archiveStep, seedArchive } from "./archive-step";
 import { ACP_BACKEND_STEP, acpBackendStep } from "./acp-backend-step";
+import { CANVAS_CROSS_SESSION_STEP, canvasCrossSessionStep } from "./canvas-step";
 import { BUILDER_EXAMPLES_STEP, builderExamplesStep } from "./builder-examples-step";
 import { WORKSHOP_POINTS_STEP, workshopPointsStep } from "./workshop-points-step";
 import { callText, WORKSHOP_STEP, workshopStep } from "./workshop-step";
@@ -3993,7 +3994,7 @@ async function otherUnitsRun(app: { exe: string; args: string[] }, ids: readonly
       await uiPhase(app, true, session, pressing, new Set(windowIds.flatMap((id) => windowIndexes(id)!)), bot);
     }
   }
-  const windowed = ids.filter((id) => id === "examples" || id === "bundled-tools" || id === "cards" || id === "workshop" || id === "arrivals" || id === "addons" || id === "archive" || id === "acp" || id === "builder-examples" || id === "workshop-points" || id === "browser" || id === "plugin-app");
+  const windowed = ids.filter((id) => id === "examples" || id === "bundled-tools" || id === "cards" || id === "workshop" || id === "arrivals" || id === "addons" || id === "archive" || id === "acp" || id === "builder-examples" || id === "workshop-points" || id === "browser" || id === "plugin-app" || id === "canvas");
   if (windowed.length > 0) await unitWindow(app, windowed, session, undefined, bot);
   if (ids.includes("release")) await releaseSteps(app);
   if (ids.includes("cold")) await coldStartStep(app, 1);
@@ -4146,6 +4147,8 @@ function uiRowRunners(ctx: ExampleCtx, session: string, launch?: Awaited<ReturnT
     [ARCHIVE_STEP, () => archiveStep(ctx)],
     // An agent backend a plugin brings (ACP), on a fake agent in place of a vendor's CLI (checklist 1.51, 4.25).
     [ACP_BACKEND_STEP, () => acpBackendStep(ctx)],
+    // Two coding sessions on a fake agent message each other through the bridge; one cannot reach a bot's conversation (lane CM, §9.5).
+    [CANVAS_CROSS_SESSION_STEP, () => canvasCrossSessionStep(ctx)],
     // The plugin builder's 15 examples installed and drawn on the app (checklist 5.4), and a bot's plugin that takes a plugin (5.12).
     [BUILDER_EXAMPLES_STEP, () => builderExamplesStep(ctx, session)],
     [WORKSHOP_POINTS_STEP, () => workshopPointsStep(ctx, bot)],

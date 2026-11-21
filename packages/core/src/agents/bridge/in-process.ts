@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 import type { McpSdkServerConfigWithInstance, WinterMcpServerInstance } from "@waifucave/clover-agent-sdk";
 import type { BridgeHandlers } from "./handlers";
 import { RUNTIME_LOAD_KEY } from "../../runtime-sdk/turn-loop/glossary";
-import { GLOSSARY, glossaryResultText, listedBridgeTool, type BridgeToolDef } from "./tools";
+import { CROSS_SESSION_TOOLS } from "@waifucave/moss-protocol";
+import { GLOSSARY, glossaryResultText, listedBridgeTool, reachableSessionsText, type BridgeToolDef } from "./tools";
 
 export interface InProcessBridgeOptions {
   /** The server's name: the session's bridge server name (`moss_<id>`), as the stdio bridge's. */
@@ -31,12 +32,13 @@ export async function inProcessBridgeServer(h: BridgeHandlers, o: InProcessBridg
     async callTool(name, args) {
       if (!o.live()) return result("Not run: this agent's bridge was closed.", true);
       try {
-        if (name === "SendMessage") {
+        if (name === CROSS_SESSION_TOOLS.send) {
           const text = String(args["message"] ?? args["text"] ?? "");
           if (!text) return result("SendMessage needs a message.", true);
           await h.sendMessage(o.sessionId, { text, ...(typeof args["to"] === "string" && args["to"] ? { to: args["to"] } : {}) });
           return result("Sent.", false);
         }
+        if (name === CROSS_SESSION_TOOLS.list) return result(reachableSessionsText((await h.listSessions(o.sessionId)).sessions), false);
         if (name === "Glossary") {
           const r = await h.glossary(o.sessionId, {
             ...(args["query"] === undefined ? {} : { query: args["query"] as string | string[] }),

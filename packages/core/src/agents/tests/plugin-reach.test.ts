@@ -214,8 +214,8 @@ describe("a plugin's tools on an agent's bridge", () => {
     // What `bridge.tools` answers the session: Glossary and toolbox's tool; not the bots-only plugin's, not the
     // Claude-Code-only one's, not the MOSS-only one's (the scripted agent's backend is `fake`).
     const listed = await w.manager.bridgeHandlers().tools(r.sessionId);
-    expect(listed.tools.map((t) => t.name)).toEqual(["Glossary", TOOL]);
-    expect(listed.tools[1]!.description).toBe("The toolbox tool. (from the plugin toolbox)");
+    expect(listed.tools.map((t) => t.name)).toEqual(["SendMessage", "ListSessions", "Glossary", TOOL]);
+    expect(listed.tools[3]!.description).toBe("The toolbox tool. (from the plugin toolbox)");
   });
 
   test("by backend and kind: Claude Code gets the Claude-Code-only plugin, MOSS's own runtime (moss-code, moss) the MOSS-only one, a bot's agent the agents' and the bots' plugins; one not for this computer, none", async () => {

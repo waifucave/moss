@@ -60,16 +60,16 @@ describe("the split", () => {
   });
 
   test("N shards: each parallel unit in one shard, the chain first in its own, the load spread", () => {
-    expect(planShards(1)).toEqual([["chain", "window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup"]]);
+    expect(planShards(1)).toEqual([["chain", "window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas"]]);
     for (const n of [2, 3, 4, 8]) {
       const plan = planShards(n);
       expect(plan.length).toBeLessThanOrEqual(n);
-      expect(plan.flat().sort()).toEqual(["acp", "addons", "archive", "arrivals", "browser", "builder-examples", "bundled-tools", "cards", "chain", "examples", "models", "moss", "plugin-app", "release", "reopen", "setup", "window-1", "window-2", "window-3", "workshop", "workshop-points"]);
+      expect(plan.flat().sort()).toEqual(["acp", "addons", "archive", "arrivals", "browser", "builder-examples", "bundled-tools", "canvas", "cards", "chain", "examples", "models", "moss", "plugin-app", "release", "reopen", "setup", "window-1", "window-2", "window-3", "workshop", "workshop-points"]);
       // The chain, the long pole, alone in the first from 2 shards (anything beside it lengthens the run).
       expect(plan[0]).toEqual(["chain"]);
     }
     // With 2 shards the chain runs alone and the rest share the other.
-    expect(planShards(2)).toEqual([["chain"], ["window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup"]]);
+    expect(planShards(2)).toEqual([["chain"], ["window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas"]]);
     expect(() => planShards(0)).toThrow();
   });
 
@@ -157,7 +157,7 @@ describe("the split", () => {
 describe("a packaged run's units (the try's test twin)", () => {
   test("every unit there is but the source-only host units, with main for the chain and the window", () => {
     const ids = packagedUnitIds();
-    expect(ids).toEqual(["main", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "cold", "idle"]);
+    expect(ids).toEqual(["main", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas", "cold", "idle"]);
     // Nothing is left out by accident: a unit a lane adds is in the packaged run unless it is named source-only.
     expect([...expandUnitIds(ids), ...SOURCE_ONLY_UNITS].sort()).toEqual(units().map((u) => u.id).sort());
     // The packaged MOSS runs in a home of its own after the chain, as from source; so does lane SG's setup unit.
