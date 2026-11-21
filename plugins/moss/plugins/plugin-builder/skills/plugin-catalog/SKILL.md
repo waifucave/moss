@@ -55,12 +55,13 @@ How to read it:
 | `app.tray` | list | app | `tray` | A line in the menu-bar (tray) menu, with the `tray` capability: `toggles` names one of the plugin's own `app.surface` entries (the line hides and shows it, and the choice is kept), or `command` names a command of the pl… |
 | `sidebar` | single | shell | — | The sidebar: the app's own, the same on every tab. A plugin may fill it for the whole app (its own component, in its own frame, reading and acting through `shell.*`); an entry tied to a bot's tab (`when.bot`, or inside… |
 | `sidebar.app` | list | shell | — | App buttons in the sidebar; `opens` names the `main` and `panel` key it shows. |
-| `main` | keyed | shell | — | The main area, keyed by route: agent, settings, plugins, app. |
+| `main` | keyed | shell | — | The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: "start" })` shows. A plugin's entry keyed `… |
 | `panel` | keyed | shell | — | The panel host, keyed by panel: each stock panel (session, terminal, diff, files, browser, agent) is a plugin of its own, and replaceable. An entry whose key is not a stock one ADDS a panel of the plugin's own, with a b… |
 | `panel.view` | keyed | shell | — | A spot inside each panel view, keyed by the view's id. |
 | `settings.section` | list | settings | — | A section of the settings screen, which the settings part (`main` key `settings`) declares. |
 | `status` | list | shell | — | The shell's status bar; the inherited `tile` becomes an entry here (§12). |
 | `conversation` | single | session-tab | `sessions.read` | The conversation view. |
+| `session.corner` | list | session-tab | — | Small controls in a session tab's top corner (spec revision 20, §9.5), beside the shell's own, in the spot's order: `title` is the tooltip, `icon` a picture in the plugin's folder. Each gets the tab's session and its ki… |
 | `composer` | single | session-tab | `conversation.post` | The composer; a send counts as the user's only on a real key press or click (§5.5). Its entry also gets the host callbacks (`useComposerHost`): the models its session can switch to, a model switch, interrupt and stop; e… |
 | `composer.action` | keyed | composer | — | The composer's buttons, keyed by action id: an entry keyed `attach`, `model`, `level`, `send` or `stop` draws that button another way (or hides it); one with any other key adds a button of its own, drawn among the butto… |
 | `conversation.message` | keyed | conversation | `sessions.read` | One message, keyed by kind; the `approval` cell can't be hidden. The `tool` cell gets a run of calls. |
