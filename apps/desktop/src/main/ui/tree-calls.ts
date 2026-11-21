@@ -20,11 +20,12 @@
 // `card.answer` and `card.confirm` are on no list: a card is answered only on the sealed path. A part's OWN plugin's
 // settings are not here: every part reads and writes them through the plugin API (`settings.get`/`set`, the core's
 // `plugin.layer.call`), at every scope, as its host half does.
-import { TopPluginId, allowedMethods, dataKindOfSession, kindCapability, type SessionKind } from "@waifucave/moss-protocol";
+import { RECENT_FOLDERS_MAX, TopPluginId, allowedMethods, dataKindOfSession, kindCapability, type SessionKind } from "@waifucave/moss-protocol";
 import { withImplied } from "@waifucave/moss-plugin-sdk";
 import { displayText } from "@waifucave/moss-plugin-sdk/plain";
 import { resend } from "./resend";
 import { messageAction } from "./message-action";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 /** The bundled tree whose notices are the app's own: never muted. */
@@ -141,6 +142,10 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   // person's own press, in a folder they picked in main's dialog (a pick token, `agentStart`), with no prompt.
   "agent.backends": read(SESSIONS_READ),
   "agent.start": press(SESSIONS_START),
+  // What a start page offers before a session exists (spec revision 20, §9.5): the models and efforts of an agent, and what
+  // the person started last (the folders never reach the page: `ui.pick {recent}` gives them as tokens).
+  "agent.options": read(SESSIONS_START),
+  "agent.recent": read(SESSIONS_START),
   "plugin.logs": read("logs.read"),
   // Settings' Tools tab: what each plugin tool may do and the card rules saved for one bot. A value decides whether a
   // card is raised at all, so setting one or taking one back is the user's own press.
@@ -529,7 +534,9 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
     }
   }
   // Only listing what is newer is a read; applying one is the user's press.
-  const listing = r.method === "plugin.update" && (r.params as { list?: unknown } | null | undefined)?.list === true;
+  // The recent folders as tokens, with no dialog, is a read too: it opens nothing and only offers what the person already picked.
+  const recentOnly = r.method === "ui.pick" && obj(r.params).recent === true && obj(r.params).dialog === false;
+  const listing = recentOnly || (r.method === "plugin.update" && (r.params as { list?: unknown } | null | undefined)?.list === true);
   // A call refused for what it says spends nobody's press: the shapes that can be checked without the core first.
   if (r.method === "bot.setUserLayer") {
     const why = userLayerWhy(r.params);
@@ -565,7 +572,8 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   if ((r.method === "plugin.settings.get" || r.method === "plugin.settings.set") && namesBot(r.params) && verdict.by === BOTS_EDIT) return editorSetting(r, part);
   if (r.method === "ui.pick") return pick(r, part, c);
   if (r.method === "session.resend") return resend(r, part);
-  if (r.method === "agent.start") return agentStart(r, part);
+  if (r.method === "agent.start") return agentStart(r, part, c);
+  if (r.method === "agent.recent") return agentRecent(r);
   if (r.method === "conversation.messageAction") return messageAction(r, part);
   if (r.method === "ui.secret") return secret(r, part, has(PLUGINS_MANAGE));
   if (PAGE_METHODS.has(r.method)) {
@@ -685,9 +693,9 @@ async function secret(r: TreeRoute, part: string, anyPlugin: boolean): Promise<{
 }
 
 /** `ui.pick`: main's own dialog; the page gets a token and the chosen item's name, never its path. */
-async function pick(r: TreeRoute, part: string, c: TreeCaller): Promise<{ token: string; name: string } | { cancelled: true }> {
+async function pick(r: TreeRoute, part: string, c: TreeCaller): Promise<{ token: string; name: string; picked?: { token: string; name: string }; recent?: { token: string; name: string }[] } | { cancelled: true; recent?: { token: string; name: string }[] }> {
   if (r.pick === undefined || r.tokens === undefined) throw r.refuse("this app has no picker for a part");
-  const p = (r.params ?? {}) as { kind?: unknown; filters?: unknown; use?: unknown };
+  const p = (r.params ?? {}) as { kind?: unknown; filters?: unknown; use?: unknown; recent?: unknown; dialog?: unknown };
   const kind = p.kind === "file" ? "file" : p.kind === "folder" ? "folder" : undefined;
   if (kind === undefined) throw r.refuse("pick a folder or a file");
   // The uses the part's plugin's capabilities give (`PICK_USES`), never its id.
@@ -701,9 +709,50 @@ async function pick(r: TreeRoute, part: string, c: TreeCaller): Promise<{ token:
       return typeof x.name === "string" && x.name.length <= 64 && ext.length > 0 ? [{ name: x.name, extensions: ext }] : [];
     })
     : undefined;
+  // The folders the person started in last (the engine's `agent.recent`), as tokens for this use: only for a session's
+  // folder, only the ones still there, each a one-use token and its name; the path never goes on.
+  let recent: { token: string; name: string }[] | undefined;
+  if (p.recent === true) {
+    if (use !== "agent.start" || kind !== "folder") throw r.refuse("recent folders are offered for a new session's folder only");
+    recent = await recentFolders(r, part, r.tokens);
+  }
+  if (p.dialog === false) return { cancelled: true, ...(recent === undefined ? {} : { recent }) };
   const path = await r.pick(c.windowId, kind, filters, use);
-  if (path === undefined) return { cancelled: true };
-  return { token: r.tokens.issue(part, path, use), name: pickedName(path) };
+  if (path === undefined) return { cancelled: true, ...(recent === undefined ? {} : { recent }) };
+  const picked = { token: r.tokens.issue(part, path, use), name: pickedName(path) };
+  return { ...picked, picked, ...(recent === undefined ? {} : { recent }) };
+}
+
+/** The engine's last-started folders (tree paths under this computer's home) as pick tokens for `agent.start`: a folder
+ *  that is gone, or that isn't inside the home, is left out. */
+async function recentFolders(r: TreeRoute, part: string, tokens: PickTokens, home: string = homedir()): Promise<{ token: string; name: string }[]> {
+  const got = obj(await r.request("agent.recent", {}));
+  const listed = obj(await r.request("computer.list", {}));
+  const self = (Array.isArray(listed.computers) ? listed.computers : []).map(obj).find((x) => x.link === "self");
+  if (typeof self?.name !== "string" || !Array.isArray(got.roots)) return [];
+  const prefix = `home/${self.name}/`;
+  const out: { token: string; name: string }[] = [];
+  for (const e of got.roots.map(obj)) {
+    const root = e.root;
+    if (typeof root !== "string" || !root.startsWith(prefix)) continue;
+    const rel = root.slice(prefix.length);
+    if (rel === "" || rel.split("/").some((x) => x === "" || x === "." || x === "..")) continue;
+    const path = resolvePath(home, ...rel.split("/"));
+    try {
+      if (!statSync(path).isDirectory()) continue;
+    } catch { continue; }
+    out.push({ token: tokens.issue(part, path, "agent.start"), name: pickedName(path) });
+    if (out.length >= RECENT_FOLDERS_MAX) break;
+  }
+  return out;
+}
+
+/** `agent.recent` from a part: the person's last agent, model, effort and computer, never a folder (a page gets those as
+ *  tokens from `ui.pick {recent}`). */
+async function agentRecent(r: TreeRoute): Promise<unknown> {
+  const got = obj(await r.request("agent.recent", {}));
+  const { roots: _roots, ...rest } = got;
+  return { ...rest, folders: Array.isArray(got.roots) ? got.roots.length : 0 };
 }
 
 /** Text a page shows that a file, a model or the core wrote: the shared cleaner (`@waifucave/moss-plugin-sdk/plain`),
@@ -729,8 +778,16 @@ export function homeTreePathOf(path: string, computer: string, home: string = ho
  *  main's dialog, inside their home, never a path from the page; the computer is this one (main's own listing). The
  *  session starts with no prompt (the agent starts with the person's first message). The page gets back the session's
  *  id only. */
-async function agentStart(r: TreeRoute, part: string): Promise<{ session: string }> {
+async function agentStart(r: TreeRoute, part: string, c: TreeCaller): Promise<{ session: string }> {
   const raw = obj(r.params);
+  for (const k of Object.keys(raw)) if (!["backend", "root", "model", "effort", "prompt"].includes(k)) throw r.refuse(`a part starts a session with a backend, a folder, a model, an effort and a first message, not ${k.slice(0, 40)}`);
+  if (raw.model !== undefined && (typeof raw.model !== "string" || raw.model.length === 0 || raw.model.length > 200)) throw r.refuse("which model?");
+  if (raw.effort !== undefined && (typeof raw.effort !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(raw.effort))) throw r.refuse("which effort?");
+  // A first message is the person's own words to the session: the part needs the right to send one as well as to start.
+  if (raw.prompt !== undefined) {
+    if (typeof raw.prompt !== "string" || raw.prompt.length === 0 || raw.prompt.length > 1_000_000) throw r.refuse("what should the first message say?");
+    if (!holds(c.capabilities, USER_SEND)) throw r.refuse("a first message takes the user.send capability as well as sessions.start");
+  }
   if (typeof raw.backend !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.backend)) throw r.refuse("which agent?");
   const path = (r.tokens ?? new PickTokens()).redeem(raw.root, part, "agent.start");
   if (path === undefined) throw r.refuse("pick the session's folder first");
@@ -739,7 +796,10 @@ async function agentStart(r: TreeRoute, part: string): Promise<{ session: string
   if (typeof self?.name !== "string") throw r.refuse("this computer isn't known yet");
   const root = homeTreePathOf(path, self.name);
   if (root === undefined) throw r.refuse("a session works in a folder of this computer's home: pick one inside it");
-  const got = obj(await r.request("agent.start", { backend: raw.backend, computer: self.name, root }));
+  const got = obj(await r.request("agent.start", {
+    backend: raw.backend, computer: self.name, root,
+    ...(raw.model === undefined ? {} : { model: raw.model }), ...(raw.effort === undefined ? {} : { effort: raw.effort }), ...(raw.prompt === undefined ? {} : { prompt: raw.prompt }),
+  }));
   if (typeof got.session !== "string") throw r.refuse("the session didn't start");
   return { session: got.session };
 }

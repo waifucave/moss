@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { LAYER_METHODS } from "../src/main/layer-links";
@@ -424,6 +424,8 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "computer.list": { needs: ["computers.read"], gesture: false },
   "agent.backends": { needs: ["sessions.read"], gesture: false },
   "agent.start": { needs: ["sessions.start"], gesture: true },
+  "agent.options": { needs: ["sessions.start"], gesture: false },
+  "agent.recent": { needs: ["sessions.start"], gesture: false },
   ...Object.fromEntries(["plugin.list", "plugin.get", "plugin.ui", "plugin.index.list", "plugin.index.search", "plugin.auth.list", "plugin.dev.list", "plugin.grant.list", "command.list", "notify.mutes"].map((m) => [m, { needs: ["plugins.read"], gesture: false }])),
   ...Object.fromEntries(["plugin.install", "plugin.remove", "plugin.update", "plugin.pin", "plugin.restart", "plugin.index.add", "plugin.index.remove", "plugin.auth.signIn", "plugin.auth.signOut", "plugin.dev.add", "plugin.dev.remove", "plugin.grant.remove", "plugin.setScope", "plugin.setComputers", "plugin.confirmAdult", "plugin.dev.renew", "notify.setMuted", "plugin.setEnabled"].map((m) => [m, { needs: ["plugins.manage"], gesture: true }])),
 };
@@ -437,6 +439,7 @@ const THIRD = "acme-panel";
 async function appConnection(method: string, params?: unknown): Promise<unknown> {
   if (method === "computer.list") return { computers: [{ name: "Studio", link: "self" }, { name: "Laptop", link: "lan" }] };
   if (method === "agent.start") return { session: "s_new" };
+  if (method === "agent.recent") return { backend: "codex", model: "gpt-6", effort: "high", computer: "Studio", roots: [{ root: "home/Studio/projects/recent-a", at: 3 }, { root: "home/Studio/projects/gone-b", at: 2 }, { root: "home/Laptop/projects/other", at: 1 }, { root: "home/Studio/../../etc", at: 1 }] };
   // The core's own session, for a read by kind: a bot's conversation (`b_…`), else a code session.
   if (method === "session.get") return { session: { kind: String((params as { id?: unknown } | undefined)?.id ?? "").startsWith("b_") ? "bot" : "coding" } };
   if (method === "plugin.get") return { plugin: { id: "tarot", manifest: { settings: { k: { type: "string" }, region: { type: "string" }, token: { type: "secret" } } } } };
@@ -484,7 +487,9 @@ const WORST: Record<string, Worst> = {
   "command.list": "read", // each command's default key and whether it is bound, for the Plugins page's Keys lines
   "computer.list": "read", // the computers' names, to tick which a plugin's server runs on
   "agent.backends": "read", // the coding agents plugins bring and which computers have them
-  "agent.start": "starts a model turn", // a coding session in a folder the person picked in main's dialog, no prompt
+  "agent.start": "starts a model turn", // a coding session in a folder the person picked in main's dialog; a first message too with user.send
+  "agent.options": "read", // an agent's models and efforts, before any session
+  "agent.recent": "read", // the last agent, model and effort; no folder (those are tokens from ui.pick)
   "notify.mutes": "read", // which plugins' notifications are muted
   "notify.setMuted": "harmless change", // mutes or unmutes one plugin's notifications to the user; nothing it may do moves
   "ui.pick": "main-owned dialog", // main's own open dialog; the page gets a one-use token and a name
@@ -693,6 +698,45 @@ describe("the Plugins page's calls as main sends them", () => {
     const npm = page("plugin.install", { source: { from: "npm", name: "moss-tarot", version: "1.0.0" } }, { tokens });
     await routeCall(npm.r);
     expect(npm.sent).toEqual([{ source: { from: "npm", name: "moss-tarot", version: "1.0.0" } }]);
+  });
+
+  test("starting from a part (spec revision 20, §9.5): model, effort and a first message go through; a first message needs user.send as well; nothing else does", async () => {
+    const tokens = new PickTokens();
+    const sent: unknown[][] = [];
+    const go = async (caps: string[], params: unknown) => {
+      const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps, method: "agent.start", params, gesture: true, tokens, request: async (m, p) => { sent.push([m, p]); return appConnection(m, p); } });
+      try { return await routeCall(r); } catch (e) { return (e as Error).message; }
+    };
+    const root = () => tokens.issue(THIRD, join(homedir(), "projects", "moss"), "agent.start");
+    expect(await go(["sessions.start"], { backend: "codex", root: root(), model: "gpt-6", effort: "high" })).toEqual({ session: "s_new" });
+    expect(sent.at(-1)).toEqual(["agent.start", { backend: "codex", computer: "Studio", root: "home/Studio/projects/moss", model: "gpt-6", effort: "high" }]);
+    expect(await go(["sessions.start"], { backend: "codex", root: root(), prompt: "hello" })).toBe("a first message takes the user.send capability as well as sessions.start");
+    expect(await go(["sessions.start", "user.send"], { backend: "codex", root: root(), prompt: "hello" })).toEqual({ session: "s_new" });
+    expect(sent.at(-1)).toEqual(["agent.start", { backend: "codex", computer: "Studio", root: "home/Studio/projects/moss", prompt: "hello" }]);
+    expect(await go(["sessions.start", "user.send"], { backend: "codex", root: root(), computer: "Laptop" })).toMatch(/not computer/);
+    expect(await go(["sessions.start", "user.send"], { backend: "codex", root: root(), effort: "x; rm" })).toBe("which effort?");
+    expect(await go(["sessions.start", "user.send"], { backend: "codex", root: root(), prompt: "" })).toBe("what should the first message say?");
+  });
+
+  test("agent.recent gives no folder; ui.pick {recent, dialog:false} gives this computer's still-existing recent folders as tokens, with no press and no dialog", async () => {
+    const tokens = new PickTokens();
+    const made = mkdtempSync(join(homedir(), ".moss-recent-test-"));
+    try {
+      const sent: unknown[][] = [];
+      const req = async (m: string, p?: unknown) => { sent.push([m, p]); return m === "agent.recent" ? { backend: "codex", roots: [{ root: `home/Studio/${made.slice(homedir().length + 1)}`, at: 3 }, { root: "home/Studio/projects/gone-b", at: 2 }, { root: "home/Laptop/projects/other", at: 1 }, { root: "home/Studio/../../etc", at: 1 }] } : appConnection(m, p); };
+      const rec = route({ tree: { windowId: 1, pluginId: THIRD }, caps: ["sessions.start"], method: "agent.recent", params: {}, gesture: false, tokens, request: req });
+      expect(await routeCall(rec.r)).toEqual({ backend: "codex", folders: 4 });
+      const noDialog = route({ tree: { windowId: 1, pluginId: THIRD }, caps: ["sessions.start"], method: "ui.pick", params: { kind: "folder", use: "agent.start", recent: true, dialog: false }, gesture: false, tokens, pick: async () => { throw new Error("no dialog"); }, request: req });
+      const got = (await routeCall(noDialog.r)) as { cancelled: boolean; recent: { token: string; name: string }[] };
+      expect(got.recent.map((x) => x.name)).toEqual([made.split("/").pop()!]);
+      expect(JSON.stringify(got)).not.toContain(homedir());
+      expect(tokens.redeem(got.recent[0]!.token, THIRD, "agent.start")).toBe(made);
+      // Another use, or a part without sessions.start, gets nothing.
+      const other = route({ tree: { windowId: 1, pluginId: PLUGINS_PART }, caps: ["plugins.manage"], method: "ui.pick", params: { kind: "folder", use: "plugin.install", recent: true, dialog: false }, gesture: false, tokens, request: req });
+      await expect(routeCall(other.r)).rejects.toThrow();
+    } finally {
+      rmSync(made, { recursive: true, force: true });
+    }
   });
 
   test("ui.pick: main's dialog, a token and the name back, never the path; cancelled says so", async () => {
