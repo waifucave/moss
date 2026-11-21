@@ -63,8 +63,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface SetupState { ready: boolean; missing: string[]; providers: string[]; default?: { model: string; source: string; effort?: string }; recommended?: Record<string, { model: string; effort?: string }>; dismissed: boolean }
 
 /** One document of an app's window through its DevTools port: trusted clicks and typing, as a person's. */
-class Doc {
-  constructor(private readonly x: SetupUnitCtx, readonly cdp: Cdp, private readonly match: (url: string) => boolean, private readonly name: string) {}
+export class Doc {
+  constructor(private readonly x: Pick<SetupUnitCtx, "until">, readonly cdp: Cdp, private readonly match: (url: string) => boolean, private readonly name: string) {}
 
   async session(): Promise<string> {
     const d = await this.x.until(`${this.name}'s document`, 60_000, async () => (await this.cdp.documents()).find((x) => this.match(x.url)), 300);

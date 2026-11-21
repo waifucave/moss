@@ -152,6 +152,8 @@ export interface MossServerDeps {
    *  home's app records only, never by a name or bundle id from the caller), for `app.openIn` to a program that isn't running.
    *  Absent: such a program is not started (a test's engine, a checkout's run), and `app.openIn` answers refused. */
   launchProgram?(program: WindowProgram): Promise<void>;
+  /** How long `app.openIn` waits for a started program's window (default `OPEN_IN_START_MS`); the acceptance run scales it. */
+  readonly openInStartMs?: number;
   readonly tokens: MossTokens;
   readonly processes: SessionProcesses;
   readonly serverVersion: string;
@@ -563,7 +565,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       const off = door.watch((live) => { if (live.some((l) => l.program === program)) setTimeout(() => finish(true), 0); });
       deps.launchProgram(program).catch(() => finish(false));
     }),
-  });
+  }, deps.openInStartMs);
 
   const own: Record<string, MossHandler> = {
     "app.openIn": (conn, p) => {

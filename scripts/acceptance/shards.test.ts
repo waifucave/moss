@@ -60,16 +60,16 @@ describe("the split", () => {
   });
 
   test("N shards: each parallel unit in one shard, the chain first in its own, the load spread", () => {
-    expect(planShards(1)).toEqual([["chain", "window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas"]]);
+    expect(planShards(1)).toEqual([["chain", "window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas", "canvas-app"]]);
     for (const n of [2, 3, 4, 8]) {
       const plan = planShards(n);
       expect(plan.length).toBeLessThanOrEqual(n);
-      expect(plan.flat().sort()).toEqual(["acp", "addons", "archive", "arrivals", "browser", "builder-examples", "bundled-tools", "canvas", "cards", "chain", "examples", "models", "moss", "plugin-app", "release", "reopen", "setup", "window-1", "window-2", "window-3", "workshop", "workshop-points"]);
+      expect(plan.flat().sort()).toEqual(["acp", "addons", "archive", "arrivals", "browser", "builder-examples", "bundled-tools", "canvas", "canvas-app", "cards", "chain", "examples", "models", "moss", "plugin-app", "release", "reopen", "setup", "window-1", "window-2", "window-3", "workshop", "workshop-points"]);
       // The chain, the long pole, alone in the first from 2 shards (anything beside it lengthens the run).
       expect(plan[0]).toEqual(["chain"]);
     }
     // With 2 shards the chain runs alone and the rest share the other.
-    expect(planShards(2)).toEqual([["chain"], ["window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas"]]);
+    expect(planShards(2)).toEqual([["chain"], ["window-1", "window-2", "window-3", "examples", "bundled-tools", "cards", "workshop", "reopen", "arrivals", "addons", "archive", "acp", "builder-examples", "workshop-points", "release", "plugin-app", "browser", "models", "moss", "setup", "canvas", "canvas-app"]]);
     expect(() => planShards(0)).toThrow();
   });
 
@@ -119,7 +119,7 @@ describe("the split", () => {
     }
     expect(homePlan(["main", "workshop", "plugin-app", "browser", "cards", "bundled-tools", "moss"]).ownRuns).toEqual(["moss"]);
     // Every shard plan: a shard holding moss and anything else runs moss as its own run (unitsRun uses homePlan).
-    for (const n of [1, 2, 3, 4]) for (const shard of planShards(n)) if (shard.includes("moss") && shard.length > 1) expect(homePlan(shard).ownRuns).toEqual(shard.includes("setup") ? ["moss", "setup"] : ["moss"]);
+    for (const n of [1, 2, 3, 4]) for (const shard of planShards(n)) if (shard.includes("moss") && shard.length > 1) expect(homePlan(shard).ownRuns).toEqual((["moss", "setup", "canvas-app"] as const).filter((id) => shard.includes(id)));
     // run.ts: moss's rows run on the run's home only when moss is the run's one unit; the full run and unitsRun hand it to
     // a run of its own (`--units moss`), never to the shared home's daemon.
     const run = readFileSync(join(import.meta.dir, "run.ts"), "utf8");

@@ -105,6 +105,7 @@ import { WORKSHOP_POINTS_STEP, workshopPointsStep } from "./workshop-points-step
 import { callText, WORKSHOP_STEP, workshopStep } from "./workshop-step";
 import { BOT_RECORDS_ENV, BOT_RECORDS_STEP, botRecordsWrong } from "./bot-records-step";
 import { SECOND_PROVIDER, SETUP_STEPS, setupUnit } from "./setup-step";
+import { CANVAS_APP_STEPS, canvasAppUnit } from "./canvas-app-step";
 import { MOSS_ENV, MOSS_STEPS, mossListsArchived, mossShowsOldConversation, mossUnit, seedLongConversation, type MossUnitCtx } from "./moss-step";
 import { botMoveUpgradeCheck } from "./bot-move-upgrade-step";
 import { ROUTINE_NAME, ROUTINE_SCHEDULE, routineTag, scheduledRunWrong, SCHEDULED_ROUTINE_STEP, type RunSeen } from "./routine-schedule-step";
@@ -3663,6 +3664,70 @@ async function setupRun(app: { exe: string; args: string[] }): Promise<void> {
   });
 }
 
+/** The `canvas` unit (lane CA, canvas-step.ts): its own fresh home and engine (the bots as engine data), the run's key signed in, then MOSS Code
+ *  from source over it, headless, driven through its DevTools port. The engine starts no app for "Open in MOSS": the source daemon leaves a
+ *  marker in the launch folder (daemon.ts `launchProgram`), and the unit answers it by starting its own MOSS from source. */
+async function canvasRun(app: { exe: string; args: string[] }): Promise<void> {
+  if (target !== "source") {
+    for (const name of CANVAS_APP_STEPS) record(stepNumber(FULL_STEPS, name), "BLOCKED", "the canvas unit runs from source only (its engine's launcher is the source daemon's)");
+    return;
+  }
+  try {
+    mossApp();
+  } catch (err) {
+    CANVAS_APP_STEPS.forEach((name, i) => record(stepNumber(FULL_STEPS, name), i === 0 ? statusOf(err) : "BLOCKED", i === 0 ? `the canvas unit's MOSS build: ${why(err)}` : "setup failed"));
+    return;
+  }
+  const launchDir = join(root, "canvas-launch");
+  mkdirSync(launchDir, { recursive: true });
+  try {
+    await startDaemonProc({ ...MOSS_ENV, MOSS_ACCEPTANCE_LAUNCH_DIR: launchDir });
+    const c = (await appDriver()).client;
+    await signInKey(c);
+  } catch (err) {
+    CANVAS_APP_STEPS.forEach((name, i) => record(stepNumber(FULL_STEPS, name), i === 0 ? statusOf(err) : "BLOCKED", i === 0 ? `the canvas unit's daemon: ${why(err)}` : "setup failed"));
+    return;
+  }
+  const front = join(root, "canvas-moss-front");
+  writeFileSync(front, "front");
+  await canvasAppUnit({
+    root, logs, userHome, launchDir, keyedModel: KEYED_MODEL,
+    driver: async () => (await appDriver()).client,
+    installFixture: (c) => installFixture(c, "acceptance-canvas"),
+    startCodeApp: (port, appearance) => startChild("canvas-code-app", app.exe, [...app.args, "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${port}`], {
+      ...baseEnv(), MOSS_DAEMON_BIN: stubBin, MOSS_TEST_APPEARANCE_FILE: appearance, MOSS_DEV_DEBUG: "1",
+    }),
+    startMossApp: (port) => {
+      const built = mossApp();
+      return startChild("canvas-moss-app", built.exe, [...built.args, "--mute-audio", "--moss-headless", `--remote-debugging-port=${port}`], {
+        ...baseEnv(), MOSS_USER_DATA: join(root, "canvas-moss-user-data"), MOSS_TEST_DEBUG: "1", MOSS_TEST_ANSWER_KEY: join(root, "canvas-moss-answer-key"), MOSS_TEST_MAIN_FRONT_FILE: front,
+      });
+    },
+    freePort, endChild: (p) => endChild(p), alive, readLog, until, fail,
+    record: (name, status, detail) => record(stepNumber(FULL_STEPS, name), status, detail),
+    statusOf, why,
+  });
+}
+
+/** A fixture plugin of the run's (scripts/acceptance/fixtures/<id>) installed from a copy of its folder and OK'd over RPC, as `installEcho`
+ *  does for step 4's: for a unit whose app is already running over the home (the OK is the unit's setup, not a row). */
+async function installFixture(c: MossClient, id: string): Promise<void> {
+  const folder = join(root, "plugin-src", id);
+  cpSync(join(import.meta.dir, "fixtures", id), folder, { recursive: true });
+  const installed = await c.request<{ id: string; state: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+  const card = await until(`${id}'s OK card`, 30_000, async () => (await cards(c)).find((k) => (installed.card !== undefined && k.id === installed.card) || k.pluginId === installed.id));
+  const option = card.options.find((x) => x.kind === "approve");
+  if (option === undefined) fail(`${id}'s OK card has no approve option`);
+  const frame = await c.request<{ channel: string }>("card.frame", { id: card.id });
+  const r = await c.request<{ accepted: boolean; reason?: string }>("card.answer", { id: card.id, hash: card.hash, option: option!.id, proof: { via: "sealed-frame", frame: frame.channel, input: "click", at: Date.now() } });
+  if (!r.accepted) fail(`card.answer refused ${id}'s OK: ${r.reason ?? "no reason"}`);
+  const state = await until(`${id} to be enabled after its OK`, 60_000, async () => {
+    const st = (await c.request<{ plugin?: { state?: string } }>("plugin.get", { id: installed.id }).catch(() => undefined))?.plugin?.state;
+    return st !== undefined && st !== "found" && st !== "installing" ? st : undefined;
+  });
+  if (state !== "enabled" && state !== "running") fail(`after its OK ${id} is ${state}`);
+}
+
 /** The bots-as-engine-data row (bot-records-step.ts): the daemon before it ended, one started with records as the bots'
  *  source on the same home (`fresh`: a home of its own, so the key is signed in first), then the clause over the app's
  *  methods with no app (its card answered over RPC). */
@@ -3885,6 +3950,8 @@ async function unitsRun(app: { exe: string; args: string[] }, allIds: readonly U
   if (allIds.length === 1 && allIds[0] === "moss") return mossRun(true);
   // The setup unit alone: a fresh home with no provider and no default model, both apps over it.
   if (allIds.length === 1 && allIds[0] === "setup") return setupRun(app);
+  // The canvas unit alone: the session canvas's rows (canvas-step.ts), MOSS Code and, for "Open in MOSS", a MOSS it starts when asked.
+  if (allIds.length === 1 && allIds[0] === "canvas-app") return canvasRun(app);
   const plan = homePlan(allIds);
   if (plan.shared.length > 0) await otherUnitsRun(app, plan.shared);
   for (const id of plan.ownRuns) await ownHomeRun(id);

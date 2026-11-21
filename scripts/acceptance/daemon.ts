@@ -8,7 +8,8 @@
 //   - its links run on an in-memory wire with a stand-in for public time (below), where a packaged daemon has its link
 //     sidecar and SNTP.
 // Never run it by hand: run.ts starts it on a temp home with a throwaway keychain file.
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { startDaemon, stopWithin } from "../../packages/core/src/daemon";
 import type { PeerFacts } from "../../packages/core/src/platform/caller-probe";
 import { MemoryNetwork } from "../../packages/core/src/links/memory-wire";
@@ -66,7 +67,16 @@ const requestRestart = (): void => {
   console.error("acceptance daemon: restarting to swap the old home's copy in");
   void (async () => { try { await stopWithin(daemon, undefined, { keepApp: true }); } finally { process.exit(76); } })();
 };
-const daemon = await startDaemon({ appPeer, heartbeatTimeoutMs: scaled(15_000), parts: { userHome }, links, usage: USAGE_INERT, pluginFetch, requestRestart, ...(Number.isFinite(opening) && opening > 0 ? { pluginsOpenDelayMs: opening } : {}), ...(Number.isFinite(answering) && answering > 0 ? { pluginsOpenAnswerDelayMs: answering } : {}) });
+// `app.openIn` to a program that isn't running: this engine starts nothing; it leaves a marker in MOSS_ACCEPTANCE_LAUNCH_DIR
+// (`open-moss`, `open-code`), and the run starts its own app from source (the canvas unit).
+const launchDir = process.env.MOSS_ACCEPTANCE_LAUNCH_DIR;
+const launchProgram = async (program: "moss" | "code"): Promise<void> => {
+  console.error(`acceptance daemon: asked to start ${program}`);
+  if (launchDir === undefined || launchDir === "") return;
+  mkdirSync(launchDir, { recursive: true });
+  writeFileSync(join(launchDir, `open-${program}`), String(Date.now()));
+};
+const daemon = await startDaemon({ appPeer, launchProgram, openInStartMs: scaled(60_000), heartbeatTimeoutMs: scaled(15_000), parts: { userHome }, links, usage: USAGE_INERT, pluginFetch, requestRestart, ...(Number.isFinite(opening) && opening > 0 ? { pluginsOpenDelayMs: opening } : {}), ...(Number.isFinite(answering) && answering > 0 ? { pluginsOpenAnswerDelayMs: answering } : {}) });
 console.error(`acceptance daemon: listening on ${daemon.socketPath}`);
 // A CI runner (run.ts sets MOSS_ACCEPT_DIAGNOSE): a tick every 500 ms; one that comes more than a second late says this daemon's loop was
 // held up (or the machine was), with the time, which the daemon's own lines do not carry. See stall-watch.ts.

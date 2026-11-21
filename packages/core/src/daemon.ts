@@ -16,7 +16,7 @@ import { createCoworkNativeWiring, type CoworkNativeWiring, type CoworkNativeWir
 import { CoworkRepository } from "./cowork/repository";
 import { CoworkWorkspaceService, type CoworkHostPorts } from "./cowork/service";
 import { isAbsolute, join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { launchApp } from "./host/world";
 import { DIST_BUILD, isCompiledBinary, missingProcessHolder } from "./build-kind";
 import { randomBytes } from "node:crypto";
@@ -629,6 +629,11 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
    *  code signature by audit token against the profile's MOSS app). Tests whose own process says hello as the app
    *  inject one, or `"none"`. */
   appPeer?: AppPeerPolicy;
+  /** Starts MOSS or MOSS Code for `app.openIn` when it isn't running. Default: the engine's own launcher (`host/world.ts` `launchApp`).
+   *  A test injects one that starts nothing real. */
+  launchProgram?: (program: "moss" | "code") => Promise<void>;
+  /** How long `app.openIn` waits for a started program's window (the acceptance run scales it to its time scale). Default 20 s. */
+  openInStartMs?: number;
   /** The app's heartbeat limit (ruling R9): how long an app may go without answering `app.ping` before the engine ends it. Default 15 s.
    *  The acceptance run's engine sets it to the run's time scale, as it does every wait of its own (a 3-core hosted runner answers late);
    *  a real engine never does. */
@@ -3760,14 +3765,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     tokens: mossTokens,
     processes: sessionProcesses,
     serverVersion: CORE_VERSION,
-    // `app.openIn` to a program that isn't running (lane CA, spec revision 20, §9.5): the way the engine already starts an app
-    // (the home's app records, through the OS). A TEST build with `MOSS_TEST_LAUNCH_DIR` set only leaves a marker file there
-    // (`open-moss`, `open-code`) for the acceptance run, which starts its own app from source: a test never starts a real app.
-    launchProgram: async (program) => {
-      const marks = typeof __MOSS_TEST_BUILD__ === "string" ? process.env.MOSS_TEST_LAUNCH_DIR : undefined;
-      if (marks !== undefined && marks !== "") { writeFileSync(join(marks, `open-${program}`), String(Date.now())); return; }
+    // `app.openIn` to a program that isn't running (lane CA, spec revision 20, §9.5): the way the engine already starts an app (the
+    // home's app records, through the OS). A test's engine passes its own (`opts.launchProgram`: the acceptance run's leaves a marker
+    // and starts its own app from source); a test never starts a real app.
+    ...(opts.openInStartMs !== undefined ? { openInStartMs: opts.openInStartMs } : {}),
+    launchProgram: opts.launchProgram ?? (async (program) => {
       await launchApp({ home: mossHome, os: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux", run: bunRunner, log: (line) => console.error(line) }, program);
-    },
+    }),
     release: releaseHome,
     enforceRelease,
     get deviceId() { return liveDeviceId; },

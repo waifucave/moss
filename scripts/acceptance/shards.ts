@@ -63,10 +63,11 @@ import { RELEASE_AHEAD_STEP, RELEASE_BEHIND_STEP, RELEASE_INSTALL_STEP } from ".
 import { MOSS_STEPS } from "./moss-step";
 import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
+import { CANVAS_APP_STEPS } from "./canvas-app-step";
 import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 import { ROWS_ELSEWHERE } from "./elsewhere";
 
-export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas";
+export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas" | "canvas-app";
 
 export interface Unit {
   id: UnitId;
@@ -131,9 +132,10 @@ const OTHERS: readonly Unit[] = [
   { id: "moss", rows: MOSS_STEPS, phase: "parallel", estimate: 240, ownHome: true },
   // Lane SG: the setup guide in MOSS Code and MOSS on a home no other unit has used (no provider, no default model).
   { id: "setup", rows: SETUP_STEPS, phase: "parallel", estimate: 150, ownHome: true },
-  // The session canvas (spec revision 20, §9.5; canvas-step.ts): empty until its lanes add rows, and left out of `units()`
-  // while it is.
+  // The session canvas (spec revision 20, §9.5; canvas-step.ts): the rows that run in the shared home (lane CM's), left out of `units()` while empty.
   { id: "canvas", rows: CANVAS_STEPS, phase: "parallel", estimate: 120 },
+  // Lane CA's canvas rows (canvas-app-step.ts): MOSS Code from source with a plugin's start page, and a MOSS it starts when a part asks "Open in MOSS"; a home of its own.
+  { id: "canvas-app", rows: CANVAS_APP_STEPS, phase: "parallel", estimate: 180, ownHome: true },
   { id: "cold", rows: [COLD_START_STEP], phase: "serial", estimate: 16 },
   { id: "idle", rows: [IDLE_STEP], phase: "serial", estimate: 45 },
   // lane HS: the background host's rows start their own daemon (and the host) on a home no other unit has used: beside other
@@ -208,8 +210,9 @@ export function chainOwnRuns(asked: readonly UnitId[] | undefined, all: readonly
 }
 
 /** The units whose rows need the engine's source seam (the host units start their host through MOSS_HOST_COMMAND, which a
- *  packaged core ignores, and a test-marked core never starts a host through the OS): they stay source-only. */
-export const SOURCE_ONLY_UNITS: readonly UnitId[] = ["host", "browser-host", "surface-copy-host"];
+ *  packaged core ignores, and a test-marked core never starts a host through the OS; the canvas unit's "Open in MOSS" asks the
+ *  acceptance daemon's own `launchProgram`, which only the source daemon has): they stay source-only. */
+export const SOURCE_ONLY_UNITS: readonly UnitId[] = ["host", "browser-host", "surface-copy-host", "canvas-app"];
 
 /** What a packaged run (a try's test twin, scripts/try/run.sh) names with `--units`: every unit there is but the
  *  source-only ones, with `main` for the chain and the window's three. A run with no `--units` is the table from before
