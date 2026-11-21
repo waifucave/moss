@@ -9,7 +9,7 @@
 // * A line from each block's parent to it (`child`, `bot`). Lines between two main sessions (`peer`) come from links
 //   (links.ts), not from here.
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { makeBot } from "@waifucave/moss-plugin-sdk/ui/faces";
+import { faceColour } from "./faceColour";
 import { brandOf, metaLine, modelLabel, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
 import { S } from "./strings";
 
@@ -127,7 +127,7 @@ export function buildModel(
     add({
       id: botBlockId(bot), type: "bot", bot, title, meta: S.bot, status,
       // Its face's own colour, as MOSS's faces kit resolves it from its name and pins; the pins draw its face.
-      motion, brand: makeBot(botNames.get(bot) ?? title, (botFaces.get(bot) ?? {}) as Parameters<typeof makeBot>[1]).color, ...(botFaces.get(bot) !== undefined ? { face: botFaces.get(bot)! } : {}), botState, startedAt: b.startedAt, messageable: false,
+      motion, brand: faceColour(botNames.get(bot) ?? title, botFaces.get(bot)), ...(botFaces.get(bot) !== undefined ? { face: botFaces.get(bot)! } : {}), botState, startedAt: b.startedAt, messageable: false,
     });
   }
 
