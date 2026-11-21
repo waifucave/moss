@@ -305,6 +305,24 @@ button.cl-window__title:hover {
   font-size: var(--moss-font-size-label);
 }
 
+/* The start page stopped (its plugin's part threw or went): the shell's own New session page in its place, under one
+   plain line saying so. */
+.cl-start-stopped {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cl-start-stopped__note {
+  margin: calc(var(--moss-plugin-moss-bar-height) + var(--moss-space-xl)) var(--moss-space-xl) 0;
+  color: var(--moss-color-text-secondary);
+}
+
+.cl-start-stopped .cl-new-session[data-layout="page"] {
+  padding-top: var(--moss-space-l);
+}
+
 /* The New session page (NewSession.tsx): one column under the bar, scrolling when the agent list is long. The primary
    button is neutral: the text colour on the surface (black in light, near-white in dark), never the accent. */
 .cl-new-session {

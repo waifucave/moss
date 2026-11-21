@@ -7,7 +7,8 @@ import type { EntryComponent } from "../client/local";
 import { catalogSpot } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { Spot } from "@waifucave/moss-plugin-sdk/ui";
 import { afterEach, describe, expect, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { AgentTab } from "../client/Tabs";
 import { keptRouteOf, newestCoding, Shell, startRoute, type ShellStart } from "../client/Shell";
 import { agentsHere } from "../client/NewSession";
@@ -60,6 +61,13 @@ const COMPONENTS: Record<string, EntryComponent> = {
   Sheets: stub("panel:sheets"),
   Notes: stub("panel:notes"),
   StartPage: stub("main:start"),
+  // A start page that throws as it is first drawn, and one that throws later (on a press).
+  StartThrows: () => { throw new Error("the start page broke"); },
+  StartThrowsLater: () => {
+    const [broken, setBroken] = useState(false);
+    if (broken) throw new Error("the start page broke later");
+    return <button type="button" data-stub="break-start" onClick={() => setBroken(true)}>break</button>;
+  },
   Corner: ({ props }) => (
     <button type="button" data-stub="corner" onClick={() => (props.navigate as (r: unknown) => void)({ route: "start", params: { session: props.session } })}>{`corner ${props.session} ${props.kind}`}</button>
   ),
@@ -274,6 +282,25 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     expect(stubText("main:start")).toContain('"route":"start"');
     expect(stubText("main:start")).toContain("fn:navigate");
     expect(document.querySelector(".cl-new-session")).toBeNull();
+  });
+
+  test("a start page that stops (at once, or later) gives way to the shell's own new-session page, with a line saying so", async () => {
+    const quiet = console.error;
+    console.error = () => undefined;
+    try {
+      await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartThrows", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
+      await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
+      expect(document.querySelector("[data-start-stopped]")!.textContent).toContain("The start page stopped.");
+      expect(document.querySelector(".moss-part-stopped")).toBeNull();
+      cleanup();
+      await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartThrowsLater", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
+      await waitFor(() => expect(document.querySelector('[data-stub="break-start"]')).not.toBeNull());
+      expect(document.querySelector(".cl-new-session")).toBeNull();
+      fireEvent.click(document.querySelector('[data-stub="break-start"]')!);
+      await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
+    } finally {
+      console.error = quiet;
+    }
   });
 
   test("a window that kept the route `new` (before the canvas) opens the start page", async () => {

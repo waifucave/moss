@@ -35,6 +35,7 @@ export const S = {
   // The shell's own pages.
   editBot: (name: string) => `Edit ${name}`,
   newSession: "New session",
+  startStopped: "The start page stopped. You can still start a session here.",
   newSessionDetail: "Pick a coding agent and a folder on this computer; it works there, and you see and steer it here.",
   pickAgent: "Agent",
   folder: "Folder",
