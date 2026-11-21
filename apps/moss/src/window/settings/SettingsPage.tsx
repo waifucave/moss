@@ -9,7 +9,7 @@
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge, shortTime } from "../bridge";
 import { Face } from "../faces/Face";
-import { EYES, makeBot, PALETTE, SHAPES, TEMPERS, type Eyes, type Shape, type Temper } from "../faces/living-bots";
+import { EYES, makeBot, PALETTE, SHAPES, TEMPERS, type Eyes, type Shape, type Temper } from "@waifucave/moss-plugin-sdk/ui/faces";
 import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, SettingsView } from "../../shared/view";
 import type { Level } from "@waifucave/moss-protocol";
 

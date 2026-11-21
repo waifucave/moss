@@ -29,10 +29,22 @@ export const AGENT_MARK_NEUTRAL = "#8a8f98";
  *  when given), in white or near-black, whichever reads on it. */
 export type AgentMarkLook =
   | { readonly kind: "icon"; readonly src: string }
+  /** A `currentColor` SVG (one colour, the mark is its shape): drawn as a mask over `fill` (a gradient to `fill2` when the
+   *  backend gives two), or over the text colour of the theme when `fill` is undefined (no colour, or black, white or grey). */
+  | { readonly kind: "mask"; readonly src: string; readonly fill?: string; readonly fill2?: string }
   | { readonly kind: "letter"; readonly letter: string; readonly background: string; readonly background2?: string; readonly foreground: string };
 
 export function agentMark(b: AgentMarkProps["backend"]): AgentMarkLook {
-  if (b.icon !== undefined) return { kind: "icon", src: `data:${b.icon.mediaType};base64,${b.icon.data}` };
+  if (b.icon !== undefined) {
+    const src = `data:${b.icon.mediaType};base64,${b.icon.data}`;
+    // The colouring rule (the owner's final picks, 2026-11-21): a `currentColor` icon takes the backend's colour when it has
+    // one that isn't black, white or grey, else the theme's text colour. An `<img>` can't take a colour, so it is a mask.
+    if (b.icon.mediaType === "image/svg+xml" && usesCurrentColor(b.icon.data)) {
+      const fill = b.color !== undefined && isChromatic(b.color) ? b.color : undefined;
+      return { kind: "mask", src, ...(fill !== undefined ? { fill, ...(b.color2 !== undefined && isChromatic(b.color2) ? { fill2: b.color2 } : {}) } : {}) };
+    }
+    return { kind: "icon", src };
+  }
   const name = typeof b.name === "string" ? b.name.trim() : "";
   const first = [...(name || b.id)][0] ?? "?";
   const background = b.color ?? AGENT_MARK_NEUTRAL;
@@ -48,4 +60,21 @@ function readsLight(hex: string): boolean {
     return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
   };
   return 0.2126 * lin(m[1]!) + 0.7152 * lin(m[2]!) + 0.0722 * lin(m[3]!) > 0.45;
+}
+
+/** Whether an SVG's bytes (base64) paint with `currentColor`. */
+function usesCurrentColor(base64: string): boolean {
+  try {
+    return /currentColor/i.test(atob(base64));
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a `#rrggbb` has a hue: not black, white or a grey (its channels are within 24 of each other). */
+export function isChromatic(hex: string): boolean {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (m === null) return false;
+  const c = [m[1]!, m[2]!, m[3]!].map((x) => Number.parseInt(x, 16));
+  return Math.max(...c) - Math.min(...c) >= 24;
 }

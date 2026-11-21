@@ -4,7 +4,7 @@
 // kit that isn't made in the protocol too would let MOSS offer a face the engine refuses; this fails first.
 import { describe, expect, test } from "bun:test";
 import * as protocol from "@waifucave/moss-protocol";
-import { EYES, PALETTE, SHAPES, TEMPERS } from "../src/window/faces/living-bots";
+import { EYES, PALETTE, SHAPES, TEMPERS } from "@waifucave/moss-plugin-sdk/ui/faces";
 
 const lists = protocol as unknown as Record<string, readonly string[] | undefined>;
 const served = lists.BOT_FACE_SHAPES !== undefined;

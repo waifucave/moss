@@ -23,9 +23,11 @@ import type {
 } from "../api/ui-api";
 import { CALLBACK_KEY, type DragOffer, type LayerBridge, type LayerMessage, type MenuItem, type MountContext, type MountInfo, type OpenTarget, type SpotItem, type SpotView, type SurfaceEnvironment, type SurfaceRequest, type ThemeSheet, type StringTable, type SpotEntryView, type PendingQuestion, type UserSendTarget, type ShellMethod } from "./bridge";
 import { EMPTY_STRINGS, translate } from "./strings";
+import { agentMark, type AgentMarkProps, type BotFaceProps } from "./marks";
+import { FaceCanvas } from "./faces";
 
 export * from "./bridge";
-export { agentMark, AGENT_MARK_NEUTRAL, type AgentMarkLook, type AgentMarkProps, type BotFaceProps } from "./marks";
+export { agentMark, AGENT_MARK_NEUTRAL, isChromatic, type AgentMarkLook, type AgentMarkProps, type BotFaceProps } from "./marks";
 // Mouth levels from speech (./mouth), for any part that moves a mouth: the five vowel weights from a speech feed, and
 // `TimedSpeech` (./speech), a feed made from mouth levels stamped in epoch milliseconds.
 export { TimedSpeech, type TimedSpeechClock, type TimedSpeechStats } from "./speech";
@@ -1539,6 +1541,56 @@ export function useCore(): CoreClient | undefined {
       });
     },
   }), [part.mount, pluginId]);
+}
+
+/** The bots as `bot.records` gives them (`bots.read`), read once per core client and shared by every face on the page for a
+ *  moment, so a canvas of many bots asks once. */
+const RECORDS = new WeakMap<CoreClient, { at: number; read: Promise<{ id?: unknown; name?: unknown; face?: unknown }[]> }>();
+function botRecords(core: CoreClient): Promise<{ id?: unknown; name?: unknown; face?: unknown }[]> {
+  const held = RECORDS.get(core);
+  if (held !== undefined && Date.now() - held.at < 2_000) return held.read;
+  const read = Promise.resolve(core.call("bot.records", {})).then((r: { bots?: { id?: unknown; name?: unknown; face?: unknown }[] } | undefined) => r?.bots ?? [], () => []);
+  RECORDS.set(core, { at: Date.now(), read });
+  return read;
+}
+
+/** A bot's living face, the same drawing MOSS's own window makes (spec revision 20, §9.5): from the bot's pins in
+ *  `bot.records` (`bots.read`; traits left out come from its name), or from the `face` and `name` a part already has (then no
+ *  read is made). `state` is the activity feed's, shown by motion; `idle` when absent. Any plugin's part may draw it. */
+export function BotFace({ bot, name, face, size = 40, state = "idle" }: BotFaceProps) {
+  const core = useCore();
+  const [rec, setRec] = useState<{ name?: string; face?: BotFaceProps["face"] } | undefined>(undefined);
+  const needs = face === undefined || name === undefined;
+  useEffect(() => {
+    if (!needs || core === undefined) return;
+    let live = true;
+    void botRecords(core).then((bots) => {
+      const mine = bots.find((b) => b.id === bot);
+      if (live && mine !== undefined) setRec({ ...(typeof mine.name === "string" ? { name: mine.name } : {}), ...(mine.face !== null && typeof mine.face === "object" ? { face: mine.face as BotFaceProps["face"] } : {}) });
+    });
+    return () => { live = false; };
+  }, [core, bot, needs]);
+  const shownName = name ?? rec?.name ?? bot;
+  const pins = face ?? rec?.face;
+  return <FaceCanvas name={shownName} face={pins} mood={state} size={size} surface="page" />;
+}
+
+/** An agent backend's mark (spec revision 20, §9.5): the icon its plugin ships, drawn as an image only (never markup in the
+ *  page), in its colour where it is a one-colour glyph; else ours, the name's first letter on its colour. */
+export function AgentMark({ backend, size = 24 }: AgentMarkProps) {
+  const look = agentMark(backend);
+  const box: CSSProperties = { width: size, height: size, flex: "none", display: "inline-block" };
+  if (look.kind === "icon") return <img src={look.src} alt="" width={size} height={size} draggable={false} style={{ ...box, objectFit: "contain" }} data-agent-mark="icon" />;
+  if (look.kind === "mask") {
+    const url = `url("${look.src}")`;
+    return <span role="img" aria-label={typeof backend.name === "string" ? backend.name : backend.id} data-agent-mark="mask" style={{ ...box, background: look.fill === undefined ? "currentColor" : look.fill2 === undefined ? look.fill : `linear-gradient(135deg, ${look.fill}, ${look.fill2})`, WebkitMask: `${url} center / contain no-repeat`, mask: `${url} center / contain no-repeat` }} />;
+  }
+  return (
+    <span role="img" aria-label={typeof backend.name === "string" ? backend.name : backend.id} data-agent-mark="letter"
+      style={{ ...box, borderRadius: Math.round(size * 0.24), background: look.background2 === undefined ? look.background : `linear-gradient(135deg, ${look.background}, ${look.background2})`, color: look.foreground, fontSize: Math.round(size * 0.56), fontWeight: 600, lineHeight: `${size}px`, textAlign: "center", fontFamily: "inherit" }}>
+      {look.letter}
+    </span>
+  );
 }
 
 /** The display names of the agent backends (`agent.backends`), for a part that shows which agent a session runs on: a
