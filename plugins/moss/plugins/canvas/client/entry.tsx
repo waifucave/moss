@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, type CanvasProps, type View } from "./Canvas";
 import type { Point } from "./layout";
 import type { FolderToken } from "./preselect";
-import { decodePlaces, encodePlaces, lastLineOf, useSessionGraph } from "./source";
+import { decodePlaces, encodePlaces, readLastLine, useSessionGraph } from "./source";
 import { S } from "./strings";
 
 /** `main`'s route as the shell holds it. */
@@ -64,13 +64,15 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
     }
     return ids;
   }, [graph.sessions]);
+  // The setting is written beside the state, never inside its updater (React may call an updater twice).
+  const placesRef = useRef(places);
+  placesRef.current = places;
   const onPlace = useCallback((id: string, at: Point) => {
-    setPlaces((was) => {
-      const { [id]: _old, ...rest } = was;
-      const next = { ...rest, [id]: at };
-      void Promise.resolve(apiRef.current.settings?.set?.("places", encodePlaces(next, known))).catch(() => undefined);
-      return next;
-    });
+    const { [id]: _old, ...rest } = placesRef.current;
+    const next = { ...rest, [id]: at };
+    placesRef.current = next;
+    setPlaces(next);
+    void Promise.resolve(apiRef.current.settings?.set?.("places", encodePlaces(next, known))).catch(() => undefined);
   }, [known]);
 
   const openTab = useCallback((session: string) => {
@@ -98,7 +100,7 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
         const r = (await call("app.openIn", { program: "moss", what: { kind: "bot", bot } })) as { opened?: boolean; refused?: string } | undefined;
         if (r?.opened === false) throw new Error(r.refused ?? "MOSS didn't open it");
       }}
-      lastLine={(session) => Promise.resolve(api.sessions?.history?.(session, { limit: 40 })).then((h) => lastLineOf(h?.events ?? []))}
+      lastLine={(session) => readLastLine((page) => Promise.resolve(api.sessions?.history?.(session, page)), session)}
       places={places}
       onPlace={onPlace}
       beginNew={() => {

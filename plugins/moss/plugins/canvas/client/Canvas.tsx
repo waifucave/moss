@@ -201,26 +201,32 @@ export function Canvas(p: CanvasProps) {
 
   // ---- Opening a block; clicking elsewhere closes it ----
   const [open, setOpen] = useState<string | undefined>(p.initial?.open);
+  // Its last line: read each time a block is opened, and again when its session changes while it is open.
   const [lines, setLines] = useState<Record<string, string | null>>({});
+  const openBlock = open === undefined ? undefined : model.byId.get(open);
+  const openSession = openBlock?.type === "bot" ? undefined : openBlock?.session;
+  const openChanged = openSession === undefined ? undefined : p.sessions[openSession]?.updatedAt;
   useEffect(() => {
-    const b = open === undefined ? undefined : model.byId.get(open);
-    const session = b?.type === "bot" ? undefined : b?.session;
-    if (session === undefined || lines[session] !== undefined) return;
+    if (openSession === undefined) return;
     let live = true;
+    const session = openSession;
     void p.lastLine(session).then((l) => live && setLines((was) => ({ ...was, [session]: l ?? null })), () => live && setLines((was) => ({ ...was, [session]: null })));
     return () => { live = false; };
-  }, [open, open !== undefined && model.byId.has(open)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, openSession, openChanged]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Dragging the background pans; dragging a block moves it ----
   const gesture = useRef<{ kind: "pan" | "block"; id?: string; x: number; y: number; from: Point; moved: boolean; pointer: number } | undefined>(undefined);
   const suppressClick = useRef(false);
   const onViewportDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    suppressClick.current = false;
     if (e.button !== 0 || (e.target as Element).closest?.(".cv-card, .cv-panel, .cv-bar")) return;
     setOpen(undefined);
     gesture.current = { kind: "pan", x: e.clientX, y: e.clientY, from: { x: v.x, y: v.y }, moved: false, pointer: e.pointerId };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onHeadDown = (e: ReactPointerEvent<HTMLButtonElement>, id: string) => {
+    // A new press: whatever a drag before it left to swallow is gone.
+    suppressClick.current = false;
     if (e.button !== 0) return;
     const b = model.byId.get(id);
     if (b === undefined) return;
@@ -245,7 +251,10 @@ export function Canvas(p: CanvasProps) {
     if (g === undefined || g.pointer !== e.pointerId) return;
     gesture.current = undefined;
     if (g.kind === "block" && g.moved && drag !== undefined) {
+      // The click that ends this drag (if the browser sends one to the head) is swallowed; once it has had its chance,
+      // the next press counts (a captured pointer's click goes to the viewport, so it may never come).
       suppressClick.current = true;
+      setTimeout(() => { suppressClick.current = false; }, 0);
       p.onPlace(drag.id, drag.at);
       setDrag(undefined);
     }
