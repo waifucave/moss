@@ -308,6 +308,11 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
         console.error(`acceptance fake: the user text carries an earlier directive before the newest: ${JSON.stringify(record.lastUserText.slice(0, record.lastUserText.length - said.length).slice(-120))} then ${JSON.stringify(said.slice(0, 80))}; acting on the newest`);
       }
       requests.push(record);
+      // A session's title request (the engine's titler: "USER MESSAGE:" then the first message) held for
+      // MOSS_ACCEPTANCE_TITLE_DELAY_MS, so a title lands well after the turn that asked for it: a row that waits on what a
+      // session's sidebar row shows meets its id first and its title later (the race a local run forces with it).
+      const titleDelay = Number(process.env["MOSS_ACCEPTANCE_TITLE_DELAY_MS"] ?? 0);
+      if (titleDelay > 0 && record.lastUserText.startsWith("USER MESSAGE:")) await Bun.sleep(Math.min(titleDelay, 60_000));
       const refused = requestRefusal(body as WireBody, record.beta);
       if (refused !== undefined && record.keyMatched) {
         record.answered = "400";

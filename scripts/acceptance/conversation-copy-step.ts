@@ -89,7 +89,7 @@ export async function conversationCopyStep(ctx: ExampleCtx, _session: string): P
       if (events.some((e) => e.type === "assistant_message")) { chosen = c; break; }
     }
     const session = chosen?.id ?? _session;
-    await toSessionTab(ctx, chosen?.title ?? session);
+    await toSessionTab(ctx, session);
     const log = async () => (await rpc.request<{ events: Record<string, unknown>[] }>("session.history", { id: session, limit: 500 })).events;
 
     // 1. The copy installs behind its OK card, which says what it holds, and runs once pressed.
@@ -108,7 +108,7 @@ export async function conversationCopyStep(ctx: ExampleCtx, _session: string): P
     // 2. It takes the bundled one's place in the code session's tab (the bundled one switched off, as a user would in the Plugins page).
     await rpc.request("plugin.setEnabled", { id: BUNDLED, enabled: false }, 30_000);
     switchedOff = true;
-    await toSessionTab(ctx, chosen?.title ?? session);
+    await toSessionTab(ctx, session);
     const doc = await until("the conversation copy's document in the code session's tab", 60_000, async () => (await layerDocs(cdp, COPY_ID))[0],
       async () => (await cdp.documents()).map((d) => d.url.slice(0, 70)).join(" || "));
 

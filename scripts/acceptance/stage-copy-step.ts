@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { CLIENT_BARE_IMPORTS, capabilityOkText } from "../../packages/plugin-sdk/src/index";
 import { EXAMPLES, fail, layerDocs, sleep, treeDocs, until, type ExampleCtx } from "./example-steps";
 import { RENDERER_PROBE, backToBots, command, controller, figureBesideCode, install, pick, pictureFrame, removeAll, type FigureCtx } from "./figure-steps";
-import { ensureCodingSession, sessionLabel, toCodingSession } from "./ui-steps";
+import { ensureCodingSession, toCodingSession } from "./ui-steps";
 
 export const STAGE_COPY_STEP = "a folder-installed copy of the avatar plugin, under another id with its own points and behind its OK card, is an avatar plugin like the bundled one: a renderer, a pack and a controller fill its points; with the bundled one off, its figure stands beside a coding session drawn by that renderer and its controller's cue is answered ok; the bundled one comes back when switched on again; the app logs no refusal by id";
 
@@ -108,7 +108,7 @@ export async function stageCopyStep(ctx: ExampleCtx, _session: string): Promise<
         });
         await cdp.click(at.session, at.c.x, at.c.y);
         await sleep(700);
-      }, () => sessionLabel(rpc, id));
+      });
       return id;
     },
     escape: async () => { for (const type of ["keyDown", "keyUp"]) for (const d of await treeDocs(cdp)) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, d.session).catch(() => undefined); await sleep(300); },

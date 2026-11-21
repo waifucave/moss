@@ -87,30 +87,19 @@ export async function ensureCodingSession(ctx: Pick<Ctx, "rpc" | "home">, o: { w
 
 /** What a session's sidebar row shows: its title, or its id when it has none (the engine titles a code session after its
  *  first turn, §9.5). */
-export async function sessionLabel(rpc: { request<T>(method: string, params?: unknown): Promise<T> }, id: string): Promise<string> {
-  const v = await rpc.request<{ session: { title?: string } }>("session.get", { id }).catch(() => undefined);
-  return v?.session.title !== undefined && v.session.title !== "" ? v.session.title : id;
-}
+/** A session's row in the window's sidebar, by its id (`data-session`): what it shows (its id, then its title once the first
+ *  turn has one) changes under a step that waits on it, its id never does. */
+export const sessionRowSelector = (id: string): string => `.cl-sidebar .cl-sidebar__agent .cl-sidebar__row[data-session=${JSON.stringify(id)}]`;
 
-/** The window's own sidebar to a coding session: the session's row under its project (what it shows: its title, or its id
- *  when it has none, read by `labelOf` at the press) listed and pressed, and that label then in the sidebar's current row. A
- *  title that lands between the read and the press is read again, once. */
-export async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>, labelOf: () => Promise<string> = async () => codeId): Promise<string> {
-  let label = await labelOf();
-  const pressRow = async () => {
-    // Its project group may be folded and its row below the list's fold: one helper opens and scrolls (cdp.sessionRowCenter), then the press.
-    for (const d of await treeDocs(cdp)) await cdp.sessionRowCenter(d.session, label).catch(() => undefined);
-    await press(`the coding session ${codeId}'s row ("${label}")`, ".cl-sidebar__projects .cl-sidebar__row", label, 30_000);
-  };
-  try {
-    await pressRow();
-  } catch (err) {
-    const again = await labelOf();
-    if (again === label) throw err;
-    label = again;
-    await pressRow();
-  }
-  await until("the coding session shown (its label in the sidebar's current row)", 30_000, async () => ((await inTree<boolean>(cdp, `[...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(label)}))`)) !== undefined ? true : undefined), async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
+/** The window's own sidebar to a coding session: the session's row under its project, found by its id (never by its label,
+ *  which a title landing after the first turn changes), pressed, and then the sidebar's current row; what the row showed is
+ *  read from it then, for the report. */
+export async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>): Promise<string> {
+  const row = sessionRowSelector(codeId);
+  // Its project group may be folded and its row below the list's fold: one helper opens and scrolls (cdp.sessionRowCenter), then the press.
+  for (const d of await treeDocs(cdp)) await cdp.sessionRowCenter(d.session, codeId).catch(() => undefined);
+  await press(`the coding session ${codeId}'s row`, row, undefined, 30_000);
+  const label = await until("the coding session shown (its row the sidebar's current row)", 30_000, async () => (await inTree<string>(cdp, `(() => { const e = document.querySelector(${JSON.stringify(`${row}[aria-current]`)}); return e ? (e.querySelector('.cl-sidebar__title')?.textContent || e.textContent || '').trim() : null; })()`))?.value, async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
   return `the sidebar listed the coding session ${codeId} ("${label}") started just before from outside the window, and its row went to it (the current row in the sidebar)`;
 }
 
@@ -238,7 +227,7 @@ async function showWindowSession(ctx: Ctx, id: string): Promise<string> {
     }, () => dumpFrames(cdp));
     await cdp.click(at.session, at.c.x, at.c.y);
   };
-  await toCodingSession(cdp, id, pressText, () => sessionLabel(rpc, id));
+  await toCodingSession(cdp, id, pressText);
   return id;
 }
 
@@ -1607,7 +1596,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         await sleep(700);
       };
       const id = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
-      await toCodingSession(cdp, id, press, () => sessionLabel(ctx.rpc, id));
+      await toCodingSession(cdp, id, press);
       return id;
     },
   });
@@ -1855,7 +1844,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // 7. A coding session started now, outside the window, with no tab change after it: the Code switch of the sidebar beside her
       // tab lists it (the sidebar follows `conversation.watch`), and its row goes to it (the session's id in the sidebar's current row).
       const codeId = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
-      const side = await toCodingSession(cdp, codeId, press, () => sessionLabel(ctx.rpc, codeId));
+      const side = await toCodingSession(cdp, codeId, press);
       await press("Bots in the sidebar's switch", ".cl-sidebar__switch-option", "Bots");
       await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
       await until("her chrome back", 20_000, async () => ((await win("w.dataset.barMode")) === "none" ? true : undefined));
@@ -2078,7 +2067,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     // that loaded again, left the window elsewhere) puts the window on that session again, as a person would, and keeps waiting.
     let landedOn: string | undefined;
     const tabShown = async () => {
-      for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]') && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(landedOn ?? "")}))`).catch(() => false)) === true) return true;
+      for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]') && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => e.getAttribute('data-session') === ${JSON.stringify(landedOn ?? "")} || (e.textContent || '').includes(${JSON.stringify(landedOn ?? "")}))`).catch(() => false)) === true) return true;
       return false;
     };
     const waitFor = (what: string, sel: string, ms = 45_000) => until(what, ms, async () => {

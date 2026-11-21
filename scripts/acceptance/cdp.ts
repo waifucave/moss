@@ -203,11 +203,12 @@ export class Cdp {
 
   /** The centre of a code session's row in the window's sidebar, ready to press: the row's project group unfolded when it is folded,
    *  and the row scrolled into the list's view (one helper for every row that presses a session row; `id` undefined: the first one).
-   *  Undefined when this document has no such row. */
+   *  `id` is the session's id, matched on the row's `data-session` (what never changes as its title lands), or a text the row
+   *  shows. Undefined when this document has no such row. */
   async sessionRowCenter(session: string, id?: string): Promise<{ x: number; y: number } | undefined> {
     const v = await this.evaluate(session, `(() => {
       const id = ${JSON.stringify(id ?? null)};
-      const rows = () => [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => id === null || (e.textContent || "").includes(id));
+      const rows = () => [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => id === null || e.getAttribute("data-session") === id || (e.textContent || "").includes(id));
       if (rows().length === 0 && document.querySelector(".cl-sidebar")) {
         // A folded project group hides its rows: a person opens it (the toggle), and the row is there.
         for (const t of document.querySelectorAll(".cl-sidebar__project-toggle[aria-expanded=false]")) t.click();
@@ -221,7 +222,7 @@ export class Cdp {
     const at = (await this.evaluate(session, `(() => {
       ${CLIPPED_AWAY_JS}
       const id = ${JSON.stringify(id ?? null)};
-      const rows = [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => (id === null || (e.textContent || "").includes(id)) && e.getBoundingClientRect().width > 0);
+      const rows = [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => (id === null || e.getAttribute("data-session") === id || (e.textContent || "").includes(id)) && e.getBoundingClientRect().width > 0);
       for (const el of rows) {
         el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
         const r = el.getBoundingClientRect();

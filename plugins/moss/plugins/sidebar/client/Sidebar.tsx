@@ -71,6 +71,7 @@ function SessionRow({ session, props }: { session: SidebarSession; props: Sideba
         type="button"
         className="cl-sidebar__row cl-sidebar__row--nested"
         aria-current={selected ? "page" : undefined}
+        data-session={session.id}
         title={session.title}
         onClick={() => props.onNavigate(target)}
       >

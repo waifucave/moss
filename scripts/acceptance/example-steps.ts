@@ -673,14 +673,15 @@ export { Failed as ExampleFailed };
 
 /** Puts MOSS Code's window where a row of the shared plugin-app window needs it (lane MC: no bot's tab in it): any plugin OK
  *  card an earlier row left waiting answered no, dialogs closed (Escape), and a code session's tab shown (its `.cl-agent-tab`
- *  in main), through the sidebar's first session row when another page is up, or the row whose text is `rowText` (a session's title
- *  or id: a row that sends its turns to one session names it, so the tab it looks at is that session's). */
+ *  in main), through the sidebar's first session row when another page is up, or the row `rowText` names (a session's id, matched on
+ *  the row's `data-session`, which a title landing later never changes; or a text it shows): a row that sends its turns to one
+ *  session names it, so the tab it looks at is that session's. */
 export async function toSessionTab(ctx: ExampleCtx, rowText?: string): Promise<void> {
   const { cdp, rpc } = ctx;
   const left = (await rpc.request<{ cards: { id: string; kind: string }[] }>("card.list", {}).catch(() => ({ cards: [] }))).cards.filter((c) => c.kind === "plugin-ok");
   for (const c of left) await ctx.denyCard(c.id).catch(() => undefined);
   const drawn = async (): Promise<boolean> => {
-    for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]')${rowText === undefined ? "" : ` && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(rowText)}))`}`).catch(() => false)) === true) return true;
+    for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]')${rowText === undefined ? "" : ` && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => e.getAttribute('data-session') === ${JSON.stringify(rowText)} || (e.textContent || '').includes(${JSON.stringify(rowText)}))`}`).catch(() => false)) === true) return true;
     return false;
   };
   for (let attempt = 0; attempt < 3 && !(await drawn()); attempt++) {
