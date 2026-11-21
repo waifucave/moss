@@ -488,9 +488,11 @@ async function slashCommand(ctx: ExampleCtx, name: string, arg: string, pluginNa
     speaker = where;
     await clickExact(cdp, `${where} in the sidebar`, SIDEBAR_ITEMS, where);
   } else {
-    // A code session's composer is labelled by its agent (the shell's tab names it by its backend).
+    // A code session's composer is labelled by its agent (the shell's tab names it by its backend's display name, the id for a backend with none).
     const view = (await ctx.rpc.request<{ session: { backend?: string; title?: string } }>("session.get", { id: where.session })).session;
-    speaker = view.backend ?? view.title ?? where.session;
+    const backends = (await ctx.rpc.request<{ backends: { id: string; name: unknown }[] }>("agent.backends", {})).backends;
+    const shown = backends.find((b) => b.id === view.backend)?.name;
+    speaker = (typeof shown === "string" && shown !== "" ? shown : undefined) ?? view.backend ?? view.title ?? where.session;
     await toSessionTab(ctx);
   }
   // The composer of that conversation (its box is labelled "Message to <speaker>"), once the switch has settled: a
