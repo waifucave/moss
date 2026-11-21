@@ -205,6 +205,32 @@ describe("the page that starts a session (spec §9.4)", () => {
     expect(stubText("sidebar")).toContain('{"route":"agent","params":{"session":"code-new"}}');
   });
 
+  test("the new-session page draws each agent's mark (its plugin's icon, else the letter on its colour), preselects the agent last started, and offers the recent folders as tokens", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path fill="currentColor" d="M0 0h8v8z"/></svg>').toString("base64");
+    const backends = [
+      { id: "codex", name: "Codex", icon: { mediaType: "image/svg+xml", data: svg, at: 1 }, color: "#484FF6", computers: [{ computer: "Studio", installed: true }] },
+      { id: "gemini", name: "Gemini", color: "#3488FB", computers: [{ computer: "Studio", installed: true }] },
+      { id: "moss-code", name: "MOSS", computers: [{ computer: "Studio", installed: true }] },
+    ];
+    const { core } = await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, {
+      "agent.backends": () => ({ backends }),
+      "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
+      "agent.recent": () => ({ backend: "gemini", folders: 2 }),
+      "ui.pick": (p) => (p.recent === true ? { cancelled: true, recent: [{ token: "pick-a", name: "moss" }, { token: "pick-b", name: "site" }] } : { token: "pick-x", name: "x" }),
+      "agent.start": () => ({ session: "code-1" }),
+    });
+    const rows = [...document.querySelectorAll(".cl-new-session__agent")];
+    expect(rows.map((r) => r.querySelector("[data-agent-mark]")?.getAttribute("data-agent-mark"))).toEqual(["letter", "mask", "letter"]);
+    expect(rows.map((r) => r.querySelector("input")?.checked)).toEqual([false, false, true]);
+    expect(core.calls.find((c) => c.method === "ui.pick")?.params).toEqual({ kind: "folder", use: "agent.start", recent: true, dialog: false });
+    fireEvent.click(screen.getByRole("button", { name: "site" }));
+    await act(() => settle(20));
+    expect(document.querySelector(".cl-new-session__folder-name")?.textContent).toBe("site");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await act(() => settle(20));
+    expect(core.calls.find((c) => c.method === "agent.start")?.params).toEqual({ backend: "gemini", root: "pick-b" });
+  });
+
   test("a session's tab names its agent by the backend's display name, not its id, and falls back to the id for a backend with no name", async () => {
     await mount({ route: { route: "agent", params: { session: "code-0" } } }, [], SESSIONS, undefined, {}, {
       "agent.backends": () => ({ backends: [{ id: "moss-code", name: "MOSS's coding agent", computers: [] }] }),

@@ -1068,3 +1068,16 @@ button.cl-window__title:hover {
 .cl-panel-toggles__item[aria-checked="true"] {
   background: var(--moss-color-hover);
 }
+
+/* An agent's mark on its row, and the recent folders under the folder button. */
+.cl-new-session__agent > [data-agent-mark] {
+  flex: none;
+  color: var(--moss-color-text);
+}
+
+.cl-new-session__recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}

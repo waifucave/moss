@@ -41,6 +41,7 @@ export const S = {
   noAgents: "No coding agent is installed yet. Add one from Plugins.",
   notInstalled: "not installed on this computer",
   pickFolder: "Choose a folder…",
+  recentFolders: "Recent folders",
   changeFolder: "Choose another folder…",
   startSession: "Start",
   settings: "Settings",
