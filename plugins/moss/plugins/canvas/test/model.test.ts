@@ -75,7 +75,15 @@ describe("the model of the sample scene", () => {
   test("standard blocks: the title and agent · model · effort; the agent's own colour(s) at full hue; a bot is coral", () => {
     const a = end.byId.get("s_a")!;
     expect(a.title).toBe("Fix the login flow");
+    // No icon in this data: our letter mark, so the agent's name leads the line (a letter alone doesn't name it).
     expect(a.meta).toBe("Claude Code · Claude Opus 5.5 · high");
+    expect(a.agent).toBe("Claude Code");
+    // With an icon, the line is the model and effort only.
+    const withIcon = new Map([...looks].map(([k, v]) => [k, { ...v, icon: { mediaType: "image/png" as const, data: "", at: 0 } }]));
+    const iconed = buildModel(sceneAt(SAMPLE_SESSION_SCENE, 20_000).sessions, withIcon);
+    expect(iconed.byId.get("s_a")!.meta).toBe("Claude Opus 5.5 · high");
+    expect(iconed.byId.get("sub:s_a:call_explore_1")!.meta).toBe("Claude Haiku 5");
+    expect(iconed.byId.get("s_a")!.agent).toBe("Claude Code");
     expect(a.brand).toBe(looks.get("claude-code")!.color!);
     expect(end.byId.get(botBlockId("moss"))!.brand).toBe(MOSS_CORAL);
     // Codex: both its colours (a gradient). MOSS's own agent: the Shards mark's gold when its record names none (coral is
