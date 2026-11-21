@@ -17,6 +17,8 @@ export interface View { x: number; y: number; k: number }
 
 export const ZOOM_MIN = 0.3;
 export const ZOOM_MAX = 1.6;
+/** The smallest zoom the canvas opens at on its own: the blocks' text still reads. */
+export const FIRST_FIT_FLOOR = 0.7;
 const clampK = (k: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k));
 
 export interface CanvasProps {
@@ -66,16 +68,36 @@ export function edgePorts(e: Edge, ra: Rect, rb: Rect): [Port, Port] {
   return ["b", "b"];
 }
 
-/** A soft curve from one point to another, leaving and arriving square to each point's side. */
-export function curve(from: Point, fp: Port, to: Point, tp: Port): string {
+/** The control points of a soft curve from one point to another, leaving and arriving square to each point's side. */
+function controls(from: Point, fp: Port, to: Point, tp: Port): [Point, Point] {
   const out = (p: Point, port: Port, d: number): Point => (port === "l" ? { x: p.x - d, y: p.y } : port === "r" ? { x: p.x + d, y: p.y } : port === "t" ? { x: p.x, y: p.y - d } : { x: p.x, y: p.y + d });
   const horizontal = fp === "l" || fp === "r";
   const span = horizontal ? Math.abs(to.x - from.x) : Math.abs(to.y - from.y);
   const d = Math.max(40, span / 2);
-  const c1 = out(from, fp, d);
-  const c2 = out(to, tp, d);
+  return [out(from, fp, d), out(to, tp, d)];
+}
+
+export function curve(from: Point, fp: Port, to: Point, tp: Port): string {
+  const [c1, c2] = controls(from, fp, to, tp);
   const n = (v: number) => Math.round(v * 10) / 10;
   return `M${n(from.x)},${n(from.y)} C${n(c1.x)},${n(c1.y)} ${n(c2.x)},${n(c2.y)} ${n(to.x)},${n(to.y)}`;
+}
+
+/** The curve's length in the world's pixels (16 straight steps along it: close enough to size a wave). */
+export function curveLength(from: Point, fp: Port, to: Point, tp: Port): number {
+  const [c1, c2] = controls(from, fp, to, tp);
+  const at = (t: number): Point => {
+    const u = 1 - t;
+    return { x: u * u * u * from.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * to.x, y: u * u * u * from.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * to.y };
+  };
+  let len = 0;
+  let prev = from;
+  for (let i = 1; i <= 16; i++) {
+    const p = at(i / 16);
+    len += Math.hypot(p.x - prev.x, p.y - prev.y);
+    prev = p;
+  }
+  return len;
 }
 
 export function Canvas(p: CanvasProps) {
@@ -117,16 +139,21 @@ export function Canvas(p: CanvasProps) {
     const el = viewport.current;
     return { w: el?.clientWidth || 1200, h: el?.clientHeight || 760 };
   };
-  const fit = useCallback(() => {
+  /** Every shown block in view (the Fit control: down to `ZOOM_MIN`, the whole picture). `floor`: no smaller than that,
+   *  from the top left when it doesn't all fit (the first view of many sessions: readable, the rest a pan away). */
+  const fit = useCallback((floor = ZOOM_MIN) => {
     const box = bounds([...rects.values()]);
     const { w, h } = size();
     if (box.w === 0) return setView({ x: 0, y: 0, k: 1 });
     const m = 40;
-    const k = clampK(Math.min(1, (w - 2 * m) / box.w, (h - 2 * m) / box.h));
-    setView({ x: Math.round((w - box.w * k) / 2 - box.x * k), y: Math.round(Math.min(m, (h - box.h * k) / 2) - box.y * k), k });
+    const whole = Math.min(1, (w - 2 * m) / box.w, (h - 2 * m) / box.h);
+    const k = clampK(Math.max(floor, whole));
+    const x = box.w * k <= w - 2 * m ? (w - box.w * k) / 2 : m;
+    const y = box.h * k <= h - 2 * m ? Math.min(m, (h - box.h * k) / 2) : m;
+    setView({ x: Math.round(x - box.x * k), y: Math.round(y - box.y * k), k });
   }, [rects, setView]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The first time there is something to show and no view was kept: fit it. Never again on its own (no jumps).
-  useLayoutEffect(() => { if (view === undefined && shown.length > 0) fit(); }, [view === undefined, shown.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first time there is something to show and no view was kept: fit it, readably. Never again on its own (no jumps).
+  useLayoutEffect(() => { if (view === undefined && shown.length > 0) fit(FIRST_FIT_FLOOR); }, [view === undefined, shown.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   const v = view ?? { x: 0, y: 0, k: 1 };
   const zoomAt = (k: number, cx: number, cy: number) => {
     const nk = clampK(k);
@@ -178,7 +205,7 @@ export function Canvas(p: CanvasProps) {
     let live = true;
     void p.lastLine(session).then((l) => live && setLines((was) => ({ ...was, [session]: l ?? null })), () => live && setLines((was) => ({ ...was, [session]: null })));
     return () => { live = false; };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, open !== undefined && model.byId.has(open)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Dragging the background pans; dragging a block moves it ----
   const gesture = useRef<{ kind: "pan" | "block"; id?: string; x: number; y: number; from: Point; moved: boolean; pointer: number } | undefined>(undefined);
@@ -261,7 +288,7 @@ export function Canvas(p: CanvasProps) {
         )}
         <span className="cv-zoom" role="group" aria-label={S.fitLong}>
           <button type="button" className="cv-icon" aria-label={S.zoomOut} onClick={() => { const { w, h } = size(); zoomAt(v.k / 1.2, w / 2, h / 2); }}>−</button>
-          <button type="button" className="cv-fit" aria-label={S.fitLong} onClick={fit}>{S.fit}</button>
+          <button type="button" className="cv-fit" aria-label={S.fitLong} onClick={() => fit()}>{S.fit}</button>
           <button type="button" className="cv-icon" aria-label={S.zoomIn} onClick={() => { const { w, h } = size(); zoomAt(v.k * 1.2, w / 2, h / 2); }}>+</button>
         </span>
       </header>
@@ -361,11 +388,14 @@ function WavePath(g: WaveGeometry) {
   const ends = waveEnds(g);
   if (ends?.from === undefined) return null;
   const d = curve(ends.from.at, ends.from.port, ends.to.at, ends.to.port);
-  const style = { "--brand": g.wave.color } as CSSProperties;
+  // The bright stretch is about 90px of the line (less on a short one), travelling its whole length and past it.
+  const len = Math.max(1, Math.round(curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port)));
+  const stretch = Math.round(Math.min(90, Math.max(24, len * 0.45)));
+  const style = { "--brand": g.wave.color, "--len": `${len}px`, "--stretch": `${stretch}px` } as CSSProperties;
   return (
     <g className="cv-wave" data-wave={g.wave.id} style={style}>
-      <path className="cv-wave__path cv-wave__glow" d={d} pathLength={1000} />
-      <path className="cv-wave__path cv-wave__light" d={d} pathLength={1000} />
+      <path className="cv-wave__path cv-wave__glow" d={d} />
+      <path className="cv-wave__path cv-wave__light" d={d} />
     </g>
   );
 }

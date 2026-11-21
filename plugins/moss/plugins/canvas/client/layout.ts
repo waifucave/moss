@@ -3,10 +3,10 @@
 // Blocks sit in a grid of slots. A slot, once given, is never taken back or changed: placing only ever adds. So nothing
 // on the canvas jumps when a session starts, ends, or is folded away (an ended block's slot stays reserved).
 // * A block with a parent (a child session, a subagent, a bot's session) goes one column to its parent's right, in the
-//   first free row at or below its parent's.
+//   first free row at or below its parent's (a grandchild reaches into the next group's columns, below what is there).
 // * A block with none (a session the person started, a bot) starts a band below everything in its group: a group is
-//   `GROUP_COLS` columns wide (a session, its children, theirs) and takes up to `GROUP_ROWS` rows of bands; the next band
-//   then opens a new group to the right. Thirty sessions are five groups side by side, not one column thirty tall.
+//   `GROUP_COLS` columns wide (a session and its children) and takes up to `GROUP_ROWS` rows of bands; the next band
+//   then opens a new group to the right. Thirty sessions are four groups side by side, not one column thirty tall.
 // * A block the person dragged sits where they put it (`moved`); its slot stays reserved, and nothing new is placed
 //   over where it now is.
 import type { BlockType } from "./model";
@@ -16,11 +16,11 @@ export const SIZE: Readonly<Record<BlockType, { w: number; h: number }>> = {
   sub: { w: 212, h: 68 },
   bot: { w: 176, h: 64 },
 };
-export const COL_W = 320;
-export const ROW_H = 112;
+export const COL_W = 372;
+export const ROW_H = 140;
 export const PAD = 48;
-export const GROUP_ROWS = 6;
-export const GROUP_COLS = 3;
+export const GROUP_ROWS = 8;
+export const GROUP_COLS = 2;
 /** Space kept clear around a new block. */
 const GAP = 12;
 

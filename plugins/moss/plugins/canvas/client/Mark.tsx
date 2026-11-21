@@ -12,7 +12,13 @@ const FACE_INK = "#1c1c1e";
 
 export function Mark({ look, size = 26 }: { look: Pick<BackendLook, "id" | "name" | "icon" | "color" | "color2">; size?: number }) {
   const m = agentMark(look);
-  if (m.kind === "icon") return <img className="cv-mark" data-kind="icon" src={m.src} alt="" width={size} height={size} draggable={false} />;
+  if (m.kind === "icon") {
+    return (
+      <span className="cv-mark" data-kind="icon" style={{ width: size, height: size, "--brand": look.color ?? "transparent" } as CSSProperties} aria-hidden="true">
+        <img src={m.src} alt="" draggable={false} />
+      </span>
+    );
+  }
   const style = {
     width: size, height: size, fontSize: Math.round(size * 0.52),
     background: m.background2 !== undefined ? `linear-gradient(135deg, ${m.background}, ${m.background2})` : m.background,
