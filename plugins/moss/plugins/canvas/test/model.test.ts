@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SAMPLE_SESSION_SCENE, SESSION_STATUSES, sceneAt, sessionMotion } from "@waifucave/moss-protocol";
+import { SAMPLE_SESSION_SCENE, sceneAt } from "../gallery/scene";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { MOSS_CORAL, modelLabel, motionOf, NEUTRAL, statusLine } from "../client/look";
 import { buildModel, botBlockId, subBlockId } from "../client/model";
@@ -8,12 +8,16 @@ import { BACKENDS } from "../gallery/fixtures";
 const looks = new Map(BACKENDS.map((b) => [b.id, b]));
 
 describe("how a session moves", () => {
-  test("motionOf is the protocol's sessionMotion for every status, with and without waiting", () => {
-    for (const status of SESSION_STATUSES) {
-      for (const waiting of [undefined, { tasks: 0, children: 0 }, { tasks: 1, children: 0 }, { tasks: 0, children: 2 }]) {
-        expect([status, waiting, motionOf({ status, waiting })]).toEqual([status, waiting, sessionMotion({ status, waiting })]);
-      }
+  test("motionOf follows the protocol's sessionMotion: running wins, then waiting, then still; stopped and failed end", () => {
+    const busy = { tasks: 1, children: 0 };
+    for (const status of ["starting", "prompting", "cancelling"]) expect([status, motionOf({ status, waiting: busy })]).toEqual([status, "running"]);
+    for (const status of ["ready", "idle"]) {
+      expect([status, motionOf({ status, waiting: busy })]).toEqual([status, "waiting"]);
+      expect([status, motionOf({ status, waiting: { tasks: 0, children: 2 } })]).toEqual([status, "waiting"]);
+      expect([status, motionOf({ status, waiting: { tasks: 0, children: 0 } })]).toEqual([status, "still"]);
+      expect([status, motionOf({ status })]).toEqual([status, "still"]);
     }
+    for (const status of ["stopped", "failed"]) expect([status, motionOf({ status, waiting: busy })]).toEqual([status, "ended"]);
   });
 
   test("the status line: running wins over waiting, waiting names what, a card waiting says so", () => {

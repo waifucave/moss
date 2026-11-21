@@ -3,7 +3,7 @@
 // moment (`at`: every step up to it at once) and plays the rest on real timers, so a picture taken a little later catches
 // what moves. `initial` opens a block or the + panel for a picture.
 import { useMemo, useState, type ReactNode } from "react";
-import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-protocol";
+import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "./scene";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { CanvasCorner, CanvasStart, type CanvasStartProps } from "../client/entry";
@@ -34,7 +34,7 @@ function World({ scene, at = 0, live = true, initial, params, onRoute }: { scene
       "app.openIn": () => ({ opened: true, started: false }),
     };
     const core = fakeCore(handlers);
-    playSessionScene(core, scene, handlers, (ms, fn) => {
+    playSessionScene(core, scene as never, handlers, (ms, fn) => {
       if (ms <= at) {
         fn();
         return () => undefined;
@@ -76,7 +76,7 @@ const T0 = 1_781_270_000_000;
 /** Thirty sessions, and a few messages crossing between them once it opens. */
 function manyScene(): SessionSceneStep[] {
   const sessions = Object.values(manySessions(30));
-  const steps: SessionSceneStep[] = sessions.map((s: SessionView) => ({ at: 0, event: { type: "session_changed", ts: T0, session: s as never } }));
+  const steps: SessionSceneStep[] = sessions.map((s: SessionView) => ({ at: 0, event: { type: "session_changed", ts: T0, session: s } }));
   const link = (at: number, from: string, to: string): SessionSceneStep => ({ at, event: { type: "session_link", ts: T0 + at, from: { end: "session", session: from, kind: "coding" }, to: { session: to, kind: "coding" }, link: "message" } });
   steps.push(link(200, "m00", "m06"), link(260, "m12", "m03"), link(320, "m18", "m24"));
   return steps;

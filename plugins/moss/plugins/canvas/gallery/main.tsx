@@ -1,11 +1,18 @@
 // The canvas gallery: one page, every story, light and dark. `#story=<id>` shows one story filling the window (the
 // pictures are taken that way); `#theme=dark` starts dark. Built into one self-contained file by build.ts.
-import "../../shell/gallery/theme.css";
 import "../client/styles.css";
 import "./page.css";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { cssProperty, TOKENS as CATALOG } from "@waifucave/moss-plugin-sdk";
 import { STORIES } from "./stories";
+
+// The theme: every catalog token at its own default, light and dark (the SDK's catalog; in MOSS the theme engine sets
+// these, with the base theme's values over the defaults).
+const css = (dark: boolean) => CATALOG.filter((t) => t.type !== "paint").map((t) => `${cssProperty(t.name)}: ${dark && t.dark !== undefined ? t.dark : t.default};`).join("\n");
+const sheet = document.createElement("style");
+sheet.textContent = `:root, [data-theme="light"] {\n${css(false)}\n}\n[data-theme="dark"] {\n${css(true)}\n}`;
+document.head.prepend(sheet);
 
 const hash = () => new URLSearchParams(globalThis.location?.hash.slice(1) ?? "");
 
