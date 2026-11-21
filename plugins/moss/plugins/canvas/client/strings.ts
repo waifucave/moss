@@ -10,7 +10,7 @@ export const S = {
     [plural(sessions, "session", "sessions"), running > 0 ? `${running} running` : undefined, waiting > 0 ? `${waiting} waiting` : undefined].filter(Boolean).join(" · "),
   ended: "Ended",
   failed: "Failed",
-  endedCount: (n: number) => plural(n, "ended session", "ended sessions"),
+  endedCount: (n: number) => `${n} ended`,
   hideEnded: "Hide ended",
   running: "Running",
   starting: "Starting",
