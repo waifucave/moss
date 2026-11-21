@@ -1,0 +1,927 @@
+/* The session canvas (spec revision 20, §9.5), after the owner's chosen mock-up: Colour = Soft, Line = Wave, standard
+   blocks, a bot as its own block. Every colour is a theme token (`--moss-*`, listed in tokens.ts) but one: an agent's
+   own colour, data from its plugin (`agent.backends`), which arrives as the block's `--brand`. The mark wears it at full
+   strength; everything that moves wears it pulled about halfway to the muted grey (`--h`).
+
+   What moves, and only then: the light round a running block (a rotating layer, the compositor's), the marching dashes
+   round a waiting one, the wave on a line a message is crossing and the receiving point lighting. A still canvas runs no
+   animation at all; a hidden window pauses them all; reduced motion turns each into a steady state. */
+
+.cv {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--moss-color-canvas);
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-label);
+  line-height: var(--moss-font-line-body);
+  --cv-line: color-mix(in srgb, var(--moss-color-text-muted) 32%, var(--moss-color-canvas));
+}
+
+.cv button,
+.cv textarea,
+.cv select {
+  font: inherit;
+  color: inherit;
+}
+
+.cv :focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 2px;
+}
+
+/* ---- The bar: +, the count, ended sessions, zoom ---- */
+
+.cv-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--moss-space-s) var(--moss-space-m);
+  padding: var(--moss-space-s) var(--moss-space-l);
+  background: var(--moss-color-surface);
+  border-bottom: 1px solid var(--moss-color-hairline);
+}
+
+.cv-plus {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--moss-radius-medium);
+  background: var(--moss-color-text);
+  color: var(--moss-color-surface);
+  font-weight: var(--moss-font-weight-semibold);
+  cursor: pointer;
+}
+
+.cv .cv-plus {
+  color: var(--moss-color-surface);
+}
+
+.cv-summary {
+  color: var(--moss-color-text-muted);
+}
+
+.cv-folded {
+  padding: 2px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-round);
+  background: var(--moss-color-control);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-zoom {
+  display: flex;
+  margin-left: auto;
+  overflow: hidden;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-medium);
+}
+
+.cv-icon,
+.cv-fit {
+  padding: 3px 10px;
+  border: 0;
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-fit {
+  border-right: 1px solid var(--moss-color-hairline-raised);
+  border-left: 1px solid var(--moss-color-hairline-raised);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-icon:hover,
+.cv-fit:hover,
+.cv-folded:hover {
+  background: var(--moss-color-hover);
+}
+
+/* ---- The stage: the panel over the viewport; the viewport clips everything drawn in the world ---- */
+
+.cv-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cv-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  background-image: radial-gradient(var(--cv-line) 1px, transparent 1px);
+}
+
+.cv-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.cv-lines,
+.cv-over {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.cv-over {
+  z-index: 8;
+}
+
+.cv-blocks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---- Lines ---- */
+
+.cv-line {
+  fill: none;
+  stroke: var(--cv-line);
+  stroke-width: 1.6;
+}
+
+.cv-line[data-kind="peer"] {
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+}
+
+/* ---- A block ---- */
+
+.cv-node {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  cursor: default;
+  --h: color-mix(in srgb, var(--brand) 46%, var(--moss-color-text-muted));
+  --wc: color-mix(in srgb, var(--h) 55%, var(--moss-color-text-muted));
+}
+
+/* The cursor is "near" a block within 30px of it: the unjoined points show then. */
+.cv-node::before {
+  position: absolute;
+  inset: -30px;
+  content: "";
+}
+
+.cv-node[data-open] {
+  z-index: 6;
+}
+
+.cv-node[data-dragging] {
+  z-index: 7;
+}
+
+.cv-card {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  min-height: var(--bh);
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-large);
+  background: var(--moss-color-surface);
+}
+
+.cv-node[data-type="bot"] .cv-card {
+  border-radius: 14px;
+}
+
+.cv-node[data-open] .cv-card {
+  box-shadow: var(--moss-shadow-float);
+}
+
+.cv-node[data-motion="ended"] .cv-card {
+  opacity: 0.62;
+}
+
+.cv-head {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(var(--bh) - 2px);
+  padding: 10px 12px;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cv-node[data-dragging] .cv-head {
+  cursor: grabbing;
+}
+
+.cv-row,
+.cv-bothead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.cv-bothead {
+  gap: 10px;
+}
+
+.cv-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cv-title {
+  overflow: hidden;
+  font-size: var(--moss-font-size-label);
+  font-weight: var(--moss-font-weight-semibold);
+  line-height: var(--moss-font-line-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  line-height: var(--moss-font-line-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 5px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-tiny);
+  font-weight: var(--moss-font-weight-medium);
+}
+
+.cv-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+  color: var(--moss-color-text-secondary);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-node[data-type="sub"] .cv-status {
+  margin-top: 5px;
+}
+
+.cv-status__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-dot {
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cv-line);
+}
+
+.cv-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: 7px;
+  font-weight: var(--moss-font-weight-semibold);
+  line-height: 1;
+  object-fit: contain;
+}
+
+.cv-face {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+}
+
+.cv-face i {
+  display: block;
+  border-radius: 2px;
+}
+
+/* Running: light going round the block. A layer far larger than the block turns behind it, clipped to a ring just
+   outside the card (a transform: the compositor's, no repaint). */
+.cv-node[data-motion="running"] .cv-card {
+  border-color: transparent;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--h) 38%, transparent), 0 0 22px color-mix(in srgb, var(--h) 22%, transparent);
+}
+
+.cv-ring {
+  position: absolute;
+  inset: -2px;
+  overflow: hidden;
+  border-radius: calc(var(--moss-radius-large) + 2px);
+  pointer-events: none;
+}
+
+.cv-ring::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 720px;
+  height: 720px;
+  margin: -360px 0 0 -360px;
+  background: conic-gradient(transparent 0 52%, var(--h) 84%, transparent 100%);
+  content: "";
+  animation: cv-spin 2.6s linear infinite;
+}
+
+.cv-node[data-motion="running"] .cv-dot {
+  background: var(--h);
+  animation: cv-beat 1.3s ease-in-out infinite;
+}
+
+/* Waiting for background jobs: slow marching dashes round the block. */
+.cv-node[data-motion="waiting"] .cv-card {
+  border-color: transparent;
+}
+
+.cv-march {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.cv-march__rect {
+  x: 0.75px;
+  y: 0.75px;
+  width: calc(100% - 1.5px);
+  height: calc(100% - 1.5px);
+  rx: var(--moss-radius-large);
+  fill: none;
+  stroke: var(--wc);
+  stroke-width: 1.5;
+  stroke-dasharray: 7 6;
+  animation: cv-march 1.8s linear infinite;
+}
+
+.cv-node[data-motion="waiting"] .cv-dot {
+  border: 2px solid var(--wc);
+  background: transparent;
+  animation: cv-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes cv-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes cv-beat {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--h) 50%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+@keyframes cv-march {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+@keyframes cv-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- Connection points ---- */
+
+.cv-port {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--cv-line);
+  border-radius: 50%;
+  background: var(--moss-color-canvas);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--moss-motion-fast);
+}
+
+.cv-port[data-port="l"] {
+  top: calc(var(--bh) / 2 - 6px);
+  left: -6px;
+}
+
+.cv-port[data-port="r"] {
+  top: calc(var(--bh) / 2 - 6px);
+  left: calc(var(--bw) - 6px);
+}
+
+.cv-port[data-port="t"] {
+  top: -6px;
+  left: calc(var(--bw) / 2 - 6px);
+}
+
+.cv-port[data-port="b"] {
+  top: calc(var(--bh) - 6px);
+  left: calc(var(--bw) / 2 - 6px);
+}
+
+.cv-node:hover .cv-port,
+.cv-node:focus-within .cv-port,
+.cv-port[data-on] {
+  opacity: 1;
+}
+
+.cv-port[data-on] {
+  border-color: var(--moss-color-text-muted);
+  background: var(--moss-color-surface);
+  box-shadow: inset 0 0 0 2.5px var(--moss-color-surface), inset 0 0 0 6px var(--moss-color-text-muted);
+}
+
+.cv-node[data-open] .cv-port[data-port="b"] {
+  display: none;
+}
+
+/* ---- A message: the wave on the line, the receiving point lighting ---- */
+
+.cv-wave__path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--brand) 46%, var(--moss-color-text-muted));
+  stroke-linecap: round;
+  stroke-dasharray: 150 2000;
+  stroke-dashoffset: 150;
+  animation: cv-wave 1.6s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.cv-wave__light {
+  stroke-width: 2.4;
+}
+
+.cv-wave__glow {
+  stroke-width: 8;
+  filter: blur(4px);
+  opacity: 0.55;
+}
+
+.cv-hit {
+  fill: color-mix(in srgb, var(--brand) 46%, var(--moss-color-text-muted));
+  stroke: color-mix(in srgb, var(--brand) 46%, transparent);
+  stroke-width: 6;
+  opacity: 0;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--brand) 60%, transparent));
+  animation: cv-hit 0.9s ease-out 1.05s both;
+}
+
+.cv-hit:not([data-travel]) {
+  animation-delay: 0s;
+}
+
+@keyframes cv-wave {
+  from {
+    stroke-dashoffset: 150;
+  }
+  to {
+    stroke-dashoffset: -1000;
+  }
+}
+
+@keyframes cv-hit {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-flash {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A hidden window: everything holds still. */
+.cv[data-hidden] .cv-ring::before,
+.cv[data-hidden] .cv-dot,
+.cv[data-hidden] .cv-march__rect,
+.cv[data-hidden] .cv-wave__path,
+.cv[data-hidden] .cv-hit {
+  animation-play-state: paused;
+}
+
+/* ---- An open block: the last line, the composer, Open tab / Open in MOSS ---- */
+
+.cv-more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moss-space-s);
+  padding: 0 12px 12px;
+}
+
+.cv-node[data-type="bot"] .cv-more {
+  padding-top: 0;
+}
+
+.cv-last {
+  margin: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--moss-color-raised);
+  color: var(--moss-color-text-secondary);
+  font-family: var(--moss-font-mono);
+  font-size: 11px;
+  line-height: var(--moss-font-line-code);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-composer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 9px;
+  background: var(--moss-color-surface);
+}
+
+.cv-composer:focus-within {
+  border-color: var(--moss-color-focus);
+}
+
+.cv .cv-composer__field {
+  flex: 1 1 120px;
+  min-height: 20px;
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: var(--moss-font-size-caption);
+  resize: none;
+}
+
+.cv-composer__field::placeholder {
+  color: var(--moss-color-text-placeholder);
+}
+
+.cv-send {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--moss-color-text);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv .cv-send {
+  color: var(--moss-color-surface);
+}
+
+.cv-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cv-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cv-button {
+  padding: 3px 9px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 7px;
+  background: var(--moss-color-surface);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-button:hover {
+  background: var(--moss-color-hover);
+}
+
+.cv-error {
+  margin: 0;
+  color: var(--moss-color-danger);
+  font-size: var(--moss-font-size-caption);
+}
+
+/* ---- The + panel ---- */
+
+.cv-panel {
+  position: absolute;
+  top: var(--moss-space-s);
+  left: var(--moss-space-l);
+  z-index: 10;
+  box-sizing: border-box;
+  width: min(440px, calc(100% - 2 * var(--moss-space-l)));
+  max-height: calc(100% - 2 * var(--moss-space-s));
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 14px;
+  background: var(--moss-color-float);
+  box-shadow: var(--moss-shadow-float);
+  cursor: default;
+}
+
+.cv-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cv-panel__title {
+  margin: 0;
+  font-size: var(--moss-font-size-control);
+  font-weight: var(--moss-font-weight-semibold);
+}
+
+.cv-panel__label {
+  margin: 12px 0 6px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  font-weight: var(--moss-font-weight-regular);
+}
+
+.cv-panel__note {
+  margin: 8px 0 0;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cv-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 4px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 9px;
+  background: var(--moss-color-surface);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-chip[aria-checked="true"] {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.cv-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cv-chip__note {
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-tiny);
+}
+
+.cv-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--moss-space-s);
+  padding: 8px 11px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 10px;
+}
+
+.cv-step__value {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--moss-font-weight-semibold);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-step__value[data-none] {
+  color: var(--moss-color-text-muted);
+  font-weight: var(--moss-font-weight-regular);
+}
+
+.cv-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-link:hover {
+  color: var(--moss-color-text);
+}
+
+.cv-step__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--moss-space-s);
+  padding: var(--moss-space-s) 2px 0;
+}
+
+.cv-field {
+  display: flex;
+  flex: 1 1 140px;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-field select {
+  padding: 5px 6px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 7px;
+  background: var(--moss-color-surface);
+}
+
+.cv .cv-field select {
+  color: var(--moss-color-text);
+}
+
+.cv-folder {
+  padding: 4px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-medium);
+  background: var(--moss-color-surface);
+  cursor: pointer;
+}
+
+.cv-folder[aria-checked="true"] {
+  border-color: var(--moss-color-text);
+  box-shadow: inset 0 0 0 1px var(--moss-color-text);
+}
+
+.cv-folder__other {
+  align-self: center;
+}
+
+.cv-create {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--moss-color-text);
+  font-weight: var(--moss-font-weight-semibold);
+  cursor: pointer;
+}
+
+.cv .cv-create {
+  color: var(--moss-color-surface);
+}
+
+.cv-create:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- Nothing yet ---- */
+
+.cv-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  padding: var(--moss-space-xl);
+  text-align: center;
+  pointer-events: none;
+}
+
+.cv-empty__title {
+  margin: 0 0 6px;
+  font-size: var(--moss-font-size-heading);
+  font-weight: var(--moss-font-weight-semibold);
+}
+
+.cv-empty__detail {
+  max-width: 360px;
+  margin: 0;
+  color: var(--moss-color-text-muted);
+}
+
+/* ---- The tab's corner switch ---- */
+
+.cv-corner {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-corner:hover {
+  background: var(--moss-color-hover);
+}
+
+.cv-corner:focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 1px;
+}
+
+/* ---- A narrow window ---- */
+
+@media (max-width: 640px) {
+  .cv-bar {
+    padding: var(--moss-space-s) var(--moss-space-m);
+  }
+
+  .cv-summary {
+    flex-basis: 100%;
+    order: 3;
+  }
+
+  .cv-panel {
+    left: var(--moss-space-s);
+    width: calc(100% - 2 * var(--moss-space-s));
+  }
+}
+
+/* ---- Reduced motion: each motion a steady state ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-ring::before {
+    background: var(--h);
+    animation: none;
+  }
+
+  .cv-node[data-motion="running"] .cv-dot,
+  .cv-node[data-motion="waiting"] .cv-dot,
+  .cv-march__rect {
+    animation: none;
+  }
+
+  .cv-wave__path {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    animation: cv-flash 1.2s ease-out both;
+  }
+
+  .cv-hit,
+  .cv-hit:not([data-travel]) {
+    animation: cv-flash 1.2s ease-out 0s both;
+  }
+
+  .cv-port {
+    transition: none;
+  }
+}
