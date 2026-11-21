@@ -15,7 +15,10 @@
         "args": [
           "--acp"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "gemini.png",
+        "color": "#3488FB",
+        "color2": "#F24D50"
       }
     ]
   }

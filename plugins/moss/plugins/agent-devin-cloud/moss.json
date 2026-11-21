@@ -16,7 +16,8 @@
           "acp",
           "--cloud"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "devin.svg"
       }
     ]
   }

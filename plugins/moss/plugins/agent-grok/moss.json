@@ -16,7 +16,8 @@
           "agent",
           "stdio"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "grok.svg"
       }
     ]
   }

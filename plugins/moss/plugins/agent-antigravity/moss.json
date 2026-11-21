@@ -16,7 +16,10 @@
           "acp",
           "--disable-telemetry"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "antigravity.svg",
+        "color": "#3186FF",
+        "color2": "#FBBC04"
       }
     ]
   }

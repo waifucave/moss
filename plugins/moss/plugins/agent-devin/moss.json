@@ -15,7 +15,8 @@
         "args": [
           "acp"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "devin.svg"
       }
     ]
   }

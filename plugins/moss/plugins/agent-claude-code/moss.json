@@ -13,7 +13,9 @@
         "protocol": "acp",
         "command": "claude-agent-acp",
         "args": [],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "claude-code.svg",
+        "color": "#D97757"
       }
     ]
   }

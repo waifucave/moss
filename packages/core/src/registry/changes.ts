@@ -155,8 +155,9 @@ function runsOf(m: Manifest | undefined, codeFieldsOf: CodeFieldsOf): string {
   // names one carries the key, so every other plugin's snapshot reads as before.
   const hooks = (c.hooks ?? []).map((h) => ({ id: h.id, command: h.command, args: h.args, handler: h.handler, ...(h.scope === undefined ? {} : { scope: h.scope }) }));
   // An agent backend runs what its whole entry says (lane K's ask): its command and args, its handler, its protocol
-  // and its quirks file, which names the command and the env it gets. Only its display name is data.
-  const backends = (c.agentBackends ?? []).map(({ name: _name, ...run }) => run);
+  // and its quirks file, which names the command and the env it gets. Only its display name and its look (the mark file's
+  // name and its colours; the file is read as an image only) are data.
+  const backends = (c.agentBackends ?? []).map(({ name: _name, icon: _icon, color: _color, color2: _color2, ...run }) => run);
   const dotted: Record<string, unknown> = {};
   for (const [point, raw] of Object.entries(c as Record<string, unknown>)) {
     if (!point.includes(".")) continue;

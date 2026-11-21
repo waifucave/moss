@@ -16,7 +16,9 @@
           "--profile",
           "acp"
         ],
-        "quirks": "quirks.json"
+        "quirks": "quirks.json",
+        "icon": "deepseek.svg",
+        "color": "#4D6BFE"
       }
     ]
   }
