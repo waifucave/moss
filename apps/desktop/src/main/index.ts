@@ -40,6 +40,7 @@ import { daemonEndpoint, dial as dialDaemon, RpcCallError, type DaemonClient } f
 import { FileGrants, answersFor } from "./ui/file-grants";
 import { OptionalCalls } from "./pair/optional-calls";
 import { loadWithRetry } from "./pair/setup-retry";
+import { testTimeScale } from "./test-scale";
 import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type CorePage } from "./core-pages";
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
@@ -942,7 +943,8 @@ const sealedSeen = new Map<string, boolean>();
 /** The sealed frames whose page has said "visible" at least once (watchSealedDraw redraws only a page that never has). */
 const sealedEverSeen = new Set<string>();
 const fallbacks = new Map<string, { timer: ReturnType<typeof setTimeout>; win?: Electron.BrowserWindow; token?: string; strip?: boolean }>();
-const FALLBACK_DELAY_MS = 2_000;
+/** 2 s; times the acceptance run's scale on a test or source build (`test-scale.ts`), never on a released app. */
+const FALLBACK_DELAY_MS = 2_000 * testTimeScale(process.env, app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string");
 /** The fallback card's window: a card's own width, a height that fits what it says up to a sane most (it scrolls inside
  *  beyond that, its buttons staying in view). */
 const FALLBACK_WIDTH = 440;
