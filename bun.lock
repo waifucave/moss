@@ -26,6 +26,7 @@
         "@waifucave/moss-app-release": "workspace:*",
         "@waifucave/moss-plugin-archive": "workspace:*",
         "@waifucave/moss-plugin-browser-view": "workspace:*",
+        "@waifucave/moss-plugin-canvas": "workspace:*",
         "@waifucave/moss-plugin-character": "workspace:*",
         "@waifucave/moss-plugin-composer": "workspace:*",
         "@waifucave/moss-plugin-conversation": "workspace:*",

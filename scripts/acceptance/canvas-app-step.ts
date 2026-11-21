@@ -4,9 +4,10 @@
 //
 // CA's rows, in order on one home (each drives MOSS Code's window through its DevTools port, with trusted clicks, and reads the engine's
 // answers beside what the window shows):
-//   1. the start page: with no plugin's `start` entry the shell draws its own new-session page, each agent's row carrying its plugin's
-//      mark (the nine agent plugins ship theirs; MOSS's own coding agent has MOSS's face on coral); the fixture plugin installed, its
-//      entry is the start page;
+//   1. the start page: on a fresh home it is the bundled canvas plugin's (the shell's own new-session page is only the fallback
+//      when no plugin fills `start`, and shows nowhere), its + panel drawing each agent's mark (the nine agent plugins ship
+//      theirs; MOSS's own coding agent the Shards mark); the fixture plugin installed, its entry is the start page (installed
+//      over bundled);
 //   2. a start through the app's door: the page's button starts a session with a model, an effort, a recent folder and a first message,
 //      the window opens that session's tab, the engine says the session runs on that model and effort, the first message is the
 //      user's own, and `agent.recent` then offers them;
@@ -14,9 +15,21 @@
 //   4. "Open in MOSS": MOSS isn't running, so the engine asks for it to start (a marker the run answers by starting its own MOSS from
 //      source), and MOSS opens the bot's conversation.
 //
+// Lane CP's rows, after CA's, with the fixture plugin removed so the canvas is the start page again (the real engine, the real
+// window; MOSS started by CA's row 4 still running):
+//   5. the start page is the canvas, and + creates a session with what it preselects (the last start's agent, model, effort and
+//      folder): the engine says the new session runs on them, and the window opens its tab;
+//   6. the tab's corner control returns to the canvas with that session's block in view;
+//   7. a message between two code sessions (one's SendMessage to the other, scripted through the run's fake model) shows on the
+//      line joining their blocks: the message's light on that line and both blocks' rings reacting are drawn when its
+//      session_link is heard; the line is still there after the canvas is closed and opened again (the engine's session.links);
+//   8. a block's composer sends as the user (a user_message in that session), and a bot's block opens "Open in MOSS" (MOSS shows
+//      that bot's conversation).
+//
 // With MOSS_ACCEPT_RENDERS set, the start pages are pictured in light and dark, and a bot's face drawn by BotFace in MOSS Code beside
 // MOSS's own drawing (a render, never a check).
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { Cdp } from "./cdp";
@@ -24,17 +37,23 @@ import type { MossClient } from "./client";
 import { Doc, type SetupUnitCtx } from "./setup-step";
 import type { Status } from "./steps";
 
-export const CANVAS_START_STEP = "the start page: with no plugin's `start` entry the shell draws its own new-session page, each agent's row carrying its plugin's mark (MOSS's own agent MOSS's face on coral, the nine agent plugins theirs, a one-colour glyph drawn in its agent's colour); with a plugin's `main` entry keyed `start` installed, that entry is the start page, drawing the same marks and, for an agent with none, the first letter on a colour";
+export const CANVAS_START_STEP = "the start page: on a fresh home it is the bundled canvas plugin's (the shell's own new-session page, the fallback when no plugin fills `start`, shows nowhere), its + panel drawing each agent's mark (MOSS's own agent the Shards mark, the nine agent plugins theirs, a one-colour glyph drawn in its agent's colour); with a plugin's `main` entry keyed `start` installed, that entry is the start page (installed over bundled), drawing the same marks and, for an agent with none, the first letter on a colour";
 export const CANVAS_START_SESSION_STEP = "a start through the app's door from the start page's button: a model, an effort, a recent folder (a token, never a path) and a first message; the window opens the new session's tab, the engine says it runs on that model and effort, the first message is the user's own, and agent.recent then offers that agent, model, effort and folder";
 export const CANVAS_CORNER_STEP = "a session tab's top corner holds a plugin's control (the `session.corner` spot, given the session and its kind): pressing it returns the window to the start page";
 export const CANVAS_OPEN_IN_STEP = "\"Open in MOSS\" from a part of MOSS Code with MOSS not running: the engine is asked to start MOSS (it starts nothing itself in the run: a marker, answered by the run starting its own MOSS from source), and MOSS opens the bot's conversation";
-export const CANVAS_APP_STEPS: readonly string[] = [CANVAS_START_STEP, CANVAS_START_SESSION_STEP, CANVAS_CORNER_STEP, CANVAS_OPEN_IN_STEP];
+export const CANVAS_PLUS_STEP = "the canvas is MOSS Code's start page, and its + creates a session with what it preselects (the last start's agent, model, effort and folder): the engine says the session runs on them, and the window opens its tab";
+export const CANVAS_BACK_STEP = "a session tab's corner control (the canvas's) returns the window to the canvas with that session's block in view";
+export const CANVAS_LINE_STEP = "a message between two code sessions shows on the line joining their blocks: the message's light on that line and both blocks' rings reacting, drawn when its session_link is heard; the line is still there after the canvas is closed and opened again (from the engine's session.links)";
+export const CANVAS_BLOCK_STEP = "a block's composer sends as the user (a user_message in that session), and a bot's block opens \"Open in MOSS\" (MOSS shows that bot's conversation)";
+export const CANVAS_APP_STEPS: readonly string[] = [CANVAS_START_STEP, CANVAS_START_SESSION_STEP, CANVAS_CORNER_STEP, CANVAS_OPEN_IN_STEP, CANVAS_PLUS_STEP, CANVAS_BACK_STEP, CANVAS_LINE_STEP, CANVAS_BLOCK_STEP];
 
 export interface CanvasAppUnitCtx extends Pick<SetupUnitCtx, "root" | "logs" | "userHome" | "driver" | "startCodeApp" | "startMossApp" | "freePort" | "endChild" | "alive" | "readLog" | "until" | "fail" | "record" | "statusOf" | "why"> {
   /** The folder the run's engine leaves its `open-moss` marker in (MOSS_ACCEPTANCE_LAUNCH_DIR). */
   launchDir: string;
   /** Installs the fixture plugin (`fixtures/acceptance-canvas`) and answers its OK card, over the run's client. */
   installFixture(c: MossClient): Promise<void>;
+  /** Removes it again (its card answered), so the bundled canvas is the start page for lane CP's rows. */
+  removeFixture(c: MossClient): Promise<void>;
   /** The model a session may be started on (signed in by the run's dummy key), and the one the engine defaults to. */
   keyedModel: string;
 }
@@ -81,6 +100,13 @@ export async function canvasAppUnit(x: CanvasAppUnitCtx): Promise<void> {
     await row(CANVAS_START_SESSION_STEP, () => sessionRow(s));
     await row(CANVAS_CORNER_STEP, () => cornerRow(s));
     await row(CANVAS_OPEN_IN_STEP, () => openInRow(s));
+    // Lane CP's rows: the canvas as the start page again.
+    await x.removeFixture(c);
+    const cp: CpState = {};
+    await row(CANVAS_PLUS_STEP, () => plusRow(s, cp));
+    await row(CANVAS_BACK_STEP, () => backRow(s, cp));
+    await row(CANVAS_LINE_STEP, () => lineRow(s, cp));
+    await row(CANVAS_BLOCK_STEP, () => blockRow(s, cp));
   } catch (err) {
     const why = `the canvas unit's app couldn't be started and driven: ${x.why(err)}`;
     for (const name of CANVAS_APP_STEPS) if (!done.has(name)) x.record(name, x.statusOf(err), why);
@@ -100,6 +126,8 @@ interface Ctx {
   apps: { proc: ChildProcess; log: string }[];
   cdps: Cdp[];
   startedMoss: { doc: Doc } | undefined;
+  /** MOSS's DevTools, once CA's row 4 started it. */
+  mossCdp?: Cdp;
   stop(): void;
 }
 
@@ -151,16 +179,21 @@ function checkMarks(s: Ctx, where: string, marks: MarkRow[]): string {
 }
 
 async function startRow(s: Ctx): Promise<string> {
-  // No plugin's `start` entry yet: the shell's own new-session page, the window's start (no code session exists).
-  const shell = await waitDoc(s, "the shell's own new-session page", ".cl-new-session__agent", 90_000);
-  await shell.waitFor("the agent rows", "document.querySelectorAll('.cl-new-session__agent [data-agent-mark]').length >= 9", 60_000);
-  const shellMarks = await marksIn(shell, ".cl-new-session__agent", "r.querySelector('input').value");
-  const shellNote = checkMarks(s, "the shell's new-session page", shellMarks);
-  const pictures = await picture(s, shell, "canvas-new-session", "moss-code-new-session");
-  // The fixture plugin installed: its entry keyed `start` is the start page, and the shell's own page is gone.
+  // A fresh home: the bundled canvas is the start page; the shell's own new-session page (the fallback) shows nowhere.
+  const canvas = await waitDoc(s, "the canvas start page", "section.cv", 90_000);
+  if (await anyDoc(s, ".cl-new-session") !== undefined) s.x.fail("the shell's own new-session page shows beside the canvas");
+  // Its + panel draws each agent's mark.
+  await canvas.click(".cv-plus");
+  await canvas.waitFor("the + panel's agent chips", "document.querySelectorAll('.cv-panel [data-agent] [data-agent-mark]').length >= 9", 60_000);
+  const canvasMarks = await marksIn(canvas, ".cv-panel [data-agent]", "r.getAttribute('data-agent')");
+  const canvasNote = checkMarks(s, "the canvas's + panel", canvasMarks);
+  const pictures = await picture(s, canvas, "canvas-plus-panel", "moss-code-canvas-plus");
+  await canvas.eval("document.querySelector('.cv-panel')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) ?? true");
+  // The fixture plugin installed: its entry keyed `start` is the start page (installed over bundled), and the canvas is gone.
   await s.x.installFixture(s.c);
   const page = await waitDoc(s, "the plugin's start page", "[data-canvas-start]", 90_000);
-  if (await anyDoc(s, ".cl-new-session") !== undefined) s.x.fail("the shell's own new-session page still shows beside the plugin's start page");
+  if (await anyDoc(s, "section.cv") !== undefined) s.x.fail("the canvas still shows beside the installed plugin's start page");
+  if (await anyDoc(s, ".cl-new-session") !== undefined) s.x.fail("the shell's own new-session page shows beside the plugin's start page");
   await page.waitFor("the plugin's agent rows", "document.querySelectorAll('[data-canvas-agent] [data-agent-mark]').length >= 9", 60_000);
   const pluginMarks = await marksIn(page, "[data-canvas-agent]", "r.getAttribute('data-canvas-agent')");
   const pluginNote = checkMarks(s, "the plugin's start page", pluginMarks);
@@ -171,7 +204,7 @@ async function startRow(s: Ctx): Promise<string> {
   // A bot's face drawn by BotFace in MOSS Code (its own drawing of the same name, as MOSS draws hers: a canvas).
   const face = await page.eval<boolean>("!!document.querySelector('[data-canvas-bot-face] canvas')");
   if (!face) s.x.fail("BotFace drew no face in MOSS Code");
-  return `no plugin entry: the shell's own page, ${shellNote}; the fixture plugin's start entry installed: it is the start page and the shell's own is gone, ${pluginNote}; an agent with no icon is the letter mark; BotFace drew a face${pictures.length > 0 ? `; pictures: ${pictures.length}` : ""}`;
+  return `a fresh home: the canvas is the start page and the shell's own page shows nowhere, its + panel ${canvasNote}; the fixture plugin's start entry installed: it is the start page and the canvas is gone, ${pluginNote}; an agent with no icon is the letter mark; BotFace drew a face${pictures.length > 0 ? `; pictures: ${pictures.length}` : ""}`;
 }
 
 /** A render of the window in light and dark (a picture, never a check). */
@@ -249,6 +282,7 @@ async function openInRow(s: Ctx): Promise<string> {
     s.apps.push(moss);
     mossCdp = await x.until("MOSS's DevTools port", 120_000, async () => { try { return await Cdp.connect(port); } catch { return undefined; } }, 400);
     s.cdps.push(mossCdp);
+    s.mossCdp = mossCdp;
   })();
   watch.catch(() => undefined);
   await page.click("[data-canvas-openin]");
@@ -264,3 +298,119 @@ async function openInRow(s: Ctx): Promise<string> {
 }
 
 export type { Status };
+
+// -------------------------------------------------------------------------------------------------
+// Lane CP's rows: the canvas plugin itself, on the real engine
+// -------------------------------------------------------------------------------------------------
+
+interface CpState { made?: string; other?: string }
+
+const canvasDoc = (s: Ctx, what = "the canvas start page") => waitDoc(s, what, "section.cv", 60_000);
+const inView = (id: string) => `(() => { const v = document.querySelector('.cv-viewport')?.getBoundingClientRect(); const b = document.querySelector(${JSON.stringify(`[data-block="${id}"]`)})?.getBoundingClientRect(); return !!v && !!b && b.left >= v.left && b.right <= v.right && b.top >= v.top && b.bottom <= v.bottom; })()`;
+
+async function computerOf(c: MossClient): Promise<string> {
+  const computer = (await c.request<{ computers: { name: string }[] }>("computer.list", {})).computers[0]?.name;
+  if (computer === undefined) throw new Error("computer.list lists no computer");
+  return computer;
+}
+
+/** Row 5: the canvas is the start page; + creates a session with what it preselects and opens its tab. */
+async function plusRow(s: Ctx, cp: CpState): Promise<string> {
+  const { x, c } = s;
+  const canvas = await canvasDoc(s);
+  if (await anyDoc(s, ".cl-new-session") !== undefined) x.fail("the shell's own new-session page shows beside the canvas");
+  // What + preselects is the last start (agent.recent): the agent, its model and effort, the folder.
+  const recent = await c.request<{ backend?: string; model?: string; effort?: string; roots: { root: string }[] }>("agent.recent", {});
+  if (recent.backend === undefined || recent.roots[0] === undefined) x.fail(`agent.recent offers no last start to preselect: ${JSON.stringify(recent)}`);
+  const before = new Set((await c.request<{ sessions: SessionView[] }>("session.list", {})).sessions.map((v) => v.id));
+  await canvas.click(".cv-plus");
+  // Every step preselected: Create is ready at once, with nothing picked by hand.
+  await canvas.waitFor("the + panel ready to create", "(() => { const b = document.querySelector('.cv-panel .cv-create'); return !!b && !b.disabled; })()", 60_000);
+  const picked = await canvas.eval<string>("document.querySelector('.cv-panel [data-agent][aria-checked=true]')?.getAttribute('data-agent') ?? ''");
+  if (picked !== recent.backend) x.fail(`+ preselected ${picked || "no agent"}, not the last start's ${recent.backend}`);
+  await canvas.click(".cv-panel .cv-create");
+  const made = await x.until("the new session in the engine's list", 60_000, async () => (await c.request<{ sessions: SessionView[] }>("session.list", {})).sessions.find((v) => !before.has(v.id) && v.kind === "coding"), 400);
+  const detail = (await c.request<{ session: SessionView }>("session.get", { id: made.id })).session;
+  if (detail.backend !== recent.backend) x.fail(`the new session runs ${detail.backend}, not ${recent.backend}`);
+  if (recent.model !== undefined && detail.model !== recent.model) x.fail(`the new session runs on ${detail.model}, not the preselected ${recent.model}`);
+  if (recent.effort !== undefined && detail.effort !== recent.effort) x.fail(`the new session's effort is ${detail.effort}, not the preselected ${recent.effort}`);
+  if (detail.root !== recent.roots[0]!.root) x.fail(`the new session's folder is ${detail.root}, not the preselected ${recent.roots[0]!.root}`);
+  await waitDoc(s, "the new session's tab", ".cl-agent-tab", 60_000);
+  if (await anyDoc(s, "section.cv") !== undefined) x.fail("the canvas still shows: the window didn't open the new session's tab");
+  cp.made = made.id;
+  return `the canvas was the start page; + preselected ${picked} (the last start), and Create started ${made.id} on ${detail.backend} ${detail.model ?? "(default model)"} at ${detail.effort ?? "no effort"} in ${detail.root}; the window opened its tab`;
+}
+
+/** Row 6: the tab's corner control returns to the canvas with that session's block in view. */
+async function backRow(s: Ctx, cp: CpState): Promise<string> {
+  const { x } = s;
+  if (cp.made === undefined) x.fail("row 5 made no session to come back from");
+  const tab = await waitDoc(s, "the canvas's corner control in the session's tab", ".cv-corner", 60_000);
+  await tab.click(".cv-corner");
+  const canvas = await canvasDoc(s, "the canvas again");
+  await canvas.waitFor("the session's block on the canvas", `!!document.querySelector('[data-block="${cp.made}"]')`, 30_000);
+  await canvas.waitFor("the session's block in view", inView(cp.made!), 10_000);
+  if (await anyDoc(s, ".cl-agent-tab") !== undefined) x.fail("the session's tab still shows after the corner control");
+  return `the corner control of ${cp.made}'s tab returned the window to the canvas with its block in view`;
+}
+
+/** Row 7: a message between two code sessions on their line; the line survives the canvas closing. */
+async function lineRow(s: Ctx, cp: CpState): Promise<string> {
+  const { x, c } = s;
+  if (cp.made === undefined) x.fail("row 5 made no session");
+  const computer = await computerOf(c);
+  mkdirSync(join(x.userHome, "canvas-line"), { recursive: true });
+  const other = (await c.request<{ session: string }>("agent.start", { backend: "moss-code", computer, root: `home/${computer}/canvas-line`, model: x.keyedModel }, 60_000)).session;
+  cp.other = other;
+  const canvas = await canvasDoc(s);
+  await canvas.waitFor("both blocks on the canvas", `!!document.querySelector('[data-block="${cp.made}"]') && !!document.querySelector('[data-block="${other}"]')`, 60_000);
+  // Watch the canvas for the message as it is drawn (it lasts about a second): the light on the line, both rings reacting.
+  await canvas.eval(`(() => { const seen = window.__cpSeen = { msg: false, from: false, to: false, line: false };
+    const look = () => {
+      if (document.querySelector('.cv-msg .cv-mlight')) seen.msg = true;
+      if (document.querySelector('[data-block="${cp.made}"] .cv-react')) seen.from = true;
+      if (document.querySelector('[data-block="${other}"] .cv-react[data-morph]')) seen.to = true;
+      if (document.querySelector('.cv-line[data-kind="peer"]')) seen.line = true;
+    };
+    new MutationObserver(look).observe(document.body, { subtree: true, childList: true, attributes: true }); look(); return true; })()`);
+  // The first session messages the second (its model scripted to call SendMessage), as the user asks it to.
+  await c.request("session.attach", { id: cp.made }).catch(() => undefined);
+  await c.request("session.send", { id: cp.made, message: { text: `ACCEPTANCE-CALL SendMessage ${JSON.stringify({ to: other, message: "CANVAS-LINE: the API moved to v2." })}`, clientMessageId: randomUUID() } }, 30_000);
+  const seen = await canvas.waitFor<{ msg: boolean; from: boolean; to: boolean; line: boolean }>("the message drawn on the canvas", "(() => { const s = window.__cpSeen; return s && s.msg && s.from && s.to && s.line ? s : null; })()", 150_000)
+    .catch(async (err: unknown) => { x.fail(`the message wasn't drawn: ${JSON.stringify(await canvas.eval("window.__cpSeen").catch(() => null))} (${x.why(err)})`); throw err; });
+  const pairs = (await c.request<{ pairs: { from: { session?: string }; to: { session: string } }[] }>("session.links", {})).pairs;
+  if (!pairs.some((p) => p.from.session === cp.made && p.to.session === other)) x.fail(`session.links keeps no pair from ${cp.made} to ${other}`);
+  // Closed and opened again: into a session's tab and back by its corner control. The line is drawn from the record.
+  await canvas.click(`[data-block="${other}"] .cv-head`);
+  await canvas.click(`[data-block="${other}"] .cv-button`, "Open tab");
+  const tab = await waitDoc(s, "the other session's tab", ".cv-corner", 60_000);
+  await tab.click(".cv-corner");
+  const again = await canvasDoc(s, "the canvas, opened again");
+  await again.waitFor("the line between them, from the engine's record", `!!document.querySelector('.cv-line[data-kind="peer"]')`, 30_000);
+  return `${cp.made}'s SendMessage to ${other} was drawn: the light on their line (${seen.msg}), ${cp.made}'s ring (${seen.from}) and ${other}'s ring turning from the sender's colour (${seen.to}); session.links keeps the pair, and the line was there again after the canvas was closed and opened`;
+}
+
+/** Row 8: a block's composer sends as the user; a bot's block opens "Open in MOSS". */
+async function blockRow(s: Ctx, cp: CpState): Promise<string> {
+  const { x, c } = s;
+  if (cp.other === undefined) x.fail("row 7 made no second session");
+  const canvas = await canvasDoc(s);
+  await canvas.click(`[data-block="${cp.other}"] .cv-head`);
+  await canvas.type(`[data-block="${cp.other}"] .cv-composer__field`, "CANVAS-COMPOSER: from the canvas");
+  await canvas.click(`[data-block="${cp.other}"] .cv-send`);
+  await c.request("session.attach", { id: cp.other }).catch(() => undefined);
+  const said = await x.until("the composer's words in the session as the user's", 60_000, async () => {
+    const h = await c.request<{ events: { type: string; text?: string }[] }>("session.history", { id: cp.other, limit: 200 });
+    return h.events.find((e) => (e.text ?? "").includes("CANVAS-COMPOSER"));
+  }, 500);
+  if (said.type !== "user_message") x.fail(`the composer's words arrived as ${said.type}, not the user's`);
+  // A bot's block: Open in MOSS (MOSS runs: CA's row 4 started it).
+  if (s.mossCdp === undefined) x.fail("MOSS isn't running (CA's row 4 starts it)");
+  const bot = await canvas.waitFor<string>("a bot's block", "document.querySelector('.cv-node[data-type=bot]')?.getAttribute('data-block') ?? null", 30_000);
+  await canvas.click(`[data-block="${bot}"] .cv-head`);
+  await canvas.click(`[data-block="${bot}"] .cv-button`, "Open in MOSS");
+  const mossDoc = new Doc(x, s.mossCdp!, (u) => u.startsWith("moss-app://app/"), "MOSS's window");
+  const botId = bot.replace(/^bot:/, "");
+  await mossDoc.waitFor("MOSS showing the bot's conversation", `!!document.querySelector('[data-bot-row="${botId}"][aria-current=true]')`, 60_000);
+  return `the composer of ${cp.other}'s block sent as the user (${said.type}); ${bot}'s block's Open in MOSS showed ${botId}'s conversation in MOSS`;
+}

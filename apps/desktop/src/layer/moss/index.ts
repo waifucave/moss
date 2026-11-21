@@ -5,6 +5,7 @@
 import * as archive from "@waifucave/moss-plugin-archive/client";
 import * as character from "@waifucave/moss-plugin-character/client";
 import * as browserView from "@waifucave/moss-plugin-browser-view/client";
+import * as canvas from "@waifucave/moss-plugin-canvas/client";
 import * as composer from "@waifucave/moss-plugin-composer/client";
 import * as conversation from "@waifucave/moss-plugin-conversation/client";
 import * as island from "@waifucave/moss-plugin-island/client";
@@ -34,6 +35,8 @@ export const modules: Record<MossChildId, Record<string, unknown>> = {
   "moss/panel-diff": panelDiff,
   "moss/panel-files": panelFiles,
   "moss/panel-terminal": panelTerminal,
+  // MOSS Code's start page, the session canvas (its `main` entry keyed `start`), and a session tab's switch back to it.
+  "moss/canvas": canvas,
   "moss/settings": settings,
   "moss/browser-view": browserView,
   "moss/archive": archive,

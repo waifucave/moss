@@ -64,6 +64,9 @@ importers:
       '@waifucave/moss-plugin-browser-view':
         specifier: workspace:*
         version: link:../../plugins/moss/plugins/browser-view
+      '@waifucave/moss-plugin-canvas':
+        specifier: workspace:*
+        version: link:../../plugins/moss/plugins/canvas
       '@waifucave/moss-plugin-character':
         specifier: workspace:*
         version: link:../../plugins/moss/plugins/character

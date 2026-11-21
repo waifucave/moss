@@ -3694,6 +3694,7 @@ async function canvasRun(app: { exe: string; args: string[] }): Promise<void> {
     root, logs, userHome, launchDir, keyedModel: KEYED_MODEL,
     driver: async () => (await appDriver()).client,
     installFixture: (c) => installFixture(c, "acceptance-canvas"),
+    removeFixture: (c) => removeFixture(c, "acceptance-canvas"),
     startCodeApp: (port, appearance) => startChild("canvas-code-app", app.exe, [...app.args, "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${port}`], {
       ...baseEnv(), MOSS_DAEMON_BIN: stubBin, MOSS_TEST_APPEARANCE_FILE: appearance, MOSS_DEV_DEBUG: "1",
     }),
@@ -3707,6 +3708,20 @@ async function canvasRun(app: { exe: string; args: string[] }): Promise<void> {
     record: (name, status, detail) => record(stepNumber(FULL_STEPS, name), status, detail),
     statusOf, why,
   });
+}
+
+/** A fixture plugin of the run's removed again, its card (if it shows one) answered over RPC as `installFixture` answers its OK. */
+async function removeFixture(c: MossClient, id: string): Promise<void> {
+  const r = await c.request<{ card?: string }>("plugin.remove", { id }, 60_000);
+  if (r.card !== undefined) {
+    const card = await until(`${id}'s removal card`, 30_000, async () => (await cards(c)).find((k) => k.id === r.card));
+    const option = card.options.find((x) => x.kind === "approve");
+    if (option === undefined) fail(`${id}'s removal card has no approve option`);
+    const frame = await c.request<{ channel: string }>("card.frame", { id: card.id });
+    const a = await c.request<{ accepted: boolean; reason?: string }>("card.answer", { id: card.id, hash: card.hash, option: option!.id, proof: { via: "sealed-frame", frame: frame.channel, input: "click", at: Date.now() } });
+    if (!a.accepted) fail(`card.answer refused ${id}'s removal: ${a.reason ?? "no reason"}`);
+  }
+  await until(`${id} removed`, 60_000, async () => ((await c.request<{ plugin?: unknown }>("plugin.get", { id }).catch(() => ({ plugin: undefined }))).plugin === undefined ? true : undefined));
 }
 
 /** A fixture plugin of the run's (scripts/acceptance/fixtures/<id>) installed from a copy of its folder and OK'd over RPC, as `installEcho`

@@ -10,6 +10,7 @@ export const modules = [
   "moss/panel-diff",
   "moss/panel-files",
   "moss/panel-terminal",
+  "moss/canvas",
   "moss/settings",
   "moss/browser-view",
   "moss/archive",
