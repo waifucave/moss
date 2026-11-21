@@ -236,7 +236,7 @@ function usePart(): Part {
   return part;
 }
 
-class PartBoundary extends Component<{ name: string; children: ReactNode }, { failed: boolean }> {
+class PartBoundary extends Component<{ name: string; stopped?: ReactNode; children: ReactNode }, { failed: boolean }> {
   override state = { failed: false };
   static getDerivedStateFromError(): { failed: boolean } {
     return { failed: true };
@@ -245,7 +245,11 @@ class PartBoundary extends Component<{ name: string; children: ReactNode }, { fa
     console.error(`the part ${this.props.name} stopped`, error, info.componentStack);
   }
   override render(): ReactNode {
-    if (this.state.failed) return <div className="moss-part-stopped" role="status" data-moss-stopped={this.props.name}>This part stopped.</div>;
+    if (this.state.failed) {
+      return this.props.stopped !== undefined
+        ? <div data-moss-stopped={this.props.name} style={{ display: "contents" }}>{this.props.stopped}</div>
+        : <div className="moss-part-stopped" role="status" data-moss-stopped={this.props.name}>This part stopped.</div>;
+    }
     return this.props.children;
   }
 }
@@ -256,11 +260,11 @@ function findComponent(mod: ClientModule | undefined, name: string): UiComponent
 }
 
 /** Renders one entry's component in its part. */
-function EntryView({ part, component, props }: { part: Part; component: UiComponent<EntryProps<any>>; props: unknown }) {
+function EntryView({ part, component, props, stopped }: { part: Part; component: UiComponent<EntryProps<any>>; props: unknown; stopped?: ReactNode }) {
   const C = component as (p: EntryProps<any>) => ReactNode;
   return (
     <PartContext.Provider value={part}>
-      <PartBoundary name={`${part.entry.pluginId}#${part.entry.id}`}>
+      <PartBoundary name={`${part.entry.pluginId}#${part.entry.id}`} {...(stopped !== undefined ? { stopped } : {})}>
         <C props={(props ?? {}) as Record<string, unknown>} tokens={part.tokens} entry={part.entry} />
       </PartBoundary>
     </PartContext.Provider>
@@ -415,10 +419,14 @@ export type SpotProps = Omit<SpotElementProps, "key" | "spotKey" | "entry"> & {
   /** An entry in a frame of its own fills the room this part gives the spot (and scrolls inside itself), instead of
    *  taking the height its content reports: a drawing that is as big as its box, say. */
   fill?: boolean;
+  /** What shows in place of an entry of this spot that stopped (its component threw, at its first drawing or later, or
+   *  its frame is gone); without it, "This part stopped." The host's own way on when the part it relies on is broken
+   *  (the shell's start page: its own new-session page). */
+  stopped?: ReactNode;
 };
 
 /** `<Spot name spotKey props>`: shows a spot this part declares (§5.5). */
-export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, forBot, fill }: SpotProps) {
+export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, forBot, fill, stopped }: SpotProps) {
   const entry = entryRef ?? only;
   const part = usePart();
   const hints = useContext(SpotHints);
@@ -455,15 +463,15 @@ export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, fo
   }
   return (
     <div data-moss-spot={name} data-moss-key={spotKey} data-moss-conflict={view.conflict ? "" : undefined} style={{ display: "contents" }}>
-      {view.items.map((item) => <SpotItemView key={item.mount} item={item} parent={part} spot={name} spotKey={view.key} props={props} fill={fill} />)}
+      {view.items.map((item) => <SpotItemView key={item.mount} item={item} parent={part} spot={name} spotKey={view.key} props={props} fill={fill} stopped={stopped} />)}
     </div>
   );
 }
 
-function SpotItemView({ item, parent, spot, spotKey, props, fill }: { item: SpotItem; parent: Part; spot: string; spotKey: string | undefined; props: unknown; fill?: boolean | undefined }) {
-  if (item.kind === "frame") return <LayerFrame item={item} props={props} spot={spot} {...(fill === true ? { fill: true } : {})} />;
+function SpotItemView({ item, parent, spot, spotKey, props, fill, stopped }: { item: SpotItem; parent: Part; spot: string; spotKey: string | undefined; props: unknown; fill?: boolean | undefined; stopped?: ReactNode }) {
+  if (item.kind === "frame") return <LayerFrame item={item} props={props} spot={spot} {...(fill === true ? { fill: true } : {})} {...(stopped !== undefined ? { stopped } : {})} />;
   if (item.kind === "web") return <WebPart item={item} />;
-  return <InlineItem item={item} parent={parent} spot={spot} spotKey={spotKey} props={props} />;
+  return <InlineItem item={item} parent={parent} spot={spot} spotKey={spotKey} props={props} {...(stopped !== undefined ? { stopped } : {})} />;
 }
 
 /** A web page part: the core draws the page's own view over this element, in the page's own session (§5.5). */
@@ -516,7 +524,7 @@ function trackRect(el: HTMLElement, measure: () => void, gone: () => void, extra
   };
 }
 
-function InlineItem({ item, parent, spot, spotKey, props }: { item: Extract<SpotItem, { kind: "inline" }>; parent: Part; spot: string; spotKey: string | undefined; props: unknown }) {
+function InlineItem({ item, parent, spot, spotKey, props, stopped }: { item: Extract<SpotItem, { kind: "inline" }>; parent: Part; spot: string; spotKey: string | undefined; props: unknown; stopped?: ReactNode }) {
   const r = rt();
   // Its own tokens: the descriptor's, then each update the core sends for this mount; none, its parent's. A change of
   // the parent's tokens never puts the descriptor's back (a light/dark switch updates both in one message, and the
@@ -556,7 +564,7 @@ function InlineItem({ item, parent, spot, spotKey, props }: { item: Extract<Spot
   if (component === undefined) return <div className="moss-part-missing" role="status" data-moss-entry={item.ref}>This part has no component {item.component}.</div>;
   return (
     <div {...marks} style={{ display: "contents", ...own }}>
-      <EntryView part={part} component={component} props={props} />
+      <EntryView part={part} component={component} props={props} {...(stopped !== undefined ? { stopped } : {})} />
     </div>
   );
 }
@@ -593,7 +601,7 @@ const FILL_SPOTS: readonly string[] = ["main", "panel"];
 /** In a flex column it takes what is left (and may shrink under it); anywhere else, the whole height of its container. */
 const FILL_STYLE: CSSProperties = { height: "100%", flex: "1 1 0", minHeight: 0 };
 
-function LayerFrame({ item, props, spot, fill: fillAsked }: { item: Extract<SpotItem, { kind: "frame" }>; props: unknown; spot: string; fill?: boolean }) {
+function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Extract<SpotItem, { kind: "frame" }>; props: unknown; spot: string; fill?: boolean; stopped?: ReactNode }) {
   const r = rt();
   const [url, setUrl] = useState(item.url);
   const [asleep, setAsleep] = useState(item.asleep === true);
@@ -663,6 +671,7 @@ function LayerFrame({ item, props, spot, fill: fillAsked }: { item: Extract<Spot
   useEffect(() => () => {
     r.callbacks.delete(item.mount);
   }, [item.mount, r]);
+  if (gone !== undefined && stopped !== undefined) return <div data-moss-entry={item.ref} data-moss-gone={gone} style={{ display: "contents" }}>{stopped}</div>;
   if (gone !== undefined) {
     return (
       <div className="moss-part-stopped" role="status" data-moss-entry={item.ref} data-moss-gone={gone}>
