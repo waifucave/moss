@@ -25,6 +25,9 @@ describe("EngineSessionTitles", () => {
     await t.turnEnded({ session: "s_a", kind: "coding", firstMessage: "fix it" });
     expect(t.title("s_a")).toBeUndefined();
     expect(warned.length).toBe(1);
+    // Every later turn tries again, and says nothing more (titles turned off would say it at each turn).
+    await t.turnEnded({ session: "s_a", kind: "coding", firstMessage: "fix it" });
+    expect(warned.length).toBe(1);
   });
 
   test("an empty first message asks nothing", async () => {

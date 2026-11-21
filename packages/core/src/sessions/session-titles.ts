@@ -41,6 +41,8 @@ export class EngineSessionTitles implements SessionTitles {
   readonly #changes = new Listeners<{ session: string; title: string; by: TitleSource }>();
   /** Sessions whose title is being made: a turn that ends meanwhile doesn't ask again. */
   readonly #inFlight = new Set<string>();
+  /** Sessions whose failed try has been said: once each, so a home with titles turned off doesn't log every turn. */
+  readonly #said = new Set<string>();
 
   constructor(o: { titler: Titler; lightModelFor: (model: string | undefined) => string; store?: TitleStore; warn?: (line: string) => void }) {
     this.#titler = o.titler;
@@ -62,7 +64,9 @@ export class EngineSessionTitles implements SessionTitles {
         model = this.#lightModelFor(s.model);
         made = titleLine(await this.#titler(first, model));
       } catch (err) {
-        // Never the turn's failure: the session stays untitled and its next turn's end tries again.
+        // Never the turn's failure: the session stays untitled and its next turn's end tries again (said once a session).
+        if (this.#said.has(s.session)) return;
+        this.#said.add(s.session);
         this.#warn(`session ${s.session}: no title yet (${err instanceof Error ? err.message.slice(0, 200) : "the titler failed"}); tried again after its next turn`);
         return;
       }
