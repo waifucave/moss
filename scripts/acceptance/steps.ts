@@ -144,7 +144,7 @@ export const FULL_STEPS = [
   SURFACE_COPY_HOST_STEP,
   // Lane SG's rows: the setup guide in both apps on a fresh home (the `setup` unit, setup-step.ts).
   ...SETUP_STEPS,
-  // The session canvas's rows (spec revision 20, §9.5; the `canvas` unit, canvas-step.ts).
+  // The session canvas's rows (spec revision 20, §9.5; the `canvas` unit, canvas-step.ts), before the two that stay last.
   ...CANVAS_STEPS,
   // Lane CA's rows: the start page, a start through the door, the corner control, "Open in MOSS" (the `canvas-app` unit, canvas-app-step.ts).
   ...CANVAS_APP_STEPS,

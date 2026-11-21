@@ -20,11 +20,14 @@
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, sleep, until, type ExampleCtx } from "./example-steps";
+import { sessionMotion } from "../../packages/protocol/src/session-graph";
+import { activeCatalog } from "../../packages/core/src/runtime-sdk/model-plugins/catalog-source";
+import { familyOfModel, lightModelOn } from "../../packages/core/src/runtime-sdk/model-plugins/light-model";
+import { fixtureWith } from "./acp-backend-step";
+import { CHILD_REPORT } from "./fake-anthropic";
 
 export const CANVAS_CROSS_SESSION_STEP = "a code session's SendMessage to another code session lands in its conversation as a session_message from the sender (heard as a session_link where the engine emits it) and its ListSessions names that session and no bot's; its SendMessage to a bot's conversation is refused and delivers nothing";
 
-/** The rows of the canvas unit. */
-export const CANVAS_STEPS: readonly string[] = [CANVAS_CROSS_SESSION_STEP];
 
 const CROSS_ID = "acceptance-cross";
 const CROSS_NAME = "Acceptance Cross";
@@ -160,4 +163,231 @@ async function run(ctx: ExampleCtx): Promise<string> {
   void botBefore;
   done.push(`2 C (${c}) sent to the default bot's conversation (${bot!.mainSession}): refused ("${String(refused.text).slice(0, 70)}…"), nothing in the conversation`);
   return done.join("; ");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Lane CG's rows (the engine's session graph), each read as the app hears it: the core events `session_changed` and
+// `session_link` on the app's own connection (the `sessions` area), never the engine's insides.
+//   1. A child: Alpha's `Agent` starts a session on MOSS's coding agent; its view names her conversation as its parent and
+//      her as its starter, her view waits on it, and the links of the spawn and of its report are heard, with no words.
+//   2. A subagent row: an agent backend declaring Claude Code's own `subagents` quirk (the bundled plugin's, copied into a
+//      fixture whose program is the fake ACP agent) plays a `Task` call as Claude Code's ACP adapter sends it; the session's
+//      view lists the row running under it, then ended.
+//   3. Waiting: a coding session on MOSS's coding agent runs a command in the background; while its turn runs its view is
+//      `running` with the task counted (running wins), after the turn `waiting`, and once the command ends neither.
+//   4. A title: a coding session on the default model is titled after its first turn; the fake provider's request for the
+//      title names the default's family's light model, its turn's the default.
+
+export const CANVAS_CHILD_STEP = "the canvas · a child session joins its parent: Alpha's Agent starts a session whose view names her conversation as its parent and her as its starter, her view waits on it, and the app hears the spawn's and the report's session_link (no words)";
+export const CANVAS_SUBAGENT_STEP = "the canvas · a subagent row: an agent declaring Claude Code's subagents quirk plays a Task call as Claude Code's adapter sends it, and the session's view lists the row under it, running, then ended";
+export const CANVAS_WAITING_STEP = "the canvas · waiting: a coding session's command in the background is counted on its view; while its turn runs the session reads running (running wins), after it waiting, and once the command ends neither";
+export const CANVAS_TITLE_STEP = "the canvas · a code session is titled after its first turn: the title's request to the fake provider names the default's family's light model, the turn's the default";
+
+/** The rows of the canvas unit: lane CM's, then lane CG's. */
+export const CANVAS_STEPS: readonly string[] = [CANVAS_CROSS_SESSION_STEP, CANVAS_CHILD_STEP, CANVAS_SUBAGENT_STEP, CANVAS_WAITING_STEP, CANVAS_TITLE_STEP];
+
+
+type CgEv = Record<string, unknown> & { type?: string };
+interface View {
+  id: string; kind: string; status: string; bot?: string; parent?: string; title?: string; model?: string; updatedAt: number;
+  startedBy?: { kind: string; bot?: string; session?: string };
+  waiting?: { tasks: number; children: number };
+  subagents?: { id: string; name: string; model?: string; state: string; startedAt: number; endedAt?: number }[];
+}
+interface Link { type: "session_link"; ts: number; from: { end: string; session?: string; kind?: string }; to: { session: string; kind: string }; link: string }
+
+/** The core events the app's connection hears from now on: every session's views and every link. */
+function heard(ctx: ExampleCtx): { views: (id: string) => View[]; links: () => Link[]; stop(): void } {
+  const views: View[] = [];
+  const links: Link[] = [];
+  let on = true;
+  ctx.rpc.onNotification((method, params) => {
+    if (!on || method !== "core.event") return;
+    const e = params as { type?: string; session?: View };
+    if (e.type === "session_changed" && e.session !== undefined) views.push(e.session);
+    else if (e.type === "session_link") links.push(e as unknown as Link);
+  });
+  return { views: (id) => views.filter((v) => v.id === id), links: () => [...links], stop: () => { on = false; } };
+}
+
+const computerOf = async (ctx: ExampleCtx): Promise<string> => {
+  const c = (await ctx.rpc.request<{ computers: { name: string }[] }>("computer.list", {})).computers[0]?.name;
+  return c ?? fail("computer.list lists no computer");
+};
+
+const viewOf = async (ctx: ExampleCtx, id: string): Promise<View | undefined> =>
+  (await ctx.rpc.request<{ session: View }>("session.get", { id }).catch(() => undefined))?.session;
+
+const shortView = (v: View | undefined) => (v === undefined ? "none" : `${v.status}${v.waiting ? ` waiting ${v.waiting.tasks}+${v.waiting.children}` : ""}${v.subagents ? ` rows ${v.subagents.map((s) => s.state).join("/")}` : ""}`);
+
+/** Row 1: a child session joined to its parent. `bot` is Alpha's conversation. */
+export async function canvasChildStep(ctx: ExampleCtx, bot: string): Promise<string> {
+  const ears = heard(ctx);
+  try {
+    const computer = await computerOf(ctx);
+    mkdirSync(join(ctx.userHome, "canvas-child"), { recursive: true });
+    writeFileSync(join(ctx.userHome, "canvas-child", "notes.md"), "The canvas row's notes.\n");
+    const root = `home/${computer}/canvas-child`;
+    const before = new Set((await ctx.rpc.request<{ sessions: { id: string }[] }>("session.list", { kinds: ["agent"] })).sessions.map((s) => s.id));
+    const t = await ctx.turn(bot, `ACCEPTANCE-AGENT ${root}`, 150_000);
+    if (t.cards.length > 0) fail(`Alpha's Agent raised ${t.cards.join("; ")}`);
+    const child = await until("the child's session_changed with its parent", 60_000, async () => {
+      const r = await ctx.rpc.request<{ sessions: View[] }>("session.list", { kinds: ["agent"] });
+      const mine = r.sessions.find((s) => !before.has(s.id) && s.parent === bot);
+      return mine === undefined ? undefined : ears.views(mine.id).at(-1) === undefined ? undefined : mine;
+    }, async () => `heard views of: ${[...new Set(ears.links().map((l) => l.to.session))].join(", ") || "none"}`);
+    const view = ears.views(child.id).at(-1)!;
+    if (view.parent !== bot) fail(`the child's view names parent ${view.parent ?? "none"}, not Alpha's conversation ${bot}`);
+    if (view.startedBy?.kind !== "bot" || view.startedBy.bot !== "alpha" || view.startedBy.session !== bot) fail(`the child's view says it was started by ${JSON.stringify(view.startedBy)}, not Alpha from ${bot} [packages/core/src/sessions/session-graph.ts derivedStarter]`);
+    const spawn = await until("the spawn's session_link", 30_000, async () => ears.links().find((l) => l.to.session === child.id && l.from.session === bot && l.link === "spawn"),
+      async () => `links heard: ${ears.links().map((l) => `${l.from.session ?? l.from.end}>${l.to.session}:${l.link}`).join(", ") || "none"}`);
+    const waited = await until("Alpha's view waiting on her child", 30_000, async () => {
+      const heardWait = ears.views(bot).find((v) => (v.waiting?.children ?? 0) >= 1);
+      const now = await viewOf(ctx, bot);
+      return heardWait ?? ((now?.waiting?.children ?? 0) >= 1 ? now : undefined);
+    }, async () => `her views: ${ears.views(bot).map(shortView).join(", ") || "none heard"}`);
+    const report = await until("the child's report, as a session_link to Alpha", 120_000, async () => ears.links().find((l) => l.from.session === child.id && l.to.session === bot && l.link === "report"),
+      async () => `links heard: ${ears.links().map((l) => `${l.from.session ?? l.from.end}>${l.to.session}:${l.link}`).join(", ") || "none"}; her conversation has the report: ${JSON.stringify(await ctx.history(bot).catch(() => [])).includes(CHILD_REPORT)}`);
+    for (const l of [spawn, report]) if (Object.keys(l).sort().join(",") !== "from,link,to,ts,type") fail(`a session_link carries more than who, whom, what and when: ${JSON.stringify(l).slice(0, 300)}`);
+    return `the child ${child.id} (parent ${view.parent}, started by ${view.startedBy!.kind} ${view.startedBy!.bot} from ${view.startedBy!.session}); Alpha waits on ${waited.waiting!.children} child(ren); heard ${spawn.link} ${bot}>${child.id} and ${report.link} ${child.id}>${bot}, no words`;
+  } finally {
+    ears.stop();
+  }
+}
+
+/** Claude Code's `Task` call as its ACP adapter sends it (read from `@zed-industries/claude-agent-acp` 0.23.1's code): the
+ *  call while its input streams, then its whole input, one of the subagent's own calls, and its end. */
+function claudeTaskFrames(id: string): Record<string, unknown>[] {
+  const meta = { claudeCode: { toolName: "Task" } };
+  return [
+    { sessionUpdate: "tool_call", toolCallId: id, title: "Task", kind: "think", status: "pending", rawInput: {}, _meta: meta },
+    { sessionUpdate: "tool_call_update", toolCallId: id, title: "Explore the auth module", kind: "think", rawInput: { description: "Explore the auth module", prompt: "Find where sessions are made.", subagent_type: "Explore", model: "haiku" }, _meta: meta },
+    { sessionUpdate: "tool_call", toolCallId: `${id}_inner`, title: "Read auth.ts", kind: "read", status: "pending", rawInput: { file_path: "auth.ts" }, _meta: { claudeCode: { toolName: "Read", parentToolUseId: id } } },
+    { sessionUpdate: "tool_call_update", toolCallId: `${id}_inner`, status: "completed", _meta: { claudeCode: { toolName: "Read", parentToolUseId: id } } },
+    { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed", rawOutput: [{ type: "text", text: "Sessions are made in host.ts." }], _meta: meta },
+  ];
+}
+
+const SUBAGENTS_ID = "acceptance-subagents";
+const ACP_FIXTURE = resolve(import.meta.dir, "fixtures", "acceptance-acp");
+const CLAUDE_QUIRKS = resolve(import.meta.dir, "..", "..", "plugins", "moss", "plugins", "agent-claude-code", "quirks.json");
+
+/** Row 2: a subagent row under its session, running then ended. */
+export async function canvasSubagentStep(ctx: ExampleCtx): Promise<string> {
+  const ears = heard(ctx);
+  try {
+    return await subagentRow(ctx, ears);
+  } finally {
+    ears.stop();
+    await leave(ctx, SUBAGENTS_ID);
+  }
+}
+
+async function subagentRow(ctx: ExampleCtx, ears: ReturnType<typeof heard>): Promise<string> {
+  const { rpc, root } = ctx;
+  const work = join(root, "canvas-subagents");
+  const folder = join(work, "plugin-src", SUBAGENTS_ID);
+  const config = join(work, "agent", "agent.json");
+  mkdirSync(dirname(config), { recursive: true });
+  cpSync(ACP_FIXTURE, folder, { recursive: true });
+  // The ACP fixture under its own id, its quirks with the bundled Claude Code plugin's `subagents` (what ships).
+  const claude = (JSON.parse(readFileSync(CLAUDE_QUIRKS, "utf8")) as { quirks: { subagents?: unknown } }).quirks.subagents;
+  if (claude === undefined || claude === null) fail(`the bundled Claude Code plugin declares no subagents quirk [${CLAUDE_QUIRKS}]`);
+  const quirksFile = JSON.parse(readFileSync(join(folder, "quirks.json"), "utf8")) as { quirks: Record<string, unknown> };
+  quirksFile.quirks.subagents = claude;
+  const manifest = readFileSync(join(folder, "moss.json"), "utf8").replaceAll("acceptance-acp", SUBAGENTS_ID).replaceAll("Acceptance ACP", "Acceptance Subagents");
+  const written = fixtureWith({ "moss.json": manifest, "quirks.json": JSON.stringify(quirksFile, null, 2) }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config });
+  for (const [name, body] of Object.entries(written)) writeFileSync(join(folder, name), body);
+  writeFileSync(config, JSON.stringify({
+    quirks: (JSON.parse(written["quirks.json"]!) as { quirks: unknown }).quirks, version: "fake-agent 1.0.0",
+    report: join(work, "agent", "report.ndjson"), selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile },
+    script: [[{ raw: claudeTaskFrames("toolu_canvas_1") }, { say: "Explored." }]],
+  }));
+  const installed = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+  if (installed.id !== SUBAGENTS_ID) fail(`the fixture installed as ${installed.id}`);
+  await ctx.pressCard(`${SUBAGENTS_ID}'s OK card`, (c) => c.kind === "plugin-ok" && c.pluginId === SUBAGENTS_ID);
+  await until("its backend in agent.backends", 60_000, async () => (await rpc.request<{ backends: { id: string }[] }>("agent.backends", {})).backends.find((b) => b.id === SUBAGENTS_ID));
+  const computer = await computerOf(ctx);
+  mkdirSync(join(ctx.userHome, "canvas-subagents"), { recursive: true });
+  const session = (await rpc.request<{ session: string }>("agent.start", { backend: SUBAGENTS_ID, computer, root: `home/${computer}/canvas-subagents`, prompt: "Explore the auth module." }, 60_000)).session;
+  // An agent with no sandbox of its own starts only after the person's OK (§9.3): its session's cards are approved, as
+  // the ACP row does.
+  const answered = new Set<string>();
+  const ended = await until("the subagent row ended on the session's view", 90_000, async () => {
+    for (const c of (await rpc.request<{ cards: { id: string; session?: string }[] }>("card.list")).cards) {
+      if (c.session !== session || answered.has(c.id)) continue;
+      answered.add(c.id);
+      await ctx.approveCard(c.id);
+    }
+    const v = ears.views(session).at(-1);
+    return v?.subagents?.find((s) => s.id === "toolu_canvas_1" && s.state !== "running") === undefined ? undefined : v;
+  }, async () => `its views: ${ears.views(session).map(shortView).join(", ") || "none heard"}; now ${shortView(await viewOf(ctx, session))}`);
+  const running = ears.views(session).find((v) => v.subagents?.some((s) => s.id === "toolu_canvas_1" && s.state === "running"));
+  if (running === undefined) fail(`the row was never heard running: ${ears.views(session).map(shortView).join(", ")}`);
+  const row = ended.subagents!.find((s) => s.id === "toolu_canvas_1")!;
+  if (row.state !== "done" || row.endedAt === undefined || row.endedAt < row.startedAt) fail(`the row ended ${JSON.stringify(row)}`);
+  if (row.name !== "Explore the auth module" || row.model !== "haiku") fail(`the row reads ${JSON.stringify(row)}: not the Task call's description and model`);
+  if (ended.subagents!.some((s) => s.id === "toolu_canvas_1_inner")) fail("the subagent's own call became a row of its own");
+  return `session ${session}: the row "${row.name}" (${row.model}) heard running, then ${row.state} after ${row.endedAt! - row.startedAt} ms; the subagent's own Read is no row`;
+}
+
+/** Row 3: waiting on a background command; running wins. */
+export async function canvasWaitingStep(ctx: ExampleCtx): Promise<string> {
+  const ears = heard(ctx);
+  try {
+    const computer = await computerOf(ctx);
+    mkdirSync(join(ctx.userHome, "canvas-waiting"), { recursive: true });
+    const session = (await ctx.rpc.request<{ session: string }>("agent.start", { backend: "moss-code", computer, root: `home/${computer}/canvas-waiting` }, 30_000)).session;
+    const t = await ctx.turn(session, 'ACCEPTANCE-CALL Bash {"command":"sleep 6","run_in_background":true,"description":"the canvas row\'s wait"}', 150_000);
+    // An agent's call is shown by its title (the command, for a Bash).
+    const called = t.events.some((e: CgEv) => e.type === "tool_call" && JSON.stringify(e).includes("sleep 6"));
+    if (!called) fail(`the turn made no background command (${t.events.filter((e: CgEv) => e.type === "tool_call").map((e) => JSON.stringify(e).slice(0, 200)).join(" | ") || "no tool call"})`);
+    const whileRunning = ears.views(session).find((v) => (v.waiting?.tasks ?? 0) >= 1 && sessionMotion(v) === "running");
+    if (whileRunning === undefined) fail(`no view while the turn ran counted the task and read running: ${ears.views(session).map(shortView).join(", ")} [packages/core/src/agents/moss-code/backend.ts reportingTasks]`);
+    const after = await until("the session waiting after its turn", 30_000, async () => {
+      const v = ears.views(session).at(-1);
+      return v !== undefined && sessionMotion(v) === "waiting" ? v : undefined;
+    }, async () => `its views: ${ears.views(session).map(shortView).join(", ")}`);
+    const done = await until("the command's end ending the wait", 90_000, async () => {
+      const v = await viewOf(ctx, session);
+      return v !== undefined && v.waiting === undefined && ears.views(session).at(-1)?.waiting === undefined ? v : undefined;
+    }, async () => `its views: ${ears.views(session).map(shortView).join(", ")}`);
+    return `session ${session}: while its turn ran it read ${sessionMotion(whileRunning!)} with ${whileRunning!.waiting!.tasks} task; after it ${sessionMotion(after)} (${after.waiting!.tasks} task); once the command ended ${sessionMotion(done)}, nothing waited`;
+  } finally {
+    ears.stop();
+  }
+}
+
+/** Row 4: the title after the first turn, on the light model. */
+export async function canvasTitleStep(ctx: ExampleCtx): Promise<string> {
+  const ears = heard(ctx);
+  try {
+    const keyed = (await ctx.rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha")?.model;
+    if (keyed === undefined) fail("Alpha has no model: the run's default is unknown");
+    const provider = keyed!.split("/")[0]!;
+    const family = familyOfModel(activeCatalog(), provider, keyed!);
+    const light = family === undefined ? undefined : lightModelOn(activeCatalog(), provider, family);
+    if (light === undefined) fail(`the default ${keyed} has no light model on ${provider}: the row can't tell the two requests apart`);
+    const bare = (tag: string) => tag.slice(tag.indexOf("/") + 1);
+    const computer = await computerOf(ctx);
+    mkdirSync(join(ctx.userHome, "canvas-title"), { recursive: true });
+    const session = (await ctx.rpc.request<{ session: string }>("agent.start", { backend: "moss-code", computer, root: `home/${computer}/canvas-title`, model: keyed }, 30_000)).session;
+    const seen = ctx.requests().length;
+    const message = "ACCEPTANCE-TAG-canvas-title the login page loops";
+    await ctx.turn(session, message, 150_000);
+    const titled = await until("the session's title, heard as session_changed", 90_000, async () => ears.views(session).find((v) => v.title !== undefined && v.title !== ""),
+      async () => `its views: ${ears.views(session).map((v) => `${v.status}:${v.title ?? "-"}`).join(", ")}; requests since: ${ctx.requests().slice(seen).map((r) => `${String((r as { model?: string }).model)}:${r.lastUserText.slice(0, 40)}`).join(" | ")}`);
+    const mine = ctx.requests().slice(seen) as { model?: string; lastUserText: string }[];
+    const turnReq = mine.find((r) => r.lastUserText.includes(message) && !r.lastUserText.startsWith("USER MESSAGE:"));
+    const titleReq = mine.find((r) => r.lastUserText.startsWith("USER MESSAGE:") && r.lastUserText.includes(message));
+    if (turnReq === undefined) fail("the fake provider never got the turn's request");
+    if (titleReq === undefined) fail(`the fake provider never got a title request (${mine.map((r) => `${r.model}:${r.lastUserText.slice(0, 30)}`).join(" | ")}) [packages/core/src/sessions/durable-host.ts #titleAfterTurn]`);
+    if (turnReq!.model !== bare(keyed!)) fail(`the turn's request names ${turnReq!.model}, not the default ${bare(keyed!)}`);
+    if (titleReq!.model !== bare(light!.tag)) fail(`the title's request names ${titleReq!.model}, not the light model ${bare(light!.tag)} [packages/core/src/agent/titles.ts mossSessionTitles]`);
+    const later = await viewOf(ctx, session);
+    if (later?.title !== titled.title) fail(`session.get reads the title "${later?.title}", the event "${titled.title}"`);
+    return `session ${session} titled "${titled.title}" after its first turn; the turn's request on ${turnReq!.model}, the title's on ${titleReq!.model}`;
+  } finally {
+    ears.stop();
+  }
 }
