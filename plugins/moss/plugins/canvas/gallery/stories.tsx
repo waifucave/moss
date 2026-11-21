@@ -174,7 +174,7 @@ function manyScene(): SessionSceneStep[] {
 export const STORIES: Story[] = [
   { id: "scene", title: "The sample scene, live", notes: "SAMPLE_SESSION_SCENE played on real timers. Press Replay to watch it again.", render: () => <Live /> },
   { id: "trips", title: "A message crossing", notes: "The three arrival cases and the two sending cases side by side. Replay, or slow it down: it should read as one light throughout.", render: () => <Trips /> },
-  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 0)} /> })),
+  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 60)} /> })),
   { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
   { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
   { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },

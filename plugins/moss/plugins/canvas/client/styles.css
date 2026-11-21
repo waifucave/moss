@@ -586,15 +586,12 @@
   animation: cv-fade calc(var(--fade) * var(--cv-slow, 1)) ease-in-out calc(var(--fade-at) * var(--cv-slow, 1)) both;
 }
 
-/* A point the light passes through fills with it, no brighter than the light beside it. */
+/* A point the light passes through fills with it (its head's colour: still the sender's at the receiver's point, where
+   it starts turning), no brighter than the light beside it. */
 .cv-dotflash {
   fill: var(--c2);
   opacity: 0;
   animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
-}
-
-.cv-dotflash[data-dot="receiver"] {
-  fill: var(--r1);
 }
 
 /* The trip's parts apart: only reduced motion shows them, each in turn. */
