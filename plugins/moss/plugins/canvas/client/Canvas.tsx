@@ -324,7 +324,7 @@ export function Canvas(p: CanvasProps) {
           <svg className="cv-lines" width={worldW} height={worldH} aria-hidden="true">
             {edges.map((e) => {
               const [pa, pb] = ports.get(e.id)!;
-              return <path key={e.id} className="cv-line" data-kind={e.kind} d={curve(portAt(rects.get(e.a)!, pa), pa, portAt(rects.get(e.b)!, pb), pb)} />;
+              return <path key={e.id} className="cv-line" data-kind={e.kind} data-edge={e.id} data-links={p.links.heard[e.id] ?? 0} d={curve(portAt(rects.get(e.a)!, pa), pa, portAt(rects.get(e.b)!, pb), pb)} />;
             })}
             {p.links.waves.map((w) => <WavePath key={w.id} wave={w} edges={edges} ports={ports} rects={rects} />)}
           </svg>
@@ -338,6 +338,7 @@ export function Canvas(p: CanvasProps) {
                 open={open === b.id}
                 joined={joined.get(b.id) ?? NONE}
                 dragging={drag?.id === b.id}
+                {...(p.links.heard[`to:${b.id}`] !== undefined ? { heard: p.links.heard[`to:${b.id}`]! } : {})}
                 {...(b.session !== undefined && lines[b.session] !== undefined ? { line: lines[b.session] } : {})}
                 onToggle={toggle}
                 onClose={() => setOpen(undefined)}

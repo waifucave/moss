@@ -99,10 +99,18 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
       lastLine={(session) => Promise.resolve(api.sessions?.history?.(session, { limit: 40 })).then((h) => lastLineOf(h?.events ?? []))}
       places={places}
       onPlace={onPlace}
-      beginNew={() => ({
-        recent: call("agent.recent", {}).catch(() => undefined),
-        folders: call("ui.pick", { kind: "folder", use: "agent.start", recent: true, dialog: false }).then((r) => (r as { recent?: FolderToken[] } | undefined)?.recent, () => undefined),
-      })}
+      beginNew={() => {
+        // Inside the + press. The recent folders are asked only once `agent.recent` answers: both are lane CA's, served
+        // together, and a `ui.pick` that doesn't know `dialog: false` would open the folder dialog on a press of +.
+        const recent = call("agent.recent", {});
+        return {
+          recent: recent.catch(() => undefined),
+          folders: recent.then(
+            () => call("ui.pick", { kind: "folder", use: "agent.start", recent: true, dialog: false }).then((r) => (r as { recent?: FolderToken[] } | undefined)?.recent, () => undefined),
+            () => undefined,
+          ),
+        };
+      }}
       starter={{
         options: (agent) => call("agent.options", { backend: agent }).catch(() => undefined) as never,
         pickFolder: () => call("ui.pick", { kind: "folder", use: "agent.start" }).then(pickedOf),

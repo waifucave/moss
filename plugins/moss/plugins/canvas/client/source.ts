@@ -126,13 +126,15 @@ export function lastLineOf(events: readonly Record<string, unknown>[]): string |
 
 /** Where the person dragged blocks, kept in the plugin's own `places` setting (a device setting: a string of JSON, as
  *  settings hold no objects). Read once; written once per drag's end, only for blocks still known, newest kept when it
- *  would pass the setting's size (the page's writes are capped at 8,300 characters and 30 a minute per plugin tree). */
+ *  would pass the setting's size (a string setting holds 8,192 characters; a page's write is held to 8,300 characters of
+ *  its JSON, and 30 writes a minute per plugin tree). */
 export const PLACES_MAX_CHARS = 8_000;
 
 export function encodePlaces(places: Readonly<Record<string, { x: number; y: number }>>, known: ReadonlySet<string>): string {
   const entries = Object.entries(places).filter(([id]) => known.has(id)).map(([id, p]) => [id, { x: Math.round(p.x), y: Math.round(p.y) }] as const);
-  // Newest last (insertion order): drop from the front until it fits.
-  while (entries.length > 0 && JSON.stringify(Object.fromEntries(entries)).length > PLACES_MAX_CHARS) entries.shift();
+  // Newest last (insertion order): drop from the front until it fits. Measured as the setting's value is (the string's
+  // own JSON, every quote escaped), which the page's write is held to.
+  while (entries.length > 0 && JSON.stringify(JSON.stringify(Object.fromEntries(entries))).length > PLACES_MAX_CHARS) entries.shift();
   return entries.length === 0 ? "" : JSON.stringify(Object.fromEntries(entries));
 }
 
