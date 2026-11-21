@@ -153,6 +153,8 @@ export interface SettingRow {
   title: unknown;
   description?: unknown;
   scope?: string;
+  /** The plugin's own state: not listed. */
+  hidden?: boolean;
   options?: (string | { value: string; title: unknown })[];
   min?: number;
   max?: number;
@@ -230,7 +232,7 @@ export function toDetail(
     ...(more.parts !== undefined && more.parts.length > 0 ? { parts: more.parts } : {}),
     tools: [...servers.flatMap(([, s]) => Object.keys(s.tools ?? {})), ...(more.childTools ?? [])],
     servers: servers.filter(([, s]) => Object.keys(s.tools ?? {}).length === 0).map(([name]) => name),
-    settings: (more.settings ?? []).map((s) => toDetailSetting(s, lang)),
+    settings: (more.settings ?? []).filter((s) => s.hidden !== true).map((s) => toDetailSetting(s, lang)),
     signIns: (more.auth ?? []).filter((a) => a.method !== "core").map((a) => ({
       index: a.index,
       method: a.method as "api-key" | "oauth-pkce" | "custom",

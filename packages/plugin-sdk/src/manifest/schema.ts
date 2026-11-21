@@ -103,6 +103,8 @@ export const SettingSchema = z.strictObject({
   scope: z.enum(["account", "device", "bot"]).optional(),
   /** The plugin waits until the value is set. */
   required: z.boolean().optional(),
+  /** The plugin's own state: readable and writable through `settings.get/set` as any setting, never listed in Settings. Not for a `secret`. */
+  hidden: z.boolean().optional(),
 });
 
 // -------------------------------------------------------------------------------------------------

@@ -210,6 +210,8 @@ export const PluginSettingView = z.object({
   description: Text.optional(),
   scope: z.enum(["account", "device", "bot"]),
   required: z.boolean(),
+  /** The plugin's own state: still readable and writable by it, never listed in Settings (the manifest's `hidden`). */
+  hidden: z.literal(true).optional(),
   /** An `enum` field's choices, as the manifest lists them: a value, or a value with its title (lane F's ask). */
   options: z.array(z.union([utf16(256, 1), z.object({ value: utf16(256, 1), title: Text })])).max(256).optional(),
   /** A `number` field's bounds, as the manifest sets them. */

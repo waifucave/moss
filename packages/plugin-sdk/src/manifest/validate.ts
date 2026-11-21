@@ -258,6 +258,7 @@ function checkSetting(f: Findings, key: string, s: Record<string, unknown>): voi
   const type = s.type as string;
   const options = Array.isArray(s.options) ? s.options.map((o) => (typeof o === "string" ? o : isObject(o) ? String(o.value) : "")) : undefined;
   if (type === "enum" && (!options || options.length === 0)) f.error("plugin", "setting_options", at, "an `enum` setting needs `options`");
+  if (type === "secret" && s.hidden === true) f.error("plugin", "setting_hidden_secret", [...at, "hidden"], "a secret can't be hidden: the person enters it in the key dialog, so Settings must list it");
   if (type !== "enum" && s.options !== undefined) f.warn("setting_options", at, "`options` applies only to an `enum` setting");
   if (type !== "number" && (s.min !== undefined || s.max !== undefined)) f.warn("setting_range", at, "`min` and `max` apply only to a `number` setting");
   if (s.default === undefined) return;

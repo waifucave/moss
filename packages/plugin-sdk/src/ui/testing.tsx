@@ -6,6 +6,9 @@
 // no plugin. Rendering is the test's own (`@testing-library/react` or a gallery's root).
 import { useEffect, useMemo, type ReactNode } from "react";
 import { foldSessionEvents, type SessionSceneStep } from "@waifucave/moss-protocol";
+// The protocol's sample session scene and its fold, for a plugin's tests and gallery (no copy of them in a plugin).
+export { SAMPLE_SESSION_SCENE, foldSessionEvents, sceneAt } from "@waifucave/moss-protocol";
+export type { SessionSceneStep, SessionGraphState } from "@waifucave/moss-protocol";
 import type { BotView, CardMeta, ComputerView, DeviceView, PluginDetail, PluginSummary, SessionView } from "../views";
 import type { TokenValue } from "../catalogs/tokens";
 import { spotInfo, STOCK_KEYS } from "../catalogs/spots";

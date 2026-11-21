@@ -31,6 +31,7 @@ describe("a plugin's settings by scope", () => {
         region: { type: "string", title: "Region", default: "eu" },
         tint: { type: "color", title: "Tint", scope: "device" },
         nick: { type: "string", title: "Nickname", scope: "bot", required: true },
+        places: { type: "string", title: "Places", hidden: true },
       },
     }));
     writeFileSync(join(folder, "package.json"), JSON.stringify({ type: "module" }));
@@ -39,6 +40,7 @@ describe("a plugin's settings by scope", () => {
       "  region: await ctx.api.settings.get(\"region\"),",
       "  tint: await ctx.api.settings.get(\"tint\") ?? null,",
       "  nick: await ctx.api.settings.get(\"nick\", { bot: args.bot }) ?? null,",
+      "  places: await ctx.api.settings.get(\"places\") ?? null,",
       "});",
       "",
     ].join("\n"));
@@ -53,18 +55,24 @@ describe("a plugin's settings by scope", () => {
       for (let i = 0; i < 250 && opened.registry.get("moods")?.state !== "running"; i++) await Bun.sleep(20);
       const read = (bot: string) => ph.host.invoke({ pluginId: "moods", handler: "read", args: { bot }, caller: USER });
       // Defaults first: the account default, nothing for the others.
-      expect(await read("alpha")).toEqual({ region: "eu", tint: null, nick: null });
+      expect(await read("alpha")).toEqual({ region: "eu", tint: null, nick: null, places: null });
       expect(await ph.settings.setByUser("moods", "region", "us")).toEqual({ applied: true });
       expect(await ph.settings.setByUser("moods", "tint", "#ff8800")).toEqual({ applied: true });
       expect(await ph.settings.setByUser("moods", "nick", "Al", "alpha")).toEqual({ applied: true });
       // A bot field without its bot is refused: it has one value per bot.
       await expect(ph.settings.setByUser("moods", "nick", "Nobody")).rejects.toThrow("one value per bot");
-      expect(await read("alpha")).toEqual({ region: "us", tint: "#ff8800", nick: "Al" });
-      expect(await read("luna")).toEqual({ region: "us", tint: "#ff8800", nick: null });
+      expect(await read("alpha")).toEqual({ region: "us", tint: "#ff8800", nick: "Al", places: null });
+      expect(await read("luna")).toEqual({ region: "us", tint: "#ff8800", nick: null, places: null });
       // Kept apart on disk: the account's, this device's and each bot's.
       expect(JSON.parse(readFileSync(join(home, "settings", "plugins", "moods.json"), "utf8"))).toEqual({ account: { region: "us" }, device: { tint: "#ff8800" }, bot: { alpha: { nick: "Al" } } });
       // What Settings shows: each field's scope, and `required`.
-      const views = await ph.settings.views("moods", "alpha");
+      const all = await ph.settings.views("moods", "alpha");
+      // A hidden setting is the plugin's own state: it reads and writes it like any setting, and the views flag it for Settings to leave out.
+      expect(all.find((v) => v.key === "places")).toMatchObject({ hidden: true });
+      expect(all.filter((v) => v.key !== "places").some((v) => v.hidden === true)).toBe(false);
+      expect(await ph.settings.setByUser("moods", "places", "{}")).toEqual({ applied: true });
+      expect(await read("alpha")).toMatchObject({ places: "{}" });
+      const views = all.filter((v) => v.hidden !== true);
       expect(views.map((v) => [v.key, v.scope, v.required, (v as { value?: unknown }).value])).toEqual([["region", "account", false, "us"], ["tint", "device", false, "#ff8800"], ["nick", "bot", true, "Al"]]);
     } finally {
       await ph.close();

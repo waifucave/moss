@@ -92,6 +92,9 @@ describe("the envelope", () => {
     expect(has(s({ type: "enum" }), "setting_options", "plugin")).toBe(true);
     expect(has(s({ type: "secret", default: "sk-123" }), "setting_secret_default", "plugin")).toBe(true);
     expect(has(s({ type: "number", min: 1, max: 5, default: 9 }), "setting_default", "plugin")).toBe(true);
+    // A setting kept out of Settings (the plugin's own state): fine for a plain one, refused for a secret.
+    expect(s({ type: "string", hidden: true }).ok).toBe(true);
+    expect(has(s({ type: "secret", hidden: true }), "setting_hidden_secret", "plugin")).toBe(true);
     expect(has(s({ type: "boolean", default: "yes" }), "setting_default", "plugin")).toBe(true);
   });
 });

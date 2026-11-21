@@ -293,6 +293,9 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "hidden": {
+            "type": "boolean"
           }
         },
         "required": [

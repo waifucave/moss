@@ -45,3 +45,13 @@ describe("the canvas spine's SDK shapes", () => {
     expect(AgentBackendSchema.safeParse({ ...entry, logo: { candidates: [] } }).success).toBe(false);
   });
 });
+
+describe("the testing module's sample scene", () => {
+  test("SAMPLE_SESSION_SCENE, foldSessionEvents and sceneAt are the protocol's own, not copies", async () => {
+    const t = await import("../src/ui/testing");
+    const p = await import("@waifucave/moss-protocol");
+    expect(t.SAMPLE_SESSION_SCENE).toBe(p.SAMPLE_SESSION_SCENE);
+    expect(t.foldSessionEvents).toBe(p.foldSessionEvents);
+    expect(t.sceneAt).toBe(p.sceneAt);
+  });
+});

@@ -305,7 +305,7 @@ export class PluginSettings {
       // bounds, for a control; `asks` when the value feeds what the plugin runs or reaches (`settingTemplated`), so the
       // user's change to it may ask on a sealed card first.
       const base = {
-        key, type: f.type, title: f.title ?? key, ...(f.description !== undefined ? { description: f.description } : {}), scope, required: f.required === true,
+        key, type: f.type, title: f.title ?? key, ...(f.description !== undefined ? { description: f.description } : {}), scope, required: f.required === true, ...(f.hidden === true && f.type !== "secret" ? { hidden: true as const } : {}),
         ...(f.type === "enum" && f.options !== undefined ? { options: f.options } : {}),
         ...(f.type === "number" && f.min !== undefined ? { min: f.min } : {}),
         ...(f.type === "number" && f.max !== undefined ? { max: f.max } : {}),

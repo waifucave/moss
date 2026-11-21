@@ -64,6 +64,8 @@ written with `/`, and must stay inside it. `Text` (a name, a description, a titl
   `secret` (kept in the keychain, never in a file; read only from a process of its own).
 - `title` (required), `description`, `default`, `min`, `max`.
 - `scope`: `account` (default, synced), `device` (this computer only), `bot` (one value per bot).
+- `hidden: true`: the plugin's own state (a place it remembers, a last choice): the plugin reads and writes it with
+  `api.settings.get/set` as any setting, and Settings never lists it. Not for a `secret`.
 - `required: true`: the plugin waits until the user sets it. Avoid it unless the plugin can't work at all without it.
 
 MOSS draws the settings form itself. Code reads a value with `api.settings.get("<key>")` and hears changes with

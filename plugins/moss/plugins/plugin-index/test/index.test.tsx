@@ -351,6 +351,12 @@ describe("the Plugins page: what is installed", () => {
     expect(head.querySelector("img")?.getAttribute("src")).toBe("/_t/tarot-panel/assets/tarot%20card.png");
   });
 
+  test("a hidden setting (the plugin's own state) is not listed in the plugin's settings", () => {
+    const d = installedDetail("tarot-panel") as never;
+    const rows = [{ key: "region", type: "string", title: "Region", value: "eu" }, { key: "places", type: "string", title: "Places", hidden: true, value: "{}" }];
+    expect(toDetail(d, { settings: rows }).settings.map((s) => s.key)).toEqual(["region"]);
+  });
+
   test("MOSS's own notices are never muted here: no switch for the app's tree or its parts; a bundled bot's, like any plugin's, has one", () => {
     for (const id of ["moss", "moss/shell"]) {
       const d = { ...installedDetail("tarot-panel"), id, capabilities: ["notify"] } as never;

@@ -43,7 +43,7 @@ export function pluginBotSettings(o: {
       const out: { pluginId: string; name: Text; settings: PluginSettingView[] }[] = [];
       for (const d of declared()) {
         if (!d.settings.some((x) => x.scope === "bot")) continue;
-        const views = (await s.views(d.pluginId, bot)).filter((v) => v.scope === "bot");
+        const views = (await s.views(d.pluginId, bot)).filter((v) => v.scope === "bot" && v.hidden !== true);
         out.push({ pluginId: d.pluginId, name: o.registry.get(d.pluginId)?.manifest?.name ?? d.pluginId, settings: views });
       }
       return out;

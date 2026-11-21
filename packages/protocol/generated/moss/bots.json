@@ -1259,6 +1259,10 @@
                       "required": {
                         "type": "boolean"
                       },
+                      "hidden": {
+                        "type": "boolean",
+                        "const": true
+                      },
                       "options": {
                         "maxItems": 256,
                         "type": "array",
