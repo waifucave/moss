@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "../gallery/scene";
+import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { applyLink, EMPTY_LINKS, livePeers, peerId, waveDone, WAVE_STALE_MS, WAVES_MAX, type LinkEvent, type LinkState } from "../client/links";
 import { botBlockId, buildModel } from "../client/model";
 import { BACKENDS } from "../gallery/fixtures";

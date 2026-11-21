@@ -27,7 +27,7 @@
       "title": "Where you moved blocks",
       "description": "Kept by the canvas when you drag a block, so it stays there. Clear it to put every block back in its own place.",
       "default": "",
-      "scope": "device"
+      "scope": "device", "hidden": true
     }
   },
   "contributes": {

@@ -2,7 +2,7 @@
 // pressing Create at once works: the agent, then its model and effort, then the folder. Creating starts the session
 // (`agent.start` from the part, the person's press) and opens its tab.
 import { useEffect, useRef, useState } from "react";
-import { Mark } from "./Mark";
+import { AgentMark } from "@waifucave/moss-plugin-sdk/ui";
 import { agentChoices, effortsFor, modelName, pickAgent, pickFolder, pickModel, startParams, type AgentChoice, type AgentOptions, type BackendRow, type FolderToken, type ModelPick, type RecentStart } from "./preselect";
 import { byPerson } from "./Block";
 import { S } from "./strings";
@@ -189,7 +189,7 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
 function AgentChip({ choice, checked, onPick }: { choice: AgentChoice; checked: boolean; onPick(): void }) {
   return (
     <button type="button" role="radio" aria-checked={checked} className="cv-chip" disabled={!choice.installed} title={choice.installed ? choice.name : `${choice.name} · ${S.notInstalled}`} onClick={onPick} style={{ ...(choice.color !== undefined ? { "--brand": choice.color } : {}), ...(choice.color2 !== undefined ? { "--brand2": choice.color2 } : {}) } as React.CSSProperties}>
-      <Mark look={choice} size={22} />
+      <AgentMark backend={choice} size={22} />
       <span className="cv-chip__name">{choice.name}</span>
       {!choice.installed && <span className="cv-chip__note">{S.notInstalled}</span>}
     </button>

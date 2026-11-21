@@ -9,7 +9,7 @@
 // * A line from each block's parent to it (`child`, `bot`). Lines between two main sessions (`peer`) come from links
 //   (links.ts), not from here.
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { faceColour } from "./faceColour";
+import { makeBot } from "@waifucave/moss-plugin-sdk/ui/faces";
 import { brandOf, metaLine, modelLabel, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
 import { S } from "./strings";
 
@@ -37,6 +37,8 @@ export interface Block {
   brand?: string;
   brand2?: string;
   /** A bot's state as the activity feed gives it (its face's expression and its words). */
+  /** A bot's face pins from its record, for its face (the SDK's `BotFace`). */
+  face?: BotFacePins;
   botState?: BotState;
   backend?: string;
   /** When it started, for the layout's order. */
@@ -124,8 +126,8 @@ export function buildModel(
     const title = botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1);
     add({
       id: botBlockId(bot), type: "bot", bot, title, meta: S.bot, status,
-      // Its face's own colour, as MOSS's faces kit resolves it from its name and pins (faceColour.ts).
-      motion, brand: faceColour(botNames.get(bot) ?? title, botFaces.get(bot)), botState, startedAt: b.startedAt, messageable: false,
+      // Its face's own colour, as MOSS's faces kit resolves it from its name and pins; the pins draw its face.
+      motion, brand: makeBot(botNames.get(bot) ?? title, (botFaces.get(bot) ?? {}) as Parameters<typeof makeBot>[1]).color, ...(botFaces.get(bot) !== undefined ? { face: botFaces.get(bot)! } : {}), botState, startedAt: b.startedAt, messageable: false,
     });
   }
 

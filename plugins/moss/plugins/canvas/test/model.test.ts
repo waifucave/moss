@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SAMPLE_SESSION_SCENE, sceneAt } from "../gallery/scene";
+import { SAMPLE_SESSION_SCENE, sceneAt } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { isGlyph, MOSS_CODE_GOLD, MOSS_CORAL, modelLabel, motionOf, statusLine } from "../client/look";
 import { buildModel, botBlockId, subBlockId } from "../client/model";

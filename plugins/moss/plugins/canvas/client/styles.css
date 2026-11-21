@@ -309,95 +309,6 @@
   background: var(--cv-line);
 }
 
-.cv-mark {
-  display: grid;
-  flex: none;
-  box-sizing: border-box;
-  place-items: center;
-  border-radius: 7px;
-  font-weight: var(--moss-font-weight-semibold);
-  line-height: 1;
-}
-
-/* A one-colour glyph: its shape (the icon, as a mask) filled with the agent's colour, or the text colour. */
-.cv-mark[data-kind="glyph"] {
-  background: linear-gradient(135deg, var(--c1), var(--c2));
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: contain;
-  -webkit-mask-position: center;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
-}
-
-.cv-mark[data-kind="icon"] {
-  object-fit: contain;
-}
-
-/* Our letter for a brand with no colour: the page's own ink. */
-.cv-mark[data-mono] {
-  background: var(--moss-color-text);
-  color: var(--moss-color-surface);
-}
-
-.cv-face {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-}
-
-.cv-eye {
-  display: block;
-  border-radius: 2px;
-  transform-origin: center;
-  animation: cv-blink 4.2s ease-in-out infinite;
-}
-
-/* The face's expression for what the bot does (the stand-in's; the SDK's living face replaces it). */
-.cv-face[data-state="thinking"] .cv-eye {
-  animation: cv-blink 4.2s ease-in-out infinite, cv-look-up 2.4s ease-in-out infinite alternate;
-}
-
-.cv-face[data-state="working"] .cv-eye {
-  animation: cv-blink 3s ease-in-out infinite, cv-dart 1.1s ease-in-out infinite alternate;
-}
-
-.cv-face[data-state="asking"] .cv-eye {
-  height: 30% !important;
-}
-
-.cv-face[data-state="asleep"] .cv-eye {
-  height: 2px !important;
-  animation: none;
-}
-
-@keyframes cv-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  96% {
-    transform: scaleY(0.1);
-  }
-}
-
-@keyframes cv-look-up {
-  to {
-    translate: 0 -3px;
-  }
-}
-
-@keyframes cv-dart {
-  from {
-    translate: -2px 0;
-  }
-  to {
-    translate: 2px 0;
-  }
-}
 
 /* Running: light going round the block. A square layer a little larger than an open block's diagonal turns behind it,
    clipped to a ring just outside the card (a transform: the compositor's, no repaint). */
@@ -831,8 +742,7 @@
 .cv[data-hidden] .cv-part,
 .cv[data-hidden] .cv-msg__timer,
 .cv[data-hidden] .cv-react__from,
-.cv[data-hidden] .cv-react__to,
-.cv[data-hidden] .cv-eye {
+.cv[data-hidden] .cv-react__to {
   animation-play-state: paused;
 }
 
@@ -1224,10 +1134,5 @@
 
   .cv-port {
     transition: none;
-  }
-
-  .cv-eye,
-  .cv-face[data-state] .cv-eye {
-    animation: none;
   }
 }

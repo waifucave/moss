@@ -3,7 +3,7 @@
 // moment (`at`: every step up to it at once) and plays the rest on real timers, so a picture taken a little later catches
 // what moves. `initial` opens a block or the + panel for a picture.
 import { useMemo, useState, type ReactNode } from "react";
-import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "./scene";
+import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { CanvasCorner, CanvasStart, type CanvasStartProps } from "../client/entry";
@@ -21,9 +21,11 @@ export interface Story {
  *  fallback letter on each agent's colour. */
 declare const __CANVAS_MARKS__: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: string }> | undefined;
 const MARKS: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: string }> = typeof __CANVAS_MARKS__ === "object" && __CANVAS_MARKS__ !== null ? __CANVAS_MARKS__ : {};
-/** MOSS's own agent's mark is MOSS Code's Shards mark, its on-light or on-dark file by the theme (lane CA serves it). */
-const markFor = (id: string) => (id === "moss-code" ? MARKS[document.documentElement.dataset.theme === "dark" ? "moss-code-dark" : "moss-code-light"] : MARKS[id]);
-const backends = () => BACKENDS.map((b) => (markFor(b.id) !== undefined ? { ...b, icon: { ...markFor(b.id)!, at: 0 } } : b));
+/** MOSS's own agent's mark is MOSS Code's Shards mark, on light and on dark (`icon`, `iconDark`, as `agent.backends` serves it). */
+const backends = () => BACKENDS.map((b) => {
+  if (b.id === "moss-code") return { ...b, ...(MARKS["moss-code-light"] !== undefined ? { icon: { ...MARKS["moss-code-light"], at: 0 } } : {}), ...(MARKS["moss-code-dark"] !== undefined ? { iconDark: { ...MARKS["moss-code-dark"], at: 0 } } : {}) };
+  return MARKS[b.id] !== undefined ? { ...b, icon: { ...MARKS[b.id]!, at: 0 } } : b;
+});
 
 function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle", messageStyle }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string>; messageStyle?: MessageStyle }) {
   const runtime = useMemo(() => {
@@ -86,7 +88,6 @@ const BOTS = [
   { id: "pip", name: "Pip", face: { shape: "drop", color: "sky", eyes: "tall", temper: "restless" } },
   { id: "juno", name: "Juno", face: { shape: "gem", color: "mint", eyes: "dot", temper: "slow" } },
 ];
-(globalThis as { __galleryFaces?: Record<string, object> }).__galleryFaces = Object.fromEntries(BOTS.map((b) => [b.id, b.face]));
 
 /** Three bots, each with a session it started. */
 function botsScene(): SessionSceneStep[] {
@@ -110,7 +111,7 @@ function tripScene(kind: TripKind, delay: number): SessionSceneStep[] {
   const sender = kind === "idle" ? child(0, "prompting")
     : v("t_send", 0, { title: "Fix the login flow", backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "high", status: kind === "send-idle" ? "idle" : "prompting" });
   const receiver = v("t_recv", 0, { title: kind === "idle" ? "Plan the auth work" : "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", ...(kind === "wait" ? { waiting: { tasks: 1, children: 0 } } : {}) });
-  const from = kind === "idle" ? { end: "session" as const, session: "t_child", kind: "agent" } : { end: "session" as const, session: "t_send", kind: "coding" };
+  const from = kind === "idle" ? { end: "session" as const, session: "t_child", kind: "agent" as const } : { end: "session" as const, session: "t_send", kind: "coding" as const };
   const steps: SessionSceneStep[] = [receiver, sender, { at: delay, event: { type: "session_link", ts: T0 + delay, from, to: { session: "t_recv", kind: "coding" }, link: kind === "idle" ? "report" : "message" } }];
   if (kind === "run") steps.push(v("t_recv", delay, { title: "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", status: "prompting" }));
   // The child reports, then stops: it was running as it sent.
