@@ -187,6 +187,10 @@ export const STORIES: Story[] = [
   { id: "plus-folder", title: "+: the folder", render: () => <World scene={SAMPLE_SESSION_SCENE} at={9_500} live={false} initial={{ panel: true, step: "folder" }} /> },
   { id: "many", title: "Thirty sessions", notes: "Bands of sessions, five groups side by side; ended ones folded into the count (press it to show them).", render: () => <World scene={manyScene()} at={0} /> },
   { id: "empty", title: "No sessions", render: () => <World scene={[]} /> },
+  {
+    id: "no-icon", title: "An agent with no icon", notes: "The one page with the fallback: an agent whose record carries no icon gets the SDK's letter mark on its colour, and its name beside it, since a letter alone doesn't name it.",
+    render: () => <World scene={[{ at: 0, event: { type: "session_changed", ts: T0, session: { id: "s_k", kind: "coding", computer: "Studio", status: "prompting", startedAt: T0, updatedAt: T0, startedBy: { kind: "user" }, title: "Tidy the build scripts", backend: "kilo", model: "anthropic/claude-sonnet-5", effort: "medium" } as SessionView } }]} live={false} />,
+  },
   { id: "closeup", title: "A running block, close", notes: "Claude Code's block while it runs, centred.", render: () => <World scene={PALETTE} at={9_500} live={false} params={{ session: "s_a" }} /> },
   { id: "closeup-gemini", title: "A two-colour agent running, close", render: () => <World scene={PALETTE} at={9_500} live={false} params={{ session: "s_g" }} /> },
   { id: "focus", title: "From a tab's corner", notes: "The canvas opened for one session: its block centred.", render: () => <World scene={SAMPLE_SESSION_SCENE} at={9_500} live={false} params={{ session: "s_d" }} /> },
