@@ -24,7 +24,7 @@ const MARKS: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: st
 const markFor = (id: string) => (id === "moss-code" ? MARKS[document.documentElement.dataset.theme === "dark" ? "moss-code-dark" : "moss-code-light"] : MARKS[id]);
 const backends = () => BACKENDS.map((b) => (markFor(b.id) !== undefined ? { ...b, icon: { ...markFor(b.id)!, at: 0 } } : b));
 
-function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle" }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string }) {
+function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle" }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string> }) {
   const runtime = useMemo(() => {
     const handlers: Record<string, (p: any) => unknown> = {
       "agent.backends": () => ({ backends: backends() }),
@@ -48,12 +48,12 @@ function World({ scene, at = 0, live = true, initial, params, onRoute, botState 
     const api = {
       settings: { get: async () => undefined, set: async () => undefined },
       sessions: { history: async (s: string) => ({ events: LAST_LINES[s] ?? [], hasMore: false }) },
-      bots: { list: async () => [{ id: "moss", name: "MOSS" }] },
-      // The activity feed: the bot's live state, which its face shows.
-      activity: { list: async () => [{ subject: { kind: "bots", id: "moss" }, state: botState, since: 0 }], watch: () => () => undefined },
+      bots: { list: async () => BOTS.map((b) => ({ id: b.id, name: b.name })) },
+      // The activity feed: each bot's live state, which its face shows.
+      activity: { list: async () => BOTS.map((b) => ({ subject: { kind: "bots", id: b.id }, state: typeof botState === "string" ? botState : botState[b.id] ?? "idle", since: 0 })), watch: () => () => undefined },
     };
     return runtimeWith({ core: () => core, api: () => api, userSend: () => async () => undefined });
-  }, [scene, at, live, botState]);
+  }, [scene, at, live, JSON.stringify(botState)]);
   return (
     <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
       <CanvasStart props={{ route: "start", params: params ?? {}, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}) }} />
@@ -77,6 +77,71 @@ function Live() {
 }
 
 const T0 = 1_781_270_000_000;
+
+/** Bots with their records' faces (`bot.records`' pins, as lane CA's `BotFace` reads them): MOSS as her record has her (the
+ *  kit's tile in coral with round eyes), and two with other traits. The gallery's build hands these to MOSS's own faces kit. */
+const BOTS = [
+  { id: "moss", name: "MOSS", face: { shape: "tile", color: "coral", eyes: "round" } },
+  { id: "pip", name: "Pip", face: { shape: "drop", color: "sky", eyes: "tall", temper: "restless" } },
+  { id: "juno", name: "Juno", face: { shape: "gem", color: "mint", eyes: "dot", temper: "slow" } },
+];
+(globalThis as { __galleryFaces?: Record<string, object> }).__galleryFaces = Object.fromEntries(BOTS.map((b) => [b.id, b.face]));
+
+/** Three bots, each with a session it started. */
+function botsScene(): SessionSceneStep[] {
+  const steps: SessionSceneStep[] = [];
+  const titles: Record<string, string> = { moss: "Tidy the release notes", pip: "Sort the photo folder", juno: "Draft the weekly summary" };
+  BOTS.forEach((b, i) => {
+    steps.push({ at: 0, event: { type: "session_changed", ts: T0 + i, session: { id: `s_${b.id}`, kind: "bot", bot: b.id, computer: "Studio", status: "idle", startedAt: T0 + i, updatedAt: T0 + i, title: b.name } } });
+    steps.push({ at: 0, event: { type: "session_changed", ts: T0 + i, session: { id: `s_${b.id}_task`, kind: "agent", bot: b.id, parent: `s_${b.id}`, computer: "Studio", status: "prompting", startedAt: T0 + 10 + i, updatedAt: T0 + 10 + i, title: titles[b.id]!, backend: "moss-code", model: "anthropic/claude-sonnet-5", startedBy: { kind: "bot", bot: b.id, session: `s_${b.id}` } } } });
+  });
+  return steps;
+}
+
+/** One message's trip, in one of three cases: the receiver starts running because of it; stays idle (a final report to an
+ *  idle parent); is waiting on background jobs. The message leaves at `delay` ms. */
+function tripScene(kind: "run" | "idle" | "wait", delay: number): SessionSceneStep[] {
+  const v = (id: string, at: number, extra: Partial<SessionView>): SessionSceneStep =>
+    ({ at, event: { type: "session_changed", ts: T0 + at, session: { id, kind: "coding", computer: "Studio", status: "idle", startedAt: T0, updatedAt: T0 + at, startedBy: { kind: "user" }, ...extra } as SessionView } });
+  const sender = kind === "idle"
+    ? v("t_child", 0, { id: "t_child", kind: "agent", title: "Write the auth tests", backend: "claude-code", model: "anthropic/claude-sonnet-5", parent: "t_recv", startedBy: { kind: "session", session: "t_recv" }, status: "prompting", startedAt: T0 + 5 })
+    : v("t_send", 0, { title: "Fix the login flow", backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "high", status: "prompting" });
+  const receiver = v("t_recv", 0, { title: kind === "idle" ? "Plan the auth work" : "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", ...(kind === "wait" ? { waiting: { tasks: 1, children: 0 } } : {}) });
+  const from = kind === "idle" ? { end: "session" as const, session: "t_child", kind: "agent" } : { end: "session" as const, session: "t_send", kind: "coding" };
+  const steps: SessionSceneStep[] = [receiver, sender, { at: delay, event: { type: "session_link", ts: T0 + delay, from, to: { session: "t_recv", kind: "coding" }, link: kind === "idle" ? "report" : "message" } }];
+  if (kind === "run") steps.push(v("t_recv", delay, { title: "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", status: "prompting" }));
+  if (kind === "idle") steps.push(v("t_child", delay, { id: "t_child", kind: "agent", title: "Write the auth tests", backend: "claude-code", model: "anthropic/claude-sonnet-5", parent: "t_recv", startedBy: { kind: "session", session: "t_recv" }, status: "stopped", startedAt: T0 + 5 }));
+  return steps;
+}
+
+const CASES = [
+  { kind: "run", title: "The receiver starts running", notes: "The arriving light becomes its running light." },
+  { kind: "idle", title: "The receiver stays idle", notes: "A final report to an idle parent: the light meets on the far side and fades." },
+  { kind: "wait", title: "The receiver is waiting", notes: "Its dashes take the light once round." },
+] as const;
+
+/** The three cases side by side, with Replay and slow motion. */
+function Trips() {
+  const [run, setRun] = useState(0);
+  const [slow, setSlow] = useState(false);
+  return (
+    <div className="g-live" style={(slow ? { "--cv-slow": 4 } : {}) as never}>
+      <div className="g-live__bar">
+        <button type="button" onClick={() => setRun((n) => n + 1)}>Replay</button>
+        <label><input type="checkbox" checked={slow} onChange={(e) => { setSlow(e.target.checked); setRun((n) => n + 1); }} /> Slow motion (4×)</label>
+        <span>One gesture: out of the sender's outline, through its point, down the line, through the receiver's point and round its outline, turning into the receiver's colour.</span>
+      </div>
+      <div className="g-cases">
+        {CASES.map((c) => (
+          <div className="g-case" key={`${c.kind}-${run}`}>
+            <div className="g-case__head"><b>{c.title}</b> <span>{c.notes}</span></div>
+            <div className="g-case__canvas"><World scene={tripScene(c.kind, 700)} /></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** The sample scene with every kind of agent colour on it: Gemini (two colours) and two black-and-white brands, OpenCode
  *  and Cursor, besides the scene's Claude Code, Codex and MOSS's own agent; a message between them at 8.8 s. */
@@ -103,7 +168,11 @@ function manyScene(): SessionSceneStep[] {
 
 export const STORIES: Story[] = [
   { id: "scene", title: "The sample scene, live", notes: "SAMPLE_SESSION_SCENE played on real timers. Press Replay to watch it again.", render: () => <Live /> },
-  { id: "wave", title: "A message crossing", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },
+  { id: "trips", title: "A message crossing", notes: "The three cases side by side. Replay, or slow it down to judge the hand-over into the running light.", render: () => <Trips /> },
+  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 300)} /> })),
+  { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
+  { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
+  { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },
   { id: "still", title: "Everything still", notes: "The scene's end, every session idle or ended: nothing moves.", render: () => <World scene={SAMPLE_SESSION_SCENE} at={20_000} live={false} initial={{ showEnded: true }} /> },
   { id: "open", title: "A block open", notes: "It grows a little: the session's last line, a composer that sends as you, Open tab.", render: () => <World scene={PALETTE} at={9_500} live={false} initial={{ open: "s_a" }} /> },
   { id: "bot", title: "A bot's block open", notes: "Open in MOSS: the bot's conversation is MOSS's. Its face as MOSS draws it, idle.", render: () => <World scene={SAMPLE_SESSION_SCENE} at={8_000} live={false} initial={{ open: "bot:moss" }} /> },

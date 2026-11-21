@@ -45,22 +45,62 @@ function readMarks(dir: string | undefined): Record<string, { mediaType: string;
   return out;
 }
 
+/** MOSS's own faces kit, as MOSS runs it (`apps/moss/src/window/faces/living-bots.js`; lane CA is moving it into the SDK as
+ *  `BotFace`). The gallery's build alone substitutes a face over it for the plugin's stand-in, in a file it writes OUTSIDE
+ *  the plugin's folder: no file of the plugin imports the app's code (F2b), and the app's own build substitutes nothing. */
+const FACES_KIT = join(pkg, "..", "..", "..", "..", "apps", "moss", "src", "window", "faces", "living-bots.js");
+
+function faceShim(dir: string): string {
+  const file = join(dir, "real-face.tsx");
+  writeFileSync(file, `// Written by the canvas gallery's build: the plugin's Mark module, with BotFace drawn by MOSS's own faces kit.
+import { createElement, useEffect, useRef } from "react";
+import { mount } from ${JSON.stringify(FACES_KIT)};
+export { Mark } from ${JSON.stringify(join(pkg, "client", "Mark.tsx"))};
+const faces = () => (globalThis as { __galleryFaces?: Record<string, object> }).__galleryFaces ?? {};
+export function BotFace({ bot, name, face, size = 38, state = "idle" }: { bot: string; name?: string; face?: object; size?: number; state?: string }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const handle = useRef<{ setMood(m: string): void; destroy(): void } | null>(null);
+  const pins = face ?? faces()[bot] ?? {};
+  useEffect(() => {
+    const c = canvas.current;
+    if (c === null) return;
+    const root = document.documentElement;
+    const surface = getComputedStyle(root).getPropertyValue("--moss-color-surface").trim();
+    handle.current = mount(c, name ?? bot, { ...pins, mood: state, scale: 1.2, dark: root.dataset.theme === "dark", ...(surface !== "" ? { surface } : {}) } as never) as never;
+    return () => { handle.current?.destroy(); handle.current = null; };
+  }, [bot, name, JSON.stringify(pins)]);
+  useEffect(() => { handle.current?.setMood(state); }, [state]);
+  return createElement("canvas", { ref: canvas, className: "cv-face-real", "data-face": bot, "data-state": state, "aria-hidden": "true", style: { width: size, height: size, flex: "none" } });
+}
+`);
+  return file;
+}
+
 export async function buildGallery(out = join(here, "dist", "canvas-gallery.html"), marksDir?: string): Promise<string> {
   const tmp = join(dirname(out), ".canvas-gallery-build");
+  mkdirSync(tmp, { recursive: true });
+  const shim = existsSync(FACES_KIT) ? faceShim(tmp) : undefined;
+  const realFaces: BunPlugin = {
+    name: "real-faces",
+    setup(build) {
+      if (shim === undefined) return;
+      build.onResolve({ filter: /^\.\/Mark$/ }, (args) => (args.importer.endsWith(join("client", "Block.tsx")) ? { path: shim } : undefined));
+    },
+  };
   const result = await Bun.build({
     entrypoints: [join(here, "main.tsx")],
-    outdir: tmp,
+    outdir: join(tmp, "out"),
     target: "browser",
     format: "iife",
     minify: true,
     naming: "[name].[ext]",
     define: { "process.env.NODE_ENV": JSON.stringify("production"), __CANVAS_MARKS__: JSON.stringify(readMarks(marksDir) ?? null) },
-    plugins: [oneReact],
+    plugins: [oneReact, realFaces],
     ...{ macros: false },
   });
   if (!result.success) throw new AggregateError(result.logs, "the canvas gallery did not build");
-  const js = readFileSync(join(tmp, "main.js"), "utf8").replace(/<\/script/gi, "<\\/script");
-  const css = readFileSync(join(tmp, "main.css"), "utf8").replace(/<\/style/gi, "<\\/style");
+  const js = readFileSync(join(tmp, "out", "main.js"), "utf8").replace(/<\/script/gi, "<\\/script");
+  const css = readFileSync(join(tmp, "out", "main.css"), "utf8").replace(/<\/style/gi, "<\\/style");
   const html = `<!doctype html>
 <html lang="en" data-theme="light">
 <head>

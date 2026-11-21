@@ -424,7 +424,13 @@
   margin: -220px 0 0 -220px;
   background: conic-gradient(transparent 0 50%, color-mix(in srgb, var(--c1) 35%, transparent) 66%, var(--c1) 80%, var(--c2) 92%, transparent 100%);
   content: "";
-  animation: cv-spin 2.6s linear infinite;
+  transform: rotate(var(--a0, 0deg));
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite;
+}
+
+/* Taking over from an arriving message: hidden until the light arrives at its point, then turning on from there. */
+.cv-ring[data-handover]::before {
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite, cv-ring-in 0.15s linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) both;
 }
 
 .cv-node[data-motion="running"] .cv-dot {
@@ -468,8 +474,20 @@
 }
 
 @keyframes cv-spin {
+  from {
+    transform: rotate(var(--a0, 0deg));
+  }
   to {
-    transform: rotate(1turn);
+    transform: rotate(calc(var(--a0, 0deg) + 1turn));
+  }
+}
+
+@keyframes cv-ring-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
@@ -505,9 +523,9 @@
   position: absolute;
   z-index: 3;
   box-sizing: border-box;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--cv-line);
+  width: 10px;
+  height: 10px;
+  border: 1.6px solid var(--cv-line);
   border-radius: 50%;
   background: var(--moss-color-canvas);
   opacity: 0;
@@ -516,23 +534,23 @@
 }
 
 .cv-port[data-port="l"] {
-  top: calc(var(--bh) / 2 - 6px);
-  left: -6px;
+  top: calc(var(--bh) / 2 - 5px);
+  left: -5px;
 }
 
 .cv-port[data-port="r"] {
-  top: calc(var(--bh) / 2 - 6px);
-  left: calc(var(--bw) - 6px);
+  top: calc(var(--bh) / 2 - 5px);
+  left: calc(var(--bw) - 5px);
 }
 
 .cv-port[data-port="t"] {
-  top: -6px;
-  left: calc(var(--bw) / 2 - 6px);
+  top: -5px;
+  left: calc(var(--bw) / 2 - 5px);
 }
 
 .cv-port[data-port="b"] {
-  top: calc(var(--bh) - 6px);
-  left: calc(var(--bw) / 2 - 6px);
+  top: calc(var(--bh) - 5px);
+  left: calc(var(--bw) / 2 - 5px);
 }
 
 .cv-node:hover .cv-port,
@@ -541,10 +559,10 @@
   opacity: 1;
 }
 
+/* A joined point is the line's own end on the block's edge: the line's stroke and colour, quiet with no traffic. */
 .cv-port[data-on] {
-  border-color: var(--moss-color-text-muted);
-  background: var(--moss-color-surface);
-  box-shadow: inset 0 0 0 2.5px var(--moss-color-surface), inset 0 0 0 6px var(--moss-color-text-muted);
+  border-color: var(--cv-line);
+  background: var(--moss-color-canvas);
 }
 
 /* Open, the card covers where its right and bottom points were: they hide under it with their lines. */
@@ -553,72 +571,75 @@
   display: none;
 }
 
-/* ---- A message: the wave on the line, the receiving point lighting ---- */
+/* ---- A message: one bright crest from the sender's outline, through its point, down the line, through the receiver's
+   point and round the receiver's outline, turning into the receiver's colour (choreography.ts). Each stretch is a dash
+   of the crest's length walking its path at one speed, its time and delay set per stretch, so the trip has no seam.
+   `--cv-slow` (the gallery's slow motion) stretches every time alike. ---- */
 
-.cv-wave {
+.cv-trip {
   --c1: var(--brand, var(--moss-color-text));
   --c2: var(--brand2, var(--c1));
+  --r1: var(--to, var(--moss-color-text));
 }
 
-.cv-wave__c1 {
+.cv-trip__c1 {
   stop-color: var(--c1);
 }
 
-.cv-wave__c2 {
+.cv-trip__c2,
+.cv-trip__from-sender {
   stop-color: var(--c2);
 }
 
-.cv-wave__path {
-  fill: none;
-  stroke-linecap: round;
-  stroke-dasharray: var(--stretch) calc(var(--len) + var(--stretch));
-  stroke-dashoffset: var(--stretch);
-  animation: cv-wave 1.6s cubic-bezier(0.4, 0, 0.2, 1) both;
+.cv-trip__to-receiver {
+  stop-color: var(--r1);
 }
 
-.cv-wave__light {
+.cv-seg {
+  fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: var(--crest) calc(var(--len) + var(--crest));
+  stroke-dashoffset: var(--crest);
+  animation: cv-seg calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) both;
+}
+
+.cv-seg--light {
   stroke-width: 2.4;
 }
 
-.cv-wave__glow {
+.cv-seg--glow {
   stroke-width: 8;
   filter: blur(4px);
   opacity: 0.4;
 }
 
-.cv-hit {
-  --c1: var(--brand, var(--moss-color-text));
-  --c2: var(--brand2, var(--c1));
+/* A point the crest passes through fills with its colour, no brighter than the line beside it. */
+.cv-dotflash {
   fill: var(--c2);
-  stroke: color-mix(in srgb, var(--c2) 30%, transparent);
-  stroke-width: 6;
   opacity: 0;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--c2) 50%, transparent));
-  animation: cv-hit 0.9s ease-out 1.05s both;
+  animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) both;
 }
 
-.cv-hit:not([data-travel]) {
-  animation-delay: 0s;
+.cv-dotflash[data-dot="sender"] {
+  fill: var(--c1);
 }
 
-@keyframes cv-wave {
+@keyframes cv-seg {
   from {
-    stroke-dashoffset: var(--stretch);
+    stroke-dashoffset: var(--crest);
   }
   to {
     stroke-dashoffset: calc(-1 * var(--len));
   }
 }
 
-@keyframes cv-hit {
-  0% {
-    opacity: 0;
-  }
-  25% {
-    opacity: 1;
-  }
+@keyframes cv-dot {
+  0%,
   100% {
     opacity: 0;
+  }
+  50% {
+    opacity: 1;
   }
 }
 
@@ -638,8 +659,8 @@
 .cv[data-hidden] .cv-ring::before,
 .cv[data-hidden] .cv-dot,
 .cv[data-hidden] .cv-march__rect,
-.cv[data-hidden] .cv-wave__path,
-.cv[data-hidden] .cv-hit,
+.cv[data-hidden] .cv-seg,
+.cv[data-hidden] .cv-dotflash,
 .cv[data-hidden] .cv-eye {
   animation-play-state: paused;
 }
@@ -1007,15 +1028,15 @@
     animation: none;
   }
 
-  .cv-wave__path {
+  /* A brief highlight of each stretch in turn (sender, its point, the line, the receiver's point, its outline), no travel. */
+  .cv-seg {
     stroke-dasharray: none;
     stroke-dashoffset: 0;
-    animation: cv-flash 1.2s ease-out both;
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
   }
 
-  .cv-hit,
-  .cv-hit:not([data-travel]) {
-    animation: cv-flash 1.2s ease-out 0s both;
+  .cv-dotflash {
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
   }
 
   .cv-port {

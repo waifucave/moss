@@ -13,10 +13,10 @@ const LEAVES = [
   ".cv-ring::before", // the light round a running block (rotates)
   ".cv-dot", // the status dot (breathes while waiting)
   ".cv-card", // an ended block, dimmed
-  ".cv-wave__glow", // a wave's blurred glow
-  ".cv-wave__path", // a wave (fades with reduced motion)
-  ".cv-hit", // the receiving point lighting
-  ".cv-hit:not([data-travel])",
+  ".cv-ring[data-handover]::before", // the running light taking over from an arriving message (appears at its point)
+  ".cv-seg", // a message's crest (a highlight with reduced motion)
+  ".cv-seg--glow", // its blurred glow
+  ".cv-dotflash", // a point the crest passes through
   ".cv-port", // a point showing as the cursor comes near
   ".cv-send", // disabled
   ".cv-chip", // an agent this computer lacks
@@ -62,7 +62,7 @@ describe("the canvas stylesheet", () => {
   test("animations run only on a running or waiting block and on a wave: a still canvas animates nothing", () => {
     const animated = rules.filter((r) => r.context.length === 0 && r.declarations.some((d) => d.property === "animation" && d.value !== "none")).map((r) => r.prelude);
     expect(animated.sort()).toEqual([
-      ".cv-hit", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-wave__path",
+      ".cv-dotflash", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-ring[data-handover]::before", ".cv-seg",
       // A bot's face: the one thing that may move while no session runs, as it does in MOSS (the owner, 2026-11-21).
       ".cv-eye", ".cv-face[data-state=\"thinking\"] .cv-eye", ".cv-face[data-state=\"working\"] .cv-eye",
     ].sort());
@@ -72,7 +72,7 @@ describe("the canvas stylesheet", () => {
 
   test("the running light turns with a transform (the compositor's), never by repainting a gradient's angle", () => {
     const spin = rules.filter((r) => r.context.some((c) => c.startsWith("@keyframes cv-spin")));
-    expect(spin.flatMap((r) => r.declarations.map((d) => d.property))).toEqual(["transform"]);
+    expect(spin.flatMap((r) => r.declarations.map((d) => d.property))).toEqual(["transform", "transform"]);
     expect(css).not.toContain("@property");
   });
 
@@ -83,8 +83,10 @@ describe("the canvas stylesheet", () => {
     expect(decl(".cv-ring::before")).toContainEqual({ property: "background", value: "linear-gradient(135deg, var(--c1), var(--c2))" });
     expect(decl(".cv-eye,\n  .cv-face[data-state] .cv-eye")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-node[data-motion=\"running\"] .cv-dot,\n  .cv-node[data-motion=\"waiting\"] .cv-dot,\n  .cv-march__rect")).toContainEqual({ property: "animation", value: "none" });
-    expect(decl(".cv-wave__path")).toContainEqual({ property: "animation", value: "cv-flash 1.2s ease-out both" });
-    expect(decl(".cv-wave__path")).toContainEqual({ property: "stroke-dasharray", value: "none" });
+    // A message: each stretch in turn (its own delay), a brief highlight, no travel.
+    expect(decl(".cv-seg")).toContainEqual({ property: "animation", value: "cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both" });
+    expect(decl(".cv-seg")).toContainEqual({ property: "stroke-dasharray", value: "none" });
+    expect(decl(".cv-dotflash")).toContainEqual({ property: "animation", value: "cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both" });
   });
 
   test("never toward grey: every colour mix is toward transparent (clearer), none toward a neutral", () => {
@@ -97,6 +99,6 @@ describe("the canvas stylesheet", () => {
   test("a hidden window pauses every animation", () => {
     const paused = rules.find((r) => r.declarations.some((d) => d.property === "animation-play-state" && d.value === "paused"))!;
     const selectors = paused.prelude.split(",").map((s) => s.trim());
-    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-wave__path", ".cv-hit", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
+    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-seg", ".cv-dotflash", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
   });
 });

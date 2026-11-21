@@ -29,6 +29,12 @@ function Gallery() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // The pictures pin each animation part-way (page.css): a headless capture doesn't advance them.
   useEffect(() => { if (params.get("freeze") === "1") document.documentElement.dataset.freeze = ""; else delete document.documentElement.dataset.freeze; }, [params]);
+  // `#t=<seconds>`: every message's trip pinned at that moment of its trip (the frame strips).
+  useEffect(() => {
+    const t = params.get("t");
+    if (t !== null) { document.documentElement.dataset.tripAt = ""; document.documentElement.style.setProperty("--trip-t", `${Number(t)}s`); }
+    else { delete document.documentElement.dataset.tripAt; document.documentElement.style.removeProperty("--trip-t"); }
+  }, [params]);
   const go = (next: Record<string, string>) => {
     const p = hash();
     for (const [k, v] of Object.entries(next)) p.set(k, v);

@@ -30,6 +30,9 @@ export interface Wave {
   /** The sender's colour(s) (the receiver's for the person's message); none: the theme's text colour. */
   color?: string;
   color2?: string;
+  /** The receiver's colour(s): the arriving light turns into them. */
+  toColor?: string;
+  toColor2?: string;
   ts: number;
   link: LinkEvent["link"];
 }
@@ -50,6 +53,7 @@ export const WAVE_STALE_MS = 10_000;
 export const WAVES_MAX = 48;
 
 const colours = (b: { brand?: string; brand2?: string }) => ({ ...(b.brand !== undefined ? { color: b.brand } : {}), ...(b.brand2 !== undefined ? { color2: b.brand2 } : {}) });
+const toColours = (b: { brand?: string; brand2?: string }) => ({ ...(b.brand !== undefined ? { toColor: b.brand } : {}), ...(b.brand2 !== undefined ? { toColor2: b.brand2 } : {}) });
 
 export const peerId = (a: string, b: string) => (a < b ? `peer:${a}|${b}` : `peer:${b}|${a}`);
 
@@ -66,7 +70,7 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
   const fresh = state.waves.filter((w) => w.ts >= link.ts - WAVE_STALE_MS);
   const id = state.seq + 1;
   if (link.from.end === "user") {
-    const wave: Wave = { id, to, ...colours(model.byId.get(to)!), ts: link.ts, link: link.link };
+    const wave: Wave = { id, to, ...colours(model.byId.get(to)!), ...toColours(model.byId.get(to)!), ts: link.ts, link: link.link };
     return { peers: state.peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, `to:${to}`) };
   }
   const from = model.blockOfSession(link.from.session);
@@ -77,7 +81,7 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
     edge = { id: peerId(from, to), kind: "peer", a: from < to ? from : to, b: from < to ? to : from };
     peers = [...peers, edge];
   }
-  const wave: Wave = { id, edge: edge.id, from, to, ...colours(model.byId.get(from)!), ts: link.ts, link: link.link };
+  const wave: Wave = { id, edge: edge.id, from, to, ...colours(model.byId.get(from)!), ...toColours(model.byId.get(to)!), ts: link.ts, link: link.link };
   return { peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, edge.id) };
 }
 

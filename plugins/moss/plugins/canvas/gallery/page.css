@@ -162,16 +162,6 @@ body {
 
 /* `#freeze=1` (the pictures only): headless captures don't advance CSS animations, so each is pinned part-way: the wave
    about halfway along its line, the receiving point lit, the light a third of the way round, the dashes moved on. */
-[data-freeze] .cv-wave__path {
-  animation-delay: -0.75s;
-  animation-play-state: paused;
-}
-
-[data-freeze] .cv-hit {
-  animation-delay: -1.3s;
-  animation-play-state: paused;
-}
-
 [data-freeze] .cv-ring::before {
   animation-delay: -0.9s;
   animation-play-state: paused;
@@ -180,4 +170,54 @@ body {
 [data-freeze] .cv-march__rect {
   animation-delay: -0.6s;
   animation-play-state: paused;
+}
+
+/* `#t=<seconds>`: a message's trip pinned at that moment of it (each stretch at its own delay less the moment). */
+[data-trip-at] .cv-seg,
+[data-trip-at] .cv-dotflash {
+  animation-delay: calc(var(--delay) - var(--trip-t));
+  animation-play-state: paused;
+}
+
+[data-trip-at] .cv-ring[data-handover]::before {
+  animation-delay: calc(var(--ring-delay) - var(--trip-t)), calc(var(--ring-delay) - var(--trip-t));
+  animation-play-state: paused;
+}
+
+.g-cases {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.g-case {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 10px;
+}
+
+.g-case__head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--moss-color-hairline);
+  font-size: 12px;
+}
+
+.g-case__head span {
+  color: var(--moss-color-text-muted);
+}
+
+.g-case__canvas {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cv-face-real {
+  display: block;
 }
