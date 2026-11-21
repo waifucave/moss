@@ -156,9 +156,13 @@ export interface CapabilityTargets {
  *  is never read for it (it could say the other kind); a list reaches every kind (the caller's result is cut to the
  *  kinds the plugin reads). The feed and the pictures name their kind (`activity.read.*`, `picture.read.*`). Empty: the
  *  call names no kind the gate can read. */
+/** The family-gated calls that read across kinds and whose results the core cuts to what the plugin may read: the list of
+ *  sessions (cut to its kinds), and the record of links between them (cut to the pairs whose both ends it reads, §9.5). */
+const ACROSS_KINDS: ReadonlySet<string> = new Set(["session.list", "session.links"]);
+
 function kindsOfCall(method: string, capability: string, params: unknown, targets: CapabilityTargets | undefined): readonly DataKind[] {
   const p = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
-  if (method === "session.list") return ["sessions", "bots"];
+  if (ACROSS_KINDS.has(method)) return ["sessions", "bots"];
   if (capability === "conversation.*") {
     const id = typeof p["id"] === "string" ? p["id"] : typeof p["session"] === "string" ? p["session"] : undefined;
     const kind = id === undefined ? undefined : targets?.sessionKind?.(id);
@@ -183,7 +187,7 @@ export function capabilityRefusal(role: MossRole, caller: Caller, method: string
   if (isKindFamily(capability)) {
     const kinds = kindsOfCall(method, capability, params, targets);
     if (method === "session.detach") return null;
-    const ok = method === "session.list" ? kinds.some((k) => pluginMayCall(spec, have, k)) : kinds.length > 0 && kinds.every((k) => pluginMayCall(spec, have, k));
+    const ok = ACROSS_KINDS.has(method) ? kinds.some((k) => pluginMayCall(spec, have, k)) : kinds.length > 0 && kinds.every((k) => pluginMayCall(spec, have, k));
     if (ok) return null;
     const names = (kinds.length === 1 ? kinds : (["bots", "sessions"] as const)).map((k) => kindCapability(capability, k)).join(" or ");
     return { code: MOSS_ERR.CAPABILITY_REFUSED, message: `${method} needs the capability ${names}, which ${caller.pluginId}'s OK doesn't list` };

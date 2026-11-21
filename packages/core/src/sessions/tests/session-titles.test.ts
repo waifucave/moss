@@ -38,3 +38,36 @@ describe("EngineSessionTitles", () => {
     expect(asked).toBe(0);
   });
 });
+
+describe("a title is one line of plain text", () => {
+  const made = async (answer: string) => {
+    const t = new EngineSessionTitles({ titler: async () => answer, lightModelFor: () => "light" });
+    await t.turnEnded({ session: "s_a", kind: "coding", firstMessage: "go" });
+    return t.title("s_a")?.title;
+  };
+
+  test("an ESC sequence, a right-to-left override, zero-width characters and angle brackets are dropped", async () => {
+    expect(await made("\u001b[31mFix\u001b[0m the login")).toBe("Fix the login");
+    expect(await made("\u001b]0;pwned\u0007Fix the login")).toBe("Fix the login");
+    expect(await made("Fix ‮txt.exe‬ login")).toBe("Fix txt.exe login");
+    expect(await made("Fix​ the⁦ login⁩")).toBe("Fix the login");
+    expect(await made("<script>alert(1)</script> Fix")).toBe("script alert(1) /script Fix");
+    expect(await made("Fix\tthe    login")).toBe("Fix the login");
+  });
+
+  test("a 500-character answer is cut at 60; a multi-line answer keeps its first line; nothing left is no title", async () => {
+    expect((await made("a".repeat(500)))!.length).toBe(60);
+    expect(await made("\n\n  Fix the login loop\nIt loops because…\n")).toBe("Fix the login loop");
+    expect(await made("Fix the second line")).toBe("Fix");
+    expect(await made("\u001b‮​")).toBeUndefined();
+    expect(await made("   \n  ")).toBeUndefined();
+  });
+
+  test("the person's and a spawn's titles are cleaned the same way, at the contract's 200", () => {
+    const t = new EngineSessionTitles({ titler: async () => "x", lightModelFor: () => "light" });
+    t.set("s_a", "Mine‮ reversed", "user");
+    expect(t.title("s_a")!.title).toBe("Mine reversed");
+    t.set("s_b", "y".repeat(300), "spawn");
+    expect(t.title("s_b")!.title.length).toBe(200);
+  });
+});

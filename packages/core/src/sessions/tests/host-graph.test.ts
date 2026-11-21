@@ -250,6 +250,8 @@ describe("the record of links, kept by the host", () => {
     await host.deliver("s_c", { from: "session", session: "s_a", text: "two" });
     await host.deliver("s_b", { from: "session", session: "s_a", text: "three" });
     await host.sendUser("s_a", user("from the person"));
+    // A clean stop writes what waits.
+    await host.close();
     const again = new DurableSessionHost({ home, clock });
     const r = again.graph.links({ kind: "user" });
     expect(r.pairs.map((p) => [p.to.session, p.count]).sort()).toEqual([["s_b", 2], ["s_c", 1]]);

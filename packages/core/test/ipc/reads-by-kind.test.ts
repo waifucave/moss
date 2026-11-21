@@ -44,6 +44,27 @@ describe("a session call is gated by the kind of the session it names", () => {
     expect(capabilityRefusal("layer", plugin("x"), "session.list", ["sessions.read"], {}, targets)).toBeNull();
     expect(capabilityRefusal("layer", plugin("x"), "session.list", ["notify"], {}, targets)?.code).toBe(MOSS_ERR.CAPABILITY_REFUSED);
     expect(capabilityRefusal("layer", plugin("x"), "session.list", [], {}, targets)?.code).toBe(MOSS_ERR.CAPABILITY_REFUSED);
+    // The record of links between sessions (§9.5) is let through the same way; its result is cut to the pairs whose both
+    // ends the plugin reads.
+    expect(capabilityRefusal("layer", plugin("x"), "session.links", ["conversation.read", "sessions.read"], {}, targets)).toBeNull();
+    expect(capabilityRefusal("layer", plugin("x"), "session.links", ["sessions.read"], { since: 5 }, targets)).toBeNull();
+    expect(capabilityRefusal("layer", plugin("x"), "session.links", ["notify"], {}, targets)?.code).toBe(MOSS_ERR.CAPABILITY_REFUSED);
+  });
+
+  test("a session_link reaches a plugin only when it reads both ends; session_changed by the session's own kind", () => {
+    const code = layer("code-only", ["sessions"]);
+    const both = layer("both", ["sessions"]);
+    const bots = layer("bots-only", ["sessions"]);
+    const caps: Record<string, string[]> = { "code-only": CODE, both: [...CODE, ...BOTS], "bots-only": BOTS };
+    const r = { connections: () => [code.c, both.c, bots.c], pluginCapabilities: (id: string) => caps[id] ?? [] };
+    const codeLink = { type: "session_link", ts: 1, from: { end: "session", session: "s_a", kind: "coding" }, to: { session: "s_b", kind: "coding" }, link: "message" };
+    const botLink = { type: "session_link", ts: 1, from: { end: "session", session: "b_moss", kind: "bot", bot: "moss" }, to: { session: "agent_1", kind: "agent", bot: "moss" }, link: "spawn" };
+    const personLink = { type: "session_link", ts: 1, from: { end: "user" }, to: { session: "s_b", kind: "coding" }, link: "message" };
+    for (const e of [codeLink, botLink, personLink]) sendCoreEvent(r, e);
+    expect(code.got.map((e) => (e as { to?: { session: string } }).to?.session)).toEqual(["s_b", "s_b"]);
+    expect(both.got.length).toBe(3);
+    // A bot's link has a code end (its agent): the bots-only plugin may not read that end, so hears nothing of it.
+    expect(bots.got).toEqual([]);
   });
 
   test("the feed and the pictures are gated by the kind they name; the user's calls aren't a plugin's", () => {

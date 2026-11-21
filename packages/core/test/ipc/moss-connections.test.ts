@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { commandMethods } from "../../src/registry/commands";
 import { grantsInForce } from "../../src/contracts/plugin-registry";
+import { EngineSessionGraph } from "../../src/sessions/session-graph";
 import { darwinTest, onDarwin } from "../helpers/darwin-only";
 
 // C-M1: MOSS's roles, tokens, caller check and the pair's methods over the daemon's real endpoint,
@@ -153,6 +154,15 @@ describe("MOSS connections (C-M1)", () => {
     // A lane's handlers in D's shape (bots/rpc.ts): session.attach streams, session.detach stops, and
     // session.list refuses with a MethodError.
     const unfollowed: string[] = [];
+    // Two code sessions and a bot's conversation with its agent, each pair having talked.
+    const linkGraph = new EngineSessionGraph(() => 1);
+    linkGraph.started("s_a", "coding", { kind: "user" });
+    linkGraph.started("s_b", "coding", { kind: "user" });
+    linkGraph.started("b_moss", "bot", { kind: "user" }, "moss");
+    linkGraph.started("agent_1", "agent", { kind: "bot", bot: "moss", session: "b_moss" }, "moss");
+    linkGraph.link("s_a", "s_b", "message");
+    linkGraph.link("b_moss", "agent_1", "spawn");
+    linkGraph.link("agent_1", "b_moss", "report");
     const laneHandlers = laneMethodHandlers({
       "session.attach": handler(SESSIONS_METHODS.sessionAttach, (p, ctx) => {
         calls.push({ method: "session.attach", sessionId: p.id, params: ctx.caller });
@@ -161,6 +171,9 @@ describe("MOSS connections (C-M1)", () => {
         return { lastSeq: 3 };
       }),
       "session.list": handler(SESSIONS_METHODS.sessionList, () => { throw new MethodError(MOSS_ERR.NOT_THE_USER, "only the user can list", { why: "test" }); }),
+      // The session graph's record of links (§9.5), read as the real handler reads it (bots/rpc.ts): the caller's grants.
+      "session.links": handler(SESSIONS_METHODS.sessionLinks, (p, ctx) => linkGraph.links(
+        ctx.caller.kind === "user" ? { kind: "user" } : { kind: "plugin", capabilities: ctx.caller.kind === "plugin" ? grantsInForce(records[ctx.caller.pluginId]) : [] }, p.since)),
       "session.interrupt": handler(SESSIONS_METHODS.sessionInterrupt, (p, ctx) => { calls.push({ method: "session.interrupt", sessionId: p.id, params: ctx.caller }); return { ok: true as const }; }),
       "routine.get": handler(SESSIONS_METHODS.routineGet, (p, ctx) => { calls.push({ method: "routine.get", sessionId: p.id, params: ctx.caller }); throw new MethodError(ERR.NOT_FOUND, "no such routine (the handler was reached)"); }),
       // B: `command.run`, its args checked against the command's schema before the handler runs.
@@ -228,6 +241,30 @@ describe("MOSS connections (C-M1)", () => {
     // The user's own door (the app's connection, the composer's slash menu) is unchanged.
     expect((await app.request("command.run", { name: "tarot.draw", args: { cards: 3 } })).error).toBeUndefined();
     app.close(); vn.close(); friend.close(); tarot.close();
+  });
+
+  test("session.links over a layer: a plugin with both reads gets every pair, one with sessions.read only the code sessions' pairs, one with neither is refused", async () => {
+    const b = await boot({ grants: { both: ["sessions.read", "conversation.read"], code: ["sessions.read"], bots: ["conversation.read"], neither: ["notify"] } });
+    const app = await Client.connect(b.socketPath);
+    await app.hello("app", b.appToken);
+    const layerOf = async (pluginId: string) => {
+      const { token } = (await app.request("layer.token", { pluginId })).result;
+      const c = await Client.connect(b.socketPath);
+      await c.hello("layer", token, { pluginId });
+      return c;
+    };
+    const pairsOf = (r: { result?: { pairs: { from: { session?: string }; to: { session: string } }[] } }) => (r.result?.pairs ?? []).map((p) => `${p.from.session}>${p.to.session}`).sort();
+    const both = await layerOf("both");
+    const code = await layerOf("code");
+    const bots = await layerOf("bots");
+    const neither = await layerOf("neither");
+    expect(pairsOf(await both.request("session.links", {}))).toEqual(["agent_1>b_moss", "b_moss>agent_1", "s_a>s_b"]);
+    // A bot's agent is a code session, its conversation is not: sessions.read alone hears only the code sessions' pair.
+    expect(pairsOf(await code.request("session.links", {}))).toEqual(["s_a>s_b"]);
+    expect(pairsOf(await bots.request("session.links", {}))).toEqual([]);
+    expect((await neither.request("session.links", {})).error.code).toBe(MOSS_ERR.CAPABILITY_REFUSED);
+    expect(pairsOf(await app.request("session.links", {}))).toEqual(["agent_1>b_moss", "b_moss>agent_1", "s_a>s_b"]);
+    app.close(); both.close(); code.close(); bots.close(); neither.close();
   });
 
   test("a layer's method that names a capability is refused, before its handler, for a plugin whose OK doesn't grant it", async () => {

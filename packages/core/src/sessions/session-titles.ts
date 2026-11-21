@@ -9,8 +9,26 @@
 //
 // Where titles live is the store's (`TitleStore`): the session host keeps them in each session's meta, with who gave
 // them, so a restart never retitles one; with none they live in memory.
+import { displayText } from "@waifucave/moss-plugin-sdk/plain";
 import { Listeners, type Unsubscribe } from "../contracts/common";
 import { titleLine, type SessionTitles, type TitleSource } from "../contracts/session-titles";
+
+/** The longest title the engine's titler gives (the inherited `SessionTitler`'s 60); the person's and a spawn's may be as
+ *  long as the contract's `titleLine` (200). */
+export const ENGINE_TITLE_MAX = 60;
+
+/** A title as every list shows it (it is a model's words, or a client's): its first line, made plain (control
+ *  characters with ESC, bidirectional overrides and isolates, zero-width and the like dropped, `displayText`'s rules),
+ *  with no angle brackets, whitespace runs one space, at most `max` characters; empty is no title. */
+export function titleText(raw: string, max: number): string {
+  // A terminal's escape sequences (CSI `ESC [ … final`, OSC `ESC ] … BEL|ST`, a two-character `ESC x`) go whole.
+  const unescaped = raw.slice(0, max * 8)
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "");
+  const first = titleLine(unescaped.replace(/[\u2028\u2029\u0085]/g, "\n"));
+  return displayText(first.replace(/[<>\uFF1C\uFF1E]/g, " "), max) ?? "";
+}
 
 export type TitleKind = "bot" | "side-thread" | "agent" | "coding";
 
@@ -62,7 +80,7 @@ export class EngineSessionTitles implements SessionTitles {
       let made: string;
       try {
         model = this.#lightModelFor(s.model);
-        made = titleLine(await this.#titler(first, model));
+        made = titleText(await this.#titler(first, model), ENGINE_TITLE_MAX);
       } catch (err) {
         // Never the turn's failure: the session stays untitled and its next turn's end tries again (said once a session).
         if (this.#said.has(s.session)) return;
@@ -79,7 +97,7 @@ export class EngineSessionTitles implements SessionTitles {
   }
 
   set(session: string, title: string, by: "user" | "spawn"): void {
-    const line = titleLine(title);
+    const line = titleText(title, 200);
     if (line === "") return;
     const old = this.#store.get(session);
     if (by === "spawn" && old !== undefined && old.by === "user") return;

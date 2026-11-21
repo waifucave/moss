@@ -199,6 +199,47 @@ describe("links and starters", () => {
 });
 
 describe("the record of links", () => {
+  test("a burst of links is a handful of writes, each whole; nothing kept is lost by a clean stop's flush", () => {
+    let writes = 0;
+    let kept: unknown;
+    const timers: (() => void)[] = [];
+    const timer = { set: (fn: () => void) => { timers.push(fn); return timers.length; }, clear: () => {} };
+    const store = { load: () => kept, save: (k: unknown) => { writes++; kept = JSON.parse(JSON.stringify(k)); } };
+    const g = new EngineSessionGraph(() => 1, store, timer);
+    for (const id of ["s_a", "s_b", "s_c"]) g.started(id, "coding", { kind: "user" });
+    for (let i = 0; i < 200; i++) {
+      g.link(i % 2 === 0 ? "s_a" : "s_b", "s_c", "message");
+      // The timer fires twice in the burst (every 80 links here): one write each time.
+      if (i === 79 || i === 159) timers.shift()?.();
+    }
+    expect(writes).toBe(2);
+    expect(timers.length).toBe(1);
+    g.flush();
+    expect(writes).toBe(3);
+    // The pending timer that fires after the flush writes nothing more.
+    timers.shift()?.();
+    expect(writes).toBe(3);
+    const again = new EngineSessionGraph(() => 2, store, timer);
+    for (const id of ["s_a", "s_b", "s_c"]) again.started(id, "coding", { kind: "user" }, undefined, { quiet: true });
+    const r = again.links({ kind: "user" });
+    expect(r.pairs.map((p) => p.count).sort()).toEqual([100, 100]);
+    expect(r.links.length).toBe(200);
+  });
+
+  test("a session's end writes a waiting record at once", () => {
+    let writes = 0;
+    const timer = { set: () => 1, clear: () => {} };
+    const g = new EngineSessionGraph(() => 1, { load: () => undefined, save: () => { writes++; } }, timer);
+    for (const id of ["s_a", "s_b", "s_c"]) g.started(id, "coding", { kind: "user" });
+    g.link("s_a", "s_b", "message");
+    expect(writes).toBe(0);
+    // s_c is in no pair, yet its end writes what waits.
+    g.ended("s_c");
+    expect(writes).toBe(1);
+    g.ended("s_c");
+    expect(writes).toBe(1);
+  });
+
   const memory = () => {
     let kept: unknown;
     return { load: () => (kept === undefined ? undefined : JSON.parse(JSON.stringify(kept))), save: (k: unknown) => { kept = k; }, raw: () => kept };
@@ -211,6 +252,7 @@ describe("the record of links", () => {
     g.started("s_b", "coding", { kind: "user" });
     g.link("s_a", "s_b", "message");
     g.link(undefined, "s_a", "message");
+    g.flush();
     const again = new EngineSessionGraph(() => 6, store);
     again.started("s_a", "coding", { kind: "user" }, undefined, { quiet: true });
     again.started("s_b", "coding", { kind: "user" }, undefined, { quiet: true });
@@ -258,6 +300,7 @@ describe("the record of links", () => {
         while (model.size > SESSION_LINK_PAIRS_MAX) model.delete(model.keys().next().value!);
         order.push({ from, to, ts: t });
       }
+      g.flush();
       const got = g.links({ kind: "user" });
       expect(got.links.length).toBe(SESSION_LINKS_RECENT_MAX);
       expect(got.links.map((l) => l.ts)).toEqual(order.slice(-SESSION_LINKS_RECENT_MAX).map((o) => o.ts));

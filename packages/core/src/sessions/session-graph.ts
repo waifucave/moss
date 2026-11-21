@@ -14,8 +14,9 @@
 // * the record of links between two sessions (`links`): per pair the last link and a count (at most
 //   `SESSION_LINK_PAIRS_MAX` pairs, the most lately used kept), and the newest `SESSION_LINKS_RECENT_MAX` links in order,
 //   kept through a `LinkStore` (the host's file beside the transcripts) so it survives a restart; a link from the person
-//   joins no two sessions and isn't kept; a session that ends takes its pairs and links with it. At most about 220 KB on
-//   disk, a few KB in a usual home; written once per kept link (one sends at most 20 a minute).
+//   joins no two sessions and isn't kept; a session that ends takes its pairs and links with it. At most about 0.5 MB on
+//   disk, a few KB in a usual home; written atomically at most once every `LINKS_SAVE_AFTER_MS` while links come (one
+//   timer per burst, never a tick), and at once when a session ends and at the host's close.
 // Nothing here ticks: every change is a call from the host or a backend.
 import {
   MOSS_EVENTS, SESSION_LINK_PAIRS_MAX, SESSION_LINKS_RECENT_MAX, SUBAGENTS_MAX, SessionLinkEvent, SessionLinkPair, SessionSubagent, pluginMayHear,
@@ -77,12 +78,33 @@ export interface LinkStore {
   save(kept: KeptLinks): void;
 }
 
+/** How long a kept link waits before the record is written: a burst of links is one write. */
+export const LINKS_SAVE_AFTER_MS = 3_000;
+
+/** The one timer a pending write uses (a test's own clock; `setTimeout`, unref'd, by default). */
+export interface SaveTimer {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const DEFAULT_TIMER: SaveTimer = {
+  set: (fn, ms) => {
+    const h = setTimeout(fn, ms);
+    (h as { unref?: () => void }).unref?.();
+    return h;
+  },
+  clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
+
 const pairKey = (from: string, to: string) => `${from}\u0000${to}`;
 const fromSession = (l: { from: SessionLinkEvent["from"] }) => (l.from.end === "session" ? l.from.session : undefined);
 
 export class EngineSessionGraph implements SessionGraph {
   readonly #now: () => number;
   readonly #store: LinkStore | undefined;
+  readonly #timer: SaveTimer;
+  /** The write a kept link is waiting for, if one is. */
+  #pendingSave: unknown;
   /** Each pair's last link and count, by `from`/`to`. */
   readonly #pairs = new Map<string, SessionLinkPair>();
   /** The newest links between sessions, oldest first. */
@@ -95,9 +117,10 @@ export class EngineSessionGraph implements SessionGraph {
   /** What each session's fields were when last heard, so an unchanged one isn't heard again. */
   readonly #last = new Map<string, string>();
 
-  constructor(now: () => number = Date.now, store?: LinkStore) {
+  constructor(now: () => number = Date.now, store?: LinkStore, timer: SaveTimer = DEFAULT_TIMER) {
     this.#now = now;
     this.#store = store;
+    this.#timer = timer;
     this.#loadLinks();
   }
 
@@ -122,7 +145,29 @@ export class EngineSessionGraph implements SessionGraph {
     }
   }
 
+  /** A write within `LINKS_SAVE_AFTER_MS`, one for every link of a burst. */
+  #saveSoon(): void {
+    if (this.#store === undefined || this.#pendingSave !== undefined) return;
+    const mine = this.#timer.set(() => {
+      // A timer a flush has already answered (cleared, yet fired) writes nothing more.
+      if (this.#pendingSave !== mine) return;
+      this.#pendingSave = undefined;
+      this.#saveLinks();
+    }, LINKS_SAVE_AFTER_MS);
+    this.#pendingSave = mine;
+  }
+
+  /** Writes what waits now (a clean stop). */
+  flush(): void {
+    if (this.#pendingSave === undefined) return;
+    this.#saveLinks();
+  }
+
   #saveLinks(): void {
+    if (this.#pendingSave !== undefined) {
+      this.#timer.clear(this.#pendingSave);
+      this.#pendingSave = undefined;
+    }
     if (this.#store === undefined) return;
     // A session known here to have ended (one a restart registered as ended) takes its entries out of the file too.
     const gone = (id: string | undefined) => id !== undefined && this.#nodes.get(id)?.ended === true;
@@ -154,7 +199,8 @@ export class EngineSessionGraph implements SessionGraph {
       this.#recent = kept;
       changed = true;
     }
-    if (changed) this.#saveLinks();
+    // A session's end writes at once: its pairs going, or a write that was waiting.
+    if (changed || this.#pendingSave !== undefined) this.#saveLinks();
   }
 
   #keep(event: SessionLinkEvent): void {
@@ -168,7 +214,7 @@ export class EngineSessionGraph implements SessionGraph {
     while (this.#pairs.size > SESSION_LINK_PAIRS_MAX) this.#pairs.delete(this.#pairs.keys().next().value!);
     this.#recent.push(event);
     if (this.#recent.length > SESSION_LINKS_RECENT_MAX) this.#recent.splice(0, this.#recent.length - SESSION_LINKS_RECENT_MAX);
-    this.#saveLinks();
+    this.#saveSoon();
   }
 
   links(reader: FeedReader, since?: number): SessionLinksResult {

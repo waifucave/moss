@@ -74,7 +74,7 @@ import { readJson, writeJsonAtomic } from "./atomic-file";
 import { MAX_RECORD_BYTES, RecordTooLargeError, SessionLogFile, shrinkRecord } from "./event-log";
 import { mainSessionIdFor, mintSessionId, SESSION_ID_PREFIX, sessionLogPath, sessionMetaPath, transcriptsDir } from "./ids";
 import { EngineSessionGraph, derivedStarter } from "./session-graph";
-import { EngineSessionTitles, type TitleStore, type Titler } from "./session-titles";
+import { EngineSessionTitles, titleText, type TitleStore, type Titler } from "./session-titles";
 
 /** After the user's interrupt, how long a driver that said it stopped has to end its turn before the host ends it. */
 export const INTERRUPT_GRACE_MS = 5_000;
@@ -650,8 +650,16 @@ export class DurableSessionHost implements SessionHost {
     if (spec.parent !== undefined) meta.parent = spec.parent;
     // Who started it is the engine's, set once here: the opener's word, or what its kind, bot and parent say.
     meta.startedBy = spec.startedBy ?? derivedStarter(meta);
-    // A title it opens with is its starter's (a spawn's, a definition's): the engine never replaces it.
-    if (meta.title !== undefined) meta.titleBy = "spawn";
+    // A title it opens with is its starter's (a spawn's, a definition's: often a model's words): plain, one line, or none;
+    // the engine never replaces it.
+    if (meta.title !== undefined) {
+      const plain = titleText(meta.title, 200);
+      if (plain === "") delete meta.title;
+      else {
+        meta.title = plain;
+        meta.titleBy = "spawn";
+      }
+    }
     writeJsonAtomic(sessionMetaPath(this.#home, meta.bot, id), meta);
     const log = new SessionLogFile(sessionLogPath(this.#home, meta.bot, id), id, this.#warn);
     log.load();
@@ -980,6 +988,8 @@ export class DurableSessionHost implements SessionHost {
   /** Releases every attached session (a daemon shutdown) and stops counting cards. */
   async close(): Promise<void> {
     this.#offApprovals?.();
+    // The record of links waiting for its write is written now: nothing kept is lost across a clean stop.
+    this.graph.flush();
     for (const s of [...this.#sessions.values()]) if (s.driver) await this.release(s.meta.id);
   }
 
