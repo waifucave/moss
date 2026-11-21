@@ -1,6 +1,7 @@
 // The acceptance run's result table: its steps, in order, and how a run's recorded results become one row per step.
 // Kept apart from run.ts (which starts a run when loaded) so the table can be unit-tested (steps.test.ts).
 import { SETUP_STEPS } from "./setup-step";
+import { CANVAS_STEPS } from "./canvas-step";
 import { UI_STEPS } from "./ui-steps";
 import { EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP } from "./example-steps";
 import { BUNDLED_TOOLS_STEP } from "./bundled-tools-step";
@@ -142,6 +143,8 @@ export const FULL_STEPS = [
   SURFACE_COPY_HOST_STEP,
   // Lane SG's rows: the setup guide in both apps on a fresh home (the `setup` unit, setup-step.ts).
   ...SETUP_STEPS,
+  // The session canvas's rows (spec revision 20, §9.5; the `canvas` unit, canvas-step.ts).
+  ...CANVAS_STEPS,
   COLD_START_STEP,
   IDLE_STEP,
 ] as const;
