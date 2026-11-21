@@ -106,11 +106,19 @@ export function buildModel(
     if (bot !== undefined && !bots.has(bot)) seeBot(bot, "still", s.startedAt);
   }
   for (const [bot, b] of [...bots].sort((x, y) => x[1].startedAt - y[1].startedAt || x[0].localeCompare(y[0]))) {
-    // Its state: the activity feed's, else what its sessions do (running: working; otherwise idle).
-    const botState: BotState = botStates.get(bot) ?? (b.motion === "running" ? "working" : "idle");
+    // The sessions it started that haven't ended: while they run and it doesn't, it waits on them (and says so).
+    const started = all.filter((s) => !isBotKind(s) && starterBot(s) === bot && motionOf(s) !== "ended").length;
+    // What it does itself: the activity feed's word, else its own conversations' motion. Busy itself, it runs; else, while
+    // sessions it started run, it waits on them.
+    const fed = botStates.get(bot);
+    const busy = fed === "thinking" || fed === "working" || fed === "listening" || b.motion === "running";
+    const motion: Motion = busy ? "running" : started > 0 ? "waiting" : b.motion;
+    const botState: BotState = fed ?? (motion === "running" ? "working" : "idle");
+    // Its words: what the feed says it does itself (thinking, working, asking...), else, drawn waiting, what it waits on.
+    const status = motion === "waiting" && botState === "idle" ? `${S.waiting} · ${started > 0 ? S.sessionsCount(started) : S.idle}` : S.botState[botState];
     add({
-      id: botBlockId(bot), type: "bot", bot, title: botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1), meta: S.bot, status: S.botState[botState],
-      motion: b.motion, brand: MOSS_CORAL, botState, startedAt: b.startedAt, messageable: false,
+      id: botBlockId(bot), type: "bot", bot, title: botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1), meta: S.bot, status,
+      motion, brand: MOSS_CORAL, botState, startedAt: b.startedAt, messageable: false,
     });
   }
 

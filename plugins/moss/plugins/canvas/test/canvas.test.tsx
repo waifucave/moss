@@ -121,19 +121,36 @@ describe("the canvas plays the sample scene", () => {
     expect(document.querySelector('.cv-line[data-kind="peer"]')).toBeNull();
     h.to(5_500);
     await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')).not.toBeNull());
-    const wave = document.querySelector(".cv-wave:last-of-type") as SVGGElement;
-    expect(wave).not.toBeNull();
-    // The sender's colour (Claude Code's), and the path starts at the sender's point: s_a sits above s_b, so its bottom.
-    expect(wave.getAttribute("style")).toContain("#D97757");
+    const trips = [...document.querySelectorAll(".cv-trip")] as SVGGElement[];
+    const wave = trips[trips.length - 1]!;
+    // One trip: out of the sender's outline, through its point, down the line, through the receiver's point and round
+    // its outline; in the sender's colour (Claude Code's) turning into the receiver's (Codex's).
+    expect([...wave.querySelectorAll("[data-segment]")].map((s) => s.getAttribute("data-segment"))).toEqual(["leave", "line", "arrive-cw", "arrive-ccw"]);
+    expect([...wave.querySelectorAll(".cv-dotflash")].map((d) => d.getAttribute("data-dot"))).toEqual(["sender", "receiver"]);
+    expect(wave.getAttribute("style")).toContain("--brand: #D97757");
+    expect(wave.getAttribute("style")).toContain("--to: #484FF6");
+    expect(document.querySelector(".cv-hit")).toBeNull();
     const id = wave.getAttribute("data-wave")!;
-    const hit = document.querySelector(`.cv-hit[data-hit="${id}"]`)!;
-    expect(hit.getAttribute("data-travel")).toBe("true");
-    act(() => { hit.dispatchEvent(new Event("animationend", { bubbles: true })); });
-    await waitFor(() => expect(document.querySelector(`.cv-wave[data-wave="${id}"]`)).toBeNull());
+    act(() => { wave.querySelector("[data-last]")!.dispatchEvent(new Event("animationend", { bubbles: true })); });
+    await waitFor(() => expect(document.querySelector(`.cv-trip[data-wave="${id}"]`)).toBeNull());
     // The line stays, and says how many links it carried (a steady mark: what an acceptance row reads).
     expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("1");
     h.to(9_000);
     await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("2"));
+  });
+
+  test("a message to a running block hands over: no clockwise arrival, the running light starts at the arrival point", async () => {
+    const h = mount();
+    h.to(1_000);
+    await waitFor(() => expect(block("s_a")?.getAttribute("data-motion")).toBe("running"));
+    // The person's message at 1 s reached s_a as it began to run (both at 1 s): its ring took the light from its left point.
+    h.to(9_000);
+    await waitFor(() => expect(block("s_a")!.querySelector(".cv-ring[data-handover]")).not.toBeNull());
+    const ring = block("s_a")!.querySelector(".cv-ring[data-handover]") as HTMLElement;
+    // s_b sits below s_a: the message arrives at s_a's bottom point (180°); the turning layer starts there.
+    expect(ring.style.getPropertyValue("--a0")).toBe(`${(180 - 317 + 360) % 360}deg`);
+    const trip = [...document.querySelectorAll(".cv-trip")].pop()!;
+    expect([...trip.querySelectorAll("[data-segment]")].map((s) => s.getAttribute("data-segment"))).toEqual(["leave", "line", "arrive-ccw"]);
   });
 
   test("running shows the light, waiting the dashes, running wins; at the end, still and idle, nothing animates", async () => {
@@ -150,9 +167,9 @@ describe("the canvas plays the sample scene", () => {
     expect(block("s_a")!.querySelector(".cv-march")).toBeNull();
     h.to(20_000);
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("still"));
-    // Every wave's hit ends (as the browser would end its animation).
-    for (const hit of [...document.querySelectorAll(".cv-hit")]) act(() => { hit.dispatchEvent(new Event("animationend", { bubbles: true })); });
-    await waitFor(() => expect(document.querySelectorAll(".cv-ring, .cv-march, .cv-wave, .cv-hit").length).toBe(0));
+    // Every trip ends (as the browser would end its last stretch's animation).
+    for (const last of [...document.querySelectorAll(".cv-trip [data-last]")]) act(() => { last.dispatchEvent(new Event("animationend", { bubbles: true })); });
+    await waitFor(() => expect(document.querySelectorAll(".cv-ring, .cv-march, .cv-trip").length).toBe(0));
   });
 
   test("sessions that ended before the canvas opened fold into a count that expands; ones that end while it is open stay", async () => {
@@ -251,6 +268,8 @@ describe("a block, pressed", () => {
     h.botState("moss", "thinking");
     await waitFor(() => expect(block("bot:moss")!.querySelector(".cv-face")!.getAttribute("data-state")).toBe("thinking"));
     expect(within(block("bot:moss")!).getByText("bot · Thinking")).toBeDefined();
+    // Busy itself, it is drawn running, not waiting.
+    expect(block("bot:moss")!.getAttribute("data-motion")).toBe("running");
   });
 
   test("a mark is bare: no tile; a black-and-white brand's block sets no colour (the theme's text colour)", async () => {
@@ -290,7 +309,7 @@ describe("a block, pressed", () => {
     const items = within(list).getAllByRole("listitem");
     expect(items.length).toBe(5);
     expect(within(list).getByRole("button", { name: "Docs pass, Codex · GPT 6 · medium, Waiting · 1 background job" })).toBeDefined();
-    expect(within(list).getByRole("button", { name: "MOSS, bot, Idle" })).toBeDefined();
+    expect(within(list).getByRole("button", { name: "MOSS, bot, Waiting · 1 session" })).toBeDefined();
     for (const b of within(list).getAllByRole("button")) expect(b.tagName).toBe("BUTTON");
   });
 

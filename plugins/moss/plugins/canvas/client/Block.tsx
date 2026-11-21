@@ -30,6 +30,9 @@ export interface BlockViewProps {
   open: boolean;
   joined: ReadonlySet<Port>;
   dragging?: boolean;
+  /** A message arriving at a running block: its running light starts at that point (a turn of `start` degrees on the
+   *  turning layer) when the light arrives (`delay` s), taking over from it. */
+  handover?: { id: number; start: number; delay: number };
   /** How many of the person's messages it got while the canvas was open (a steady mark beside the point's light). */
   heard?: number;
   /** The session's last line while open: undefined while it is read, null when it has none. */
@@ -78,7 +81,15 @@ export function BlockView(p: BlockViewProps) {
       style={style}
       onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}
     >
-      {b.motion === "running" && <span className="cv-ring" aria-hidden="true" />}
+      {b.motion === "running" && (
+        <span
+          key={p.handover?.id ?? "ring"}
+          className="cv-ring"
+          data-handover={p.handover !== undefined || undefined}
+          style={p.handover !== undefined ? ({ "--a0": `${p.handover.start}deg`, "--ring-delay": `${Math.round(p.handover.delay * 1000) / 1000}s` } as CSSProperties) : undefined}
+          aria-hidden="true"
+        />
+      )}
       {b.motion === "waiting" && (
         <svg className="cv-march" aria-hidden="true">
           <rect className="cv-march__rect" />

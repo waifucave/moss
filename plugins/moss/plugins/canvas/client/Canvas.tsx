@@ -4,6 +4,7 @@
 // crossing, and it all pauses while the window is hidden.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BlockView, type Port } from "./Block";
+import { choreograph, CREST, OUTLINE_RADIUS, ringStart, type Choreography, type TripInput } from "./choreography";
 import { bounds, EMPTY_LAYOUT, place, rectOf, SIZE, type Layout, type Point, type Rect } from "./layout";
 import { livePeers, type LinkState, type Wave } from "./links";
 import type { BackendLook, BotState } from "./look";
@@ -270,6 +271,12 @@ export function Canvas(p: CanvasProps) {
     return () => document.removeEventListener("visibilitychange", on);
   }, []);
 
+  // A running receiver's running light starts where the newest message arrives at it (choreography.ts).
+  const handovers = new Map<string, { id: number; start: number; delay: number }>();
+  for (const w of p.links.waves) {
+    const trip = tripOf({ wave: w, edges, ports, rects, model });
+    if (trip?.handover !== undefined) handovers.set(w.to, { id: w.id, start: ringStart(trip.handover.angle), delay: trip.handover.delay });
+  }
   const mains = model.blocks.filter((b) => b.type === "main" && b.motion !== "ended");
   const running = mains.filter((b) => b.motion === "running").length;
   const waiting = mains.filter((b) => b.motion === "waiting").length;
@@ -328,7 +335,6 @@ export function Canvas(p: CanvasProps) {
               const [pa, pb] = ports.get(e.id)!;
               return <path key={e.id} className="cv-line" data-kind={e.kind} data-edge={e.id} data-links={p.links.heard[e.id] ?? 0} d={curve(portAt(rects.get(e.a)!, pa), pa, portAt(rects.get(e.b)!, pb), pb)} />;
             })}
-            {p.links.waves.map((w) => <WavePath key={w.id} wave={w} edges={edges} ports={ports} rects={rects} />)}
           </svg>
           <ul className="cv-blocks" aria-label={S.blocks}>
             {shown.map((b) => (
@@ -340,6 +346,7 @@ export function Canvas(p: CanvasProps) {
                 open={open === b.id}
                 joined={joined.get(b.id) ?? NONE}
                 dragging={drag?.id === b.id}
+                {...(handovers.get(b.id) !== undefined ? { handover: handovers.get(b.id)! } : {})}
                 {...(p.links.heard[`to:${b.id}`] !== undefined ? { heard: p.links.heard[`to:${b.id}`]! } : {})}
                 {...(b.session !== undefined && lines[b.session] !== undefined ? { line: lines[b.session] } : {})}
                 onToggle={toggle}
@@ -352,7 +359,7 @@ export function Canvas(p: CanvasProps) {
             ))}
           </ul>
           <svg className="cv-over" width={worldW} height={worldH} aria-hidden="true">
-            {p.links.waves.map((w) => <Hit key={w.id} wave={w} edges={edges} ports={ports} rects={rects} model={model} onDone={p.onWaveDone} />)}
+            {p.links.waves.map((w) => <Trip key={w.id} wave={w} edges={edges} ports={ports} rects={rects} model={model} onDone={p.onWaveDone} />)}
           </svg>
         </div>
       </div>
@@ -363,15 +370,15 @@ export function Canvas(p: CanvasProps) {
 
 const NONE: ReadonlySet<Port> = new Set();
 
-interface WaveGeometry { wave: Wave; edges: readonly Edge[]; ports: ReadonlyMap<string, [Port, Port]>; rects: ReadonlyMap<string, Rect> }
+interface WaveGeometry { wave: Wave; edges: readonly Edge[]; ports: ReadonlyMap<string, [Port, Port]>; rects: ReadonlyMap<string, Rect>; model: CanvasModel }
 
-/** Where a wave leaves and arrives: the sender's point on its line, the receiver's; for the person's message only the
- *  receiver's left point. Undefined when its line or blocks are not shown. */
-export function waveEnds(g: WaveGeometry): { from?: { at: Point; port: Port }; to: { at: Point; port: Port } } | undefined {
+/** Where a wave leaves and arrives: the sending block and its point on the line, the receiving block and its point; for
+ *  the person's message only the receiver, at its left point. Undefined when its line or blocks are not shown. */
+export function waveEnds(g: Omit<WaveGeometry, "model">): { from?: { id: string; at: Point; port: Port }; to: { id: string; at: Point; port: Port } } | undefined {
   const w = g.wave;
   if (w.edge === undefined) {
     const r = g.rects.get(w.to);
-    return r === undefined ? undefined : { to: { at: portAt(r, "l"), port: "l" } };
+    return r === undefined ? undefined : { to: { id: w.to, at: portAt(r, "l"), port: "l" } };
   }
   const e = g.edges.find((x) => x.id === w.edge);
   const pr = e === undefined ? undefined : g.ports.get(e.id);
@@ -382,52 +389,63 @@ export function waveEnds(g: WaveGeometry): { from?: { at: Point; port: Port }; t
   const rf = g.rects.get(fromId);
   const rt = g.rects.get(toId);
   if (rf === undefined || rt === undefined) return undefined;
-  return { from: { at: portAt(rf, fp), port: fp }, to: { at: portAt(rt, tp), port: tp } };
+  return { from: { id: fromId, at: portAt(rf, fp), port: fp }, to: { id: toId, at: portAt(rt, tp), port: tp } };
 }
 
-/** A wave's colours as the block's: none for a black-and-white brand (the text colour then). */
-const waveColours = (w: Wave): Record<string, string> => ({ ...(w.color !== undefined ? { "--brand": w.color } : {}), ...(w.color2 !== undefined ? { "--brand2": w.color2 } : {}) });
+/** A wave's colours as the blocks': the sender's (`--brand`, `--brand2`) and the receiver's (`--to`, `--to2`); none for a
+ *  black-and-white brand (the text colour then). */
+const waveColours = (w: Wave): Record<string, string> => ({
+  ...(w.color !== undefined ? { "--brand": w.color } : {}), ...(w.color2 !== undefined ? { "--brand2": w.color2 } : {}),
+  ...(w.toColor !== undefined ? { "--to": w.toColor } : {}), ...(w.toColor2 !== undefined ? { "--to2": w.toColor2 } : {}),
+});
 
-/** A message crossing a line: the line itself brightens over a soft stretch that travels from the sender's point to the
- *  receiver's, in the sender's colour (two strokes: a blurred glow and the light). */
-function WavePath(g: WaveGeometry) {
+const radiusOf = (b: Block | undefined) => (b?.type === "bot" ? 14 : OUTLINE_RADIUS);
+
+/** A wave's whole trip (choreography.ts), or undefined when its blocks are not shown. */
+export function tripOf(g: WaveGeometry): Choreography | undefined {
   const ends = waveEnds(g);
-  if (ends?.from === undefined) return null;
-  const d = curve(ends.from.at, ends.from.port, ends.to.at, ends.to.port);
-  // The bright stretch is about 90px of the line (less on a short one), travelling its whole length and past it.
-  const len = Math.max(1, Math.round(curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port)));
-  const stretch = Math.round(Math.min(90, Math.max(24, len * 0.45)));
-  const style = { ...waveColours(g.wave), "--len": `${len}px`, "--stretch": `${stretch}px` } as CSSProperties;
-  // The light runs in the sender's colour, from its first colour at the sender to its second at the receiver.
-  const grad = `cv-wave-${g.wave.id}`;
+  if (ends === undefined) return undefined;
+  const receiver = g.model.byId.get(ends.to.id);
+  const rr = g.rects.get(ends.to.id)!;
+  const input: TripInput = { receiver: { rect: rr, port: ends.to.port, radius: radiusOf(receiver), running: receiver?.motion === "running" } };
+  if (ends.from !== undefined) {
+    const rf = g.rects.get(ends.from.id)!;
+    input.sender = { rect: rf, port: ends.from.port, radius: radiusOf(g.model.byId.get(ends.from.id)) };
+    input.line = { d: curve(ends.from.at, ends.from.port, ends.to.at, ends.to.port), length: curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port), from: ends.from.at, to: ends.to.at };
+  }
+  return choreograph(input);
+}
+
+const sec = (s: number) => `${Math.round(s * 1000) / 1000}s`;
+
+/** A message's trip, drawn over the blocks: one bright crest leaving the sender's outline through its point, down the
+ *  line, through the receiver's point and round its outline, turning into the receiver's colour. The trip ends (and the
+ *  wave goes) when its last stretch's animation ends. */
+function Trip(g: WaveGeometry & { onDone(id: number): void }) {
+  const c = tripOf(g);
+  useEffect(() => { if (c === undefined) g.onDone(g.wave.id); }, [c === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (c === undefined) return null;
+  const last = c.segments.reduce((a, s, i) => (s.delay + s.duration > c.segments[a]!.delay + c.segments[a]!.duration ? i : a), 0);
+  const id = g.wave.id;
   return (
-    <g className="cv-wave" data-wave={g.wave.id} style={style}>
-      <linearGradient id={grad} gradientUnits="userSpaceOnUse" x1={ends.from.at.x} y1={ends.from.at.y} x2={ends.to.at.x} y2={ends.to.at.y}>
-        <stop className="cv-wave__c1" offset="0" />
-        <stop className="cv-wave__c2" offset="1" />
-      </linearGradient>
-      <path className="cv-wave__path cv-wave__glow" d={d} stroke={`url(#${grad})`} />
-      <path className="cv-wave__path cv-wave__light" d={d} stroke={`url(#${grad})`} />
+    <g className="cv-trip" data-wave={id} style={waveColours(g.wave) as CSSProperties}>
+      {c.segments.map((s, i) => {
+        const grad = `cv-trip-${id}-${i}`;
+        const style = { "--len": `${s.length}px`, "--crest": `${CREST}px`, "--dur": sec(s.duration), "--delay": sec(s.delay) } as CSSProperties;
+        return (
+          <g key={s.kind} data-segment={s.kind}>
+            <linearGradient id={grad} gradientUnits="userSpaceOnUse" x1={s.from.x} y1={s.from.y} x2={s.to.x} y2={s.to.y}>
+              <stop className={s.morph ? "cv-trip__from-sender" : "cv-trip__c1"} offset="0" />
+              <stop className={s.morph ? "cv-trip__to-receiver" : "cv-trip__c2"} offset="1" />
+            </linearGradient>
+            <path className="cv-seg cv-seg--glow" d={s.d} stroke={`url(#${grad})`} style={style} />
+            <path className="cv-seg cv-seg--light" d={s.d} stroke={`url(#${grad})`} style={style} {...(i === last ? { "data-last": "" } : {})} onAnimationEnd={i === last ? () => g.onDone(id) : undefined} />
+          </g>
+        );
+      })}
+      {c.dots.map((d) => (
+        <circle key={d.role} className="cv-dotflash" data-dot={d.role} cx={d.at.x} cy={d.at.y} r={3} style={{ "--dur": sec(d.duration), "--delay": sec(d.delay) } as CSSProperties} />
+      ))}
     </g>
-  );
-}
-
-/** The receiving point lighting as the wave arrives (at once for the person's message). Its end is the wave's end. */
-function Hit(g: WaveGeometry & { model: CanvasModel; onDone(id: number): void }) {
-  const ends = waveEnds(g);
-  useEffect(() => { if (ends === undefined) g.onDone(g.wave.id); }, [ends === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (ends === undefined) return null;
-  const style = waveColours(g.wave) as CSSProperties;
-  return (
-    <circle
-      className="cv-hit"
-      data-hit={g.wave.id}
-      data-travel={g.wave.edge !== undefined || undefined}
-      cx={ends.to.at.x}
-      cy={ends.to.at.y}
-      r={6}
-      style={style}
-      onAnimationEnd={() => g.onDone(g.wave.id)}
-    />
   );
 }

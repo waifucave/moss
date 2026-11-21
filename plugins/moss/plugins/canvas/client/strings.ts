@@ -20,6 +20,7 @@ export const S = {
   lastTurnFailed: "Idle · the last turn failed",
   jobs: (n: number) => plural(n, "background job", "background jobs"),
   children: (n: number) => plural(n, "session it started", "sessions it started"),
+  sessionsCount: (n: number) => plural(n, "session", "sessions"),
   subagents: (n: number) => plural(n, "subagent", "subagents"),
   subagent: "subagent",
   sub: "sub",

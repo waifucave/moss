@@ -105,6 +105,8 @@ describe("the model of the sample scene", () => {
     expect(at(11_000).byId.get("s_c")!.motion).toBe("ended");
     expect(at(6_500).byId.get(botBlockId("moss"))!.motion).toBe("running");
     expect(at(8_000).byId.get(botBlockId("moss"))!.motion).toBe("waiting");
+    // Drawn waiting, it says what it waits on; a bot whose session runs waits on it (not "Idle").
+    expect(at(8_000).byId.get(botBlockId("moss"))!.status).toBe("Waiting · 1 session");
     expect(at(8_000).byId.get("s_b")!.status).toBe("Waiting · 1 background job");
   });
 
