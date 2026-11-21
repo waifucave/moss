@@ -290,18 +290,33 @@ export function Canvas(p: CanvasProps) {
   const loopEls = useRef(new Map<string, SVGGElement>());
   const loopFrom = useRef(new Map<string, { start: number; delay: number; id: number }>());
   const runningSince = useRef(new Map<string, number>());
-  const trips = useRef(new Map<number, Trip>());
+  const trips = useRef(new Map<number, { trip: Trip; seen: number; head: number | undefined }>());
   const now = typeof performance !== "undefined" ? performance.now() : 0;
   for (const b of model.blocks) {
     if (b.motion === "running") { if (!runningSince.current.has(b.id)) runningSince.current.set(b.id, now); }
     else { runningSince.current.delete(b.id); loopFrom.current.delete(b.id); }
   }
   for (const w of p.links.waves) {
-    if (trips.current.has(w.id)) continue;
+    const receiver = model.byId.get(w.to);
+    const since = receiver === undefined ? undefined : runningSince.current.get(receiver.id);
+    const planned = trips.current.get(w.id);
+    if (planned !== undefined) {
+      // The receiver started running after the message left (its status came a moment after the link): before the light
+      // arrives, the trip's end becomes a handover. At one speed the light is where it was whatever the path's length,
+      // so its dashes don't move; only what lies past the receiver's point changes.
+      const elapsed = (now - planned.seen) / 1000;
+      if (!planned.trip.handover && since !== undefined && since >= planned.seen && elapsed < planned.trip.arrive && !loopFrom.current.has(w.to)) {
+        const t = tripOf({ wave: w, edges, ports, rects, model }, planned.head, true);
+        if (t !== undefined) {
+          trips.current.set(w.id, { ...planned, trip: t });
+          if (t.loopStart !== undefined) loopFrom.current.set(w.to, { start: t.loopStart.at, delay: t.loopStart.delay - elapsed, id: w.id });
+        }
+      }
+      continue;
+    }
     const ends = waveEnds({ wave: w, edges, ports, rects });
     if (ends === undefined) continue;
     const sender = ends.from === undefined ? undefined : model.byId.get(ends.from.id);
-    const receiver = model.byId.get(ends.to.id);
     let head: number | undefined;
     if (sender?.motion === "running") {
       const el = loopEls.current.get(sender.id);
@@ -311,11 +326,10 @@ export function Canvas(p: CanvasProps) {
       const start = Number(el?.dataset.start ?? 0);
       head = typeof progress === "number" ? headAfter(r, start, (progress * perimeter(r, radiusOf(sender))) / LIGHT_SPEED, radiusOf(sender)) : start;
     }
-    const since = receiver === undefined ? undefined : runningSince.current.get(receiver.id);
-    const handover = receiver?.motion === "running" && since !== undefined && now - since < 100 && !loopFrom.current.has(receiver.id);
+    const handover = receiver?.motion === "running" && since !== undefined && now - since < 100 && !loopFrom.current.has(w.to);
     const t = tripOf({ wave: w, edges, ports, rects, model }, head, handover);
     if (t === undefined) continue;
-    trips.current.set(w.id, t);
+    trips.current.set(w.id, { trip: t, seen: now, head });
     if (t.loopStart !== undefined) loopFrom.current.set(w.to, { start: t.loopStart.at, delay: t.loopStart.delay, id: w.id });
   }
   for (const id of [...trips.current.keys()]) if (!p.links.waves.some((w) => w.id === id)) trips.current.delete(id);
@@ -408,7 +422,7 @@ export function Canvas(p: CanvasProps) {
               return <Loop key={`l-${b.id}-${from?.id ?? 0}`} block={b} rect={rects.get(b.id)!} {...(from !== undefined ? { from } : {})} onEl={(el) => { if (el) loopEls.current.set(b.id, el); else loopEls.current.delete(b.id); }} />;
             })}
             {p.links.waves.map((w) => {
-              const t = trips.current.get(w.id);
+              const t = trips.current.get(w.id)?.trip;
               return t === undefined ? <Gone key={w.id} id={w.id} onDone={p.onWaveDone} /> : <TripView key={w.id} wave={w} t={t} onDone={p.onWaveDone} />;
             })}
           </svg>

@@ -29,11 +29,16 @@ function Gallery() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // The pictures pin each animation part-way (page.css): a headless capture doesn't advance them.
   useEffect(() => { if (params.get("freeze") === "1") document.documentElement.dataset.freeze = ""; else delete document.documentElement.dataset.freeze; }, [params]);
-  // `#t=<seconds>`: every message's trip pinned at that moment of its trip (the frame strips).
+  // `#t=<seconds>`: every animation pinned at that moment since it began (the frame strips). Pinned once the scene's trip
+  // has started (a capture's clock doesn't move animations, so until then every light sits where it began, and the trip
+  // planned from the sender's light starts on the same clock as the loops).
   useEffect(() => {
     const t = params.get("t");
-    if (t !== null) { document.documentElement.dataset.tripAt = ""; document.documentElement.style.setProperty("--trip-t", `${Number(t)}s`); }
-    else { delete document.documentElement.dataset.tripAt; document.documentElement.style.removeProperty("--trip-t"); }
+    const root = document.documentElement;
+    if (t === null) { delete root.dataset.tripAt; delete root.dataset.tripPending; root.style.removeProperty("--trip-t"); return; }
+    root.dataset.tripPending = "";
+    const pin = setTimeout(() => { delete root.dataset.tripPending; root.dataset.tripAt = ""; root.style.setProperty("--trip-t", `${Number(t)}s`); }, 400);
+    return () => clearTimeout(pin);
   }, [params]);
   const go = (next: Record<string, string>) => {
     const p = hash();
