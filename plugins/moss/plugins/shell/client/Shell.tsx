@@ -239,8 +239,9 @@ export function Shell({ props }: EntryProps<ShellProps>) {
   const main = !shown ? (
     <NothingHere key="loading" title={S.loading} />
   ) : shown.route === "start" ? (
-    // A plugin's entry keyed `start` is the start page; with none, the shell's own new-session page.
-    <Spot key="start" name="main" spotKey="start" props={{ route: "start", params: {}, navigate }} fallback={<NewSession key="new" onStarted={(id) => navigate({ route: "agent", params: { session: id } })} />} />
+    // A plugin's entry keyed `start` is the start page, given the route's params (the session a tab's corner asks it to
+    // bring into view); with none, the shell's own new-session page.
+    <Spot key="start" name="main" spotKey="start" props={{ route: "start", params: shown.params, navigate }} fallback={<NewSession key="new" onStarted={(id) => navigate({ route: "agent", params: { session: id } })} />} />
   ) : (
     <Spot key="page" name="main" spotKey={shown.route} props={{ route: shown.route, params: shown.params, navigate }} fallback={<NothingHere title={S.nothingHere} />} />
   );
