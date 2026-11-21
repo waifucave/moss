@@ -25,6 +25,7 @@ const PLUGINS = [
 const detail = (p: PluginSummary, capabilities: string[], networkHosts: string[] = []): PluginDetail => pluginDetail(p, { capabilities, networkHosts });
 
 let uiSetFails = false;
+let setEnabledFails = false;
 let uiAppearance: "light" | "dark" | "system" | undefined;
 
 async function mount(params: { section?: string; item?: string } = {}, extra: { component?: EntryComponent } = {}) {
@@ -32,7 +33,7 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
   const core = fakeCore({
     "plugin.list": () => ({ plugins: PLUGINS }),
     "plugin.get": ({ id }) => ({ plugin: detail(PLUGINS.find((p) => p.id === id)!, id === "weather-routine" ? ["notify", "network:api.weather.example"] : ["conversation.read", "call:moss"], id === "weather-routine" ? ["api.weather.example"] : []) }),
-    "plugin.setEnabled": () => ({ applied: true }),
+    "plugin.setEnabled": () => { if (setEnabledFails) throw new Error("the plugin couldn't be switched"); return { applied: true }; },
     "plugin.logs": () => ({ lines: ["14:05 started", "14:06 TypeError: scene"] }),
     "plugin.ui": () => ({ plugins: [uiPluginView("moss/base-theme", [{ id: "base", file: "base.css" }], []), uiPluginView("midnight", [{ id: "night", file: "night.css" }], [{ lang: "de", file: "de.json" }])] }),
     "account.status": () => ({ signedIn: true, provider: "email", user: { id: "u1", name: "Sam" } }),
@@ -142,6 +143,58 @@ describe("settings on the runtime", () => {
     fireEvent.click(within(chooser).getByRole("radio", { name: /Deutsch/ }));
     await act(() => settle());
     expect(core.calls.filter((c) => c.method === "ui.set").map((c) => c.params)).toContainEqual({ patch: { language: "de" } });
+  });
+
+  test("a change that isn't saved (refused: the shared budget spent) goes back to the stored value and says so beside it", async () => {
+    const { api } = await mount({ section: "notifications" });
+    const sw = () => screen.getByRole("switch", { name: /needs you/i });
+    expect(sw().getAttribute("aria-checked")).toBe("true");
+    const set = api.settings.set;
+    api.settings.set = async () => { throw new Error("moss's pages changed its settings 30 times this minute; try again in a moment"); };
+    fireEvent.click(sw());
+    await act(() => settle());
+    expect(sw().getAttribute("aria-checked")).toBe("true");
+    const said = sw().parentElement!.querySelector("[role=alert]")!;
+    expect(said.textContent).toContain("wasn't changed. Try again.");
+    // Tried again and saved: the line goes, the switch shows the change.
+    api.settings.set = set;
+    fireEvent.click(sw());
+    await act(() => settle());
+    expect(sw().getAttribute("aria-checked")).toBe("false");
+    expect(sw().parentElement!.querySelector("[role=alert]")).toBeNull();
+    expect(api.stored.get("notifications.needsYou")).toBe(false);
+  });
+
+  test("a plugin's switch whose change fails stays as it was and says so beside it", async () => {
+    await mount({ section: "plugins" });
+    const sw = screen.getByRole("switch", { name: "Story mode" });
+    const was = sw.getAttribute("aria-checked");
+    setEnabledFails = true;
+    try {
+      fireEvent.click(sw);
+      await act(() => settle());
+      expect(screen.getByRole("switch", { name: "Story mode" }).getAttribute("aria-checked")).toBe(was);
+      expect(screen.getByRole("switch", { name: "Story mode" }).parentElement!.querySelector("[role=alert]")!.textContent).toContain("Story mode wasn't changed");
+    } finally {
+      setEnabledFails = false;
+    }
+  });
+
+  test("while a change is being saved its control takes no second press", async () => {
+    const { api } = await mount({ section: "notifications" });
+    let release!: () => void;
+    let writes = 0;
+    api.settings.set = () => { writes++; return new Promise<void>((r) => { release = r; }); };
+    const sw = () => screen.getByRole("switch", { name: /needs you/i });
+    fireEvent.click(sw());
+    await act(() => settle());
+    expect(sw().getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(sw());
+    await act(() => settle());
+    expect(writes).toBe(1);
+    expect(sw().getAttribute("aria-checked")).toBe("false");
+    await act(async () => { release(); await settle(); });
+    expect(sw().hasAttribute("aria-busy")).toBe(false);
   });
 
   test("appearance: with no `appearance` in the core the theme shows System, whatever an old plugin-only copy says", async () => {

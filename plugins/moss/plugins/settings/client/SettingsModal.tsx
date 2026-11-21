@@ -3,7 +3,7 @@
 // account and devices, appearance and notifications, plugins with their states, OKs and logs, and each
 // computer's level. Pages with nothing to set yet say so. It fills the shell's `settings.section` spot
 // with its own sections; a plugin adds one there.
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { IconClose, IconPlugin, IconSearch, SECTION_ICONS } from "./icons";
 import { S } from "./strings";
 import type { OneAtATimeView, SettingsModalProps, SettingsSection, ToolAvailability, ToolPermission, ToolsView } from "./types";
@@ -161,23 +161,45 @@ function ToolsPage({ tools, onSet, onSetAvailability, onTakeBack, item }: { tool
   );
 }
 
-function Toggle({ label, on, onChange }: { label: string; on: boolean; onChange: (on: boolean) => void }) {
+/** Which controls are saving and which failed to save (SettingsModalProps.saves). */
+const Saves = createContext<{ busy: ReadonlySet<string>; failed: ReadonlySet<string> }>({ busy: new Set(), failed: new Set() });
+
+/** A control's save: while it is under way the control takes no second press; when it failed, one plain line beside it
+ *  says so (read out at once) and the control is back on its stored value. */
+function useSave(path: string | undefined): { busy: boolean; failed: boolean } {
+  const s = useContext(Saves);
+  return { busy: path !== undefined && s.busy.has(path), failed: path !== undefined && s.failed.has(path) };
+}
+
+function SaveFailed({ label }: { label: string }) {
+  return <span className="cl-settings__save-failed" role="alert">{S.choiceFailed(label)}</span>;
+}
+
+function Toggle({ label, on, onChange, path }: { label: string; on: boolean; onChange: (on: boolean) => void; path?: string }) {
+  const save = useSave(path);
   return (
-    <button type="button" role="switch" aria-checked={on} aria-label={label} className="cl-settings__switch" onClick={() => onChange(!on)}>
-      <span className="cl-settings__knob" />
-    </button>
+    <span className="cl-settings__control">
+      {save.failed && <SaveFailed label={label} />}
+      <button type="button" role="switch" aria-checked={on} aria-label={label} aria-busy={save.busy || undefined} className="cl-settings__switch" onClick={() => { if (!save.busy) onChange(!on); }}>
+        <span className="cl-settings__knob" />
+      </button>
+    </span>
   );
 }
 
-function Choice<T extends string>({ label, value, options, labels, onChange }: { label: string; value: T; options: readonly T[]; labels: Record<T, string>; onChange: (value: T) => void }) {
+function Choice<T extends string>({ label, value, options, labels, onChange, path }: { label: string; value: T; options: readonly T[]; labels: Record<T, string>; onChange: (value: T) => void; path?: string }) {
+  const save = useSave(path);
   return (
-    <div className="cl-settings__segmented" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={o} type="button" role="radio" aria-checked={o === value} className="cl-settings__segment" onClick={() => onChange(o)}>
-          {labels[o]}
-        </button>
-      ))}
-    </div>
+    <span className="cl-settings__control">
+      {save.failed && <SaveFailed label={label} />}
+      <div className="cl-settings__segmented" role="radiogroup" aria-label={label} aria-busy={save.busy || undefined}>
+        {options.map((o) => (
+          <button key={o} type="button" role="radio" aria-checked={o === value} className="cl-settings__segment" onClick={() => { if (!save.busy) onChange(o); }}>
+            {labels[o]}
+          </button>
+        ))}
+      </div>
+    </span>
   );
 }
 
@@ -299,7 +321,7 @@ function Page({ props }: { props: SettingsModalProps }) {
             </select>
           </Row>
           <Row label={S.textSize}>
-            <Choice label={S.textSize} value={values.appearance.textSize} options={["small", "default", "large"] as const} labels={S.textSizes} onChange={(v) => onChange("appearance.textSize", v)} />
+            <Choice label={S.textSize} value={values.appearance.textSize} options={["small", "default", "large"] as const} labels={S.textSizes} onChange={(v) => onChange("appearance.textSize", v)} path="appearance.textSize" />
           </Row>
           <Row label={S.language} detail={S.languageDetail}>
             <span className="cl-settings__value">{values.language.name}</span>
@@ -313,16 +335,16 @@ function Page({ props }: { props: SettingsModalProps }) {
       return (
         <>
           <Row label={S.notifyNeedsYou} detail={S.notifyNeedsYouDetail}>
-            <Toggle label={S.notifyNeedsYou} on={values.notifications.needsYou} onChange={(v) => onChange("notifications.needsYou", v)} />
+            <Toggle label={S.notifyNeedsYou} on={values.notifications.needsYou} onChange={(v) => onChange("notifications.needsYou", v)} path="notifications.needsYou" />
           </Row>
           <Row label={S.notifyAgentDone}>
-            <Toggle label={S.notifyAgentDone} on={values.notifications.agentDone} onChange={(v) => onChange("notifications.agentDone", v)} />
+            <Toggle label={S.notifyAgentDone} on={values.notifications.agentDone} onChange={(v) => onChange("notifications.agentDone", v)} path="notifications.agentDone" />
           </Row>
           <Row label={S.notifyRoutineFailed}>
-            <Toggle label={S.notifyRoutineFailed} on={values.notifications.routineFailed} onChange={(v) => onChange("notifications.routineFailed", v)} />
+            <Toggle label={S.notifyRoutineFailed} on={values.notifications.routineFailed} onChange={(v) => onChange("notifications.routineFailed", v)} path="notifications.routineFailed" />
           </Row>
           <Row label={S.notifySounds}>
-            <Toggle label={S.notifySounds} on={values.notifications.sounds} onChange={(v) => onChange("notifications.sounds", v)} />
+            <Toggle label={S.notifySounds} on={values.notifications.sounds} onChange={(v) => onChange("notifications.sounds", v)} path="notifications.sounds" />
           </Row>
         </>
       );
@@ -357,7 +379,7 @@ function Page({ props }: { props: SettingsModalProps }) {
                     {S.pluginLogs}
                   </button>
                 )}
-                <Toggle label={p.name} on={p.enabled} onChange={(v) => onChange(`plugins.${p.id}.enabled`, v)} />
+                <Toggle label={p.name} on={p.enabled} onChange={(v) => onChange(`plugins.${p.id}.enabled`, v)} path={`plugins.${p.id}.enabled`} />
               </div>}
             </div>
           ))}
@@ -513,7 +535,9 @@ export function SettingsModal(props: SettingsModalProps) {
         <section className="cl-settings__page" aria-label={title} ref={page}>
           <h3 className="cl-settings__page-title">{title}</h3>
           {props.failure !== undefined && <p role="alert" className="cl-settings__failure">{props.failure}</p>}
-          <Page props={props} />
+          <Saves.Provider value={props.saves ?? { busy: new Set(), failed: new Set() }}>
+            <Page props={props} />
+          </Saves.Provider>
         </section>
       </div>
     </div>

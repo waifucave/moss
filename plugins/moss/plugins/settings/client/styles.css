@@ -281,6 +281,19 @@
   color: var(--moss-color-danger);
 }
 
+/* A control with its save state: the line saying a change wasn't saved sits beside it. */
+.cl-settings__control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--moss-space-s);
+  min-width: 0;
+}
+
+.cl-settings__save-failed {
+  color: var(--moss-color-danger);
+  font-size: var(--moss-font-size-label);
+}
+
 .cl-settings__oks {
   font-size: var(--moss-font-size-label);
 }

@@ -11,7 +11,7 @@
 import { type CoreClient, Spot, useCore, usePluginApi, useSpotEntries } from "@waifucave/moss-plugin-sdk/ui";
 import type { PluginDetail, PluginSummary, UiPluginView, UiSettings } from "@waifucave/moss-plugin-sdk";
 import { deviceKind, fieldText, plain } from "./local";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { APPEARANCE_KEYS, NOTIFICATION_KEYS, OWN_SETTING_KEYS, settingKey } from "./keys";
 import { LanguageChooser } from "./LanguageChooser";
 import { SettingsModal } from "./SettingsModal";
@@ -153,6 +153,22 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
   // Light / dark / system is the core's `appearance` alone (the app's main process applies it): what a pick set until the
   // core is read again, else what the core has, else system.
   const [failure, setFailure] = useState<string | undefined>(undefined);
+  // Each control's save (SettingsModalProps.saves): one at a time per control, and back to the stored value when it fails.
+  const busyRef = useRef(new Set<string>());
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const beginSave = (path: string): boolean => {
+    if (busyRef.current.has(path)) return false;
+    busyRef.current.add(path);
+    setBusy(new Set(busyRef.current));
+    setFailed((f) => { if (!f.has(path)) return f; const n = new Set(f); n.delete(path); return n; });
+    return true;
+  };
+  const endSave = (path: string, ok: boolean) => {
+    busyRef.current.delete(path);
+    setBusy(new Set(busyRef.current));
+    if (!ok) setFailed((f) => new Set(f).add(path));
+  };
   const [themePick, setThemePick] = useState<"light" | "dark" | "system" | undefined>(undefined);
   const [computers, setComputers] = useState<Awaited<ReturnType<NonNullable<NonNullable<typeof api.computers>["list"]>>>>([]);
   const [devices, setDevices] = useState<Awaited<ReturnType<NonNullable<typeof api.devices>["list"]>>>([]);
@@ -262,19 +278,27 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
           () => { setThemePick(undefined); setFailure(S.choiceFailed(S.theme)); },
         );
       }
-    } else if (head === "appearance" && key) {
-      const next = { ...values.appearance, [key]: value } as SettingsValues["appearance"];
-      setOwn((o) => ({ ...o, appearance: next }));
-      void api.settings.set(settingKey("appearance", key), value).catch(() => undefined);
-    } else if (head === "notifications" && key) {
-      const next = { ...values.notifications, [key]: value } as SettingsValues["notifications"];
-      setOwn((o) => ({ ...o, notifications: next }));
-      void api.settings.set(settingKey("notifications", key), value).catch(() => undefined);
+    } else if ((head === "appearance" || head === "notifications") && key) {
+      // Shown at once; saved in the person's press. Refused or failed: back to the stored value, and the line beside it says so.
+      if (!beginSave(path)) return;
+      const stored = (values[head] as Record<string, unknown>)[key];
+      const put = (v: unknown) => setOwn((o) => (head === "appearance"
+        ? { ...o, appearance: { ...(o.appearance ?? values.appearance), [key]: v } as SettingsValues["appearance"] }
+        : { ...o, notifications: { ...(o.notifications ?? values.notifications), [key]: v } as SettingsValues["notifications"] }));
+      put(value);
+      void Promise.resolve().then(() => api.settings.set(settingKey(head, key), value)).then(
+        () => endSave(path, true),
+        () => { put(stored); endSave(path, false); },
+      );
     } else if (head === "theme" && typeof value === "string" && core) {
       // A theme is `<plugin-id>#<theme-id>` (B's `ThemeRef`).
       if (value.includes("#")) void core.call("ui.set", { patch: { globalTheme: value } }).then(() => setRevision((r) => r + 1), () => setFailure(S.choiceFailed(S.themePlugin)));
     } else if (head === "plugins" && key && field === "enabled" && core) {
-      void core.call("plugin.setEnabled", { id: key, enabled: value === true }).then(() => setRevision((r) => r + 1));
+      if (!beginSave(path)) return;
+      void core.call("plugin.setEnabled", { id: key, enabled: value === true }).then(
+        () => { setRevision((r) => r + 1); endSave(path, true); },
+        () => endSave(path, false),
+      );
     }
   };
 
@@ -295,6 +319,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
   return (
     <SettingsModal
       {...(failure !== undefined ? { failure } : {})}
+      saves={{ busy, failed }}
       section={section}
       onSection={(s) => {
         setLogs(undefined);

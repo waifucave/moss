@@ -96,6 +96,10 @@ export interface OneAtATimeView {
 export interface SettingsModalProps {
   /** A change that didn't take, said at the top of the page (the control has gone back to what is real). */
   failure?: string;
+  /** The controls whose change is being saved (each takes no second press until it is done), and those whose last
+   *  change wasn't saved (each back on its stored value, with a line beside it saying so), by their path
+   *  (`notifications.needsYou`, `plugins.<id>.enabled`). */
+  saves?: { busy: ReadonlySet<string>; failed: ReadonlySet<string> };
   /** One of MOSS's own sections, or an added one's id. */
   section: SettingsSection | string;
   onSection: (section: SettingsSection | string) => void;
