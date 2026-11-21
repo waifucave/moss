@@ -64,7 +64,7 @@ describe("an agent on another computer", () => {
     const p = make({ b: { quirks: S5_CURSOR_QUIRKS, level: "ask", script: [[{ mcp: { server: "$bridge", tool: "SendMessage", input: { message: "Halfway: 6 of 12 fixed." } } }, { say: "Done." }]] } });
     const r = await delegate(p);
     expect((await waitFor(() => notification(p.a), "the task notification")).text).toBe("Done.");
-    expect(p.a.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed." }]);
+    expect(p.a.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed.", depth: 1 }]);
     // Another bot's agent, the person's own code session, and a name nobody has: through Studio's own check (the protocol's
     // `reachRefusal`; another bot's CONVERSATION is reachable by its line 2, as for a bot's own tools).
     p.a.host.open({ id: "s_beta", kind: "bot", bot: "beta", computer: "Studio" }, p.a.parentDriver);

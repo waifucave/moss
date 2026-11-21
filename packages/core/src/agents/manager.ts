@@ -300,6 +300,7 @@ export class AgentManager {
 
   readonly #unpause: (() => void) | undefined;
   readonly #unwatchLevels: (() => void) | undefined;
+  readonly #unwatchCards: (() => void) | undefined;
   readonly #unwatchParts: (() => void) | undefined;
   #partsTimer: ReturnType<typeof setTimeout> | undefined;
   #refreshing: Promise<void> = Promise.resolve();
@@ -313,6 +314,13 @@ export class AgentManager {
       // The session graph hears a delivery through the host (lane CG's `session_link`); nothing to tell it here.
       now: () => opts.clock.now(),
     }, opts.sendSlots ?? sendSlots(() => opts.clock.now()));
+    // The person's answer to a session's card puts that session back to depth 0 (the loop brake): only an answer they gave counts,
+    // never a card that expired or was cancelled.
+    this.#unwatchCards = opts.approvals.watch?.((e) => {
+      if (e.type !== "resolved" || (e.outcome !== "approved" && e.outcome !== "denied")) return;
+      const session = opts.approvals.get(e.cardId)?.card.session;
+      if (session !== undefined) this.#messenger.personSpoke(session);
+    });
     // The ruling (K-M2 review 4): the moment the switch says paused, a busy agent that acts without asking is cancelled,
     // since MOSS can't hold what it isn't asked about. Without `watch`, it is cancelled at its next tool call.
     this.#unpause = opts.pause?.watch?.(() => {
@@ -782,7 +790,11 @@ export class AgentManager {
         this.#o.approvals.cancelSession(id);
         entry.session = undefined;
       },
-      turnStarted: (input, origin) => this.#o.turnStarted?.(id, input, origin),
+      turnStarted: (input, origin) => {
+        // The loop brake's depth of this turn (agents/bridge/messenger.ts): set before the agent can send anything.
+        this.#messenger.turnStarted(id, input);
+        this.#o.turnStarted?.(id, input, origin);
+      },
       toolShows: entry.shows,
       // A turn another computer sent carries the prompt it built there (its images read there).
       promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
@@ -1318,6 +1330,7 @@ export class AgentManager {
   async close(): Promise<void> {
     this.#unpause?.();
     this.#unwatchLevels?.();
+    this.#unwatchCards?.();
     this.#unwatchParts?.();
     if (this.#partsTimer !== undefined) clearTimeout(this.#partsTimer);
     this.#offPeerPause?.();

@@ -40,7 +40,8 @@ export function runSessionMessengerConformance(make: SessionMessengerFactory): v
       expect(await m.send("s_c", { message: "done", to: "s_b" })).toEqual({ delivered: "s_b" });
       for (const to of ["s_moss", "s_side", "s_d", "MOSS", "s_a", "s_old"]) expect([to, "refused" in (await m.send("s_a", { message: "x", to }))]).toEqual([to, true]);
       expect("refused" in (await m.send("s_a", { message: "no target" }))).toBe(true);
-      expect(delivered[0]).toEqual({ to: "s_b", input: { from: "session", session: "s_a", text: "hi" } });
+      // `depth` (the loop brake, messenger.ts) may ride along; the sender and the words are the contract.
+      expect(delivered[0]).toMatchObject({ to: "s_b", input: { from: "session", session: "s_a", text: "hi" } });
       expect(delivered.length).toBe(3);
       expect(links).toEqual(["s_a>s_b", "s_a>s_c", "s_c>s_b"]);
     });

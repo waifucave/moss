@@ -21,7 +21,9 @@ export const CROSS_SESSION_TOOLS = { send: "SendMessage", list: "ListSessions" }
 /** The longest message `SendMessage` takes (the bots' `SEND_MESSAGE_MAX_CHARS`). */
 export const SESSION_MESSAGE_MAX_CHARS = 100_000;
 /** How many messages one session may send in `SESSION_SEND_WINDOW_MS`, the same for bots and agent sessions and counted
- *  per sending session (the bots' `SEND_MESSAGE_LIMIT`): two sessions answering each other forever stop within a minute. */
+ *  per sending session (the bots' `SEND_MESSAGE_LIMIT`). It caps a sender's rate, not an exchange: two sessions answering
+ *  each other would go on at up to this many a minute each, so the engine's messenger also counts how far an exchange has
+ *  gone without the person and refuses a send beyond `EXCHANGE_DEPTH_LIMIT` (agents/bridge/messenger.ts). */
 export const SESSION_SEND_LIMIT = 20;
 export const SESSION_SEND_WINDOW_MS = 60_000;
 /** The most sessions `ListSessions` lists (the bots' `LIST_AGENTS_MAX`). */

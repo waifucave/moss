@@ -60,11 +60,15 @@ export type UserInput = {
 };
 
 export type DeliveredInput =
-  | { from: "bot"; bot: string; session: string; text: string }
-  | { from: "agent"; agent: string; text: string }
+  /** `depth` (bot, agent and session messages sent through the bridge's `SendMessage`): how many messages this exchange has
+   *  gone between sessions without the person, this one counted. The engine sets it from its own record of the sender's turn,
+   *  never from what the sender wrote (the loop brake, agents/bridge/messenger.ts). Recorded with the input, so a delivery
+   *  still queued across a restart starts its turn at the depth it was sent with. */
+  | { from: "bot"; bot: string; session: string; text: string; depth?: number }
+  | { from: "agent"; agent: string; text: string; depth?: number }
   /** Another session's `SendMessage` where neither is a bot's (spec revision 20, §9.5, lane CM): the sending session is
    *  recorded (`session_message`); its turn is never the person's. */
-  | { from: "session"; session: string; text: string }
+  | { from: "session"; session: string; text: string; depth?: number }
   | { from: "task-notification"; agent: string; backend: string; stopReason: AgentStopReason; text: string; transcript: string; usage?: { inputTokens: number; outputTokens: number } }
   /** `failed`, on a result posted to the bot's conversation: the run didn't finish well (an error, a timeout, a
    *  refusal, stopped or cut off). */
