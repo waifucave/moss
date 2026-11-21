@@ -707,12 +707,15 @@ describe("the Plugins page's calls as main sends them", () => {
   test("starting from a part (spec revision 20, §9.5): model, effort and a first message go through; a first message needs user.send as well; nothing else does", async () => {
     const tokens = new PickTokens();
     const sent: unknown[][] = [];
+    const shown: unknown[][] = [];
     const go = async (caps: string[], params: unknown) => {
       const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps, method: "agent.start", params, gesture: true, tokens, request: async (m, p) => { sent.push([m, p]); return appConnection(m, p); } });
+      r.openSession = (w, id) => void shown.push([w, id]);
       try { return await routeCall(r); } catch (e) { return (e as Error).message; }
     };
     const root = () => tokens.issue(THIRD, join(homedir(), "projects", "moss"), "agent.start");
     expect(await go(["sessions.start"], { backend: "codex", root: root(), model: "gpt-6", effort: "high" })).toEqual({ session: "s_new" });
+    expect(shown).toEqual([[1, "s_new"]]);
     expect(sent.at(-1)).toEqual(["agent.start", { backend: "codex", computer: "Studio", root: "home/Studio/projects/moss", model: "gpt-6", effort: "high" }]);
     expect(await go(["sessions.start"], { backend: "codex", root: root(), prompt: "hello" })).toBe("a first message takes the user.send capability as well as sessions.start");
     expect(await go(["sessions.start", "user.send"], { backend: "codex", root: root(), prompt: "hello" })).toEqual({ session: "s_new" });

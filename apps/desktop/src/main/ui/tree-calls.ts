@@ -423,6 +423,9 @@ export interface TreeRoute {
   log(line: string): void;
   /** How a refusal is thrown. */
   refuse(why: string): Error;
+  /** Shows a session's tab in the window (a part started it on the person's press; one press is spent by the start, so the
+   *  window itself takes the new session's tab). */
+  openSession?(windowId: number, session: string): void;
   /** The picked folders' tokens (the Plugins page's); absent, `ui.pick` and a picked install are refused. */
   tokens?: PickTokens;
   /** Main's native folder or file dialog over the window: the path chosen, or undefined when the user cancels. */
@@ -824,6 +827,7 @@ async function agentStart(r: TreeRoute, part: string, c: TreeCaller): Promise<{ 
     ...(raw.model === undefined ? {} : { model: raw.model }), ...(raw.effort === undefined ? {} : { effort: raw.effort }), ...(raw.prompt === undefined ? {} : { prompt: raw.prompt }),
   }));
   if (typeof got.session !== "string") throw r.refuse("the session didn't start");
+  r.openSession?.(c.windowId, got.session);
   return { session: got.session };
 }
 

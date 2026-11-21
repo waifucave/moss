@@ -720,6 +720,8 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       // main process saw land in this frame (F2); a refused call spends nobody's gesture.
       takeGesture: press,
       request: hooks.treeRequest,
+      // A session a part started (the person's own press) is shown: the window takes the session's tab (spec revision 20, §9.5).
+      openSession: (windowId: number, session: string) => runtime.rootPartMessage(windowId, { type: "shell-act", act: { kind: "go", target: { session } } }),
       entries: (spot) => runtime.entries(s.frame, mount, spot),
       layer: () => {
         const got = hooks.api(pluginId, method, a.params);

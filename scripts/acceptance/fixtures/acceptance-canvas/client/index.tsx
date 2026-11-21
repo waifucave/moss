@@ -25,7 +25,6 @@ export function CanvasStart() {
       const effort = model.efforts[model.efforts.length - 1];
       const got = (await core!.call("agent.start", { backend: "moss-code", root: token, model: model.id, ...(effort !== undefined ? { effort } : {}), prompt: "ACCEPTANCE-CANVAS-FIRST" })) as { session: string };
       setSaid(`started ${got.session} on ${model.id} ${effort ?? ""}`);
-      await api.shell!.go({ session: got.session });
     } catch (e) {
       setSaid(`refused: ${String((e as Error).message ?? e).slice(0, 160)}`);
     }
