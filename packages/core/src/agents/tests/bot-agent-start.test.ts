@@ -17,7 +17,7 @@ import type { ApprovalRequest } from "../../contracts/approval-broker";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { BOT_SANDBOX } from "../../runtime-sdk/turn-loop/driver";
 import { SUBAGENT_TOOLS } from "../../runtime-sdk/turn-loop/subagent-backend";
-import { bridgeOwnTools } from "../bridge/tools";
+import { BRIDGE_OWN_TOOLS } from "../bridge/tools";
 import { MOSS_CODE_TOOLS } from "../moss-code/backend";
 import { botChildPolicy, botRootRefusal, botRootRefusalOnDisk } from "../manager";
 import { botShellWriteRoots, grantsCover } from "../bot-child";
@@ -506,7 +506,7 @@ describe("what holds the child to its bot", () => {
   test("one level: neither of MOSS's agents nor the bridge offers Agent; their sandbox is never off", () => {
     expect(SUBAGENT_TOOLS).not.toContain("Agent");
     expect(MOSS_CODE_TOOLS).not.toContain("Agent");
-    expect(bridgeOwnTools("alpha").map((t) => t.name)).not.toContain("Agent");
+    expect(BRIDGE_OWN_TOOLS.map((t) => t.name)).not.toContain("Agent");
     expect(BOT_SANDBOX).toMatchObject({ enabled: true, allowUnsandboxedCommands: false });
   });
 });

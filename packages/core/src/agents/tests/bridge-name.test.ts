@@ -14,7 +14,7 @@ import { FakeSessionHost } from "../../contracts/fakes/session-host";
 import { AcpAgentBackend } from "../backend";
 import { bridgeMossParts } from "../bridge/handlers";
 import { bridgeCommand } from "../bridge/main";
-import type { BridgeToolDef, BridgeToolSource } from "../bridge/tools";
+import { BRIDGE_OWN_TOOLS, type BridgeToolDef, type BridgeToolSource } from "../bridge/tools";
 import { BridgeTokens } from "../bridge/tokens";
 import { AgentManager } from "../manager";
 import { agentRecordPath, BRIDGE_NAME_RE, readAgentRecord } from "../records";
@@ -190,7 +190,7 @@ describe("generated sequences of restarts, plugin changes and turns", () => {
         }
         // After any step: the list the bridge gives this session is the plugins' list as it is now, and it is on the
         // server whose name the agent holds (the record's), whatever happened.
-        const given = (await m.bridgeHandlers().tools(r.sessionId)).tools.map((t) => t.name).filter((x) => x !== "Glossary" && x !== "SendMessage");
+        const given = (await m.bridgeHandlers().tools(r.sessionId)).tools.map((t) => t.name).filter((x) => !BRIDGE_OWN_TOOLS.some((o) => o.name === x));
         expect(given).toEqual([...installed].sort().map((x) => `plug_${x}__t`));
         expect(readAgentRecord(w.mossHome, r.sessionId)?.bridge).toBe(name);
       }

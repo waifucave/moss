@@ -2,13 +2,13 @@
 // `protocol.hello` with role `bridge`, its token and its agent session on the same endpoint every client uses, and
 // lane C's MOSS server checks it with lane K's `BridgeTokens` and the kernel's pid for the caller (`LOCAL_PEERPID`,
 // `SO_PEERCRED`, or the pipe's client pid on Windows, where the agent's job object is the check). After the hello the
-// role may call only `bridge.tools`, `bridge.call`, `bridge.sendMessage` and `glossary.query`, bound to its session;
+// role may call only `bridge.tools`, `bridge.call`, `bridge.sendMessage`, `bridge.listSessions` and `glossary.query`, bound to its session;
 // the server validates their params, and a revoked token's connection is closed (`onRevoke`).
 //
 // `bridgeMossParts` is what the daemon passes to `createMossServer`: the gate and the session's bot for the hello,
-// and the four methods, each refused unless the connection is still its session token's live one (review 5: the
+// and the five methods, each refused unless the connection is still its session token's live one (review 5: the
 // revoke's close may not have reached the connection yet; a re-mint leaves the session a token, but not this one).
-import { MOSS_ERR } from "@waifucave/moss-protocol";
+import { MOSS_ERR, type ReachableSession } from "@waifucave/moss-protocol";
 import { bridgeMethodHandlers, MossRpcError, type BridgeGate, type MossConn, type MossHandler } from "../../ipc/moss";
 import type { BridgeTokens } from "./tokens";
 import type { BridgeToolDef, GlossaryAnswer } from "./tools";
@@ -20,6 +20,8 @@ export interface BridgeHandlers {
   tools(sessionId: string): Promise<{ tools: BridgeToolDef[]; instructions: string }>;
   call(sessionId: string, call: { callId: string; tool: string; input: unknown }): Promise<{ content: unknown[]; isError: boolean }>;
   sendMessage(sessionId: string, m: { text: string; to?: string }): Promise<void>;
+  /** `ListSessions`: the sessions this session's `SendMessage` would deliver to (spec §9.5), and no others. */
+  listSessions(sessionId: string): Promise<{ sessions: ReachableSession[] }>;
   glossary(sessionId: string, q: { query?: string | string[]; load?: string | string[] }): Promise<GlossaryAnswer>;
   /** The session's live bridge connection, given on each request it makes (the first is its `bridge.tools`): where the
    *  manager sends `bridge.toolsChanged`. Only a connection that passed the live-token check is ever given. */
@@ -33,12 +35,19 @@ export interface BridgeMossParts {
 }
 
 export function bridgeMossParts(tokens: BridgeTokens, h: BridgeHandlers): BridgeMossParts {
-  const methods = bridgeMethodHandlers({
-    tools: (id) => h.tools(id),
-    call: (id, c) => h.call(id, c),
-    sendMessage: (id, m) => h.sendMessage(id, m),
-    glossary: (id, q) => h.glossary(id, q),
-  });
+  const methods: Record<string, MossHandler> = {
+    ...bridgeMethodHandlers({
+      tools: (id) => h.tools(id),
+      call: (id, c) => h.call(id, c),
+      sendMessage: (id, m) => h.sendMessage(id, m),
+      glossary: (id, q) => h.glossary(id, q),
+    }),
+    // Mounted here, inside the live-token check below, as the other four are.
+    "bridge.listSessions": (conn) => {
+      if (conn.caller.kind !== "session") throw new MossRpcError(MOSS_ERR.ROLE_REFUSED, "not a bridge connection");
+      return h.listSessions(conn.caller.sessionId);
+    },
+  };
   // Each request checks that its connection is the one `accept` let in for the session's live token (K-M2 review 6):
   // a re-mint revokes the old token, and its connection is refused here even before the revoke's close reaches it.
   // A connection without both (a `peer.call` dispatch under the bridge role, say) is refused too.

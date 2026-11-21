@@ -65,9 +65,14 @@ describe("an agent on another computer", () => {
     const r = await delegate(p);
     expect((await waitFor(() => notification(p.a), "the task notification")).text).toBe("Done.");
     expect(p.a.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed." }]);
-    // Another bot's session, through Studio's own check.
+    // Another bot's agent, the person's own code session, and a name nobody has: through Studio's own check (the protocol's
+    // `reachRefusal`; another bot's CONVERSATION is reachable by its line 2, as for a bot's own tools).
     p.a.host.open({ id: "s_beta", kind: "bot", bot: "beta", computer: "Studio" }, p.a.parentDriver);
-    expect(isContractError(await p.a.manager.remoteMessage(r.sessionId, "hi", "s_beta").catch((e: unknown) => e), "refused")).toBe(true);
+    p.a.host.open({ id: "s_beta_agent", kind: "agent", bot: "beta", parent: "s_beta", computer: "Studio" }, p.a.parentDriver);
+    p.a.host.open({ id: "s_mine", kind: "coding", computer: "Studio" }, p.a.parentDriver);
+    for (const to of ["s_beta_agent", "s_mine", "s_nobody"]) {
+      expect([to, isContractError(await p.a.manager.remoteMessage(r.sessionId, "hi", to).catch((e: unknown) => e), "refused")]).toEqual([to, true]);
+    }
   });
 
   test("the other computer judges at its own level: the bot's routine level counts only when it isn't above it", async () => {

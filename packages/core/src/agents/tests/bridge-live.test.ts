@@ -22,6 +22,7 @@ function boot() {
     tools: async (id) => { calls.push(`tools ${id}`); return { tools: [], instructions: "hi" }; },
     call: async (id) => { calls.push(`call ${id}`); return { content: [], isError: false }; },
     sendMessage: async (id) => { calls.push(`send ${id}`); },
+    listSessions: async (id) => { calls.push(`list ${id}`); return { sessions: [] }; },
     glossary: async (id) => { calls.push(`glossary ${id}`); return { results: [], loaded: [] }; },
   });
   const moss = createMossServer({

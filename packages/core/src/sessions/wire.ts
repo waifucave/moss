@@ -160,6 +160,8 @@ export function projectRecord(record: SessionRecord, opts: ProjectOptions): Wire
           return { type: "bot_message", ...envelope, from: input.bot, fromSession: input.session, text: input.text };
         case "agent":
           return { type: "agent_message", ...envelope, agent: input.agent, text: input.text };
+        case "session":
+          return { type: "session_message", ...envelope, fromSession: input.session, text: input.text };
         case "task-notification":
           return {
             type: "agent_finished", ...envelope, agent: input.agent, backend: input.backend, stopReason: input.stopReason,

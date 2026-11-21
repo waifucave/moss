@@ -288,7 +288,7 @@ describe("the bridge's tokens", () => {
     if (!v.ok) throw new Error(v.reason);
     const parts = bridgeMossParts(t, {
       sessionInfo: () => ({ bot: "alpha" }), tools: async () => ({ tools: [], instructions: "" }),
-      call: async () => ({ content: [], isError: false }), sendMessage: async () => {}, glossary: async () => ({ results: [], loaded: [] }),
+      call: async () => ({ content: [], isError: false }), sendMessage: async () => {}, listSessions: async () => ({ sessions: [] }), glossary: async () => ({ results: [], loaded: [] }),
     });
     const caller = { kind: "session", sessionId: "s1", sessionKind: "agent", bot: "alpha" };
     const conn = { caller, bridgeConnection: v.connection } as unknown as MossConn;

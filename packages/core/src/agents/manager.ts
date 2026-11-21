@@ -50,12 +50,14 @@ import { BridgeTokens } from "./bridge/tokens";
 import type { BridgeHandlers } from "./bridge/handlers";
 import { BRIDGE_ENV } from "./bridge/server";
 import { exposureOf, listChangeModeOf } from "./exposure";
-import { NO_PLUGIN_TOOLS, bridgeInstructions, bridgeOwnTools, type AgentSessionFacts, type GlossaryAnswer, type BridgeToolDef, type BridgeToolSource } from "./bridge/tools";
+import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessionFacts, type GlossaryAnswer, type BridgeToolDef, type BridgeToolSource } from "./bridge/tools";
 import { AgentDriver } from "./driver";
 import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
+import { EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
+import { formatSessionMessage } from "../runtime-sdk/turn-loop/input";
 import { agentPaths, namesUnlistedPaths } from "./paths";
 import { agentPolicyOf, homeReach, withHomeDenied, withSecretsDenied } from "./memory";
 import { type DaemonAgentRecord, readAgentRecord, removeAgentRecord, writeAgentRecord } from "./records";
@@ -129,6 +131,10 @@ export interface AgentManagerOptions {
   /** A turn of an agent or coding session starts from `input` (what the conversation saw, as a bot's turn reports it:
    *  the addresses the user's own message gave, a turn of the user's resetting the fetch budget). */
   turnStarted?: (sessionId: string, input: TurnInput, origin: TurnOrigin | undefined) => void;
+  /** Counts each session's `SendMessage`s (spec §9.5: at most 20 a minute per sending session, refused sends counting); the
+   *  manager's own when absent. A session sends through the bridge alone, over the socket or in process, so one counter
+   *  here covers both; the bots' own tools have theirs. */
+  sendSlots?: SendSlots;
   log?: (line: string) => void;
 }
 
@@ -287,6 +293,8 @@ export class AgentManager {
   /** Agents this computer's bots placed on other computers. */
   readonly #remote = new Map<string, RemoteAgentEntry>();
   readonly #oks: AgentOks;
+  /** The one door behind `SendMessage` and `ListSessions` for every session (messenger.ts): the protocol's `reachRefusal` decides. */
+  readonly #messenger: EngineSessionMessenger;
   #peers: AgentPeers | undefined;
   #offPeerPause: (() => void) | undefined;
 
@@ -299,6 +307,12 @@ export class AgentManager {
   constructor(opts: AgentManagerOptions) {
     this.#o = opts;
     this.#oks = opts.oks ?? new MemoryAgentOks();
+    this.#messenger = new EngineSessionMessenger({
+      sessions: () => opts.host.list(),
+      deliver: (to, input) => opts.host.deliver(to, input),
+      // The session graph hears a delivery through the host (lane CG's `session_link`); nothing to tell it here.
+      now: () => opts.clock.now(),
+    }, opts.sendSlots ?? sendSlots(() => opts.clock.now()));
     // The ruling (K-M2 review 4): the moment the switch says paused, a busy agent that acts without asking is cancelled,
     // since MOSS can't hold what it isn't asked about. Without `watch`, it is cancelled at its next tool call.
     this.#unpause = opts.pause?.watch?.(() => {
@@ -557,7 +571,7 @@ export class AgentManager {
       transcript: new AgentTranscript(this.#o.home, id, daemon.bot),
       record, daemon,
       driver: undefined as unknown as RemoteAgentEntry["driver"],
-      promptOf: (input) => promptOf(input),
+      promptOf: (input) => promptOf(input, (id) => this.#o.host.get(id)?.title),
       started: (agentSessionId) => {
         if (r.daemon.agentSessionId === agentSessionId) return;
         r.daemon = { ...r.daemon, agentSessionId };
@@ -627,11 +641,11 @@ export class AgentManager {
     return e?.peer ? { id, driver: e.driver, peer: e.peer } : undefined;
   }
 
-  /** A: an agent's `SendMessage` from the computer running it, into its bot's sessions only. */
+  /** A: an agent's `SendMessage` from the computer running it: judged here, by the one rule, as any session's. */
   async remoteMessage(id: string, text: string, to?: string): Promise<void> {
     const r = this.#remote.get(id);
     if (!r) throw new ContractError("not_found", `no agent ${id}`);
-    await this.#deliverFromAgent(id, r.bot, r.parent, text, to);
+    await this.#send(id, text, to);
   }
 
   /** Reattaches a background agent or a coding session after a daemon restart: the host restored the session dormant,
@@ -737,7 +751,7 @@ export class AgentManager {
     transcript.redact(token);
     const entry = {
       id, backend, transcript, record, daemon, token, rootPath, computer: daemon.computer, root: daemon.root,
-      held: 0, gone: new AbortController(), serverName: this.#serverNameFor(daemon), bridgeTools: bridgeOwnTools(daemon.bot).map((t) => t.name),
+      held: 0, gone: new AbortController(), serverName: this.#serverNameFor(daemon), bridgeTools: BRIDGE_OWN_TOOLS.map((t) => t.name),
       shows: new AgentToolDisplays(),
       ...(daemon.bot === undefined ? {} : { bot: daemon.bot }), ...(daemon.parent === undefined ? {} : { parent: daemon.parent }),
       ...(record.model === undefined ? {} : { model: record.model }), ...(record.effort === undefined ? {} : { effort: record.effort }),
@@ -771,7 +785,7 @@ export class AgentManager {
       turnStarted: (input, origin) => this.#o.turnStarted?.(id, input, origin),
       toolShows: entry.shows,
       // A turn another computer sent carries the prompt it built there (its images read there).
-      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input),
+      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
       redact: (v) => transcript.redacted(v),
       // A paused agent is sent no new prompt until the switch is back.
       beforeTurn: async (session) => {
@@ -1114,7 +1128,7 @@ export class AgentManager {
     // The plugins' tool.before hooks, before the broker (best effort: see the header). A plugin's tool on the bridge
     // meets them where it runs (plugin-reach.ts), under its own name, so not here a second time.
     const pluginOnBridge = raw.mcp !== undefined && raw.mcp.server === e.serverName && e.bridgeTools.includes(raw.mcp.tool)
-      && !bridgeOwnTools(e.bot).some((t) => t.name === raw.mcp!.tool);
+      && !BRIDGE_OWN_TOOLS.some((t) => t.name === raw.mcp!.tool);
     if (this.#o.hooks !== undefined && e.backend.id !== HOOKED_IN_RUNTIME_BACKEND && !pluginOnBridge) {
       const reject = (): AgentPermissionAnswer => {
         const r = raw.options.find((o) => o.kind === "reject_once");
@@ -1360,6 +1374,12 @@ export class AgentManager {
         await this.#holdForBridge(id);
         return this.agentMessage(id, m.text, m.to);
       },
+      // What `SendMessage` would deliver to, from this session: the same messenger, the same rule. An agent run here for another
+      // computer's bot has none of this computer's sessions to list (its sends go to that computer, which checks where they may go).
+      listSessions: async (id) => {
+        const e = this.#entries.get(id);
+        return { sessions: e === undefined || e.peer !== undefined ? [] : this.#messenger.reachable(id) };
+      },
       glossary: async (id, q) => {
         const e = this.#entries.get(id);
         if (!this.#o.glossary || e === undefined) return { results: [], loaded: [] };
@@ -1386,7 +1406,7 @@ export class AgentManager {
     e?.shows.listed(plugin);
     const own = await source.instructions?.(id, facts).catch(() => "");
     const essentials = bridgeInstructions({ ...(e?.bot === undefined ? {} : { bot: e.bot }), serverName: e?.serverName ?? BRIDGE_SERVER_PREFIX });
-    return { tools: [...bridgeOwnTools(e?.bot), ...plugin], instructions: own ? `${essentials}\n\n${own}` : essentials };
+    return { tools: [...BRIDGE_OWN_TOOLS, ...plugin], instructions: own ? `${essentials}\n\n${own}` : essentials };
   }
 
   /** How a running session takes a changed tool list (`listChangeModeOf`). */
@@ -1468,7 +1488,7 @@ export class AgentManager {
     return `MOSS's plugin tools changed${what ? ` (${what})` : ""}. This agent doesn't take a change of tools in a running session, so it keeps the list it started with until its next session. A tool that has gone is refused if it calls it.`;
   }
 
-  /** An agent's `SendMessage` (§9.3): it folds into its bot's conversation like any bot message. */
+  /** An agent's `SendMessage` (§9.3, §9.5): a message to another session it may reach, under the protocol's one rule. */
   async agentMessage(sessionId: string, text: string, to?: string): Promise<void> {
     const e = this.#entries.get(sessionId);
     if (!e) throw new ContractError("not_found", `no agent ${sessionId}`);
@@ -1477,16 +1497,12 @@ export class AgentManager {
       if (!this.#peers) throw new ContractError("closed", "this computer has no link to the bot's computer");
       return this.#peers.sendMessage(e.peer.device, sessionId, text, to);
     }
-    await this.#deliverFromAgent(sessionId, e.bot, e.parent, text, to);
+    await this.#send(sessionId, text, to);
   }
 
-  async #deliverFromAgent(sessionId: string, bot: string | undefined, parent: string | undefined, text: string, to?: string): Promise<void> {
-    const target = to ?? parent;
-    if (!target) throw new ContractError("refused", "this session has no bot to message");
-    if (target === sessionId) throw new ContractError("refused", "that is this agent's own session; SendMessage reaches another one");
-    const view = this.#o.host.get(target);
-    if (!view || view.bot === undefined || view.bot !== bot) throw new ContractError("refused", "an agent may message only its own bot's sessions");
-    await this.#o.host.deliver(target, { from: "agent", agent: sessionId, text });
+  async #send(sessionId: string, text: string, to?: string): Promise<void> {
+    const r = await this.#messenger.send(sessionId, { message: text, ...(to === undefined ? {} : { to }) });
+    if ("refused" in r) throw new ContractError("refused", r.refused);
   }
 }
 
@@ -1560,8 +1576,9 @@ function cardFields(e: Entry, ask: AgentPermissionAsk): ApprovalRequest["fields"
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
-/** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3). */
-export async function promptOf(input: TurnInput): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
+/** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3); another session's is
+ *  framed as that session's (`titleOf` gives its title), never as the user's words (§9.5). */
+export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
   switch (input.from) {
     case "user": {
       const images = (input.images ?? []).flatMap((img) => {
@@ -1581,8 +1598,7 @@ export async function promptOf(input: TurnInput): Promise<{ text: string; images
     case "agent":
       return { text: `Message from agent ${input.agent}:\n\n${input.text}` };
     case "session":
-      // Nothing delivers it yet (spec revision 20, §9.5): lane CM's cross-session tools will.
-      return { text: `Message from session ${input.session}:\n\n${input.text}` };
+      return { text: formatSessionMessage(input, titleOf?.(input.session)) };
     case "task-notification":
       return { text: `Agent ${input.agent} (${input.backend}) finished: ${input.stopReason}. Transcript: ${input.transcript}\n\n${input.text}` };
     case "routine":

@@ -44,6 +44,7 @@ describe.skipIf(!live)("the real agents (opt-in)", () => {
           },
           call: async () => ({ content: [], isError: true }),
           sendMessage: async () => {},
+          listSessions: async () => ({ sessions: [] }),
           glossary: async () => ({ results: [], loaded: [] }),
       }));
       const backend = new AcpAgentBackend({ id, pluginId: `moss/agent-${id}`, quirks: QUIRKS[id]!, clock, wire: () => ({ launched: (pid) => tokens.bind("live", pid) }) });
