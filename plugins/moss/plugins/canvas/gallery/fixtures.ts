@@ -69,7 +69,7 @@ const MODELS: Record<string, string> = { "claude-code": "anthropic/claude-opus-5
 const TITLES = [
   "Fix the flaky upgrade rows", "API refactor", "Port the parser to Rust", "Review the parser port", "Design the settings page", "Triage the issue backlog",
   "Weekly usage report", "Tidy the downloads folder", "Bump the Electron pin", "Write the release notes", "Profile the cold start", "Split the sidebar into parts",
-  "Move the faces into the SDK", "Translate the setup guide", "Clean up the old Norma migrations and every file that still names it after the rename",
+  "Move the faces into the SDK", "Translate the setup guide", "Clean up the old migrations and every file that still names the previous app after the rename",
 ];
 
 /** `n` sessions: some running, some waiting, some ended (folded), a few children and a bot's. Deterministic. */
