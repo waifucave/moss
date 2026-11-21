@@ -160,9 +160,9 @@ body {
   font-weight: 600;
 }
 
-/* `#freeze=1` (the pictures only): headless captures don't advance CSS animations, so each is pinned part-way: the wave
-   about halfway along its line, the receiving point lit, the light a third of the way round, the dashes moved on. */
-[data-freeze] .cv-light--loop {
+/* `#freeze=1` (the pictures only): headless captures don't advance CSS animations, so each is pinned part-way: the light
+   a third of the way round, the dashes moved on. */
+[data-freeze] .cv-ring::before {
   animation-delay: -0.9s;
   animation-play-state: paused;
 }
@@ -172,35 +172,36 @@ body {
   animation-play-state: paused;
 }
 
-/* `#t=<seconds>`: every animation pinned at that moment since it began (the pictures' trips start with their scene, so
-   the loops and the trip share one clock). */
-/* Until then every light holds where it began (a capture's timeline moves even though its pictures don't). */
-[data-trip-pending] .cv-light {
+/* `#t=<seconds>` (the frame strips): every animation pinned at that moment since the scene began. Until the pin is set
+   every light holds where it began (a capture's timeline moves even though its pictures don't). */
+[data-trip-pending] .cv-ring::before {
   animation-play-state: paused;
 }
 
-[data-trip-at] .cv-light,
-[data-trip-at] .cv-dotflash {
-  animation-delay: calc(var(--delay) - var(--trip-t));
-  animation-play-state: paused;
-}
-
-[data-trip-at] .cv-light--loop {
-  animation-delay: calc(var(--delay) - var(--trip-t)), calc(var(--delay) - var(--trip-t));
-}
-
-[data-trip-at] .cv-light--morph {
-  animation-delay: calc(var(--delay) - var(--trip-t)), calc(var(--morph-at) - var(--trip-t));
-}
-
-[data-trip-at] .cv-trip__gather[data-gather] {
+[data-trip-at] .cv-ring::before {
   animation-delay: calc(0s - var(--trip-t));
   animation-play-state: paused;
 }
 
-[data-trip-at] .cv-trip__fade[data-fade] {
-  animation-delay: calc(var(--fade-at) - var(--trip-t));
+[data-trip-at] .cv-ring[data-handover]::before {
+  animation-delay: calc(var(--ring-delay) - var(--trip-t)), calc(var(--ring-delay) - var(--trip-t));
+}
+
+[data-trip-at] .cv-mlight,
+[data-trip-at] .cv-dotflash,
+[data-trip-at] .cv-react__from,
+[data-trip-at] .cv-react__to {
+  animation-delay: calc(var(--delay) - var(--trip-t));
   animation-play-state: paused;
+}
+
+[data-trip-at] .cv-msg__timer {
+  animation-play-state: paused;
+}
+
+.g-live__bar [data-on] {
+  font-weight: 700;
+  text-decoration: underline;
 }
 
 .g-cases {

@@ -29,6 +29,8 @@ export interface CanvasStartProps {
   navigate?: (route: ShellRoute) => void;
   /** The gallery's pictures only. */
   initial?: CanvasProps["initial"];
+  /** How a message crossing looks, while the owner picks (the gallery's switch). */
+  messageStyle?: CanvasProps["messageStyle"];
 }
 
 /** A pick's answer, in the shape `ui.pick` gives (`UiPickResult`), or the older one (`{ token, name }`). */
@@ -122,6 +124,7 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
       {...(kept !== undefined ? { view: kept } : {})}
       onView={setKept}
       {...(props.initial !== undefined ? { initial: props.initial } : {})}
+      {...(props.messageStyle !== undefined ? { messageStyle: props.messageStyle } : {})}
     />
   );
 }

@@ -399,10 +399,38 @@
   }
 }
 
-/* Running: the one light circulating on the block's own loop of wire (the canvas's overlay, `.cv-light--loop`). An
-   open block, drawn larger, keeps its own border and shows it running in its colour. */
-.cv-node[data-open][data-motion="running"] .cv-card {
-  border-color: color-mix(in srgb, var(--c1) 60%, transparent);
+/* Running: light going round the block. A square layer a little larger than an open block's diagonal turns behind it,
+   clipped to a ring just outside the card (a transform: the compositor's, no repaint). */
+.cv-node[data-motion="running"] .cv-card {
+  border-color: color-mix(in srgb, var(--c1) 34%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--c1) 18%, transparent);
+}
+
+.cv-ring {
+  position: absolute;
+  inset: -2px;
+  overflow: hidden;
+  border-radius: calc(var(--moss-radius-large) + 2px);
+  background: color-mix(in srgb, var(--c1) 14%, transparent);
+  pointer-events: none;
+}
+
+.cv-ring::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 440px;
+  height: 440px;
+  margin: -220px 0 0 -220px;
+  background: conic-gradient(transparent 0 50%, color-mix(in srgb, var(--c1) 35%, transparent) 66%, var(--c1) 80%, var(--c2) 92%, transparent 100%);
+  content: "";
+  transform: rotate(var(--a0, 0deg));
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite;
+}
+
+/* Taking over from an arriving message: hidden until the light arrives at its point, then turning on from there. */
+.cv-ring[data-handover]::before {
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite, cv-ring-in 0.15s linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) both;
 }
 
 .cv-node[data-motion="running"] .cv-dot {
@@ -443,6 +471,24 @@
   border: 2px solid color-mix(in srgb, var(--c1) 70%, transparent);
   background: transparent;
   animation: cv-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes cv-spin {
+  from {
+    transform: rotate(var(--a0, 0deg));
+  }
+  to {
+    transform: rotate(calc(var(--a0, 0deg) + 1turn));
+  }
+}
+
+@keyframes cv-ring-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes cv-beat {
@@ -525,76 +571,40 @@
   display: none;
 }
 
-/* ---- The wire and the one light (light.ts, choreography.ts) ----
-   The canvas is one circuit: every block's outline is drawn here, in the lines' own stroke, and the light is ONE thing
-   that moves along it: round a running block's loop, and for a message along one path (the sender's loop to its point,
-   the line, the receiver's loop). Its dashes walk their path together at one speed; `--cv-slow` (the gallery's slow
-   motion) stretches every time alike. */
+/* ---- A message crossing (message.ts): over each block's own running light; three variants for the owner to choose from.
+   The light on the line wears the running light's look (its colour, a soft head and tail, its glow); at each end the
+   block's own effect reacts (`.cv-react`). Each part has its time (`--delay`, `--dur`); `--cv-slow` (the gallery's slow
+   motion) stretches every time alike. ---- */
 
-.cv-wire {
-  fill: none;
-  stroke: var(--cv-line);
-  stroke-width: 1.6;
-}
-
-/* The card's own border gives way to the wire (an open card, drawn larger, keeps its own). */
-.cv-node:not([data-open]) .cv-card {
-  border-color: transparent;
-}
-
-.cv-loop,
-.cv-trip {
+.cv-msg {
   --c1: var(--brand, var(--moss-color-text));
   --c2: var(--brand2, var(--c1));
-  --r1: var(--to, var(--moss-color-text));
-  --r2: var(--to2, var(--r1));
 }
 
-.cv-light {
+.cv-mlight {
   fill: none;
-  stroke: var(--pc);
+  stroke: var(--pc, var(--c1));
   stroke-width: 2.4;
   stroke-opacity: var(--a);
   stroke-dasharray: var(--pl) var(--gap);
   stroke-dashoffset: var(--o0);
-  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards;
+  animation: cv-mrun calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards;
 }
 
-.cv-light--glow {
-  stroke-width: 7;
-  stroke-opacity: 0.32;
-  filter: blur(3px);
+.cv-mlight--glow {
+  stroke: var(--c1);
+  stroke-width: 8;
+  filter: blur(4px);
 }
 
-/* Round a loop for ever. One that takes a message's light's place is hidden until that moment. */
-.cv-light--loop {
-  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) infinite, cv-on calc(0.001s * var(--cv-slow, 1)) step-end calc(var(--delay) * var(--cv-slow, 1)) backwards;
-}
-
-/* On a trip each dash turns from the sender's colours to the receiver's as it passes the receiver's point. */
-.cv-light--morph {
-  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards, cv-morph calc(var(--morph-dur) * var(--cv-slow, 1)) ease-in-out calc(var(--morph-at) * var(--cv-slow, 1)) both;
-}
-
-/* An idle sender's light gathers as it laps its loop (the person's message as it comes in), and a lap that isn't taken
-   up eases out to nothing on the receiver's loop. */
-.cv-trip__gather[data-gather] {
-  animation: cv-gather calc(var(--gather) * var(--cv-slow, 1)) ease-in both;
-}
-
-.cv-trip__fade[data-fade] {
-  animation: cv-fade calc(var(--fade) * var(--cv-slow, 1)) ease-in-out calc(var(--fade-at) * var(--cv-slow, 1)) both;
-}
-
-/* A point the light passes through fills with it (its head's colour: still the sender's at the receiver's point, where
-   it starts turning), no brighter than the light beside it. */
+/* A point the light passes through fills with it, no brighter than the light beside it. */
 .cv-dotflash {
   fill: var(--c2);
   opacity: 0;
   animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
 }
 
-/* The trip's parts apart: only reduced motion shows them, each in turn. */
+/* Reduced motion's highlight of the line (no travel). */
 .cv-part {
   display: none;
   fill: none;
@@ -602,52 +612,119 @@
   stroke-width: 2.4;
 }
 
-.cv-part[data-part="receiver"] {
-  stroke: var(--r1);
+/* Ends the wave once all its parts are over (it draws nothing). */
+.cv-msg__timer {
+  animation: cv-timer calc(var(--dur) * var(--cv-slow, 1)) linear both;
 }
 
-@keyframes cv-run {
+/* A block's own effect reacting: behind the card, around its outline. It starts in the sender's colour (`--from`) and
+   settles into the block's own where the message lands (two layers crossing over); in the block's own on sending. */
+.cv-react {
+  position: absolute;
+  inset: -2px;
+  border-radius: calc(var(--moss-radius-large) + 2px);
+  pointer-events: none;
+  --f: var(--from, var(--c1));
+}
+
+.cv-node[data-type="bot"] .cv-react {
+  border-radius: 16px;
+}
+
+.cv-react__from,
+.cv-react__to {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  animation: cv-react-one calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
+}
+
+.cv-react[data-morph] .cv-react__from {
+  animation-name: cv-react-from;
+}
+
+.cv-react[data-morph] .cv-react__to {
+  animation-name: cv-react-to;
+}
+
+/* A: the ring swells (brighter, a wider glow) and settles. */
+.cv-react[data-kind="swell"] .cv-react__from {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--f) 75%, transparent), 0 0 26px color-mix(in srgb, var(--f) 45%, transparent);
+}
+
+.cv-react[data-kind="swell"] .cv-react__to {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c1) 75%, transparent), 0 0 26px color-mix(in srgb, var(--c1) 45%, transparent);
+}
+
+/* C: the glow breathes in and out once, gentler. */
+.cv-react[data-kind="breathe"] .cv-react__from {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--f) 45%, transparent), 0 0 30px color-mix(in srgb, var(--f) 30%, transparent);
+}
+
+.cv-react[data-kind="breathe"] .cv-react__to {
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--c1) 45%, transparent), 0 0 30px color-mix(in srgb, var(--c1) 30%, transparent);
+}
+
+/* B: the ring flares from the side the light came in by: the outline near that point brightens, spreading along it,
+   with a soft glow (blurred, so it has no edge), and settles. */
+.cv-react[data-kind="flare"] .cv-react__from,
+.cv-react[data-kind="flare"] .cv-react__to {
+  inset: -3px;
+  filter: blur(3px);
+}
+
+.cv-react[data-kind="flare"] .cv-react__from {
+  background: radial-gradient(ellipse 55% 120% at var(--fx) var(--fy), var(--f) 0, color-mix(in srgb, var(--f) 40%, transparent) 45%, transparent 100%);
+}
+
+.cv-react[data-kind="flare"] .cv-react__to {
+  background: radial-gradient(ellipse 75% 150% at var(--fx) var(--fy), var(--c1) 0, color-mix(in srgb, var(--c1) 35%, transparent) 50%, transparent 100%);
+}
+
+.cv-react[data-kind="flare"][data-port="l"] {
+  --fx: 0%;
+  --fy: 50%;
+}
+
+.cv-react[data-kind="flare"][data-port="r"] {
+  --fx: 100%;
+  --fy: 50%;
+}
+
+.cv-react[data-kind="flare"][data-port="t"] {
+  --fx: 50%;
+  --fy: 0%;
+}
+
+.cv-react[data-kind="flare"][data-port="b"] {
+  --fx: 50%;
+  --fy: 100%;
+}
+
+/* C: a ripple, the outline's light breathing out from the sender, or landing on the receiver. */
+.cv-react[data-kind="ripple-out"] .cv-react__from,
+.cv-react[data-kind="ripple-in"] .cv-react__from {
+  border: 1.5px solid color-mix(in srgb, var(--f) 70%, transparent);
+  animation-name: cv-ripple-out;
+  animation-timing-function: ease-out;
+}
+
+.cv-react[data-kind="ripple-in"] .cv-react__from {
+  animation-name: cv-ripple-in;
+  animation-timing-function: ease-in;
+}
+
+.cv-react[data-kind^="ripple"] .cv-react__to {
+  display: none;
+}
+
+@keyframes cv-mrun {
   from {
     stroke-dashoffset: var(--o0);
   }
   to {
     stroke-dashoffset: var(--o1);
-  }
-}
-
-@keyframes cv-on {
-  from {
-    visibility: hidden;
-  }
-  to {
-    visibility: visible;
-  }
-}
-
-@keyframes cv-morph {
-  from {
-    stroke: var(--pc);
-  }
-  to {
-    stroke: var(--rc);
-  }
-}
-
-@keyframes cv-gather {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes cv-fade {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }
 
@@ -658,6 +735,78 @@
   }
   50% {
     opacity: 0.9;
+  }
+}
+
+@keyframes cv-timer {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-one {
+  0% {
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-from {
+  0% {
+    opacity: 0;
+  }
+  22% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-to {
+  0%,
+  15% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-ripple-out {
+  from {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(var(--sx), var(--sy));
+  }
+}
+
+@keyframes cv-ripple-in {
+  from {
+    opacity: 0;
+    transform: scale(var(--sx), var(--sy));
+  }
+  70% {
+    opacity: 0.75;
+  }
+  to {
+    opacity: 0;
+    transform: scale(1);
   }
 }
 
@@ -674,13 +823,15 @@
 }
 
 /* A hidden window: everything holds still. */
-.cv[data-hidden] .cv-light,
-.cv[data-hidden] .cv-trip__gather,
-.cv[data-hidden] .cv-trip__fade,
+.cv[data-hidden] .cv-ring::before,
 .cv[data-hidden] .cv-dot,
 .cv[data-hidden] .cv-march__rect,
-.cv[data-hidden] .cv-part,
+.cv[data-hidden] .cv-mlight,
 .cv[data-hidden] .cv-dotflash,
+.cv[data-hidden] .cv-part,
+.cv[data-hidden] .cv-msg__timer,
+.cv[data-hidden] .cv-react__from,
+.cv[data-hidden] .cv-react__to,
 .cv[data-hidden] .cv-eye {
   animation-play-state: paused;
 }
@@ -1037,8 +1188,8 @@
 /* ---- Reduced motion: each motion a steady state ---- */
 
 @media (prefers-reduced-motion: reduce) {
-  /* The running light holds still where it starts on its loop. */
-  .cv-light--loop {
+  .cv-ring::before {
+    background: linear-gradient(135deg, var(--c1), var(--c2));
     animation: none;
   }
 
@@ -1048,16 +1199,22 @@
     animation: none;
   }
 
-  /* A message: the sender's loop, the line, the receiver's loop, each a brief highlight in turn, no travel. */
-  .cv-trip .cv-light,
-  .cv-trip__gather,
-  .cv-trip__fade {
+  /* A message: the sender's effect, the line, the receiver's effect, each a brief highlight in turn, no travel. */
+  .cv-mlight {
     display: none;
   }
 
   .cv-part {
     display: inline;
     opacity: 0;
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
+  }
+
+  .cv-react__from,
+  .cv-react__to,
+  .cv-react[data-morph] .cv-react__from,
+  .cv-react[data-morph] .cv-react__to {
+    transform: none;
     animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
   }
 

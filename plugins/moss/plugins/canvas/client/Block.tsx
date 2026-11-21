@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type SyntheticEvent } from "react";
 import type { Rect } from "./layout";
 import type { BackendLook } from "./look";
+import type { Reaction } from "./message";
 import { BotFace, Mark } from "./Mark";
 import type { Block } from "./model";
 import { S } from "./strings";
@@ -23,6 +24,9 @@ export const PORTS: Readonly<Record<Block["type"], readonly Port[]>> = { main: [
  *  refuses it too; this keeps the page from even asking). */
 export const byPerson = (e: SyntheticEvent): boolean => e.nativeEvent.isTrusted === true;
 
+/** A reaction of a block's effect to a message: what, when, from which side, and the sender's colour it turns from. */
+export type BlockReaction = Reaction & { key: string; from?: string };
+
 export interface BlockViewProps {
   block: Block;
   rect: Rect;
@@ -30,6 +34,11 @@ export interface BlockViewProps {
   open: boolean;
   joined: ReadonlySet<Port>;
   dragging?: boolean;
+  /** A message arriving at a running block: its running light starts at that point (a turn of `start` degrees on the
+   *  turning layer) when the light arrives (`delay` s), taking over from it. */
+  handover?: { id: number; start: number; delay: number };
+  /** How its own effect reacts to messages crossing now (message.ts), each keyed so it plays once. */
+  reacts?: readonly BlockReaction[];
   /** How many of the person's messages it got while the canvas was open (a steady mark beside the point's light). */
   heard?: number;
   /** The session's last line while open: undefined while it is read, null when it has none. */
@@ -78,6 +87,33 @@ export function BlockView(p: BlockViewProps) {
       style={style}
       onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}
     >
+      {b.motion === "running" && (
+        <span
+          key={p.handover?.id ?? "ring"}
+          className="cv-ring"
+          data-handover={p.handover !== undefined || undefined}
+          style={p.handover !== undefined ? ({ "--a0": `${p.handover.start}deg`, "--ring-delay": `${Math.round(p.handover.delay * 1000) / 1000}s` } as CSSProperties) : undefined}
+          aria-hidden="true"
+        />
+      )}
+      {p.reacts?.map((r) => (
+        <span
+          key={r.key}
+          className="cv-react"
+          data-kind={r.kind}
+          data-port={r.port}
+          data-morph={r.from !== undefined || undefined}
+          style={{
+            "--delay": `${Math.round(r.delay * 1000) / 1000}s`, "--dur": `${Math.round(r.dur * 1000) / 1000}s`,
+            "--sx": Math.round(((p.rect.w + 28) / p.rect.w) * 1000) / 1000, "--sy": Math.round(((p.rect.h + 28) / p.rect.h) * 1000) / 1000,
+            ...(r.from !== undefined ? { "--from": r.from } : {}),
+          } as CSSProperties}
+          aria-hidden="true"
+        >
+          <i className="cv-react__from" />
+          {r.from !== undefined && <i className="cv-react__to" />}
+        </span>
+      ))}
       {b.motion === "waiting" && (
         <svg className="cv-march" aria-hidden="true">
           <rect className="cv-march__rect" />
