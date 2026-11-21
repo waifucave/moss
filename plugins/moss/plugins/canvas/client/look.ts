@@ -38,6 +38,8 @@ export interface BackendLook {
   color?: string;
   color2?: string;
   icon?: { mediaType: "image/png" | "image/svg+xml"; data: string; at: number };
+  /** The same mark for a dark theme, where the backend has one (MOSS's own agent's Shards mark). */
+  iconDark?: { mediaType: "image/png" | "image/svg+xml"; data: string; at: number };
 }
 
 /** An agent's colour(s): its icon's real colour from its backend (`color`, and `color2` for a two-colour mark), at full

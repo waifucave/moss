@@ -46,7 +46,7 @@ describe("moss.json (spec §5.9, format 1)", () => {
 
   test("the client bundle carries no protocol code (the protocol is the tests' and the gallery's only)", () => {
     expect(pkg.dependencies["@waifucave/moss-protocol"]).toBeUndefined();
-    for (const f of ["Canvas.tsx", "Block.tsx", "NewSessionPanel.tsx", "Mark.tsx", "entry.tsx", "index.tsx", "layout.ts", "links.ts", "look.ts", "model.ts", "preselect.ts", "source.ts", "strings.ts", "tokens.ts"]) {
+    for (const f of ["Canvas.tsx", "Block.tsx", "NewSessionPanel.tsx", "message.ts", "entry.tsx", "index.tsx", "layout.ts", "links.ts", "look.ts", "model.ts", "preselect.ts", "source.ts", "strings.ts", "tokens.ts"]) {
       expect([f, readFileSync(join(root, "client", f), "utf8").includes("moss-protocol")]).toEqual([f, false]);
     }
   });

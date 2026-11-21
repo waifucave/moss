@@ -2,7 +2,7 @@
 // spine's `playSessionScene` with SAMPLE_SESSION_SCENE on a clock the test turns.
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "../gallery/scene";
+import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer, type FakeCore } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { CanvasCorner, CanvasStart, type ShellRoute } from "../client/entry";
 import { BACKENDS, FOLDERS, LAST_LINES, OPTIONS, RECENT } from "../gallery/fixtures";
@@ -289,9 +289,10 @@ describe("a block, pressed", () => {
   test("a bot's face follows its live state from the activity feed, and says it in words", async () => {
     const h = mount({ playedTo: 8_000 });
     await waitFor(() => expect(block("bot:moss")).not.toBeNull());
-    expect(block("bot:moss")!.querySelector(".cv-face")!.getAttribute("data-state")).toBe("idle");
+    // The SDK's living face (the same drawing MOSS makes), in the feed's mood.
+    expect(block("bot:moss")!.querySelector("canvas.face")!.getAttribute("data-mood")).toBe("idle");
     h.botState("moss", "thinking");
-    await waitFor(() => expect(block("bot:moss")!.querySelector(".cv-face")!.getAttribute("data-state")).toBe("thinking"));
+    await waitFor(() => expect(block("bot:moss")!.querySelector("canvas.face")!.getAttribute("data-mood")).toBe("thinking"));
     expect(within(block("bot:moss")!).getByText("bot · Thinking")).toBeDefined();
     // Busy itself, it is drawn running, not waiting.
     expect(block("bot:moss")!.getAttribute("data-motion")).toBe("running");
@@ -302,8 +303,9 @@ describe("a block, pressed", () => {
     mount({ scene: [{ at: 0, event: { type: "session_changed", ts: T0, session: { id: "s_o", kind: "coding", computer: "Studio", status: "prompting", startedAt: T0, updatedAt: T0, title: "Port the parser", backend: "opencode", startedBy: { kind: "user" } } } }], playedTo: 0 });
     await waitFor(() => expect(block("s_o")).not.toBeNull());
     expect(block("s_o")!.style.getPropertyValue("--brand")).toBe("");
-    const mark = block("s_o")!.querySelector(".cv-mark")!;
-    expect(mark.getAttribute("data-mono")).toBe("true");
+    // The SDK's mark (no icon in this data: its letter), its only wrapper the name's tooltip.
+    const mark = block("s_o")!.querySelector("[data-agent-mark]")!;
+    expect(mark.getAttribute("data-agent-mark")).toBe("letter");
     // Its only wrapper carries the agent's name as a tooltip and draws nothing (no tile, no border, no background).
     expect(mark.parentElement!.className).toBe("cv-markwrap");
     expect(mark.parentElement!.getAttribute("title")).toBe("OpenCode");

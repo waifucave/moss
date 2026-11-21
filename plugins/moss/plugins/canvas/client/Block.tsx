@@ -10,7 +10,7 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, ty
 import type { Rect } from "./layout";
 import type { BackendLook } from "./look";
 import type { Reaction } from "./message";
-import { BotFace, Mark } from "./Mark";
+import { AgentMark, BotFace } from "@waifucave/moss-plugin-sdk/ui";
 import type { Block } from "./model";
 import { S } from "./strings";
 
@@ -131,7 +131,7 @@ export function BlockView(p: BlockViewProps) {
         >
           {b.type === "bot" ? (
             <span className="cv-bothead">
-              <BotFace bot={b.bot ?? b.id} name={b.title} {...(b.brand !== undefined ? { face: { color: b.brand } } : {})} size={38} state={b.botState ?? "idle"} />
+              <BotFace bot={b.bot ?? b.id} name={b.title} {...(b.face !== undefined ? { face: b.face as never } : {})} size={38} state={b.botState ?? "idle"} />
               <span className="cv-text">
                 <span className="cv-title" title={b.title}>{b.title}</span>
                 {/* The face shows its mood by motion alone, so it is said in words too. */}
@@ -142,7 +142,7 @@ export function BlockView(p: BlockViewProps) {
             <>
               <span className="cv-row">
                 <span className="cv-markwrap" title={b.agent}>
-                  <Mark look={markLook} size={b.type === "sub" ? 22 : 26} />
+                  <AgentMark backend={markLook} size={b.type === "sub" ? 22 : 26} />
                 </span>
                 <span className="cv-text">
                   <span className="cv-title" title={b.title}>

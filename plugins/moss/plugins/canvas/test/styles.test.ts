@@ -23,7 +23,6 @@ const LEAVES = [
   ".cv-send", // disabled
   ".cv-chip", // an agent this computer lacks
   ".cv-create", // disabled
-  ".cv-eye", // a bot's face: its eyes blink and move by its state
 ];
 
 /** Everything out of the flow, each named. Those that reach outside a block (its points, its ring, the 30px "near"
@@ -67,8 +66,6 @@ describe("the canvas stylesheet", () => {
       ".cv-dotflash", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-ring[data-handover]::before",
       // A message, only while one crosses (Canvas.tsx draws it then): its light, the timer, the blocks' reactions.
       ".cv-mlight", ".cv-msg__timer", ".cv-react__from,\n.cv-react__to",
-      // A bot's face: the one thing that may move while no session runs, as it does in MOSS (the owner, 2026-11-21).
-      ".cv-eye", ".cv-face[data-state=\"thinking\"] .cv-eye", ".cv-face[data-state=\"working\"] .cv-eye",
     ].sort());
     // The ring and the dashes exist only while their block runs or waits (Block.tsx draws them then), and a wave or a
     // hit only while a message crosses: so nothing here can run on a still canvas.
@@ -85,7 +82,6 @@ describe("the canvas stylesheet", () => {
     const decl = (prelude: string) => reduced.find((r) => r.prelude === prelude)?.declarations ?? [];
     expect(decl(".cv-ring::before")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-ring::before")).toContainEqual({ property: "background", value: "linear-gradient(135deg, var(--c1), var(--c2))" });
-    expect(decl(".cv-eye,\n  .cv-face[data-state] .cv-eye")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-node[data-motion=\"running\"] .cv-dot,\n  .cv-node[data-motion=\"waiting\"] .cv-dot,\n  .cv-march__rect")).toContainEqual({ property: "animation", value: "none" });
     // A message: each stretch in turn (its own delay), a brief highlight, no travel.
     expect(decl(".cv-mlight")).toContainEqual({ property: "display", value: "none" });
@@ -103,6 +99,6 @@ describe("the canvas stylesheet", () => {
   test("a hidden window pauses every animation", () => {
     const paused = rules.find((r) => r.declarations.some((d) => d.property === "animation-play-state" && d.value === "paused"))!;
     const selectors = paused.prelude.split(",").map((s) => s.trim());
-    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-mlight", ".cv-dotflash", ".cv-part", ".cv-msg__timer", ".cv-react__from", ".cv-react__to", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
+    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-mlight", ".cv-dotflash", ".cv-part", ".cv-msg__timer", ".cv-react__from", ".cv-react__to"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
   });
 });
