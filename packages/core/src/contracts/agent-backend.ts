@@ -113,6 +113,24 @@ export interface AgentQuirks {
   placement: "local" | "cloud";
   /** What Settings marks for this backend (§9.3). */
   marks: readonly BackendMark[];
+  /** How the agent reports a subagent of its own through its tool calls (spec revision 20, §9.5 "Subagents"), so its
+   *  session's view lists it as a row; `null` or left out: none known. */
+  subagents?: SubagentQuirk | null;
+}
+
+/** Which of an agent's tool calls starts a subagent of its own, and where its name and model are. The call's own end is
+ *  the subagent's end (its report back). Read from what the agent sends, never from its name. */
+export interface SubagentQuirk {
+  /** Where the call's tool name is: a dotted path in the update's `_meta` (Claude Code's adapter: `claudeCode.toolName`),
+   *  or `title` (the call's title's first word) or `kind`. */
+  toolNameAt: string;
+  /** The tool names that start a subagent (Claude Code: `Task`, `Agent`). */
+  tools: readonly string[];
+  /** Keys of the call's input tried in order for the row's name (its description, its type); the call's title, then
+   *  the tool's name, when none is there. */
+  name: readonly string[];
+  /** The key of the call's input that names its model, when it has one. */
+  model?: string;
 }
 
 export interface AgentDetection {
@@ -184,6 +202,9 @@ export type AgentEvent =
   | { type: "tool_call"; id: string; kind: string; title: string; status: "pending" | "in_progress" | "completed" | "failed"; rawInput?: unknown }
   | { type: "tool_call_update"; id: string; status: "pending" | "in_progress" | "completed" | "failed"; refused?: boolean; closedByMoss?: boolean; /** The call's text output, once it has ended (its `content`'s text, cut at `AGENT_TOOL_OUTPUT_MAX`). */ output?: string }
   | { type: "usage"; inputTokens: number; outputTokens: number }
+  /** The call `id` started a subagent of the agent's own (its `subagents` quirk); said again when its name or model
+   *  becomes known. Its end is the call's end. */
+  | { type: "subagent"; id: string; name: string; model?: string }
   | { type: "progress" };
 
 export interface AgentTurnEnd {

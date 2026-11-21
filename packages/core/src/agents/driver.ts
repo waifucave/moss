@@ -64,6 +64,9 @@ export type AgentLogEvent =
   | { type: "agent_tool_call"; id: string; kind: string; title: string; status: string; rawInput?: unknown; displayTitle?: string }
   | { type: "agent_tool_call_update"; id: string; status: string; refused?: boolean; closedByMoss?: boolean; output?: string; display?: ToolDisplay }
   | { type: "agent_usage"; inputTokens: number; outputTokens: number }
+  /** The call `id` started a subagent of the agent's own (§9.5): the session's view lists it as a row (the host's
+   *  graph); never sent to clients as an event of its own. */
+  | { type: "agent_subagent"; id: string; name: string; model?: string }
   | { type: "agent_started"; agentSessionId: string }
   /** MOSS's own word to the person about this agent, not the agent's (`hook_notice` on the wire). */
   | { type: "agent_notice"; text: string };
@@ -351,6 +354,9 @@ class TextRuns {
         return;
       case "usage":
         this.record({ type: "agent_usage", inputTokens: e.inputTokens, outputTokens: e.outputTokens });
+        return;
+      case "subagent":
+        this.record({ type: "agent_subagent", id: e.id, name: e.name, ...(e.model === undefined ? {} : { model: e.model }) });
         return;
       default:
         return;

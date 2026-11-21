@@ -141,8 +141,13 @@ describe("subagent rows", () => {
     host.open({ id: "s_a", kind: "coding", computer: "Studio" }, d);
     await host.sendUser("s_a", user("look around"));
     await flush();
-    d.emit({ type: "agent_tool_call", id: "toolu_1", kind: "think", title: "Explore the auth module", status: "pending", subagent: { name: "Explore the auth module", model: "haiku" } });
-    d.emit({ type: "agent_tool_call", id: "toolu_2", kind: "think", title: "Review", status: "pending", subagent: { name: "Review" } });
+    d.emit({ type: "agent_tool_call", id: "toolu_1", kind: "think", title: "Task", status: "pending" });
+    d.emit({ type: "agent_subagent", id: "toolu_1", name: "Task" });
+    clock.advance(10);
+    // Its name, once its input arrived: the same row, renamed, its start unchanged.
+    d.emit({ type: "agent_subagent", id: "toolu_1", name: "Explore the auth module", model: "haiku" });
+    d.emit({ type: "agent_tool_call", id: "toolu_2", kind: "think", title: "Review", status: "pending" });
+    d.emit({ type: "agent_subagent", id: "toolu_2", name: "Review" });
     d.emit({ type: "agent_tool_call", id: "toolu_3", kind: "read", title: "Read a.ts", status: "pending" });
     expect(host.get("s_a")!.subagents!.map((r) => [r.id, r.state])).toEqual([["toolu_1", "running"], ["toolu_2", "running"]]);
     clock.advance(500);
@@ -150,7 +155,7 @@ describe("subagent rows", () => {
     d.emit({ type: "agent_tool_call_update", id: "toolu_3", status: "completed" });
     const rows = host.get("s_a")!.subagents!;
     expect(rows[0]).toMatchObject({ id: "toolu_1", name: "Explore the auth module", model: "haiku", state: "done" });
-    expect(rows[0]!.endedAt! - rows[0]!.startedAt).toBe(500);
+    expect(rows[0]!.endedAt! - rows[0]!.startedAt).toBe(510);
     // The turn ends with the second still open: the core closes the call, and the row fails with it.
     d.end({ text: "ok" });
     await flush();
@@ -165,7 +170,8 @@ describe("subagent rows", () => {
     host.open({ id: "s_a", kind: "coding", computer: "Studio" }, d);
     await host.sendUser("s_a", user("go"));
     await flush();
-    d.emit({ type: "agent_tool_call", id: "toolu_1", kind: "think", title: "Explore", status: "pending", subagent: { name: "Explore" } });
+    d.emit({ type: "agent_tool_call", id: "toolu_1", kind: "think", title: "Explore", status: "pending" });
+    d.emit({ type: "agent_subagent", id: "toolu_1", name: "Explore" });
     // The daemon dies here; the next start reads the log.
     const again = new DurableSessionHost({ home, clock });
     expect(again.get("s_a")!.subagents!.map((r) => r.state)).toEqual(["failed"]);

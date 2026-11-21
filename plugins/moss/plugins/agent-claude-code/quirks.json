@@ -82,6 +82,18 @@
       "requiredError": {
         "code": -32000
       }
+    },
+    "subagents": {
+      "toolNameAt": "claudeCode.toolName",
+      "tools": [
+        "Task",
+        "Agent"
+      ],
+      "name": [
+        "description",
+        "subagent_type"
+      ],
+      "model": "model"
     }
   }
 }

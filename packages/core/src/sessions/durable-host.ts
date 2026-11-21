@@ -485,15 +485,14 @@ interface Replayed {
   ts: number;
 }
 
-/** The subagent row a driver event starts: an agent's tool call its driver marked `subagent` (the backend's
- *  `subagents` quirk, agents/subagents.ts), keyed by the call's id. */
+/** The subagent row a driver event starts, or names again: an agent driver's `agent_subagent` (the backend's
+ *  `subagents` quirk, agents/subagents.ts), keyed by the id of the call that started it. */
 export function subagentOfEvent(event: { type: string; [key: string]: unknown }, at: number): { id: string; name: string; model?: string; state: "running"; startedAt: number } | undefined {
-  if (event.type !== "agent_tool_call") return undefined;
-  const mark = event["subagent"] as { name?: unknown; model?: unknown } | undefined;
-  const id = callIdOf(event);
-  if (id === undefined || mark === undefined || mark === null || typeof mark !== "object") return undefined;
-  const name = typeof mark.name === "string" ? mark.name.slice(0, 200) : "";
-  const model = typeof mark.model === "string" && mark.model !== "" ? mark.model.slice(0, 200) : undefined;
+  if (event.type !== "agent_subagent") return undefined;
+  const id = typeof event["id"] === "string" && event["id"] !== "" ? event["id"] : undefined;
+  if (id === undefined) return undefined;
+  const name = typeof event["name"] === "string" ? event["name"].slice(0, 200) : "";
+  const model = typeof event["model"] === "string" && event["model"] !== "" ? event["model"].slice(0, 200) : undefined;
   return { id: id.slice(0, 128), name, ...(model === undefined ? {} : { model }), state: "running", startedAt: at };
 }
 

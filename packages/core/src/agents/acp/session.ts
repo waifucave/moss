@@ -39,6 +39,7 @@ import type { Clock } from "../../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../../contracts/common";
 import { RPC_METHOD_NOT_FOUND, RpcError, RpcPeer, type JsonRpcMessage } from "@waifucave/clover-agent-sdk/acp";
 import { UserSelections } from "./selections";
+import { metaToolName, subagentOf } from "../subagents";
 import {
   ACP_PROTOCOL_VERSION, type AgentCaps, type ConfigOption, type StdioMcpServer, at, isAuthRequired, obj, pathsOf, readCaps,
   readConfigOptions, readPermissionOptions, readToolStatus, str, textOf, type Obj, type ToolStatus,
@@ -69,6 +70,10 @@ export interface ToolCallRecord {
   startedAtWall: number;
   decision?: "allowed" | "refused" | "cancelled";
   closedByMoss?: boolean;
+  /** The tool's own name, where the `subagents` quirk reads it from the update's `_meta`. */
+  toolName?: string;
+  /** The subagent this call started, as last said (§9.5 "Subagents"). */
+  subagent?: { name: string; model?: string };
 }
 
 export interface OpenOptions {
@@ -722,6 +727,7 @@ export class AcpAgentSession implements AgentSession {
           turn.toolIds.add(id);
         }
         this.#emit({ type: "tool_call", id, kind: r.kind, title: r.title, status: r.status, ...(r.rawInput === undefined ? {} : { rawInput: r.rawInput }) });
+        this.#saySubagent(r);
         return;
       }
       case "tool_call_update": {
@@ -730,6 +736,8 @@ export class AcpAgentSession implements AgentSession {
         const before = this.#calls.get(id)?.status;
         const r = this.#merge(id, update, false);
         if (turn) turn.toolIds.add(id);
+        // Its input arrives here when the agent streamed the call (Claude Code's adapter): the subagent's name with it.
+        this.#saySubagent(r);
         const status = readToolStatus(update?.["status"]);
         if (status && status !== before) {
           const ended = status === "completed" || status === "failed";
@@ -778,7 +786,21 @@ export class AcpAgentSession implements AgentSession {
     if (status) r.status = status;
     if (src["rawInput"] !== undefined && !(isEmptyObject(src["rawInput"]) && r.rawInput !== undefined)) r.rawInput = capRawInput(src["rawInput"]);
     for (const key of ["locations", "content"]) if (src[key] !== undefined) r.fields[key] = src[key];
+    const toolName = metaToolName(this.#quirks.subagents, src);
+    if (toolName !== undefined) r.toolName = toolName;
     return r;
+  }
+
+  /** A call that starts a subagent of the agent's own (its `subagents` quirk) is said, and said again when its name or
+   *  model changes. Never for a call that has ended. */
+  #saySubagent(r: ToolCallRecord): void {
+    if (this.#quirks.subagents === undefined || this.#quirks.subagents === null) return;
+    const sub = subagentOf(this.#quirks.subagents, { ...(r.toolName === undefined ? {} : { toolName: r.toolName }), title: r.title, kind: r.kind, rawInput: r.rawInput });
+    if (sub === undefined) return;
+    if (r.subagent !== undefined && r.subagent.name === sub.name && r.subagent.model === sub.model) return;
+    if (r.subagent === undefined && (r.status === "completed" || r.status === "failed")) return;
+    r.subagent = sub;
+    this.#emit({ type: "subagent", id: r.id, ...sub });
   }
 
   #closeOpenCalls(turn: Turn): void {

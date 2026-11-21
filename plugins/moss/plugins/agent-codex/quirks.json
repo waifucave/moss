@@ -85,6 +85,7 @@
       "requiredError": {
         "code": -32000
       }
-    }
+    },
+    "subagents": null
   }
 }

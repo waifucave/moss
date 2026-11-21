@@ -76,6 +76,13 @@ export const AgentQuirksSchema = z.strictObject({
   progress: z.strictObject({ countsChildProcesses: z.boolean() }),
   placement: z.enum(["local", "cloud"]),
   marks: z.array(Mark).max(16),
+  // §9.5 "Subagents": which tool call starts a subagent of the agent's own; null or left out: none known.
+  subagents: z.strictObject({
+    toolNameAt: z.string().min(1).max(128),
+    tools: z.array(z.string().min(1).max(64)).min(1).max(8),
+    name: z.array(z.string().min(1).max(64)).max(8),
+    model: z.string().min(1).max(64).optional(),
+  }).nullable().optional(),
 });
 
 /** A quirks file: the descriptor, the read-only mode of an agent that acts without asking, and where the row comes from. */

@@ -37,6 +37,7 @@ import { inProcessSandboxReady, notAvailableHere } from "../../agents/sandbox/in
 import { TASK_NOTIFICATION_FRAME } from "./input";
 import { createHostPromptQueue, type HostPromptQueue } from "../prompt-queue";
 import { mossSessions } from "../sessions";
+import { subagentOf } from "../../agents/subagents";
 
 export const IN_PROCESS_BACKEND_ID = "moss";
 
@@ -62,6 +63,8 @@ export const IN_PROCESS_QUIRKS: AgentQuirks = {
   progress: { countsChildProcesses: false },
   placement: "local",
   marks: [],
+  // The runtime's `Agent` tool, its call's kind its name: not in `SUBAGENT_TOOLS` today, so no row yet (§9.5 "Subagents").
+  subagents: { toolNameAt: "kind", tools: ["Agent", "Task"], name: ["description", "subagent_type"], model: "model" },
 };
 
 /** The seam lane K's in-process agents share (`EmbeddedSessionDeps`: home, spawn hook, provider fill). */
@@ -477,6 +480,9 @@ class InProcessSession implements AgentSession {
           const name = typeof b.name === "string" ? b.name : "tool";
           this.#toolKinds.set(b.id, name);
           this.#emit({ type: "tool_call", id: b.id, kind: name, title: name, status: "in_progress", rawInput: b.input });
+          // A subagent of its own (its `Agent` tool): a row under the session (§9.5).
+          const sub = subagentOf(IN_PROCESS_QUIRKS.subagents, { title: name, kind: name, rawInput: b.input });
+          if (sub !== undefined) this.#emit({ type: "subagent", id: b.id, ...sub });
         }
       }
     } else if (msg.type === "user") {

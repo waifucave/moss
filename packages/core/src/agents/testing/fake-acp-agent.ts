@@ -36,7 +36,10 @@ export type FakeAcpStep =
   /** Says the bridge's token, as read from its server entry at `session/new`. */
   | { sayBridgeToken: true }
   /** Reports how much of its context it uses (ACP's `usage_update`: `used` of `size` tokens). */
-  | { context: { used: number; size: number } };
+  | { context: { used: number; size: number } }
+  /** Sends these `session/update` updates as they are, `_meta` and all: an adapter's own frames, as recorded or as read
+   *  from its code (Claude Code's subagent calls, §9.5). */
+  | { raw: Record<string, unknown>[] };
 
 export interface FakeAcpConfig {
   quirks: AgentQuirks;
@@ -326,6 +329,7 @@ async function runTurn(params: Record<string, unknown>): Promise<unknown> {
     else if ("think" in step) update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: step.think } });
     else if ("usage" in step) usage = step.usage;
     else if ("context" in step) update({ sessionUpdate: "usage_update", used: step.context.used, size: step.context.size });
+    else if ("raw" in step) for (const u of step.raw) update(u);
     else if ("wait" in step) {
       await waitWake("wait");
       if (t.cancelled) return finish("cancelled");

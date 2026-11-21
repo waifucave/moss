@@ -92,6 +92,9 @@ export const MOSS_CODE_QUIRKS: AgentQuirks = {
   progress: { countsChildProcesses: false },
   placement: "local",
   marks: [],
+  // The runtime's `Agent` tool, titled by its name (`toolTitleOf`) on the ACP wire: not in `MOSS_CODE_TOOLS` today, so no
+  // row yet (§9.5 "Subagents").
+  subagents: { toolNameAt: "title", tools: ["Agent", "Task"], name: ["description", "subagent_type"], model: "model" },
 };
 
 /** Plan mode is the read-only one (it asks before any change). */
