@@ -24,7 +24,12 @@ export interface Block {
   /** The block it hangs from: its left point's line. */
   parent?: string;
   title: string;
+  /** The line under the title: `model · effort` (a subagent's: its model), empty when neither is known. The agent's name
+   *  leads it only when its mark is our letter (a letter alone doesn't name it); otherwise its icon names it (the owner,
+   *  2026-11-21: "remove the harness name its useless since we have the icons"). */
   meta: string;
+  /** The agent's name: the mark's accessible name and tooltip, and the block's announcement. */
+  agent?: string;
   status: string;
   motion: Motion;
   /** The agent's colour (and a gradient's second), at full strength: the mark wears it; what moves wears it softened. */
@@ -136,7 +141,8 @@ export function buildModel(
     add({
       id: s.id, type: "main", session: s.id, ...(s.bot !== undefined ? { bot: s.bot } : {}), ...(parent !== undefined && parent !== s.id ? { parent } : {}),
       title: s.title !== undefined && s.title.trim() !== "" ? s.title : S.untitled,
-      meta: metaLine([agent, modelLabel(s.model), s.effort]),
+      meta: metaLine([look?.icon === undefined ? agent : undefined, modelLabel(s.model), s.effort]),
+      ...(agent !== undefined ? { agent } : {}),
       status: statusLine(s), motion, ...brandOf(s.backend, look), ...(s.backend !== undefined ? { backend: s.backend } : {}),
       startedAt: s.startedAt, messageable: motion !== "ended",
     });
@@ -147,7 +153,8 @@ export function buildModel(
     for (const row of s.subagents ?? []) {
       add({
         id: subBlockId(s.id, row.id), type: "sub", session: s.id, parent: s.id, title: row.name || S.subagent,
-        meta: metaLine([S.subagent, modelLabel(row.model)]),
+        meta: metaLine([modelLabel(row.model)]),
+        ...(parent.agent !== undefined ? { agent: parent.agent } : {}),
         status: row.state === "running" ? S.running : row.state === "failed" ? S.failed : S.done,
         motion: row.state === "running" ? "running" : "ended",
         ...(parent.brand !== undefined ? { brand: parent.brand } : {}), ...(parent.brand2 !== undefined ? { brand2: parent.brand2 } : {}), ...(parent.backend !== undefined ? { backend: parent.backend } : {}),

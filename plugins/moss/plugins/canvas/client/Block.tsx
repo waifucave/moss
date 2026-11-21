@@ -42,6 +42,12 @@ export interface BlockViewProps {
   onOpenInMoss(bot: string): Promise<void>;
 }
 
+/** `agent · model · effort` for the announcement, the agent's name once. */
+function metaWithAgent(b: Block): string {
+  if (b.agent === undefined || b.meta.startsWith(b.agent)) return b.type === "sub" ? [S.subagent, b.meta].filter(Boolean).join(" · ") : b.meta;
+  return [b.agent, b.type === "sub" ? S.subagent : undefined, b.meta].filter(Boolean).join(" · ");
+}
+
 export function BlockView(p: BlockViewProps) {
   const { block: b, rect, open } = p;
   // Open, it grows a little to the right; its points stay where its lines meet it (`--bw`, `--bh`: its closed size).
@@ -52,8 +58,9 @@ export function BlockView(p: BlockViewProps) {
     left: rect.x, top: rect.y, width: rect.w + grow, "--bw": `${rect.w}px`, "--bh": `${rect.h}px`, minHeight: rect.h,
     ...(b.brand !== undefined ? { "--brand": b.brand } : {}), ...(b.brand2 !== undefined ? { "--brand2": b.brand2 } : {}),
   } as CSSProperties;
-  const label = S.state(b.title, b.type === "bot" ? S.bot : b.meta, b.status);
-  const markLook = p.look ?? { id: b.backend ?? b.title, name: b.meta.split(" · ")[0] ?? b.title, ...(b.brand !== undefined ? { color: b.brand } : {}), ...(b.brand2 !== undefined ? { color2: b.brand2 } : {}) };
+  // Announced whole: the title, the agent's name (its mark names it on screen), its model and effort, its state.
+  const label = S.state(b.title, b.type === "bot" ? S.bot : metaWithAgent(b), b.status);
+  const markLook = p.look ?? { id: b.backend ?? b.title, name: b.agent ?? b.title, ...(b.brand !== undefined ? { color: b.brand } : {}), ...(b.brand2 !== undefined ? { color2: b.brand2 } : {}) };
   const head = useRef<HTMLButtonElement>(null);
   const close = () => {
     p.onClose();
@@ -99,13 +106,16 @@ export function BlockView(p: BlockViewProps) {
           ) : (
             <>
               <span className="cv-row">
-                <Mark look={markLook} size={b.type === "sub" ? 22 : 26} />
+                <span className="cv-markwrap" title={b.agent}>
+                  <Mark look={markLook} size={b.type === "sub" ? 22 : 26} />
+                </span>
                 <span className="cv-text">
                   <span className="cv-title" title={b.title}>
                     {b.title}
                     {b.type === "sub" && <span className="cv-tag">{S.sub}</span>}
                   </span>
-                  <span className="cv-meta" title={b.meta}>{b.meta}</span>
+                  {/* Empty until the model is known: the line keeps its height, so nothing jumps when it arrives. */}
+                  <span className="cv-meta" title={b.meta || undefined}>{b.meta || " "}</span>
                 </span>
               </span>
               <span className="cv-status">

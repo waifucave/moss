@@ -45,9 +45,9 @@ interface Harness {
   botState(bot: string, state: string): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[] } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[] } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
-    "agent.backends": () => ({ backends: BACKENDS }),
+    "agent.backends": () => ({ backends: o.backends ?? BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
     "agent.recent": () => ({ ...RECENT, roots: [] }),
     "agent.options": (p: { backend: string }) => OPTIONS[p.backend] ?? { backend: p.backend, known: false, source: "unknown", models: [] },
@@ -260,7 +260,27 @@ describe("a block, pressed", () => {
     expect(block("s_o")!.style.getPropertyValue("--brand")).toBe("");
     const mark = block("s_o")!.querySelector(".cv-mark")!;
     expect(mark.getAttribute("data-mono")).toBe("true");
-    expect(mark.parentElement!.classList.contains("cv-row")).toBe(true);
+    // Its only wrapper carries the agent's name as a tooltip and draws nothing (no tile, no border, no background).
+    expect(mark.parentElement!.className).toBe("cv-markwrap");
+    expect(mark.parentElement!.getAttribute("title")).toBe("OpenCode");
+  });
+
+  test("with an icon, the line under the title is model · effort only; the agent's name is the mark's tooltip and in the announcement; an unknown model leaves the line empty at its height", async () => {
+    const T0 = 1_781_270_000_000;
+    const icon = { mediaType: "image/svg+xml", data: btoa('<svg><path fill="#D97757"/></svg>'), at: 0 };
+    mount({
+      scene: [
+        { at: 0, event: { type: "session_changed", ts: T0, session: { id: "s_x", kind: "coding", computer: "Studio", status: "idle", startedAt: T0, updatedAt: T0, title: "With a model", backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "medium", startedBy: { kind: "user" } } } },
+        { at: 0, event: { type: "session_changed", ts: T0, session: { id: "s_y", kind: "coding", computer: "Studio", status: "idle", startedAt: T0 + 1, updatedAt: T0, title: "No model yet", backend: "claude-code", startedBy: { kind: "user" } } } },
+      ],
+      playedTo: 0,
+      backends: BACKENDS.map((b) => (b.id === "claude-code" ? { ...b, icon } : b)),
+    });
+    await waitFor(() => expect(block("s_x")).not.toBeNull());
+    expect(block("s_x")!.querySelector(".cv-meta")!.textContent).toBe("Claude Opus 5.5 · medium");
+    expect(block("s_x")!.querySelector(".cv-markwrap")!.getAttribute("title")).toBe("Claude Code");
+    expect(head("s_x").getAttribute("aria-label")).toBe("With a model, Claude Code · Claude Opus 5.5 · medium, Idle");
+    expect(block("s_y")!.querySelector(".cv-meta")!.textContent).toBe(" ");
   });
 
   test("blocks are a list, each announced with its state and reachable from the keyboard", async () => {
