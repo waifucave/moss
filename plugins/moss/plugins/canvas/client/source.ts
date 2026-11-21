@@ -10,14 +10,17 @@ import { applyLink, EMPTY_LINKS, waveDone, type LinkEvent, type LinkState } from
 import type { BackendLook, BotState } from "./look";
 import type { BotFacePins } from "./model";
 
-/** A record's face pins, kept only as short strings (a shape and a colour). */
+/** A record's face pins, kept only as short strings (its shape, colour, eyes and temper). */
 function facePins(v: unknown): BotFacePins | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   const short = (x: unknown) => (typeof x === "string" && x.length <= 16 ? x : undefined);
-  const shape = short(o.shape);
-  const color = short(o.color);
-  return { ...(shape !== undefined ? { shape } : {}), ...(color !== undefined ? { color } : {}) };
+  const out: BotFacePins = {};
+  for (const k of ["shape", "color", "eyes", "temper"] as const) {
+    const v = short(o[k]);
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 import { buildModel } from "./model";
 import type { BackendRow } from "./preselect";

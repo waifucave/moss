@@ -9,7 +9,7 @@
 // * A line from each block's parent to it (`child`, `bot`). Lines between two main sessions (`peer`) come from links
 //   (links.ts), not from here.
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { faceColour } from "./faceColour";
+import { botFaceLook } from "@waifucave/moss-plugin-sdk/ui";
 import { brandOf, metaLine, modelLabel, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
 import { S } from "./strings";
 
@@ -69,8 +69,8 @@ export const subBlockId = (session: string, row: string) => `sub:${session}:${ro
 
 const isBotKind = (s: SessionView) => s.kind === "bot" || s.kind === "side-thread";
 
-/** A bot's face pins from its record (a shape and a colour; the rest is the face's own). */
-export interface BotFacePins { shape?: string; color?: string }
+/** A bot's face pins from its record (any trait left out is drawn from its name). */
+export interface BotFacePins { shape?: string; color?: string; eyes?: string; temper?: string }
 
 /** The model of `sessions` (latest views by id), with each backend's look and each bot's name. Archived sessions are
  *  left out, as the sidebar leaves them out. */
@@ -127,7 +127,7 @@ export function buildModel(
     add({
       id: botBlockId(bot), type: "bot", bot, title, meta: S.bot, status,
       // Its face's own colour, as MOSS's faces kit resolves it from its name and pins; the pins draw its face.
-      motion, brand: faceColour(botNames.get(bot) ?? title, botFaces.get(bot)), ...(botFaces.get(bot) !== undefined ? { face: botFaces.get(bot)! } : {}), botState, startedAt: b.startedAt, messageable: false,
+      motion, brand: botFaceLook(botNames.get(bot) ?? title, botFaces.get(bot) as never).color, ...(botFaces.get(bot) !== undefined ? { face: botFaces.get(bot)! } : {}), botState, startedAt: b.startedAt, messageable: false,
     });
   }
 
