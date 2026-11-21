@@ -1,7 +1,8 @@
 // FakeSessionGraph: the graph in memory. FakeSessionSource: sessions and links played from a scene (`SAMPLE_SESSION_SCENE`
 // or a test's own), for anything that reads sessions to be built before the engine serves the graph.
 import {
-  SUBAGENTS_MAX, SessionLinkEvent, SessionSubagent, foldSessionEvents, pluginMayHear, MOSS_EVENTS,
+  SUBAGENTS_MAX, SESSION_LINKS_RECENT_MAX, SessionLinkEvent, SessionSubagent, foldSessionEvents, pluginMayHear, MOSS_EVENTS,
+  type SessionLinkPair, type SessionLinksResult,
   type SessionGraphState, type SessionKind, type SessionLinkKind, type SessionSceneStep, type SessionStarter, type SessionView,
 } from "@waifucave/moss-protocol";
 import type { FeedReader } from "../activity-feed";
@@ -29,6 +30,8 @@ export class FakeSessionGraph implements SessionGraph {
   readonly #changes = new Listeners<{ session: string; fields: SessionGraphFields }>();
   readonly #links = new Set<{ reader: FeedReader; fn: (l: SessionLinkEvent) => void }>();
   readonly #last = new Map<string, string>();
+  /** Every link between two sessions, in order (the pairs are counted from it). */
+  #kept: SessionLinkEvent[] = [];
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -65,6 +68,7 @@ export class FakeSessionGraph implements SessionGraph {
     if (n.ended) return;
     n.ended = true;
     n.tasks.clear();
+    this.#kept = this.#kept.filter((l) => l.to.session !== session && (l.from.end !== "session" || l.from.session !== session));
     this.#changed(session);
     const starter = this.#starterOf(n);
     if (starter !== undefined) this.#changed(starter);
@@ -108,8 +112,22 @@ export class FakeSessionGraph implements SessionGraph {
       to: { session: to, kind: t.kind, ...(t.bot !== undefined ? { bot: t.bot } : {}) },
       link: kind,
     });
+    if (event.from.end === "session") this.#kept.push(event);
     for (const l of [...this.#links]) if (readerHearsLink(l.reader, event)) l.fn(event);
     return event;
+  }
+
+  links(reader: FeedReader, since?: number): SessionLinksResult {
+    const heard = this.#kept.filter((l) => readerHearsLink(reader, l));
+    const pairs = new Map<string, SessionLinkPair>();
+    for (const l of heard) {
+      if (l.from.end !== "session") continue;
+      const key = `${l.from.session}>${l.to.session}`;
+      const old = pairs.get(key);
+      pairs.set(key, { from: l.from, to: l.to, last: l.link, lastAt: l.ts, count: (old?.count ?? 0) + 1 });
+    }
+    const recent = heard.slice(-SESSION_LINKS_RECENT_MAX).filter((l) => since === undefined || l.ts > since);
+    return { pairs: [...pairs.values()], links: recent.map((l) => ({ ...l })) };
   }
 
   fields(session: string): SessionGraphFields {

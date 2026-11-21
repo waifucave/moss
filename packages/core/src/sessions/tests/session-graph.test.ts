@@ -2,7 +2,7 @@
 // sequences for its two folds: the waiting counts and the subagent rows (lane-common: code that turns a sequence of
 // events into a state gets a property test of its invariant).
 import { describe, expect, test } from "bun:test";
-import { SUBAGENTS_MAX, type SessionStarter, type SessionSubagent } from "@waifucave/moss-protocol";
+import { SESSION_LINK_PAIRS_MAX, SESSION_LINKS_RECENT_MAX, SUBAGENTS_MAX, type SessionStarter, type SessionSubagent } from "@waifucave/moss-protocol";
 import { runSessionGraphConformance } from "../../contracts/conformance/session-graph";
 import { EngineSessionGraph, derivedStarter } from "../session-graph";
 
@@ -195,5 +195,109 @@ describe("links and starters", () => {
     g.watchLinks({ kind: "user" }, (l) => heard.push(l.link));
     g.link(undefined, "s_a", "message");
     expect(heard).toEqual(["message"]);
+  });
+});
+
+describe("the record of links", () => {
+  const memory = () => {
+    let kept: unknown;
+    return { load: () => (kept === undefined ? undefined : JSON.parse(JSON.stringify(kept))), save: (k: unknown) => { kept = k; }, raw: () => kept };
+  };
+
+  test("it survives a restart through its store; the person's messages aren't kept; a file that doesn't read is an empty record", () => {
+    const store = memory();
+    const g = new EngineSessionGraph(() => 5, store);
+    g.started("s_a", "coding", { kind: "user" });
+    g.started("s_b", "coding", { kind: "user" });
+    g.link("s_a", "s_b", "message");
+    g.link(undefined, "s_a", "message");
+    const again = new EngineSessionGraph(() => 6, store);
+    again.started("s_a", "coding", { kind: "user" }, undefined, { quiet: true });
+    again.started("s_b", "coding", { kind: "user" }, undefined, { quiet: true });
+    const r = again.links({ kind: "user" });
+    expect(r.pairs.map((p) => [p.to.session, p.count, p.lastAt])).toEqual([["s_b", 1, 5]]);
+    expect(r.links.length).toBe(1);
+    // A pair whose session has ended by the time it is read is not drawn; one never registered isn't either.
+    const third = new EngineSessionGraph(() => 7, store);
+    third.started("s_a", "coding", { kind: "user" }, undefined, { quiet: true });
+    third.started("s_b", "coding", { kind: "user" }, undefined, { ended: true, quiet: true });
+    expect(third.links({ kind: "user" })).toEqual({ pairs: [], links: [] });
+    for (const bad of [{ v: 2 }, "junk", { v: 1, pairs: [{ nope: 1 }], recent: [{ type: "x" }] }]) {
+      const g2 = new EngineSessionGraph(() => 1, { load: () => bad, save: () => {} });
+      expect(g2.links({ kind: "user" })).toEqual({ pairs: [], links: [] });
+    }
+    const throwing = new EngineSessionGraph(() => 1, { load: () => { throw new Error("disk"); }, save: () => { throw new Error("disk"); } });
+    throwing.started("s_a", "coding", { kind: "user" });
+    throwing.started("s_b", "coding", { kind: "user" });
+    throwing.link("s_a", "s_b", "message");
+    expect(throwing.links({ kind: "user" }).pairs.length).toBe(1);
+  });
+
+  test("under a generated flood the bounds hold, each pair's count and last link are right, and what is kept on disk is the same", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const r = rng(seed);
+      let t = 1;
+      const store = memory();
+      const g = new EngineSessionGraph(() => t, store);
+      const ids = Array.from({ length: 60 }, (_, i) => `s_${i}`);
+      for (const id of ids) g.started(id, "coding", { kind: "user" });
+      const model = new Map<string, { count: number; lastAt: number; last: string }>();
+      const order: { from: string; to: string; ts: number }[] = [];
+      for (let i = 0; i < 3_000; i++) {
+        t++;
+        const from = ids[Math.floor(r() * ids.length)]!;
+        let to = ids[Math.floor(r() * ids.length)]!;
+        if (to === from) to = ids[(ids.indexOf(from) + 1) % ids.length]!;
+        const kind = (["message", "spawn", "report"] as const)[Math.floor(r() * 3)]!;
+        g.link(from, to, kind);
+        const k = `${from}>${to}`;
+        const was = model.get(k)?.count ?? 0;
+        model.delete(k);
+        model.set(k, { count: was + 1, lastAt: t, last: kind });
+        // Past the bound the least lately used pair goes, and counts afresh if it comes back.
+        while (model.size > SESSION_LINK_PAIRS_MAX) model.delete(model.keys().next().value!);
+        order.push({ from, to, ts: t });
+      }
+      const got = g.links({ kind: "user" });
+      expect(got.links.length).toBe(SESSION_LINKS_RECENT_MAX);
+      expect(got.links.map((l) => l.ts)).toEqual(order.slice(-SESSION_LINKS_RECENT_MAX).map((o) => o.ts));
+      expect(got.pairs.length).toBeLessThanOrEqual(SESSION_LINK_PAIRS_MAX);
+      for (const p of got.pairs) {
+        const want = model.get(`${p.from.end === "session" ? p.from.session : "?"}>${p.to.session}`)!;
+        expect([p.count, p.lastAt, p.last as string]).toEqual([want.count, want.lastAt, want.last]);
+      }
+      // The pairs kept are the most lately used.
+      const newest = [...model.values()].map((m) => m.lastAt).sort((a, b) => b - a).slice(0, SESSION_LINK_PAIRS_MAX);
+      expect(got.pairs.map((p) => p.lastAt).sort((a, b) => b - a)).toEqual(newest);
+      expect(got.links.every((l) => l.ts > t - 3_000)).toBe(true);
+      const disk = store.raw() as { pairs: unknown[]; recent: unknown[] };
+      expect(disk.pairs.length).toBe(got.pairs.length);
+      expect(disk.recent.length).toBe(SESSION_LINKS_RECENT_MAX);
+      expect(JSON.stringify(disk).length).toBeLessThan(600_000);
+      // Since a time: only what came after it.
+      expect(g.links({ kind: "user" }, t - 10).links.map((l) => l.ts)).toEqual(order.slice(-10).map((o) => o.ts));
+    }
+  });
+
+  test("a plugin that may not read one end learns nothing of the pair; an ended or forgotten session's records go, on disk too", () => {
+    const store = memory();
+    const g = new EngineSessionGraph(() => 1, store);
+    g.started("b_moss", "bot", { kind: "user" }, "moss");
+    g.started("agent_1", "agent", { kind: "bot", bot: "moss", session: "b_moss" }, "moss");
+    g.started("s_a", "coding", { kind: "user" });
+    g.started("s_b", "coding", { kind: "user" });
+    g.link("b_moss", "agent_1", "spawn");
+    g.link("s_a", "s_b", "message");
+    g.link("s_b", "agent_1", "message");
+    const code = g.links({ kind: "plugin", capabilities: ["sessions.read"] });
+    // agent_1 is a bot's: its kind is `agent`, read with sessions.read; b_moss is a bot's conversation, which it can't read.
+    expect(code.pairs.map((p) => `${p.from.end === "session" ? p.from.session : ""}>${p.to.session}`).sort()).toEqual(["s_a>s_b", "s_b>agent_1"]);
+    expect(code.links.some((l) => l.from.end === "session" && l.from.session === "b_moss")).toBe(false);
+    expect(g.links({ kind: "plugin", capabilities: [] })).toEqual({ pairs: [], links: [] });
+    g.ended("agent_1");
+    expect(g.links({ kind: "user" }).pairs.map((p) => p.to.session)).toEqual(["s_b"]);
+    g.forget("s_b");
+    expect(g.links({ kind: "user" })).toEqual({ pairs: [], links: [] });
+    expect(store.raw()).toEqual({ v: 1, pairs: [], recent: [] });
   });
 });

@@ -51,6 +51,8 @@ export interface SessionsMethodsDeps {
   setAgentModel?(id: string, model: string, effort?: string): Promise<void>;
   /** The bot side's questions (questions.ts): `session.answer` resolves the one waiting. Without it, none waits. */
   questions?: Pick<BotQuestions, "answer">;
+  /** A plugin's capabilities in force (its OK's), for what it may hear of `session.links`; without it a plugin hears none. */
+  capabilitiesOf?(pluginId: string): readonly string[];
 }
 
 /** How far back a bot conversation's messages are read for the staged copies they still name (never pruned). */
@@ -156,6 +158,14 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     })),
 
     [M.sessionGet.name]: handler(M.sessionGet, async ({ id }) => ({ session: view(id) })),
+
+    // The record of links between sessions (§9.5), heard as the live `session_link` is: a plugin learns of a pair only
+    // when it may read both sessions' kinds; the person (app, terminal, phone, web) hears every one.
+    [M.sessionLinks.name]: handler(M.sessionLinks, async ({ since }, ctx) => host.graph.links(
+      // Any other caller (a session, a peer) reads as a plugin with no capability: nothing.
+      ctx.caller.kind === "user" ? { kind: "user" } : { kind: "plugin", capabilities: ctx.caller.kind === "plugin" ? deps.capabilitiesOf?.(ctx.caller.pluginId) ?? [] : [] },
+      since,
+    )),
 
     [M.sessionHistory.name]: handler(M.sessionHistory, async ({ id, before, limit }, ctx) => {
       const v = view(id);

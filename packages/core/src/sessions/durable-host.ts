@@ -474,6 +474,9 @@ function isInterruptedClose(event: { type: string; [key: string]: unknown }): bo
   return event.type === "tool_result" && event["interrupted"] === true;
 }
 
+/** The session graph's record of links between sessions, in the transcripts folder (a file, which the restore's scan of
+ *  bots' folders passes over). */
+export const SESSION_LINKS_FILE = "links.json";
 /** How many of a log's first records `#titleAfterTurn` reads for the session's first message. */
 const FIRST_MESSAGE_SCAN = 200;
 /** How many subagent events a replay keeps (the newest). */
@@ -591,7 +594,12 @@ export class DurableSessionHost implements SessionHost {
     this.#runsHere = opts.runsHere;
     this.#forward = opts.forward;
     this.#warn = opts.warn ?? (() => {});
-    this.graph = new EngineSessionGraph(() => this.#clock.now());
+    // Its record of links between sessions beside the transcripts, so a restart keeps it (§9.5).
+    const linksFile = join(transcriptsDir(this.#home), SESSION_LINKS_FILE);
+    this.graph = new EngineSessionGraph(() => this.#clock.now(), {
+      load: () => (existsSync(linksFile) ? readJson(linksFile) : undefined),
+      save: (kept) => writeJsonAtomic(linksFile, kept),
+    });
     // A change of a session's graph fields (a child started or ended, a task, a subagent row) is a change of its view.
     this.graph.watch((c) => {
       const s = this.#sessions.get(c.session);

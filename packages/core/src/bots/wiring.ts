@@ -12,7 +12,7 @@ import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
 import type { DeliveredInput } from "../contracts/session-host";
-import type { PluginRegistry } from "../contracts/plugin-registry";
+import { grantsInForce, type PluginRegistry } from "../contracts/plugin-registry";
 import type { PluginHost } from "../contracts/plugin-host";
 import { userSendMethods } from "../pill/rpc";
 import { CacheTimedCompaction, type CompactionPolicy } from "../sessions/compaction";
@@ -358,6 +358,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
         ...(updates === undefined ? {} : { updateGate: updates }),
         ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort) }),
         questions,
+        capabilitiesOf: (pluginId: string) => grantsInForce(o.registry.get(pluginId)),
       });
       return {
       ...sessions,

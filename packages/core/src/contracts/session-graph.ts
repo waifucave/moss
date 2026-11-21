@@ -15,7 +15,11 @@
 // * A link names two different sessions it knows (or the person and one), carries no words (`SessionLinkEvent` is
 //   strict), and is heard only by a reader that may read both ends' kinds (`pluginMayHear`'s rule; the user always).
 // * Every change to a session's fields is heard once by `watch` (an unchanged one is not heard).
-import type { SessionKind, SessionLinkEvent, SessionLinkKind, SessionStarter, SessionSubagent, SessionWaiting } from "@waifucave/moss-protocol";
+// * The links between two sessions are kept (`links`): per pair the last one and a count, and the newest
+//   `SESSION_LINKS_RECENT_MAX` in order, read with the live event's rule (a reader that may not read both ends learns
+//   nothing of a pair: not that it is, not a count). A link from the person is no pair and isn't kept. A session that
+//   ends takes its pairs and links with it. The engine's survives a restart.
+import type { SessionKind, SessionLinkEvent, SessionLinkKind, SessionLinksResult, SessionStarter, SessionSubagent, SessionWaiting } from "@waifucave/moss-protocol";
 import type { FeedReader } from "./activity-feed";
 import type { Unsubscribe } from "./common";
 
@@ -42,4 +46,6 @@ export interface SessionGraph {
   fields(session: string): SessionGraphFields;
   watch(fn: (change: { session: string; fields: SessionGraphFields }) => void): Unsubscribe;
   watchLinks(reader: FeedReader, fn: (link: SessionLinkEvent) => void): Unsubscribe;
+  /** The kept record as `reader` may hear it: every pair, and the links since `since` (all it keeps without it). */
+  links(reader: FeedReader, since?: number): SessionLinksResult;
 }

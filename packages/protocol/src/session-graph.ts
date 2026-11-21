@@ -123,3 +123,33 @@ export function linkSessionKinds(e: { from?: unknown; to?: unknown }): SessionKi
   out.push(to.data.kind);
   return out;
 }
+
+// -------------------------------------------------------------------------------------------------
+// The record of links: which sessions have talked, and what crossed lately
+// -------------------------------------------------------------------------------------------------
+
+/** How many links between sessions the engine keeps in order (the newest), beside one row per pair. */
+export const SESSION_LINKS_RECENT_MAX = 256;
+/** How many pairs of sessions the record keeps (the ones that talked most lately). */
+export const SESSION_LINK_PAIRS_MAX = 1_024;
+
+/** Two sessions that have talked, one way (`from` to `to`): the last link's kind and time, and how many crossed. A link
+ *  from the person is not a pair: it joins no two sessions. Dropped once either session ends. */
+export const SessionLinkPair = z.strictObject({
+  from: SessionLinkEnd,
+  to: z.object({ session: SessionId, kind: SessionKind, bot: BotId.optional() }),
+  last: SessionLinkKind,
+  lastAt: Timestamp,
+  count: z.number().int().positive(),
+});
+export type SessionLinkPair = z.infer<typeof SessionLinkPair>;
+
+/** `session.links`: the record a reader may hear (both ends' kinds, as the live `session_link`): every pair, and the links
+ *  between sessions since `since` (all it keeps, the newest `SESSION_LINKS_RECENT_MAX`, without it), oldest first. So
+ *  what a reader drew before it was opened, and what crossed while it was closed, can be drawn again. */
+export const SessionLinksParams = z.object({ since: Timestamp.optional() });
+export const SessionLinksResult = z.object({
+  pairs: z.array(SessionLinkPair).max(SESSION_LINK_PAIRS_MAX),
+  links: z.array(SessionLinkEvent).max(SESSION_LINKS_RECENT_MAX),
+});
+export type SessionLinksResult = z.infer<typeof SessionLinksResult>;

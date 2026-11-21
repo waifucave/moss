@@ -239,3 +239,26 @@ describe("titles", () => {
     expect(asked).toEqual(["first", "first"]);
   });
 });
+
+describe("the record of links, kept by the host", () => {
+  test("links between sessions survive a restart in the transcripts folder, and an ended session's go from the file", async () => {
+    const { home, clock, host } = hostOn();
+    host.open({ id: "s_a", kind: "coding", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    host.open({ id: "s_b", kind: "coding", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    host.open({ id: "s_c", kind: "coding", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    await host.deliver("s_b", { from: "session", session: "s_a", text: "one" });
+    await host.deliver("s_c", { from: "session", session: "s_a", text: "two" });
+    await host.deliver("s_b", { from: "session", session: "s_a", text: "three" });
+    await host.sendUser("s_a", user("from the person"));
+    const again = new DurableSessionHost({ home, clock });
+    const r = again.graph.links({ kind: "user" });
+    expect(r.pairs.map((p) => [p.to.session, p.count]).sort()).toEqual([["s_b", 2], ["s_c", 1]]);
+    expect(r.links.length).toBe(3);
+    // No words were kept.
+    expect(readFileSync(join(home, "transcripts", "links.json"), "utf8")).not.toContain("three");
+    await host.stop("s_c");
+    const third = new DurableSessionHost({ home, clock });
+    expect(third.graph.links({ kind: "user" }).pairs.map((p) => p.to.session)).toEqual(["s_b"]);
+    expect(readFileSync(join(home, "transcripts", "links.json"), "utf8")).not.toContain("s_c");
+  });
+});

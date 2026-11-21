@@ -85,14 +85,33 @@ export async function ensureCodingSession(ctx: Pick<Ctx, "rpc" | "home">, o: { w
   return (await views())[0]?.id;
 }
 
-/** The window's own sidebar to a coding session: the session's row under its project (its id, the title a session with none
- *  of its own shows) listed and pressed, and the session's id then in the sidebar's current row. */
-export async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>): Promise<string> {
-  // Its project group may be folded and its row below the list's fold: one helper opens and scrolls (cdp.sessionRowCenter), then the press.
-  for (const d of await treeDocs(cdp)) await cdp.sessionRowCenter(d.session, codeId).catch(() => undefined);
-  await press(`the coding session ${codeId}'s row`, ".cl-sidebar__projects .cl-sidebar__row", codeId, 30_000);
-  await until("the coding session shown (its id in the sidebar's current row)", 30_000, async () => ((await inTree<boolean>(cdp, `[...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(codeId)}))`)) !== undefined ? true : undefined), async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
-  return `the sidebar listed the coding session ${codeId} started just before from outside the window, and its row went to it (the current row in the sidebar)`;
+/** What a session's sidebar row shows: its title, or its id when it has none (the engine titles a code session after its
+ *  first turn, §9.5). */
+export async function sessionLabel(rpc: { request<T>(method: string, params?: unknown): Promise<T> }, id: string): Promise<string> {
+  const v = await rpc.request<{ session: { title?: string } }>("session.get", { id }).catch(() => undefined);
+  return v?.session.title !== undefined && v.session.title !== "" ? v.session.title : id;
+}
+
+/** The window's own sidebar to a coding session: the session's row under its project (what it shows: its title, or its id
+ *  when it has none, read by `labelOf` at the press) listed and pressed, and that label then in the sidebar's current row. A
+ *  title that lands between the read and the press is read again, once. */
+export async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>, labelOf: () => Promise<string> = async () => codeId): Promise<string> {
+  let label = await labelOf();
+  const pressRow = async () => {
+    // Its project group may be folded and its row below the list's fold: one helper opens and scrolls (cdp.sessionRowCenter), then the press.
+    for (const d of await treeDocs(cdp)) await cdp.sessionRowCenter(d.session, label).catch(() => undefined);
+    await press(`the coding session ${codeId}'s row ("${label}")`, ".cl-sidebar__projects .cl-sidebar__row", label, 30_000);
+  };
+  try {
+    await pressRow();
+  } catch (err) {
+    const again = await labelOf();
+    if (again === label) throw err;
+    label = again;
+    await pressRow();
+  }
+  await until("the coding session shown (its label in the sidebar's current row)", 30_000, async () => ((await inTree<boolean>(cdp, `[...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(label)}))`)) !== undefined ? true : undefined), async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
+  return `the sidebar listed the coding session ${codeId} ("${label}") started just before from outside the window, and its row went to it (the current row in the sidebar)`;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -219,7 +238,7 @@ async function showWindowSession(ctx: Ctx, id: string): Promise<string> {
     }, () => dumpFrames(cdp));
     await cdp.click(at.session, at.c.x, at.c.y);
   };
-  await toCodingSession(cdp, id, pressText);
+  await toCodingSession(cdp, id, pressText, () => sessionLabel(rpc, id));
   return id;
 }
 
@@ -1588,7 +1607,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         await sleep(700);
       };
       const id = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
-      await toCodingSession(cdp, id, press);
+      await toCodingSession(cdp, id, press, () => sessionLabel(ctx.rpc, id));
       return id;
     },
   });
@@ -1836,7 +1855,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // 7. A coding session started now, outside the window, with no tab change after it: the Code switch of the sidebar beside her
       // tab lists it (the sidebar follows `conversation.watch`), and its row goes to it (the session's id in the sidebar's current row).
       const codeId = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
-      const side = await toCodingSession(cdp, codeId, press);
+      const side = await toCodingSession(cdp, codeId, press, () => sessionLabel(ctx.rpc, codeId));
       await press("Bots in the sidebar's switch", ".cl-sidebar__switch-option", "Bots");
       await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
       await until("her chrome back", 20_000, async () => ((await win("w.dataset.barMode")) === "none" ? true : undefined));

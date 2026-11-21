@@ -365,3 +365,24 @@ describe("the sessions area's methods", () => {
   });
 });
 
+
+describe("session.links", () => {
+  test("the person hears every pair; a plugin only those whose both ends it may read; another caller nothing", async () => {
+    const home = tempDir();
+    const clock = new FakeClock();
+    const b = await boot({ home, clock, plugins: (await pluginFromFolder(ALPHA_FOLDER, { bundled: true })).inputs });
+    const caps: Record<string, string[]> = { weather: ["sessions.read"], both: ["sessions.read", "conversation.read"] };
+    const methods = sessionsMethods({ home, computer: "Studio", bots: b.bots, host: b.host, clock, localDevice: "studio0000000000000", capabilitiesOf: (id) => caps[id] ?? [] });
+    b.host.open({ id: "s_a", kind: "coding", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    b.host.open({ id: "s_b", kind: "coding", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    await b.host.deliver("s_b", { from: "session", session: "s_a", text: "hello" });
+    await b.host.deliver("b_alpha", { from: "session", session: "s_a", text: "to the bot" });
+    const links = async (caller: Caller, since?: number) => M.sessionLinks.result.parse(await methods[M.sessionLinks.name]!(since === undefined ? {} : { since }, { caller }));
+    expect((await links(theUser)).pairs.map((p) => p.to.session).sort()).toEqual(["b_alpha", "s_b"]);
+    expect((await links(aPlugin)).pairs.map((p) => p.to.session)).toEqual(["s_b"]);
+    expect((await links({ kind: "plugin", pluginId: "both" })).pairs.length).toBe(2);
+    expect(await links(aBot)).toEqual({ pairs: [], links: [] });
+    expect((await links(theUser, clock.now())).links).toEqual([]);
+    await b.shutdown();
+  });
+});

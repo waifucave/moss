@@ -85,6 +85,41 @@ export function runSessionGraphConformance(make: SessionGraphFactory): void {
       expect(throws(() => g.link("s_a", "s_zz", "message"), "invalid")).toBe(true);
     });
 
+    test("the record keeps each pair's last link and count and the links since a time, heard by both ends' kinds; an ended session's go", () => {
+      let t = 10;
+      const g = make(() => t);
+      g.started("s_a", "coding", user);
+      g.started("s_b", "coding", user);
+      g.started("s_moss", "bot", user, "moss");
+      g.started("s_d", "agent", { kind: "bot", bot: "moss", session: "s_moss" }, "moss");
+      g.link("s_a", "s_b", "message");
+      t = 20;
+      g.link("s_a", "s_b", "message");
+      g.link("s_moss", "s_d", "spawn");
+      t = 30;
+      g.link(undefined, "s_a", "message");
+      g.link("s_d", "s_moss", "report");
+      const all = g.links({ kind: "user" });
+      const pairOf = (r: typeof all, from: string, to: string) => r.pairs.find((p) => p.from.end === "session" && p.from.session === from && p.to.session === to);
+      expect(pairOf(all, "s_a", "s_b")).toEqual({ from: { end: "session", session: "s_a", kind: "coding" }, to: { session: "s_b", kind: "coding" }, last: "message", lastAt: 20, count: 2 });
+      expect(pairOf(all, "s_d", "s_moss")).toMatchObject({ last: "report", lastAt: 30, count: 1 });
+      // The person's message joins no two sessions: no pair, not kept.
+      expect(all.pairs.length).toBe(3);
+      expect(all.links.map((l) => l.ts)).toEqual([10, 20, 20, 30]);
+      expect(g.links({ kind: "user" }, 20).links.map((l) => l.link)).toEqual(["report"]);
+      // A plugin that reads code sessions only learns nothing of the bot's pairs.
+      const code = g.links({ kind: "plugin", capabilities: ["sessions.read"] });
+      expect(code.pairs.map((p) => p.to.session)).toEqual(["s_b"]);
+      expect(code.links.every((l) => l.to.kind === "coding")).toBe(true);
+      expect(g.links({ kind: "plugin", capabilities: ["conversation.read"] })).toEqual({ pairs: [], links: [] });
+      for (const l of all.links) expect(Object.keys(l).sort()).toEqual(["from", "link", "to", "ts", "type"]);
+      g.ended("s_b");
+      const after = g.links({ kind: "user" });
+      expect(pairOf(after, "s_a", "s_b")).toBeUndefined();
+      expect(after.links.some((l) => l.to.session === "s_b")).toBe(false);
+      expect(after.pairs.length).toBe(2);
+    });
+
     test("each change of a session's fields is heard once; an unchanged one is not", () => {
       const g = make(() => 1);
       const heard: string[] = [];

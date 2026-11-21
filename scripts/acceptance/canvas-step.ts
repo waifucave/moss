@@ -12,21 +12,21 @@
 //    and then `SendMessage` to B by id, through the real bridge process and the daemon: `ListSessions` names B and not
 //    the default bot's conversation, `SendMessage` answers "Sent.", and B's conversation holds a `session_message` that
 //    names A as its sender and carries the words (never a `user_message`); B's agent was prompted with the words framed
-//    as another session's. A `session_link` of kind `message` from A to B is heard when the engine emits it (lane CG's
-//    graph; until it has merged the row says so and asserts the delivery alone).
+//    as another session's. A `session_link` of kind `message` from A to B is heard (lane CG's graph), and the engine's
+//    record of links (`session.links`) keeps the pair.
 // 2. C, a third session, is scripted to `SendMessage` to the default bot's conversation: its answer is an error that says no
 //    session of that name may be messaged, and nothing reaches the bot's conversation.
 // Removed afterwards, whatever happened.
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fail, leave, sleep, until, type ExampleCtx } from "./example-steps";
+import { fail, leave, until, type ExampleCtx } from "./example-steps";
 import { sessionMotion } from "../../packages/protocol/src/session-graph";
 import { activeCatalog } from "../../packages/core/src/runtime-sdk/model-plugins/catalog-source";
 import { familyOfModel, lightModelOn } from "../../packages/core/src/runtime-sdk/model-plugins/light-model";
 import { fixtureWith } from "./acp-backend-step";
 import { CHILD_REPORT } from "./fake-anthropic";
 
-export const CANVAS_CROSS_SESSION_STEP = "a code session's SendMessage to another code session lands in its conversation as a session_message from the sender (heard as a session_link where the engine emits it) and its ListSessions names that session and no bot's; its SendMessage to a bot's conversation is refused and delivers nothing";
+export const CANVAS_CROSS_SESSION_STEP = "a code session's SendMessage to another code session lands in its conversation as a session_message from the sender (heard as a session_link, and kept in session.links) and its ListSessions names that session and no bot's; its SendMessage to a bot's conversation is refused and delivers nothing";
 
 
 const CROSS_ID = "acceptance-cross";
@@ -142,14 +142,18 @@ async function run(ctx: ExampleCtx): Promise<string> {
   // B's agent was prompted with it, as another session's words.
   const prompted = await until("B's agent to be prompted with the message", 60_000, async () => reportOf(reportB).find((x) => x.type === "prompt" && String(x.text).includes("CROSS-HELLO")));
   if (!String(prompted.text).includes(`from-session="${a}"`) || !String(prompted.text).includes("not the person's words")) fail(`B's agent read the message as "${String(prompted.text).slice(0, 300)}"`);
-  // A link is announced in the moment of the delivery; a moment later it has been heard or the engine does not emit one yet.
-  await sleep(1_500);
-  const link = links.find((l) => (l.to as { session?: string } | undefined)?.session === b);
-  if (link !== undefined) {
-    const from = link.from as { end?: string; session?: string } | undefined;
-    if (link.link !== "message" || from?.session !== a) fail(`the link reads ${JSON.stringify(link).slice(0, 300)}, not a message from ${a}`);
-  }
-  done.push(`1 A (${a}) listed sessions ("${listText.replace(/\s+/g, " ").slice(0, 90)}…": B, no bot's conversation) and sent to B (${b}) by id: B's conversation holds a session_message from ${a} with the words and no user_message; B's agent read it as another session's ${link === undefined ? "(no session_link was emitted: the engine's graph, lane CG, has not merged; delivery asserted alone)" : "(and a session_link of kind message from A to B was heard)"}`);
+  // The link, announced at the delivery (lane CG's graph): heard, a message from A, with no words; and kept in the
+  // engine's record of links (`session.links`), which a canvas opened later reads.
+  // B's own first prompt was the person's (a link from the person to B): the one asked for is A's.
+  const link = await until("the session_link from A to B", 30_000, async () => links.find((l) => (l.to as { session?: string } | undefined)?.session === b && (l.from as { session?: string } | undefined)?.session === a),
+    async () => `links heard: ${links.map((l) => JSON.stringify(l).slice(0, 160)).join(" | ") || "none"} [packages/core/src/sessions/durable-host.ts deliver]`);
+  const from = link.from as { end?: string; session?: string } | undefined;
+  if (link.link !== "message" || from?.session !== a) fail(`the link reads ${JSON.stringify(link).slice(0, 300)}, not a message from ${a}`);
+  if (Object.keys(link).sort().join(",") !== "from,link,to,ts,type") fail(`the link carries more than who, whom, what and when: ${JSON.stringify(link).slice(0, 300)}`);
+  const kept = await rpc.request<{ pairs: { from: { session?: string }; to: { session: string }; count: number; last: string }[] }>("session.links", {});
+  const pair = kept.pairs.find((p) => p.from.session === a && p.to.session === b);
+  if (pair === undefined || pair.last !== "message" || pair.count < 1) fail(`session.links keeps no pair from A to B: ${JSON.stringify(kept.pairs).slice(0, 300)} [packages/core/src/sessions/session-graph.ts links]`);
+  done.push(`1 A (${a}) listed sessions ("${listText.replace(/\s+/g, " ").slice(0, 90)}…": B, no bot's conversation) and sent to B (${b}) by id: B's conversation holds a session_message from ${a} with the words and no user_message; B's agent read it as another session's; a session_link of kind message from A to B was heard, and session.links keeps the pair (${pair!.count})`);
 
   // 2. C sends to the default bot's conversation: refused, nothing delivered.
   const botBefore = (await history(bot!.mainSession)).length;

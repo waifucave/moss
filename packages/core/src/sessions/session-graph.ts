@@ -11,10 +11,15 @@
 //   ended row never runs again;
 // * the links (`session_link`): one per delivery from a session (or the person) to another, with no words, heard only by
 //   a reader that may read both ends' kinds (`pluginMayHear`, the core events' own gate).
+// * the record of links between two sessions (`links`): per pair the last link and a count (at most
+//   `SESSION_LINK_PAIRS_MAX` pairs, the most lately used kept), and the newest `SESSION_LINKS_RECENT_MAX` links in order,
+//   kept through a `LinkStore` (the host's file beside the transcripts) so it survives a restart; a link from the person
+//   joins no two sessions and isn't kept; a session that ends takes its pairs and links with it. At most about 220 KB on
+//   disk, a few KB in a usual home; written once per kept link (one sends at most 20 a minute).
 // Nothing here ticks: every change is a call from the host or a backend.
 import {
-  MOSS_EVENTS, SUBAGENTS_MAX, SessionLinkEvent, SessionSubagent, pluginMayHear,
-  type SessionKind, type SessionLinkKind, type SessionStarter,
+  MOSS_EVENTS, SESSION_LINK_PAIRS_MAX, SESSION_LINKS_RECENT_MAX, SUBAGENTS_MAX, SessionLinkEvent, SessionLinkPair, SessionSubagent, pluginMayHear,
+  type SessionKind, type SessionLinkKind, type SessionLinksResult, type SessionStarter,
 } from "@waifucave/moss-protocol";
 import type { FeedReader } from "../contracts/activity-feed";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -59,8 +64,29 @@ export function derivedStarter(s: { kind: SessionKind; bot?: string | undefined;
   return { kind: "user" };
 }
 
+/** The links record as it is kept on disk. */
+export interface KeptLinks {
+  v: 1;
+  pairs: SessionLinkPair[];
+  recent: SessionLinkEvent[];
+}
+
+/** Where the links record lives between restarts. */
+export interface LinkStore {
+  load(): unknown;
+  save(kept: KeptLinks): void;
+}
+
+const pairKey = (from: string, to: string) => `${from}\u0000${to}`;
+const fromSession = (l: { from: SessionLinkEvent["from"] }) => (l.from.end === "session" ? l.from.session : undefined);
+
 export class EngineSessionGraph implements SessionGraph {
   readonly #now: () => number;
+  readonly #store: LinkStore | undefined;
+  /** Each pair's last link and count, by `from`/`to`. */
+  readonly #pairs = new Map<string, SessionLinkPair>();
+  /** The newest links between sessions, oldest first. */
+  #recent: SessionLinkEvent[] = [];
   readonly #nodes = new Map<string, Node>();
   /** Each starter's children that have not ended. */
   readonly #children = new Map<string, Set<string>>();
@@ -69,8 +95,89 @@ export class EngineSessionGraph implements SessionGraph {
   /** What each session's fields were when last heard, so an unchanged one isn't heard again. */
   readonly #last = new Map<string, string>();
 
-  constructor(now: () => number = Date.now) {
+  constructor(now: () => number = Date.now, store?: LinkStore) {
     this.#now = now;
+    this.#store = store;
+    this.#loadLinks();
+  }
+
+  /** The kept record, each entry checked; a file that doesn't read is an empty record, never a failed start. */
+  #loadLinks(): void {
+    let raw: unknown;
+    try {
+      raw = this.#store?.load();
+    } catch {
+      return;
+    }
+    if (raw === null || typeof raw !== "object" || (raw as { v?: unknown }).v !== 1) return;
+    const { pairs, recent } = raw as { pairs?: unknown; recent?: unknown };
+    for (const p of Array.isArray(pairs) ? pairs.slice(-SESSION_LINK_PAIRS_MAX) : []) {
+      const ok = SessionLinkPair.safeParse(p);
+      const from = ok.success ? fromSession(ok.data) : undefined;
+      if (ok.success && from !== undefined) this.#pairs.set(pairKey(from, ok.data.to.session), ok.data);
+    }
+    for (const l of Array.isArray(recent) ? recent.slice(-SESSION_LINKS_RECENT_MAX) : []) {
+      const ok = SessionLinkEvent.safeParse(l);
+      if (ok.success && ok.data.from.end === "session") this.#recent.push(ok.data);
+    }
+  }
+
+  #saveLinks(): void {
+    if (this.#store === undefined) return;
+    // A session known here to have ended (one a restart registered as ended) takes its entries out of the file too.
+    const gone = (id: string | undefined) => id !== undefined && this.#nodes.get(id)?.ended === true;
+    for (const [k, p] of this.#pairs) if (gone(p.to.session) || gone(fromSession(p))) this.#pairs.delete(k);
+    this.#recent = this.#recent.filter((l) => !gone(l.to.session) && !gone(fromSession(l)));
+    try {
+      this.#store.save({ v: 1, pairs: [...this.#pairs.values()], recent: [...this.#recent] });
+    } catch {
+      // The record is a convenience: a refused write keeps it in memory, and the next link tries again.
+    }
+  }
+
+  /** A kept link's session that has ended here (or never was) is no longer drawn. */
+  #live(id: string): boolean {
+    const n = this.#nodes.get(id);
+    return n !== undefined && !n.ended;
+  }
+
+  /** Every pair and link that names `session` goes (it ended, or left). */
+  #dropLinksOf(session: string): void {
+    let changed = false;
+    for (const [k, p] of this.#pairs) {
+      if (p.to.session !== session && fromSession(p) !== session) continue;
+      this.#pairs.delete(k);
+      changed = true;
+    }
+    const kept = this.#recent.filter((l) => l.to.session !== session && fromSession(l) !== session);
+    if (kept.length !== this.#recent.length) {
+      this.#recent = kept;
+      changed = true;
+    }
+    if (changed) this.#saveLinks();
+  }
+
+  #keep(event: SessionLinkEvent): void {
+    const from = fromSession(event);
+    if (from === undefined) return;
+    const key = pairKey(from, event.to.session);
+    const old = this.#pairs.get(key);
+    // Re-inserted, so the map is in the order pairs were last used: the oldest goes first past the bound.
+    this.#pairs.delete(key);
+    this.#pairs.set(key, { from: event.from, to: event.to, last: event.link, lastAt: event.ts, count: (old?.count ?? 0) + 1 });
+    while (this.#pairs.size > SESSION_LINK_PAIRS_MAX) this.#pairs.delete(this.#pairs.keys().next().value!);
+    this.#recent.push(event);
+    if (this.#recent.length > SESSION_LINKS_RECENT_MAX) this.#recent.splice(0, this.#recent.length - SESSION_LINKS_RECENT_MAX);
+    this.#saveLinks();
+  }
+
+  links(reader: FeedReader, since?: number): SessionLinksResult {
+    const drawn = (l: { from: SessionLinkEvent["from"]; to: { session: string } }) => this.#live(l.to.session) && this.#live(fromSession(l) ?? "");
+    const asEvent = (p: SessionLinkPair): SessionLinkEvent => ({ type: "session_link", ts: p.lastAt, from: p.from, to: p.to, link: p.last });
+    return {
+      pairs: [...this.#pairs.values()].filter((p) => drawn(p) && mayHearLink(reader, asEvent(p))).map((p) => structuredClone(p)),
+      links: this.#recent.filter((l) => (since === undefined || l.ts > since) && drawn(l) && mayHearLink(reader, l)).map((l) => structuredClone(l)),
+    };
   }
 
   #node(id: string): Node {
@@ -121,6 +228,7 @@ export class EngineSessionGraph implements SessionGraph {
     if (n.ended) return;
     n.ended = true;
     n.tasks.clear();
+    this.#dropLinksOf(session);
     if (n.starter !== undefined) {
       const set = this.#children.get(n.starter);
       set?.delete(session);
@@ -135,6 +243,7 @@ export class EngineSessionGraph implements SessionGraph {
     const n = this.#nodes.get(session);
     if (n === undefined) return;
     if (!n.ended) this.ended(session);
+    this.#dropLinksOf(session);
     this.#nodes.delete(session);
     this.#last.delete(session);
   }
@@ -228,6 +337,7 @@ export class EngineSessionGraph implements SessionGraph {
       to: { session: to, kind: t.kind, ...(t.bot === undefined ? {} : { bot: t.bot }) },
       link: kind,
     });
+    this.#keep(event);
     for (const l of [...this.#links]) {
       if (!mayHearLink(l.reader, event)) continue;
       try {

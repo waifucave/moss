@@ -802,6 +802,274 @@
         "additionalProperties": false
       }
     },
+    "session.links": {
+      "doc": "The record of links between sessions (§9.5): every pair that has talked with its last link and count, and the links since a time; never the words, and only what the caller may hear (it reads both sessions' kinds), as the live session_link.",
+      "owner": "CG",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli",
+        "remote",
+        "web",
+        "layer"
+      ],
+      "capability": "conversation.*",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "pairs": {
+            "maxItems": 1024,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "end": {
+                          "type": "string",
+                          "const": "user"
+                        }
+                      },
+                      "required": [
+                        "end"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "end": {
+                          "type": "string",
+                          "const": "session"
+                        },
+                        "session": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "bot",
+                            "side-thread",
+                            "agent",
+                            "coding"
+                          ]
+                        },
+                        "bot": {
+                          "type": "string",
+                          "maxLength": 81,
+                          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "session",
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "to": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9._:-]+$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "bot",
+                        "side-thread",
+                        "agent",
+                        "coding"
+                      ]
+                    },
+                    "bot": {
+                      "type": "string",
+                      "maxLength": 81,
+                      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                    }
+                  },
+                  "required": [
+                    "session",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "last": {
+                  "type": "string",
+                  "enum": [
+                    "message",
+                    "spawn",
+                    "report"
+                  ]
+                },
+                "lastAt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "count": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "from",
+                "to",
+                "last",
+                "lastAt",
+                "count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "links": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "session_link"
+                },
+                "ts": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "from": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "end": {
+                          "type": "string",
+                          "const": "user"
+                        }
+                      },
+                      "required": [
+                        "end"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "end": {
+                          "type": "string",
+                          "const": "session"
+                        },
+                        "session": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "bot",
+                            "side-thread",
+                            "agent",
+                            "coding"
+                          ]
+                        },
+                        "bot": {
+                          "type": "string",
+                          "maxLength": 81,
+                          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "session",
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "to": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9._:-]+$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "bot",
+                        "side-thread",
+                        "agent",
+                        "coding"
+                      ]
+                    },
+                    "bot": {
+                      "type": "string",
+                      "maxLength": 81,
+                      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                    }
+                  },
+                  "required": [
+                    "session",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "link": {
+                  "type": "string",
+                  "enum": [
+                    "message",
+                    "spawn",
+                    "report"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "ts",
+                "from",
+                "to",
+                "link"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "pairs",
+          "links"
+        ],
+        "additionalProperties": false
+      }
+    },
     "session.get": {
       "doc": "One session, with its state.",
       "owner": "D",

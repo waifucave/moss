@@ -15,7 +15,7 @@ import {
 import { canonicalJson } from "./approvals";
 import { STAGE_IMAGE_B64_MAX_LENGTH, STAGE_IMAGE_MEDIA_TYPES } from "./methods";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
-import { SessionLinkEvent, SessionStarter, SessionSubagent, SessionWaiting, SUBAGENTS_MAX } from "./session-graph";
+import { SessionLinkEvent, SessionLinksParams, SessionLinksResult, SessionStarter, SessionSubagent, SessionWaiting, SUBAGENTS_MAX } from "./session-graph";
 
 // -------------------------------------------------------------------------------------------------
 // Bots
@@ -330,6 +330,11 @@ export const SESSIONS_METHODS = {
     params: z.object({ kinds: z.array(SessionKind).max(4).optional(), bot: BotId.optional() }),
     result: z.object({ sessions: z.array(SessionView) }),
     doc: "Every session: bots' conversations, side threads, background agents and coding sessions (`ListAgents`).",
+  }),
+  sessionLinks: defineMethod({
+    name: "session.links", owner: "CG", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
+    params: SessionLinksParams, result: SessionLinksResult,
+    doc: "The record of links between sessions (§9.5): every pair that has talked with its last link and count, and the links since a time; never the words, and only what the caller may hear (it reads both sessions' kinds), as the live session_link.",
   }),
   sessionGet: defineMethod({
     name: "session.get", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
