@@ -210,7 +210,8 @@ describe("points and spots", () => {
     for (const n of ["bot.tab", "bot.header", "bot.header.action", "bot.side", "bot.controls", "bar", "sidebar.bot", "bot.editor.section", "chrome.title", "chrome.action", "chrome.actions", "chrome.sidebar", "chrome.drag", "chrome.panels"]) expect(names).not.toContain(n);
     // The session tab declares the conversation and the composer.
     for (const n of ["conversation", "composer"]) expect(SPOTS.find((s) => s.name === n)!.declaredBy).toBe("session-tab");
-    expect(MAIN_ROUTES).toEqual(["agent", "settings", "plugins", "app"]);
+    // Revision 20 (§9.5): `start`, MOSS Code's start page.
+    expect(MAIN_ROUTES).toEqual(["agent", "settings", "plugins", "app", "start"]);
     const msg = SPOTS.find((s) => s.name === "conversation.message")!;
     expect(msg.keys).toEqual(MESSAGE_KINDS);
     expect(msg.keep).toEqual(["approval"]);

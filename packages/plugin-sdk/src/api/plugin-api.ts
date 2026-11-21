@@ -761,7 +761,9 @@ export type ShellTarget =
   | { readonly session: string }
   | { readonly side: "bots" | "code" }
   | { readonly app: string }
-  | { readonly page: "plugins" | "archive" };
+  | { readonly page: "plugins" | "archive" }
+  /** MOSS Code's start page (spec revision 20, §9.5): the `main` entry keyed `start`, or the shell's new-session page. */
+  | { readonly page: "start" };
 
 /**
  * The window itself: what a plugin that draws its own bar, its own sidebar or its own controls asks of the app, so

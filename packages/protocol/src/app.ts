@@ -10,6 +10,7 @@ import { z } from "zod";
 import { utf16 } from "./strings";
 import { AnyPluginId, BotId, CardId, ChangeResult, Empty, Ok, SessionId, Text, Timestamp } from "./common";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { WindowProgram } from "./surfaces";
 
 /** What stops if this computer quits now (§3.1). */
 export const PairStatus = z.object({
@@ -161,6 +162,52 @@ export const AppRenderResult = z.object({
 });
 export type AppRenderResult = z.infer<typeof AppRenderResult>;
 
+/** A place `app.show` opens in a program's window. */
+export const AppShowWhat = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("window") }),
+  z.object({ kind: z.literal("bot"), bot: BotId }),
+  z.object({ kind: z.literal("session"), session: SessionId }),
+  z.object({ kind: z.literal("card"), card: CardId }),
+  /** Settings at a section, and an item in it (a device, a plugin; lane E's ask). */
+  z.object({ kind: z.literal("settings"), section: utf16(128).optional(), item: utf16(256).optional() }),
+  z.object({ kind: z.literal("url"), url: z.string().url() }),
+]);
+export type AppShowWhat = z.infer<typeof AppShowWhat>;
+
+/** What each program's window opens from another program (`app.openIn`, spec revision 20, §9.5): MOSS a bot's
+ *  conversation (its window shows bots), MOSS Code a session's tab. Anything else is refused there, never guessed. */
+export const OPEN_IN_PLACES: Readonly<Record<WindowProgram, readonly AppShowWhat["kind"][]>> = {
+  moss: ["window", "bot"],
+  code: ["window", "session"],
+};
+
+/** `app.openIn`'s answer: `opened` once the program's window took it; `started` when the engine had to start the program
+ *  first (it was not running); `refused` with why (a place that program doesn't open, one the caller may not read). */
+export const AppOpenInResult = z.union([
+  z.object({ opened: z.literal(true), started: z.boolean() }),
+  z.object({ opened: z.literal(false), refused: utf16(300) }),
+]);
+export type AppOpenInResult = z.infer<typeof AppOpenInResult>;
+
+/** The app's own folder dialog (`ui.pick`, its door for parts; spec §9.4, revision 20 §9.5). `use` names the one call that
+ *  may redeem the token; `recent: true` answers the folders the person started in last (the engine's `agent.recent`) as
+ *  tokens too, with no dialog when `dialog: false`. A path never reaches the page: only a token and the folder's name. */
+export const UiPickParams = z.strictObject({
+  kind: z.enum(["folder", "file"]),
+  use: utf16(64, 1),
+  recent: z.boolean().optional(),
+  dialog: z.boolean().optional(),
+});
+export type UiPickParams = z.infer<typeof UiPickParams>;
+export const UiPickToken = z.object({ token: utf16(128, 1), name: utf16(255) });
+export const UiPickResult = z.object({
+  /** The folder the person chose in the dialog; absent when they cancelled it or none was opened. */
+  picked: UiPickToken.optional(),
+  /** With `recent`: the folders started in last, newest first, each a token for the same `use`. */
+  recent: z.array(UiPickToken).max(8).optional(),
+});
+export type UiPickResult = z.infer<typeof UiPickResult>;
+
 export const APP_METHODS = {
   appOpen: defineMethod({
     name: "app.open", owner: "D", roles: ["cli"], userOnly: true,
@@ -212,19 +259,17 @@ export const APP_METHODS = {
   }),
   appShow: defineMethod({
     name: "app.show", owner: "E", roles: ["app"], direction: "from-daemon",
-    params: z.object({
-      what: z.discriminatedUnion("kind", [
-        z.object({ kind: z.literal("window") }),
-        z.object({ kind: z.literal("bot"), bot: BotId }),
-        z.object({ kind: z.literal("session"), session: SessionId }),
-        z.object({ kind: z.literal("card"), card: CardId }),
-        /** Settings at a section, and an item in it (a device, a plugin; lane E's ask). */
-        z.object({ kind: z.literal("settings"), section: utf16(128).optional(), item: utf16(256).optional() }),
-        z.object({ kind: z.literal("url"), url: z.string().url() }),
-      ]),
-    }),
+    params: z.object({ what: AppShowWhat }),
     result: Ok,
-    doc: "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `moss open`).",
+    doc: "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `moss open`, a place another program asked for with `app.openIn`).",
+  }),
+  appOpenIn: defineMethod({
+    /** From a window's main process on the person's own press in a part (its door: `shell.control`, and the read of what
+     *  it names: a bot needs `bots.read`, a session its kind's read). Never the host, never a layer by itself. */
+    name: "app.openIn", owner: "CA", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({ program: WindowProgram, what: AppShowWhat }),
+    result: AppOpenInResult,
+    doc: "Opens a place in the other program of the pair (\"Open in MOSS\": a bot's conversation; \"Open in MOSS Code\": a session): the engine sends that program's window `app.show`, starting the program first when it isn't running (§9.5).",
   }),
   appPing: defineMethod({
     name: "app.ping", owner: "E", roles: ["app"], direction: "from-daemon",

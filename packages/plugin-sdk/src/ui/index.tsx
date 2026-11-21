@@ -25,6 +25,7 @@ import { CALLBACK_KEY, type DragOffer, type LayerBridge, type LayerMessage, type
 import { EMPTY_STRINGS, translate } from "./strings";
 
 export * from "./bridge";
+export { agentMark, AGENT_MARK_NEUTRAL, type AgentMarkLook, type AgentMarkProps, type BotFaceProps } from "./marks";
 // Mouth levels from speech (./mouth), for any part that moves a mouth: the five vowel weights from a speech feed, and
 // `TimedSpeech` (./speech), a feed made from mouth levels stamped in epoch milliseconds.
 export { TimedSpeech, type TimedSpeechClock, type TimedSpeechStats } from "./speech";

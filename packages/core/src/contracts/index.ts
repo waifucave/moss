@@ -25,6 +25,14 @@
 // | LivePictures      | AF (HS for tabs, MA shows them) | live-pictures.ts |
 // | BotRecords        | BT         | bot-records.ts        |
 // | ToolSettings      | TS (beside A's permission) | tool-settings.ts |
+// | SessionGraph      | CG         | session-graph.ts      |
+// | SessionTitles     | CG         | session-titles.ts     |
+// | SessionMessenger  | CM         | session-reach.ts      |
+// | AgentStartOptions | CA         | agent-start.ts        |
+// | BackendIcons      | CA         | backend-icons.ts      |
+// | ProgramOpener     | CA         | program-opener.ts     |
+//
+// The session canvas's contracts (spec revision 20, §9.5) were pinned by lane CS; their owners are the canvas's lanes.
 //
 // The split's contracts (spec revision 19, §13 Split 1) were pinned by lane SP; their owners are the split's lanes.
 //
@@ -54,3 +62,4 @@ export * from "./activity-feed";
 export * from "./live-pictures";
 export * from "./bot-records";
 export * from "./tool-settings";
+export * from "./session-graph"; export * from "./session-titles"; export * from "./session-reach"; export * from "./agent-start"; export * from "./backend-icons"; export * from "./program-opener";

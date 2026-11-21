@@ -43,6 +43,32 @@ export type SessionView = {
   };
   rebasedAt?: number;
   archived?: boolean;
+  startedBy?: {
+    kind: "user";
+  } | {
+    kind: "bot";
+    bot: string;
+    session?: string;
+  } | {
+    kind: "session";
+    session: string;
+  } | {
+    kind: "routine";
+    routine: string;
+    bot?: string;
+  };
+  waiting?: {
+    tasks: number;
+    children: number;
+  };
+  subagents?: {
+    id: string;
+    name: string;
+    model?: string;
+    state: "running" | "done" | "failed";
+    startedAt: number;
+    endedAt?: number;
+  }[];
 };
 
 export type ArchivedSessionView = {

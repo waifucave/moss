@@ -138,7 +138,8 @@ describe("the event table", () => {
       else expect(MossSessionEvent.safeParse(e.fixture).success).toBe(true);
     }
     const sessionTypes = events.filter((e) => e.scope === "session").map((e) => e.type).sort();
-    expect(sessionTypes).toEqual(["agent_finished", "agent_message", "bot_message", "note", "plugin_message", "routine_result"]);
+    // Revision 20 (§9.5): another code session's message, `session_message`.
+    expect(sessionTypes).toEqual(["agent_finished", "agent_message", "bot_message", "note", "plugin_message", "routine_result", "session_message"]);
   });
 
   test("every area has events, and each event names an owner and roles", () => {
@@ -151,8 +152,8 @@ describe("the event table", () => {
 });
 
 describe("the allow lists", () => {
-  test("the bridge reaches only its own tools, SendMessage and Glossary (§9.3)", () => {
-    expect([...calls("bridge")].sort()).toEqual(["bridge.call", "bridge.sendMessage", "bridge.tools", "glossary.query", "protocol.hello"]);
+  test("the bridge reaches only its own tools, SendMessage, ListSessions and Glossary (§9.3, §9.5)", () => {
+    expect([...calls("bridge")].sort()).toEqual(["bridge.call", "bridge.listSessions", "bridge.sendMessage", "bridge.tools", "glossary.query", "protocol.hello"]);
     expect(allowedEvents("bridge").size).toBe(0);
   });
 

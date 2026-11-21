@@ -7,4 +7,6 @@ export const EVENT_AREAS: Readonly<Record<string, string>> = {
   session_changed: "sessions", bot_changed: "sessions", computer_changed: "computers", plugin_changed: "plugins", plugin_removed: "plugins", plugin_found: "plugins", plugin_card_note: "plugins",
   // The activity feed and the live pictures (spec revision 19, §3.6), heard by the kind the plugin reads.
   activity_changed: "activity", picture_changed: "activity", picture_ended: "activity",
+  // A message crossing between two sessions (spec revision 20, §9.5), heard only by a plugin that reads both ends' kinds.
+  session_link: "sessions",
 };

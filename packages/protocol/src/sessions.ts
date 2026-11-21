@@ -15,6 +15,7 @@ import {
 import { canonicalJson } from "./approvals";
 import { STAGE_IMAGE_B64_MAX_LENGTH, STAGE_IMAGE_MEDIA_TYPES } from "./methods";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { SessionLinkEvent, SessionStarter, SessionSubagent, SessionWaiting, SUBAGENTS_MAX } from "./session-graph";
 
 // -------------------------------------------------------------------------------------------------
 // Bots
@@ -98,6 +99,8 @@ export const SessionView = z.object({
   parent: SessionId.optional(),
   /** The computer running it (§6.4). */
   computer: ComputerName,
+  /** Its title: the person's, a spawn's, or the engine's titler's after a code session's first turn, on its model family's
+   *  light model (§9.5 "Titles", lane CG); a change reaches every reader as `session_changed`. */
   title: utf16(200).optional(),
   status: SessionStatus,
   failure: SessionFailure.optional(),
@@ -127,6 +130,15 @@ export const SessionView = z.object({
   rebasedAt: Timestamp.optional(),
   /** The user put this session in the archive: the sidebar's lists leave it out (the Archive page is where it lives). Absent: not archived. */
   archived: z.boolean().optional(),
+  // The session graph (spec revision 20, §9.5; session-graph.ts, lane CG). `parent` and `bot` above stay as they are.
+  /** Who started it: the person, a bot, another session or a routine. The engine's, set at the start. Absent on a session
+   *  from before revision 20 (read it as `parent`/`bot` say: a bot's agent was its bot's; a coding session the person's). */
+  startedBy: SessionStarter.optional(),
+  /** What it waits on, as counts (its background tasks that will wake it, its children not yet ended); absent: nothing.
+   *  How it sits beside `status`: `sessionMotion` (running wins). */
+  waiting: SessionWaiting.optional(),
+  /** The subagents its agent reported through its tool calls, oldest first: rows under it, never sessions. */
+  subagents: z.array(SessionSubagent).max(SUBAGENTS_MAX).optional(),
 });
 export type SessionView = z.infer<typeof SessionView>;
 
@@ -563,6 +575,10 @@ function sessionEvent<T extends string, S extends z.ZodRawShape>(type: T, shape:
 
 /** Another bot's `SendMessage`, folded into this conversation (§6.4). */
 export const BotMessageEvent = sessionEvent("bot_message", { from: BotId, fromSession: SessionId, text: utf16(1_000_000) });
+/** Another session's `SendMessage` to this one, where neither is a bot's (§9.5: a session the person drives messaging
+ *  another of the person's code sessions): the sending session and the words. A message between a bot's sessions stays
+ *  `bot_message` / `agent_message`. */
+export const SessionMessageEvent = sessionEvent("session_message", { fromSession: SessionId, text: utf16(1_000_000) });
 /** A background agent's `SendMessage` to its bot while it works (§9.3). Shown as `agent-report` (§5.5). */
 export const AgentMessageEvent = sessionEvent("agent_message", { agent: SessionId, text: utf16(1_000_000) });
 /** A background agent finished: the task notification, with the final text unchanged (spike S5 §8). */
@@ -609,7 +625,7 @@ export const UserMessageStamp = z.object({ device: DeviceId, sentAt: Timestamp }
 export const SetupChangedEvent = coreEvent("setup_changed", { setup: SetupState });
 
 export const MossSessionEvent = z.discriminatedUnion("type", [
-  BotMessageEvent, AgentMessageEvent, AgentFinishedEvent, RoutineResultEvent, NoteEvent, PluginMessageEvent,
+  BotMessageEvent, AgentMessageEvent, AgentFinishedEvent, RoutineResultEvent, NoteEvent, PluginMessageEvent, SessionMessageEvent,
 ]);
 export type MossSessionEvent = z.infer<typeof MossSessionEvent>;
 
@@ -647,6 +663,11 @@ export const SESSIONS_EVENTS = {
     },
     doc: "A session started, changed state or ended.",
   }),
+  sessionLink: defineEvent({
+    type: "session_link", owner: "CG", roles: READERS, capability: "conversation.*", transient: true, schema: SessionLinkEvent,
+    fixture: { type: "session_link", ts: 1781270000000, from: { end: "session", session: "s_code_1", kind: "coding" }, to: { session: "s_code_2", kind: "coding" }, link: "message" },
+    doc: "A message crossed from one session (or the person) to another: who, to whom, its kind and when, never its words; a plugin hears it only when it may read both sessions' kinds.",
+  }),
   routinesChanged: defineEvent({
     type: "routines_changed", owner: "D", roles: READERS, capability: "routines.read", schema: RoutinesChangedEvent,
     fixture: { type: "routines_changed", ts: 1781270000000, bot: "alpha" },
@@ -680,6 +701,11 @@ export const SESSIONS_EVENTS = {
     type: "note", owner: "D", roles: READERS, capability: "conversation.read", scope: "session", schema: NoteEvent,
     fixture: { type: "note", seq: 16, sessionId: "s_alpha", ts: 1781270004000, from: { kind: "plugin", pluginId: "weather" }, label: "Forecast", text: "Rain after 4 pm." },
     doc: "A labelled note in the conversation.",
+  }),
+  sessionMessage: defineEvent({
+    type: "session_message", owner: "CM", roles: READERS, capability: "sessions.read", scope: "session", schema: SessionMessageEvent,
+    fixture: { type: "session_message", seq: 18, sessionId: "s_code_2", ts: 1781270006000, fromSession: "s_code_1", text: "The API moved to v2; update the client." },
+    doc: "Another code session's message, folded in.",
   }),
   pluginMessage: defineEvent({
     type: "plugin_message", owner: "D", roles: READERS, capability: "conversation.read", scope: "session", schema: PluginMessageEvent,

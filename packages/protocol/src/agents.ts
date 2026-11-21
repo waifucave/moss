@@ -10,8 +10,9 @@
 // bridge entry's `env` (S5 edit 4).
 import { z } from "zod";
 import { utf16 } from "./strings";
-import { AnyPluginId, ComputerName, Empty, Ok, SessionId, Text, TreePath } from "./common";
+import { AnyPluginId, ComputerName, Empty, Ok, SessionId, Text, Timestamp, TreePath } from "./common";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { LIST_SESSIONS_MAX, ReachableSession } from "./reach";
 
 /** Facts Settings marks on a backend (S5 edit 4, edit 6; §9.3 "Settings marks it"). */
 export const BackendMark = z.enum([
@@ -30,10 +31,37 @@ export const BackendMark = z.enum([
 ]);
 export type BackendMark = z.infer<typeof BackendMark>;
 
+/** A colour as a backend's look gives it: `#rrggbb`. */
+export const LookColor = z.string().regex(/^#[0-9a-f]{6}$/i);
+
+/** The kinds a backend's icon file may be (its bytes', never its name's): PNG, or SVG only when inert. */
+export const ICON_FILE_TYPES = ["png", "svg"] as const;
+/** The largest icon file a plugin's `agentBackends` entry may name; a bigger one is no icon (the plugin still loads). */
+export const ICON_FILE_MAX_BYTES = 64 * 1024;
+
+/** A backend's icon as `agent.backends` serves it: its plugin's file, checked where the plugin's other files are (at
+ *  validation and load: inside the plugin's folder, no symlink out, `ICON_FILE_MAX_BYTES`, its bytes' type, an SVG only
+ *  when inert), inline, in a form a sandboxed page shows as an image only (an `<img>` of a `data:` URL; never markup in the
+ *  page). `at` is when it was read. */
+export const BackendIcon = z.object({
+  mediaType: z.enum(["image/png", "image/svg+xml"]),
+  /** Base64. */
+  data: z.string().max(Math.ceil(ICON_FILE_MAX_BYTES / 3) * 4),
+  at: Timestamp,
+});
+export type BackendIcon = z.infer<typeof BackendIcon>;
+
 export const AgentBackendView = z.object({
   id: utf16(128, 1),
   name: Text,
   pluginId: AnyPluginId,
+  /** Its look (spec revision 20, §9.5; lane CA serves it), from its plugin's `agentBackends` entry: `icon`, the plugin's own
+   *  icon file (the owner's ruling of 2026-11-21: each agent's plugin ships its mark); absent when the entry names none or
+   *  the file was refused. A reader then draws the SDK's fallback mark (`agentMark`: the name's first letter on `color`,
+   *  or on a neutral). `color` and `color2` (a gradient's second) are the entry's. */
+  icon: BackendIcon.optional(),
+  color: LookColor.optional(),
+  color2: LookColor.optional(),
   protocol: z.enum(["acp", "cloud"]),
   placement: z.enum(["local", "cloud"]),
   /** Whether a person can open a session with it (`agent.start`). False for a backend only a turn's own subagents use. */
@@ -61,6 +89,47 @@ export const AgentDefView = z.object({
   root: TreePath.optional(),
 });
 export type AgentDefView = z.infer<typeof AgentDefView>;
+
+/** A model a backend offers before any session exists (`agent.options`), with its efforts in order. */
+export const BackendModelOption = z.object({
+  id: utf16(200, 1),
+  name: Text,
+  efforts: z.array(utf16(32, 1)).max(16),
+  defaultEffort: utf16(32, 1).optional(),
+});
+export type BackendModelOption = z.infer<typeof BackendModelOption>;
+
+/** What a backend offers to start with (spec revision 20, §9.5), before a session exists: MOSS's coding agent answers
+ *  from the model catalog (`source: "catalog"`, its default the person's default model); an ACP agent from its quirks
+ *  or a probe where they give them (`quirks`, `probe`); otherwise `known: false`, a valid answer meaning "unknown until
+ *  started" (the session's own picker lists them once it runs). An effort list with no model is the backend's own
+ *  efforts where it has them apart from models. */
+export const AgentBackendOptions = z.object({
+  backend: utf16(128, 1),
+  known: z.boolean(),
+  source: z.enum(["catalog", "quirks", "probe", "unknown"]),
+  models: z.array(BackendModelOption).max(1_000),
+  efforts: z.array(utf16(32, 1)).max(16).optional(),
+  default: z.object({ model: utf16(200, 1).optional(), effort: utf16(32, 1).optional() }).optional(),
+});
+export type AgentBackendOptions = z.infer<typeof AgentBackendOptions>;
+
+/** How many folders `RecentStart` keeps. */
+export const RECENT_FOLDERS_MAX = 8;
+
+/** The person's last start (spec revision 20, §9.5): the backend, model, effort and folder of the session they started
+ *  last, in either app or the CLI, kept by the engine per person (`<home>/settings`, lane CA). `root` is a tree path: it
+ *  reaches the app's main process and the CLI only, never a page, which gets the folder as a pick token
+ *  (`UiPickResult.recent`). */
+export const RecentStart = z.object({
+  backend: utf16(128, 1).optional(),
+  model: utf16(200, 1).optional(),
+  effort: utf16(32, 1).optional(),
+  computer: ComputerName.optional(),
+  /** The folders started in last, newest first, at most `RECENT_FOLDERS_MAX`. */
+  roots: z.array(z.object({ root: TreePath, at: Timestamp })).max(RECENT_FOLDERS_MAX),
+});
+export type RecentStart = z.infer<typeof RecentStart>;
 
 /** A bridge tool as the agent sees it: one of the plugin tools in its scope, with a description that stands on its
  *  own, since Cursor and Antigravity keep server instructions out of the prompt (S5 edit 3). */
@@ -110,7 +179,19 @@ export const AGENTS_METHODS = {
       prompt: utf16(1_000_000).optional(),
     }),
     result: z.object({ session: SessionId }),
-    doc: "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3).",
+    doc: "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3). From a plugin part (`sessions.start`, the app's door) it takes the model, the effort and a first message too (§9.5).",
+  }),
+  agentOptions: defineMethod({
+    name: "agent.options", owner: "CA", roles: ["app", "cli"],
+    params: z.object({ backend: utf16(128, 1), computer: ComputerName.optional() }),
+    result: AgentBackendOptions,
+    doc: "What a backend offers to start with, before any session exists: its models with their efforts and its defaults, or that they are unknown until it starts (§9.5).",
+  }),
+  agentRecent: defineMethod({
+    name: "agent.recent", owner: "CA", roles: ["app", "cli"],
+    params: Empty,
+    result: RecentStart,
+    doc: "The person's last start: backend, model, effort and the folders started in last (tree paths, for the app's main process and the CLI only; a page gets a pick token) (§9.5).",
   }),
 
   // `moss-core code-agent` (K-M3b): an outside ACP client's (Zed's) relay to MOSS's coding agent, on a `cli`
@@ -147,9 +228,17 @@ export const AGENTS_METHODS = {
   }),
   bridgeSendMessage: defineMethod({
     name: "bridge.sendMessage", owner: "K", roles: ["bridge"],
-    params: z.object({ text: utf16(1_000_000, 1), to: SessionId.optional() }),
+    /** `to`: a session's id, or its title when one session this agent may reach has it (spec revision 20, §9.5; lane CM
+     *  resolves it under `reachRefusal`). Absent: a bot's agent's bot; refused for a session the person drives. */
+    params: z.object({ text: utf16(1_000_000, 1), to: utf16(200, 1).optional() }),
     result: z.object({ ok: z.literal(true) }),
-    doc: "The agent messages its bot (or another session); it folds in like any bot message (§9.3).",
+    doc: "The agent messages its bot or another session it may reach (§9.3, §9.5); it folds in like any session's message.",
+  }),
+  bridgeListSessions: defineMethod({
+    name: "bridge.listSessions", owner: "CM", roles: ["bridge"],
+    params: Empty,
+    result: z.object({ sessions: z.array(ReachableSession).max(LIST_SESSIONS_MAX) }),
+    doc: "The sessions this agent's session may message now (`ListSessions`): exactly those `SendMessage` would deliver to (§9.5).",
   }),
 } as const;
 

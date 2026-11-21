@@ -875,9 +875,10 @@
         "agent",
         "settings",
         "plugins",
-        "app"
+        "app",
+        "start"
       ],
-      "doc": "The main area, keyed by route: agent, settings, plugins, app.",
+      "doc": "The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: \"start\" })` shows. A plugin's entry keyed `start` fills it; with none, the shell shows its own new-session page (the reusable `NewSession`, `layout=\"panel\"`). Each entry also gets `navigate`, as every `main` entry does.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1186,6 +1187,66 @@
         "required": [
           "bot",
           "session"
+        ]
+      }
+    },
+    {
+      "name": "session.corner",
+      "shape": "list",
+      "declaredBy": "session-tab",
+      "botsOffer": false,
+      "context": [
+        "session"
+      ],
+      "doc": "Small controls in a session tab's top corner (spec revision 20, §9.5), beside the shell's own, in the spot's order: `title` is the tooltip, `icon` a picture in the plugin's folder. Each gets the tab's session and its kind, and `navigate` (as a `main` entry does) to show the start page or another session's tab; `when.session` says which kinds of tab show it.",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "path",
+            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
+          }
+        }
+      },
+      "props": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "kind"
         ]
       }
     },

@@ -62,6 +62,9 @@ export type UserInput = {
 export type DeliveredInput =
   | { from: "bot"; bot: string; session: string; text: string }
   | { from: "agent"; agent: string; text: string }
+  /** Another session's `SendMessage` where neither is a bot's (spec revision 20, §9.5, lane CM): the sending session is
+   *  recorded (`session_message`); its turn is never the person's. */
+  | { from: "session"; session: string; text: string }
   | { from: "task-notification"; agent: string; backend: string; stopReason: AgentStopReason; text: string; transcript: string; usage?: { inputTokens: number; outputTokens: number } }
   /** `failed`, on a result posted to the bot's conversation: the run didn't finish well (an error, a timeout, a
    *  refusal, stopped or cut off). */
@@ -91,6 +94,7 @@ export function originOf(input: TurnInput): TurnOrigin {
     case "bot":
       return "bot";
     case "agent":
+    case "session":
       return "agent";
     case "task-notification":
     case "task":

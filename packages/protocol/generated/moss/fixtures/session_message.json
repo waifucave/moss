@@ -1,0 +1,8 @@
+{
+  "type": "session_message",
+  "seq": 18,
+  "sessionId": "s_code_2",
+  "ts": 1781270006000,
+  "fromSession": "s_code_1",
+  "text": "The API moved to v2; update the client."
+}

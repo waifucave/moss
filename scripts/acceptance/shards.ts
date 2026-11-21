@@ -62,10 +62,11 @@ import { SCHEDULED_ROUTINE_STEP } from "./routine-schedule-step";
 import { RELEASE_AHEAD_STEP, RELEASE_BEHIND_STEP, RELEASE_INSTALL_STEP } from "./release-step";
 import { MOSS_STEPS } from "./moss-step";
 import { SETUP_STEPS } from "./setup-step";
+import { CANVAS_STEPS } from "./canvas-step";
 import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 import { ROWS_ELSEWHERE } from "./elsewhere";
 
-export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host";
+export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas";
 
 export interface Unit {
   id: UnitId;
@@ -130,6 +131,9 @@ const OTHERS: readonly Unit[] = [
   { id: "moss", rows: MOSS_STEPS, phase: "parallel", estimate: 240, ownHome: true },
   // Lane SG: the setup guide in MOSS Code and MOSS on a home no other unit has used (no provider, no default model).
   { id: "setup", rows: SETUP_STEPS, phase: "parallel", estimate: 150, ownHome: true },
+  // The session canvas (spec revision 20, §9.5; canvas-step.ts): empty until its lanes add rows, and left out of `units()`
+  // while it is.
+  { id: "canvas", rows: CANVAS_STEPS, phase: "parallel", estimate: 120 },
   { id: "cold", rows: [COLD_START_STEP], phase: "serial", estimate: 16 },
   { id: "idle", rows: [IDLE_STEP], phase: "serial", estimate: 45 },
   // lane HS: the background host's rows start their own daemon (and the host) on a home no other unit has used: beside other

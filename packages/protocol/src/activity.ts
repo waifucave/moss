@@ -17,6 +17,7 @@ import { z } from "zod";
 import { utf16 } from "./strings";
 import { AnyPluginId, BotId, Ok, SessionId, Timestamp, type SessionKind } from "./common";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { linkSessionKinds } from "./session-graph";
 
 // -------------------------------------------------------------------------------------------------
 // Kinds of data
@@ -85,6 +86,24 @@ function dataKindOfSessionLike(session: unknown): DataKind | undefined {
   return kind === "bot" || kind === "side-thread" || kind === "agent" || kind === "coding" ? dataKindOfSession({ kind }) : undefined;
 }
 
+/** The family-gated core events about MORE than one session (spec revision 20, §9.5): each end's kind, every one of which
+ *  the plugin must read. A link from the person has one session end. */
+const EVENT_KINDS_PATH: Readonly<Record<string, (event: Record<string, unknown>) => readonly DataKind[] | undefined>> = {
+  session_link: (e) => linkSessionKinds(e)?.map((kind) => dataKindOfSession({ kind })),
+};
+
+/** The kinds of data a family-gated core event is about (one for most, each end's for a link), or undefined. */
+export function eventDataKinds(type: string, event: unknown): readonly DataKind[] | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const many = EVENT_KINDS_PATH[type];
+  if (many !== undefined) {
+    const kinds = many(event as Record<string, unknown>);
+    return kinds !== undefined && kinds.length > 0 ? kinds : undefined;
+  }
+  const one = eventDataKind(type, event);
+  return one === undefined ? undefined : [one];
+}
+
 /** The kind of data a family-gated core event is about, or undefined. */
 export function eventDataKind(type: string, event: unknown): DataKind | undefined {
   const read = EVENT_KIND_PATH[type];
@@ -99,8 +118,10 @@ export function eventDataKind(type: string, event: unknown): DataKind | undefine
 export function pluginMayHear(spec: { type: string; capability?: string }, capabilities: readonly string[], event: unknown): boolean {
   if (spec.capability === undefined) return true;
   if (!isKindFamily(spec.capability)) return capabilities.includes(spec.capability);
-  const kind = eventDataKind(spec.type, event);
-  return kind !== undefined && capabilities.includes(kindCapability(spec.capability, kind));
+  // Every kind the event is about (both sessions of a link): a plugin that may not read one never learns of it.
+  const kinds = eventDataKinds(spec.type, event);
+  const family = spec.capability;
+  return kinds !== undefined && kinds.every((kind) => capabilities.includes(kindCapability(family, kind)));
 }
 
 // -------------------------------------------------------------------------------------------------

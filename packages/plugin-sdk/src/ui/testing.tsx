@@ -5,6 +5,7 @@
 // SDK's, and what reaches the bridge is what would reach the app. Any plugin's tests and galleries may use it; it names
 // no plugin. Rendering is the test's own (`@testing-library/react` or a gallery's root).
 import { useEffect, useMemo, type ReactNode } from "react";
+import { foldSessionEvents, type SessionSceneStep } from "@waifucave/moss-protocol";
 import type { BotView, CardMeta, ComputerView, DeviceView, PluginDetail, PluginSummary, SessionView } from "../views";
 import type { TokenValue } from "../catalogs/tokens";
 import { spotInfo, STOCK_KEYS } from "../catalogs/spots";
@@ -609,3 +610,30 @@ function RootChildren({ props }: { props?: { testRoot?: string } }): ReactNode {
 
 // ---- Theme lint ----------------------------------------------------------------------------------------------------
 export * from "./theme-lint/index";
+
+// ---- Sessions as a scene ------------------------------------------------------------------------------------------
+
+/** Plays a scene of sessions (spec revision 20, §9.5; the protocol's `SAMPLE_SESSION_SCENE` or one of the test's own) into a
+ *  test core (`handlers` is the object the core was made with, `fakeCore(handlers)`): each step's event reaches the parts listening with `useCore().on` at its time, and `session.list` (and
+ *  `session.get`) answer the sessions as they stand. `schedule` is the clock (the default runs on timers; a test passes its
+ *  own, `(ms, fn) => fn()` to play it all at once). Returns a stop. */
+export function playSessionScene(
+  core: FakeCore,
+  scene: readonly SessionSceneStep[],
+  handlers: Record<string, (params: any) => unknown>,
+  schedule: (ms: number, fn: () => void) => () => void = (ms, fn) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); },
+): () => void {
+  let state = foldSessionEvents([]);
+  handlers["session.list"] = () => ({ sessions: Object.values(state.sessions) });
+  handlers["session.get"] = (p: { id: string }) => {
+    const session = state.sessions[p.id];
+    if (session === undefined) throw new Error(`no session ${p.id}`);
+    return { session };
+  };
+  const stops = scene.map((step) => schedule(step.at, () => {
+    state = foldSessionEvents([step.event], state);
+    const { type, ...payload } = step.event;
+    core.emit(type, payload as Record<string, unknown>);
+  }));
+  return () => { for (const s of stops) s(); };
+}

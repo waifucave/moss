@@ -1,0 +1,14 @@
+{
+  "type": "session_link",
+  "ts": 1781270000000,
+  "from": {
+    "end": "session",
+    "session": "s_code_1",
+    "kind": "coding"
+  },
+  "to": {
+    "session": "s_code_2",
+    "kind": "coding"
+  },
+  "link": "message"
+}

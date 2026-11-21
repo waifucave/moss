@@ -29,3 +29,7 @@ export * from "./host";
 export * from "./release";
 export * from "./activity";
 export * from "./bots";
+// The session canvas (spec revision 20, §9.5): the session graph, who may reach whom, and a scene to play.
+export * from "./session-graph";
+export * from "./reach";
+export * from "./session-scene";

@@ -1295,7 +1295,7 @@
       }
     },
     "app.show": {
-      "doc": "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `moss open`).",
+      "doc": "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `moss open`, a place another program asked for with `app.openIn`).",
       "owner": "E",
       "direction": "from-daemon",
       "roles": [
@@ -1430,6 +1430,181 @@
           "ok"
         ],
         "additionalProperties": false
+      }
+    },
+    "app.openIn": {
+      "doc": "Opens a place in the other program of the pair (\"Open in MOSS\": a bot's conversation; \"Open in MOSS Code\": a session): the engine sends that program's window `app.show`, starting the program first when it isn't running (§9.5).",
+      "owner": "CA",
+      "direction": "to-daemon",
+      "roles": [
+        "app"
+      ],
+      "userOnly": true,
+      "windowOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "enum": [
+              "moss",
+              "code"
+            ]
+          },
+          "what": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "window"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "bot"
+                  },
+                  "bot": {
+                    "type": "string",
+                    "maxLength": 81,
+                    "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "bot"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "session"
+                  },
+                  "session": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]+$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "session"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "card"
+                  },
+                  "card": {
+                    "type": "string",
+                    "pattern": "^card_[A-Za-z0-9_-]{6,64}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "card"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "settings"
+                  },
+                  "section": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "item": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "url"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "url"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "program",
+          "what"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "opened": {
+                "type": "boolean",
+                "const": true
+              },
+              "started": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "opened",
+              "started"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened": {
+                "type": "boolean",
+                "const": false
+              },
+              "refused": {
+                "type": "string",
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "opened",
+              "refused"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "app.ping": {

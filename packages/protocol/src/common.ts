@@ -21,8 +21,13 @@ export const MOSS_PROTOCOL_MIN_VERSION = 1;
  *  * `BT`: bots as engine data and the one-time move of plugin bots (§6.1);
  *  * `AF`: the activity feed, a tool's live picture and reads by kind (§3.6);
  *  * `TS`: the tool setting's engine half (§6.7);
- *  * `MA`: the MOSS app (§6.10); `MC`: MOSS Code's changes and the avatar plugin (§9.4, §10). */
-export const LANES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "RT", "HS", "RL", "BT", "AF", "TS", "MA", "MC"] as const;
+ *  * `MA`: the MOSS app (§6.10); `MC`: MOSS Code's changes and the avatar plugin (§9.4, §10).
+ *  Then the session canvas's lanes (spec revision 20, §9.5; ids chosen by lane CS, its spine):
+ *  * `CG`: the session graph: who started a session, its links, waiting, an agent's subagents, titles;
+ *  * `CM`: the cross-session tools of every agent session (`SendMessage`, `ListSessions`) and their rule;
+ *  * `CA`: the app and the SDK: starting from a part, a backend's options and look, the start page, the tab corner, the
+ *    bot face, opening a place in the other program; `CP`: the canvas plugin. */
+export const LANES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "RT", "HS", "RL", "BT", "AF", "TS", "MA", "MC", "CG", "CM", "CA", "CP"] as const;
 export type Lane = (typeof LANES)[number];
 
 // -------------------------------------------------------------------------------------------------

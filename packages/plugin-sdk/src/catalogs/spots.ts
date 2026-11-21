@@ -61,7 +61,7 @@ const inConversation = { bot: BotRef, session: z.string(), item, ctx };
 /** The message kinds `conversation.message` is keyed by (§5.5). */
 export const MESSAGE_KINDS = ["user", "bot", "tool", "approval", "question", "routine-result", "task-notification", "agent-report", "note"] as const;
 /** The routes `main` is keyed by (§5.5). */
-export const MAIN_ROUTES = ["agent", "settings", "plugins", "app"] as const;
+export const MAIN_ROUTES = ["agent", "settings", "plugins", "app", "start"] as const;
 
 export const SPOTS: readonly SpotInfo[] = [
   // The app's core points (§5.3).
@@ -87,7 +87,7 @@ export const SPOTS: readonly SpotInfo[] = [
     doc: "App buttons in the sidebar; `opens` names the `main` and `panel` key it shows." },
   { name: "main", shape: "keyed", declaredBy: "shell", botsOffer: false, keys: MAIN_ROUTES, fields: none,
     props: z.object({ route: z.string(), params: z.record(z.string(), z.string()) }),
-    doc: "The main area, keyed by route: agent, settings, plugins, app." },
+    doc: "The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: \"start\" })` shows. A plugin's entry keyed `start` fills it; with none, the shell shows its own new-session page (the reusable `NewSession`, `layout=\"panel\"`). Each entry also gets `navigate`, as every `main` entry does." },
   { name: "panel", shape: "keyed", declaredBy: "shell", botsOffer: ["browser", "agent"], context: ["session"], placeholder: true, fields: titledOpt,
     props: z.object({ app: z.string(), session: z.string().optional(), bot: z.string().optional() }),
     doc: "The panel host, keyed by panel: each stock panel (session, terminal, diff, files, browser, agent) is a plugin of its own, and replaceable. An entry whose key is not a stock one ADDS a panel of the plugin's own, with a button of its own beside the stock ones: it needs a `title`, `icon` is optional, and `when.session` (`bot`, `agent`, `coding`) says which tabs show it (all when absent). Inside a bot's plugin it shows on that bot's tab only; beside the bot (`\"app\": true`) or in a plugin with no bot, on every tab of the kinds it names. A panel for some sessions only says so with `when.session` (the code-only panels: `\"coding\"`); a stock key no plugin fills shows the host's placeholder." },
@@ -101,6 +101,9 @@ export const SPOTS: readonly SpotInfo[] = [
   // A session's tab (the shell's `Tabs.tsx`): the conversation over the composer.
   { name: "conversation", shape: "single", declaredBy: "session-tab", botsOffer: true, context: ["bot"], needs: ["sessions.read"], fields: none,
     props: z.object({ bot: BotRef, session: z.string() }), doc: "The conversation view." },
+  { name: "session.corner", shape: "list", declaredBy: "session-tab", botsOffer: false, context: ["session"], fields: titledOpt,
+    props: z.object({ session: z.string(), kind: z.string() }),
+    doc: "Small controls in a session tab's top corner (spec revision 20, §9.5), beside the shell's own, in the spot's order: `title` is the tooltip, `icon` a picture in the plugin's folder. Each gets the tab's session and its kind, and `navigate` (as a `main` entry does) to show the start page or another session's tab; `when.session` says which kinds of tab show it." },
   { name: "composer", shape: "single", declaredBy: "session-tab", botsOffer: true, context: ["bot"], needs: ["conversation.post"], fields: none,
     props: z.object({ bot: BotRef, session: z.string() }),
     doc: "The composer; a send counts as the user's only on a real key press or click (§5.5). Its entry also gets the host callbacks (`useComposerHost`): the models its session can switch to, a model switch, interrupt and stop; each acting one needs the user's own key press or click, and a model switch on a bot's main conversation is a sealed card unless it is the default composer's. The default composer also lists the running plugins' commands and runs one as the user (its slash menu); another plugin's entry doesn't get those." },

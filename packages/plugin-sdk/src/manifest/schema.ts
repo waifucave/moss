@@ -2,7 +2,7 @@
 // (`generated/moss.schema.json`) and its validation (`validate.ts`). Every shape below follows §5.9's reference; the
 // details §5.9 leaves open are noted where they are chosen.
 import { z } from "zod";
-import { Os, Platform, RunsOn, Scope, SemverVersion, SessionKind, TopPluginId, COMPUTER_NAME_RE, utf16 } from "@waifucave/moss-protocol";
+import { LookColor, Os, Platform, RunsOn, Scope, SemverVersion, SessionKind, TopPluginId, COMPUTER_NAME_RE, utf16 } from "@waifucave/moss-protocol";
 import { AUTH_SCHEME_RE } from "../api/keyed-fetch";
 import { DATA_FILE_CAPS, DATA_FILE_TYPES } from "../catalogs/data-files";
 import { TURN_LOCAL_NAME } from "../catalogs/turns";
@@ -227,6 +227,14 @@ export const AgentBackendSchema = z.strictObject({
   /** A JSON file in the folder with the backend's quirks (`AgentQuirks`, lane K), so each backend's row lives in its
    *  own plugin (K's ask). */
   quirks: Path.optional(),
+  /** Its look (spec revision 20, §9.5): its brand colour and, for a gradient, a second, `#rrggbb`. */
+  color: LookColor.optional(),
+  color2: LookColor.optional(),
+  /** Its mark: a PNG or SVG file in the plugin's own folder (the owner's ruling of 2026-11-21: each agent's plugin ships
+   *  its mark; removing one is this line and its file). Checked with the plugin's other files: inside its folder, no
+   *  symlink out, at most `ICON_FILE_MAX_BYTES`, its bytes' type, an SVG only when inert; a refused or missing icon is no
+   *  icon (the SDK's fallback mark), never a failed plugin. */
+  icon: Path.optional(),
   ...declares,
 });
 

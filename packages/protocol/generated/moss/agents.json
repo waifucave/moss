@@ -55,6 +55,41 @@
                   "maxLength": 81,
                   "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
                 },
+                "icon": {
+                  "type": "object",
+                  "properties": {
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "image/png",
+                        "image/svg+xml"
+                      ]
+                    },
+                    "data": {
+                      "type": "string",
+                      "maxLength": 87384
+                    },
+                    "at": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "mediaType",
+                    "data",
+                    "at"
+                  ],
+                  "additionalProperties": false
+                },
+                "color": {
+                  "type": "string",
+                  "pattern": "^#[0-9a-f]{6}$"
+                },
+                "color2": {
+                  "type": "string",
+                  "pattern": "^#[0-9a-f]{6}$"
+                },
                 "protocol": {
                   "type": "string",
                   "enum": [
@@ -234,7 +269,7 @@
       }
     },
     "agent.start": {
-      "doc": "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3).",
+      "doc": "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3). From a plugin part (`sessions.start`, the app's door) it takes the model, the effort and a first message too (§9.5).",
       "owner": "K",
       "direction": "to-daemon",
       "roles": [
@@ -299,6 +334,215 @@
         },
         "required": [
           "session"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "agent.options": {
+      "doc": "What a backend offers to start with, before any session exists: its models with their efforts and its defaults, or that they are unknown until it starts (§9.5).",
+      "owner": "CA",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "computer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$"
+          }
+        },
+        "required": [
+          "backend"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "known": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "quirks",
+              "probe",
+              "unknown"
+            ]
+          },
+          "models": {
+            "maxItems": 1000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "en": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "en"
+                      ],
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "efforts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  }
+                },
+                "defaultEffort": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "efforts"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "efforts": {
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            }
+          },
+          "default": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "effort": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "backend",
+          "known",
+          "source",
+          "models"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "agent.recent": {
+      "doc": "The person's last start: backend, model, effort and the folders started in last (tree paths, for the app's main process and the CLI only; a page gets a pick token) (§9.5).",
+      "owner": "CA",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "effort": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "computer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$"
+          },
+          "roots": {
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "pattern": "^(home|bots)(\\/|$)"
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "root",
+                "at"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "roots"
         ],
         "additionalProperties": false
       }
@@ -494,7 +738,7 @@
       }
     },
     "bridge.sendMessage": {
-      "doc": "The agent messages its bot (or another session); it folds in like any bot message (§9.3).",
+      "doc": "The agent messages its bot or another session it may reach (§9.3, §9.5); it folds in like any session's message.",
       "owner": "K",
       "direction": "to-daemon",
       "roles": [
@@ -512,8 +756,7 @@
           "to": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9._:-]+$"
+            "maxLength": 200
           }
         },
         "required": [
@@ -531,6 +774,176 @@
         },
         "required": [
           "ok"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "bridge.listSessions": {
+      "doc": "The sessions this agent's session may message now (`ListSessions`): exactly those `SendMessage` would deliver to (§9.5).",
+      "owner": "CM",
+      "direction": "to-daemon",
+      "roles": [
+        "bridge"
+      ],
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "bot",
+                    "side-thread",
+                    "agent",
+                    "coding"
+                  ]
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "starting",
+                    "ready",
+                    "prompting",
+                    "cancelling",
+                    "idle",
+                    "stopped",
+                    "failed"
+                  ]
+                },
+                "backend": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "bot": {
+                  "type": "string",
+                  "maxLength": 81,
+                  "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                },
+                "parent": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                "startedBy": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "user"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "bot"
+                        },
+                        "bot": {
+                          "type": "string",
+                          "maxLength": 81,
+                          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                        },
+                        "session": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "bot"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "session"
+                        },
+                        "session": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "session"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "routine"
+                        },
+                        "routine": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "bot": {
+                          "type": "string",
+                          "maxLength": 81,
+                          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "routine"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "sessions"
         ],
         "additionalProperties": false
       }

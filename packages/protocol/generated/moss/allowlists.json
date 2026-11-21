@@ -7,7 +7,10 @@
       "activity.list",
       "agent.backends",
       "agent.definitions",
+      "agent.options",
+      "agent.recent",
       "agent.start",
+      "app.openIn",
       "archive.history",
       "archive.list",
       "bot.archived",
@@ -215,6 +218,8 @@
       "routine_result",
       "routines_changed",
       "session_changed",
+      "session_link",
+      "session_message",
       "setup_changed",
       "tab_changed",
       "tab_closed",
@@ -354,6 +359,8 @@
       "routine_result",
       "routines_changed",
       "session_changed",
+      "session_link",
+      "session_message",
       "tab_changed",
       "tab_closed",
       "terminal_output",
@@ -370,6 +377,8 @@
       "activity.list",
       "agent.backends",
       "agent.definitions",
+      "agent.options",
+      "agent.recent",
       "agent.start",
       "app.capture",
       "app.open",
@@ -516,6 +525,8 @@
       "routine_result",
       "routines_changed",
       "session_changed",
+      "session_link",
+      "session_message",
       "setup_changed",
       "tool_settings_changed",
       "update_available",
@@ -551,6 +562,7 @@
   "bridge": {
     "calls": [
       "bridge.call",
+      "bridge.listSessions",
       "bridge.sendMessage",
       "bridge.tools",
       "glossary.query",
@@ -632,7 +644,9 @@
       "plugin_message",
       "routine_result",
       "routines_changed",
-      "session_changed"
+      "session_changed",
+      "session_link",
+      "session_message"
     ],
     "daemonSends": []
   },
@@ -670,7 +684,9 @@
       "plugin_message",
       "routine_result",
       "routines_changed",
-      "session_changed"
+      "session_changed",
+      "session_link",
+      "session_message"
     ],
     "daemonSends": []
   },

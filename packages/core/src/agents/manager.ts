@@ -1580,6 +1580,9 @@ export async function promptOf(input: TurnInput): Promise<{ text: string; images
       return { text: input.text };
     case "agent":
       return { text: `Message from agent ${input.agent}:\n\n${input.text}` };
+    case "session":
+      // Nothing delivers it yet (spec revision 20, §9.5): lane CM's cross-session tools will.
+      return { text: `Message from session ${input.session}:\n\n${input.text}` };
     case "task-notification":
       return { text: `Agent ${input.agent} (${input.backend}) finished: ${input.stopReason}. Transcript: ${input.transcript}\n\n${input.text}` };
     case "routine":
