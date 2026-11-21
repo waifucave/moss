@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { decodePlaces, EMPTY_GRAPH, encodePlaces, graphReducer, lastLineOf, PLACES_MAX_CHARS } from "../client/source";
+import { decodePlaces, EMPTY_GRAPH, encodePlaces, graphReducer, LAST_LINE_MAX, lastLineOf, PLACES_MAX_CHARS, readLastLine } from "../client/source";
 import { LAST_LINES } from "../gallery/fixtures";
 
 describe("the source", () => {
@@ -37,5 +37,29 @@ describe("the source", () => {
     expect(decodePlaces("not json")).toEqual({});
     expect(decodePlaces('{"a":{"x":"1","y":2}}')).toEqual({});
     expect(decodePlaces(undefined)).toEqual({});
+  });
+});
+
+describe("an opened block's last line", () => {
+  test("one line, cut at its most with an ellipsis", () => {
+    const long = "x".repeat(500);
+    const l = lastLineOf([{ type: "assistant_message", text: `first\n  ${long}  ` }])!;
+    expect(l.length).toBe(LAST_LINE_MAX);
+    expect(l.endsWith("…")).toBe(true);
+    expect(lastLineOf([{ type: "assistant_message", text: "a\tb   c" }])).toBe("a b c");
+  });
+
+  test("when the last 40 events hold no line and there is more, read once from further back", async () => {
+    const asked: { before?: number; limit: number }[] = [];
+    const pages = [
+      { events: [{ type: "user_message", text: "hi", seq: 41 }], hasMore: true },
+      { events: [{ type: "assistant_message", text: "Earlier: done.", seq: 3 }], hasMore: true },
+    ];
+    expect(await readLastLine(async (p) => { asked.push(p); return pages[asked.length - 1]; })).toBe("Earlier: done.");
+    expect(asked).toEqual([{ limit: 40 }, { before: 41, limit: 200 }]);
+    // Nothing further back: none, after one more read only.
+    const none: { before?: number; limit: number }[] = [];
+    expect(await readLastLine(async (p) => { none.push(p); return { events: [{ type: "user_message", text: "hi", seq: 9 }], hasMore: none.length === 1 }; })).toBeUndefined();
+    expect(none.length).toBe(2);
   });
 });

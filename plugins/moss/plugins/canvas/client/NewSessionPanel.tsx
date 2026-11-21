@@ -94,15 +94,20 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
     }
   }, [ready]);
 
+  const creating = useRef(false);
   const create = (e: React.MouseEvent) => {
-    if (!byPerson(e) || !ready) return;
+    if (!byPerson(e) || !ready || creating.current) return;
+    creating.current = true;
     setBusy(true);
     setError(undefined);
     // Inside the press: `agent.start` is the person's.
     void p.starter.start(startParams(agent!, folder!, pick!)).then(
       (session) => { if (session !== undefined) p.onStarted(session); },
       (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
-    ).finally(() => setBusy(false));
+    ).finally(() => {
+      creating.current = false;
+      setBusy(false);
+    });
   };
   const chooseFolder = (e: React.MouseEvent) => {
     if (!byPerson(e)) return;
@@ -180,7 +185,16 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
       )}
 
       {folder === undefined && <p className="cv-panel__note">{S.needFolder}</p>}
-      <button ref={createRef} type="button" className="cv-create" disabled={!ready} onClick={create}>{busy ? S.creating : S.create}</button>
+      <button
+        ref={createRef}
+        type="button"
+        className="cv-create"
+        disabled={!ready}
+        onClick={create}
+        // Focus comes here once every step is chosen: a held Enter's repeats (one begun on an earlier step, say) must not
+        // press it. Only a fresh press does, as in the composer.
+        onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && e.repeat) e.preventDefault(); }}
+      >{busy ? S.creating : S.create}</button>
       {error !== undefined && <p className="cv-error" role="alert">{error}</p>}
     </div>
   );

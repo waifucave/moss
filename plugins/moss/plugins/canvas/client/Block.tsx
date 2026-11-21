@@ -192,7 +192,7 @@ function More(p: BlockViewProps) {
   }
   return (
     <div className="cv-more">
-      <p className="cv-last" title={p.line ?? undefined}>{p.line === undefined ? S.readingLine : p.line === null ? S.noLine : p.line}</p>
+      <p className="cv-last">{p.line === undefined ? S.readingLine : p.line === null ? S.noLine : p.line}</p>
       {b.messageable && b.session !== undefined && <Composer session={b.session} title={b.title} onSend={p.onSend} />}
       <div className="cv-actions">
         <button type="button" className="cv-button" onClick={() => b.session !== undefined && p.onOpenTab(b.session)}>
@@ -222,7 +222,8 @@ export function Composer({ session, title, onSend }: { session: string; title: s
     setError(undefined);
     // Called here, inside the press: the app counts it as the person's only then.
     void onSend(session, words).then(
-      () => setText(""),
+      // What the person typed while it was on its way stays: only the words sent are cleared.
+      () => setText((now) => (now.trim() === words ? "" : now)),
       (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
     ).finally(() => {
       busy.current = false;

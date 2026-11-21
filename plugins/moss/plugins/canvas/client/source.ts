@@ -163,14 +163,33 @@ export function lastLineOf(events: readonly Record<string, unknown>[]): string |
     const e = events[i]!;
     if (e.type === "assistant_message" && typeof e.text === "string" && e.text.trim() !== "") {
       const lines = e.text.split("\n").map((l) => l.trim()).filter(Boolean);
-      return lines[lines.length - 1];
+      return capLine(lines[lines.length - 1]!);
     }
     if (e.type === "tool_call") {
       const t = typeof e.displayTitle === "string" && e.displayTitle !== "" ? e.displayTitle : typeof e.name === "string" ? e.name : undefined;
-      if (t !== undefined) return t;
+      if (t !== undefined) return capLine(t);
     }
   }
   return undefined;
+}
+
+/** The most of a last line an opened block shows (one line, the rest cut with an ellipsis; never the full text). */
+export const LAST_LINE_MAX = 200;
+const capLine = (line: string) => {
+  const one = line.replace(/\s+/g, " ").trim();
+  return one.length <= LAST_LINE_MAX ? one : `${one.slice(0, LAST_LINE_MAX - 1).trimEnd()}…`;
+};
+
+type HistoryPage = { events: Record<string, unknown>[]; hasMore: boolean } | undefined;
+
+/** A session's last line: from its last 40 events, or, when they hold none and there is more, once from further back. */
+export async function readLastLine(history: (page: { before?: number; limit: number }) => Promise<HistoryPage>, _session?: string): Promise<string | undefined> {
+  const h = await history({ limit: 40 });
+  const line = lastLineOf(h?.events ?? []);
+  if (line !== undefined || h?.hasMore !== true) return line;
+  const first = h.events[0]?.seq;
+  if (typeof first !== "number") return undefined;
+  return lastLineOf((await history({ before: first, limit: 200 }))?.events ?? []);
 }
 
 /** Where the person dragged blocks, kept in the plugin's own `places` setting (a device setting: a string of JSON, as

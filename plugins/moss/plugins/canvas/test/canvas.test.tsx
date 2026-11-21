@@ -41,6 +41,8 @@ interface Harness {
   sends: { to: unknown; message: unknown }[];
   routes: ShellRoute[];
   settings: Map<string, unknown>;
+  /** The sessions whose history the canvas read, in order (an opened block's last line). */
+  histories: string[];
   to(t: number): void;
   botState(bot: string, state: string): void;
 }
@@ -65,10 +67,11 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
   const routes: ShellRoute[] = [];
   const settings = new Map<string, unknown>([...(o.places !== undefined ? [["places", o.places] as const] : []), ...(o.seen !== undefined ? [["seen", o.seen] as const] : [])]);
   const activity: unknown[] = [];
+  const histories: string[] = [];
   const feed: ((a: unknown) => void)[] = [];
   const api = {
     settings: { get: async (k: string) => settings.get(k), set: async (k: string, v: unknown) => void settings.set(k, v) },
-    sessions: { history: async (s: string) => ({ events: LAST_LINES[s] ?? [], hasMore: false }) },
+    sessions: { history: async (s: string) => { histories.push(s); return { events: LAST_LINES[s] ?? [], hasMore: false }; } },
     bots: { list: async () => [{ id: "moss", name: "MOSS" }] },
     activity: { list: async () => activity, watch: (_kind: string, l: (a: unknown) => void) => { feed.push(l); return () => undefined; } },
   };
@@ -85,7 +88,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
       <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r) }} />
     </TestLayer>,
   );
-  return { core, sends, routes, settings, to: (t) => act(() => c.to(t)), botState: (bot, state) => act(() => { for (const l of feed) l({ subject: { kind: "bots", id: bot }, state, since: 0 }); }) };
+  return { core, sends, routes, settings, histories, to: (t) => act(() => c.to(t)), botState: (bot, state) => act(() => { for (const l of feed) l({ subject: { kind: "bots", id: bot }, state, since: 0 }); }) };
 }
 
 const block = (id: string) => document.querySelector(`[data-block="${id}"]`) as HTMLElement | null;
@@ -231,6 +234,19 @@ describe("a block, pressed", () => {
     expect(block("s_a")!.hasAttribute("data-open")).toBe(false);
   });
 
+  test("its last line is read each time it opens and again when its session changes while open; no tooltip holds it", async () => {
+    const h = mount({ playedTo: 1_000 });
+    await waitFor(() => expect(block("s_a")).not.toBeNull());
+    fireEvent.click(head("s_a"));
+    await waitFor(() => expect(h.histories.filter((s) => s === "s_a").length).toBe(1));
+    expect(block("s_a")!.querySelector(".cv-last")!.hasAttribute("title")).toBe(false);
+    h.to(2_500);
+    await waitFor(() => expect(h.histories.filter((s) => s === "s_a").length).toBe(2));
+    fireEvent.keyDown(block("s_a")!, { key: "Escape" });
+    fireEvent.click(head("s_a"));
+    await waitFor(() => expect(h.histories.filter((s) => s === "s_a").length).toBe(3));
+  });
+
   test("its composer sends as the person, once per press: Enter or Send, never a held key's repeat, a page's own event, or a press while one is on its way", async () => {
     let release!: () => void;
     const h = mount({ playedTo: 1_000, send: () => new Promise<void>((r) => { release = r; }) });
@@ -257,7 +273,10 @@ describe("a block, pressed", () => {
     fireEvent.change(box, { target: { value: "Thanks" } });
     press(within(block("s_a")!).getByRole("button", { name: "Send" }));
     expect(h.sends.map((s) => s.message)).toEqual([{ text: "Also check the logout" }, { text: "Thanks" }]);
+    // What the person types while a send is on its way stays.
+    fireEvent.change(box, { target: { value: "Thanks, and the docs" } });
     await act(async () => { release(); });
+    expect((box as HTMLTextAreaElement).value).toBe("Thanks, and the docs");
   });
 
   test("a subagent's block has no composer (no one can message it) and opens its session's tab", async () => {
@@ -344,16 +363,32 @@ describe("a block, pressed", () => {
     fireEvent.pointerDown(head("s_b"), { button: 0, pointerId: 7, clientX: 100, clientY: 100 });
     fireEvent.pointerMove(vp, { pointerId: 7, clientX: 160, clientY: 400 });
     fireEvent.pointerUp(vp, { pointerId: 7, clientX: 160, clientY: 400 });
+    // The click that ends a drag (the browser sends it right after the pointer's release) doesn't open the block.
+    fireEvent.click(head("s_b"));
+    expect(block("s_b")!.hasAttribute("data-open")).toBe(false);
     await waitFor(() => expect(h.settings.get("places")).toBeDefined());
     const kept = JSON.parse(h.settings.get("places") as string) as Record<string, { x: number; y: number }>;
     expect(kept.s_b).toEqual({ x: Number.parseInt(before.left) + 60, y: Number.parseInt(before.top) + 300 });
-    // The click that ends a drag doesn't open the block.
-    fireEvent.click(head("s_b"));
-    expect(block("s_b")!.hasAttribute("data-open")).toBe(false);
+    // But only that click: once it has had its chance, the next press opens another block. (A captured pointer's click
+    // may never reach the head: the next press, or Enter on a focused block, still counts.)
+    fireEvent.pointerDown(head("s_b"), { button: 0, pointerId: 8, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(vp, { pointerId: 8, clientX: 130, clientY: 120 });
+    fireEvent.pointerUp(vp, { pointerId: 8, clientX: 130, clientY: 120 });
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.click(head("s_a"));
+    expect(block("s_a")!.hasAttribute("data-open")).toBe(true);
+    fireEvent.keyDown(block("s_a")!, { key: "Escape" });
+    fireEvent.pointerDown(head("s_b"), { button: 0, pointerId: 9, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(vp, { pointerId: 9, clientX: 140, clientY: 90 });
+    fireEvent.pointerUp(vp, { pointerId: 9, clientX: 140, clientY: 90 });
+    fireEvent.pointerDown(head("s_a"), { button: 0, pointerId: 10, clientX: 0, clientY: 0 });
+    fireEvent.click(head("s_a"));
+    expect(block("s_a")!.hasAttribute("data-open")).toBe(true);
     const places = h.settings.get("places") as string;
+    const last = JSON.parse(places) as Record<string, { x: number; y: number }>;
     cleanup();
     mount({ playedTo: 1_000, places });
-    await waitFor(() => expect(block("s_b")?.style.top).toBe(`${kept.s_b!.y}px`));
+    await waitFor(() => expect(block("s_b")?.style.top).toBe(`${last.s_b!.y}px`));
   });
 });
 
@@ -373,6 +408,9 @@ describe("+ New session", () => {
     await waitFor(() => expect(within(panel).getByText("Opus 5.5 · high")).toBeDefined());
     expect(within(panel).getByText("app")).toBeDefined();
     const create = within(panel).getByRole("button", { name: "Create session" });
+    // A held Enter (focus lands on Create once every step is chosen): its repeats don't press it.
+    expect(fireEvent.keyDown(create, { key: "Enter", repeat: true })).toBe(false);
+    expect(fireEvent.keyDown(create, { key: "Enter" })).toBe(true);
     fireEvent.click(create);
     expect(h.core.calls.filter((c) => c.method === "agent.start")).toEqual([]);
     press(create);
