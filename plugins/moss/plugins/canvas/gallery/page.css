@@ -199,11 +199,6 @@ body {
   animation-play-state: paused;
 }
 
-.g-live__bar [data-on] {
-  font-weight: 700;
-  text-decoration: underline;
-}
-
 .g-cases {
   display: grid;
   flex: 1 1 auto;

@@ -4,7 +4,7 @@
 // crossing, and it all pauses while the window is hidden.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BlockView, type BlockReaction, type Port } from "./Block";
-import { crestIn, LINE_LIGHTS, lightPieces, planMessage, ringStartAt, type MessagePlan, type MessageStyle, type Reaction } from "./message";
+import { LINE_LIGHT, lightPieces, planMessage, ringStartAt, type MessagePlan, type Reaction } from "./message";
 import { bounds, EMPTY_LAYOUT, place, rectOf, SIZE, type Layout, type Point, type Rect } from "./layout";
 import { livePeers, type LinkState, type Wave } from "./links";
 import type { BackendLook, BotState } from "./look";
@@ -49,8 +49,6 @@ export interface CanvasProps {
   /** The view kept across a reload of the window's document. */
   view?: View;
   onView?(view: View): void;
-  /** How a message crossing looks (message.ts): the owner picks one of three. */
-  messageStyle?: MessageStyle;
   /** The gallery's pictures: a block or the + panel open at first, ended sessions shown. */
   initial?: { open?: string; panel?: boolean; step?: PanelStep; showEnded?: boolean };
 }
@@ -275,10 +273,8 @@ export function Canvas(p: CanvasProps) {
   }, []);
 
   // ---- A message crossing (message.ts): planned once, when its wave is first seen ----
-  // The sender's running light is read where it is now (variant B leaves as its crest passes the point). A receiver that
-  // starts running with the message (even when its status lands a moment after the link) starts its running light with
-  // the crest at its point as the message arrives.
-  const style: MessageStyle = p.messageStyle ?? "A";
+  // A receiver that starts running with the message (even when its status lands a moment after the link) starts its
+  // running light with the crest at its point as the message arrives.
   const runningSince = useRef(new Map<string, number>());
   const handovers = useRef(new Map<string, { start: number; delay: number; id: number }>());
   const messages = useRef(new Map<number, Planned>());
@@ -292,15 +288,11 @@ export function Canvas(p: CanvasProps) {
     if (planned === undefined) {
       const ends = waveEnds({ wave: w, edges, ports, rects });
       if (ends === undefined) continue;
-      const sender = ends.from === undefined ? undefined : model.byId.get(ends.from.id);
       const receiver = model.byId.get(ends.to.id);
-      let crest: number | undefined;
-      if (sender?.motion === "running" && ends.from !== undefined) crest = crestIn(ringRotation(viewport.current, sender.id), ends.from.port);
       const line = ends.from === undefined ? undefined : { d: curve(ends.from.at, ends.from.port, ends.to.at, ends.to.port), length: curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port) };
       const plan = planMessage({
-        style,
         line: line?.length ?? 0,
-        ...(ends.from !== undefined ? { sender: { port: ends.from.port, ...(crest !== undefined ? { crestIn: crest } : {}) } } : {}),
+        ...(ends.from !== undefined ? { sender: { port: ends.from.port } } : {}),
         receiver: { port: ends.to.port, waiting: receiver?.motion === "waiting" },
       });
       planned = { plan, seen: now, ends, ...(line !== undefined ? { line } : {}) };
@@ -456,25 +448,15 @@ export function waveEnds(g: WaveGeometry): Ends | undefined {
   return { from: { id: fromId, at: portAt(rf, fp), port: fp }, to: { id: toId, at: portAt(rt, tp), port: tp } };
 }
 
-/** The turn a block's running light is at now, degrees (its turning layer's animation; 0 when it can't be read). */
-function ringRotation(root: HTMLElement | null, id: string): number {
-  const ring = root?.querySelector(`[data-block="${CSS.escape(id)}"] .cv-ring`) as (HTMLElement & { getAnimations?: (o?: { subtree?: boolean }) => Animation[] }) | null | undefined;
-  if (ring == null) return 0;
-  const a0 = parseFloat(ring.style.getPropertyValue("--a0")) || 0;
-  const spin = ring.getAnimations?.({ subtree: true }).find((a) => (a as CSSAnimation).animationName === "cv-spin");
-  const progress = spin?.effect?.getComputedTiming().progress;
-  return a0 + (typeof progress === "number" ? progress * 360 : 0);
-}
-
 const sec = (s: number) => `${Math.round(s * 1000) / 1000}s`;
 const px = (v: number) => `${Math.round(v * 10) / 10}px`;
 
 /** A message's light on its line, in the running light's look (message.ts `LINE_LIGHTS`): its dashes, tail to head, at
  *  one speed, and a blurred glow; the points it passes light as it does; an unseen timer ends the wave. */
 function MessageView({ wave, m, onDone }: { wave: Wave; m: Planned; onDone(id: number): void }) {
-  const light = LINE_LIGHTS[m.plan.style];
+  const light = LINE_LIGHT;
   const colours = { ...(wave.color !== undefined ? { "--brand": wave.color } : {}), ...(wave.color2 !== undefined ? { "--brand2": wave.color2 } : {}) };
-  const dashes = m.line === undefined ? [] : lightPieces(light);
+  const dashes = m.line === undefined ? [] : lightPieces();
   const travel = m.line === undefined ? 0 : m.line.length + light.length;
   const peak = light.profile.reduce((a, q) => (q.a > a.a ? q : a));
   const glow = { length: light.length * 0.4, back: Math.max(0, (1 - peak.at) * light.length - light.length * 0.2) };
@@ -483,7 +465,7 @@ function MessageView({ wave, m, onDone }: { wave: Wave; m: Planned; onDone(id: n
     "--dur": sec(travel / light.speed), "--delay": sec(m.plan.depart), ...extra,
   }) as CSSProperties;
   return (
-    <g className="cv-msg" data-wave={wave.id} data-style={m.plan.style} style={colours as CSSProperties}>
+    <g className="cv-msg" data-wave={wave.id} style={colours as CSSProperties}>
       {m.line !== undefined && (
         <>
           <path className="cv-mlight cv-mlight--glow" d={m.line.d} style={dash(glow, { "--a": light.glow })} />
