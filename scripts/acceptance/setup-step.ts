@@ -300,10 +300,11 @@ async function oneRow(s: Ctx): Promise<string> {
   pictures.push(...await codePicture(s, "3-done"));
   await s.code.click("[data-moss-welcome=start]");
   await s.code.waitFor("the guide closed", `!document.querySelector('[data-moss-welcome-step]')`);
-  // It landed on the coding side: the shell's new-session page.
-  await s.x.until("MOSS Code on a new code session (the shell's coding side)", 30_000, async () => {
+  // It landed on the coding side: MOSS Code's start page, the session canvas (spec revision 20, §9.5; the bundled
+  // canvas plugin's `main` entry keyed `start`).
+  await s.x.until("MOSS Code on its start page, the session canvas (the shell's coding side)", 30_000, async () => {
     for (const d of await s.code.cdp.documents()) {
-      const has = await s.code.cdp.evaluate(d.session, "!!document.querySelector('.cl-new-session')").catch(() => false);
+      const has = await s.code.cdp.evaluate(d.session, "!!document.querySelector('section.cv')").catch(() => false);
       if (has === true) return true;
     }
     return undefined;

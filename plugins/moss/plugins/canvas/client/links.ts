@@ -91,9 +91,9 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
 /** A pair of sessions that have talked, as the engine's record keeps it (`SessionLinkPair`): who to whom, the last link's
  *  kind and time. */
 export interface LinkPair {
-  from: LinkEvent["from"];
-  to: LinkEvent["to"];
-  last: LinkEvent["link"];
+  from: { end: "user" } | { end: "session"; session: string; kind: string; bot?: string };
+  to: { session: string; kind: string; bot?: string };
+  last: "message" | "spawn" | "report";
   lastAt: number;
   count: number;
 }
