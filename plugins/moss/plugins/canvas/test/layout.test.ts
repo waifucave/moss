@@ -95,7 +95,7 @@ describe("the layout is stable", () => {
     const layout = place(EMPTY_LAYOUT, roots);
     const rows = Object.values(layout.slots).map((s) => s.row);
     expect(Math.max(...rows)).toBe(GROUP_ROWS - 1);
-    expect(new Set(Object.values(layout.slots).map((s) => s.col))).toEqual(new Set([0, 1, 2, 3, 4].map((g) => g * GROUP_COLS)));
-    expect(slotRect(layout.slots.r29!, "main").x).toBe(48 + 4 * GROUP_COLS * COL_W);
+    expect(new Set(Object.values(layout.slots).map((s) => s.col))).toEqual(new Set([0, 1, 2, 3].map((g) => g * GROUP_COLS)));
+    expect(slotRect(layout.slots.r29!, "main").x).toBe(48 + 3 * GROUP_COLS * COL_W);
   });
 });

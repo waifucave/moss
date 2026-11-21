@@ -305,10 +305,25 @@
 .cv-mark {
   display: grid;
   flex: none;
+  box-sizing: border-box;
   place-items: center;
   border-radius: 7px;
   font-weight: var(--moss-font-weight-semibold);
   line-height: 1;
+}
+
+/* A shipped mark sits on a tile tinted with the agent's colour, so a dark mark reads on a dark theme and a light one on
+   a light theme (the mock-up's tile). */
+.cv-mark[data-kind="icon"] {
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--moss-color-surface));
+  background: color-mix(in srgb, var(--brand) 15%, var(--moss-color-control));
+}
+
+.cv-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 
@@ -328,8 +343,8 @@
 /* Running: light going round the block. A layer far larger than the block turns behind it, clipped to a ring just
    outside the card (a transform: the compositor's, no repaint). */
 .cv-node[data-motion="running"] .cv-card {
-  border-color: transparent;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--h) 38%, transparent), 0 0 22px color-mix(in srgb, var(--h) 22%, transparent);
+  border-color: color-mix(in srgb, var(--h) 42%, transparent);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--h) 24%, transparent);
 }
 
 .cv-ring {
@@ -337,6 +352,7 @@
   inset: -2px;
   overflow: hidden;
   border-radius: calc(var(--moss-radius-large) + 2px);
+  background: color-mix(in srgb, var(--h) 22%, transparent);
   pointer-events: none;
 }
 
@@ -472,7 +488,9 @@
   box-shadow: inset 0 0 0 2.5px var(--moss-color-surface), inset 0 0 0 6px var(--moss-color-text-muted);
 }
 
-.cv-node[data-open] .cv-port[data-port="b"] {
+/* Open, the card covers where its right and bottom points were: they hide under it with their lines. */
+.cv-node[data-open] .cv-port[data-port="b"],
+.cv-node[data-open] .cv-port[data-port="r"] {
   display: none;
 }
 
@@ -482,8 +500,8 @@
   fill: none;
   stroke: color-mix(in srgb, var(--brand) 46%, var(--moss-color-text-muted));
   stroke-linecap: round;
-  stroke-dasharray: 150 2000;
-  stroke-dashoffset: 150;
+  stroke-dasharray: var(--stretch) calc(var(--len) + var(--stretch));
+  stroke-dashoffset: var(--stretch);
   animation: cv-wave 1.6s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
@@ -512,10 +530,10 @@
 
 @keyframes cv-wave {
   from {
-    stroke-dashoffset: 150;
+    stroke-dashoffset: var(--stretch);
   }
   to {
-    stroke-dashoffset: -1000;
+    stroke-dashoffset: calc(-1 * var(--len));
   }
 }
 

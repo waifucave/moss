@@ -81,10 +81,18 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
     setPick(pickModel(agent, opts, recent ?? undefined));
   }, [agent, opts, recent]);
 
-  useEffect(() => panel.current?.querySelector<HTMLElement>("[aria-checked=true], button")?.focus(), [choices === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chosen = choices?.find((c) => c.id === agent);
   const ready = agent !== undefined && folder !== undefined && pick !== undefined && !busy;
+  // Once every step is chosen, Create has the focus: Enter (or Space) creates at once.
+  const createRef = useRef<HTMLButtonElement>(null);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (ready && !focused.current) {
+      focused.current = true;
+      createRef.current?.focus();
+    }
+  }, [ready]);
 
   const create = (e: React.MouseEvent) => {
     if (!byPerson(e) || !ready) return;
@@ -172,7 +180,7 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
       )}
 
       {folder === undefined && <p className="cv-panel__note">{S.needFolder}</p>}
-      <button type="button" className="cv-create" disabled={!ready} onClick={create}>{busy ? S.creating : S.create}</button>
+      <button ref={createRef} type="button" className="cv-create" disabled={!ready} onClick={create}>{busy ? S.creating : S.create}</button>
       {error !== undefined && <p className="cv-error" role="alert">{error}</p>}
     </div>
   );
