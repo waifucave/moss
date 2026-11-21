@@ -102,9 +102,8 @@ export class EngineSessionGraph implements SessionGraph {
     this.#nodes.set(session, node);
     if (node.starter !== undefined && !node.ended) this.#childSet(node.starter).add(session);
     // `quiet`: the session's own view is sent by its opener (or read when someone asks, for one registered after a
-    // restart); its starter still hears that it has one more child.
-    if (opts.quiet === true) this.#last.set(session, JSON.stringify(this.fields(session)));
-    else this.#changed(session);
+    // restart: tens of thousands of ended side threads cost nothing more); its starter still hears one more child.
+    if (opts.quiet !== true) this.#changed(session);
     if (node.starter !== undefined && !node.ended) this.#changed(node.starter);
   }
 
