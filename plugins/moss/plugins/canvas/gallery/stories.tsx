@@ -21,15 +21,21 @@ export interface Story {
 declare const __CANVAS_MARKS__: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: string }> | undefined;
 const MARKS: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: string }> = typeof __CANVAS_MARKS__ === "object" && __CANVAS_MARKS__ !== null ? __CANVAS_MARKS__ : {};
 /** MOSS's own agent's mark is MOSS Code's Shards mark, on light and on dark (`icon`, `iconDark`, as `agent.backends` serves it). */
-const backends = () => BACKENDS.map((b) => {
+/** Copilot and Kimi are on the gallery's "every agent" page only (the fixtures the tests share list neither): the colours
+ *  their plugins declare (Kimi declares none, so its mark and light wear the text's colour). */
+const EXTRA_BACKENDS = [
+  { id: "copilot", name: "Copilot", color: "#218BFF", computers: [{ computer: "Studio", installed: true }] },
+  { id: "kimi", name: "Kimi", computers: [{ computer: "Studio", installed: true }] },
+];
+const backends = (more = false) => [...BACKENDS, ...(more ? EXTRA_BACKENDS : [])].map((b) => {
   if (b.id === "moss-code") return { ...b, ...(MARKS["moss-code-light"] !== undefined ? { icon: { ...MARKS["moss-code-light"], at: 0 } } : {}), ...(MARKS["moss-code-dark"] !== undefined ? { iconDark: { ...MARKS["moss-code-dark"], at: 0 } } : {}) };
   return MARKS[b.id] !== undefined ? { ...b, icon: { ...MARKS[b.id]!, at: 0 } } : b;
 });
 
-function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle" }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string> }) {
+function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle", more = false }: { more?: boolean; scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string> }) {
   const runtime = useMemo(() => {
     const handlers: Record<string, (p: any) => unknown> = {
-      "agent.backends": () => ({ backends: backends() }),
+      "agent.backends": () => ({ backends: backends(more) }),
       "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
       "agent.recent": () => ({ ...RECENT, roots: [] }),
       "agent.options": (p: { backend: string }) => OPTIONS[p.backend] ?? { backend: p.backend, known: false, source: "unknown", models: [] },
@@ -55,7 +61,7 @@ function World({ scene, at = 0, live = true, initial, params, onRoute, botState 
       activity: { list: async () => BOTS.map((b) => ({ subject: { kind: "bots", id: b.id }, state: typeof botState === "string" ? botState : botState[b.id] ?? "idle", since: 0 })), watch: () => () => undefined },
     };
     return runtimeWith({ core: () => core, api: () => api, userSend: () => async () => undefined });
-  }, [scene, at, live, JSON.stringify(botState)]);
+  }, [scene, at, live, more, JSON.stringify(botState)]);
   return (
     <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
       <CanvasStart props={{ route: "start", params: params ?? {}, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}) }} />
@@ -164,6 +170,19 @@ function paletteScene(): SessionSceneStep[] {
   ];
 }
 const PALETTE = paletteScene();
+/** The four newest agents beside two long-standing ones: OpenCode (text colour), Copilot (blue), Qwen (its blue) and Kimi (text colour), with Claude Code and Codex. */
+function newAgentsScene(): SessionSceneStep[] {
+  const v = (id: string, title: string, backend: string, model: string, status: SessionView["status"], extra: Partial<SessionView> = {}): SessionSceneStep =>
+    ({ at: 0, event: { type: "session_changed", ts: T0, session: { id, kind: "coding", computer: "Studio", status, startedAt: T0, updatedAt: T0, title, backend, model, effort: "medium", startedBy: { kind: "user" }, ...extra } } });
+  return [
+    v("n_cc", "Fix the login flow", "claude-code", "anthropic/claude-opus-5-5", "prompting"),
+    v("n_cx", "Docs pass", "codex", "openai/gpt-6", "idle"),
+    v("n_oc", "Port the parser to Rust", "opencode", "muse/spark-1-3", "prompting"),
+    v("n_cp", "Triage the issue backlog", "copilot", "github/gpt-5", "idle"),
+    v("n_qw", "Profile the cold start", "qwen", "qwen/qwen3-coder", "idle", { waiting: { tasks: 1, children: 0 } }),
+    v("n_km", "Translate the setup guide", "kimi", "moonshot/kimi-k2", "prompting"),
+  ];
+}
 /** Thirty sessions, and a few messages crossing between them once it opens. */
 function manyScene(): SessionSceneStep[] {
   const sessions = Object.values(manySessions(30));
@@ -179,6 +198,7 @@ export const STORIES: Story[] = [
   ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 60)} /> })),
   { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
   { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
+  { id: "new-agents", title: "OpenCode, Copilot, Qwen and Kimi", notes: "The four newest agent plugins beside Claude Code and Codex: each block shows its plugin's mark and colour (OpenCode and Kimi wear the text's colour).", render: () => <World scene={newAgentsScene()} more live={false} /> },
   { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },
   { id: "still", title: "Everything still", notes: "The scene's end, every session idle or ended: nothing moves.", render: () => <World scene={SAMPLE_SESSION_SCENE} at={20_000} live={false} initial={{ showEnded: true }} /> },
   { id: "open", title: "A block open", notes: "It grows a little: the session's last line, a composer that sends as you, Open tab.", render: () => <World scene={PALETTE} at={9_500} live={false} initial={{ open: "s_a" }} /> },

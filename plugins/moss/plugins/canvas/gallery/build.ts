@@ -1,7 +1,7 @@
 // Builds the canvas gallery into ONE self-contained HTML file (its script and styles inline), to open straight from disk:
 //   scripts/pinned-bun plugins/moss/plugins/canvas/gallery/build.ts [out.html] [--marks <dir>]
 // (default gallery/dist/canvas-gallery.html). `--marks <dir>` puts agents' marks in the pretend `agent.backends` (an
-// SVG or PNG per agent, by file name: claude-code, codex, gemini, opencode, qwen), as each agent's plugin will ship
+// SVG or PNG per agent, by file name: claude-code, codex, gemini, opencode, qwen, copilot, kimi), as each agent's plugin will ship
 // them; without it every agent shows the SDK's fallback mark. React is pinned to this package's copy: one React for
 // the canvas and the SDK.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -27,6 +27,8 @@ const MARK_FILES: Record<string, readonly string[]> = {
   gemini: ["gemini.png", "gemini.svg"],
   opencode: ["opencode.svg"],
   qwen: ["qwen.svg", "qwen-code.svg"],
+  copilot: ["copilot.svg"],
+  kimi: ["kimi.svg"],
 };
 
 function readMarks(dir: string | undefined): Record<string, { mediaType: string; data: string }> | undefined {

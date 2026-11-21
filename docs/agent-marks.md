@@ -16,7 +16,11 @@ Every mark below is the trademark of its owner. It is shown only to name that ag
 | `agent-devin` and `agent-devin-cloud` (same file in each folder) | `devin.svg` | Cognition | https://devin.ai/assets/brand/logos/devin/Devin_Symbol.svg |
 | `agent-grok` | `grok.svg` | xAI | https://grok.com/images/favicon.svg (the mark only) |
 | `agent-deepseek` | `deepseek.svg` | DeepSeek | https://raw.githubusercontent.com/deepseek-ai/DeepSeek-LLM/HEAD/images/logo.svg (the whale only; colour `#4D6BFE`) |
+| `agent-opencode` | `opencode.svg` | Anomaly (OpenCode) | https://opencode.ai/brand (no `color`: its brand is black and silver, so the text's colour) |
+| `agent-copilot` | `copilot.svg` | GitHub (Microsoft) | https://github.com/primer/octicons (`copilot-24.svg`; colour `#218BFF`, a value from GitHub Primer's blue scale) |
+| `agent-qwen` | `qwen.svg` | Alibaba (Qwen) | the qwen-code repository's `qwen-code-logo.svg` (colour `#082DFF`, its own) |
+| `agent-kimi` | `kimi.svg` | Moonshot AI (Kimi) | https://www.kimi.com/en/resources/kimi-brand (the logomark; its black tile dropped, the K drawn in the text's colour, the dot `#1783FF` its own) |
 
 MOSS's own coding agent has no plugin: its mark is our own, MOSS Code's Shards mark (`assets/brand/moss-code/mark/shards-mark-on-light.svg` and `shards-mark-on-dark.svg`, served as `icon` and `iconDark`, the one that fits the theme drawn), bare, with the mark's gold `#E5A72E` as its colour. MOSS's face is for bots only (`BotFace`).
 
-Files were put on a square canvas and made plain (no script, style, external reference); no path data or colour of a mark was changed. A one-colour (`currentColor`) icon is drawn in the agent's colour when it has one with a hue, else in the theme's text colour. The engine accepts an icon only as a PNG or inert SVG of at most 64 KiB, inside the plugin's own folder.
+Files were put on a square canvas and made plain (no script, style, external reference); no path data of a mark was changed, and no colour either, except Kimi's: the vendor's black tile was dropped (marks are drawn bare, as Grok's and Cursor's were) and its white K is `currentColor`, so it takes the theme's text colour. A one-colour (`currentColor`) icon is drawn in the agent's colour when it has one with a hue, else in the theme's text colour. The engine accepts an icon only as a PNG or inert SVG of at most 64 KiB, inside the plugin's own folder.

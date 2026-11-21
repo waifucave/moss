@@ -1,4 +1,4 @@
-// The nine agent plugins' marks (lane CA, the owner's ruling of 2026-11-21: each plugin ships its mark; removing one is its
+// The agent plugins' marks (lane CA, the owner's ruling of 2026-11-21: each plugin ships its mark; removing one is its
 // file and its manifest line). Every shipped mark is served by the real reader from the real bundled folders; with a mark's
 // file removed, or its manifest line, the plugin still runs and its backend is offered, with no icon (the SDK draws the
 // fallback letter mark) and its colours kept.
@@ -14,7 +14,7 @@ import { BUNDLED_PLUGINS_DIR } from "../testing/bundled-backends";
 const temps: string[] = [];
 afterAll(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
-const NINE = readdirSync(BUNDLED_PLUGINS_DIR).filter((n) => n.startsWith("agent-"));
+const AGENT_PLUGINS = readdirSync(BUNDLED_PLUGINS_DIR).filter((n) => n.startsWith("agent-"));
 const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, "moss.json"), "utf8")) as { contributes: { agentBackends: { id: string; icon?: string; color?: string; color2?: string }[] } };
 
 /** The one-plugin registry `BackendLooks` reads. */
@@ -28,9 +28,9 @@ function registryOf(dir: string) {
 }
 
 describe("the shipped marks", () => {
-  test("there are nine agent plugins, each with a mark file its manifest names,  (the manifests validate and run in plugin-backends.test.ts)", async () => {
-    expect(NINE).toHaveLength(9);
-    for (const d of NINE) {
+  test("there are thirteen agent plugins, each with a mark file its manifest names (the manifests validate and run in plugin-backends.test.ts)", async () => {
+    expect(AGENT_PLUGINS).toHaveLength(13);
+    for (const d of AGENT_PLUGINS) {
       const dir = join(BUNDLED_PLUGINS_DIR, d);
       const b = manifestOf(dir).contributes.agentBackends[0]!;
       expect(b.icon, d).toBeDefined();
@@ -70,5 +70,44 @@ describe("MOSS's own coding agent's mark", () => {
     expect(Buffer.from(MOSS_CODE_ICON_DARK.data, "base64").toString()).toBe(brand("shards-mark-on-dark.svg"));
     expect(MOSS_CODE_COLOR).toBe("#E5A72E");
     expect(Buffer.from(MOSS_CODE_ICON.data, "base64").toString()).not.toContain("F0694C");
+  });
+});
+
+describe("the OpenCode, Copilot, Qwen and Kimi plugins (lane AP)", () => {
+  const LOOKS: Record<string, { color?: string; command: string; args: string[]; version: string; got: string }> = {
+    opencode: { command: "opencode", args: ["acp"], version: "v2.2.5\n", got: "2.2.5" },
+    copilot: { color: "#218BFF", command: "copilot", args: ["--acp"], version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.\n", got: "1.0.109" },
+    qwen: { color: "#082DFF", command: "qwen", args: ["--acp"], version: "0.26.5\n", got: "0.26.5" },
+    kimi: { command: "kimi", args: ["acp"], version: "2.4.1\n", got: "2.4.1" },
+  };
+
+  test("each one's entry, mark and colour are as the owner's ruling says, and its mark passes the engine's icon screen", async () => {
+    for (const [id, want] of Object.entries(LOOKS)) {
+      const dir = join(BUNDLED_PLUGINS_DIR, `agent-${id}`);
+      const entry = manifestOf(dir).contributes.agentBackends[0]! as { id: string; command: string; args: string[]; protocol: string; icon: string; color?: string; iconDark?: string };
+      expect(entry, id).toMatchObject({ id, protocol: "acp", command: want.command, args: want.args, icon: `${id}.svg` });
+      expect(entry.color, id).toBe(want.color);
+      expect(entry.iconDark, id).toBeUndefined();
+      const r = await new EngineBackendIcons().read(dir, entry.icon);
+      expect("icon" in r, `${id}: ${JSON.stringify(r)}`).toBe(true);
+    }
+  });
+
+  test("Kimi's mark is bare: no tile, the K takes the text's colour and the dot is the vendor's blue", () => {
+    const svg = readFileSync(join(BUNDLED_PLUGINS_DIR, "agent-kimi", "kimi.svg"), "utf8");
+    expect(svg).not.toContain("<rect");
+    expect(svg).toContain('fill="currentColor"');
+    expect(svg).toContain('fill="#1783FF"');
+    expect(svg).not.toMatch(/fill="(white|black|#fff|#000)/i);
+  });
+
+  test("each one's version pattern reads the real `--version` line, and nothing from an unrelated tool", () => {
+    for (const [id, want] of Object.entries(LOOKS)) {
+      const q = JSON.parse(readFileSync(join(BUNDLED_PLUGINS_DIR, `agent-${id}`, "quirks.json"), "utf8")).quirks.launch.identity as { versionPattern: string };
+      const re = new RegExp(q.versionPattern, "m");
+      const m = re.exec(want.version);
+      expect(m?.[1], id).toBe(want.got);
+      expect(re.test("grok 1.0.70 (abc123)"), id).toBe(false);
+    }
   });
 });

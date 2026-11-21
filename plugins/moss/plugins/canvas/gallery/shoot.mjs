@@ -11,7 +11,7 @@ if (!pageArg || !outArg) {
   console.error("usage: node shoot.mjs <page> <out>");
   process.exit(2);
 }
-const STORIES = ["scene", "wave", "still", "open", "bot", "plus", "plus-model", "plus-folder", "many", "empty", "focus", "corner"];
+const STORIES = ["scene", "new-agents", "wave", "still", "open", "bot", "plus", "plus-model", "plus-folder", "many", "empty", "focus", "corner"];
 const browser = await chromium.launch();
 const problems = [];
 for (const theme of ["light", "dark"]) {

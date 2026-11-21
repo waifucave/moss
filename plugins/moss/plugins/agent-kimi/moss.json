@@ -1,0 +1,23 @@
+{
+  "manifest": 1,
+  "name": "Kimi",
+  "description": "Kimi CLI (`kimi acp`) as an agent bots can delegate to.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "contributes": {
+    "agentBackends": [
+      {
+        "id": "kimi",
+        "name": "Kimi",
+        "protocol": "acp",
+        "command": "kimi",
+        "args": [
+          "acp"
+        ],
+        "quirks": "quirks.json",
+        "icon": "kimi.svg"
+      }
+    ]
+  }
+}

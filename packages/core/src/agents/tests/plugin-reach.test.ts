@@ -1175,7 +1175,7 @@ describe("on demand in an agent's session: how each kind of agent is given a too
     expect(exposureOf(MOSS_CODE_QUIRKS)).toBe("host-search");
     expect(exposureOf(quirksOf("agent-claude-code"))).toBe("agent-search");
     // No agent we ship besides those two declares a search of its own or a list that changes in a session.
-    for (const a of ["agent-codex", "agent-gemini", "agent-cursor", "agent-antigravity", "agent-grok", "agent-deepseek", "agent-devin", "agent-devin-cloud"]) expect([a, exposureOf(quirksOf(a))]).toEqual([a, "up-front"]);
+    for (const a of ["agent-codex", "agent-gemini", "agent-cursor", "agent-antigravity", "agent-grok", "agent-deepseek", "agent-devin", "agent-devin-cloud", "agent-opencode", "agent-copilot", "agent-qwen", "agent-kimi"]) expect([a, exposureOf(quirksOf(a))]).toEqual([a, "up-front"]);
     // A search of its own wins over a list that changes; a list that changes (live, or next turn where it can be opened again) is `list`; next-turn with no honest resume is not.
     const base = quirksOf("agent-codex");
     const withMcp = (mcp: object, sessions?: object) => ({ ...base, mcp: { ...base.mcp, ...mcp }, sessions: { ...base.sessions, ...(sessions ?? {}) } }) as Parameters<typeof exposureOf>[0];
