@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "@waifucave/moss-protocol";
+import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "../gallery/scene";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { decodePlaces, EMPTY_GRAPH, encodePlaces, graphReducer, lastLineOf, PLACES_MAX_CHARS } from "../client/source";
 import { LAST_LINES } from "../gallery/fixtures";

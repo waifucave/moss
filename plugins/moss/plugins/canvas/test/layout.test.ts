@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SAMPLE_SESSION_SCENE, sceneAt } from "@waifucave/moss-protocol";
+import { SAMPLE_SESSION_SCENE, sceneAt } from "../gallery/scene";
 import type { BlockType } from "../client/model";
 import { buildModel } from "../client/model";
 import { COL_W, EMPTY_LAYOUT, GROUP_COLS, GROUP_ROWS, overlaps, place, rectOf, slotRect, type Layout, type LayoutBlock, type Point } from "../client/layout";

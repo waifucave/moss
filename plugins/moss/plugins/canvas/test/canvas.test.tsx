@@ -2,7 +2,7 @@
 // spine's `playSessionScene` with SAMPLE_SESSION_SCENE on a clock the test turns.
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-protocol";
+import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "../gallery/scene";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer, type FakeCore } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { CanvasCorner, CanvasStart, type ShellRoute } from "../client/entry";
 import { BACKENDS, FOLDERS, LAST_LINES, OPTIONS, RECENT } from "../gallery/fixtures";
@@ -57,7 +57,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
   for (const m of o.unserved ?? []) delete handlers[m];
   const core = fakeCore(handlers);
   const c = clock();
-  playSessionScene(core, o.scene ?? SAMPLE_SESSION_SCENE, handlers, c.schedule);
+  playSessionScene(core, (o.scene ?? SAMPLE_SESSION_SCENE) as never, handlers, c.schedule);
   if (o.playedTo !== undefined) c.to(o.playedTo);
   const sends: Harness["sends"] = [];
   const routes: ShellRoute[] = [];
