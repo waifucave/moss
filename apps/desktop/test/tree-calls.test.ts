@@ -424,6 +424,7 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "computer.list": { needs: ["computers.read"], gesture: false },
   "agent.backends": { needs: ["sessions.read"], gesture: false },
   "agent.start": { needs: ["sessions.start"], gesture: true },
+  "app.openIn": { needs: ["shell.control"], gesture: true },
   "agent.options": { needs: ["sessions.start"], gesture: false },
   "agent.recent": { needs: ["sessions.start"], gesture: false },
   ...Object.fromEntries(["plugin.list", "plugin.get", "plugin.ui", "plugin.index.list", "plugin.index.search", "plugin.auth.list", "plugin.dev.list", "plugin.grant.list", "command.list", "notify.mutes"].map((m) => [m, { needs: ["plugins.read"], gesture: false }])),
@@ -488,6 +489,7 @@ const WORST: Record<string, Worst> = {
   "computer.list": "read", // the computers' names, to tick which a plugin's server runs on
   "agent.backends": "read", // the coding agents plugins bring and which computers have them
   "agent.start": "starts a model turn", // a coding session in a folder the person picked in main's dialog; a first message too with user.send
+  "app.openIn": "harmless change", // opens a bot's conversation or the window in MOSS (the other program), starting it if needed; the place is data, the person's own press
   "agent.options": "read", // an agent's models and efforts, before any session
   "agent.recent": "read", // the last agent, model and effort; no folder (those are tokens from ui.pick)
   "notify.mutes": "read", // which plugins' notifications are muted
@@ -550,6 +552,8 @@ function paramsFor(method: string, part: string, tokens: PickTokens, cap = ""): 
       return { session: "b_alpha" };
     case "conversation.messageAction":
       return { entry: "alpha#pin", session: "b_alpha", seq: 7 };
+    case "app.openIn":
+      return { what: { kind: "window" } };
     case "agent.start":
       return { backend: "moss-code", root: tokens.issue(part, join(homedir(), "projects", "new"), "agent.start") };
     case "session.diff":
@@ -737,6 +741,26 @@ describe("the Plugins page's calls as main sends them", () => {
     } finally {
       rmSync(made, { recursive: true, force: true });
     }
+  });
+
+  test("app.openIn (Open in MOSS): the other program's window or a bot, from a holder of shell.control (a bot also bots.read), on the user's press; the page never names the program", async () => {
+    const sent: unknown[][] = [];
+    const go = async (caps: string[], params: unknown, gesture = true) => {
+      const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps, method: "app.openIn", params, gesture, request: async (m, p) => { sent.push([m, p]); return { opened: true, started: false }; } });
+      try { return await routeCall(r); } catch (e) { return (e as Error).message; }
+    };
+    expect(await go(["shell.control"], { what: { kind: "window" } })).toEqual({ opened: true, started: false });
+    expect(sent.at(-1)).toEqual(["app.openIn", { program: "moss", what: { kind: "window" } }]);
+    expect(await go(["shell.control"], { what: { kind: "bot", bot: "luna" } })).toBe("opening a bot takes the bots.read capability as well as shell.control");
+    expect(await go(["shell.control", "bots.read"], { what: { kind: "bot", bot: "luna" } })).toEqual({ opened: true, started: false });
+    expect(sent.at(-1)).toEqual(["app.openIn", { program: "moss", what: { kind: "bot", bot: "luna" } }]);
+    const n = sent.length;
+    expect(await go(["shell.control", "bots.read"], { program: "code", what: { kind: "window" } })).toMatch(/place only/);
+    expect(await go(["shell.control", "bots.read"], { what: { kind: "session", session: "s_1" } })).toMatch(/opens its window or a bot/);
+    expect(await go(["shell.control", "bots.read"], { what: { kind: "bot", bot: "../x" } })).toMatch(/opens its window or a bot/);
+    expect(await go(["bots.read"], { what: { kind: "window" } })).toMatch(/shell\.control/);
+    expect(await go(["shell.control"], { what: { kind: "window" } }, false)).toMatch(/key press or click/);
+    expect(sent.length).toBe(n);
   });
 
   test("ui.pick: main's dialog, a token and the name back, never the path; cancelled says so", async () => {

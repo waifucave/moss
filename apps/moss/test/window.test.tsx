@@ -31,11 +31,13 @@ function view(over: Partial<MossView> = {}): MossView {
 let retried: string[] = [];
 let messageTo: ((bot: string, m: import("../src/shared/view").Message) => void)[] = [];
 let viewTo: ((v: MossView) => void)[] = [];
+let pendingBot: { bot: string } | undefined;
+let showTo: ((w: { bot: string }) => void)[] = [];
 let saidTo: ((cardId: string, words: string) => void)[] = [];
 function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBridge {
   const none = () => () => {};
   return {
-    view: async () => v, onView: (fn) => { viewTo.push(fn); return () => {}; }, showing: () => {}, conversation: async () => page, onMessage: (fn) => { messageTo.push(fn); return () => {}; },
+    view: async () => v, onView: (fn) => { viewTo.push(fn); return () => {}; }, showing: () => {}, pendingShow: async () => pendingBot, onShow: (fn) => { showTo.push(fn); return () => {}; }, conversation: async () => page, onMessage: (fn) => { messageTo.push(fn); return () => {}; },
     send: async () => ({ ok: true }), pickImages: async () => [], createBot: async () => ({ ok: false, why: "no" }), markRead: () => {},
     routines: async () => [], routineInstructions: async () => ({ ok: false, why: "no" }), runRoutine: async () => ({ ok: false, why: "no" }),
     editRoutine: async () => ({ ok: false, why: "no" }), memory: async () => ({ waiting: true }), memoryFile: async () => ({ ok: false, why: "no" }),
@@ -58,6 +60,19 @@ async function draw(v: MossView, page: ConversationPage | { waiting: true }) {
 }
 
 describe("MOSS's window", () => {
+  test("\"Open in MOSS\": the bot the engine asked the window to show is the one drawn, at load and while open", async () => {
+    pendingBot = { bot: "kite" };
+    const r = await draw(view(), { bot: "kite", hasMore: false, messages: [] });
+    expect(r.container.querySelector("[data-bot-row=kite]")?.getAttribute("aria-current")).toBe("true");
+    expect(r.container.querySelector("[data-bot-row=juniper]")?.getAttribute("aria-current")).toBeNull();
+    r.unmount();
+    pendingBot = undefined;
+    const r2 = await draw(view(), { bot: "kite", hasMore: false, messages: [] });
+    await act(async () => { for (const fn of showTo) fn({ bot: "kite" }); await new Promise((res) => setTimeout(res, 30)); });
+    expect(r2.container.querySelector("[data-bot-row=kite]")?.getAttribute("aria-current")).toBe("true");
+    r2.unmount();
+  });
+
   test("a bot's markup is text: no element, no script runs", async () => {
     const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [{ id: "1", from: "bot", text: EVIL, at: Date.now() }, { id: "2", from: "user", text: "<i>me</i>", at: Date.now() }] });
     const bubbles = [...r.container.querySelectorAll("[data-bubble]")];

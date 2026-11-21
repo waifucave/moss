@@ -50,6 +50,12 @@ export function App() {
     void bridge().view().then(setView);
     return bridge().onView(setView);
   }, []);
+  // A bot's conversation the engine asked this window to show ("Open in MOSS" from MOSS Code): the one waiting at load, then each.
+  useEffect(() => {
+    const show = (w: { bot: string }) => { setSettingsBot(undefined); setPage({ bot: w.bot }); };
+    void bridge().pendingShow().then((w) => { if (w !== undefined) show(w); });
+    return bridge().onShow(show);
+  }, []);
   // The times beside the rows move on.
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 30_000);

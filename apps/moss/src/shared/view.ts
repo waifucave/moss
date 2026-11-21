@@ -232,6 +232,10 @@ export interface MossBridge {
   onView(fn: (view: MossView) => void): () => void;
   /** What the window shows now: a bot's conversation, or a page with none (presence's `showing`). */
   showing(page: { bot: string } | { page: "plugins" | "settings" | "none" }): void;
+  /** A bot's conversation the engine asked this window to show (`app.show` with `what: { kind: "bot" }`, "Open in MOSS" from
+   *  MOSS Code): the one waiting when the window loads, and each after it. */
+  pendingShow(): Promise<{ bot: string } | undefined>;
+  onShow(fn: (what: { bot: string }) => void): () => void;
   conversation(bot: string, before?: number): Promise<ConversationPage | { waiting: true }>;
   onMessage(fn: (bot: string, message: Message) => void): () => void;
   /** Sends the person's words to a bot, with the pictures they picked (`pickImages`' ids); main takes it only right

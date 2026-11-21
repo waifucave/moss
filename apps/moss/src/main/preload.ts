@@ -38,6 +38,8 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
     view: () => ipcRenderer.invoke("moss:view"),
     onView: (fn) => listen<[MossView]>("moss:view", fn),
     showing: (page) => ipcRenderer.send("moss:showing", page),
+    pendingShow: () => ipcRenderer.invoke("moss:show-pending"),
+    onShow: (fn) => listen<[{ bot: string }]>("moss:show", fn),
     conversation: (bot, before) => ipcRenderer.invoke("moss:conversation", { bot, ...(before !== undefined ? { before } : {}) }),
     onMessage: (fn) => listen<[string, Message]>("moss:message", fn),
     send: (bot, text, images) => ipcRenderer.invoke("moss:send", { bot, text, ...(images !== undefined ? { images } : {}) }),

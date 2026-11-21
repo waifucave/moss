@@ -15,7 +15,7 @@
 // the usage counter): each runs as the connection's caller, with its event stream.
 import {
   MOSS_ERR, MOSS_METHODS, MOSS_PROTOCOL_MIN_VERSION, MOSS_ROLES, MOSS_PROTOCOL_VERSION, MossHelloParams, CODE_AGENT_LINE_NOTIFICATION, CODE_AGENT_MAX_LINE, ERR,
-  PairStatus, encodeLine, helloVersionServed, type Caller, type MossHelloResult, type MossRole, type SessionKind,
+  PairStatus, encodeLine, helloVersionServed, type AppShowWhat, type Caller, type WindowProgram, type MossHelloResult, type MossRole, type SessionKind,
   CardPlacement, PresenceReport, type Program, type Surface, PLUGIN_ROLES, WINDOW_PROGRAMS, dataKindOfSession, kindCapability, type DataKind, type Card,
 } from "@waifucave/moss-protocol";
 import type { ReleaseHome } from "../contracts/release-home";
@@ -31,6 +31,7 @@ import { SystemClock } from "../clock/system-clock";
 import type { Clock } from "../contracts/clock";
 import { EngineCardRouter } from "../surfaces/card-router";
 import { EngineSurfaceDoor } from "../surfaces/door";
+import { EngineProgramOpener } from "./program-opener";
 import { resolveMossProfile } from "../profile";
 import type { DaemonPair, PairStopReason } from "../platform/pair/policy";
 import type { DaemonPlatform } from "../platform/transport";
@@ -147,6 +148,10 @@ export function bridgeMethodHandlers(h: BridgeMethods): Record<string, MossHandl
 }
 
 export interface MossServerDeps {
+  /** Starts MOSS or MOSS Code through the OS the way the engine already starts an app (`launchApp`, `host/world.ts`: from the
+   *  home's app records only, never by a name or bundle id from the caller), for `app.openIn` to a program that isn't running.
+   *  Absent: such a program is not started (a test's engine, a checkout's run), and `app.openIn` answers refused. */
+  launchProgram?(program: WindowProgram): Promise<void>;
   readonly tokens: MossTokens;
   readonly processes: SessionProcesses;
   readonly serverVersion: string;
@@ -541,7 +546,31 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     return PairStatus.parse({ ...extras, safeMode: deps.pair?.status().safeMode ?? false });
   };
 
+  // `app.openIn` (lane CA, spec revision 20, §9.5): the person's press in one program's window opens a place in the other.
+  const openers = new EngineProgramOpener({
+    connected: (program) => [...conns.values()].some((c) => isWindowConn(c) && c.program === program),
+    show: async (program, what) => {
+      const target = [...conns.values()].find((c) => isWindowConn(c) && c.program === program);
+      if (target === undefined) throw new Error(`${program === "moss" ? "MOSS" : "MOSS Code"} isn't open`);
+      await server.ask(target, "app.show", { what }, 30_000);
+    },
+    start: (program, withinMs) => new Promise<boolean>((resolve) => {
+      if (deps.launchProgram === undefined) { resolve(false); return; }
+      let done = false;
+      const finish = (ok: boolean) => { if (done) return; done = true; clearTimeout(timer); off(); resolve(ok); };
+      const timer = setTimeout(() => finish(false), withinMs);
+      (timer as { unref?: () => void }).unref?.();
+      const off = door.watch((live) => { if (live.some((l) => l.program === program)) setTimeout(() => finish(true), 0); });
+      deps.launchProgram(program).catch(() => finish(false));
+    }),
+  });
+
   const own: Record<string, MossHandler> = {
+    "app.openIn": (conn, p) => {
+      if (conn.program !== "moss" && conn.program !== "code") throw new MossRpcError(MOSS_ERR.NOT_THE_USER, "app.openIn comes from MOSS's or MOSS Code's window");
+      const { program, what } = p as { program: WindowProgram; what: AppShowWhat };
+      return openers.openIn(conn.program, program, what);
+    },
     // Lane RT: a window program's presence (§3.5), from its main process on its own connection; the host has no windows.
     "presence.report": (conn, p) => {
       if (conn.program !== "moss" && conn.program !== "code") throw new MossRpcError(MOSS_ERR.SURFACE_REFUSED, "presence comes from MOSS's or MOSS Code's window program", { reason: "not-app", ...(conn.surface !== undefined ? { surface: conn.surface } : {}) });

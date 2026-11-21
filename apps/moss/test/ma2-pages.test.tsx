@@ -63,7 +63,7 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
   await engine.attach(client);
   const none = () => () => {};
   const real: MossBridge = {
-    view: async () => engine.view(), onView: (fn) => engine.onView(fn), showing: () => {},
+    view: async () => engine.view(), onView: (fn) => engine.onView(fn), showing: () => {}, pendingShow: async () => undefined, onShow: () => () => {},
     conversation: (b, before) => engine.conversation(b, before), onMessage: none,
     send: async () => ({ ok: true }), pickImages: async () => [], createBot: (n, m) => engine.createBot(n, m), markRead: () => {},
     routines: (b) => engine.routines(b), routineInstructions: (b, id) => engine.routineInstructions(b, id), runRoutine: (id) => engine.runRoutine(id),

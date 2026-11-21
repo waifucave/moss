@@ -16,7 +16,8 @@ import { createCoworkNativeWiring, type CoworkNativeWiring, type CoworkNativeWir
 import { CoworkRepository } from "./cowork/repository";
 import { CoworkWorkspaceService, type CoworkHostPorts } from "./cowork/service";
 import { isAbsolute, join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { launchApp } from "./host/world";
 import { DIST_BUILD, isCompiledBinary, missingProcessHolder } from "./build-kind";
 import { randomBytes } from "node:crypto";
 import { bootstrapMossDir, resolveMossHome, isDefaultMossHome } from "./moss-dir";
@@ -3759,6 +3760,14 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     tokens: mossTokens,
     processes: sessionProcesses,
     serverVersion: CORE_VERSION,
+    // `app.openIn` to a program that isn't running (lane CA, spec revision 20, §9.5): the way the engine already starts an app
+    // (the home's app records, through the OS). A TEST build with `MOSS_TEST_LAUNCH_DIR` set only leaves a marker file there
+    // (`open-moss`, `open-code`) for the acceptance run, which starts its own app from source: a test never starts a real app.
+    launchProgram: async (program) => {
+      const marks = typeof __MOSS_TEST_BUILD__ === "string" ? process.env.MOSS_TEST_LAUNCH_DIR : undefined;
+      if (marks !== undefined && marks !== "") { writeFileSync(join(marks, `open-${program}`), String(Date.now())); return; }
+      await launchApp({ home: mossHome, os: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux", run: bunRunner, log: (line) => console.error(line) }, program);
+    },
     release: releaseHome,
     enforceRelease,
     get deviceId() { return liveDeviceId; },

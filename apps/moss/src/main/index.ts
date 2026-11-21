@@ -247,7 +247,23 @@ async function offerReleaseChoice(n: ReleaseNotice | undefined): Promise<void> {
   if (choice.act === "switch") await bringWatch.switchNow();
   else await bringWatch.retry();
 }
-connection.handle("app.show", () => {
+/** A bot's conversation the engine asked this window to show, held until the window's page has asked for it. */
+let pendingShow: { bot: string } | undefined;
+connection.handle("app.show", async (params) => {
+  // `what` (spec revision 20, §9.5): a bot's conversation opens in the window (MOSS's own place for a bot); a place MOSS has none
+  // for stays what it was, the window shown. A bot MOSS doesn't have is refused with words, never guessed (the engine says so).
+  const what = (params !== null && typeof params === "object" ? (params as { what?: unknown }).what : undefined) as { kind?: unknown; bot?: unknown } | undefined;
+  if (what?.kind === "bot") {
+    const bot = typeof what.bot === "string" && what.bot.length <= 128 ? what.bot : undefined;
+    if (bot === undefined) throw new Error("which bot?");
+    // A copy MOSS has just started has not heard its bots yet: wait for them a little.
+    for (let waited = 0; !engine.hasBot(bot) && waited < 10_000; waited += 200) await new Promise((r) => setTimeout(r, 200));
+    if (!engine.hasBot(bot)) throw new Error("MOSS has no bot by that id");
+    pendingShow = { bot };
+    if (!headless) void openWindow();
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.webContents.send("moss:show", { bot });
+    return { ok: true };
+  }
   if (!headless) void openWindow();
   return { ok: true };
 });
@@ -531,6 +547,7 @@ const talk = new Talk(async (held) => {
 
 function wireBridge(): void {
   handle("moss:view", () => engine.view());
+  handle("moss:show-pending", () => { const w = pendingShow; pendingShow = undefined; return w; });
   on("moss:showing", (_w, a) => {
     showing = typeof a.bot === "string" ? { bot: a.bot } : { page: typeof a.page === "string" ? a.page : "none" };
     pushPresence();

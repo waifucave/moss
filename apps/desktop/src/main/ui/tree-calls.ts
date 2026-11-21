@@ -144,6 +144,10 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   "agent.start": press(SESSIONS_START),
   // What a start page offers before a session exists (spec revision 20, §9.5): the models and efforts of an agent, and what
   // the person started last (the folders never reach the page: `ui.pick {recent}` gives them as tokens).
+  // "Open in MOSS" (spec revision 20, §9.5): the person's press opens a place in the other program (this app is MOSS Code; the
+  // other is MOSS: a bot's conversation or its window), started by the engine when it isn't running. `shell.control`, and the
+  // read of what it names (a bot: `bots.read`, checked in `openIn`).
+  "app.openIn": press("shell.control"),
   "agent.options": read(SESSIONS_START),
   "agent.recent": read(SESSIONS_START),
   "plugin.logs": read("logs.read"),
@@ -574,6 +578,7 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   if (r.method === "session.resend") return resend(r, part);
   if (r.method === "agent.start") return agentStart(r, part, c);
   if (r.method === "agent.recent") return agentRecent(r);
+  if (r.method === "app.openIn") return openIn(r, part, has);
   if (r.method === "conversation.messageAction") return messageAction(r, part);
   if (r.method === "ui.secret") return secret(r, part, has(PLUGINS_MANAGE));
   if (PAGE_METHODS.has(r.method)) {
@@ -745,6 +750,24 @@ async function recentFolders(r: TreeRoute, part: string, tokens: PickTokens, hom
     if (out.length >= RECENT_FOLDERS_MAX) break;
   }
   return out;
+}
+
+/** The program this window's "Open in" goes to: this app is MOSS Code's window, so MOSS. */
+const OTHER_PROGRAM = "moss";
+
+/** `app.openIn` from a part: `{ what: { kind: "window" } }` or `{ what: { kind: "bot", bot } }` and nothing else; the program is
+ *  the other one, never the page's word. A bot needs the read of bots as well (it names one). The engine starts MOSS when it
+ *  isn't running and answers `{ opened, started }` or `{ opened: false, refused }`. */
+async function openIn(r: TreeRoute, part: string, has: (cap: string) => boolean): Promise<unknown> {
+  const raw = obj(r.params);
+  if (Object.keys(raw).some((k) => k !== "what")) throw r.refuse("Open in names a place only");
+  const what = obj(raw.what);
+  if (what.kind === "window" && Object.keys(what).length === 1) return r.request("app.openIn", { program: OTHER_PROGRAM, what: { kind: "window" } });
+  if (what.kind === "bot" && Object.keys(what).length === 2 && typeof what.bot === "string" && BOT_ID.test(what.bot)) {
+    if (!has("bots.read")) throw r.refuse("opening a bot takes the bots.read capability as well as shell.control");
+    return r.request("app.openIn", { program: OTHER_PROGRAM, what: { kind: "bot", bot: what.bot } });
+  }
+  throw r.refuse("MOSS opens its window or a bot's conversation");
 }
 
 /** `agent.recent` from a part: the person's last agent, model, effort and computer, never a folder (a page gets those as
