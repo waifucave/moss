@@ -23,6 +23,10 @@ export function Mark({ look, size = 26 }: { look: Pick<BackendLook, "id" | "name
   }
   const m = agentMark(look);
   if (m.kind === "icon") return <img className="cv-mark" data-kind="icon" src={m.src} alt="" style={box} draggable={false} />;
+  if (m.kind === "mask") {
+    const url = `url("${m.src}")`;
+    return <span className="cv-mark" data-kind="glyph" style={{ ...box, WebkitMaskImage: url, maskImage: url }} aria-hidden="true" />;
+  }
   // A letter: on the agent's colour, or on the text colour when the brand has none (the page's own ink, never a grey).
   const style = { ...box, fontSize: Math.round(size * 0.52), ...(look.color !== undefined ? { background: m.background2 !== undefined ? `linear-gradient(135deg, ${m.background}, ${m.background2})` : m.background, color: m.foreground } : {}) } satisfies CSSProperties;
   return <span className="cv-mark" data-kind="letter" data-mono={look.color === undefined || undefined} style={style} aria-hidden="true">{m.letter}</span>;

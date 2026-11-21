@@ -7,7 +7,7 @@ describe("the + flow's preselection", () => {
 
   test("only agents a person can start; the ones this computer has first, MOSS's own first among them", () => {
     expect(choices.map((c) => [c.id, c.installed])).toEqual([
-      ["moss-code", true], ["claude-code", true], ["codex", true], ["cursor", true], ["gemini", true], ["opencode", true], ["qwen", false],
+      ["moss-code", true], ["claude-code", true], ["codex", true], ["cursor", true], ["gemini", true], ["kilo", true], ["opencode", true], ["qwen", false],
     ]);
     expect(choices.some((c) => c.id === "moss-subagent")).toBe(false);
   });
