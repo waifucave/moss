@@ -16,6 +16,8 @@ export const BACKENDS: BackendRow[] = [
   // Black-and-white brands: no colour; their mark and motion wear the theme's text colour.
   { id: "opencode", name: "OpenCode", computers: here },
   { id: "cursor", name: "Cursor", computers: here },
+  // An agent whose record carries no icon (the gallery's one page with the fallback letter mark).
+  { id: "kilo", name: "Kilo Code", color: "#7A5CF0", computers: here },
   { id: "qwen", name: "Qwen", color: "#082DFF", computers: elsewhere },
   { id: "moss-subagent", name: "MOSS's subagents", color: "#F0694C", userStartable: false, computers: here },
 ];
