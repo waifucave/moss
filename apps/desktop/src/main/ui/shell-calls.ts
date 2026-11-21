@@ -3,7 +3,9 @@
 //
 //   * the call must be one of the catalogued `shell.*` methods, and the plugin must hold its capability (`apiCallAllowed`, the one table the host uses);
 //   * a plugin reaches the window only while one of its own bots shows its tab (a bot's id begins with its plugin's id), so a plugin that draws a bot's
-//     bar or sidebar changes nothing while another bot's tab shows, and reads nothing of where the user is the rest of the time;
+//     bar or sidebar changes nothing while another bot's tab shows, and reads nothing of where the user is the rest of the time; the one
+//     exception is `go` to the start page or to a session's tab (spec revision 20, §9.5), which any plugin holding `shell.control` may do,
+//     with no bot tab, since it shows a place the person's own window already has and reads nothing;
 //   * an act counts only inside the user's own key press or click in the calling frame, one call per gesture (the Plugins page's rule); `dragWindow`
 //     is the user's press on a region the main process itself saw, so it takes no gesture here (the drag's own rules in window-drag.ts apply);
 //   * an act is data the shell applies to its own state: a place to show, a panel view, the sidebar's fold; never a conversation, a card or a file.
@@ -59,7 +61,7 @@ function target(v: unknown): Extract<ShellAct, { kind: "go" }>["target"] {
   if (typeof t.session === "string" && ID.test(t.session)) return { session: t.session };
   if (t.side === "bots" || t.side === "code") return { side: t.side };
   if (typeof t.app === "string" && ID.test(t.app)) return { app: t.app };
-  if (t.page === "plugins" || t.page === "archive") return { page: t.page };
+  if (t.page === "plugins" || t.page === "archive" || t.page === "start") return { page: t.page };
   throw new Error("shell.go: not a place the window shows");
 }
 
@@ -69,9 +71,11 @@ export function routeShell(i: ShellCallInput): ShellCall {
   if (typeof method !== "string" || !known.includes(method)) throw new Error("not a shell call");
   const caps = [...i.plugin.capabilities];
   if (!apiCallAllowed(`shell.${method}`, "ui", caps)) throw new Error(`shell.${method} needs a capability this plugin doesn't hold`);
-  if (!ownsShownBot(i.plugin.id, i.window?.state)) throw new Error("the window answers only while one of this plugin's bots shows its tab");
-  const win = i.window!;
   const m = method as ShellMethod;
+  // `go` to the start page or a session's tab: a place every window has, so no bot tab is needed (still the user's own press).
+  const toOwn = m === "go" && ((): boolean => { try { const t = target(obj(i.args).target); return "session" in t || ("page" in t && t.page === "start"); } catch { return false; } })();
+  if (!toOwn && !ownsShownBot(i.plugin.id, i.window?.state)) throw new Error("the window answers only while one of this plugin's bots shows its tab");
+  const win = i.window!;
   if (m === "state") return { kind: "answer", value: win.state };
   if (m === "apps") return { kind: "answer", value: i.appButtons?.() ?? win.apps };
   if (m === "account") return { kind: "answer", value: win.account ?? { name: "" } };

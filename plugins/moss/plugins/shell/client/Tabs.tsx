@@ -26,7 +26,7 @@ export function AgentStatus({ session }: { session: SessionView }) {
 
 /** An agent's live tab: watch it, type to it (spec §9.3). Its interrupt and stop buttons are hidden until the host callbacks cover them (backlog: agent-tab controls). In `main` for an agent or a coding
  *  session; in the panel for a bot's coding agent, without a column or code panels of its own (item 90). */
-export function AgentTab({ props }: EntryProps<{ route?: string; params?: { session?: string }; app?: string; session?: string }>) {
+export function AgentTab({ props }: EntryProps<{ route?: string; params?: { session?: string }; app?: string; session?: string; navigate?: (route: { route: string; params: Record<string, string> }) => void }>) {
   const id = props.params?.session ?? props.session;
   const api = usePluginApi();
   const nameOf = useBackendNames();
@@ -38,6 +38,8 @@ export function AgentTab({ props }: EntryProps<{ route?: string; params?: { sess
   const status = inPanel ? <AgentStatus session={session} /> : null;
   return (
     <div className="cl-agent-tab" data-place={inPanel ? "panel" : "main"} data-status={session.status}>
+      {/* The tab's top corner (spec revision 20, §9.5): small controls plugins add (the canvas's switch back to the start page), given the session, its kind and `navigate`. In `main` only. */}
+      {!inPanel && <div className="cl-agent-tab__corner"><Spot name="session.corner" props={{ session: id, kind: session.kind, sessionKind: session.kind, ...(props.navigate !== undefined ? { navigate: props.navigate } : {}) }} /></div>}
       <BotTab
         conversation={<Spot name="conversation" props={at} />}
         composer={

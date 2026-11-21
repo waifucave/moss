@@ -66,6 +66,8 @@ const BOT_ROUTES: ReadonlySet<string> = new Set(["bot", "bot-editor"]);
 /** A kept route as this window shows it: one that names a bot is no route (the window then starts where it starts). */
 export function keptRouteOf(r: ShellRoute | null | undefined): ShellRoute | undefined {
   if (r === null || r === undefined || typeof r !== "object" || typeof r.route !== "string") return undefined;
+  // The start page was the route `new` before the canvas (spec revision 20): a window that kept it shows the start page.
+  if (r.route === "new") return { ...r, route: "start" };
   return BOT_ROUTES.has(r.route) || (r.params !== null && typeof r.params === "object" && typeof r.params.bot === "string") ? undefined : r;
 }
 
@@ -92,7 +94,7 @@ export function newestCoding(sessions: readonly SessionView[]): SessionView | un
 export function startRoute(sessions: readonly SessionView[] | undefined): ShellRoute | undefined {
   if (sessions === undefined) return undefined;
   const code = newestCoding(sessions);
-  return code !== undefined ? { route: "agent", params: { session: code.id } } : { route: "new", params: {} };
+  return code !== undefined ? { route: "agent", params: { session: code.id } } : { route: "start", params: {} };
 }
 
 export function Shell({ props }: EntryProps<ShellProps>) {
@@ -155,7 +157,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
   const title = (() => {
     if (!shown) return "";
     if (shown.route === "agent") return session?.title ?? S.views.agent!;
-    if (shown.route === "new") return S.newSession;
+    if (shown.route === "start") return S.newSession;
     if (shown.route === "plugins") return S.plugins;
     const app = appButtons.find((e) => e.fields?.opens === shown.route);
     return fieldText(app?.fields?.title) ?? (shown.params.title !== undefined ? fieldText(shown.params.title) : undefined) ?? shown.route;
@@ -236,8 +238,9 @@ export function Shell({ props }: EntryProps<ShellProps>) {
 
   const main = !shown ? (
     <NothingHere key="loading" title={S.loading} />
-  ) : shown.route === "new" ? (
-    <NewSession key="new" onStarted={(id) => navigate({ route: "agent", params: { session: id } })} />
+  ) : shown.route === "start" ? (
+    // A plugin's entry keyed `start` is the start page; with none, the shell's own new-session page.
+    <Spot key="start" name="main" spotKey="start" props={{ route: "start", params: {}, navigate }} fallback={<NewSession key="new" onStarted={(id) => navigate({ route: "agent", params: { session: id } })} />} />
   ) : (
     <Spot key="page" name="main" spotKey={shown.route} props={{ route: shown.route, params: shown.params, navigate }} fallback={<NothingHere title={S.nothingHere} />} />
   );
@@ -257,7 +260,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
   // Where the window is, said to the core for the plugin frames that read it (`shell.state`): data only, whenever it changes.
   const appEntries = useSpotEntries("sidebar.app").entries;
   const stateOut: ShellState = {
-    tab: { kind: !shown ? "other" : shown.route === "agent" ? "agent" : shown.route === "settings" || shown.route === "plugins" || shown.route === "archive" ? shown.route : "app", ...(shown?.params.session !== undefined ? { id: shown.params.session } : shown !== undefined && !["agent", "settings", "plugins", "archive"].includes(shown.route) ? { id: shown.route } : {}) },
+    tab: { kind: !shown ? "other" : shown.route === "agent" ? "agent" : shown.route === "settings" || shown.route === "plugins" || shown.route === "archive" ? shown.route : shown.route === "start" ? "other" : "app", ...(shown?.params.session !== undefined ? { id: shown.params.session } : shown !== undefined && !["agent", "settings", "plugins", "archive"].includes(shown.route) ? { id: shown.route } : {}) },
     ...(dialog ? { dialog: "settings" as const } : {}),
     sidebar: { collapsed: sidebarCollapsed, side: "code", ...(sidebarWidth !== undefined ? { width: sidebarWidth } : {}) },
     panels: { open, available: kind ? [...VIEWS_BY_KIND[kind].filter((id) => filled.has(id)), ...own.map((o) => o.id)] : [], ...(kind && own.length > 0 ? { titles: Object.fromEntries(own.map((o) => [o.id, o.title])) } : {}) },
@@ -308,7 +311,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
       else if ("page" in t) l.navigate({ route: t.page, params: {} });
       else if ("side" in t && t.side === "code") {
         const code = newestCoding(l.sessions ?? []);
-        l.navigate(code ? { route: "agent", params: { session: code.id } } : { route: "new", params: {} });
+        l.navigate(code ? { route: "agent", params: { session: code.id } } : { route: "start", params: {} });
       }
     }
   }, [act]);
@@ -320,7 +323,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
       provides={props.provides}
       onSidebarWidth={setSidebarWidth}
       safeArea={safeArea}
-      sidebar={<Spot name="sidebar" props={{ route: shown ?? { route: "new", params: {} }, navigate, collapsed: sidebarCollapsed, onCollapsedChange: setCollapsed }} />}
+      sidebar={<Spot name="sidebar" props={{ route: shown ?? { route: "start", params: {} }, navigate, collapsed: sidebarCollapsed, onCollapsedChange: setCollapsed }} />}
       title={title}
       toggles={toggles}
       side={side}

@@ -30,6 +30,7 @@ export interface SidebarEntryProps {
 export function toSidebarRoute(r: ShellRoute): SidebarRoute {
   switch (r.route) {
     case "new":
+    case "start":
       return { kind: "new" };
     case "agent":
       return { kind: "agent", agentId: r.params.session ?? "" };
@@ -45,7 +46,7 @@ export function toSidebarRoute(r: ShellRoute): SidebarRoute {
 export function toShellRoute(r: SidebarRoute): ShellRoute {
   switch (r.kind) {
     case "new":
-      return { route: "new", params: {} };
+      return { route: "start", params: {} };
     case "agent":
       return { route: "agent", params: { session: r.agentId } };
     case "settings":

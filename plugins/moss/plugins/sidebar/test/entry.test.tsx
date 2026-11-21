@@ -46,7 +46,7 @@ async function mount(route: ShellRoute = { route: "agent", params: { session: "c
 
 describe("the sidebar entry", () => {
   test("routes map both ways; a bot's route has no place here", () => {
-    const all: ShellRoute[] = [{ route: "new", params: {} }, { route: "agent", params: { session: "a" } }, { route: "settings", params: {} }, { route: "plugins", params: {} }, { route: "archive", params: {} }];
+    const all: ShellRoute[] = [{ route: "start", params: {} }, { route: "agent", params: { session: "a" } }, { route: "settings", params: {} }, { route: "plugins", params: {} }, { route: "archive", params: {} }];
     for (const r of all) {
       expect(toShellRoute(toSidebarRoute(r))).toEqual(r);
     }
@@ -95,7 +95,7 @@ describe("the sidebar entry", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(routes).toEqual([
       { route: "agent", params: { session: "agent-1" } },
-      { route: "new", params: {} },
+      { route: "start", params: {} },
       { route: "archive", params: { title: "Archive" } },
       { route: "discord-waifus", params: { title: "Discord Waifus" } },
       { route: "settings", params: {} },

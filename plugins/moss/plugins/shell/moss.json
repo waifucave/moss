@@ -64,7 +64,7 @@
                 }
               }
             },
-            "doc": "The main area, keyed by route: agent (a session's live tab), settings, plugins, and the keys app buttons open. The shell draws its own page to start a session (new)."
+            "doc": "The main area, keyed by route: agent (a session's live tab), settings, plugins, the keys app buttons open, and start (MOSS Code's start page: a plugin's entry keyed start fills it; with none the shell draws its own new-session page)."
           },
           "panel": {
             "shape": "keyed",
@@ -166,6 +166,24 @@
               "bot"
             ],
             "doc": "The composer."
+          },
+          "session.corner": {
+            "shape": "list",
+            "props": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "session"
+            ],
+            "doc": "Small controls in a session tab's top corner, beside the shell's own."
           }
         }
       },

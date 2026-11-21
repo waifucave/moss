@@ -74,6 +74,22 @@ describe("shell.* from a plugin's frame", () => {
     expect(ownsShownBot("alpha", state({ bot: "alpha/side-bot" }))).toBe(true);
   });
 
+  test("go to the start page or a session's tab needs no bot tab (any plugin holding shell.control, the user's own press); nothing else does", () => {
+    const none = { id: "luna", window: undefined };
+    const start = call("go", { target: { page: "start" } }, none);
+    expect(start.run()).toEqual({ kind: "act", act: { kind: "go", target: { page: "start" } } });
+    expect(start.spent()).toBe(1);
+    expect(call("go", { target: { session: "s_1" } }, { ...none, window: win(state({ bot: undefined, tab: { kind: "settings" } })) }).run()).toEqual({ kind: "act", act: { kind: "go", target: { session: "s_1" } } });
+    // The press is still the user's, and the capability still needed.
+    expect(() => call("go", { target: { page: "start" } }, { ...none, gesture: false }).run()).toThrow(/key press or click/);
+    expect(() => call("go", { target: { page: "start" } }, { ...none, caps: ["shell.read"] }).run()).toThrow(/capability/);
+    // Other places, and every other act or read, still need the plugin's own bot's tab.
+    expect(() => call("go", { target: { page: "plugins" } }, none).run()).toThrow(/shows its tab/);
+    expect(() => call("go", { target: { app: "notes" } }, none).run()).toThrow(/shows its tab/);
+    expect(() => call("go", { target: { page: "start", extra: 1 } }, none).run()).toThrow(/shows its tab/);
+    expect(() => call("toggleSidebar", {}, none).run()).toThrow(/shows its tab/);
+  });
+
   test("the arguments are checked: unknown methods, panel names, places", () => {
     expect(() => call("window.close").run()).toThrow(/not a shell call/);
     expect(() => call(undefined).run()).toThrow(/not a shell call/);

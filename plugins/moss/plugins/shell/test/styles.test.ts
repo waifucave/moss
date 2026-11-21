@@ -21,6 +21,8 @@ const POSITIONED: string[] = [
   ".cl-window[data-panel-over] .cl-window__panel", ".cl-chrome-drag--fallback", ".cl-chrome-fallback",
   // The one menu for the panels plugins add beyond the third button (`OwnPanelToggles`): it opens under its button, in the bar's own width.
   ".cl-panel-toggles__menu",
+  // A session tab's top corner (the `session.corner` spot, spec revision 20): small controls over the tab's own top right, inside the tab.
+  ".cl-agent-tab__corner",
 ];
 // (`.cl-skin-paint` and its layers are empty paint under the bar, which holds no card: the bot's shell skin.)
 

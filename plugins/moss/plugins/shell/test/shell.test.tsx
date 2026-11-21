@@ -59,6 +59,10 @@ const COMPONENTS: Record<string, EntryComponent> = {
   Status: stub("status"),
   Sheets: stub("panel:sheets"),
   Notes: stub("panel:notes"),
+  StartPage: stub("main:start"),
+  Corner: ({ props }) => (
+    <button type="button" data-stub="corner" onClick={() => (props.navigate as (r: unknown) => void)({ route: "start", params: {} })}>{`corner ${props.session} ${props.kind}`}</button>
+  ),
 };
 
 const entry = (pluginId: string, spot: string, component: string, extra: Partial<UiEntry> = {}): UiEntry => ({ pluginId, id: extra.id ?? `${spot}${extra.key ? `:${extra.key}` : ""}`, spot, component, source: "bundled", enabledAt: 0, ...extra });
@@ -132,7 +136,7 @@ describe("where the window starts, with no bots in it", () => {
   test("a first start opens the newest code session's tab; with none, the page that starts one", async () => {
     expect(startRoute(undefined)).toBeUndefined();
     expect(startRoute(SESSIONS)).toEqual({ route: "agent", params: { session: "code-1" } });
-    expect(startRoute([])).toEqual({ route: "new", params: {} });
+    expect(startRoute([])).toEqual({ route: "start", params: {} });
     await mount();
     expect(stubText("conversation")).toContain('"session":"code-1"');
     cleanup();
@@ -181,7 +185,7 @@ describe("the page that starts a session (spec §9.4)", () => {
     ]);
     const started = s("code-new", { kind: "coding", title: "New", startedAt: 9 });
     const sessions = [...SESSIONS];
-    const { core } = await mount({ route: { route: "new", params: {} } }, [], sessions, undefined, {}, {
+    const { core } = await mount({ route: { route: "start", params: {} } }, [], sessions, undefined, {}, {
       "agent.backends": () => ({ backends }),
       "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
       "ui.pick": () => ({ token: "pick-1", name: "projects" }),
@@ -218,7 +222,7 @@ describe("the page that starts a session (spec §9.4)", () => {
   });
 
   test("a refusal (no folder of this computer's home, say) shows its reason and starts nothing", async () => {
-    await mount({ route: { route: "new", params: {} } }, [], SESSIONS, undefined, {}, {
+    await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, {
       "agent.backends": () => ({ backends: [{ id: "moss-code", name: "MOSS", computers: [{ computer: "Studio", installed: true }] }] }),
       "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
       "ui.pick": () => ({ token: "pick-1", name: "elsewhere" }),
@@ -229,7 +233,38 @@ describe("the page that starts a session (spec §9.4)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await act(() => settle(20));
     expect(screen.getByRole("alert").textContent).toContain("a folder of this computer's home");
-    expect(stubText("sidebar")).toContain('"route":"new"');
+    expect(stubText("sidebar")).toContain('"route":"start"');
+  });
+});
+
+describe("the start page and a session tab's corner (spec revision 20, §9.5)", () => {
+  const backends = () => ({ backends: [{ id: "moss-code", name: "MOSS", computers: [{ computer: "Studio", installed: true }] }] });
+  test("the start page is a plugin's `main` entry keyed `start`; with none it is the shell's own new-session page", async () => {
+    await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
+    expect(stubText("main:start")).toBeNull();
+    expect(document.querySelector(".cl-new-session")).not.toBeNull();
+    cleanup();
+    await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends });
+    expect(stubText("main:start")).toContain('"route":"start"');
+    expect(stubText("main:start")).toContain("fn:navigate");
+    expect(document.querySelector(".cl-new-session")).toBeNull();
+  });
+
+  test("a window that kept the route `new` (before the canvas) opens the start page", async () => {
+    expect(keptRouteOf({ route: "new", params: {} })).toEqual({ route: "start", params: {} });
+    await mount({ route: { route: "new", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" })]);
+    expect(stubText("main:start")).not.toBeNull();
+  });
+
+  test("a session tab has a corner for plugins' controls, given the session, its kind and navigate; a click takes the window to the start page", async () => {
+    await mount({ route: { route: "agent", params: { session: "code-1" } } }, [entry("canvas", "session.corner", "Corner", { id: "corner", source: "installed" }), entry("canvas", "main", "StartPage", { key: "start", source: "installed" })]);
+    const corner = document.querySelector<HTMLButtonElement>('[data-stub="corner"]')!;
+    expect(corner.textContent).toBe("corner code-1 coding");
+    expect(document.querySelector(".cl-agent-tab__corner")).not.toBeNull();
+    fireEvent.click(corner);
+    await act(() => settle(20));
+    expect(stubText("sidebar")).toContain('"route":"start"');
+    expect(stubText("main:start")).not.toBeNull();
   });
 });
 

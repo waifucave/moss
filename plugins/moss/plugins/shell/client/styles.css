@@ -505,10 +505,21 @@ button.cl-window__title:hover {
 
 /* An agent's live tab: its transcript, its state over the composer, and Interrupt and Stop. */
 .cl-agent-tab {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+}
+
+/* The tab's top corner (the `session.corner` spot): small controls plugins add, under the bar at the right. */
+.cl-agent-tab__corner {
+  position: absolute;
+  z-index: 2;
+  top: calc(var(--moss-plugin-moss-bar-height) + 8px);
+  right: 12px;
+  display: flex;
+  gap: 6px;
 }
 
 .cl-window__toggles .cl-agent-tab__status {
