@@ -30,6 +30,14 @@ describe("EngineProgramOpener", () => {
     expect(starts).toBe(1);
   });
 
+  test("only an own program is a place: constructor, toString and __proto__ are refused with words, never a throw", async () => {
+    const world: ProgramOpenerWorld = { connected: () => true, show: async () => undefined, start: async () => true };
+    const opener = new EngineProgramOpener(world);
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(await opener.openIn("code", name as never, { kind: "window" } as never)).toEqual({ opened: false, refused: "That isn't a program with a window." });
+    }
+  });
+
   test("a window that refuses the place, or a start that throws, is a refusal with words, never a throw", async () => {
     const refusing: ProgramOpenerWorld = { connected: () => true, show: async () => { throw new Error("MOSS has no bot named zed."); }, start: async () => true };
     expect(await new EngineProgramOpener(refusing).openIn("code", "moss", { kind: "bot", bot: "zed" })).toEqual({ opened: false, refused: "MOSS has no bot named zed." });

@@ -17,7 +17,7 @@ export class EngineProgramOpener implements ProgramOpener {
 
   async openIn(caller: WindowProgram, program: WindowProgram, what: AppShowWhat): Promise<AppOpenInResult> {
     if (caller === program) return { opened: false, refused: "That place is in this program's own window: show it there." };
-    if (!(program in OPEN_IN_PLACES)) return { opened: false, refused: "That isn't a program with a window." };
+    if (!Object.hasOwn(OPEN_IN_PLACES, program)) return { opened: false, refused: "That isn't a program with a window." };
     if (!OPEN_IN_PLACES[program].includes(what.kind)) return { opened: false, refused: `${NAME[program]} doesn't open a ${what.kind}.` };
     let started = false;
     if (!this.world.connected(program)) {

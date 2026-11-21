@@ -115,6 +115,26 @@ describe("the door for parts: by capability, never by id (F2)", () => {
     expect(treeVerdict(["user.send"], "ui.pick", { kind: "folder", use: "agent.start" })).toMatchObject({ ok: false, owned: true });
   });
 
+  test("a model or effort an agent doesn't list is refused before it reaches the agent; an agent whose options are unknown gets the shape check only", async () => {
+    const tokens = new PickTokens();
+    const sent: unknown[][] = [];
+    const go = (params: unknown) => {
+      const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps: ["sessions.start"], method: "agent.start", params, gesture: true, tokens, request: async (m, p) => { sent.push([m, p]); return appConnection(m, p); } });
+      return routeCall(r).then((v) => v, (e: Error) => e.message);
+    };
+    const root = () => tokens.issue(THIRD, join(homedir(), "projects", "moss"), "agent.start");
+    const starts = () => sent.filter((x) => x[0] === "agent.start").length;
+    expect(await go({ backend: "codex", root: root(), model: "gpt-9" })).toBe("that agent doesn't offer that model");
+    expect(await go({ backend: "codex", root: root(), model: "gpt-6", effort: "max" })).toBe("that model doesn't offer that effort");
+    expect(await go({ backend: "codex", root: root(), effort: "max" })).toBe("that model doesn't offer that effort");
+    expect(starts()).toBe(0);
+    expect(await go({ backend: "codex", root: root(), model: "gpt-6", effort: "high" })).toEqual({ session: "s_new" });
+    expect(await go({ backend: "codex", root: root(), model: "gpt-6-mini" })).toEqual({ session: "s_new" });
+    // Unknown until started: any well-shaped model and effort pass on to the agent, as before.
+    expect(await go({ backend: "gemini", root: root(), model: "whatever-1", effort: "turbo" })).toEqual({ session: "s_new" });
+    expect(starts()).toBe(3);
+  });
+
   test("reads by kind (spec revision 19, §3.6): conversation.read alone reaches no code session, sessions.read alone no bot's conversation", async () => {
     const kinds: Record<string, string> = { s_code: "coding", agent_task: "agent", b_alpha: "bot", st_alpha: "side-thread" };
     const ask = async (caps: string[], method: string, id: string) => {
@@ -440,6 +460,11 @@ const THIRD = "acme-panel";
 async function appConnection(method: string, params?: unknown): Promise<unknown> {
   if (method === "computer.list") return { computers: [{ name: "Studio", link: "self" }, { name: "Laptop", link: "lan" }] };
   if (method === "agent.start") return { session: "s_new" };
+  if (method === "agent.options") {
+    const b = (params as { backend?: string } | undefined)?.backend;
+    if (b === "codex") return { backend: b, known: true, source: "catalog", models: [{ id: "gpt-6", name: "GPT-6", efforts: ["low", "high"] }, { id: "gpt-6-mini", name: "Mini", efforts: [] }], default: { model: "gpt-6" } };
+    return { backend: b, known: false, source: "unknown", models: [] };
+  }
   if (method === "agent.recent") return { backend: "codex", model: "gpt-6", effort: "high", computer: "Studio", roots: [{ root: "home/Studio/projects/recent-a", at: 3 }, { root: "home/Studio/projects/gone-b", at: 2 }, { root: "home/Laptop/projects/other", at: 1 }, { root: "home/Studio/../../etc", at: 1 }] };
   // The core's own session, for a read by kind: a bot's conversation (`b_…`), else a code session.
   if (method === "session.get") return { session: { kind: String((params as { id?: unknown } | undefined)?.id ?? "").startsWith("b_") ? "bot" : "coding" } };

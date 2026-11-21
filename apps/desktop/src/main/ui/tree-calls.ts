@@ -815,6 +815,21 @@ async function agentStart(r: TreeRoute, part: string, c: TreeCaller): Promise<{ 
     if (!holds(c.capabilities, USER_SEND)) throw r.refuse("a first message takes the user.send capability as well as sessions.start");
   }
   if (typeof raw.backend !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.backend)) throw r.refuse("which agent?");
+  // What the agent offers, where it says (`agent.options` known): a model or effort it does not list never reaches it. Where its
+  // options are unknown until it starts, the shape check above is all there is. Checked before the folder's token is spent.
+  if (raw.model !== undefined || raw.effort !== undefined) {
+    const offered = obj(await r.request("agent.options", { backend: raw.backend }));
+    if (offered.known === true && Array.isArray(offered.models)) {
+      const models = offered.models.map(obj);
+      const dflt = obj(offered.default);
+      const model = raw.model === undefined ? models.find((m) => m.id === dflt.model) : models.find((m) => m.id === raw.model);
+      if (raw.model !== undefined && model === undefined && models.length > 0) throw r.refuse("that agent doesn't offer that model");
+      if (raw.effort !== undefined) {
+        const efforts = model !== undefined && Array.isArray(model.efforts) ? model.efforts : Array.isArray(offered.efforts) ? offered.efforts : undefined;
+        if (efforts !== undefined && !efforts.includes(raw.effort)) throw r.refuse("that model doesn't offer that effort");
+      }
+    }
+  }
   const path = (r.tokens ?? new PickTokens()).redeem(raw.root, part, "agent.start");
   if (path === undefined) throw r.refuse("pick the session's folder first");
   const listed = obj(await r.request("computer.list", {}));

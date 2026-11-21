@@ -208,8 +208,8 @@
     },
     {
       "name": "sessions.start",
-      "lets": "Start a session with a coding agent, on the user's own press, in a folder the user picked in the app's own dialog (never a path the plugin names), with no words of the plugin's",
-      "ok": "starts sessions with a coding agent in a folder you pick",
+      "lets": "Start a session with a coding agent, on the user's own press, in a folder the user picked in the app's own dialog or one of the folders the user used recently (never a path the plugin names), with no words of the plugin's unless it also holds user.send; read the names of the folders the user used recently, with no click",
+      "ok": "starts sessions with a coding agent, in a folder you pick or one you used recently without asking you again, and sees the names of the folders you used recently",
       "warns": true
     },
     {
