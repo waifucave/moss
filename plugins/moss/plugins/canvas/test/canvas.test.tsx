@@ -45,7 +45,7 @@ interface Harness {
   botState(bot: string, state: string): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[] } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; pairs?: unknown[]; seen?: number } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
     "agent.backends": () => ({ backends: o.backends ?? BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
@@ -54,6 +54,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
     "ui.pick": (p: { recent?: boolean }) => (p.recent ? { recent: FOLDERS } : { picked: { token: "pick-9", name: "elsewhere" } }),
     "agent.start": () => ({ session: "s_new" }),
     "app.openIn": () => ({ opened: true, started: false }),
+    "session.links": () => ({ pairs: o.pairs ?? [], links: [] }),
   };
   for (const m of o.unserved ?? []) delete handlers[m];
   const core = fakeCore(handlers);
@@ -62,7 +63,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
   if (o.playedTo !== undefined) c.to(o.playedTo);
   const sends: Harness["sends"] = [];
   const routes: ShellRoute[] = [];
-  const settings = new Map<string, unknown>(o.places !== undefined ? [["places", o.places]] : []);
+  const settings = new Map<string, unknown>([...(o.places !== undefined ? [["places", o.places] as const] : []), ...(o.seen !== undefined ? [["seen", o.seen] as const] : [])]);
   const activity: unknown[] = [];
   const feed: ((a: unknown) => void)[] = [];
   const api = {
@@ -179,6 +180,17 @@ describe("the canvas plays the sample scene", () => {
     // Every trip ends (as the browser would end its last stretch's animation).
     for (const last of [...document.querySelectorAll(".cv-msg [data-last]")]) act(() => { last.dispatchEvent(runEnd()); });
     await waitFor(() => expect(document.querySelectorAll(".cv-ring, .cv-march, .cv-msg, .cv-react").length).toBe(0));
+  });
+
+  test("opened again, the lines are drawn from the engine's record; one that carried a link while it was away is marked once", async () => {
+    const T = 1_781_270_000_000;
+    const pair = { from: { end: "session", session: "s_a", kind: "coding" }, to: { session: "s_b", kind: "coding" }, last: "message", lastAt: T + 9_000, count: 2 };
+    mount({ playedTo: 9_500, pairs: [pair], seen: T + 8_000 });
+    await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')).not.toBeNull());
+    const line = document.querySelector('.cv-line[data-kind="peer"]')!;
+    expect(line.getAttribute("data-away")).not.toBeNull();
+    // Nothing plays for an old link.
+    expect(document.querySelector(".cv-msg")).toBeNull();
   });
 
   test("sessions that ended before the canvas opened fold into a count that expands; ones that end while it is open stay", async () => {

@@ -45,9 +45,12 @@ export interface LinkState {
   /** How many links each line carried (by edge id), and how many of the person's messages each block got (`to:<block>`)
    *  while the canvas was open: a steady mark beside the waves, which go once drawn. */
   heard: Readonly<Record<string, number>>;
+  /** The lines whose last link (the engine's record, `session.links`) is newer than when the canvas was last seen: what
+   *  crossed while it was away, marked once with a quiet highlight when it opens. */
+  away: Readonly<Record<string, true>>;
 }
 
-export const EMPTY_LINKS: LinkState = { peers: [], waves: [], seq: 0, heard: {} };
+export const EMPTY_LINKS: LinkState = { peers: [], waves: [], seq: 0, heard: {}, away: {} };
 const count = (heard: Readonly<Record<string, number>>, key: string) => ({ ...heard, [key]: (heard[key] ?? 0) + 1 });
 export const WAVE_STALE_MS = 10_000;
 export const WAVES_MAX = 48;
@@ -71,7 +74,7 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
   const id = state.seq + 1;
   if (link.from.end === "user") {
     const wave: Wave = { id, to, ...colours(model.byId.get(to)!), ...toColours(model.byId.get(to)!), ts: link.ts, link: link.link };
-    return { peers: state.peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, `to:${to}`) };
+    return { ...state, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, `to:${to}`) };
   }
   const from = model.blockOfSession(link.from.session);
   if (from === undefined || from === to || !model.byId.has(from)) return { ...state, waves: fresh };
@@ -82,7 +85,38 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
     peers = [...peers, edge];
   }
   const wave: Wave = { id, edge: edge.id, from, to, ...colours(model.byId.get(from)!), ...toColours(model.byId.get(to)!), ts: link.ts, link: link.link };
-  return { peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, edge.id) };
+  return { ...state, peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, edge.id) };
+}
+
+/** A pair of sessions that have talked, as the engine's record keeps it (`SessionLinkPair`): who to whom, the last link's
+ *  kind and time. */
+export interface LinkPair {
+  from: LinkEvent["from"];
+  to: LinkEvent["to"];
+  last: LinkEvent["link"];
+  lastAt: number;
+  count: number;
+}
+
+/** The engine's record, read as the canvas opens: a line for each pair of blocks that have talked and no line joins yet
+ *  (so the lines survive the canvas being closed), and a quiet mark on each line whose last link is newer than `seenAt`
+ *  (when the canvas was last seen). No wave plays for an old link. */
+export function applyPairs(state: LinkState, pairs: readonly LinkPair[], model: CanvasModel, seenAt: number | undefined): LinkState {
+  let peers = state.peers;
+  const away: Record<string, true> = { ...state.away };
+  for (const p of pairs) {
+    if (p.from.end !== "session") continue;
+    const from = model.blockOfSession(p.from.session);
+    const to = model.blockOfSession(p.to.session);
+    if (from === undefined || to === undefined || from === to || !model.byId.has(from) || !model.byId.has(to)) continue;
+    let edge = edgeBetween(model, peers, from, to);
+    if (edge === undefined) {
+      edge = { id: peerId(from, to), kind: "peer", a: from < to ? from : to, b: from < to ? to : from };
+      peers = [...peers, edge];
+    }
+    if (seenAt !== undefined && p.lastAt > seenAt) away[edge.id] = true;
+  }
+  return { ...state, peers, away };
 }
 
 /** A wave's view says it ended. */
