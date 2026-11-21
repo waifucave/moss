@@ -6,7 +6,7 @@
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { useCore, usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { applyLink, EMPTY_LINKS, waveDone, type LinkEvent, type LinkState } from "./links";
+import { applyLink, applyPairs, EMPTY_LINKS, waveDone, type LinkEvent, type LinkPair, type LinkState } from "./links";
 import type { BackendLook, BotState } from "./look";
 import type { BotFacePins } from "./model";
 
@@ -46,6 +46,7 @@ type Action =
   | { t: "view"; view: SessionView }
   | { t: "list"; views: readonly SessionView[] }
   | { t: "link"; link: LinkEvent }
+  | { t: "pairs"; pairs: readonly LinkPair[]; seenAt: number | undefined }
   | { t: "done"; wave: number }
   | { t: "backends"; rows: readonly BackendRow[] }
   | { t: "bots"; names: ReadonlyMap<string, string>; faces: ReadonlyMap<string, BotFacePins> }
@@ -65,6 +66,8 @@ export function graphReducer(state: GraphState, a: Action): GraphState {
       for (const v of a.views) if (newer(sessions[v.id], v)) sessions[v.id] = v;
       return { ...state, sessions, loaded: true };
     }
+    case "pairs":
+      return { ...state, links: applyPairs(state.links, a.pairs, buildModel(state.sessions, state.backends, state.botNames, state.botStates, state.botFaces), a.seenAt) };
     case "link":
       return { ...state, links: applyLink(state.links, a.link, buildModel(state.sessions, state.backends, state.botNames, state.botStates, state.botFaces)) };
     case "done": {
@@ -96,10 +99,18 @@ export function useSessionGraph(): GraphState & { waveDone(id: number): void } {
     let live = true;
     const offView = core.on("session_changed", (e) => { if (isView(e.session)) dispatch({ t: "view", view: e.session }); });
     const offLink = core.on("session_link", (e) => { if (typeof e.ts === "number" && typeof e.to === "object") dispatch({ t: "link", link: e as unknown as LinkEvent }); });
+    // When the canvas was last seen (its hidden `seen` setting), read before it is marked seen again.
+    const seen = Promise.resolve(apiRef.current.settings?.get?.("seen")).then((v) => (typeof v === "number" && v > 0 ? v : undefined), () => undefined);
     void Promise.resolve(core.call("session.list", {})).then(
       (r: { sessions?: unknown[] } | undefined) => { if (live) dispatch({ t: "list", views: (r?.sessions ?? []).filter(isView) }); },
       () => { if (live) dispatch({ t: "list", views: [] }); },
-    );
+    ).then(async () => {
+      // The engine's record of links, once the blocks are there: the lines that survive the canvas being closed, and
+      // what crossed while it was away (marked, not played).
+      const seenAt = await seen;
+      const r = (await Promise.resolve(core.call("session.links", {})).catch(() => undefined)) as { pairs?: LinkPair[] } | undefined;
+      if (live && Array.isArray(r?.pairs)) dispatch({ t: "pairs", pairs: r.pairs, seenAt });
+    });
     void Promise.resolve(core.call("agent.backends", {})).then(
       (r: { backends?: BackendRow[] } | undefined) => {
         if (!live) return;
@@ -128,8 +139,14 @@ export function useSessionGraph(): GraphState & { waveDone(id: number): void } {
     };
     const offActivity = apiRef.current.activity?.watch?.("bots", onActivity as never);
     void Promise.resolve(apiRef.current.activity?.list?.("bots")).then((list) => { for (const a of list ?? []) onActivity(a as never); }, () => undefined);
+    // The canvas is seen while it is shown: the time is kept when it is hidden or closed.
+    const markSeen = () => { void Promise.resolve(apiRef.current.settings?.set?.("seen", Date.now())).catch(() => undefined); };
+    const onVisibility = () => { if (document.visibilityState === "hidden") markSeen(); };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
     return () => {
       live = false;
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+      void seen.then(markSeen);
       offView();
       offLink();
       offActivity?.();

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SAMPLE_SESSION_SCENE, foldSessionEvents } from "@waifucave/moss-plugin-sdk/ui/testing";
-import { applyLink, EMPTY_LINKS, livePeers, peerId, waveDone, WAVE_STALE_MS, WAVES_MAX, type LinkEvent, type LinkState } from "../client/links";
+import { applyLink, applyPairs, EMPTY_LINKS, livePeers, peerId, waveDone, WAVE_STALE_MS, WAVES_MAX, type LinkEvent, type LinkState } from "../client/links";
 import { botBlockId, buildModel } from "../client/model";
 import { BACKENDS } from "../gallery/fixtures";
 
@@ -85,5 +85,30 @@ describe("the link bookkeeping", () => {
     const sessions = foldSessionEvents(SAMPLE_SESSION_SCENE.map((s) => s.event)).sessions;
     const model = buildModel({ ...sessions, s_b: { ...sessions.s_b!, archived: true } }, looks);
     expect(livePeers(links, model)).toEqual([]);
+  });
+});
+
+describe("the engine's record of links, read as the canvas opens", () => {
+  const T = 1_781_270_000_000;
+  const model = () => buildModel(foldSessionEvents(SAMPLE_SESSION_SCENE.map((s) => s.event)).sessions, looks);
+  const pair = (from: string, to: string, lastAt: number) => ({ from: { end: "session" as const, session: from, kind: "coding" }, to: { session: to, kind: "coding" }, last: "message" as const, lastAt, count: 2 });
+
+  test("draws the line between two main sessions that talked, marks it when its last link is newer than the last look, plays nothing", () => {
+    const m = model();
+    const opened = applyPairs(EMPTY_LINKS, [pair("s_a", "s_b", T + 50)], m, T);
+    expect(opened.peers.map((e) => e.id)).toEqual([peerId("s_a", "s_b")]);
+    expect(opened.away).toEqual({ [peerId("s_a", "s_b")]: true });
+    expect(opened.waves).toEqual([]);
+    // Seen since: the line, no mark. Never seen (a first open): no mark either.
+    expect(applyPairs(EMPTY_LINKS, [pair("s_a", "s_b", T - 50)], m, T).away).toEqual({});
+    expect(applyPairs(EMPTY_LINKS, [pair("s_a", "s_b", T + 50)], m, undefined).away).toEqual({});
+  });
+
+  test("a pair already joined (parent and child) gets no second line; one with a session not on the canvas is left out", () => {
+    const m = model();
+    const child = m.edges.find((e) => e.kind === "child")!;
+    const s = applyPairs(EMPTY_LINKS, [pair(m.byId.get(child.a)!.session!, m.byId.get(child.b)!.session!, T + 1), pair("s_a", "gone", T + 1)], m, T);
+    expect(s.peers).toEqual([]);
+    expect(s.away).toEqual({ [child.id]: true });
   });
 });

@@ -66,6 +66,8 @@ describe("the canvas stylesheet", () => {
       ".cv-dotflash", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-ring[data-handover]::before",
       // A message, only while one crosses (Canvas.tsx draws it then): its light, the timer, the blocks' reactions.
       ".cv-mlight", ".cv-msg__timer", ".cv-react__from,\n.cv-react__to",
+      // What crossed while the canvas was away: one quiet highlight as it opens, then still.
+      ".cv-line[data-away]",
     ].sort());
     // The ring and the dashes exist only while their block runs or waits (Block.tsx draws them then), and a wave or a
     // hit only while a message crosses: so nothing here can run on a still canvas.

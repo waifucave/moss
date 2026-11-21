@@ -27,7 +27,16 @@
       "title": "Where you moved blocks",
       "description": "Kept by the canvas when you drag a block, so it stays there. Clear it to put every block back in its own place.",
       "default": "",
-      "scope": "device", "hidden": true
+      "scope": "device",
+      "hidden": true
+    },
+    "seen": {
+      "type": "number",
+      "title": "When you last saw the canvas",
+      "description": "Kept by the canvas so it can mark what crossed between sessions while it was closed.",
+      "default": 0,
+      "scope": "device",
+      "hidden": true
     }
   },
   "contributes": {

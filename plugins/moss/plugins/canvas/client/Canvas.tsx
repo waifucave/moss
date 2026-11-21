@@ -377,7 +377,7 @@ export function Canvas(p: CanvasProps) {
           <svg className="cv-lines" width={worldW} height={worldH} aria-hidden="true">
             {edges.map((e) => {
               const [pa, pb] = ports.get(e.id)!;
-              return <path key={e.id} className="cv-line" data-kind={e.kind} data-edge={e.id} data-links={p.links.heard[e.id] ?? 0} d={curve(portAt(rects.get(e.a)!, pa), pa, portAt(rects.get(e.b)!, pb), pb)} />;
+              return <path key={e.id} className="cv-line" data-kind={e.kind} data-edge={e.id} data-links={p.links.heard[e.id] ?? 0} {...(p.links.away[e.id] === true ? { "data-away": "" } : {})} d={curve(portAt(rects.get(e.a)!, pa), pa, portAt(rects.get(e.b)!, pb), pb)} />;
             })}
           </svg>
           <ul className="cv-blocks" aria-label={S.blocks}>

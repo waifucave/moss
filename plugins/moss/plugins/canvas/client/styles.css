@@ -159,6 +159,21 @@
   stroke-width: 1.6;
 }
 
+/* What crossed while the canvas was away (the engine's record): the line brightens once, quietly, as it opens. */
+.cv-line[data-away] {
+  animation: cv-away calc(2.4s * var(--cv-slow, 1)) ease-in-out 0.3s 1 both;
+}
+
+@keyframes cv-away {
+  0%,
+  100% {
+    stroke: var(--cv-line);
+  }
+  45% {
+    stroke: var(--moss-color-text-secondary);
+  }
+}
+
 .cv-line[data-kind="peer"] {
   stroke-dasharray: 2 5;
   stroke-linecap: round;
@@ -634,6 +649,16 @@
   }
 }
 
+@keyframes cv-flash-line {
+  0%,
+  100% {
+    stroke: var(--cv-line);
+  }
+  20% {
+    stroke: var(--moss-color-text-secondary);
+  }
+}
+
 @keyframes cv-flash {
   0% {
     opacity: 0;
@@ -647,6 +672,7 @@
 }
 
 /* A hidden window: everything holds still. */
+.cv[data-hidden] .cv-line,
 .cv[data-hidden] .cv-ring::before,
 .cv[data-hidden] .cv-dot,
 .cv[data-hidden] .cv-march__rect,
@@ -1046,5 +1072,9 @@
 
   .cv-port {
     transition: none;
+  }
+
+  .cv-line[data-away] {
+    animation: cv-flash-line calc(0.8s * var(--cv-slow, 1)) ease-out 0.3s 1 both;
   }
 }
