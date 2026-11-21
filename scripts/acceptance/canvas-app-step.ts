@@ -6,8 +6,8 @@
 // answers beside what the window shows):
 //   1. the start page: on a fresh home it is the bundled canvas plugin's (the shell's own new-session page is only the fallback
 //      when no plugin fills `start`, and shows nowhere), its + panel drawing each agent's mark (the nine agent plugins ship
-//      theirs; MOSS's own coding agent the Shards mark); the fixture plugin installed, its entry is the start page (installed
-//      over bundled);
+//      theirs; MOSS's own coding agent the Shards mark); with the canvas switched off and the fixture plugin installed, its
+//      entry is the start page;
 //   2. a start through the app's door: the page's button starts a session with a model, an effort, a recent folder and a first message,
 //      the window opens that session's tab, the engine says the session runs on that model and effort, the first message is the
 //      user's own, and `agent.recent` then offers them;
@@ -15,7 +15,7 @@
 //   4. "Open in MOSS": MOSS isn't running, so the engine asks for it to start (a marker the run answers by starting its own MOSS from
 //      source), and MOSS opens the bot's conversation.
 //
-// Lane CP's rows, after CA's, with the fixture plugin removed so the canvas is the start page again (the real engine, the real
+// Lane CP's rows, after CA's, with the fixture plugin removed and the canvas switched on again (the real engine, the real
 // window; MOSS started by CA's row 4 still running):
 //   5. the start page is the canvas, and + creates a session with what it preselects (the last start's agent, model, effort and
 //      folder): the engine says the new session runs on them, and the window opens its tab;
@@ -37,7 +37,7 @@ import type { MossClient } from "./client";
 import { Doc, type SetupUnitCtx } from "./setup-step";
 import type { Status } from "./steps";
 
-export const CANVAS_START_STEP = "the start page: on a fresh home it is the bundled canvas plugin's (the shell's own new-session page, the fallback when no plugin fills `start`, shows nowhere), its + panel drawing each agent's mark (MOSS's own agent the Shards mark, the nine agent plugins theirs, a one-colour glyph drawn in its agent's colour); with a plugin's `main` entry keyed `start` installed, that entry is the start page (installed over bundled), drawing the same marks and, for an agent with none, the first letter on a colour";
+export const CANVAS_START_STEP = "the start page: on a fresh home it is the bundled canvas plugin's (the shell's own new-session page, the fallback when no plugin fills `start`, shows nowhere), its + panel drawing each agent's mark (MOSS's own agent the Shards mark, the nine agent plugins theirs, a one-colour glyph drawn in its agent's colour); with the canvas switched off and a plugin's `main` entry keyed `start` installed, that entry is the start page, drawing the same marks and, for an agent with none, the first letter on a colour";
 export const CANVAS_START_SESSION_STEP = "a start through the app's door from the start page's button: a model, an effort, a recent folder (a token, never a path) and a first message; the window opens the new session's tab, the engine says it runs on that model and effort, the first message is the user's own, and agent.recent then offers that agent, model, effort and folder";
 export const CANVAS_CORNER_STEP = "a session tab's top corner holds a plugin's control (the `session.corner` spot, given the session and its kind): pressing it returns the window to the start page";
 export const CANVAS_OPEN_IN_STEP = "\"Open in MOSS\" from a part of MOSS Code with MOSS not running: the engine is asked to start MOSS (it starts nothing itself in the run: a marker, answered by the run starting its own MOSS from source), and MOSS opens the bot's conversation";
@@ -100,8 +100,9 @@ export async function canvasAppUnit(x: CanvasAppUnitCtx): Promise<void> {
     await row(CANVAS_START_SESSION_STEP, () => sessionRow(s));
     await row(CANVAS_CORNER_STEP, () => cornerRow(s));
     await row(CANVAS_OPEN_IN_STEP, () => openInRow(s));
-    // Lane CP's rows: the canvas as the start page again.
+    // Lane CP's rows: the fixture removed and the canvas switched on again, the start page once more.
     await x.removeFixture(c);
+    await c.request("plugin.setEnabled", { id: "moss/canvas", enabled: true }, 60_000);
     const cp: CpState = {};
     await row(CANVAS_PLUS_STEP, () => plusRow(s, cp));
     await row(CANVAS_BACK_STEP, () => backRow(s, cp));
@@ -189,7 +190,8 @@ async function startRow(s: Ctx): Promise<string> {
   const canvasNote = checkMarks(s, "the canvas's + panel", canvasMarks);
   const pictures = await picture(s, canvas, "canvas-plus-panel", "moss-code-canvas-plus");
   await canvas.eval("document.querySelector('.cv-panel')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) ?? true");
-  // The fixture plugin installed: its entry keyed `start` is the start page (installed over bundled), and the canvas is gone.
+  // The canvas switched off and the fixture plugin installed: its entry keyed `start` is the start page (CA's rows drive it).
+  await s.c.request("plugin.setEnabled", { id: "moss/canvas", enabled: false }, 60_000);
   await s.x.installFixture(s.c);
   const page = await waitDoc(s, "the plugin's start page", "[data-canvas-start]", 90_000);
   if (await anyDoc(s, "section.cv") !== undefined) s.x.fail("the canvas still shows beside the installed plugin's start page");
@@ -204,7 +206,7 @@ async function startRow(s: Ctx): Promise<string> {
   // A bot's face drawn by BotFace in MOSS Code (its own drawing of the same name, as MOSS draws hers: a canvas).
   const face = await page.eval<boolean>("!!document.querySelector('[data-canvas-bot-face] canvas')");
   if (!face) s.x.fail("BotFace drew no face in MOSS Code");
-  return `a fresh home: the canvas is the start page and the shell's own page shows nowhere, its + panel ${canvasNote}; the fixture plugin's start entry installed: it is the start page and the canvas is gone, ${pluginNote}; an agent with no icon is the letter mark; BotFace drew a face${pictures.length > 0 ? `; pictures: ${pictures.length}` : ""}`;
+  return `a fresh home: the canvas is the start page and the shell's own page shows nowhere, its + panel ${canvasNote}; the canvas switched off and the fixture plugin's start entry installed: it is the start page, ${pluginNote}; an agent with no icon is the letter mark; BotFace drew a face${pictures.length > 0 ? `; pictures: ${pictures.length}` : ""}`;
 }
 
 /** A render of the window in light and dark (a picture, never a check). */

@@ -225,8 +225,9 @@ export function Canvas(p: CanvasProps) {
     const b = model.byId.get(id);
     if (b === undefined) return;
     const r = rect(b);
+    // The pointer is captured only once it really drags (onMove): captured at the press, the browser would send the
+    // click to the viewport, and a plain press on the head would never open the block.
     gesture.current = { kind: "block", id, x: e.clientX, y: e.clientY, from: { x: r.x, y: r.y }, moved: false, pointer: e.pointerId };
-    viewport.current?.setPointerCapture?.(e.pointerId);
   };
   const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const g = gesture.current;
@@ -234,6 +235,7 @@ export function Canvas(p: CanvasProps) {
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
     if (!g.moved && Math.hypot(dx, dy) < 4) return;
+    if (!g.moved && g.kind === "block") viewport.current?.setPointerCapture?.(e.pointerId);
     g.moved = true;
     if (g.kind === "pan") setView({ x: Math.round(g.from.x + dx), y: Math.round(g.from.y + dy), k: v.k });
     else setDrag({ id: g.id!, at: { x: Math.round(g.from.x + dx / v.k), y: Math.round(g.from.y + dy / v.k) } });
