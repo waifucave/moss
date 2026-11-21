@@ -70,6 +70,7 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
           placement: b.quirks.placement,
           userStartable: b.userStartable !== false,
           ...(looks?.get(b.id)?.icon === undefined ? {} : { icon: looks.get(b.id)!.icon! }),
+          ...(looks?.get(b.id)?.iconDark === undefined ? {} : { iconDark: looks.get(b.id)!.iconDark! }),
           ...(looks?.get(b.id)?.color === undefined ? {} : { color: looks.get(b.id)!.color! }),
           ...(looks?.get(b.id)?.color2 === undefined ? {} : { color2: looks.get(b.id)!.color2! }),
           computers: [{

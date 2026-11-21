@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { LAYER_METHODS } from "../src/main/layer-links";
 import { NEVER, SEND_ONLY, TREE_CALLS, needsOf, treeVerdict, type TreeCaller } from "../src/main/ui/tree-calls";
@@ -760,7 +760,7 @@ describe("the Plugins page's calls as main sends them", () => {
       expect(await routeCall(rec.r)).toEqual({ backend: "codex", folders: 4 });
       const noDialog = route({ tree: { windowId: 1, pluginId: THIRD }, caps: ["sessions.start"], method: "ui.pick", params: { kind: "folder", use: "agent.start", recent: true, dialog: false }, gesture: false, tokens, pick: async () => { throw new Error("no dialog"); }, request: req });
       const got = (await routeCall(noDialog.r)) as { cancelled: boolean; recent: { token: string; name: string }[] };
-      expect(got.recent.map((x) => x.name)).toEqual([made.split("/").pop()!]);
+      expect(got.recent.map((x) => x.name)).toEqual([basename(made)]);
       expect(JSON.stringify(got)).not.toContain(homedir());
       expect(tokens.redeem(got.recent[0]!.token, THIRD, "agent.start")).toBe(made);
       // Another use, or a part without sessions.start, gets nothing.

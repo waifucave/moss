@@ -75,7 +75,7 @@ import { lateAgentMethods } from "./agents/rpc";
 import { EngineAgentStartOptions, FileRecentStore } from "./agents/start-options";
 import { BackendLooks } from "./agents/backend-look";
 import { EngineBackendIcons } from "./agents/backend-icons";
-import { MOSS_CODE_COLOR, MOSS_CODE_ICON } from "./agents/moss-code/look";
+import { MOSS_CODE_COLOR, MOSS_CODE_ICON, MOSS_CODE_ICON_DARK } from "./agents/moss-code/look";
 import { MOSS_CODE_ID } from "./agents/moss-code/backend";
 import { commandMethods } from "./registry/commands";
 import { grantsInForce, RUNNING_STATES } from "./contracts/plugin-registry";
@@ -3735,7 +3735,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   const backendLooks = new BackendLooks({
     get registry() { return partsRegistry?.registry ?? { entries: () => [], get: () => undefined }; },
     icons: new EngineBackendIcons(),
-    core: { [MOSS_CODE_ID]: { color: MOSS_CODE_COLOR, icon: MOSS_CODE_ICON } },
+    core: { [MOSS_CODE_ID]: { color: MOSS_CODE_COLOR, icon: MOSS_CODE_ICON, iconDark: MOSS_CODE_ICON_DARK } },
     log: (line) => console.error(`[agents] ${line}`),
   });
   Object.assign(mossLaneHandlers, cardMethods(() => daemonParts?.broker, (pluginId) => grantsInForce(partsRegistry?.registry.get(pluginId)), {

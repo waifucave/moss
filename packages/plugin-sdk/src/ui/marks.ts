@@ -17,7 +17,7 @@ export interface BotFaceProps {
 
 /** `AgentMark`'s props: a backend as `agent.backends` gives it, and its size in CSS pixels. */
 export interface AgentMarkProps {
-  readonly backend: Pick<AgentBackendView, "id" | "name" | "icon" | "color" | "color2">;
+  readonly backend: Pick<AgentBackendView, "id" | "name" | "icon" | "iconDark" | "color" | "color2">;
   readonly size?: number;
 }
 
@@ -28,7 +28,7 @@ export const AGENT_MARK_NEUTRAL = "#8a8f98";
  *  `<img>`, never markup in the page); else ours, the name's first letter on the brand colour (a gradient to `color2`
  *  when given), in white or near-black, whichever reads on it. */
 export type AgentMarkLook =
-  | { readonly kind: "icon"; readonly src: string }
+  | { readonly kind: "icon"; readonly src: string; /** The same mark for a dark theme, where the backend has one. */ readonly srcDark?: string }
   /** A `currentColor` SVG (one colour, the mark is its shape): drawn as a mask over `fill` (a gradient to `fill2` when the
    *  backend gives two), or over the text colour of the theme when `fill` is undefined (no colour, or black, white or grey). */
   | { readonly kind: "mask"; readonly src: string; readonly fill?: string; readonly fill2?: string }
@@ -43,7 +43,8 @@ export function agentMark(b: AgentMarkProps["backend"]): AgentMarkLook {
       const fill = b.color !== undefined && isChromatic(b.color) ? b.color : undefined;
       return { kind: "mask", src, ...(fill !== undefined ? { fill, ...(b.color2 !== undefined && isChromatic(b.color2) ? { fill2: b.color2 } : {}) } : {}) };
     }
-    return { kind: "icon", src };
+    const dark = b.iconDark === undefined ? undefined : `data:${b.iconDark.mediaType};base64,${b.iconDark.data}`;
+    return { kind: "icon", src, ...(dark !== undefined ? { srcDark: dark } : {}) };
   }
   const name = typeof b.name === "string" ? b.name.trim() : "";
   const first = [...(name || b.id)][0] ?? "?";

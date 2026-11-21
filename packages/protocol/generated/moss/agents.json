@@ -82,6 +82,33 @@
                   ],
                   "additionalProperties": false
                 },
+                "iconDark": {
+                  "type": "object",
+                  "properties": {
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "image/png",
+                        "image/svg+xml"
+                      ]
+                    },
+                    "data": {
+                      "type": "string",
+                      "maxLength": 87384
+                    },
+                    "at": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "mediaType",
+                    "data",
+                    "at"
+                  ],
+                  "additionalProperties": false
+                },
                 "color": {
                   "type": "string",
                   "pattern": "^#[0-9a-f]{6}$"

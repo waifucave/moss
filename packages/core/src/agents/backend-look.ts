@@ -10,6 +10,7 @@ import { contributedBackends } from "./plugin-backends";
 
 export interface BackendLook {
   icon?: BackendIcon;
+  iconDark?: BackendIcon;
   color?: string;
   color2?: string;
 }

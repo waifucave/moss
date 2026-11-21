@@ -17,6 +17,6 @@ Every mark below is the trademark of its owner. It is shown only to name that ag
 | `agent-grok` | `grok.svg` | xAI | https://grok.com/images/favicon.svg (the mark only) |
 | `agent-deepseek` | `deepseek.svg` | DeepSeek | https://raw.githubusercontent.com/deepseek-ai/DeepSeek-LLM/HEAD/images/logo.svg (the whale only; colour `#4D6BFE`) |
 
-MOSS's own coding agent has no plugin: its mark is MOSS's face on the coral `#F0694C`, drawn by the app's own face kit.
+MOSS's own coding agent has no plugin: its mark is our own, MOSS Code's Shards mark (`assets/brand/moss-code/mark/shards-mark-on-light.svg` and `shards-mark-on-dark.svg`, served as `icon` and `iconDark`, the one that fits the theme drawn), bare, with the mark's gold `#E5A72E` as its colour. MOSS's face is for bots only (`BotFace`).
 
 Files were put on a square canvas and made plain (no script, style, external reference); no path data or colour of a mark was changed. A one-colour (`currentColor`) icon is drawn in the agent's colour when it has one with a hue, else in the theme's text colour. The engine accepts an icon only as a PNG or inert SVG of at most 64 KiB, inside the plugin's own folder.

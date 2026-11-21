@@ -59,3 +59,16 @@ describe("the shipped marks", () => {
     }
   });
 });
+
+describe("MOSS's own coding agent's mark", () => {
+  test("is MOSS Code's Shards mark, bare, one file for each theme, in the mark's gold (never MOSS's face or coral)", async () => {
+    const { MOSS_CODE_COLOR, MOSS_CODE_ICON, MOSS_CODE_ICON_DARK } = await import("../moss-code/look");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const brand = (f: string) => readFileSync(join(import.meta.dir, "..", "..", "..", "..", "..", "assets", "brand", "moss-code", "mark", f), "utf8").trim();
+    expect(Buffer.from(MOSS_CODE_ICON.data, "base64").toString()).toBe(brand("shards-mark-on-light.svg"));
+    expect(Buffer.from(MOSS_CODE_ICON_DARK.data, "base64").toString()).toBe(brand("shards-mark-on-dark.svg"));
+    expect(MOSS_CODE_COLOR).toBe("#E5A72E");
+    expect(Buffer.from(MOSS_CODE_ICON.data, "base64").toString()).not.toContain("F0694C");
+  });
+});

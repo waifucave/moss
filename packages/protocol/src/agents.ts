@@ -60,6 +60,9 @@ export const AgentBackendView = z.object({
    *  the file was refused. A reader then draws the SDK's fallback mark (`agentMark`: the name's first letter on `color`,
    *  or on a neutral). `color` and `color2` (a gradient's second) are the entry's. */
   icon: BackendIcon.optional(),
+  /** The same mark for a dark theme, where a backend has one for each (the built-in backend's: its mark's on-dark file); a
+   *  reader on a dark theme draws it in place of `icon`. */
+  iconDark: BackendIcon.optional(),
   color: LookColor.optional(),
   color2: LookColor.optional(),
   protocol: z.enum(["acp", "cloud"]),

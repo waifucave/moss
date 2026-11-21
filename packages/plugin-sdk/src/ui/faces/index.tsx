@@ -72,5 +72,5 @@ export function FaceCanvas(props: FaceCanvasProps) {
     if (faceMotion.calm !== undefined) handle.current?.set({ calm: faceMotion.calm });
   });
   // The name is said beside the face, so the canvas is decoration for a screen reader.
-  return <canvas ref={canvas} data-face={props.name} {...(f?.shape !== undefined ? { "data-pin-shape": f.shape } : {})} {...(f?.color !== undefined ? { "data-pin-color": f.color } : {})} {...(f?.eyes !== undefined ? { "data-pin-eyes": f.eyes } : {})} aria-hidden="true" className={`face face--${props.surface ?? "list"}`} style={{ width: props.size, height: props.size }} />;
+  return <canvas ref={canvas} data-face={props.name} {...(f?.shape !== undefined ? { "data-pin-shape": f.shape } : {})} {...(f?.color !== undefined ? { "data-pin-color": f.color } : {})} {...(f?.eyes !== undefined ? { "data-pin-eyes": f.eyes } : {})} data-mood={props.mood} aria-hidden="true" className={`face face--${props.surface ?? "list"}`} style={{ width: props.size, height: props.size }} />;
 }

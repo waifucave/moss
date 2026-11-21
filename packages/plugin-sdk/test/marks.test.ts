@@ -40,6 +40,11 @@ describe("agentMark", () => {
     for (const k of ["background", "backgroundColor", "border", "borderRadius", "padding", "boxShadow", "opacity", "filter"]) expect(sized.props.style[k]).toBeUndefined();
     const two = el({ id: "g", name: "G", icon: icon("currentColor"), color: "#484FF6", color2: "#7893F9" });
     expect((two.props.style as { background: string }).background).toBe("linear-gradient(135deg, #484FF6, #7893F9)");
+    // A backend with a mark for each theme: the dark one where the theme is dark, the same bare image otherwise.
+    const themed = AgentMark({ backend: { id: "t", name: "T", icon: icon("#1B1D2B"), iconDark: icon("#F6F4EE") } }) as unknown as { type: string; props: { children: unknown[] } };
+    expect(themed.type).toBe("picture");
+    const [source, themedImg] = themed.props.children as { type: string; props: Record<string, string | undefined> }[];
+    expect([source!.type, source!.props.media, source!.props.srcSet!.startsWith("data:image/svg+xml;base64,"), themedImg!.props["data-agent-mark"]]).toEqual(["source", "(prefers-color-scheme: dark)", true, "icon"]);
     const letter = el({ id: "x", name: "Xy", color: "#4D6BFE" });
     expect((letter.props.style as { background: string }).background).toBe("#4D6BFE");
   });

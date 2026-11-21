@@ -1580,7 +1580,11 @@ export function BotFace({ bot, name, face, size = 40, state = "idle" }: BotFaceP
 export function AgentMark({ backend, size = 24 }: AgentMarkProps) {
   const look = agentMark(backend);
   const box: CSSProperties = { width: size, height: size, flex: "none", display: "inline-block" };
-  if (look.kind === "icon") return <img src={look.src} alt="" width={size} height={size} draggable={false} style={{ ...box, objectFit: "contain" }} data-agent-mark="icon" />;
+  if (look.kind === "icon") {
+    const img = <img src={look.src} alt="" width={size} height={size} draggable={false} style={{ ...box, objectFit: "contain" }} data-agent-mark="icon" />;
+    // A backend with a mark for each theme (the built-in one's): the dark one where the theme is dark.
+    return look.srcDark === undefined ? img : <picture style={box}><source media="(prefers-color-scheme: dark)" srcSet={look.srcDark} />{img}</picture>;
+  }
   if (look.kind === "mask") {
     const url = `url("${look.src}")`;
     return <span role="img" aria-label={typeof backend.name === "string" ? backend.name : backend.id} data-agent-mark="mask" style={{ ...box, background: look.fill === undefined ? "currentColor" : look.fill2 === undefined ? look.fill : `linear-gradient(135deg, ${look.fill}, ${look.fill2})`, WebkitMask: `${url} center / contain no-repeat`, mask: `${url} center / contain no-repeat` }} />;
