@@ -36,7 +36,7 @@
 // thinking). A session's view carries its needs-you counts (`SessionView.needsYou`): its pending cards and its
 // unanswered questions.
 import {
-  SENT_AT_WINDOW_MS, type SessionFailure, type SessionKind, type SessionStatus, type SessionView, type TurnOrigin, type UserMessageInput,
+  SENT_AT_WINDOW_MS, type SessionFailure, type SessionStarter, type SessionKind, type SessionStatus, type SessionView, type TurnOrigin, type UserMessageInput,
   userMessageHashInput, userMessageSigningInput,
 } from "@waifucave/moss-protocol";
 import { fromBase64, type Unsubscribe } from "./common";
@@ -136,6 +136,8 @@ export interface SessionSpec {
   bot?: string;
   /** A side thread's or a background agent's bot's main session, which gets its results. */
   parent?: string;
+  /** Who started it (§9.5), when the opener says; otherwise the host reads it from the kind, bot, parent and routine. */
+  startedBy?: SessionStarter;
   /** The computer running it (§6.4). */
   computer: string;
   title?: string;

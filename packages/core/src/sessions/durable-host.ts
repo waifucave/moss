@@ -59,8 +59,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   clampSentAt, pluginIdToSegment, SessionView as SessionViewSchema, TRANSIENT_EVENT_TYPES,
-  type Caller, type SessionFailure, type SessionKind, type SessionStatus, type SessionView, type TurnOrigin,
+  type Caller, type SessionFailure, type SessionKind, type SessionLinkKind, type SessionStarter, type SessionStatus, type SessionView, type TurnOrigin,
 } from "@waifucave/moss-protocol";
+import type { TitleSource } from "../contracts/session-titles";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import { compareStamps, type Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -72,6 +73,8 @@ import {
 import { readJson, writeJsonAtomic } from "./atomic-file";
 import { MAX_RECORD_BYTES, RecordTooLargeError, SessionLogFile, shrinkRecord } from "./event-log";
 import { mainSessionIdFor, mintSessionId, SESSION_ID_PREFIX, sessionLogPath, sessionMetaPath, transcriptsDir } from "./ids";
+import { EngineSessionGraph, derivedStarter } from "./session-graph";
+import { EngineSessionTitles, type TitleStore, type Titler } from "./session-titles";
 
 /** After the user's interrupt, how long a driver that said it stopped has to end its turn before the host ends it. */
 export const INTERRUPT_GRACE_MS = 5_000;
@@ -164,6 +167,12 @@ export interface SessionMeta {
   routine?: string;
   definition?: string;
   startedAt: number;
+  /** Who started it (§9.5), set at the start and never changed; a meta from before revision 20 has none, and reads as
+   *  its kind, bot, parent and routine say (`derivedStarter`). */
+  startedBy?: SessionStarter;
+  /** Who gave its title: the person, a spawn, or the engine's titler. A title with none (from before revision 20) is
+   *  never replaced by the engine. */
+  titleBy?: TitleSource;
   /** This computer's records set aside when its copy forked from the computer running the session (`setAside`). */
   earlier?: EarlierLog[];
   /** Set when the session ends, so a start needn't read its log. */
@@ -198,6 +207,9 @@ export interface DurableSessionHostOptions {
    *  such an input is refused `bot_asleep`. */
   forward?: (view: SessionView, input: DeliveredInput) => Promise<{ disposition: Disposition; seq: number }>;
   warn?: (message: string) => void;
+  /** Titles a code session after a turn of it ends (§9.5 "Titles"): the titler, on a model tag, and the light model of a
+   *  session's model's family. Without it no session is titled by the engine. */
+  titles?: { titler: Titler; lightModelFor: (model: string | undefined) => string };
 }
 
 /** An input waiting for a turn, or to be folded into one, with the seq of the record that brought it. */
@@ -365,6 +377,9 @@ class Replay {
   readonly questions = new Set<string>();
   /** The calls the core closed as interrupted (`closedCalls`). */
   readonly closedCalls = new Set<string>();
+  /** The driver events that start or end a subagent row, in order, with their times (§9.5 "Subagents"). */
+  readonly subagentEvents: Replayed[] = [];
+  readonly subagentIds = new Set<string>();
 
   apply(r: SessionRecord): void {
     // A late record (another lease's, or another computer's set aside) is history only: it never moves the status,
@@ -422,6 +437,16 @@ class Replay {
         trackQuestion(this.questions, r.event);
         if (this.running) trackCall(this.openCalls, r.event);
         if (isInterruptedClose(r.event)) this.closedCalls.add(callIdOf(r.event)!);
+        {
+          const started = subagentOfEvent(r.event, r.ts);
+          const end = started === undefined ? subagentEndOf(r.event) : undefined;
+          if (started !== undefined) this.subagentIds.add(started.id);
+          if (started !== undefined || (end !== undefined && this.subagentIds.has(end.id))) {
+            this.subagentEvents.push({ event: r.event, ts: r.ts });
+            // The newest only: a long session's rows are at most `SUBAGENTS_MAX` anyway.
+            if (this.subagentEvents.length > SUBAGENT_EVENTS_KEPT) this.subagentEvents.splice(0, this.subagentEvents.length - SUBAGENT_EVENTS_KEPT);
+          }
+        }
         break;
     }
   }
@@ -447,6 +472,40 @@ function callIdOf(event: { type: string; [key: string]: unknown }): string | und
 /** Whether a driver event is the core's own interrupted result for a call (a release's, a stop's, a restart's). */
 function isInterruptedClose(event: { type: string; [key: string]: unknown }): boolean {
   return event.type === "tool_result" && event["interrupted"] === true;
+}
+
+/** How many of a log's first records `#titleAfterTurn` reads for the session's first message. */
+const FIRST_MESSAGE_SCAN = 200;
+/** How many subagent events a replay keeps (the newest). */
+const SUBAGENT_EVENTS_KEPT = 1_024;
+
+/** A driver event and when it was recorded. */
+interface Replayed {
+  event: { type: string; [key: string]: unknown };
+  ts: number;
+}
+
+/** The subagent row a driver event starts: an agent's tool call its driver marked `subagent` (the backend's
+ *  `subagents` quirk, agents/subagents.ts), keyed by the call's id. */
+export function subagentOfEvent(event: { type: string; [key: string]: unknown }, at: number): { id: string; name: string; model?: string; state: "running"; startedAt: number } | undefined {
+  if (event.type !== "agent_tool_call") return undefined;
+  const mark = event["subagent"] as { name?: unknown; model?: unknown } | undefined;
+  const id = callIdOf(event);
+  if (id === undefined || mark === undefined || mark === null || typeof mark !== "object") return undefined;
+  const name = typeof mark.name === "string" ? mark.name.slice(0, 200) : "";
+  const model = typeof mark.model === "string" && mark.model !== "" ? mark.model.slice(0, 200) : undefined;
+  return { id: id.slice(0, 128), name, ...(model === undefined ? {} : { model }), state: "running", startedAt: at };
+}
+
+/** The end a driver event gives a subagent row: its call ended (or the core closed it). */
+function subagentEndOf(event: { type: string; [key: string]: unknown }): { id: string; state: "done" | "failed" } | undefined {
+  const id = callIdOf(event);
+  if (id === undefined) return undefined;
+  if (event.type === "agent_tool_call_update" && (event["status"] === "completed" || event["status"] === "failed")) {
+    return { id: id.slice(0, 128), state: event["status"] === "completed" && event["refused"] !== true ? "done" : "failed" };
+  }
+  if (isInterruptedClose(event)) return { id: id.slice(0, 128), state: "failed" };
+  return undefined;
 }
 
 /** A record as this computer keeps a copy of it: a grant renamed so it grants nothing here, marked late if so. */
@@ -518,6 +577,10 @@ export class DurableSessionHost implements SessionHost {
   readonly #watchers = new Listeners<SessionView>();
   readonly #taps = new Listeners<{ record: SessionRecord; view: SessionView }>();
   readonly #offApprovals: Unsubscribe | undefined;
+  /** How the sessions hang together (§9.5): who started each, what each waits on, its agent's subagents, the links. */
+  readonly graph: EngineSessionGraph;
+  /** The engine's titles of code sessions, when a titler is given. */
+  readonly titles: EngineSessionTitles | undefined;
 
   constructor(opts: DurableSessionHostOptions) {
     this.#home = opts.home;
@@ -529,6 +592,13 @@ export class DurableSessionHost implements SessionHost {
     this.#runsHere = opts.runsHere;
     this.#forward = opts.forward;
     this.#warn = opts.warn ?? (() => {});
+    this.graph = new EngineSessionGraph(() => this.#clock.now());
+    // A change of a session's graph fields (a child started or ended, a task, a subagent row) is a change of its view.
+    this.graph.watch((c) => {
+      const s = this.#sessions.get(c.session);
+      if (s !== undefined) this.#emitView(s);
+    });
+    this.titles = opts.titles === undefined ? undefined : new EngineSessionTitles({ ...opts.titles, store: this.#titleStore(), warn: this.#warn });
     this.#restore();
     this.#offApprovals = opts.approvals?.watch?.(() => this.#recountCards());
     this.#recountCards();
@@ -548,6 +618,8 @@ export class DurableSessionHost implements SessionHost {
       const meta: SessionMeta = { meta: SESSION_META_VERSION, id, kind: spec.kind, startedAt: this.#clock.now(), ...specPatchOf(spec) };
       if (spec.bot !== undefined) meta.bot = spec.bot;
       if (spec.parent !== undefined) meta.parent = spec.parent;
+      meta.startedBy = spec.startedBy ?? derivedStarter(meta);
+      if (meta.title !== undefined) meta.titleBy = "spawn";
       writeJsonAtomic(sessionMetaPath(this.#home, meta.bot, id), meta);
       this.#load(meta);
       existing = this.#sessions.get(id);
@@ -569,12 +641,17 @@ export class DurableSessionHost implements SessionHost {
     const meta: SessionMeta = { meta: SESSION_META_VERSION, id, kind: spec.kind, startedAt: now, ...specPatchOf(spec) };
     if (spec.bot !== undefined) meta.bot = spec.bot;
     if (spec.parent !== undefined) meta.parent = spec.parent;
+    // Who started it is the engine's, set once here: the opener's word, or what its kind, bot and parent say.
+    meta.startedBy = spec.startedBy ?? derivedStarter(meta);
+    // A title it opens with is its starter's (a spawn's, a definition's): the engine never replaces it.
+    if (meta.title !== undefined) meta.titleBy = "spawn";
     writeJsonAtomic(sessionMetaPath(this.#home, meta.bot, id), meta);
     const log = new SessionLogFile(sessionLogPath(this.#home, meta.bot, id), id, this.#warn);
     log.load();
     const s = this.#hosted(meta, log);
     s.driver = driver;
     this.#sessions.set(id, s);
+    this.#graphAdd(s);
     this.#record(s, { type: "status", status: "ready" });
     this.#emitView(s);
     return this.#viewOf(s);
@@ -631,11 +708,14 @@ export class DurableSessionHost implements SessionHost {
         }
       } else await this.#interruptStep(s);
       this.#pump(s);
+      this.#link(undefined, id, "message");
       return { disposition: "interrupted", seq: record.seq };
     }
     // The user's message drops a cache-timed compaction, which is tried again later (§6.3).
     if (s.compacting?.reason === "cache") s.compacting.abort.abort("the user's message");
-    return this.#accept(s, full);
+    const accepted = this.#accept(s, full);
+    this.#link(undefined, id, "message");
+    return accepted;
   }
 
   /** Try again: the latest turn of a bot's main conversation ended in an error, and the message that began it was the
@@ -709,7 +789,52 @@ export class DurableSessionHost implements SessionHost {
     }
     const copy = structuredClone(input);
     if (copy.from === "note" || (copy.from === "routine" && s.meta.kind === "bot")) return this.#post(s, copy);
-    return this.#accept(s, copy);
+    const accepted = this.#accept(s, copy);
+    // A message from one session to another crossed (§9.5): the link, with no words, once it is recorded here.
+    switch (copy.from) {
+      case "bot":
+        this.#link(copy.session, id, this.#deliveryKind(copy.session, id));
+        break;
+      case "session":
+        this.#link(copy.session, id, this.#deliveryKind(copy.session, id));
+        break;
+      case "agent":
+        this.#link(copy.agent, id, "message");
+        break;
+      case "task-notification":
+        this.#link(copy.agent, id, "report");
+        break;
+    }
+    return accepted;
+  }
+
+  /** The link of a delivery that was recorded here; one this host can't name (an end it doesn't know, a session to
+   *  itself) is no link, never the delivery's failure. */
+  #link(from: string | undefined, to: string, kind: SessionLinkKind): void {
+    if (from === to || !this.graph.has(to) || (from !== undefined && !this.graph.has(from))) return;
+    try {
+      this.graph.link(from, to, kind);
+    } catch (err) {
+      this.#warn(`session ${to}: its link from ${from ?? "the person"} wasn't sent: ${errorText(err)}`);
+    }
+  }
+
+  #deliveryKind(from: string, to: string): SessionLinkKind {
+    return this.graph.has(to) ? this.graph.deliveryKind(from, to) : "message";
+  }
+
+  /** One of the session's background tasks that will wake it began (a backend's task frames, §9.5 "Waiting"). */
+  taskStarted(id: string, task: string): void {
+    if (this.graph.has(id)) this.graph.taskStarted(id, task);
+  }
+
+  taskEnded(id: string, task: string): void {
+    if (this.graph.has(id)) this.graph.taskEnded(id, task);
+  }
+
+  /** The session's agent went away with its tasks (its process ended): none of them will wake it. */
+  tasksGone(id: string): void {
+    this.graph.tasksGone(id);
   }
 
   async interrupt(id: string): Promise<void> {
@@ -835,6 +960,7 @@ export class DurableSessionHost implements SessionHost {
     if (s === undefined) return;
     if (s.driver !== undefined) throw new ContractError("conflict", `session ${id} is still open; release it first`);
     this.#sessions.delete(id);
+    this.graph.forget(id);
   }
 
   /** Lane BT's restore: picks up the sessions whose files came back into `transcripts/` (a bot brought back from the
@@ -1151,6 +1277,7 @@ export class DurableSessionHost implements SessionHost {
       file.load();
       s = this.#hosted(meta, file);
       this.#sessions.set(meta.id, s);
+      this.#graphAdd(s);
     } else if (view.computer !== s.meta.computer) {
       this.#patchMeta(s, { computer: view.computer });
       s.view = { ...s.view, computer: view.computer };
@@ -1189,6 +1316,7 @@ export class DurableSessionHost implements SessionHost {
     const { failure: _was, ...kept } = hosted.view;
     hosted.view = { ...kept, status: replay.status, ...(replay.failure === undefined ? {} : { failure: replay.failure }) };
     if (isEnded(hosted.view.status) && hosted.meta.ended === undefined) this.#markEnded(hosted);
+    if (isEnded(hosted.view.status) && this.graph.has(hosted.meta.id)) this.graph.ended(hosted.meta.id);
     this.#emitView(hosted);
   }
 
@@ -1471,6 +1599,7 @@ export class DurableSessionHost implements SessionHost {
         else {
           this.#tryRecord(s, { type: "driver", event: structuredClone(event) });
           trackCall(running.openCalls, event);
+          this.#trackSubagent(s, event, this.#clock.now());
           if (s.running === running) this.#trackTurnCompaction(s, event);
         }
       },
@@ -1484,13 +1613,84 @@ export class DurableSessionHost implements SessionHost {
       .catch((err: unknown) => this.#warn(`session ${s.meta.id}: ending a turn failed: ${errorText(err)}`));
   }
 
-  /** Records each still-open call as interrupted (the core's own result) and remembers it closed. */
+  /** Records each still-open call as interrupted (the core's own result) and remembers it closed. A subagent its call
+   *  started ends failed with it. */
   #closeOpenCalls(s: Hosted, open: Map<string, string>): void {
     for (const callId of open.keys()) {
       this.#tryRecord(s, { type: "driver", event: { type: "tool_result", callId, output: interruptedCallOutput(), isError: true, interrupted: true } });
       s.closedCalls.add(callId);
+      if (this.graph.has(s.meta.id)) this.graph.subagentEnded(s.meta.id, callId, "failed");
     }
     open.clear();
+  }
+
+  /** A subagent the session's agent reported (§9.5 "Subagents"): the driver marks the call that started it
+   *  (`subagentOfEvent`); its end is that call's end. */
+  #trackSubagent(s: Hosted, event: { type: string; [key: string]: unknown }, at: number): void {
+    if (!this.graph.has(s.meta.id)) return;
+    const row = subagentOfEvent(event, at);
+    if (row !== undefined) {
+      try {
+        this.graph.subagent(s.meta.id, row);
+      } catch (err) {
+        this.#warn(`session ${s.meta.id}: a subagent row wasn't kept: ${errorText(err)}`);
+      }
+      return;
+    }
+    const end = subagentEndOf(event);
+    if (end !== undefined) this.graph.subagentEnded(s.meta.id, end.id, end.state, at);
+  }
+
+  /** A session joins the graph: who started it, as its meta says, and whether it has ended. Once per session. */
+  #graphAdd(s: Hosted, rows?: readonly Replayed[]): void {
+    const meta = s.meta;
+    if (this.graph.has(meta.id)) return;
+    this.graph.started(meta.id, meta.kind, meta.startedBy ?? derivedStarter(meta), meta.bot, { ended: isEnded(s.view.status), quiet: true });
+    for (const r of rows ?? []) this.#trackSubagent(s, r.event, r.ts);
+  }
+
+  /** Titles kept in each session's meta, with who gave them. */
+  #titleStore(): TitleStore {
+    return {
+      get: (id) => {
+        const meta = this.#sessions.get(id)?.meta;
+        return meta?.title === undefined ? undefined : { title: meta.title, by: meta.titleBy ?? "spawn" };
+      },
+      put: (id, title, by) => {
+        const s = this.#sessions.get(id);
+        if (s === undefined) return;
+        try {
+          s.meta = { ...s.meta, titleBy: by };
+          if (!this.#patchMeta(s, { title })) writeJsonAtomic(sessionMetaPath(this.#home, s.meta.bot, s.meta.id), s.meta);
+          this.#emitView(s);
+        } catch (err) {
+          this.#warn(`session ${id}: its title wasn't kept: ${errorText(err)}`);
+        }
+      },
+    };
+  }
+
+  /** A turn of a code session ended: one with no title is titled from its first message (fire and forget). */
+  #titleAfterTurn(s: Hosted): void {
+    const titles = this.titles;
+    if (titles === undefined || (s.meta.kind !== "coding" && s.meta.kind !== "agent") || s.meta.title !== undefined) return;
+    let first: string | undefined;
+    try {
+      const log = this.#logOf(s);
+      for (const r of log.read(0, Math.min(log.length, FIRST_MESSAGE_SCAN))) {
+        if (r.type !== "input") continue;
+        const input = r.input;
+        if (input.from === "user" || input.from === "bot" || input.from === "session" || input.from === "agent") {
+          first = input.text;
+          break;
+        }
+      }
+    } catch (err) {
+      this.#warn(`session ${s.meta.id}: its first message wasn't read for a title: ${errorText(err)}`);
+      return;
+    }
+    if (first === undefined) return;
+    void titles.turnEnded({ session: s.meta.id, kind: s.meta.kind, ...(s.meta.model === undefined ? {} : { model: s.meta.model }), firstMessage: first }).catch(() => {});
   }
 
   #ended(s: Hosted, running: Running, end: TurnEnd): void {
@@ -1504,6 +1704,7 @@ export class DurableSessionHost implements SessionHost {
     // Recorded first; if the disk refuses it, the turn has still ended, and a restart records it interrupted.
     this.#tryRecord(s, { type: "turn_ended", end });
     delete s.running;
+    if (!s.stopping && !isEnded(s.view.status)) this.#titleAfterTurn(s);
     s.turnCompaction = false;
     s.interruptAfterCompaction = false;
     const waits = (i: QueueItem) => i.input.from === "note" || (i.input.from === "routine" && s.meta.kind === "bot");
@@ -1623,6 +1824,7 @@ export class DurableSessionHost implements SessionHost {
           const s = this.#hosted(meta, undefined);
           s.view = viewOfMeta(meta, meta.ended.status, meta.ended.at, meta.ended.failure);
           this.#sessions.set(meta.id, s);
+          this.#graphAdd(s);
         } else this.#load(meta);
       }
     }
@@ -1650,6 +1852,8 @@ export class DurableSessionHost implements SessionHost {
     for (const q of replay.questions) s.questions.add(q);
     for (const c of replay.closedCalls) s.closedCalls.add(c);
     this.#sessions.set(meta.id, s);
+    // Its subagent rows as its log holds them, before a restart's closing of its open calls ends the running ones.
+    this.#graphAdd(s, replay.subagentEvents);
     // A turn the daemon was running when it stopped is recorded interrupted, with each of its calls that has no
     // result (§3.1).
     if (replay.running && replay.runningOn !== undefined && this.#computer !== undefined && replay.runningOn !== this.#computer) {
@@ -1708,7 +1912,10 @@ export class DurableSessionHost implements SessionHost {
     this.#tryRecord(s, { type: "status", status, ...(failure === undefined || failure === null ? {} : { failure }) });
     const { failure: _was, ...rest } = s.view;
     s.view = { ...(failure === null ? rest : s.view), status, updatedAt: this.#clock.now(), ...(failure === undefined || failure === null ? {} : { failure }) };
-    if (isEnded(status)) this.#markEnded(s);
+    if (isEnded(status)) {
+      this.#markEnded(s);
+      if (this.graph.has(s.meta.id)) this.graph.ended(s.meta.id);
+    }
     this.#emitView(s);
   }
 
@@ -1775,7 +1982,8 @@ export class DurableSessionHost implements SessionHost {
   }
 
   #viewOf(s: Hosted): SessionView {
-    return { ...structuredClone(s.view), needsYou: { cards: s.cards, questions: s.questions.size } };
+    const graph = this.graph.has(s.meta.id) ? this.graph.fields(s.meta.id) : {};
+    return { ...structuredClone(s.view), needsYou: { cards: s.cards, questions: s.questions.size }, ...graph };
   }
 
   #emitView(s: Hosted): void {

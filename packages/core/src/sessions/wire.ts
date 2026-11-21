@@ -8,6 +8,7 @@
 // | the user's input                         | the inherited `user_message`, with `device` and `sentAt`       |
 // | another bot's message                    | `bot_message`                                                  |
 // | an agent's message                       | `agent_message`                                                |
+// | another session's message (no bot's)     | `session_message` (§9.5: the sender session and the words)     |
 // | a task notification                      | `agent_finished`                                               |
 // | a routine's input in a bot's conversation| `routine_result` (its short result, §7)                        |
 // | a routine's input in a side thread       | `note` from the core, labelled with the routine's name (the run's instructions) |
@@ -42,7 +43,7 @@ export const WIRE_EVENT_TYPES: ReadonlySet<string> = new Set([
  *  driver's `user_message` would read as the user's) and never reaches clients. */
 export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "user_message", "turn_started", "turn_completed", "bot_message", "agent_message", "agent_finished", "routine_result",
-  "note", "plugin_message",
+  "note", "plugin_message", "session_message",
 ]);
 
 /** A call to an agent session's bridge (`mcp__moss_<16 hex>__<server>__<tool>`, the session's own server name), shown under

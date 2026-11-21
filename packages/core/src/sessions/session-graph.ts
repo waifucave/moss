@@ -101,12 +101,10 @@ export class EngineSessionGraph implements SessionGraph {
     };
     this.#nodes.set(session, node);
     if (node.starter !== undefined && !node.ended) this.#childSet(node.starter).add(session);
-    // A session registered as it was before a restart is not news: its view is read when someone asks.
-    if (opts.quiet === true) {
-      this.#last.set(session, JSON.stringify(this.fields(session)));
-      return;
-    }
-    this.#changed(session);
+    // `quiet`: the session's own view is sent by its opener (or read when someone asks, for one registered after a
+    // restart); its starter still hears that it has one more child.
+    if (opts.quiet === true) this.#last.set(session, JSON.stringify(this.fields(session)));
+    else this.#changed(session);
     if (node.starter !== undefined && !node.ended) this.#changed(node.starter);
   }
 
@@ -185,6 +183,15 @@ export class EngineSessionGraph implements SessionGraph {
       n.subagents.splice(ended >= 0 ? ended : 0, 1);
     }
     this.#changed(parent);
+  }
+
+  /** The row `id` under `parent` ended (`done` or `failed`) at `at`, when it is there and still running; whether it was. */
+  subagentEnded(parent: string, id: string, state: "done" | "failed", at: number = this.#now()): boolean {
+    const n = this.#nodes.get(parent);
+    const row = n?.subagents.find((s) => s.id === id);
+    if (n === undefined || row === undefined || row.state !== "running") return false;
+    this.subagent(parent, { ...row, state, endedAt: at });
+    return true;
   }
 
   /** Each subagent still running under `parent` ends `failed` (its call was closed without a word: a cancel, a restart). */
