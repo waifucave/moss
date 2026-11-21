@@ -45,7 +45,7 @@ interface Harness {
   botState(bot: string, state: string): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; messageStyle?: "A" | "B" | "C" } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[] } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
     "agent.backends": () => ({ backends: o.backends ?? BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
@@ -81,7 +81,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
   });
   render(
     <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
-      <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r), ...(o.messageStyle !== undefined ? { messageStyle: o.messageStyle } : {}) }} />
+      <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r) }} />
     </TestLayer>,
   );
   return { core, sends, routes, settings, to: (t) => act(() => c.to(t)), botState: (bot, state) => act(() => { for (const l of feed) l({ subject: { kind: "bots", id: bot }, state, since: 0 }); }) };
@@ -128,8 +128,7 @@ describe("the canvas plays the sample scene", () => {
     const wave = msgs[msgs.length - 1]!;
     // The light on the line, in the sender's colour (Claude Code's), in small dashes of the running light's look; the
     // points light as it passes; the sender's effect swells as it leaves, the receiver's (Codex) as it lands, turning
-    // from the sender's colour into its own (style A, the default until the owner picks).
-    expect(wave.getAttribute("data-style")).toBe("A");
+    // from the sender's colour into its own.
     expect(wave.querySelectorAll(".cv-mlight").length).toBeGreaterThan(10);
     expect(new Set([...wave.querySelectorAll(".cv-mlight")].map((l) => l.getAttribute("d"))).size).toBe(1);
     expect([...wave.querySelectorAll(".cv-dotflash")].map((d) => d.getAttribute("data-dot"))).toEqual(["sender", "receiver"]);
@@ -161,21 +160,6 @@ describe("the canvas plays the sample scene", () => {
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("waiting"));
     h.to(9_000);
     await waitFor(() => expect((block("s_a")!.querySelector(".cv-ring[data-handover]") as HTMLElement | null)?.style.getPropertyValue("--a0")).toBe(`${(180 - 317 + 360) % 360}deg`));
-  });
-
-  test("the three message styles: B flares the receiver from its side, C ripples out and lands", async () => {
-    for (const [style, sender, receiver] of [["B", undefined, "flare"], ["C", "ripple-out", "ripple-in"]] as const) {
-      const h = mount({ messageStyle: style });
-      h.to(5_400);
-      await waitFor(() => expect(block("s_b")).not.toBeNull());
-      h.to(5_500);
-      await waitFor(() => expect(document.querySelector(`.cv-msg[data-style="${style}"]`)).not.toBeNull());
-      if (sender !== undefined) expect(block("s_a")!.querySelector(`.cv-react[data-kind="${sender}"]`)).not.toBeNull();
-      const land = block("s_b")!.querySelector(`.cv-react[data-kind="${receiver}"]`) as HTMLElement;
-      expect(land).not.toBeNull();
-      if (style === "B") expect(land.getAttribute("data-port")).not.toBeNull();
-      cleanup();
-    }
   });
 
   test("running shows the light, waiting the dashes, running wins; at the end, still and idle, nothing animates", async () => {

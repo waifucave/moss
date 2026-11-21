@@ -7,7 +7,6 @@ import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-plu
 import { fakeCore, playSessionScene, runtimeWith, TestLayer } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { CanvasCorner, CanvasStart, type CanvasStartProps } from "../client/entry";
-import { MESSAGE_STYLES, type MessageStyle } from "../client/message";
 import { BACKENDS, FOLDERS, LAST_LINES, manySessions, OPTIONS, RECENT } from "./fixtures";
 
 export interface Story {
@@ -27,7 +26,7 @@ const backends = () => BACKENDS.map((b) => {
   return MARKS[b.id] !== undefined ? { ...b, icon: { ...MARKS[b.id]!, at: 0 } } : b;
 });
 
-function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle", messageStyle }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string>; messageStyle?: MessageStyle }) {
+function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle" }: { scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string> }) {
   const runtime = useMemo(() => {
     const handlers: Record<string, (p: any) => unknown> = {
       "agent.backends": () => ({ backends: backends() }),
@@ -59,7 +58,7 @@ function World({ scene, at = 0, live = true, initial, params, onRoute, botState 
   }, [scene, at, live, JSON.stringify(botState)]);
   return (
     <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
-      <CanvasStart props={{ route: "start", params: params ?? {}, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}), messageStyle: messageStyle ?? hashStyle() }} />
+      <CanvasStart props={{ route: "start", params: params ?? {}, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}) }} />
     </TestLayer>
   );
 }
@@ -119,50 +118,31 @@ function tripScene(kind: TripKind, delay: number): SessionSceneStep[] {
   return steps;
 }
 
-const CASES: readonly { kind: TripKind; title: string; notes: Record<MessageStyle, string> }[] = [
-  { kind: "run", title: "Arriving: the receiver starts running", notes: { A: "Its ring swells in the sender's colour, settling into its own, and runs on.", B: "The light is absorbed at its point and its running light starts from there.", C: "The ripple lands, its glow breathes once, and its ring carries on." } },
-  { kind: "idle", title: "Arriving: the receiver stays idle", notes: { A: "Its outline gives one soft glow pulse that fades.", B: "The light is absorbed at its point; its outline flares from that side and fades.", C: "The ripple lands and its glow breathes once." } },
-  { kind: "wait", title: "Arriving: the receiver is waiting", notes: { A: "Its dashes glow once.", B: "Its outline flares from that side, over its dashes.", C: "The ripple lands on its dashes." } },
-  { kind: "send-run", title: "Sending: the sender is running", notes: { A: "Its ring swells as the wave leaves its point.", B: "The light leaves as its circling highlight passes its point.", C: "A soft ring of light breathes out from it as the wave leaves." } },
-  { kind: "send-idle", title: "Sending: the sender is idle", notes: { A: "Its outline swells once as the wave leaves.", B: "Its outline flashes softly, then the light leaves.", C: "A soft ring of light breathes out from it." } },
+const CASES: readonly { kind: TripKind; title: string; notes: string }[] = [
+  { kind: "run", title: "Arriving: the receiver starts running", notes: "Its ring swells in the sender's colour, settling into its own, and runs on from its point." },
+  { kind: "idle", title: "Arriving: the receiver stays idle", notes: "Its outline gives one soft glow pulse that fades." },
+  { kind: "wait", title: "Arriving: the receiver is waiting", notes: "It glows once over its dashes." },
+  { kind: "send-run", title: "Sending: the sender is running", notes: "Its ring swells as the wave leaves its point." },
+  { kind: "send-idle", title: "Sending: the sender is idle", notes: "Its outline swells once as the wave leaves." },
 ];
 
-/** The message style in the page's hash (`msg=A|B|C`), for the pinned pictures. */
-const hashStyle = (): MessageStyle => {
-  const m = new URLSearchParams(location.hash.slice(1)).get("msg");
-  return m === "B" || m === "C" ? m : "A";
-};
-
-const STYLE_NAMES: Record<MessageStyle, string> = {
-  A: "A · Glow wave + ring swell",
-  B: "B · The ring's light, on the line",
-  C: "C · Ripple",
-};
-
-/** The three message styles over the blocks' own running light, the five cases side by side, with a switch, Replay,
- *  slow motion and the theme. */
+/** The five cases side by side, with Replay, slow motion and the theme. */
 function Trips() {
   const [run, setRun] = useState(0);
   const [slow, setSlow] = useState(false);
-  const [style, setStyle] = useState<MessageStyle>(hashStyle());
   const [dark, setDark] = useState(document.documentElement.dataset.theme === "dark");
   return (
     <div className="g-live" style={(slow ? { "--cv-slow": 4 } : {}) as never}>
       <div className="g-live__bar">
-        <span role="radiogroup" aria-label="Message style">
-          {MESSAGE_STYLES.map((s) => (
-            <button key={s} type="button" role="radio" aria-checked={style === s} data-on={style === s || undefined} onClick={() => { setStyle(s); setRun((n) => n + 1); }}>{STYLE_NAMES[s]}</button>
-          ))}
-        </span>
         <button type="button" onClick={() => setRun((n) => n + 1)}>Replay</button>
         <label><input type="checkbox" checked={slow} onChange={(e) => { setSlow(e.target.checked); setRun((n) => n + 1); }} /> Slow motion (4×)</label>
         <label><input type="checkbox" checked={dark} onChange={(e) => { setDark(e.target.checked); document.documentElement.dataset.theme = e.target.checked ? "dark" : "light"; }} /> Dark</label>
       </div>
       <div className="g-cases">
         {CASES.map((c) => (
-          <div className="g-case" key={`${c.kind}-${style}-${run}`}>
-            <div className="g-case__head"><b>{c.title}</b> <span>{c.notes[style]}</span></div>
-            <div className="g-case__canvas"><World scene={tripScene(c.kind, 900)} messageStyle={style} /></div>
+          <div className="g-case" key={`${c.kind}-${run}`}>
+            <div className="g-case__head"><b>{c.title}</b> <span>{c.notes}</span></div>
+            <div className="g-case__canvas"><World scene={tripScene(c.kind, 900)} /></div>
           </div>
         ))}
       </div>
@@ -195,8 +175,8 @@ function manyScene(): SessionSceneStep[] {
 
 export const STORIES: Story[] = [
   { id: "scene", title: "The sample scene, live", notes: "SAMPLE_SESSION_SCENE played on real timers. Press Replay to watch it again.", render: () => <Live /> },
-  { id: "trips", title: "A message crossing: pick one", notes: "Three ways a message crosses, over each block's own running light: switch A / B / C, Replay, slow it down, and try it dark. The same three receivers and two senders for each.", render: () => <Trips /> },
-  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes.A} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 60)} /> })),
+  { id: "trips", title: "A message crossing", notes: "The three receivers and the two senders side by side, over each block's own running light. Replay, slow it down, try it dark.", render: () => <Trips /> },
+  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 60)} /> })),
   { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
   { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
   { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },

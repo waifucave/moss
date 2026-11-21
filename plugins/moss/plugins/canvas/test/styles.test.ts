@@ -16,7 +16,7 @@ const LEAVES = [
   ".cv-ring[data-handover]::before", // the running light taking over from an arriving message (appears at its point)
   ".cv-mlight--glow", // a message's light's blurred glow
   ".cv-msg__timer", // the unseen timer that ends a message
-  ".cv-react__from", ".cv-react__to", // a block's effect reacting to a message: fades, a ripple scales
+  ".cv-react__from", ".cv-react__to", // a block's ring swelling as a message leaves or lands (fades)
   ".cv-dotflash", // a point the light passes through
   ".cv-part", // reduced motion: the line highlighted
   ".cv-port", // a point showing as the cursor comes near

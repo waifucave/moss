@@ -482,9 +482,9 @@
   display: none;
 }
 
-/* ---- A message crossing (message.ts): over each block's own running light; three variants for the owner to choose from.
-   The light on the line wears the running light's look (its colour, a soft head and tail, its glow); at each end the
-   block's own effect reacts (`.cv-react`). Each part has its time (`--delay`, `--dur`); `--cv-slow` (the gallery's slow
+/* ---- A message crossing (message.ts; the owner's pick, style A): over each block's own running light. A soft stretch
+   with the running light's look (its colour, its glow) runs the line; at each end the block's own ring swells
+   (`.cv-react`). Each part has its time (`--delay`, `--dur`); `--cv-slow` (the gallery's slow
    motion) stretches every time alike. ---- */
 
 .cv-msg {
@@ -559,75 +559,13 @@
   animation-name: cv-react-to;
 }
 
-/* A: the ring swells (brighter, a wider glow) and settles. */
+/* The ring swells (brighter, a wider glow) and settles. */
 .cv-react[data-kind="swell"] .cv-react__from {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--f) 75%, transparent), 0 0 26px color-mix(in srgb, var(--f) 45%, transparent);
 }
 
 .cv-react[data-kind="swell"] .cv-react__to {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--c1) 75%, transparent), 0 0 26px color-mix(in srgb, var(--c1) 45%, transparent);
-}
-
-/* C: the glow breathes in and out once, gentler. */
-.cv-react[data-kind="breathe"] .cv-react__from {
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--f) 45%, transparent), 0 0 30px color-mix(in srgb, var(--f) 30%, transparent);
-}
-
-.cv-react[data-kind="breathe"] .cv-react__to {
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--c1) 45%, transparent), 0 0 30px color-mix(in srgb, var(--c1) 30%, transparent);
-}
-
-/* B: the ring flares from the side the light came in by: the outline near that point brightens, spreading along it,
-   with a soft glow (blurred, so it has no edge), and settles. */
-.cv-react[data-kind="flare"] .cv-react__from,
-.cv-react[data-kind="flare"] .cv-react__to {
-  inset: -3px;
-  filter: blur(3px);
-}
-
-.cv-react[data-kind="flare"] .cv-react__from {
-  background: radial-gradient(ellipse 55% 120% at var(--fx) var(--fy), var(--f) 0, color-mix(in srgb, var(--f) 40%, transparent) 45%, transparent 100%);
-}
-
-.cv-react[data-kind="flare"] .cv-react__to {
-  background: radial-gradient(ellipse 75% 150% at var(--fx) var(--fy), var(--c1) 0, color-mix(in srgb, var(--c1) 35%, transparent) 50%, transparent 100%);
-}
-
-.cv-react[data-kind="flare"][data-port="l"] {
-  --fx: 0%;
-  --fy: 50%;
-}
-
-.cv-react[data-kind="flare"][data-port="r"] {
-  --fx: 100%;
-  --fy: 50%;
-}
-
-.cv-react[data-kind="flare"][data-port="t"] {
-  --fx: 50%;
-  --fy: 0%;
-}
-
-.cv-react[data-kind="flare"][data-port="b"] {
-  --fx: 50%;
-  --fy: 100%;
-}
-
-/* C: a ripple, the outline's light breathing out from the sender, or landing on the receiver. */
-.cv-react[data-kind="ripple-out"] .cv-react__from,
-.cv-react[data-kind="ripple-in"] .cv-react__from {
-  border: 1.5px solid color-mix(in srgb, var(--f) 70%, transparent);
-  animation-name: cv-ripple-out;
-  animation-timing-function: ease-out;
-}
-
-.cv-react[data-kind="ripple-in"] .cv-react__from {
-  animation-name: cv-ripple-in;
-  animation-timing-function: ease-in;
-}
-
-.cv-react[data-kind^="ripple"] .cv-react__to {
-  display: none;
 }
 
 @keyframes cv-mrun {
@@ -693,31 +631,6 @@
   }
   100% {
     opacity: 0;
-  }
-}
-
-@keyframes cv-ripple-out {
-  from {
-    opacity: 0.85;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(var(--sx), var(--sy));
-  }
-}
-
-@keyframes cv-ripple-in {
-  from {
-    opacity: 0;
-    transform: scale(var(--sx), var(--sy));
-  }
-  70% {
-    opacity: 0.75;
-  }
-  to {
-    opacity: 0;
-    transform: scale(1);
   }
 }
 
@@ -1124,7 +1037,6 @@
   .cv-react__to,
   .cv-react[data-morph] .cv-react__from,
   .cv-react[data-morph] .cv-react__to {
-    transform: none;
     animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
   }
 

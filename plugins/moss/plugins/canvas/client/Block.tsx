@@ -101,11 +101,9 @@ export function BlockView(p: BlockViewProps) {
           key={r.key}
           className="cv-react"
           data-kind={r.kind}
-          data-port={r.port}
           data-morph={r.from !== undefined || undefined}
           style={{
             "--delay": `${Math.round(r.delay * 1000) / 1000}s`, "--dur": `${Math.round(r.dur * 1000) / 1000}s`,
-            "--sx": Math.round(((p.rect.w + 28) / p.rect.w) * 1000) / 1000, "--sy": Math.round(((p.rect.h + 28) / p.rect.h) * 1000) / 1000,
             ...(r.from !== undefined ? { "--from": r.from } : {}),
           } as CSSProperties}
           aria-hidden="true"
