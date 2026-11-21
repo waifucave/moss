@@ -1,0 +1,31 @@
+{
+  "name": "@waifucave/moss-plugin-canvas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MOSS Code's start page: the session canvas (spec revision 20, §9.5).",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "gallery": "bun gallery/build.ts"
+  },
+  "dependencies": {
+    "@waifucave/moss-plugin-sdk": "workspace:*",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@waifucave/moss-protocol": "workspace:*",
+    "@happy-dom/global-registrator": "21.0.4",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  },
+  "exports": {
+    "./client": "./client/index.tsx",
+    "./package.json": "./package.json"
+  }
+}

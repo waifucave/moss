@@ -1,0 +1,53 @@
+{
+  "manifest": 1,
+  "name": "Canvas",
+  "description": "MOSS Code's start page: every session as a block on a canvas, the lines between them, and a new session from the + button.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx",
+    "css": [
+      "client/styles.css"
+    ]
+  },
+  "capabilities": [
+    "sessions.read",
+    "conversation.read",
+    "bots.read",
+    "sessions.start",
+    "user.send",
+    "shell.control"
+  ],
+  "settings": {
+    "places": {
+      "type": "string",
+      "title": "Where you moved blocks",
+      "description": "Kept by the canvas when you drag a block, so it stays there. Clear it to put every block back in its own place.",
+      "default": "",
+      "scope": "device"
+    }
+  },
+  "contributes": {
+    "ui": [
+      {
+        "spot": "main",
+        "key": "start",
+        "component": "CanvasStart"
+      },
+      {
+        "spot": "session.corner",
+        "id": "canvas-corner",
+        "component": "CanvasCorner",
+        "title": "Show on the canvas",
+        "icon": "assets/canvas.svg",
+        "when": {
+          "session": [
+            "coding",
+            "agent"
+          ]
+        }
+      }
+    ]
+  }
+}
