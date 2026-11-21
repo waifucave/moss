@@ -65,6 +65,16 @@ describe("a session call is gated by the kind of the session it names", () => {
     expect(both.got.length).toBe(3);
     // A bot's link has a code end (its agent): the bots-only plugin may not read that end, so hears nothing of it.
     expect(bots.got).toEqual([]);
+    // A title change rides session_changed, heard by the session's own kind.
+    for (const x of [code, both, bots]) x.got.length = 0;
+    const base = (MOSS_EVENTS.get("session_changed")!.fixture as { session: Record<string, unknown> }).session;
+    const view = (id: string, kind: string) => ({ ...base, id, kind, title: "Fix the login", ...(kind === "bot" ? { bot: "moss" } : {}) });
+    sendCoreEvent(r, { type: "session_changed", ts: 2, session: view("s_a", "coding") });
+    sendCoreEvent(r, { type: "session_changed", ts: 2, session: view("b_moss", "bot") });
+    const ids = (x: { got: { type: string }[] }) => x.got.map((e) => (e as unknown as { session: { id: string } }).session.id);
+    expect(ids(code)).toEqual(["s_a"]);
+    expect(ids(bots)).toEqual(["b_moss"]);
+    expect(ids(both)).toEqual(["s_a", "b_moss"]);
   });
 
   test("the feed and the pictures are gated by the kind they name; the user's calls aren't a plugin's", () => {
