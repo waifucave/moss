@@ -392,6 +392,25 @@ describe("a block, pressed", () => {
   });
 });
 
+test("drags in quick succession write the setting once, and the newest place is written when the canvas closes", async () => {
+  const h = mount({ playedTo: 1_000 });
+  await waitFor(() => expect(block("s_b")).not.toBeNull());
+  const vp = document.querySelector(".cv-viewport")!;
+  const sets: string[] = [];
+  const set = h.settings.set.bind(h.settings);
+  h.settings.set = (k: string, v: unknown) => { if (k === "places") sets.push(v as string); return set(k, v); };
+  for (const [i, dy] of [[1, 40], [2, 80], [3, 120]] as const) {
+    fireEvent.pointerDown(head("s_b"), { button: 0, pointerId: 20 + i, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(vp, { pointerId: 20 + i, clientX: 100, clientY: 100 + dy });
+    fireEvent.pointerUp(vp, { pointerId: 20 + i, clientX: 100, clientY: 100 + dy });
+  }
+  await waitFor(() => expect(sets.length).toBe(1));
+  const top = block("s_b")!.style.top;
+  cleanup();
+  await waitFor(() => expect(sets.length).toBe(2));
+  expect((JSON.parse(sets.at(-1)!) as Record<string, { y: number }>).s_b!.y).toBe(Number.parseInt(top));
+});
+
 describe("+ New session", () => {
   test("every step comes preselected, so Create at once starts the last used agent, model, effort and folder, and opens its tab", async () => {
     const h = mount({ playedTo: 1_000 });

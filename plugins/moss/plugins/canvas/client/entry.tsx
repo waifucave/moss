@@ -14,6 +14,10 @@ import { Canvas, type CanvasProps, type View } from "./Canvas";
 import type { Point } from "./layout";
 import type { FolderToken } from "./preselect";
 import { decodePlaces, encodePlaces, readLastLine, useSessionGraph } from "./source";
+import { coalesced, type CoalescedSetting } from "./writes";
+
+/** A drag's end is kept at once in memory; `places` is written at most this often (the setting budget MOSS's pages share). */
+export const PLACES_GAP_MS = 8_000;
 import { S } from "./strings";
 
 /** `main`'s route as the shell holds it. */
@@ -67,12 +71,24 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
   // The setting is written beside the state, never inside its updater (React may call an updater twice).
   const placesRef = useRef(places);
   placesRef.current = places;
+  const placesWriter = useRef<CoalescedSetting<string> | undefined>(undefined);
+  placesWriter.current ??= coalesced((v) => Promise.resolve(apiRef.current.settings?.set?.("places", v)), PLACES_GAP_MS);
+  // What waits is written when the window hides and when the canvas closes: nothing is lost on a clean close.
+  useEffect(() => {
+    const w = placesWriter.current!;
+    const onVisibility = () => { if (document.visibilityState === "hidden") w.flush(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      w.flush();
+    };
+  }, []);
   const onPlace = useCallback((id: string, at: Point) => {
     const { [id]: _old, ...rest } = placesRef.current;
     const next = { ...rest, [id]: at };
     placesRef.current = next;
     setPlaces(next);
-    void Promise.resolve(apiRef.current.settings?.set?.("places", encodePlaces(next, known))).catch(() => undefined);
+    placesWriter.current!.put(encodePlaces(next, known));
   }, [known]);
 
   const openTab = useCallback((session: string) => {

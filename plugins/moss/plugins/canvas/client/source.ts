@@ -6,6 +6,7 @@
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { useCore, usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { coalesced } from "./writes";
 import { applyLink, applyPairs, EMPTY_LINKS, waveDone, type LinkEvent, type LinkPair, type LinkState } from "./links";
 import type { BackendLook, BotState } from "./look";
 import type { BotFacePins } from "./model";
@@ -139,14 +140,16 @@ export function useSessionGraph(): GraphState & { waveDone(id: number): void } {
     };
     const offActivity = apiRef.current.activity?.watch?.("bots", onActivity as never);
     void Promise.resolve(apiRef.current.activity?.list?.("bots")).then((list) => { for (const a of list ?? []) onActivity(a as never); }, () => undefined);
-    // The canvas is seen while it is shown: the time is kept when it is hidden or closed.
-    const markSeen = () => { void Promise.resolve(apiRef.current.settings?.set?.("seen", Date.now())).catch(() => undefined); };
+    // The canvas is seen while it is shown: the time is kept when it is hidden (at most once a minute: MOSS's pages share
+    // one budget of setting writes) and when it is closed. Only after the last look was read, so it isn't written over first.
+    const seenWriter = coalesced((v: number) => Promise.resolve(apiRef.current.settings?.set?.("seen", v)), SEEN_GAP_MS);
+    const markSeen = () => { void seen.then(() => seenWriter.put(Date.now())); };
     const onVisibility = () => { if (document.visibilityState === "hidden") markSeen(); };
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
     return () => {
       live = false;
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
-      void seen.then(markSeen);
+      void seen.then(() => { seenWriter.put(Date.now()); seenWriter.flush(); });
       offView();
       offLink();
       offActivity?.();
@@ -196,6 +199,9 @@ export async function readLastLine(history: (page: { before?: number; limit: num
  *  settings hold no objects). Read once; written once per drag's end, only for blocks still known, newest kept when it
  *  would pass the setting's size (a string setting holds 8,192 characters; a page's write is held to 8,300 characters of
  *  its JSON, and 30 writes a minute per plugin tree). */
+/** `seen` is written at most this often while the canvas is open (and always as it closes). */
+export const SEEN_GAP_MS = 60_000;
+
 export const PLACES_MAX_CHARS = 8_000;
 
 export function encodePlaces(places: Readonly<Record<string, { x: number; y: number }>>, known: ReadonlySet<string>): string {
