@@ -61,7 +61,7 @@ const COMPONENTS: Record<string, EntryComponent> = {
   Notes: stub("panel:notes"),
   StartPage: stub("main:start"),
   Corner: ({ props }) => (
-    <button type="button" data-stub="corner" onClick={() => (props.navigate as (r: unknown) => void)({ route: "start", params: {} })}>{`corner ${props.session} ${props.kind}`}</button>
+    <button type="button" data-stub="corner" onClick={() => (props.navigate as (r: unknown) => void)({ route: "start", params: { session: props.session } })}>{`corner ${props.session} ${props.kind}`}</button>
   ),
 };
 
@@ -291,6 +291,8 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     await act(() => settle(20));
     expect(stubText("sidebar")).toContain('"route":"start"');
     expect(stubText("main:start")).not.toBeNull();
+    // The start page is given the session the corner named, to bring its block into view.
+    expect(stubText("main:start")).toContain('"session":"code-1"');
   });
 });
 
