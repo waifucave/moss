@@ -71,6 +71,11 @@ import { ProgramKeyTable } from "./surfaces/program-keys";
 import { cardPressGate, routeBrokerCards } from "./surfaces/routing";
 import { programKeyMethods } from "./surfaces/rpc";
 import { lateAgentMethods } from "./agents/rpc";
+import { EngineAgentStartOptions, FileRecentStore } from "./agents/start-options";
+import { BackendLooks } from "./agents/backend-look";
+import { EngineBackendIcons } from "./agents/backend-icons";
+import { MOSS_CODE_COLOR, MOSS_CODE_ICON } from "./agents/moss-code/look";
+import { MOSS_CODE_ID } from "./agents/moss-code/backend";
 import { commandMethods } from "./registry/commands";
 import { grantsInForce, RUNNING_STATES } from "./contracts/plugin-registry";
 import { MossTokens } from "./auth/moss-tokens";
@@ -3561,12 +3566,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   let botKeys: BotKeyPresence | undefined;
   let offBotKeysWatch: (() => void) | undefined;
   // A: the app's model picker (`models.list`), from the model plugins' catalog; signed in = a credential is stored.
+  // The providers' keychain slots, and a third party's model plugin signed in through its own secret (or taking none).
+  const signedInNow = async (): Promise<Set<string>> => new Set([
+    ...Object.keys((await credentialPresenceFrom(secrets)).byProvider),
+    ...(await pluginAuth?.signedInProviders().catch(() => new Set<string>()) ?? []),
+  ]);
   Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods({
-    // The providers' keychain slots, and a third party's model plugin signed in through its own secret (or taking none).
-    signedIn: async () => new Set([
-      ...Object.keys((await credentialPresenceFrom(secrets)).byProvider),
-      ...(await pluginAuth?.signedInProviders().catch(() => new Set<string>()) ?? []),
-    ]),
+    signedIn: signedInNow,
     defaultModel: () => liveModel?.() || undefined,
   })));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
@@ -3704,12 +3710,36 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     forgetSaved: (hash, bot) => daemonParts?.broker?.forgetSaved(hash, bot) ?? 0,
   })));
   // Lane RT: a card is answered from where the router placed it, and computer use is read at the answer itself.
+  // `agent.options` and `agent.recent` (lane CA, spec revision 20, §9.5): what a person starts a session with before one
+  // exists (MOSS's coding agent: the models they can run now and their default; an ACP agent: unknown until it starts) and
+  // what they started last, kept in one small file under the run folder.
+  const startOptions = new EngineAgentStartOptions({
+    source: (id) => {
+      const b = daemonParts?.agents?.backends().find((x) => x.id === id);
+      return b === undefined || b.userStartable === false ? undefined : id === MOSS_CODE_ID ? { from: "catalog" } : { from: "unknown" };
+    },
+    catalog: async () => {
+      const models = catalogModelListings(activeCatalog(), await signedInNow()).filter((m) => m.signedIn).slice(0, 1_000)
+        .map((m) => ({ id: m.id, name: m.name, efforts: m.efforts ?? [], ...(m.defaultEffort !== undefined ? { defaultEffort: m.defaultEffort } : {}) }));
+      const model = setup.defaultModel();
+      return { models, ...(model !== undefined && models.some((m) => m.id === model) ? { default: { model, ...(setup.state().default?.effort !== undefined ? { effort: setup.state().default!.effort! } : {}) } } : {}) };
+    },
+    store: FileRecentStore.in(mossHome),
+  });
+  const backendLooks = new BackendLooks({
+    get registry() { return partsRegistry?.registry ?? { entries: () => [], get: () => undefined }; },
+    icons: new EngineBackendIcons(),
+    core: { [MOSS_CODE_ID]: { color: MOSS_CODE_COLOR, icon: MOSS_CODE_ICON } },
+    log: (line) => console.error(`[agents] ${line}`),
+  });
   Object.assign(mossLaneHandlers, cardMethods(() => daemonParts?.broker, (pluginId) => grantsInForce(partsRegistry?.registry.get(pluginId)), {
     press: (conn, id) => (mossServer === undefined ? "MOSS isn't taking answers yet" : cardPressGate(mossServer.surfaces, conn.connId, id)),
     acting: () => computerUse?.anyActing() ?? false,
   }), laneMethodHandlers(lateAgentMethods(() => daemonParts?.agents, {
     // A user's call made on this computer (the app or the terminal here) is this computer's device.
     localDevice: () => liveDeviceId,
+    startOptions,
+    looks: (ids) => backendLooks.ofAll(ids),
     definitions: () => daemonParts?.agentDefinitions?.() ?? [],
     // `agent.start` with a definition: one that reaches a code session on that backend, as the session's Glossary lists it.
     definition: (name, backend) => {

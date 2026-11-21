@@ -13,6 +13,8 @@ import { ContractError } from "../contracts/common";
 import { MethodError, toMethodError } from "../rpc/handler";
 import type { AgentManager } from "./manager";
 import { agentTaskText, type AgentDefinitionView } from "./tools";
+import type { BackendLook } from "./backend-look";
+import type { AgentStartOptions } from "../contracts/agent-start";
 
 export interface AgentMethodsOptions {
   manager: AgentManager;
@@ -30,6 +32,12 @@ export interface AgentMethodsOptions {
   /** This computer's device id: the device of a user's call made on this computer (the app or the terminal here), whose
    *  caller names none. */
   localDevice: () => string;
+  /** Each backend's look (`agent.backends`: its icon and colours; spec revision 20, §9.5). Without it none carries one. */
+  looks?: (ids: readonly string[]) => Promise<ReadonlyMap<string, BackendLook>>;
+  /** What a person starts with before a session exists, and what they started last (`agent.options`, `agent.recent`; the
+   *  person's own `agent.start` is remembered through it). Without it neither method is served. */
+  startOptions?: AgentStartOptions;
+  now?: () => number;
 }
 
 export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<unknown>;
@@ -42,11 +50,13 @@ function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"
 }
 
 export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod> {
-  return {
+  const methods: Record<string, AgentMethod> = {
     [AGENTS_METHODS.agentBackends.name]: async (raw) => {
       parse(AGENTS_METHODS.agentBackends, raw);
       const backends: AgentBackendView[] = [];
-      for (const b of o.backends()) {
+      const list = o.backends();
+      const looks = await o.looks?.(list.map((b) => b.id)).catch(() => undefined);
+      for (const b of list) {
         const d = await b.detect().catch(() => ({ installed: false, sandboxed: false, version: undefined }));
         const marks = new Set<BackendMark>(b.quirks.marks);
         if (d.installed && !d.sandboxed) marks.add("unsandboxed");
@@ -59,6 +69,9 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
           protocol: b.quirks.placement === "cloud" && Object.keys(b.quirks.launch.command).length === 0 ? "cloud" : "acp",
           placement: b.quirks.placement,
           userStartable: b.userStartable !== false,
+          ...(looks?.get(b.id)?.icon === undefined ? {} : { icon: looks.get(b.id)!.icon! }),
+          ...(looks?.get(b.id)?.color === undefined ? {} : { color: looks.get(b.id)!.color! }),
+          ...(looks?.get(b.id)?.color2 === undefined ? {} : { color2: looks.get(b.id)!.color2! }),
           computers: [{
             computer: o.computer, installed: d.installed, sandboxed: d.sandboxed, marks: [...marks],
             ...(d.version === undefined ? {} : { version: d.version.slice(0, 64) }),
@@ -86,9 +99,26 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
         ...(def === undefined ? {} : { definition: { pluginId: def.pluginId, id: def.id }, title: def.name }),
         ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }),
       });
+      // The person's last start (never a bot's or a spawn's: only this method, only the user), kept by the engine for the
+      // start page of any client. A first message is not kept; the model and effort are what the person chose.
+      try {
+        o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
+      } catch { /* the start went ahead; the memory is a convenience */ }
       return { session: r.sessionId };
     },
   };
+  if (o.startOptions !== undefined) {
+    const start = o.startOptions;
+    methods[AGENTS_METHODS.agentOptions.name] = async (raw) => {
+      const p = parse(AGENTS_METHODS.agentOptions, raw);
+      return start.options(p.backend, p.computer);
+    };
+    methods[AGENTS_METHODS.agentRecent.name] = async (raw) => {
+      parse(AGENTS_METHODS.agentRecent, raw);
+      return start.recent();
+    };
+  }
+  return methods;
 }
 
 /** What `agentMethods` needs of the agents the daemon runs (`createAgents`'s). */
@@ -116,15 +146,15 @@ export function pluginAgentDefinitions(registry: Pick<PluginRegistry, "entries">
  *  getter, and is refused while none run. A thrown `ContractError` becomes its JSON-RPC code (`toMethodError`). */
 export function lateAgentMethods(
   agents: () => RunningAgents | undefined,
-  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition">,
+  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now">,
 ): Record<string, AgentMethod> {
   const made = new WeakMap<RunningAgents, Record<string, AgentMethod>>();
   const methodsOf = (a: RunningAgents): Record<string, AgentMethod> => {
     let m = made.get(a);
-    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}) })));
+    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}) })));
     return m;
   };
-  const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name];
+  const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name, ...(o.startOptions ? [AGENTS_METHODS.agentOptions.name, AGENTS_METHODS.agentRecent.name] : [])];
   return Object.fromEntries(names.map((name) => [name, async (params: unknown, ctx: { caller: Caller }) => {
     const a = agents();
     if (!a) throw new MethodError(ERR.RETRY, "MOSS's agents aren't running on this computer yet: try again in a moment");
