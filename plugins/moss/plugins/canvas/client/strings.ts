@@ -25,6 +25,7 @@ export const S = {
   sub: "sub",
   done: "Done",
   bot: "bot",
+  botState: { idle: "Idle", listening: "Listening", thinking: "Thinking", working: "Working", asking: "Asking you", stuck: "Stuck", done: "Done", asleep: "Asleep" } as const,
   untitled: "Untitled session",
   emptyTitle: "No sessions yet",
   emptyDetail: "Press ＋ New session to start one. Each session shows here as a block, with lines to the sessions it starts and talks to.",

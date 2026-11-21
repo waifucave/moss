@@ -9,7 +9,7 @@
 // * A line from each block's parent to it (`child`, `bot`). Lines between two main sessions (`peer`) come from links
 //   (links.ts), not from here.
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { brandOf, metaLine, modelLabel, MOSS_CORAL, motionOf, statusLine, strongest, type BackendLook, type Motion } from "./look";
+import { brandOf, metaLine, modelLabel, MOSS_CORAL, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
 import { S } from "./strings";
 
 export type BlockType = "main" | "sub" | "bot";
@@ -28,8 +28,10 @@ export interface Block {
   status: string;
   motion: Motion;
   /** The agent's colour (and a gradient's second), at full strength: the mark wears it; what moves wears it softened. */
-  brand: string;
+  brand?: string;
   brand2?: string;
+  /** A bot's state as the activity feed gives it (its face's expression and its words). */
+  botState?: BotState;
   backend?: string;
   /** When it started, for the layout's order. */
   startedAt: number;
@@ -65,6 +67,7 @@ export function buildModel(
   sessions: Readonly<Record<string, SessionView>>,
   backends: ReadonlyMap<string, BackendLook>,
   botNames: ReadonlyMap<string, string> = new Map(),
+  botStates: ReadonlyMap<string, BotState> = new Map(),
 ): CanvasModel {
   const all = Object.values(sessions).filter((s) => s.archived !== true);
   const byId = new Map<string, Block>();
@@ -98,9 +101,11 @@ export function buildModel(
     if (bot !== undefined && !bots.has(bot)) seeBot(bot, "still", s.startedAt);
   }
   for (const [bot, b] of [...bots].sort((x, y) => x[1].startedAt - y[1].startedAt || x[0].localeCompare(y[0]))) {
+    // Its state: the activity feed's, else what its sessions do (running: working; otherwise idle).
+    const botState: BotState = botStates.get(bot) ?? (b.motion === "running" ? "working" : "idle");
     add({
-      id: botBlockId(bot), type: "bot", bot, title: botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1), meta: S.bot, status: "",
-      motion: b.motion, brand: MOSS_CORAL, startedAt: b.startedAt, messageable: false,
+      id: botBlockId(bot), type: "bot", bot, title: botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1), meta: S.bot, status: S.botState[botState],
+      motion: b.motion, brand: MOSS_CORAL, botState, startedAt: b.startedAt, messageable: false,
     });
   }
 
@@ -145,7 +150,7 @@ export function buildModel(
         meta: metaLine([S.subagent, modelLabel(row.model)]),
         status: row.state === "running" ? S.running : row.state === "failed" ? S.failed : S.done,
         motion: row.state === "running" ? "running" : "ended",
-        brand: parent.brand, ...(parent.brand2 !== undefined ? { brand2: parent.brand2 } : {}), ...(parent.backend !== undefined ? { backend: parent.backend } : {}),
+        ...(parent.brand !== undefined ? { brand: parent.brand } : {}), ...(parent.brand2 !== undefined ? { brand2: parent.brand2 } : {}), ...(parent.backend !== undefined ? { backend: parent.backend } : {}),
         startedAt: row.startedAt, messageable: false,
       });
     }

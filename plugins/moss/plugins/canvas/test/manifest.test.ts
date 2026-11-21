@@ -20,10 +20,10 @@ describe("moss.json (spec §5.9, format 1)", () => {
   });
 
   test("asks only for capabilities the catalog defines, and each for a reason the canvas has", () => {
-    // sessions.read + conversation.read: the code sessions and the bots' (a link with a bot's end is heard only by a
+    // activity.read.bots: a bot's live state, which its face shows; sessions.read + conversation.read: the code sessions and the bots' (a link with a bot's end is heard only by a
     // plugin that reads both kinds); bots.read: a bot's name and face; computers.read: which agents this computer has;
     // sessions.start: + (agent.start, ui.pick for agent.start); user.send: a block's composer; shell.control: Open in MOSS.
-    expect([...manifest.capabilities].sort()).toEqual(["bots.read", "computers.read", "conversation.read", "sessions.read", "sessions.start", "shell.control", "user.send"]);
+    expect([...manifest.capabilities].sort()).toEqual(["activity.read.bots", "bots.read", "computers.read", "conversation.read", "sessions.read", "sessions.start", "shell.control", "user.send"]);
     for (const c of manifest.capabilities) expect([c, CAPABILITIES.has(c)]).toEqual([c, true]);
   });
 

@@ -22,11 +22,12 @@ export function strongest(a: Motion, b: Motion): Motion {
   return rank[a] >= rank[b] ? a : b;
 }
 
-/** MOSS's own coral: a bot's colour and MOSS's coding agent's when their records name none (the owner's mock-up). Data,
- *  like each agent's brand colour, never a theme colour: it reaches the page as the block's `--brand`. */
+/** MOSS's own coral: a bot's colour (its face's, when its record names none) and the lines that leave a bot. Data, like
+ *  each agent's colour, never a theme colour: it reaches the page as the block's `--brand`. */
 export const MOSS_CORAL = "#F0694C";
-/** A backend that names no colour (the SDK's `AGENT_MARK_NEUTRAL`). */
-export const NEUTRAL = "#8a8f98";
+/** MOSS's own coding agent's colour when its record names none: the gold of MOSS Code's Shards mark (the owner,
+ *  2026-11-21: "moss coding agent give it the coding icon"; coral is for bots only). */
+export const MOSS_CODE_GOLD = "#E5A72E";
 /** MOSS's own coding agent's backend id. */
 export const MOSS_CODE = "moss-code";
 
@@ -39,11 +40,27 @@ export interface BackendLook {
   icon?: { mediaType: "image/png" | "image/svg+xml"; data: string; at: number };
 }
 
-/** An agent's colour: its backend's, MOSS's coral for MOSS's own agent, else the neutral. */
-export function brandOf(backend: string | undefined, look: BackendLook | undefined): { brand: string; brand2?: string } {
+/** An agent's colour(s): its icon's real colour from its backend (`color`, and `color2` for a two-colour mark), at full
+ *  hue; MOSS's coral for MOSS's own agent when its record names none. None for a black-and-white brand: the canvas then
+ *  draws its mark and everything that moves in the theme's text colour (never a grey of our own). */
+export function brandOf(backend: string | undefined, look: BackendLook | undefined): { brand?: string; brand2?: string } {
   if (look?.color !== undefined) return { brand: look.color, ...(look.color2 !== undefined ? { brand2: look.color2 } : {}) };
-  return { brand: backend === MOSS_CODE ? MOSS_CORAL : NEUTRAL };
+  return backend === MOSS_CODE ? { brand: MOSS_CODE_GOLD } : {};
 }
+
+/** Whether a shipped icon is a one-colour glyph drawn in `currentColor` (an SVG that says so): the canvas then fills its
+ *  shape with the agent's colour, or the theme's text colour, as an image mask (never markup in the page). */
+export function isGlyph(icon: BackendLook["icon"]): boolean {
+  if (icon === undefined || icon.mediaType !== "image/svg+xml") return false;
+  try {
+    return atob(icon.data).includes("currentColor");
+  } catch {
+    return false;
+  }
+}
+
+/** A bot's state as its face shows it (the activity feed's `ActivityState`). */
+export type BotState = "idle" | "listening" | "thinking" | "working" | "asking" | "stuck" | "done" | "asleep";
 
 /** A model id as a person reads it: `anthropic/claude-opus-5-5` → `Claude Opus 5.5`. The provider goes, words are
  *  capitalised and a run of single digits joins with dots. A name the catalog gives wins over this (`agent.options`). */

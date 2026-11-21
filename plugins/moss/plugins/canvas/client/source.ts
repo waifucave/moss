@@ -7,7 +7,7 @@ import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { useCore, usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { applyLink, EMPTY_LINKS, waveDone, type LinkEvent, type LinkState } from "./links";
-import type { BackendLook } from "./look";
+import type { BackendLook, BotState } from "./look";
 import { buildModel } from "./model";
 import type { BackendRow } from "./preselect";
 
@@ -18,6 +18,8 @@ export interface GraphState {
   /** `agent.backends` as listed, for the + panel; undefined until it answers. */
   rows: readonly BackendRow[] | undefined;
   botNames: ReadonlyMap<string, string>;
+  /** Each bot's state from the activity feed (`activity.read.bots`): what its face shows. */
+  botStates: ReadonlyMap<string, BotState>;
   /** This computer's name (`computer.list`'s `self`), for which agents it has. */
   here: string | undefined;
   /** False until `session.list` has answered once. */
@@ -31,11 +33,12 @@ type Action =
   | { t: "done"; wave: number }
   | { t: "backends"; rows: readonly BackendRow[] }
   | { t: "bots"; names: ReadonlyMap<string, string> }
+  | { t: "botState"; bot: string; state: BotState }
   | { t: "here"; here: string | undefined };
 
 const newer = (old: SessionView | undefined, view: SessionView) => old === undefined || view.updatedAt >= old.updatedAt;
 
-export const EMPTY_GRAPH: GraphState = { sessions: {}, links: EMPTY_LINKS, backends: new Map(), rows: undefined, botNames: new Map(), here: undefined, loaded: false };
+export const EMPTY_GRAPH: GraphState = { sessions: {}, links: EMPTY_LINKS, backends: new Map(), rows: undefined, botNames: new Map(), botStates: new Map(), here: undefined, loaded: false };
 
 export function graphReducer(state: GraphState, a: Action): GraphState {
   switch (a.t) {
@@ -47,7 +50,7 @@ export function graphReducer(state: GraphState, a: Action): GraphState {
       return { ...state, sessions, loaded: true };
     }
     case "link":
-      return { ...state, links: applyLink(state.links, a.link, buildModel(state.sessions, state.backends, state.botNames)) };
+      return { ...state, links: applyLink(state.links, a.link, buildModel(state.sessions, state.backends, state.botNames, state.botStates)) };
     case "done": {
       const links = waveDone(state.links, a.wave);
       return links === state.links ? state : { ...state, links };
@@ -56,6 +59,8 @@ export function graphReducer(state: GraphState, a: Action): GraphState {
       return { ...state, rows: a.rows, backends: new Map(a.rows.map((r) => [r.id, r])) };
     case "bots":
       return { ...state, botNames: a.names };
+    case "botState":
+      return state.botStates.get(a.bot) === a.state ? state : { ...state, botStates: new Map(state.botStates).set(a.bot, a.state) };
     case "here":
       return { ...state, here: a.here };
   }
@@ -97,10 +102,17 @@ export function useSessionGraph(): GraphState & { waveDone(id: number): void } {
       },
       () => undefined,
     );
+    // Each bot's live state, as MOSS's own window follows it: the activity feed (listen first, then read).
+    const onActivity = (a: { subject?: { kind?: string; id?: string }; state?: string }) => {
+      if (live && a.subject?.kind === "bots" && typeof a.subject.id === "string" && typeof a.state === "string") dispatch({ t: "botState", bot: a.subject.id, state: a.state as BotState });
+    };
+    const offActivity = apiRef.current.activity?.watch?.("bots", onActivity as never);
+    void Promise.resolve(apiRef.current.activity?.list?.("bots")).then((list) => { for (const a of list ?? []) onActivity(a as never); }, () => undefined);
     return () => {
       live = false;
       offView();
       offLink();
+      offActivity?.();
     };
   }, [core]);
   const done = useCallback((wave: number) => dispatch({ t: "done", wave }), []);

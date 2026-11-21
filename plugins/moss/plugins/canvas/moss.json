@@ -15,6 +15,7 @@
     "sessions.read",
     "conversation.read",
     "bots.read",
+    "activity.read.bots",
     "computers.read",
     "sessions.start",
     "user.send",

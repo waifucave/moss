@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SAMPLE_SESSION_SCENE, sceneAt } from "../gallery/scene";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { MOSS_CORAL, modelLabel, motionOf, NEUTRAL, statusLine } from "../client/look";
+import { isGlyph, MOSS_CODE_GOLD, MOSS_CORAL, modelLabel, motionOf, statusLine } from "../client/look";
 import { buildModel, botBlockId, subBlockId } from "../client/model";
 import { BACKENDS } from "../gallery/fixtures";
 
@@ -27,6 +27,22 @@ describe("how a session moves", () => {
     expect(statusLine({ status: "failed" })).toBe("Failed");
     expect(statusLine({ status: "idle", needsYou: { cards: 1, questions: 0 } })).toBe("Needs you");
     expect(statusLine({ status: "prompting", subagents: [{ id: "a", name: "x", state: "running", startedAt: 0 }] })).toBe("Running · 1 subagent");
+  });
+
+  test("a one-colour glyph (an SVG in currentColor) is told from an icon in its own colours", () => {
+    const svg = (body: string) => ({ mediaType: "image/svg+xml" as const, data: btoa(body), at: 0 });
+    expect(isGlyph(svg('<svg><path fill="currentColor"/></svg>'))).toBe(true);
+    expect(isGlyph(svg('<svg><path fill="#D97757"/></svg>'))).toBe(false);
+    expect(isGlyph({ mediaType: "image/png", data: "", at: 0 })).toBe(false);
+    expect(isGlyph(undefined)).toBe(false);
+  });
+
+  test("a bot's state is the activity feed's, else what its sessions do; its face says it in words too", () => {
+    const st = sceneAt(SAMPLE_SESSION_SCENE, 6_500).sessions;
+    expect(buildModel(st, looks).byId.get(botBlockId("moss"))!.botState).toBe("working");
+    expect(buildModel(sceneAt(SAMPLE_SESSION_SCENE, 8_000).sessions, looks).byId.get(botBlockId("moss"))!.botState).toBe("idle");
+    const fed = buildModel(st, looks, new Map(), new Map([["moss", "asking" as const]])).byId.get(botBlockId("moss"))!;
+    expect([fed.botState, fed.status]).toEqual(["asking", "Asking you"]);
   });
 
   test("a model id reads as a name", () => {
@@ -56,17 +72,21 @@ describe("the model of the sample scene", () => {
     ].sort() as [string, string, string][]);
   });
 
-  test("standard blocks: the title and agent · model · effort; the agent's colour; a bot is coral", () => {
+  test("standard blocks: the title and agent · model · effort; the agent's own colour(s) at full hue; a bot is coral", () => {
     const a = end.byId.get("s_a")!;
     expect(a.title).toBe("Fix the login flow");
     expect(a.meta).toBe("Claude Code · Claude Opus 5.5 · high");
     expect(a.brand).toBe(looks.get("claude-code")!.color!);
     expect(end.byId.get(botBlockId("moss"))!.brand).toBe(MOSS_CORAL);
-    // MOSS's own coding agent is coral when its record names no colour; an unknown backend is the neutral.
+    // Codex: both its colours (a gradient). MOSS's own agent: the Shards mark's gold when its record names none (coral is
+    // the bots'). A black-and-white brand, or an unknown backend: no colour (the theme's text colour), never a grey.
+    expect([end.byId.get("s_b")!.brand, end.byId.get("s_b")!.brand2]).toEqual(["#484FF6", "#7893F9"]);
     const s = (id: string, backend: string): SessionView => ({ id, kind: "coding", computer: "c", status: "idle", startedAt: 1, updatedAt: 1, backend });
-    const m = buildModel({ x: s("x", "moss-code"), y: s("y", "nobody") }, new Map());
-    expect(m.byId.get("x")!.brand).toBe(MOSS_CORAL);
-    expect(m.byId.get("y")!.brand).toBe(NEUTRAL);
+    const m = buildModel({ x: s("x", "moss-code"), y: s("y", "nobody"), z: s("z", "opencode") }, looks);
+    expect(buildModel({ x: s("x", "moss-code") }, new Map()).byId.get("x")!.brand).toBe(MOSS_CODE_GOLD);
+    expect(m.byId.get("x")!.brand).toBe("#E5A72E");
+    expect(m.byId.get("y")!.brand).toBeUndefined();
+    expect(m.byId.get("z")!.brand).toBeUndefined();
   });
 
   test("motion through the scene: s_a runs at 1 s, waits on its child at 6 s, the child ends at 11 s; the bot runs while its conversation does", () => {

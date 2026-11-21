@@ -21,6 +21,7 @@ const LEAVES = [
   ".cv-send", // disabled
   ".cv-chip", // an agent this computer lacks
   ".cv-create", // disabled
+  ".cv-eye", // a bot's face: its eyes blink and move by its state
 ];
 
 /** Everything out of the flow, each named. Those that reach outside a block (its points, its ring, the 30px "near"
@@ -62,6 +63,8 @@ describe("the canvas stylesheet", () => {
     const animated = rules.filter((r) => r.context.length === 0 && r.declarations.some((d) => d.property === "animation" && d.value !== "none")).map((r) => r.prelude);
     expect(animated.sort()).toEqual([
       ".cv-hit", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-wave__path",
+      // A bot's face: the one thing that may move while no session runs, as it does in MOSS (the owner, 2026-11-21).
+      ".cv-eye", ".cv-face[data-state=\"thinking\"] .cv-eye", ".cv-face[data-state=\"working\"] .cv-eye",
     ].sort());
     // The ring and the dashes exist only while their block runs or waits (Block.tsx draws them then), and a wave or a
     // hit only while a message crosses: so nothing here can run on a still canvas.
@@ -77,15 +80,23 @@ describe("the canvas stylesheet", () => {
     const reduced = rules.filter((r) => r.context.includes("@media (prefers-reduced-motion: reduce)"));
     const decl = (prelude: string) => reduced.find((r) => r.prelude === prelude)?.declarations ?? [];
     expect(decl(".cv-ring::before")).toContainEqual({ property: "animation", value: "none" });
-    expect(decl(".cv-ring::before")).toContainEqual({ property: "background", value: "var(--h)" });
+    expect(decl(".cv-ring::before")).toContainEqual({ property: "background", value: "linear-gradient(135deg, var(--c1), var(--c2))" });
+    expect(decl(".cv-eye,\n  .cv-face[data-state] .cv-eye")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-node[data-motion=\"running\"] .cv-dot,\n  .cv-node[data-motion=\"waiting\"] .cv-dot,\n  .cv-march__rect")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-wave__path")).toContainEqual({ property: "animation", value: "cv-flash 1.2s ease-out both" });
     expect(decl(".cv-wave__path")).toContainEqual({ property: "stroke-dasharray", value: "none" });
   });
 
+  test("never toward grey: every colour mix is toward transparent (clearer), none toward a neutral", () => {
+    const all = css.match(/color-mix\(/g)?.length ?? 0;
+    const clear = css.match(/color-mix\(in srgb, var\(--[a-z0-9-]+\) \d+%, transparent\)/g)?.length ?? 0;
+    expect(all).toBeGreaterThan(0);
+    expect(clear).toBe(all);
+  });
+
   test("a hidden window pauses every animation", () => {
     const paused = rules.find((r) => r.declarations.some((d) => d.property === "animation-play-state" && d.value === "paused"))!;
     const selectors = paused.prelude.split(",").map((s) => s.trim());
-    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-wave__path", ".cv-hit"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
+    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-wave__path", ".cv-hit", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
   });
 });
