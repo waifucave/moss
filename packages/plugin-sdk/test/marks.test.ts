@@ -32,6 +32,16 @@ describe("agentMark", () => {
     expect((plain.props.style as { background: string }).background).toBe("currentColor");
     expect(el({ id: "z", name: "Zed" }).props.children).toBe("Z");
     for (const x of [img, mask, plain]) expect(JSON.stringify(x.props)).not.toContain("<path");
+    // The owner's correction (2026-11-21): a real icon is drawn BARE (no tile, border or tinted background; a one-colour glyph's
+    // only paint is its own colour, or the text's), at the size asked; only the no-icon fallback is a letter on a colour. A brand
+    // colour is never mixed toward grey: it reaches the paint as given (a gradient of the two when there are two).
+    const sized = AgentMark({ backend: { id: "c", name: "C", icon: icon("#D97757") }, size: 40 }) as unknown as { props: { width: number; height: number; style: Record<string, unknown> } };
+    expect([sized.props.width, sized.props.height]).toEqual([40, 40]);
+    for (const k of ["background", "backgroundColor", "border", "borderRadius", "padding", "boxShadow", "opacity", "filter"]) expect(sized.props.style[k]).toBeUndefined();
+    const two = el({ id: "g", name: "G", icon: icon("currentColor"), color: "#484FF6", color2: "#7893F9" });
+    expect((two.props.style as { background: string }).background).toBe("linear-gradient(135deg, #484FF6, #7893F9)");
+    const letter = el({ id: "x", name: "Xy", color: "#4D6BFE" });
+    expect((letter.props.style as { background: string }).background).toBe("#4D6BFE");
   });
 
   test("black, white and grey have no hue", () => {
