@@ -8,12 +8,15 @@ const here = [{ computer: "Studio", installed: true }];
 const elsewhere = [{ computer: "Studio", installed: false }];
 
 export const BACKENDS: BackendRow[] = [
-  { id: "moss-code", name: "MOSS's coding agent", color: "#F0694C", computers: here },
+  // Each agent's colour(s) are its icon's real ones (the owner, 2026-11-21); MOSS's own agent is the Shards mark's gold.
+  { id: "moss-code", name: "MOSS's coding agent", color: "#E5A72E", computers: here },
   { id: "claude-code", name: "Claude Code", color: "#D97757", computers: here },
-  { id: "codex", name: "Codex", color: "#10A37F", color2: "#3B9EFF", computers: here },
-  { id: "gemini", name: "Gemini CLI", color: "#6C8CF5", color2: "#D96570", computers: here },
+  { id: "codex", name: "Codex", color: "#484FF6", color2: "#7893F9", computers: here },
+  { id: "gemini", name: "Gemini CLI", color: "#3488FB", color2: "#F24D50", computers: here },
+  // Black-and-white brands: no colour; their mark and motion wear the theme's text colour.
   { id: "opencode", name: "OpenCode", computers: here },
-  { id: "qwen", name: "Qwen", color: "#7C5CF0", computers: elsewhere },
+  { id: "cursor", name: "Cursor", computers: here },
+  { id: "qwen", name: "Qwen", color: "#082DFF", computers: elsewhere },
   { id: "moss-subagent", name: "MOSS's subagents", color: "#F0694C", userStartable: false, computers: here },
 ];
 
@@ -41,6 +44,7 @@ export const OPTIONS: Record<string, AgentOptions> = {
   },
   gemini: { backend: "gemini", known: false, source: "unknown", models: [] },
   opencode: { backend: "opencode", known: false, source: "unknown", models: [] },
+  cursor: { backend: "cursor", known: false, source: "unknown", models: [] },
 };
 
 export const RECENT: RecentStart = { backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "high" };
@@ -64,8 +68,8 @@ export const LAST_LINES: Record<string, Record<string, unknown>[]> = {
 };
 
 const T0 = 1_781_270_000_000;
-const AGENTS = ["claude-code", "codex", "moss-code", "gemini", "opencode"] as const;
-const MODELS: Record<string, string> = { "claude-code": "anthropic/claude-opus-5-5", codex: "openai/gpt-6", "moss-code": "anthropic/claude-sonnet-5", gemini: "google/gemini-3-pro", opencode: "muse/spark-1-3" };
+const AGENTS = ["claude-code", "codex", "moss-code", "gemini", "opencode", "cursor"] as const;
+const MODELS: Record<string, string> = { "claude-code": "anthropic/claude-opus-5-5", codex: "openai/gpt-6", "moss-code": "anthropic/claude-sonnet-5", gemini: "google/gemini-3-pro", opencode: "muse/spark-1-3", cursor: "cursor/composer-2" };
 const TITLES = [
   "Fix the flaky upgrade rows", "API refactor", "Port the parser to Rust", "Review the parser port", "Design the settings page", "Triage the issue backlog",
   "Weekly usage report", "Tidy the downloads folder", "Bump the Electron pin", "Write the release notes", "Profile the cold start", "Split the sidebar into parts",

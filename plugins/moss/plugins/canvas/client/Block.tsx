@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type SyntheticEvent } from "react";
 import type { Rect } from "./layout";
 import type { BackendLook } from "./look";
-import { Face, Mark } from "./Mark";
+import { BotFace, Mark } from "./Mark";
 import type { Block } from "./model";
 import { S } from "./strings";
 
@@ -46,8 +46,14 @@ export function BlockView(p: BlockViewProps) {
   const { block: b, rect, open } = p;
   // Open, it grows a little to the right; its points stay where its lines meet it (`--bw`, `--bh`: its closed size).
   const grow = open ? (b.type === "bot" ? 40 : 70) : 0;
-  const style = { left: rect.x, top: rect.y, width: rect.w + grow, "--bw": `${rect.w}px`, "--bh": `${rect.h}px`, minHeight: rect.h, "--brand": b.brand } as CSSProperties;
+  // The agent's colour(s) at full hue: `--brand` (and `--brand2` for a two-colour mark); none for a black-and-white brand,
+  // whose mark and motion then wear the theme's text colour (styles.css).
+  const style = {
+    left: rect.x, top: rect.y, width: rect.w + grow, "--bw": `${rect.w}px`, "--bh": `${rect.h}px`, minHeight: rect.h,
+    ...(b.brand !== undefined ? { "--brand": b.brand } : {}), ...(b.brand2 !== undefined ? { "--brand2": b.brand2 } : {}),
+  } as CSSProperties;
   const label = S.state(b.title, b.type === "bot" ? S.bot : b.meta, b.status);
+  const markLook = p.look ?? { id: b.backend ?? b.title, name: b.meta.split(" · ")[0] ?? b.title, ...(b.brand !== undefined ? { color: b.brand } : {}), ...(b.brand2 !== undefined ? { color2: b.brand2 } : {}) };
   const head = useRef<HTMLButtonElement>(null);
   const close = () => {
     p.onClose();
@@ -83,16 +89,17 @@ export function BlockView(p: BlockViewProps) {
         >
           {b.type === "bot" ? (
             <span className="cv-bothead">
-              <Face color={b.brand} />
+              <BotFace bot={b.bot ?? b.id} name={b.title} size={38} state={b.botState ?? "idle"} />
               <span className="cv-text">
                 <span className="cv-title" title={b.title}>{b.title}</span>
-                <span className="cv-meta">{S.bot}</span>
+                {/* The face shows its mood by motion alone, so it is said in words too. */}
+                <span className="cv-meta">{S.bot} · {b.status}</span>
               </span>
             </span>
           ) : (
             <>
               <span className="cv-row">
-                <Mark look={p.look ?? { id: b.backend ?? b.title, name: b.meta.split(" · ")[0] ?? b.title, color: b.brand, ...(b.brand2 !== undefined ? { color2: b.brand2 } : {}) }} size={b.type === "sub" ? 22 : 26} />
+                <Mark look={markLook} size={b.type === "sub" ? 22 : 26} />
                 <span className="cv-text">
                   <span className="cv-title" title={b.title}>
                     {b.title}

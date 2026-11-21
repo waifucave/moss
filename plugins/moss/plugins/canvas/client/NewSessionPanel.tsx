@@ -188,7 +188,7 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
 
 function AgentChip({ choice, checked, onPick }: { choice: AgentChoice; checked: boolean; onPick(): void }) {
   return (
-    <button type="button" role="radio" aria-checked={checked} className="cv-chip" disabled={!choice.installed} title={choice.installed ? choice.name : `${choice.name} · ${S.notInstalled}`} onClick={onPick} style={{ "--brand": choice.color ?? "transparent" } as React.CSSProperties}>
+    <button type="button" role="radio" aria-checked={checked} className="cv-chip" disabled={!choice.installed} title={choice.installed ? choice.name : `${choice.name} · ${S.notInstalled}`} onClick={onPick} style={{ ...(choice.color !== undefined ? { "--brand": choice.color } : {}), ...(choice.color2 !== undefined ? { "--brand2": choice.color2 } : {}) } as React.CSSProperties}>
       <Mark look={choice} size={22} />
       <span className="cv-chip__name">{choice.name}</span>
       {!choice.installed && <span className="cv-chip__note">{S.notInstalled}</span>}

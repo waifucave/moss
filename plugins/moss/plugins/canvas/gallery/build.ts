@@ -22,7 +22,8 @@ const oneReact: BunPlugin = {
 /** The agents' marks in `dir`, by backend id (the first file of each that exists). */
 const MARK_FILES: Record<string, readonly string[]> = {
   "claude-code": ["claude-code.svg"],
-  codex: ["codex.svg", "codex-openai.svg"],
+  codex: ["codex.svg"],
+  cursor: ["cursor.svg"],
   gemini: ["gemini.png", "gemini.svg"],
   opencode: ["opencode.svg"],
   qwen: ["qwen.svg", "qwen-code.svg"],
@@ -35,6 +36,11 @@ function readMarks(dir: string | undefined): Record<string, { mediaType: string;
     const file = files.map((f) => join(dir, f)).find((f) => existsSync(f));
     if (file === undefined) continue;
     out[id] = { mediaType: file.endsWith(".png") ? "image/png" : "image/svg+xml", data: readFileSync(file).toString("base64") };
+  }
+  // MOSS's own agent: MOSS Code's Shards mark from the repo, on light and on dark.
+  const brand = join(pkg, "..", "..", "..", "..", "assets", "brand", "moss-code", "mark");
+  for (const [id, file] of [["moss-code-light", "shards-mark-on-light.svg"], ["moss-code-dark", "shards-mark-on-dark.svg"]] as const) {
+    if (existsSync(join(brand, file))) out[id] = { mediaType: "image/svg+xml", data: readFileSync(join(brand, file)).toString("base64") };
   }
   return out;
 }

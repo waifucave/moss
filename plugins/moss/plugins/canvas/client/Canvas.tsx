@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { BlockView, type Port } from "./Block";
 import { bounds, EMPTY_LAYOUT, place, rectOf, SIZE, type Layout, type Point, type Rect } from "./layout";
 import { livePeers, type LinkState, type Wave } from "./links";
-import type { BackendLook } from "./look";
+import type { BackendLook, BotState } from "./look";
 import { buildModel, type Block, type CanvasModel, type Edge } from "./model";
 import { NewSessionPanel, type PanelStep, type Starter } from "./NewSessionPanel";
 import type { BackendRow, FolderToken, RecentStart } from "./preselect";
@@ -26,6 +26,8 @@ export interface CanvasProps {
   links: LinkState;
   backends: ReadonlyMap<string, BackendLook>;
   botNames?: ReadonlyMap<string, string>;
+  /** Each bot's state from the activity feed (its face's expression). */
+  botStates?: ReadonlyMap<string, BotState>;
   rows: readonly BackendRow[] | undefined;
   here?: string;
   loaded?: boolean;
@@ -101,7 +103,7 @@ export function curveLength(from: Point, fp: Port, to: Point, tp: Port): number 
 }
 
 export function Canvas(p: CanvasProps) {
-  const model = useMemo<CanvasModel>(() => buildModel(p.sessions, p.backends, p.botNames), [p.sessions, p.backends, p.botNames]);
+  const model = useMemo<CanvasModel>(() => buildModel(p.sessions, p.backends, p.botNames, p.botStates), [p.sessions, p.backends, p.botNames, p.botStates]);
 
   // Ended blocks fold into a count, but one that ended while the canvas was open stays until it is opened again: the
   // person sees it end (and its last report arrive). Its slot stays reserved either way, so nothing moves.
@@ -383,6 +385,9 @@ export function waveEnds(g: WaveGeometry): { from?: { at: Point; port: Port }; t
   return { from: { at: portAt(rf, fp), port: fp }, to: { at: portAt(rt, tp), port: tp } };
 }
 
+/** A wave's colours as the block's: none for a black-and-white brand (the text colour then). */
+const waveColours = (w: Wave): Record<string, string> => ({ ...(w.color !== undefined ? { "--brand": w.color } : {}), ...(w.color2 !== undefined ? { "--brand2": w.color2 } : {}) });
+
 /** A message crossing a line: the line itself brightens over a soft stretch that travels from the sender's point to the
  *  receiver's, in the sender's colour (two strokes: a blurred glow and the light). */
 function WavePath(g: WaveGeometry) {
@@ -392,11 +397,17 @@ function WavePath(g: WaveGeometry) {
   // The bright stretch is about 90px of the line (less on a short one), travelling its whole length and past it.
   const len = Math.max(1, Math.round(curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port)));
   const stretch = Math.round(Math.min(90, Math.max(24, len * 0.45)));
-  const style = { "--brand": g.wave.color, "--len": `${len}px`, "--stretch": `${stretch}px` } as CSSProperties;
+  const style = { ...waveColours(g.wave), "--len": `${len}px`, "--stretch": `${stretch}px` } as CSSProperties;
+  // The light runs in the sender's colour, from its first colour at the sender to its second at the receiver.
+  const grad = `cv-wave-${g.wave.id}`;
   return (
     <g className="cv-wave" data-wave={g.wave.id} style={style}>
-      <path className="cv-wave__path cv-wave__glow" d={d} />
-      <path className="cv-wave__path cv-wave__light" d={d} />
+      <linearGradient id={grad} gradientUnits="userSpaceOnUse" x1={ends.from.at.x} y1={ends.from.at.y} x2={ends.to.at.x} y2={ends.to.at.y}>
+        <stop className="cv-wave__c1" offset="0" />
+        <stop className="cv-wave__c2" offset="1" />
+      </linearGradient>
+      <path className="cv-wave__path cv-wave__glow" d={d} stroke={`url(#${grad})`} />
+      <path className="cv-wave__path cv-wave__light" d={d} stroke={`url(#${grad})`} />
     </g>
   );
 }
@@ -406,7 +417,7 @@ function Hit(g: WaveGeometry & { model: CanvasModel; onDone(id: number): void })
   const ends = waveEnds(g);
   useEffect(() => { if (ends === undefined) g.onDone(g.wave.id); }, [ends === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
   if (ends === undefined) return null;
-  const style = { "--brand": g.wave.color } as CSSProperties;
+  const style = waveColours(g.wave) as CSSProperties;
   return (
     <circle
       className="cv-hit"

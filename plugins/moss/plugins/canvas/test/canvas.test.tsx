@@ -42,6 +42,7 @@ interface Harness {
   routes: ShellRoute[];
   settings: Map<string, unknown>;
   to(t: number): void;
+  botState(bot: string, state: string): void;
 }
 
 function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[] } = {}): Harness {
@@ -62,10 +63,13 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
   const sends: Harness["sends"] = [];
   const routes: ShellRoute[] = [];
   const settings = new Map<string, unknown>(o.places !== undefined ? [["places", o.places]] : []);
+  const activity: unknown[] = [];
+  const feed: ((a: unknown) => void)[] = [];
   const api = {
     settings: { get: async (k: string) => settings.get(k), set: async (k: string, v: unknown) => void settings.set(k, v) },
     sessions: { history: async (s: string) => ({ events: LAST_LINES[s] ?? [], hasMore: false }) },
     bots: { list: async () => [{ id: "moss", name: "MOSS" }] },
+    activity: { list: async () => activity, watch: (_kind: string, l: (a: unknown) => void) => { feed.push(l); return () => undefined; } },
   };
   const runtime = runtimeWith({
     core: () => core,
@@ -80,7 +84,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
       <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r) }} />
     </TestLayer>,
   );
-  return { core, sends, routes, settings, to: (t) => act(() => c.to(t)) };
+  return { core, sends, routes, settings, to: (t) => act(() => c.to(t)), botState: (bot, state) => act(() => { for (const l of feed) l({ subject: { kind: "bots", id: bot }, state, since: 0 }); }) };
 }
 
 const block = (id: string) => document.querySelector(`[data-block="${id}"]`) as HTMLElement | null;
@@ -240,6 +244,25 @@ describe("a block, pressed", () => {
     expect(h.core.calls.filter((c) => c.method === "app.openIn")).toEqual([{ method: "app.openIn", params: { program: "moss", what: { kind: "bot", bot: "moss" } } }]);
   });
 
+  test("a bot's face follows its live state from the activity feed, and says it in words", async () => {
+    const h = mount({ playedTo: 8_000 });
+    await waitFor(() => expect(block("bot:moss")).not.toBeNull());
+    expect(block("bot:moss")!.querySelector(".cv-face")!.getAttribute("data-state")).toBe("idle");
+    h.botState("moss", "thinking");
+    await waitFor(() => expect(block("bot:moss")!.querySelector(".cv-face")!.getAttribute("data-state")).toBe("thinking"));
+    expect(within(block("bot:moss")!).getByText("bot · Thinking")).toBeDefined();
+  });
+
+  test("a mark is bare: no tile; a black-and-white brand's block sets no colour (the theme's text colour)", async () => {
+    const T0 = 1_781_270_000_000;
+    mount({ scene: [{ at: 0, event: { type: "session_changed", ts: T0, session: { id: "s_o", kind: "coding", computer: "Studio", status: "prompting", startedAt: T0, updatedAt: T0, title: "Port the parser", backend: "opencode", startedBy: { kind: "user" } } } }], playedTo: 0 });
+    await waitFor(() => expect(block("s_o")).not.toBeNull());
+    expect(block("s_o")!.style.getPropertyValue("--brand")).toBe("");
+    const mark = block("s_o")!.querySelector(".cv-mark")!;
+    expect(mark.getAttribute("data-mono")).toBe("true");
+    expect(mark.parentElement!.classList.contains("cv-row")).toBe(true);
+  });
+
   test("blocks are a list, each announced with its state and reachable from the keyboard", async () => {
     mount({ playedTo: 8_000 });
     await waitFor(() => expect(block("s_b")).not.toBeNull());
@@ -247,7 +270,7 @@ describe("a block, pressed", () => {
     const items = within(list).getAllByRole("listitem");
     expect(items.length).toBe(5);
     expect(within(list).getByRole("button", { name: "Docs pass, Codex · GPT 6 · medium, Waiting · 1 background job" })).toBeDefined();
-    expect(within(list).getByRole("button", { name: "MOSS, bot" })).toBeDefined();
+    expect(within(list).getByRole("button", { name: "MOSS, bot, Idle" })).toBeDefined();
     for (const b of within(list).getAllByRole("button")) expect(b.tagName).toBe("BUTTON");
   });
 
