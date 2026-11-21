@@ -1,7 +1,8 @@
 // The agent mark: the plugin's icon as an image only, a `currentColor` glyph as a mask in the backend's colour or the text's,
 // our letter mark otherwise (spec revision 20, §9.5; the owner's final picks in the logos' READY.md).
 import { describe, expect, test } from "bun:test";
-import { AgentMark } from "../src/ui";
+import { AgentMark, botFaceLook } from "../src/ui";
+import { makeBot } from "../src/ui/faces";
 import { agentMark, isChromatic } from "../src/ui/marks";
 
 const svg = (fill: string) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path fill="${fill}" d="M0 0h8v8z"/></svg>`).toString("base64");
@@ -52,5 +53,25 @@ describe("agentMark", () => {
   test("black, white and grey have no hue", () => {
     expect(["#000000", "#ffffff", "#8a8f98", "#1F1F1F"].map(isChromatic)).toEqual([false, false, false, false]);
     expect(["#D97757", "#484FF6", "#4D6BFE"].map(isChromatic)).toEqual([true, true, true]);
+  });
+});
+
+describe("botFaceLook: a bot's face as the faces kit resolves it", () => {
+  // The three sample bots (the session canvas's gallery): pinned traits, and the rest drawn from the name.
+  const SAMPLES = [
+    { name: "MOSS", face: { shape: "tile", color: "coral", eyes: "round" } },
+    { name: "Pip", face: { shape: "drop", color: "sky", eyes: "tall", temper: "restless" } },
+    { name: "Juno", face: { shape: "gem", color: "mint", eyes: "dot", temper: "slow" } },
+  ] as const;
+
+  test("answers as the kit's makeBot does, for the pins and for the name alone", () => {
+    for (const s of SAMPLES) {
+      for (const face of [s.face, undefined]) {
+        const kit = makeBot(s.name, face ?? {});
+        expect(botFaceLook(s.name, face)).toEqual({ shape: kit.shape, colorName: kit.colorName, color: kit.color, eyes: kit.eye.kind, temper: kit.temper });
+      }
+    }
+    expect(SAMPLES.map((s) => botFaceLook(s.name, s.face).color)).toEqual(["#F0694C", "#4A9CEC", "#3DBE8B"]);
+    expect(botFaceLook("Pip", { color: "#a1b2c3" }).color).toBe("#A1B2C3");
   });
 });

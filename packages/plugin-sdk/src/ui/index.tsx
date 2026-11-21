@@ -24,7 +24,7 @@ import type {
 import { CALLBACK_KEY, type DragOffer, type LayerBridge, type LayerMessage, type MenuItem, type MountContext, type MountInfo, type OpenTarget, type SpotItem, type SpotView, type SurfaceEnvironment, type SurfaceRequest, type ThemeSheet, type StringTable, type SpotEntryView, type PendingQuestion, type UserSendTarget, type ShellMethod } from "./bridge";
 import { EMPTY_STRINGS, translate } from "./strings";
 import { agentMark, type AgentMarkProps, type BotFaceProps } from "./marks";
-import { FaceCanvas } from "./faces";
+import { FaceCanvas, makeBot } from "./faces";
 
 export * from "./bridge";
 export { agentMark, AGENT_MARK_NEUTRAL, isChromatic, type AgentMarkLook, type AgentMarkProps, type BotFaceProps } from "./marks";
@@ -1573,6 +1573,14 @@ export function BotFace({ bot, name, face, size = 40, state = "idle" }: BotFaceP
   const shownName = name ?? rec?.name ?? bot;
   const pins = face ?? rec?.face;
   return <FaceCanvas name={shownName} face={pins} mood={state} size={size} surface="page" />;
+}
+
+/** A bot's face as MOSS's faces kit resolves it, for a part that shows something in the face's own colour beside it (the
+ *  session canvas paints a bot's light and lines this colour): from its name and its record's pins (`bot.records`), any
+ *  trait left out drawn from the name, as `BotFace` draws it. Pure: the kit's own `makeBot`, no rules of its own. */
+export function botFaceLook(name: string, face?: BotFaceProps["face"]): { shape: string; colorName: string; color: string; eyes: string; temper: string } {
+  const b = makeBot(name, (face ?? {}) as Parameters<typeof makeBot>[1]);
+  return { shape: b.shape, colorName: b.colorName, color: b.color, eyes: b.eye.kind, temper: b.temper };
 }
 
 /** An agent backend's mark (spec revision 20, §9.5): the icon its plugin ships, drawn as an image only (never markup in the
