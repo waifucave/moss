@@ -1,4 +1,4 @@
-// The session canvas's acceptance rows of lane CA (spec revision 20, §9.5; the `canvas-app` unit, a home of its own: it installs a plugin and starts MOSS; lane CM's cross-session row is in canvas-step.ts, the shared `canvas` unit): MOSS Code from source over its own home, the start page a plugin's
+// The session canvas's acceptance rows of lane CA (spec revision 20, §9.5; the `canvas-app` unit, a home of its own; lane CM's row is in canvas-step.ts): MOSS Code from source over its own home,
 // `main` entry keyed `start` (lane CA's rows here use a fixture plugin, `fixtures/acceptance-canvas`, until the canvas plugin of lane CP
 // has its own). Lanes CG, CM and CP add their rows to this table beside CA's.
 //
@@ -198,8 +198,7 @@ async function sessionRow(s: Ctx): Promise<string> {
   const page = await waitDoc(s, "the plugin's start page", "[data-canvas-start]", 60_000);
   const before = new Set((await c.request<{ sessions: SessionView[] }>("session.list", {})).sessions.map((v) => v.id));
   await page.click("[data-canvas-go]");
-  const said = await page.waitFor<string>("the page's answer to Start", "document.querySelector('[data-canvas-said]')?.textContent || null", 60_000);
-  if (/refused|no recent/.test(said)) x.fail(`the start through the door was refused: ${said}`);
+  // The window takes the new session's tab at once, so the page is gone before it can say anything: the engine's list is the answer.
   const made = await x.until("the new session in the engine's list", 30_000, async () => (await c.request<{ sessions: SessionView[] }>("session.list", {})).sessions.find((v) => !before.has(v.id) && v.kind === "coding"), 400);
   const wantModel = options.models.find((m) => m.id !== options.default?.model && m.efforts.length > 0) ?? options.models[0]!;
   const wantEffort = wantModel.efforts[wantModel.efforts.length - 1];
