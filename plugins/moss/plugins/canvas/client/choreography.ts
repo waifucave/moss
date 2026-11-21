@@ -1,72 +1,27 @@
-// A message's trip on the canvas as ONE motion (the owner, 2026-11-21: "the animations should morph when the sent light
-// arrives there instead of just that basic pulse in the dot"). Pure: what is drawn, where, and when; the view draws it
-// with CSS animations only.
+// The canvas as one circuit (the owner, 2026-11-21: "i want like a unified effect"): a block's outline and the lines
+// between blocks are the same wire, the points are junctions on it, and ONE light lives on it (light.ts). Pure: the
+// paths and the times; the view moves the light along them with CSS only.
 //
-// The trip is one path walked by one bright crest at a constant speed, so it has no seam:
-//   leave   a short stretch of the sender's own outline, running into its connection point;
-//   (dot)   the sender's dot fills as the crest passes through it;
-//   line    the line itself, from the sender's point to the receiver's;
-//   (dot)   the receiver's dot fills as the crest passes through it;
-//   arrive  from the receiver's point the light runs along its outline both ways, its colour morphing from the sender's
-//           to the receiver's; the two halves meet on the far side and fade out.
-// A receiver that is running takes the light as its own running light: only the counter-clockwise half runs, and its
-// circling light starts at the connection point the moment the crest arrives (`handover`), turning on clockwise.
-// The person's message has no sender on the canvas: only the arrival.
+// * Running: the light circulating on the block's own loop (`loop`), at the light's one speed.
+// * A message: the same light on ONE path made of the sender's outline up to its point, the line, and the receiver's
+//   outline from its point on (`trip`). From a running sender it starts where the sender's own light is at that moment,
+//   so the circulating light is seen to take the branch (the loop keeps circulating). From an idle one it gathers half
+//   way round its loop and runs to the point. At the receiver it either becomes the receiver's own circulating light
+//   (`handover`: the path ends at the point, where the receiver's loop light starts at that moment) or laps the
+//   receiver's loop once, its colour turning into the receiver's, easing out to nothing (an idle receiver; a waiting
+//   one, over its dashes; one already running, joining its light).
+import { LIGHT_LENGTH, LIGHT_SPEED } from "./light";
 import type { Point, Rect } from "./layout";
 import type { Port } from "./Block";
 
-/** The corner radius of a block's outline (styles.css `--moss-radius-large`, 12px; a bot's 14px). */
+/** The corner radius of a block's outline (`--moss-radius-large`, 12px; a bot's 14px). */
 export const OUTLINE_RADIUS = 12;
-/** How much of the sender's outline lights before its point. */
-export const LEAVE_LENGTH = 72;
-/** The bright crest's length. */
-export const CREST = 64;
-/** The crest's speed, px a second: a usual trip (about 70 + 120 + 340 px) takes about 1.7 s, as the wave did. */
-export const SPEED = 330;
-/** Where the running light's crest sits on its turning layer (styles.css: its full colour from 80% to 92% of the turn). */
-export const RING_CREST_DEG = 317;
 
-export type SegmentKind = "leave" | "line" | "arrive-cw" | "arrive-ccw";
-
-export interface Segment {
-  kind: SegmentKind;
-  /** The path the crest walks, in the world's pixels. */
-  d: string;
-  length: number;
-  /** When the crest's head reaches its start, seconds from the trip's start, and how long until its tail leaves its end. */
-  delay: number;
-  duration: number;
-  /** A colour run along it: from the sender's colour into the receiver's on the arrival. */
-  from: Point;
-  to: Point;
-  morph: boolean;
-}
-
-export interface DotFlash {
-  at: Point;
-  /** "sender" or "receiver". */
-  role: "sender" | "receiver";
-  delay: number;
-  duration: number;
-}
-
-export interface Choreography {
-  segments: Segment[];
-  dots: DotFlash[];
-  /** For a running receiver: where its running light starts (the angle of the connection point from the block's centre,
-   *  clockwise from the top, as its turning layer counts) and when (the crest's arrival). */
-  handover?: { angle: number; delay: number };
-  /** When the last of it has left the canvas. */
-  total: number;
-}
-
-// ---- A rounded rectangle's outline, walked from its top middle, clockwise ----
-
-function perimeter(r: Rect, radius: number): number {
+export function perimeter(r: Rect, radius = OUTLINE_RADIUS): number {
   return 2 * (r.w - 2 * radius) + 2 * (r.h - 2 * radius) + 2 * Math.PI * radius;
 }
 
-/** Where a block's point sits along its outline (arc length from the top middle, clockwise). */
+/** Where a block's point sits along its outline: arc length from the top middle, clockwise. */
 export function portDistance(r: Rect, port: Port, radius = OUTLINE_RADIUS): number {
   const arc = (Math.PI * radius) / 2;
   const right = r.w / 2 - radius + arc + (r.h / 2 - radius);
@@ -75,7 +30,7 @@ export function portDistance(r: Rect, port: Port, radius = OUTLINE_RADIUS): numb
   return port === "t" ? 0 : port === "r" ? right : port === "b" ? bottom : left;
 }
 
-/** The point at arc length `s` (any real number, taken round the outline). */
+/** The point at arc length `s` round the outline (any real number). */
 export function outlinePoint(r: Rect, s: number, radius = OUTLINE_RADIUS): Point {
   const P = perimeter(r, radius);
   let d = ((s % P) + P) % P;
@@ -110,84 +65,122 @@ export function outlinePoint(r: Rect, s: number, radius = OUTLINE_RADIUS): Point
   return { x: x0 + radius + d, y: y0 };
 }
 
-/** A path along the outline from arc length `from` for `length` px, clockwise (`dir` 1) or counter-clockwise (-1). */
-export function outlinePath(r: Rect, from: number, length: number, dir: 1 | -1, radius = OUTLINE_RADIUS): string {
-  const steps = Math.max(2, Math.ceil(length / 4));
-  const n = (v: number) => Math.round(v * 10) / 10;
-  const pts: string[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const p = outlinePoint(r, from + dir * (length * i) / steps, radius);
-    pts.push(`${n(p.x)},${n(p.y)}`);
-  }
-  return `M${pts[0]} L${pts.slice(1).join(" ")}`;
+/** Points along the outline from arc length `from`, `length` px clockwise, one every ~3px. */
+function outlinePoints(r: Rect, from: number, length: number, radius: number): Point[] {
+  const steps = Math.max(1, Math.ceil(length / 3));
+  return Array.from({ length: steps + 1 }, (_, i) => outlinePoint(r, from + (length * i) / steps, radius));
 }
 
-/** The angle of a point from the block's centre, clockwise from the top, as the turning layer counts. */
-export function portAngle(port: Port): number {
-  return port === "t" ? 0 : port === "r" ? 90 : port === "b" ? 180 : 270;
+const n = (v: number) => Math.round(v * 10) / 10;
+const pathOf = (pts: readonly Point[]) => `M${pts.map((p) => `${n(p.x)},${n(p.y)}`).join(" L")}`;
+const lengthOf = (pts: readonly Point[]) => pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i]!.x, p.y - pts[i]!.y), 0);
+
+/** A block's own loop: its whole outline from the top middle, clockwise, closed. */
+export function loopPath(r: Rect, radius = OUTLINE_RADIUS): { d: string; length: number } {
+  const pts = outlinePoints(r, 0, perimeter(r, radius), radius);
+  return { d: `${pathOf(pts)} Z`, length: perimeter(r, radius) };
+}
+
+/** Where the running light's head is after `seconds` on a loop it started on with its head at `start` (arc length). */
+export function headAfter(r: Rect, start: number, seconds: number, radius = OUTLINE_RADIUS): number {
+  const P = perimeter(r, radius);
+  return (((start + seconds * LIGHT_SPEED) % P) + P) % P;
 }
 
 export interface TripInput {
-  /** The sender's block and point; absent for the person's message. */
-  sender?: { rect: Rect; port: Port; radius?: number };
-  receiver: { rect: Rect; port: Port; radius?: number; running: boolean };
-  /** The line between the two points and its length. */
-  line?: { d: string; length: number; from: Point; to: Point };
+  /** The sender: its block, its point, and where its running light's head is now (absent: it isn't running). */
+  sender?: { rect: Rect; port: Port; radius?: number; head?: number };
+  /** The line from the sender's point to the receiver's: its points in order (absent for the person's message). */
+  line?: readonly Point[];
+  /** The receiver; `handover` when its own running light starts with this message. */
+  receiver: { rect: Rect; port: Port; radius?: number; handover: boolean };
 }
 
-/** The whole trip. Times are at `SPEED` px a second; a segment's crest is visible from when its head reaches the
- *  segment's start until its tail leaves the segment's end. */
-export function choreograph(t: TripInput): Choreography {
-  const segments: Segment[] = [];
-  const dots: DotFlash[] = [];
-  const time = (px: number) => px / SPEED;
-  let at = 0;
-  const seg = (kind: SegmentKind, d: string, length: number, start: number, from: Point, to: Point, morph: boolean) =>
-    segments.push({ kind, d, length, delay: time(start), duration: time(length + CREST), from, to, morph });
+export interface Trip {
+  /** The one path the light walks, and its length. */
+  d: string;
+  length: number;
+  /** How far the light moves, px: off the path's end (a lap that fades), or until its head reaches it (a handover, where
+   *  the whole light is on the receiver's loop and the receiver's own light takes its place, on the same spot). */
+  travel: number;
+  /** Seconds from the trip's start: the head at the sender's point, at the receiver's point, and the light gone. */
+  depart: number;
+  arrive: number;
+  end: number;
+  /** The light gathers (fades in) over its first seconds: an idle sender's lap, or the person's message coming in. */
+  gather: number;
+  /** A lap that fades: from the arrival, over the lap, to nothing. */
+  fade?: { at: number; dur: number };
+  handover: boolean;
+  /** For a handover: where the receiver's own light's head starts (arc length round its loop) and when. */
+  loopStart?: { at: number; delay: number };
+  /** The points it passes, and when its head is at each. */
+  dots: { role: "sender" | "receiver"; at: Point; time: number }[];
+  /** The three parts of the path apart, for reduced motion's highlight of each in turn (no travel). */
+  parts: { kind: "sender" | "line" | "receiver"; d: string; time: number }[];
+}
+
+/** A message's trip, all at the light's one speed. */
+export function trip(t: TripInput): Trip {
+  const pts: Point[] = [];
+  const parts: Trip["parts"] = [];
+  let depart = 0;
+  let gather = LIGHT_LENGTH / LIGHT_SPEED;
+  let senderDot: Point | undefined;
   if (t.sender !== undefined && t.line !== undefined) {
     const sr = t.sender.radius ?? OUTLINE_RADIUS;
+    const P = perimeter(t.sender.rect, sr);
     const sp = portDistance(t.sender.rect, t.sender.port, sr);
-    // The outline before the point, clockwise into it.
-    seg("leave", outlinePath(t.sender.rect, sp - LEAVE_LENGTH, LEAVE_LENGTH, 1, sr), LEAVE_LENGTH, 0, outlinePoint(t.sender.rect, sp - LEAVE_LENGTH, sr), t.line.from, false);
-    at = LEAVE_LENGTH;
-    dots.push({ at: t.line.from, role: "sender", delay: time(at), duration: time(CREST) });
-    seg("line", t.line.d, t.line.length, at, t.line.from, t.line.to, false);
-    at += t.line.length;
+    // Running: from where its own light's head is, clockwise to the point (the light takes the branch as it passes).
+    // Idle: one lap round its loop, gathering as it goes.
+    let run = t.sender.head === undefined ? P : (((sp - t.sender.head) % P) + P) % P;
+    if (run < 4) run += P;
+    const onSender = outlinePoints(t.sender.rect, sp - run, run, sr);
+    pts.push(...onSender);
+    parts.push({ kind: "sender", d: pathOf(onSender), time: 0 });
+    depart = run / LIGHT_SPEED;
+    gather = t.sender.head === undefined ? depart : 0;
+    senderDot = onSender[onSender.length - 1]!;
+    pts.push(...t.line.slice(1));
+    parts.push({ kind: "line", d: pathOf(t.line), time: depart });
   }
   const rr = t.receiver.radius ?? OUTLINE_RADIUS;
+  const RP = perimeter(t.receiver.rect, rr);
   const rp = portDistance(t.receiver.rect, t.receiver.port, rr);
-  const half = perimeter(t.receiver.rect, rr) / 2;
-  const portAt = outlinePoint(t.receiver.rect, rp, rr);
-  const far = outlinePoint(t.receiver.rect, rp + half, rr);
-  dots.push({ at: portAt, role: "receiver", delay: time(at), duration: time(CREST) });
-  // Into the receiver's outline, both ways, its colour turning into the receiver's; a running receiver's clockwise
-  // half is its own running light, which starts here.
-  if (!t.receiver.running) seg("arrive-cw", outlinePath(t.receiver.rect, rp, half, 1, rr), half, at, portAt, far, true);
-  seg("arrive-ccw", outlinePath(t.receiver.rect, rp, half, -1, rr), half, at, portAt, far, true);
-  const total = Math.max(...segments.map((s) => s.delay + s.duration));
+  const receiverDot = outlinePoint(t.receiver.rect, rp, rr);
+  const before = lengthOf(pts);
+  const arrive = before / LIGHT_SPEED;
+  // On the receiver: the light's own length (then the receiver's light is it), or a whole lap that fades.
+  const onReceiver = outlinePoints(t.receiver.rect, rp, t.receiver.handover ? LIGHT_LENGTH : RP, rr);
+  if (pts.length === 0) pts.push(onReceiver[0]!);
+  pts.push(...onReceiver.slice(1));
+  parts.push({ kind: "receiver", d: pathOf(outlinePoints(t.receiver.rect, rp, RP, rr)), time: arrive });
+  const length = lengthOf(pts);
+  const travel = t.receiver.handover ? length : length + LIGHT_LENGTH;
+  const dots: Trip["dots"] = [];
+  if (senderDot !== undefined) dots.push({ role: "sender", at: senderDot, time: depart });
+  dots.push({ role: "receiver", at: receiverDot, time: arrive });
   return {
-    segments,
+    d: pathOf(pts),
+    length,
+    travel,
+    depart,
+    arrive,
+    end: travel / LIGHT_SPEED,
+    gather,
+    ...(t.receiver.handover ? {} : { fade: { at: arrive, dur: (length - before) / LIGHT_SPEED } }),
+    handover: t.receiver.handover,
+    ...(t.receiver.handover ? { loopStart: { at: (rp + LIGHT_LENGTH) % RP, delay: length / LIGHT_SPEED } } : {}),
     dots,
-    ...(t.receiver.running ? { handover: { angle: portAngle(t.receiver.port), delay: time(at) } } : {}),
-    total,
+    parts,
   };
 }
 
-/** What is lit at `t` seconds: each segment's lit stretch (arc lengths along it), and the dots lit. For the tests: the
- *  light is never in two unconnected places. */
-export function litAt(c: Choreography, t: number): { kind: SegmentKind; from: number; to: number }[] {
-  const out: { kind: SegmentKind; from: number; to: number }[] = [];
-  for (const s of c.segments) {
-    const head = (t - s.delay) * SPEED;
-    const tail = head - CREST;
-    const from = Math.max(0, tail);
-    const to = Math.min(s.length, head);
-    if (to > from) out.push({ kind: s.kind, from, to });
-  }
-  return out;
-}
-
-/** The rotation that puts the running light's crest at `angle` (the turning layer's start). */
-export function ringStart(angle: number): number {
-  return (((angle - RING_CREST_DEG) % 360) + 360) % 360;
+/** Which part of the path the light's head is on at `seconds` (or "gone" once it has run off the end). */
+export function headOn(tr: Trip, seconds: number): "sender" | "line" | "receiver" | "gone" {
+  const at = seconds * LIGHT_SPEED;
+  if (at >= tr.length) return "gone";
+  if (at < tr.depart * LIGHT_SPEED) return "sender";
+  if (at < tr.arrive * LIGHT_SPEED) return "line";
+  return "receiver";
 }

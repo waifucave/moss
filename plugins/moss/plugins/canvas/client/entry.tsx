@@ -86,6 +86,7 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
       links={graph.links}
       backends={graph.backends}
       botNames={graph.botNames}
+      botFaces={graph.botFaces}
       botStates={graph.botStates}
       rows={graph.rows}
       here={graph.here}

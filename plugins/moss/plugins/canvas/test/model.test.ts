@@ -85,7 +85,11 @@ describe("the model of the sample scene", () => {
     expect(iconed.byId.get("sub:s_a:call_explore_1")!.meta).toBe("Claude Haiku 5");
     expect(iconed.byId.get("s_a")!.agent).toBe("Claude Code");
     expect(a.brand).toBe(looks.get("claude-code")!.color!);
-    expect(end.byId.get(botBlockId("moss"))!.brand).toBe(MOSS_CORAL);
+    // A bot: its face's own colour, as the faces kit resolves it (from its name here; from its record's pins below).
+    expect(end.byId.get(botBlockId("moss"))!.brand).toBe("#4A9CEC");
+    const sessions = sceneAt(SAMPLE_SESSION_SCENE, 20_000).sessions;
+    expect(buildModel(sessions, looks, new Map([["moss", "MOSS"]]), new Map(), new Map([["moss", { color: "coral" }]])).byId.get(botBlockId("moss"))!.brand).toBe(MOSS_CORAL);
+    expect(buildModel(sessions, looks, new Map([["moss", "Juno"]]), new Map(), new Map([["moss", { color: "mint" }]])).byId.get(botBlockId("moss"))!.brand).toBe("#3DBE8B");
     // Codex: both its colours (a gradient). MOSS's own agent: the Shards mark's gold when its record names none (coral is
     // the bots'). A black-and-white brand, or an unknown backend: no colour (the theme's text colour), never a grey.
     expect([end.byId.get("s_b")!.brand, end.byId.get("s_b")!.brand2]).toEqual(["#484FF6", "#7893F9"]);

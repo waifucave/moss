@@ -90,6 +90,9 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
 const block = (id: string) => document.querySelector(`[data-block="${id}"]`) as HTMLElement | null;
 const head = (id: string) => block(id)!.querySelector(".cv-head") as HTMLButtonElement;
 
+/** The end of a light's run, as the browser reports it (the trip ends on its `cv-run`, not its colour turn). */
+const runEnd = () => Object.assign(new Event("animationend", { bubbles: true }), { animationName: "cv-run" });
+
 describe("the canvas plays the sample scene", () => {
   test("blocks appear as sessions start; the child and the subagent join their parent; the bot's session joins the bot", async () => {
     const h = mount();
@@ -123,15 +126,20 @@ describe("the canvas plays the sample scene", () => {
     await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')).not.toBeNull());
     const trips = [...document.querySelectorAll(".cv-trip")] as SVGGElement[];
     const wave = trips[trips.length - 1]!;
-    // One trip: out of the sender's outline, through its point, down the line, through the receiver's point and round
-    // its outline; in the sender's colour (Claude Code's) turning into the receiver's (Codex's).
-    expect([...wave.querySelectorAll("[data-segment]")].map((s) => s.getAttribute("data-segment"))).toEqual(["leave", "line", "arrive-cw", "arrive-ccw"]);
+    // One light on one path: the sender's loop to its point, the line, the receiver's loop; in the sender's colour
+    // (Claude Code's) turning into the receiver's (Codex's). The same light as a running block's: the same dashes.
+    expect([...wave.querySelectorAll(".cv-part")].map((s) => s.getAttribute("data-part"))).toEqual(["sender", "line", "receiver"]);
+    const tripDashes = wave.querySelectorAll(".cv-light").length;
+    const loop = document.querySelector(".cv-loop")!;
+    expect(tripDashes).toBe(loop.querySelectorAll(".cv-light").length);
+    expect(tripDashes).toBeGreaterThan(20);
+    expect(new Set([...wave.querySelectorAll(".cv-light")].map((p) => p.getAttribute("d"))).size).toBe(1);
     expect([...wave.querySelectorAll(".cv-dotflash")].map((d) => d.getAttribute("data-dot"))).toEqual(["sender", "receiver"]);
     expect(wave.getAttribute("style")).toContain("--brand: #D97757");
     expect(wave.getAttribute("style")).toContain("--to: #484FF6");
     expect(document.querySelector(".cv-hit")).toBeNull();
     const id = wave.getAttribute("data-wave")!;
-    act(() => { wave.querySelector("[data-last]")!.dispatchEvent(new Event("animationend", { bubbles: true })); });
+    act(() => { wave.querySelector("[data-last]")!.dispatchEvent(runEnd()); });
     await waitFor(() => expect(document.querySelector(`.cv-trip[data-wave="${id}"]`)).toBeNull());
     // The line stays, and says how many links it carried (a steady mark: what an acceptance row reads).
     expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("1");
@@ -139,28 +147,34 @@ describe("the canvas plays the sample scene", () => {
     await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("2"));
   });
 
-  test("a message to a running block hands over: no clockwise arrival, the running light starts at the arrival point", async () => {
+  test("a message that starts its receiver running becomes the receiver's own light: its loop takes the light's place", async () => {
     const h = mount();
     h.to(1_000);
     await waitFor(() => expect(block("s_a")?.getAttribute("data-motion")).toBe("running"));
-    // The person's message at 1 s reached s_a as it began to run (both at 1 s): its ring took the light from its left point.
+    // The person's message at 1 s reached s_a as it began to run (both at 1 s): s_a's loop starts from that light.
+    const loop = document.querySelector('.cv-loop[data-loop="s_a"]') as SVGGElement;
+    expect(loop.getAttribute("data-from")).not.toBeNull();
+    const trip = document.querySelector(".cv-trip") as SVGGElement;
+    expect(trip.getAttribute("data-handover")).not.toBeNull();
+    // It takes its place when the message's light is wholly on s_a's loop: that light's whole run, at the one speed.
+    const dash = trip.querySelector(".cv-light") as SVGPathElement;
+    expect(loop.querySelector(".cv-light")!.getAttribute("style")).toContain(`--delay: ${dash.style.getPropertyValue("--dur")}`);
+    // A message to a block already running doesn't restart its light: it laps and eases out over it.
     h.to(9_000);
-    await waitFor(() => expect(block("s_a")!.querySelector(".cv-ring[data-handover]")).not.toBeNull());
-    const ring = block("s_a")!.querySelector(".cv-ring[data-handover]") as HTMLElement;
-    // s_b sits below s_a: the message arrives at s_a's bottom point (180°); the turning layer starts there.
-    expect(ring.style.getPropertyValue("--a0")).toBe(`${(180 - 317 + 360) % 360}deg`);
-    const trip = [...document.querySelectorAll(".cv-trip")].pop()!;
-    expect([...trip.querySelectorAll("[data-segment]")].map((s) => s.getAttribute("data-segment"))).toEqual(["leave", "line", "arrive-ccw"]);
+    await waitFor(() => expect(document.querySelectorAll(".cv-trip").length).toBeGreaterThan(1));
+    const later = [...document.querySelectorAll(".cv-trip")].pop()!;
+    expect(later.getAttribute("data-handover")).toBeNull();
+    expect(later.querySelector(".cv-trip__fade[data-fade]")).not.toBeNull();
   });
 
   test("running shows the light, waiting the dashes, running wins; at the end, still and idle, nothing animates", async () => {
     const h = mount();
     h.to(1_000);
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("running"));
-    expect(block("s_a")!.querySelector(".cv-ring")).not.toBeNull();
+    expect(document.querySelector('.cv-loop[data-loop="s_a"]')).not.toBeNull();
     h.to(6_000);
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("waiting"));
-    expect(block("s_a")!.querySelector(".cv-ring")).toBeNull();
+    expect(document.querySelector('.cv-loop[data-loop="s_a"]')).toBeNull();
     expect(block("s_a")!.querySelector(".cv-march")).not.toBeNull();
     h.to(9_000);
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("running"));
@@ -168,8 +182,8 @@ describe("the canvas plays the sample scene", () => {
     h.to(20_000);
     await waitFor(() => expect(block("s_a")!.getAttribute("data-motion")).toBe("still"));
     // Every trip ends (as the browser would end its last stretch's animation).
-    for (const last of [...document.querySelectorAll(".cv-trip [data-last]")]) act(() => { last.dispatchEvent(new Event("animationend", { bubbles: true })); });
-    await waitFor(() => expect(document.querySelectorAll(".cv-ring, .cv-march, .cv-trip").length).toBe(0));
+    for (const last of [...document.querySelectorAll(".cv-trip [data-last]")]) act(() => { last.dispatchEvent(runEnd()); });
+    await waitFor(() => expect(document.querySelectorAll(".cv-loop, .cv-march, .cv-trip").length).toBe(0));
   });
 
   test("sessions that ended before the canvas opened fold into a count that expands; ones that end while it is open stay", async () => {

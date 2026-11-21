@@ -399,38 +399,10 @@
   }
 }
 
-/* Running: light going round the block. A square layer a little larger than an open block's diagonal turns behind it,
-   clipped to a ring just outside the card (a transform: the compositor's, no repaint). */
-.cv-node[data-motion="running"] .cv-card {
-  border-color: color-mix(in srgb, var(--c1) 34%, transparent);
-  box-shadow: 0 0 20px color-mix(in srgb, var(--c1) 18%, transparent);
-}
-
-.cv-ring {
-  position: absolute;
-  inset: -2px;
-  overflow: hidden;
-  border-radius: calc(var(--moss-radius-large) + 2px);
-  background: color-mix(in srgb, var(--c1) 14%, transparent);
-  pointer-events: none;
-}
-
-.cv-ring::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 440px;
-  height: 440px;
-  margin: -220px 0 0 -220px;
-  background: conic-gradient(transparent 0 50%, color-mix(in srgb, var(--c1) 35%, transparent) 66%, var(--c1) 80%, var(--c2) 92%, transparent 100%);
-  content: "";
-  transform: rotate(var(--a0, 0deg));
-  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite;
-}
-
-/* Taking over from an arriving message: hidden until the light arrives at its point, then turning on from there. */
-.cv-ring[data-handover]::before {
-  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite, cv-ring-in 0.15s linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) both;
+/* Running: the one light circulating on the block's own loop of wire (the canvas's overlay, `.cv-light--loop`). An
+   open block, drawn larger, keeps its own border and shows it running in its colour. */
+.cv-node[data-open][data-motion="running"] .cv-card {
+  border-color: color-mix(in srgb, var(--c1) 60%, transparent);
 }
 
 .cv-node[data-motion="running"] .cv-dot {
@@ -471,24 +443,6 @@
   border: 2px solid color-mix(in srgb, var(--c1) 70%, transparent);
   background: transparent;
   animation: cv-breathe 2.4s ease-in-out infinite;
-}
-
-@keyframes cv-spin {
-  from {
-    transform: rotate(var(--a0, 0deg));
-  }
-  to {
-    transform: rotate(calc(var(--a0, 0deg) + 1turn));
-  }
-}
-
-@keyframes cv-ring-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 @keyframes cv-beat {
@@ -571,65 +525,132 @@
   display: none;
 }
 
-/* ---- A message: one bright crest from the sender's outline, through its point, down the line, through the receiver's
-   point and round the receiver's outline, turning into the receiver's colour (choreography.ts). Each stretch is a dash
-   of the crest's length walking its path at one speed, its time and delay set per stretch, so the trip has no seam.
-   `--cv-slow` (the gallery's slow motion) stretches every time alike. ---- */
+/* ---- The wire and the one light (light.ts, choreography.ts) ----
+   The canvas is one circuit: every block's outline is drawn here, in the lines' own stroke, and the light is ONE thing
+   that moves along it: round a running block's loop, and for a message along one path (the sender's loop to its point,
+   the line, the receiver's loop). Its dashes walk their path together at one speed; `--cv-slow` (the gallery's slow
+   motion) stretches every time alike. */
 
+.cv-wire {
+  fill: none;
+  stroke: var(--cv-line);
+  stroke-width: 1.6;
+}
+
+/* The card's own border gives way to the wire (an open card, drawn larger, keeps its own). */
+.cv-node:not([data-open]) .cv-card {
+  border-color: transparent;
+}
+
+.cv-loop,
 .cv-trip {
   --c1: var(--brand, var(--moss-color-text));
   --c2: var(--brand2, var(--c1));
   --r1: var(--to, var(--moss-color-text));
+  --r2: var(--to2, var(--r1));
 }
 
-.cv-trip__c1 {
-  stop-color: var(--c1);
-}
-
-.cv-trip__c2,
-.cv-trip__from-sender {
-  stop-color: var(--c2);
-}
-
-.cv-trip__to-receiver {
-  stop-color: var(--r1);
-}
-
-.cv-seg {
+.cv-light {
   fill: none;
-  stroke-linecap: round;
-  stroke-dasharray: var(--crest) calc(var(--len) + var(--crest));
-  stroke-dashoffset: var(--crest);
-  animation: cv-seg calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) both;
-}
-
-.cv-seg--light {
+  stroke: var(--pc);
   stroke-width: 2.4;
+  stroke-opacity: var(--a);
+  stroke-dasharray: var(--pl) var(--gap);
+  stroke-dashoffset: var(--o0);
+  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards;
 }
 
-.cv-seg--glow {
-  stroke-width: 8;
-  filter: blur(4px);
-  opacity: 0.4;
+.cv-light--glow {
+  stroke-width: 7;
+  stroke-opacity: 0.32;
+  filter: blur(3px);
 }
 
-/* A point the crest passes through fills with its colour, no brighter than the line beside it. */
+/* Round a loop for ever. One that takes a message's light's place is hidden until that moment. */
+.cv-light--loop {
+  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) infinite, cv-on calc(0.001s * var(--cv-slow, 1)) step-end calc(var(--delay) * var(--cv-slow, 1)) backwards;
+}
+
+/* On a trip each dash turns from the sender's colours to the receiver's as it passes the receiver's point. */
+.cv-light--morph {
+  animation: cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards, cv-morph calc(var(--morph-dur) * var(--cv-slow, 1)) ease-in-out calc(var(--morph-at) * var(--cv-slow, 1)) both;
+}
+
+/* An idle sender's light gathers as it laps its loop (the person's message as it comes in), and a lap that isn't taken
+   up eases out to nothing on the receiver's loop. */
+.cv-trip__gather[data-gather] {
+  animation: cv-gather calc(var(--gather) * var(--cv-slow, 1)) ease-in both;
+}
+
+.cv-trip__fade[data-fade] {
+  animation: cv-fade calc(var(--fade) * var(--cv-slow, 1)) ease-in-out calc(var(--fade-at) * var(--cv-slow, 1)) both;
+}
+
+/* A point the light passes through fills with it, no brighter than the light beside it. */
 .cv-dotflash {
   fill: var(--c2);
   opacity: 0;
-  animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) both;
+  animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
 }
 
-.cv-dotflash[data-dot="sender"] {
-  fill: var(--c1);
+.cv-dotflash[data-dot="receiver"] {
+  fill: var(--r1);
 }
 
-@keyframes cv-seg {
+/* The trip's parts apart: only reduced motion shows them, each in turn. */
+.cv-part {
+  display: none;
+  fill: none;
+  stroke: var(--c1);
+  stroke-width: 2.4;
+}
+
+.cv-part[data-part="receiver"] {
+  stroke: var(--r1);
+}
+
+@keyframes cv-run {
   from {
-    stroke-dashoffset: var(--crest);
+    stroke-dashoffset: var(--o0);
   }
   to {
-    stroke-dashoffset: calc(-1 * var(--len));
+    stroke-dashoffset: var(--o1);
+  }
+}
+
+@keyframes cv-on {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+
+@keyframes cv-morph {
+  from {
+    stroke: var(--pc);
+  }
+  to {
+    stroke: var(--rc);
+  }
+}
+
+@keyframes cv-gather {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes cv-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 
@@ -639,7 +660,7 @@
     opacity: 0;
   }
   50% {
-    opacity: 1;
+    opacity: 0.9;
   }
 }
 
@@ -656,10 +677,12 @@
 }
 
 /* A hidden window: everything holds still. */
-.cv[data-hidden] .cv-ring::before,
+.cv[data-hidden] .cv-light,
+.cv[data-hidden] .cv-trip__gather,
+.cv[data-hidden] .cv-trip__fade,
 .cv[data-hidden] .cv-dot,
 .cv[data-hidden] .cv-march__rect,
-.cv[data-hidden] .cv-seg,
+.cv[data-hidden] .cv-part,
 .cv[data-hidden] .cv-dotflash,
 .cv[data-hidden] .cv-eye {
   animation-play-state: paused;
@@ -1017,8 +1040,8 @@
 /* ---- Reduced motion: each motion a steady state ---- */
 
 @media (prefers-reduced-motion: reduce) {
-  .cv-ring::before {
-    background: linear-gradient(135deg, var(--c1), var(--c2));
+  /* The running light holds still where it starts on its loop. */
+  .cv-light--loop {
     animation: none;
   }
 
@@ -1028,10 +1051,16 @@
     animation: none;
   }
 
-  /* A brief highlight of each stretch in turn (sender, its point, the line, the receiver's point, its outline), no travel. */
-  .cv-seg {
-    stroke-dasharray: none;
-    stroke-dashoffset: 0;
+  /* A message: the sender's loop, the line, the receiver's loop, each a brief highlight in turn, no travel. */
+  .cv-trip .cv-light,
+  .cv-trip__gather,
+  .cv-trip__fade {
+    display: none;
+  }
+
+  .cv-part {
+    display: inline;
+    opacity: 0;
     animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
   }
 

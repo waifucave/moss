@@ -48,7 +48,7 @@ function World({ scene, at = 0, live = true, initial, params, onRoute, botState 
     const api = {
       settings: { get: async () => undefined, set: async () => undefined },
       sessions: { history: async (s: string) => ({ events: LAST_LINES[s] ?? [], hasMore: false }) },
-      bots: { list: async () => BOTS.map((b) => ({ id: b.id, name: b.name })) },
+      bots: { list: async () => BOTS.map((b) => ({ id: b.id, name: b.name, face: b.face })) },
       // The activity feed: each bot's live state, which its face shows.
       activity: { list: async () => BOTS.map((b) => ({ subject: { kind: "bots", id: b.id }, state: typeof botState === "string" ? botState : botState[b.id] ?? "idle", since: 0 })), watch: () => () => undefined },
     };
@@ -98,29 +98,34 @@ function botsScene(): SessionSceneStep[] {
   return steps;
 }
 
-/** One message's trip, in one of three cases: the receiver starts running because of it; stays idle (a final report to an
- *  idle parent); is waiting on background jobs. The message leaves at `delay` ms. */
-function tripScene(kind: "run" | "idle" | "wait", delay: number): SessionSceneStep[] {
+/** One message's trip. Arrival cases: the receiver starts running because of it (`run`); stays idle, a final report to an
+ *  idle parent (`idle`); is waiting on background jobs (`wait`). Sending cases: from a running sender (`send-run`) and from
+ *  an idle one (`send-idle`), both to an idle receiver. The message leaves at `delay` ms. */
+type TripKind = "run" | "idle" | "wait" | "send-run" | "send-idle";
+function tripScene(kind: TripKind, delay: number): SessionSceneStep[] {
   const v = (id: string, at: number, extra: Partial<SessionView>): SessionSceneStep =>
     ({ at, event: { type: "session_changed", ts: T0 + at, session: { id, kind: "coding", computer: "Studio", status: "idle", startedAt: T0, updatedAt: T0 + at, startedBy: { kind: "user" }, ...extra } as SessionView } });
-  const sender = kind === "idle"
-    ? v("t_child", 0, { id: "t_child", kind: "agent", title: "Write the auth tests", backend: "claude-code", model: "anthropic/claude-sonnet-5", parent: "t_recv", startedBy: { kind: "session", session: "t_recv" }, status: "prompting", startedAt: T0 + 5 })
-    : v("t_send", 0, { title: "Fix the login flow", backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "high", status: "prompting" });
+  const child = (at: number, status: SessionView["status"]) => v("t_child", at, { id: "t_child", kind: "agent", title: "Write the auth tests", backend: "claude-code", model: "anthropic/claude-sonnet-5", parent: "t_recv", startedBy: { kind: "session", session: "t_recv" }, status, startedAt: T0 + 5 });
+  const sender = kind === "idle" ? child(0, "prompting")
+    : v("t_send", 0, { title: "Fix the login flow", backend: "claude-code", model: "anthropic/claude-opus-5-5", effort: "high", status: kind === "send-idle" ? "idle" : "prompting" });
   const receiver = v("t_recv", 0, { title: kind === "idle" ? "Plan the auth work" : "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", ...(kind === "wait" ? { waiting: { tasks: 1, children: 0 } } : {}) });
   const from = kind === "idle" ? { end: "session" as const, session: "t_child", kind: "agent" } : { end: "session" as const, session: "t_send", kind: "coding" };
   const steps: SessionSceneStep[] = [receiver, sender, { at: delay, event: { type: "session_link", ts: T0 + delay, from, to: { session: "t_recv", kind: "coding" }, link: kind === "idle" ? "report" : "message" } }];
   if (kind === "run") steps.push(v("t_recv", delay, { title: "Docs pass", backend: "codex", model: "openai/gpt-6", effort: "medium", status: "prompting" }));
-  if (kind === "idle") steps.push(v("t_child", delay, { id: "t_child", kind: "agent", title: "Write the auth tests", backend: "claude-code", model: "anthropic/claude-sonnet-5", parent: "t_recv", startedBy: { kind: "session", session: "t_recv" }, status: "stopped", startedAt: T0 + 5 }));
+  // The child reports, then stops: it was running as it sent.
+  if (kind === "idle") steps.push(child(delay + 50, "stopped"));
   return steps;
 }
 
-const CASES = [
-  { kind: "run", title: "The receiver starts running", notes: "The arriving light becomes its running light." },
-  { kind: "idle", title: "The receiver stays idle", notes: "A final report to an idle parent: the light meets on the far side and fades." },
-  { kind: "wait", title: "The receiver is waiting", notes: "Its dashes take the light once round." },
-] as const;
+const CASES: readonly { kind: TripKind; title: string; notes: string }[] = [
+  { kind: "run", title: "Arriving: the receiver starts running", notes: "The arriving light joins its loop and is its running light from then on." },
+  { kind: "idle", title: "Arriving: the receiver stays idle", notes: "A final report to an idle parent: the light laps its loop once, turning into its colour, and eases out." },
+  { kind: "wait", title: "Arriving: the receiver is waiting", notes: "The light laps once over its dashes and eases out into them." },
+  { kind: "send-run", title: "Sending: the sender is running", notes: "Its own circulating light takes the branch at its point; the loop keeps circulating." },
+  { kind: "send-idle", title: "Sending: the sender is idle", notes: "Light gathers as it laps the sender's loop, then leaves through its point." },
+];
 
-/** The three cases side by side, with Replay and slow motion. */
+/** The five cases side by side, with Replay and slow motion. */
 function Trips() {
   const [run, setRun] = useState(0);
   const [slow, setSlow] = useState(false);
@@ -129,7 +134,7 @@ function Trips() {
       <div className="g-live__bar">
         <button type="button" onClick={() => setRun((n) => n + 1)}>Replay</button>
         <label><input type="checkbox" checked={slow} onChange={(e) => { setSlow(e.target.checked); setRun((n) => n + 1); }} /> Slow motion (4×)</label>
-        <span>One gesture: out of the sender's outline, through its point, down the line, through the receiver's point and round its outline, turning into the receiver's colour.</span>
+        <span>One light on one wire: a block's loop, its point, the line, the other block's point and loop, at one speed.</span>
       </div>
       <div className="g-cases">
         {CASES.map((c) => (
@@ -168,8 +173,8 @@ function manyScene(): SessionSceneStep[] {
 
 export const STORIES: Story[] = [
   { id: "scene", title: "The sample scene, live", notes: "SAMPLE_SESSION_SCENE played on real timers. Press Replay to watch it again.", render: () => <Live /> },
-  { id: "trips", title: "A message crossing", notes: "The three cases side by side. Replay, or slow it down to judge the hand-over into the running light.", render: () => <Trips /> },
-  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 300)} /> })),
+  { id: "trips", title: "A message crossing", notes: "The three arrival cases and the two sending cases side by side. Replay, or slow it down: it should read as one light throughout.", render: () => <Trips /> },
+  ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 0)} /> })),
   { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
   { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
   { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },

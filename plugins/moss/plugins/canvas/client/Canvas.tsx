@@ -4,11 +4,12 @@
 // crossing, and it all pauses while the window is hidden.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BlockView, type Port } from "./Block";
-import { choreograph, CREST, OUTLINE_RADIUS, ringStart, type Choreography, type TripInput } from "./choreography";
+import { headAfter, loopPath, OUTLINE_RADIUS, perimeter, trip, type Trip, type TripInput } from "./choreography";
+import { glowPiece, LIGHT_LENGTH, LIGHT_SPEED, lightPieces } from "./light";
 import { bounds, EMPTY_LAYOUT, place, rectOf, SIZE, type Layout, type Point, type Rect } from "./layout";
 import { livePeers, type LinkState, type Wave } from "./links";
 import type { BackendLook, BotState } from "./look";
-import { buildModel, type Block, type CanvasModel, type Edge } from "./model";
+import { buildModel, type Block, type BotFacePins, type CanvasModel, type Edge } from "./model";
 import { NewSessionPanel, type PanelStep, type Starter } from "./NewSessionPanel";
 import type { BackendRow, FolderToken, RecentStart } from "./preselect";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
@@ -27,6 +28,7 @@ export interface CanvasProps {
   links: LinkState;
   backends: ReadonlyMap<string, BackendLook>;
   botNames?: ReadonlyMap<string, string>;
+  botFaces?: ReadonlyMap<string, BotFacePins>;
   /** Each bot's state from the activity feed (its face's expression). */
   botStates?: ReadonlyMap<string, BotState>;
   rows: readonly BackendRow[] | undefined;
@@ -80,6 +82,16 @@ function controls(from: Point, fp: Port, to: Point, tp: Port): [Point, Point] {
   return [out(from, fp, d), out(to, tp, d)];
 }
 
+/** Points along the line's curve, from one point to the other (24 steps). */
+export function curvePoints(from: Point, fp: Port, to: Point, tp: Port): Point[] {
+  const [c1, c2] = controls(from, fp, to, tp);
+  return Array.from({ length: 25 }, (_, i) => {
+    const t = i / 24;
+    const u = 1 - t;
+    return { x: u * u * u * from.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * to.x, y: u * u * u * from.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * to.y };
+  });
+}
+
 export function curve(from: Point, fp: Port, to: Point, tp: Port): string {
   const [c1, c2] = controls(from, fp, to, tp);
   const n = (v: number) => Math.round(v * 10) / 10;
@@ -104,7 +116,7 @@ export function curveLength(from: Point, fp: Port, to: Point, tp: Port): number 
 }
 
 export function Canvas(p: CanvasProps) {
-  const model = useMemo<CanvasModel>(() => buildModel(p.sessions, p.backends, p.botNames, p.botStates), [p.sessions, p.backends, p.botNames, p.botStates]);
+  const model = useMemo<CanvasModel>(() => buildModel(p.sessions, p.backends, p.botNames, p.botStates, p.botFaces), [p.sessions, p.backends, p.botNames, p.botStates, p.botFaces]);
 
   // Ended blocks fold into a count, but one that ended while the canvas was open stays until it is opened again: the
   // person sees it end (and its last report arrive). Its slot stays reserved either way, so nothing moves.
@@ -271,12 +283,43 @@ export function Canvas(p: CanvasProps) {
     return () => document.removeEventListener("visibilitychange", on);
   }, []);
 
-  // A running receiver's running light starts where the newest message arrives at it (choreography.ts).
-  const handovers = new Map<string, { id: number; start: number; delay: number }>();
-  for (const w of p.links.waves) {
-    const trip = tripOf({ wave: w, edges, ports, rects, model });
-    if (trip?.handover !== undefined) handovers.set(w.to, { id: w.id, start: ringStart(trip.handover.angle), delay: trip.handover.delay });
+  // ---- The one light: each running block's loop, each message's trip ----
+  // A trip is planned once, when its wave is first seen: from where the sender's own light is at that moment (read from
+  // its loop's animation); and when the receiver starts running with this message, its loop light is planned to take
+  // the message's light's place (kept while it runs, so its timing never changes under it).
+  const loopEls = useRef(new Map<string, SVGGElement>());
+  const loopFrom = useRef(new Map<string, { start: number; delay: number; id: number }>());
+  const runningSince = useRef(new Map<string, number>());
+  const trips = useRef(new Map<number, Trip>());
+  const now = typeof performance !== "undefined" ? performance.now() : 0;
+  for (const b of model.blocks) {
+    if (b.motion === "running") { if (!runningSince.current.has(b.id)) runningSince.current.set(b.id, now); }
+    else { runningSince.current.delete(b.id); loopFrom.current.delete(b.id); }
   }
+  for (const w of p.links.waves) {
+    if (trips.current.has(w.id)) continue;
+    const ends = waveEnds({ wave: w, edges, ports, rects });
+    if (ends === undefined) continue;
+    const sender = ends.from === undefined ? undefined : model.byId.get(ends.from.id);
+    const receiver = model.byId.get(ends.to.id);
+    let head: number | undefined;
+    if (sender?.motion === "running") {
+      const el = loopEls.current.get(sender.id);
+      const piece = el?.querySelector(".cv-light") as (SVGPathElement & { getAnimations?: () => Animation[] }) | null | undefined;
+      const progress = piece?.getAnimations?.()[0]?.effect?.getComputedTiming().progress;
+      const r = rects.get(sender.id)!;
+      const start = Number(el?.dataset.start ?? 0);
+      head = typeof progress === "number" ? headAfter(r, start, (progress * perimeter(r, radiusOf(sender))) / LIGHT_SPEED, radiusOf(sender)) : start;
+    }
+    const since = receiver === undefined ? undefined : runningSince.current.get(receiver.id);
+    const handover = receiver?.motion === "running" && since !== undefined && now - since < 100 && !loopFrom.current.has(receiver.id);
+    const t = tripOf({ wave: w, edges, ports, rects, model }, head, handover);
+    if (t === undefined) continue;
+    trips.current.set(w.id, t);
+    if (t.loopStart !== undefined) loopFrom.current.set(w.to, { start: t.loopStart.at, delay: t.loopStart.delay, id: w.id });
+  }
+  for (const id of [...trips.current.keys()]) if (!p.links.waves.some((w) => w.id === id)) trips.current.delete(id);
+
   const mains = model.blocks.filter((b) => b.type === "main" && b.motion !== "ended");
   const running = mains.filter((b) => b.motion === "running").length;
   const waiting = mains.filter((b) => b.motion === "waiting").length;
@@ -346,7 +389,6 @@ export function Canvas(p: CanvasProps) {
                 open={open === b.id}
                 joined={joined.get(b.id) ?? NONE}
                 dragging={drag?.id === b.id}
-                {...(handovers.get(b.id) !== undefined ? { handover: handovers.get(b.id)! } : {})}
                 {...(p.links.heard[`to:${b.id}`] !== undefined ? { heard: p.links.heard[`to:${b.id}`]! } : {})}
                 {...(b.session !== undefined && lines[b.session] !== undefined ? { line: lines[b.session] } : {})}
                 onToggle={toggle}
@@ -359,7 +401,16 @@ export function Canvas(p: CanvasProps) {
             ))}
           </ul>
           <svg className="cv-over" width={worldW} height={worldH} aria-hidden="true">
-            {p.links.waves.map((w) => <Trip key={w.id} wave={w} edges={edges} ports={ports} rects={rects} model={model} onDone={p.onWaveDone} />)}
+            {/* The wire: every block's outline in the lines' own stroke (an open block draws its own). */}
+            {shown.filter((b) => b.id !== open).map((b) => <path key={`o-${b.id}`} className="cv-wire" data-wire={b.id} d={loopPath(rects.get(b.id)!, radiusOf(b)).d} />)}
+            {shown.filter((b) => b.motion === "running" && b.id !== open).map((b) => {
+              const from = loopFrom.current.get(b.id);
+              return <Loop key={`l-${b.id}-${from?.id ?? 0}`} block={b} rect={rects.get(b.id)!} {...(from !== undefined ? { from } : {})} onEl={(el) => { if (el) loopEls.current.set(b.id, el); else loopEls.current.delete(b.id); }} />;
+            })}
+            {p.links.waves.map((w) => {
+              const t = trips.current.get(w.id);
+              return t === undefined ? <Gone key={w.id} id={w.id} onDone={p.onWaveDone} /> : <TripView key={w.id} wave={w} t={t} onDone={p.onWaveDone} />;
+            })}
           </svg>
         </div>
       </div>
@@ -369,6 +420,12 @@ export function Canvas(p: CanvasProps) {
 }
 
 const NONE: ReadonlySet<Port> = new Set();
+
+/** A wave whose blocks aren't shown: it ends at once. */
+function Gone({ id, onDone }: { id: number; onDone(id: number): void }) {
+  useEffect(() => onDone(id), [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
 
 interface WaveGeometry { wave: Wave; edges: readonly Edge[]; ports: ReadonlyMap<string, [Port, Port]>; rects: ReadonlyMap<string, Rect>; model: CanvasModel }
 
@@ -392,60 +449,92 @@ export function waveEnds(g: Omit<WaveGeometry, "model">): { from?: { id: string;
   return { from: { id: fromId, at: portAt(rf, fp), port: fp }, to: { id: toId, at: portAt(rt, tp), port: tp } };
 }
 
-/** A wave's colours as the blocks': the sender's (`--brand`, `--brand2`) and the receiver's (`--to`, `--to2`); none for a
- *  black-and-white brand (the text colour then). */
+/** A wave's colours: the sender's (`--brand`, `--brand2`) and the receiver's (`--to`, `--to2`); none for a black-and-white
+ *  brand (the text colour then). */
 const waveColours = (w: Wave): Record<string, string> => ({
   ...(w.color !== undefined ? { "--brand": w.color } : {}), ...(w.color2 !== undefined ? { "--brand2": w.color2 } : {}),
   ...(w.toColor !== undefined ? { "--to": w.toColor } : {}), ...(w.toColor2 !== undefined ? { "--to2": w.toColor2 } : {}),
 });
 
-const radiusOf = (b: Block | undefined) => (b?.type === "bot" ? 14 : OUTLINE_RADIUS);
+export const radiusOf = (b: Block | undefined) => (b?.type === "bot" ? 14 : OUTLINE_RADIUS);
 
-/** A wave's whole trip (choreography.ts), or undefined when its blocks are not shown. */
-export function tripOf(g: WaveGeometry): Choreography | undefined {
+/** A wave's trip (choreography.ts): `head` is where the sender's running light is now (undefined: idle), `handover`
+ *  whether the receiver's own light starts from the arrival. Undefined when its blocks are not shown. */
+export function tripOf(g: WaveGeometry, head: number | undefined, handover: boolean): Trip | undefined {
   const ends = waveEnds(g);
   if (ends === undefined) return undefined;
-  const receiver = g.model.byId.get(ends.to.id);
-  const rr = g.rects.get(ends.to.id)!;
-  const input: TripInput = { receiver: { rect: rr, port: ends.to.port, radius: radiusOf(receiver), running: receiver?.motion === "running" } };
+  const input: TripInput = { receiver: { rect: g.rects.get(ends.to.id)!, port: ends.to.port, radius: radiusOf(g.model.byId.get(ends.to.id)), handover } };
   if (ends.from !== undefined) {
-    const rf = g.rects.get(ends.from.id)!;
-    input.sender = { rect: rf, port: ends.from.port, radius: radiusOf(g.model.byId.get(ends.from.id)) };
-    input.line = { d: curve(ends.from.at, ends.from.port, ends.to.at, ends.to.port), length: curveLength(ends.from.at, ends.from.port, ends.to.at, ends.to.port), from: ends.from.at, to: ends.to.at };
+    input.sender = { rect: g.rects.get(ends.from.id)!, port: ends.from.port, radius: radiusOf(g.model.byId.get(ends.from.id)), ...(head !== undefined ? { head } : {}) };
+    input.line = curvePoints(ends.from.at, ends.from.port, ends.to.at, ends.to.port);
   }
-  return choreograph(input);
+  return trip(input);
 }
 
 const sec = (s: number) => `${Math.round(s * 1000) / 1000}s`;
+const px = (v: number) => `${Math.round(v * 10) / 10}px`;
+const mixOf = (a: string, b: string, m: number) => (m <= 0 ? `var(${a})` : m >= 1 ? `var(${b})` : `color-mix(in srgb, var(${b}) ${Math.round(m * 100)}%, var(${a}))`);
 
-/** A message's trip, drawn over the blocks: one bright crest leaving the sender's outline through its point, down the
- *  line, through the receiver's point and round its outline, turning into the receiver's colour. The trip ends (and the
- *  wave goes) when its last stretch's animation ends. */
-function Trip(g: WaveGeometry & { onDone(id: number): void }) {
-  const c = tripOf(g);
-  useEffect(() => { if (c === undefined) g.onDone(g.wave.id); }, [c === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (c === undefined) return null;
-  const last = c.segments.reduce((a, s, i) => (s.delay + s.duration > c.segments[a]!.delay + c.segments[a]!.duration ? i : a), 0);
-  const id = g.wave.id;
+/** The ONE light (light.ts) walking a path: its dashes, tail to head, moving together at the light's one speed, and its
+ *  glow. On a loop (`loop`) it circulates for ever with its head starting at `start`; on a trip it walks the path once
+ *  from before its start, `travel` px, and is hidden again after. `morph` turns each dash from the sender's colours to
+ *  the receiver's as it passes the receiver's point. */
+function Light({ d, length, travel, loop, start = 0, delay = 0, morph, onEnd }: { d: string; length: number; travel: number; loop?: boolean; start?: number; delay?: number; morph?: number; onEnd?: () => void }) {
+  const dashes = [...lightPieces().map((p, i) => ({ ...p, key: String(i), glow: false })), { ...glowPiece(), a: 1, mix: 1, key: "glow", glow: true }];
   return (
-    <g className="cv-trip" data-wave={id} style={waveColours(g.wave) as CSSProperties}>
-      {c.segments.map((s, i) => {
-        const grad = `cv-trip-${id}-${i}`;
-        const style = { "--len": `${s.length}px`, "--crest": `${CREST}px`, "--dur": sec(s.duration), "--delay": sec(s.delay) } as CSSProperties;
+    <>
+      {dashes.map((p, i) => {
+        const o0 = p.length + p.back - start;
+        const style = {
+          "--pl": px(p.length + 0.6), "--gap": px(loop ? Math.max(0, length - p.length - 0.6) : length + 2 * LIGHT_LENGTH), "--a": p.a,
+          "--o0": px(o0), "--o1": px(o0 - travel), "--dur": sec(travel / LIGHT_SPEED), "--delay": sec(delay),
+          "--pc": mixOf("--c1", "--c2", p.mix), "--rc": mixOf("--r1", "--r2", p.mix),
+          ...(morph !== undefined ? { "--morph-at": sec(morph + p.back / LIGHT_SPEED), "--morph-dur": sec((p.length + LIGHT_LENGTH * 0.25) / LIGHT_SPEED) } : {}),
+        } as CSSProperties;
+        const last = !loop && i === 0;
         return (
-          <g key={s.kind} data-segment={s.kind}>
-            <linearGradient id={grad} gradientUnits="userSpaceOnUse" x1={s.from.x} y1={s.from.y} x2={s.to.x} y2={s.to.y}>
-              <stop className={s.morph ? "cv-trip__from-sender" : "cv-trip__c1"} offset="0" />
-              <stop className={s.morph ? "cv-trip__to-receiver" : "cv-trip__c2"} offset="1" />
-            </linearGradient>
-            <path className="cv-seg cv-seg--glow" d={s.d} stroke={`url(#${grad})`} style={style} />
-            <path className="cv-seg cv-seg--light" d={s.d} stroke={`url(#${grad})`} style={style} {...(i === last ? { "data-last": "" } : {})} onAnimationEnd={i === last ? () => g.onDone(id) : undefined} />
-          </g>
+          <path
+            key={p.key}
+            className={`cv-light${p.glow ? " cv-light--glow" : ""}${loop ? " cv-light--loop" : ""}${morph !== undefined ? " cv-light--morph" : ""}`}
+            d={d}
+            style={style}
+            {...(last ? { "data-last": "" } : {})}
+            onAnimationEnd={last ? (e) => { if (e.animationName === "cv-run") onEnd?.(); } : undefined}
+          />
         );
       })}
-      {c.dots.map((d) => (
-        <circle key={d.role} className="cv-dotflash" data-dot={d.role} cx={d.at.x} cy={d.at.y} r={3} style={{ "--dur": sec(d.duration), "--delay": sec(d.delay) } as CSSProperties} />
+    </>
+  );
+}
+
+/** A block's own circulating light while it runs: the same light as a message's, on its own loop of wire. One that
+ *  started with a message starts where that message's light is on its loop, the moment the message's light is wholly on
+ *  it, so it takes its place on the same spot. */
+function Loop({ block, rect, from, onEl }: { block: Block; rect: Rect; from?: { start: number; delay: number }; onEl(el: SVGGElement | null): void }) {
+  const loop = loopPath(rect, radiusOf(block));
+  const style = { ...(block.brand !== undefined ? { "--brand": block.brand } : {}), ...(block.brand2 !== undefined ? { "--brand2": block.brand2 } : {}), "--on": sec(from?.delay ?? 0) } as CSSProperties;
+  return (
+    <g className="cv-loop" data-loop={block.id} data-start={Math.round((from?.start ?? 0) * 10) / 10} data-from={from !== undefined || undefined} style={style} ref={onEl}>
+      <Light d={loop.d} length={loop.length} travel={loop.length} loop start={from?.start ?? 0} delay={from?.delay ?? 0} />
+    </g>
+  );
+}
+
+/** A message's trip: the one light on one path (the sender's loop to its point, the line, the receiver's loop), turning
+ *  into the receiver's colours on its loop; it becomes the receiver's own light, or laps once and eases out to nothing. */
+function TripView({ wave, t, onDone }: { wave: Wave; t: Trip; onDone(id: number): void }) {
+  const style = { ...waveColours(wave), "--gather": sec(t.gather), ...(t.fade !== undefined ? { "--fade-at": sec(t.fade.at), "--fade": sec(t.fade.dur) } : {}) } as CSSProperties;
+  return (
+    <g className="cv-trip" data-wave={wave.id} data-handover={t.handover || undefined} style={style}>
+      <g className="cv-trip__gather" data-gather={t.gather > 0 || undefined}>
+        <g className="cv-trip__fade" data-fade={t.fade !== undefined || undefined}>
+          <Light d={t.d} length={t.length} travel={t.travel} morph={t.arrive} onEnd={() => onDone(wave.id)} />
+        </g>
+      </g>
+      {t.dots.map((d) => (
+        <circle key={d.role} className="cv-dotflash" data-dot={d.role} cx={d.at.x} cy={d.at.y} r={3} style={{ "--delay": sec(Math.max(0, d.time - 12 / LIGHT_SPEED)), "--dur": sec((LIGHT_LENGTH * 0.4) / LIGHT_SPEED) } as CSSProperties} />
       ))}
+      {t.parts.map((p) => <path key={p.kind} className="cv-part" data-part={p.kind} d={p.d} style={{ "--delay": sec(p.time) } as CSSProperties} />)}
     </g>
   );
 }
