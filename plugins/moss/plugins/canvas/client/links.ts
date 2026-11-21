@@ -38,9 +38,13 @@ export interface LinkState {
   peers: Edge[];
   waves: Wave[];
   seq: number;
+  /** How many links each line carried (by edge id), and how many of the person's messages each block got (`to:<block>`)
+   *  while the canvas was open: a steady mark beside the waves, which go once drawn. */
+  heard: Readonly<Record<string, number>>;
 }
 
-export const EMPTY_LINKS: LinkState = { peers: [], waves: [], seq: 0 };
+export const EMPTY_LINKS: LinkState = { peers: [], waves: [], seq: 0, heard: {} };
+const count = (heard: Readonly<Record<string, number>>, key: string) => ({ ...heard, [key]: (heard[key] ?? 0) + 1 });
 export const WAVE_STALE_MS = 10_000;
 export const WAVES_MAX = 48;
 
@@ -60,7 +64,7 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
   const id = state.seq + 1;
   if (link.from.end === "user") {
     const wave: Wave = { id, to, color: model.byId.get(to)!.brand, ts: link.ts, link: link.link };
-    return { peers: state.peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id };
+    return { peers: state.peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, `to:${to}`) };
   }
   const from = model.blockOfSession(link.from.session);
   if (from === undefined || from === to || !model.byId.has(from)) return { ...state, waves: fresh };
@@ -71,7 +75,7 @@ export function applyLink(state: LinkState, link: LinkEvent, model: CanvasModel)
     peers = [...peers, edge];
   }
   const wave: Wave = { id, edge: edge.id, from, to, color: model.byId.get(from)!.brand, ts: link.ts, link: link.link };
-  return { peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id };
+  return { peers, waves: [...fresh, wave].slice(-WAVES_MAX), seq: id, heard: count(state.heard, edge.id) };
 }
 
 /** A wave's view says it ended. */

@@ -30,6 +30,8 @@ export interface BlockViewProps {
   open: boolean;
   joined: ReadonlySet<Port>;
   dragging?: boolean;
+  /** How many of the person's messages it got while the canvas was open (a steady mark beside the point's light). */
+  heard?: number;
   /** The session's last line while open: undefined while it is read, null when it has none. */
   line?: string | null;
   onToggle(id: string): void;
@@ -59,6 +61,7 @@ export function BlockView(p: BlockViewProps) {
       data-open={open || undefined}
       data-dragging={p.dragging || undefined}
       data-block={b.id}
+      {...(p.heard !== undefined && p.heard > 0 ? { "data-heard": p.heard } : {})}
       style={style}
       onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}
     >

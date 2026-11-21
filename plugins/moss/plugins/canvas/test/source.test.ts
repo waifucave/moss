@@ -29,7 +29,9 @@ describe("the source", () => {
     const ids = new Set<string>();
     for (let i = 0; i < 1_000; i++) { many[`session-${i}`] = { x: i, y: i }; ids.add(`session-${i}`); }
     const kept = encodePlaces(many, ids);
-    expect(kept.length).toBeLessThanOrEqual(PLACES_MAX_CHARS);
+    // As the page's write measures it: the string's own JSON, quotes escaped (the layer's cap is 8,300).
+    expect(JSON.stringify(kept).length).toBeLessThanOrEqual(PLACES_MAX_CHARS);
+    expect(JSON.stringify(kept).length).toBeLessThanOrEqual(8_300);
     expect(JSON.parse(kept)["session-999"]).toEqual({ x: 999, y: 999 });
     expect(decodePlaces(kept)["session-999"]).toEqual({ x: 999, y: 999 });
     expect(decodePlaces("not json")).toEqual({});

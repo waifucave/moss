@@ -28,8 +28,10 @@ describe("the link bookkeeping", () => {
     const firstMessage = seen.findIndex((s) => s.link.from.end === "session" && s.link.from.session === "s_a" && s.link.to.session === "s_b");
     expect(seen[firstMessage - 1]!.state.peers).toEqual([]);
     expect(seen[firstMessage]!.state.peers.map((e) => e.id)).toEqual([peerId("s_a", "s_b")]);
-    // s_b answers s_a at 9 s: the same line, not a second.
+    // s_b answers s_a at 9 s: the same line, not a second; it carried two links.
     expect(play().links.peers.map((e) => e.id)).toEqual([peerId("s_a", "s_b")]);
+    expect(play().links.heard[peerId("s_a", "s_b")]).toBe(2);
+    expect(play().links.heard["to:s_a"]).toBe(1);
   });
 
   test("a wave runs on the line from the sender to the receiver, in the sender's colour", () => {

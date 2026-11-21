@@ -44,7 +44,7 @@ interface Harness {
   to(t: number): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[] } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
     "agent.backends": () => ({ backends: BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
@@ -54,6 +54,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
     "agent.start": () => ({ session: "s_new" }),
     "app.openIn": () => ({ opened: true, started: false }),
   };
+  for (const m of o.unserved ?? []) delete handlers[m];
   const core = fakeCore(handlers);
   const c = clock();
   playSessionScene(core, o.scene ?? SAMPLE_SESSION_SCENE, handlers, c.schedule);
@@ -125,8 +126,10 @@ describe("the canvas plays the sample scene", () => {
     expect(hit.getAttribute("data-travel")).toBe("true");
     act(() => { hit.dispatchEvent(new Event("animationend", { bubbles: true })); });
     await waitFor(() => expect(document.querySelector(`.cv-wave[data-wave="${id}"]`)).toBeNull());
-    // The line stays.
-    expect(document.querySelector('.cv-line[data-kind="peer"]')).not.toBeNull();
+    // The line stays, and says how many links it carried (a steady mark: what an acceptance row reads).
+    expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("1");
+    h.to(9_000);
+    await waitFor(() => expect(document.querySelector('.cv-line[data-kind="peer"]')!.getAttribute("data-links")).toBe("2"));
   });
 
   test("running shows the light, waiting the dashes, running wins; at the end, still and idle, nothing animates", async () => {
@@ -275,8 +278,10 @@ describe("+ New session", () => {
     await waitFor(() => expect(block("s_a")).not.toBeNull());
     const before = h.core.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "＋ New session" }));
-    // Asked inside the press (the app's dialog answers a press only).
-    expect(h.core.calls.slice(before).map((c) => c.method).sort()).toEqual(["agent.recent", "ui.pick"]);
+    // Asked inside the press: the last start at once, the recent folders as soon as it answers (the dialog's door
+    // answers a press only, within its second).
+    expect(h.core.calls.slice(before).map((c) => c.method)).toEqual(["agent.recent"]);
+    await waitFor(() => expect(h.core.calls.slice(before).map((c) => c.method)).toEqual(["agent.recent", "ui.pick"]));
     expect(h.core.calls.find((c) => c.method === "ui.pick")!.params).toEqual({ kind: "folder", use: "agent.start", recent: true, dialog: false });
     const panel = await screen.findByRole("dialog", { name: "New session" });
     await waitFor(() => expect(within(panel).getByRole("radio", { name: /Claude Code/ }).getAttribute("aria-checked")).toBe("true"));
@@ -307,6 +312,16 @@ describe("+ New session", () => {
     press(within(panel).getByRole("button", { name: "Create session" }));
     expect(h.core.calls.filter((c) => c.method === "agent.start").map((c) => c.params)).toEqual([{ backend: "gemini", root: "pick-9" }]);
   });
+});
+
+test("+ before the engine serves agent.recent: no folder dialog opens; the folder step asks for one", async () => {
+  const h = mount({ playedTo: 1_000, unserved: ["agent.recent"] });
+  fireEvent.click(await screen.findByRole("button", { name: "＋ New session" }));
+  const panel = await screen.findByRole("dialog", { name: "New session" });
+  await waitFor(() => expect(within(panel).getByRole("radio", { name: /MOSS's coding agent/ }).getAttribute("aria-checked")).toBe("true"));
+  expect(h.core.calls.filter((c) => c.method === "ui.pick")).toEqual([]);
+  expect(within(panel).getByText("Choose a folder to start in.")).toBeDefined();
+  expect((within(panel).getByRole("button", { name: "Create session" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 describe("the tab's corner", () => {
