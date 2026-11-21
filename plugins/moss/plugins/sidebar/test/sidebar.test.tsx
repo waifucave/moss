@@ -57,6 +57,8 @@ describe("the code side", () => {
     const h = setup({ route: { kind: "agent", agentId: "session-panels" } });
     const row = screen.getByRole("button", { name: /The panels as plugins/ });
     expect(row.getAttribute("aria-current")).toBe("page");
+    // The row names its session by id (what never changes as its title lands), for whatever finds it.
+    expect(row.getAttribute("data-session")).toBe("session-panels");
     expect(within(row).getByLabelText("On lane/f-m1, 14 files changed").textContent).toBe("14");
     fireEvent.click(screen.getByRole("button", { name: "New session in moss" }));
     expect(h.onNewSession).toHaveBeenCalledWith("moss");
