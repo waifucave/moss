@@ -39,6 +39,7 @@ import { appHello, devOverridesAllowed, pairEnv, readAppToken, readStartInfo } f
 import { daemonEndpoint, dial as dialDaemon, RpcCallError, type DaemonClient } from "./protocol/client";
 import { FileGrants, answersFor } from "./ui/file-grants";
 import { OptionalCalls } from "./pair/optional-calls";
+import { loadWithRetry } from "./pair/setup-retry";
 import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type CorePage } from "./core-pages";
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
@@ -1404,7 +1405,19 @@ function makePair(): Pair {
         restack();
       });
       // lane HS: once the registry is in, the mount applies; the host then says it is up.
-      return loadRegistry(client).then(() => mounted(client, hello));
+      // A reading that fails (the engine answered later than 10 s) is asked again, on a growing wait, while this connection is the
+      // app's; the first failure lets this setup return, as it did, and the window's mount is applied when a try succeeds.
+      let firstFailed: () => void = () => {};
+      const failedFirst = new Promise<void>((r) => { firstFailed = r; });
+      const loading = loadWithRetry({
+        load: () => loadRegistry(client), waits: [1_000, 2_000, 4_000, 8_000, 15_000], current: () => pair.client === client,
+        sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)), log, onFirstFailure: firstFailed,
+      });
+      return Promise.race([loading.then((ok) => ({ ok })), failedFirst.then(() => undefined)]).then((first) => {
+        if (first?.ok === true) return mounted(client, hello);
+        if (first === undefined) void loading.then((ok) => (ok && pair.client === client ? mounted(client, hello) : undefined)).catch((err) => log(`pair: the window's mount failed: ${why(err)}`));
+        return undefined;
+      });
     },
     onState: (s) => stateChanged(s),
     onDaemonQuit: (reason) => {
