@@ -449,8 +449,14 @@ async function blockRow(s: Ctx, cp: CpState): Promise<string> {
   // A bot's block: Open in MOSS (MOSS runs: CA's row 4 started it).
   if (s.mossCdp === undefined) x.fail("MOSS isn't running (CA's row 4 starts it)");
   const bot = await canvas.waitFor<string>("a bot's block", "document.querySelector('.cv-node[data-type=bot]')?.getAttribute('data-block') ?? null", 30_000);
-  // Every block in view (the view is still where the corner control centred it), the bot's among them.
-  await canvas.click(".cv-fit");
+  // The bot's block brought into view the person's way: the wheel pans the canvas (Fit stops at its least zoom).
+  const vp = await s.cdp.centerOf(doc, ".cv-viewport");
+  for (let i = 0; i < 20 && !(await canvas.eval<boolean>(inView(bot))); i++) {
+    const dy = await canvas.eval<number>(`(() => { const v = document.querySelector('.cv-viewport').getBoundingClientRect(); const b = document.querySelector(${JSON.stringify(`[data-block="${bot}"]`)}).getBoundingClientRect(); return (b.top + b.bottom) / 2 - (v.top + v.bottom) / 2; })()`);
+    const dx = await canvas.eval<number>(`(() => { const v = document.querySelector('.cv-viewport').getBoundingClientRect(); const b = document.querySelector(${JSON.stringify(`[data-block="${bot}"]`)}).getBoundingClientRect(); return (b.left + b.right) / 2 - (v.left + v.right) / 2; })()`);
+    await s.cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: vp!.x, y: vp!.y, deltaX: Math.max(-400, Math.min(400, dx)), deltaY: Math.max(-400, Math.min(400, dy)) }, doc);
+    await sleep(150);
+  }
   await canvas.waitFor("the bot's block in view", inView(bot), 10_000);
   await canvas.click(`[data-block="${bot}"] .cv-head`);
   await canvas.click(`[data-block="${bot}"] .cv-button`, "Open in MOSS");
