@@ -9,7 +9,8 @@
 // * A line from each block's parent to it (`child`, `bot`). Lines between two main sessions (`peer`) come from links
 //   (links.ts), not from here.
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { brandOf, metaLine, modelLabel, MOSS_CORAL, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
+import { faceColour } from "./faceColour";
+import { brandOf, metaLine, modelLabel, motionOf, statusLine, strongest, type BackendLook, type BotState, type Motion } from "./look";
 import { S } from "./strings";
 
 export type BlockType = "main" | "sub" | "bot";
@@ -66,6 +67,9 @@ export const subBlockId = (session: string, row: string) => `sub:${session}:${ro
 
 const isBotKind = (s: SessionView) => s.kind === "bot" || s.kind === "side-thread";
 
+/** A bot's face pins from its record (a shape and a colour; the rest is the face's own). */
+export interface BotFacePins { shape?: string; color?: string }
+
 /** The model of `sessions` (latest views by id), with each backend's look and each bot's name. Archived sessions are
  *  left out, as the sidebar leaves them out. */
 export function buildModel(
@@ -73,6 +77,7 @@ export function buildModel(
   backends: ReadonlyMap<string, BackendLook>,
   botNames: ReadonlyMap<string, string> = new Map(),
   botStates: ReadonlyMap<string, BotState> = new Map(),
+  botFaces: ReadonlyMap<string, BotFacePins> = new Map(),
 ): CanvasModel {
   const all = Object.values(sessions).filter((s) => s.archived !== true);
   const byId = new Map<string, Block>();
@@ -116,9 +121,11 @@ export function buildModel(
     const botState: BotState = fed ?? (motion === "running" ? "working" : "idle");
     // Its words: what the feed says it does itself (thinking, working, asking...), else, drawn waiting, what it waits on.
     const status = motion === "waiting" && botState === "idle" ? `${S.waiting} · ${started > 0 ? S.sessionsCount(started) : S.idle}` : S.botState[botState];
+    const title = botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1);
     add({
-      id: botBlockId(bot), type: "bot", bot, title: botNames.get(bot) ?? b.title ?? bot[0]!.toUpperCase() + bot.slice(1), meta: S.bot, status,
-      motion, brand: MOSS_CORAL, botState, startedAt: b.startedAt, messageable: false,
+      id: botBlockId(bot), type: "bot", bot, title, meta: S.bot, status,
+      // Its face's own colour, as MOSS's faces kit resolves it from its name and pins (faceColour.ts).
+      motion, brand: faceColour(botNames.get(bot) ?? title, botFaces.get(bot)), botState, startedAt: b.startedAt, messageable: false,
     });
   }
 

@@ -162,7 +162,7 @@ body {
 
 /* `#freeze=1` (the pictures only): headless captures don't advance CSS animations, so each is pinned part-way: the wave
    about halfway along its line, the receiving point lit, the light a third of the way round, the dashes moved on. */
-[data-freeze] .cv-ring::before {
+[data-freeze] .cv-light--loop {
   animation-delay: -0.9s;
   animation-play-state: paused;
 }
@@ -172,22 +172,36 @@ body {
   animation-play-state: paused;
 }
 
-/* `#t=<seconds>`: a message's trip pinned at that moment of it (each stretch at its own delay less the moment). */
-[data-trip-at] .cv-seg,
+/* `#t=<seconds>`: every animation pinned at that moment since it began (the pictures' trips start with their scene, so
+   the loops and the trip share one clock). */
+[data-trip-at] .cv-light,
 [data-trip-at] .cv-dotflash {
   animation-delay: calc(var(--delay) - var(--trip-t));
   animation-play-state: paused;
 }
 
-[data-trip-at] .cv-ring[data-handover]::before {
-  animation-delay: calc(var(--ring-delay) - var(--trip-t)), calc(var(--ring-delay) - var(--trip-t));
+[data-trip-at] .cv-light--loop {
+  animation-delay: calc(var(--delay) - var(--trip-t)), calc(var(--delay) - var(--trip-t));
+}
+
+[data-trip-at] .cv-light--morph {
+  animation-delay: calc(var(--delay) - var(--trip-t)), calc(var(--morph-at) - var(--trip-t));
+}
+
+[data-trip-at] .cv-trip__gather[data-gather] {
+  animation-delay: calc(0s - var(--trip-t));
+  animation-play-state: paused;
+}
+
+[data-trip-at] .cv-trip__fade[data-fade] {
+  animation-delay: calc(var(--fade-at) - var(--trip-t));
   animation-play-state: paused;
 }
 
 .g-cases {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 12px;
   min-height: 0;
   padding: 12px;

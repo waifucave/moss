@@ -10,13 +10,13 @@ const rules = parseCss(css);
 /** What may move, fade, blur or transform. The canvas holds no sealed frame anywhere (no card, no `Card*` element:
  *  approvals stay in the session's tab), so these are listed to say what each one is, not to fence a frame. */
 const LEAVES = [
-  ".cv-ring::before", // the light round a running block (rotates)
   ".cv-dot", // the status dot (breathes while waiting)
   ".cv-card", // an ended block, dimmed
-  ".cv-ring[data-handover]::before", // the running light taking over from an arriving message (appears at its point)
-  ".cv-seg", // a message's crest (a highlight with reduced motion)
-  ".cv-seg--glow", // its blurred glow
-  ".cv-dotflash", // a point the crest passes through
+  ".cv-light--glow", // the one light's blurred glow
+  ".cv-trip__gather[data-gather]", // an idle sender's light gathering (fades in)
+  ".cv-trip__fade[data-fade]", // a lap not taken up, easing out
+  ".cv-dotflash", // a point the light passes through
+  ".cv-part", // reduced motion: each part of a trip highlighted in turn
   ".cv-port", // a point showing as the cursor comes near
   ".cv-send", // disabled
   ".cv-chip", // an agent this computer lacks
@@ -27,10 +27,10 @@ const LEAVES = [
 /** Everything out of the flow, each named. Those that reach outside a block (its points, its ring, the 30px "near"
  *  area) are all inside `.cv-world`, which `.cv-viewport` clips: nothing reaches outside the part. */
 const POSITIONED = [
-  ".cv-viewport", ".cv-world", ".cv-lines,\n.cv-over", ".cv-node", ".cv-node::before", ".cv-ring", ".cv-ring::before", ".cv-march",
+  ".cv-viewport", ".cv-world", ".cv-lines,\n.cv-over", ".cv-node", ".cv-node::before", ".cv-march",
   ".cv-port", ".cv-panel", ".cv-empty",
 ];
-const INSIDE_THE_WORLD = new Set([".cv-node::before", ".cv-ring", ".cv-ring::before"]);
+const INSIDE_THE_WORLD = new Set([".cv-node::before"]);
 
 describe("the canvas stylesheet", () => {
   test("uses exactly the tokens tokens.ts names", () => {
@@ -62,30 +62,37 @@ describe("the canvas stylesheet", () => {
   test("animations run only on a running or waiting block and on a wave: a still canvas animates nothing", () => {
     const animated = rules.filter((r) => r.context.length === 0 && r.declarations.some((d) => d.property === "animation" && d.value !== "none")).map((r) => r.prelude);
     expect(animated.sort()).toEqual([
-      ".cv-dotflash", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot", ".cv-ring::before", ".cv-ring[data-handover]::before", ".cv-seg",
+      ".cv-dotflash", ".cv-march__rect", ".cv-node[data-motion=\"running\"] .cv-dot", ".cv-node[data-motion=\"waiting\"] .cv-dot",
+      ".cv-light", ".cv-light--loop", ".cv-light--morph", ".cv-trip__gather[data-gather]", ".cv-trip__fade[data-fade]",
       // A bot's face: the one thing that may move while no session runs, as it does in MOSS (the owner, 2026-11-21).
       ".cv-eye", ".cv-face[data-state=\"thinking\"] .cv-eye", ".cv-face[data-state=\"working\"] .cv-eye",
     ].sort());
-    // The ring and the dashes exist only while their block runs or waits (Block.tsx draws them then), and a wave or a
-    // hit only while a message crosses: so nothing here can run on a still canvas.
+    // A loop exists only while its block runs and the dashes while it waits (Canvas.tsx and Block.tsx draw them then),
+    // and a trip only while a message crosses: so nothing here can run on a still canvas.
   });
 
-  test("the running light turns with a transform (the compositor's), never by repainting a gradient's angle", () => {
-    const spin = rules.filter((r) => r.context.some((c) => c.startsWith("@keyframes cv-spin")));
-    expect(spin.flatMap((r) => r.declarations.map((d) => d.property))).toEqual(["transform", "transform"]);
+  test("one light: the running light and a message's light are the same dashes walking a path by one keyframe", () => {
+    const run = rules.filter((r) => r.context.some((c) => c.startsWith("@keyframes cv-run")));
+    expect(run.flatMap((r) => r.declarations.map((d) => d.property))).toEqual(["stroke-dashoffset", "stroke-dashoffset"]);
+    for (const sel of [".cv-light", ".cv-light--loop", ".cv-light--morph"]) {
+      const anim = rules.find((r) => r.context.length === 0 && r.prelude === sel)!.declarations.find((d) => d.property === "animation")!.value;
+      expect(anim.startsWith("cv-run calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1))")).toBe(true);
+    }
+    // No second technique: no conic or rotating ring.
+    expect(css).not.toContain("conic-gradient");
+    expect(css).not.toContain("@keyframes cv-spin");
     expect(css).not.toContain("@property");
   });
 
-  test("reduced motion: the ring is solid, the dashes and dots still, a wave a brief highlight", () => {
+  test("reduced motion: the light holds still, the dashes and dots too, a message each part highlighted in turn", () => {
     const reduced = rules.filter((r) => r.context.includes("@media (prefers-reduced-motion: reduce)"));
     const decl = (prelude: string) => reduced.find((r) => r.prelude === prelude)?.declarations ?? [];
-    expect(decl(".cv-ring::before")).toContainEqual({ property: "animation", value: "none" });
-    expect(decl(".cv-ring::before")).toContainEqual({ property: "background", value: "linear-gradient(135deg, var(--c1), var(--c2))" });
+    expect(decl(".cv-light--loop")).toContainEqual({ property: "animation", value: "none" });
+    expect(decl(".cv-trip .cv-light,\n  .cv-trip__gather,\n  .cv-trip__fade")).toContainEqual({ property: "display", value: "none" });
     expect(decl(".cv-eye,\n  .cv-face[data-state] .cv-eye")).toContainEqual({ property: "animation", value: "none" });
     expect(decl(".cv-node[data-motion=\"running\"] .cv-dot,\n  .cv-node[data-motion=\"waiting\"] .cv-dot,\n  .cv-march__rect")).toContainEqual({ property: "animation", value: "none" });
     // A message: each stretch in turn (its own delay), a brief highlight, no travel.
-    expect(decl(".cv-seg")).toContainEqual({ property: "animation", value: "cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both" });
-    expect(decl(".cv-seg")).toContainEqual({ property: "stroke-dasharray", value: "none" });
+    expect(decl(".cv-part")).toContainEqual({ property: "animation", value: "cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both" });
     expect(decl(".cv-dotflash")).toContainEqual({ property: "animation", value: "cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both" });
   });
 
@@ -99,6 +106,6 @@ describe("the canvas stylesheet", () => {
   test("a hidden window pauses every animation", () => {
     const paused = rules.find((r) => r.declarations.some((d) => d.property === "animation-play-state" && d.value === "paused"))!;
     const selectors = paused.prelude.split(",").map((s) => s.trim());
-    for (const animated of [".cv-ring::before", ".cv-dot", ".cv-march__rect", ".cv-seg", ".cv-dotflash", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
+    for (const animated of [".cv-light", ".cv-trip__gather", ".cv-trip__fade", ".cv-dot", ".cv-march__rect", ".cv-part", ".cv-dotflash", ".cv-eye"]) expect(selectors).toContain(`.cv[data-hidden] ${animated}`);
   });
 });

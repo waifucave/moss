@@ -8,6 +8,17 @@ import { useCore, usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { applyLink, EMPTY_LINKS, waveDone, type LinkEvent, type LinkState } from "./links";
 import type { BackendLook, BotState } from "./look";
+import type { BotFacePins } from "./model";
+
+/** A record's face pins, kept only as short strings (a shape and a colour). */
+function facePins(v: unknown): BotFacePins | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  const short = (x: unknown) => (typeof x === "string" && x.length <= 16 ? x : undefined);
+  const shape = short(o.shape);
+  const color = short(o.color);
+  return { ...(shape !== undefined ? { shape } : {}), ...(color !== undefined ? { color } : {}) };
+}
 import { buildModel } from "./model";
 import type { BackendRow } from "./preselect";
 
@@ -18,6 +29,8 @@ export interface GraphState {
   /** `agent.backends` as listed, for the + panel; undefined until it answers. */
   rows: readonly BackendRow[] | undefined;
   botNames: ReadonlyMap<string, string>;
+  /** Each bot's face pins from its record (its colour paints its block's light and its lines). */
+  botFaces: ReadonlyMap<string, BotFacePins>;
   /** Each bot's state from the activity feed (`activity.read.bots`): what its face shows. */
   botStates: ReadonlyMap<string, BotState>;
   /** This computer's name (`computer.list`'s `self`), for which agents it has. */
@@ -32,13 +45,13 @@ type Action =
   | { t: "link"; link: LinkEvent }
   | { t: "done"; wave: number }
   | { t: "backends"; rows: readonly BackendRow[] }
-  | { t: "bots"; names: ReadonlyMap<string, string> }
+  | { t: "bots"; names: ReadonlyMap<string, string>; faces: ReadonlyMap<string, BotFacePins> }
   | { t: "botState"; bot: string; state: BotState }
   | { t: "here"; here: string | undefined };
 
 const newer = (old: SessionView | undefined, view: SessionView) => old === undefined || view.updatedAt >= old.updatedAt;
 
-export const EMPTY_GRAPH: GraphState = { sessions: {}, links: EMPTY_LINKS, backends: new Map(), rows: undefined, botNames: new Map(), botStates: new Map(), here: undefined, loaded: false };
+export const EMPTY_GRAPH: GraphState = { sessions: {}, links: EMPTY_LINKS, backends: new Map(), rows: undefined, botNames: new Map(), botFaces: new Map(), botStates: new Map(), here: undefined, loaded: false };
 
 export function graphReducer(state: GraphState, a: Action): GraphState {
   switch (a.t) {
@@ -50,7 +63,7 @@ export function graphReducer(state: GraphState, a: Action): GraphState {
       return { ...state, sessions, loaded: true };
     }
     case "link":
-      return { ...state, links: applyLink(state.links, a.link, buildModel(state.sessions, state.backends, state.botNames, state.botStates)) };
+      return { ...state, links: applyLink(state.links, a.link, buildModel(state.sessions, state.backends, state.botNames, state.botStates, state.botFaces)) };
     case "done": {
       const links = waveDone(state.links, a.wave);
       return links === state.links ? state : { ...state, links };
@@ -58,7 +71,7 @@ export function graphReducer(state: GraphState, a: Action): GraphState {
     case "backends":
       return { ...state, rows: a.rows, backends: new Map(a.rows.map((r) => [r.id, r])) };
     case "bots":
-      return { ...state, botNames: a.names };
+      return { ...state, botNames: a.names, botFaces: a.faces };
     case "botState":
       return state.botStates.get(a.bot) === a.state ? state : { ...state, botStates: new Map(state.botStates).set(a.bot, a.state) };
     case "here":
@@ -96,9 +109,13 @@ export function useSessionGraph(): GraphState & { waveDone(id: number): void } {
       () => undefined,
     );
     void Promise.resolve(apiRef.current.bots?.list?.()).then(
-      (bots: { id: string; name: unknown }[] | undefined) => {
+      (bots: { id: string; name: unknown; face?: unknown; record?: { face?: unknown } }[] | undefined) => {
         if (!live || bots === undefined) return;
-        dispatch({ t: "bots", names: new Map(bots.flatMap((b) => { const n = plainName(b.name); return n !== undefined ? [[b.id, n] as const] : []; })) });
+        dispatch({
+          t: "bots",
+          names: new Map(bots.flatMap((b) => { const n = plainName(b.name); return n !== undefined ? [[b.id, n] as const] : []; })),
+          faces: new Map(bots.flatMap((b) => { const f = facePins(b.face ?? b.record?.face); return f !== undefined ? [[b.id, f] as const] : []; })),
+        });
       },
       () => undefined,
     );
