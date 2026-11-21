@@ -106,6 +106,8 @@ export interface BotSideOptions {
   updateGate?: UpdateGateLike;
   userHome?: string;
   approvals?: DurableSessionHostOptions["approvals"] & Partial<Pick<ApprovalBroker, "request">>;
+  /** The engine's titles of code sessions (§9.5 "Titles"): the session host titles one after a turn of it ends. */
+  titles?: DurableSessionHostOptions["titles"];
   /** The provider check for bots' plugin-chosen models (provider-consent.ts); by default one over this side's grants,
    *  which refuses a plugin's provider when there's no broker to ask. A test's seam. */
   providerConsent?: BotProviderConsent;
@@ -200,6 +202,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
   const updates = o.updateGate;
   const host: DurableSessionHost = new DurableSessionHost({
     home: o.home, clock: o.clock, computer: o.computer, epoch: () => main.epoch(),
+    ...(o.titles === undefined ? {} : { titles: o.titles }),
     // An update's restart holds every turn (lane M's gate); what waits starts on its reopen, below.
     mayStart: (view) => gate.mayStart(view) && turnMayStart(updates),
     // A bot's conversation lives on the runner: what arrives here for it goes there (review S1).

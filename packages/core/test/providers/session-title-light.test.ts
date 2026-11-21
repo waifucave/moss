@@ -1,0 +1,70 @@
+/**
+ * A code session's title runs on the light model of ITS OWN model's family (spec revision 20, §9.5 "Titles"), not the
+ * default's: the router's `lightOf`. Its provider must serve the light model and hold a credential; otherwise the titles
+ * job's usual answer. An explicit setting for titles still wins. Over a throwaway secret store, never a real credential.
+ */
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileSecretStore } from "../../src/auth/secret-store";
+import { writeCredentialMaterial } from "../../src/auth/credential-material";
+import { createInternalProviderView } from "../../src/providers/internal-view";
+import { createInternalRouter, isInternalRefusal, type InternalRouter } from "../../src/providers/internal-router";
+import type { ModelTag } from "../../src/runtime-sdk/model-tag";
+import { mossSessionTitles } from "../../src/agent/titles";
+import { Settings, setModelRole } from "../../src/settings";
+
+const settingsWith = (model: string, extra: Record<string, unknown> = {}): Settings => Settings.parse({ schemaVersion: 3, provider: { model }, ...extra });
+
+async function routerWith(keys: string[]): Promise<InternalRouter> {
+  const secrets = new FileSecretStore(mkdtempSync(join(tmpdir(), "moss-cg-title-secrets-")));
+  for (const k of keys) await writeCredentialMaterial(secrets, `${k}:default`, { kind: "api-key", key: `sk-${k}` });
+  const view = createInternalProviderView({ secrets, log: () => {} });
+  await view.refresh();
+  return createInternalRouter({ view, secrets });
+}
+
+const tagOf = (r: InternalRouter, s: Settings, lightOf?: string) => {
+  const c = r.resolve("titles.model", s, lightOf === undefined ? undefined : { lightOf: lightOf as ModelTag });
+  if (isInternalRefusal(c)) throw new Error(c.reason);
+  return String(c.tag);
+};
+
+describe("a session's title on its own family's light model", () => {
+  test("a GPT session in a home whose default is Claude is titled on luna; a Claude session on Haiku", async () => {
+    const r = await routerWith(["anthropic", "openai"]);
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    expect(tagOf(r, s)).toBe("anthropic/claude-haiku-5-5");
+    expect(tagOf(r, s, "openai/gpt-6.1-terra")).toBe("openai/gpt-6-luna");
+    expect(tagOf(r, s, "anthropic/claude-sonnet-5")).toBe("anthropic/claude-haiku-5-5");
+    // The light model itself names its own family.
+    expect(tagOf(r, s, "openai/gpt-6-luna")).toBe("openai/gpt-6-luna");
+  });
+
+  test("a provider with no credential, a model in no family and an agent's own model name: the titles job's usual answer", async () => {
+    const r = await routerWith(["anthropic"]);
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    expect(tagOf(r, s, "openai/gpt-6.1-terra")).toBe("anthropic/claude-haiku-5-5");
+    expect(tagOf(r, s, "anthropic/not-a-model")).toBe("anthropic/claude-haiku-5-5");
+    expect(tagOf(r, s, "opus")).toBe("anthropic/claude-haiku-5-5");
+  });
+
+  test("an explicit setting for titles wins over the session's family", async () => {
+    const r = await routerWith(["anthropic", "openai"]);
+    const s = setModelRole(settingsWith("anthropic/claude-opus-5-5"), "titles.model", "anthropic/claude-sonnet-5" as ModelTag);
+    expect(tagOf(r, s, "openai/gpt-6.1-terra")).toBe("anthropic/claude-sonnet-5");
+  });
+
+  test("the host's titles source: the light tag for a session, and a failed try when titles are off or nothing can run", async () => {
+    const r = await routerWith(["anthropic", "openai"]);
+    let s: Settings = settingsWith("anthropic/claude-opus-5-5");
+    const t = mossSessionTitles(r, () => s);
+    expect(t.lightModelFor("openai/gpt-6.1-terra")).toBe("openai/gpt-6-luna");
+    expect(t.lightModelFor(undefined)).toBe("anthropic/claude-haiku-5-5");
+    s = settingsWith("anthropic/claude-opus-5-5", { titles: { enabled: false } });
+    expect(() => t.lightModelFor(undefined)).toThrow("titles are turned off");
+    const none = mossSessionTitles(await routerWith([]), () => settingsWith("anthropic/claude-opus-5-5"));
+    expect(() => none.lightModelFor(undefined)).toThrow();
+  });
+});

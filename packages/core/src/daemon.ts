@@ -165,7 +165,7 @@ import { WorkflowStore } from "./workflows/store";
 import { MemoryStore } from "./agent/memory";
 import { registerComputerTool } from "./agent/tools/computer";
 import { ComputerUseService } from "./agent/computer-use";
-import { SessionTitler } from "./agent/titles";
+import { mossSessionTitles, SessionTitler } from "./agent/titles";
 import { McpManager } from "./agent/mcp/manager";
 import { daemonConnectorSource } from "./agent/mcp/connector-source";
 import { notifyHeadless } from "./agent/notify-fallback";
@@ -4533,6 +4533,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         return () => { offBots(); offEnded(); notices?.close(); };
       },
       registry: registry,
+      // The engine titles a code session after a turn of it ends (§9.5 "Titles"), on the light model of its own model's
+      // family (the default's when its provider can't serve it), never when the person turned titles off.
+      ...(internalRouter === null ? {} : { titles: mossSessionTitles(internalRouter, () => settings) }),
       // The drop: the folders bots made in the plugins folder that the registry hasn't recorded yet (the fence lets their
       // sessions go on writing inside them).
       drops: { pending: (bot: string) => partsRegistry?.folders.pendingDrops(bot) ?? [] },

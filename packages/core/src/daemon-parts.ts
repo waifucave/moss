@@ -114,6 +114,8 @@ export interface DaemonBotsInput {
   connectorsOf?: SessionPanelDeps["connectorsOf"];
   /** The relay plugin's mailbox (#277): where a message goes when the computer running its bot can't be reached. */
   relayMailbox?: BotRelayMailbox;
+  /** The engine's titles of code sessions (§9.5 "Titles"): the titler and the light model of a session's model's family. */
+  titles?: BotSideOptions["titles"];
   /** The plugin host that runs `pill.target` entries' handlers (#323's `user.send`). */
   pillTargets?: BotSideOptions["pillTargets"];
   /** Lane B's plugin triggers' arm and disarm, where the daemon gives no `pluginHost` (whose webhook ingress this
@@ -497,9 +499,15 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         const send = input.coreEvent;
         closers.push(s.bots.onEvent((e) => {
           if (e.type === "bot_changed" || e.type === "bot_removed" || e.type === "bots_paused") send(e);
+          // A session's view as it changes (§9.5: who started it, what it waits on, its subagents, its title), heard by
+          // each reader of its kind (`sendCoreEvent`'s gate).
+          else if (e.type === "session_changed") send(e);
           // Lane BT: bots as engine data (protocol bots.ts), with records as the source.
           else if (e.type === "bot_record_changed" || e.type === "bot_record_removed" || e.type === "bot_summary_changed" || e.type === "bots_moved") send(e);
         }));
+        // A message from one session (or the person) to another (§9.5 `session_link`, no words): sent as the person hears
+        // it, each connection gated by both ends' kinds (`sendCoreEvent`).
+        closers.push(s.host.graph.watchLinks({ kind: "user" }, (l) => send(l)));
       }
       // Lane D's bot-side options, the receiving half: other computers' messages to the bots this computer runs.
       if (links) {
@@ -638,6 +646,7 @@ export function botSideOptions(o: { b: DaemonBotsInput; links: DeviceLinks | nul
     routines,
     ...(b.compaction ? { compaction: b.compaction } : {}),
     ...(b.assetUrl ? { assetUrl: b.assetUrl } : {}),
+    ...(b.titles ? { titles: b.titles } : {}),
   };
 }
 

@@ -33,9 +33,12 @@ import {
   internalRoleEffectiveTag,
   internalRoleLight,
   internalRoleNoTagReason,
+  LIGHT_MODEL_ROLES,
   type InternalJobRole,
   type Settings,
 } from "../settings";
+import { activeCatalog } from "../runtime-sdk/model-plugins/catalog-source";
+import { familyOfModel, lightModelOn } from "../runtime-sdk/model-plugins/light-model";
 import { wireModelIdFor } from "./internal-adapters";
 import { buildInternalProvider, internalWireEffortFor } from "./internal-provider";
 import { INTERNAL_JOBS_LOGIN_HINT } from "./internal-login-hint";
@@ -179,6 +182,10 @@ export interface InternalRouter {
  */
 export interface ResolveOptions {
   fallbackToDefault?: boolean;
+  /** A light job about one session (its title, §9.5): the light model of THIS model's family on its own provider, in
+   *  place of the default's, when that provider serves it and MOSS's jobs may run there; otherwise the role's own
+   *  answer. Never over an explicit pin. */
+  lightOf?: ModelTag;
 }
 
 /** The consumer defaults that predate roles being able to store an effort — passed through
@@ -315,6 +322,27 @@ export function createInternalRouter(deps: {
     return { provider, model: wireModelIdFor(providerId, model), tag, providerId, quota: quotaFor(providerId), ...(effort === undefined ? {} : { effort }) };
   };
 
+  /** `ResolveOptions.lightOf`: the light model of `model`'s family on `model`'s provider, as a call (with the role's own
+   *  answer behind it for a provider that turns out not to serve it), or undefined to resolve as usual. */
+  const lightOfModel = (role: InternalRole, settings: Settings | null | undefined, model: ModelTag): InternalCall | undefined => {
+    if (!LIGHT_MODEL_ROLES.includes(role) || explicitInternalRolePin(settings, role) !== undefined) return undefined;
+    let providerId: string;
+    try {
+      ({ providerId } = splitTag(model));
+    } catch {
+      return undefined;
+    }
+    const catalog = activeCatalog();
+    const family = familyOfModel(catalog, providerId, model);
+    const choice = family === undefined ? undefined : lightModelOn(catalog, providerId, family);
+    if (choice === undefined) return undefined;
+    const call = resolveTag(role, settings, choice.tag as ModelTag, choice.effort);
+    if (isInternalRefusal(call)) return undefined;
+    const usual = effectiveTag(role, settings);
+    const fallback = usual === null || usual === call.tag ? undefined : resolveTag(role, settings, usual);
+    return fallback === undefined || isInternalRefusal(fallback) ? call : withDefaultFallback(call, fallback);
+  };
+
   /** The refusal for "no tag at all" — shared by `resolve` and the pin-fallback path. */
   const noTagRefusal = (role: InternalRole, settings: Settings | null | undefined): InternalRefusal => {
     const why = internalRoleNoTagReason(settings, role, deps.view.snapshot());
@@ -342,6 +370,8 @@ export function createInternalRouter(deps: {
     },
     effectiveTag,
     resolve(role, settings, opts) {
+      const own = opts?.lightOf === undefined ? undefined : lightOfModel(role, settings, opts.lightOf);
+      if (own !== undefined) return own;
       let tag = effectiveTag(role, settings);
       if (tag === null) return noTagRefusal(role, settings);
       // THE LIGHT MODEL (the owner, 2026-11-21): a light job with no pin of its own runs on its family's light model.
