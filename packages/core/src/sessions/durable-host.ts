@@ -1288,7 +1288,10 @@ export class DurableSessionHost implements SessionHost {
         meta: SESSION_META_VERSION, id: view.id, kind: view.kind, startedAt: view.startedAt, computer: view.computer,
         ...(view.bot === undefined ? {} : { bot: view.bot }), ...(view.parent === undefined ? {} : { parent: view.parent }),
       };
-      for (const k of ["title", "backend", "model", "effort", "root", "routine", "definition"] as const) if (view[k] !== undefined) meta[k] = view[k];
+      for (const k of ["backend", "model", "effort", "root", "routine", "definition"] as const) if (view[k] !== undefined) meta[k] = view[k];
+      // Another computer's title is words it sent: one plain line, or none, as every title here.
+      const title = view.title === undefined ? "" : titleText(view.title, 200);
+      if (title !== "") meta.title = title;
       writeJsonAtomic(sessionMetaPath(this.#home, meta.bot, meta.id), meta);
       const file = new SessionLogFile(sessionLogPath(this.#home, meta.bot, meta.id), meta.id, this.#warn);
       file.load();

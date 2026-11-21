@@ -264,3 +264,18 @@ describe("the record of links, kept by the host", () => {
     expect(readFileSync(join(home, "transcripts", "links.json"), "utf8")).not.toContain("s_c");
   });
 });
+
+describe("a title another computer sends", () => {
+  test("is one plain line, or none, when its session is first held here", () => {
+    const { host: laptop } = hostOn();
+    const { host: studio } = hostOn();
+    laptop.open({ id: "c_dirty", kind: "coding", computer: "Laptop", title: "Fix\u001b[2J ‮exe.txt‬\nsecond line" }, new FakeSessionDriver());
+    laptop.open({ id: "c_blank", kind: "coding", computer: "Laptop", title: "ok" }, new FakeSessionDriver());
+    const dirty = { ...laptop.get("c_dirty")!, title: "Fix\u001b[2J ‮exe.txt‬\nsecond line" } as SessionView;
+    const blank = { ...laptop.get("c_blank")!, title: "​‮" } as SessionView;
+    studio.ingest(dirty, laptop.history("c_dirty"), { from: "laptop-device", late: false });
+    studio.ingest(blank, laptop.history("c_blank"), { from: "laptop-device", late: false });
+    expect(studio.get("c_dirty")!.title).toBe("Fix exe.txt");
+    expect(studio.get("c_blank")!.title).toBeUndefined();
+  });
+});
