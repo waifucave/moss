@@ -124,6 +124,17 @@ export interface MossCodeDeps {
   /** A bot's child: its command sandbox by the bot's own builder and its run-later check (agents/bot-child.ts).
    *  Required for a spec that names a bot: without it the child doesn't start. */
   botChild?: BotChildSandbox;
+  /** The session's background tasks that will wake it, as the runtime's task frames say (§9.5 "Waiting"): the session
+   *  host's graph. */
+  tasks?: SessionTaskReporter;
+}
+
+/** Where a session's background tasks are told (the session host: `taskStarted`, `taskEnded`, `tasksGone`). */
+export interface SessionTaskReporter {
+  started(session: string, task: string): void;
+  ended(session: string, task: string): void;
+  /** The agent's runtime ended: none of its tasks will wake the session. */
+  gone(session: string): void;
 }
 
 
@@ -288,7 +299,12 @@ export class MossCodeBackend implements AgentBackend {
     // Its context, as a bot's turn reports it: the runtime's own count of the last request's whole prompt, told to MOSS's
     // ACP client as ACP's `usage_update` (`used`) before the turn's end, as any agent that reports it does.
     const usage = contextUpdates();
-    const { query, options, abort, bridgeCalls } = await this.#agentParts(spec, bridge, spec.pause ?? deps.pause ?? CLOSED_GATE, usage.report);
+    const tasks = deps.tasks;
+    const { query, options, abort, bridgeCalls } = await this.#agentParts(spec, bridge, spec.pause ?? deps.pause ?? CLOSED_GATE, usage.report, tasks === undefined ? undefined : {
+      started: (task) => tasks.started(spec.sessionId, task),
+      ended: (task) => tasks.ended(spec.sessionId, task),
+      gone: () => tasks.gone(spec.sessionId),
+    });
     const wire = deps.wire?.(spec.sessionId) ?? {};
     const proc = inMemoryAgent((write) => serveAcpAgent({
       query,
@@ -363,7 +379,7 @@ export class MossCodeBackend implements AgentBackend {
 
   /** What `start` and `serve` share: the session's query on the embedded runtime and its options (the coding tools,
    *  the fence's sandbox and deny rules, the pause and the fence's hooks), checked and filled. */
-  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">>, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
+  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">>, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void, onTasks?: TaskFrames): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
     const deps = this.#deps;
     // The root is a folder that exists: the manager resolved it; one that went away isn't made again here.
     if (!isDirectory(spec.root)) throw new ContractError("not_found", `the agent's root folder ${spec.root} isn't there`);
@@ -489,7 +505,8 @@ export class MossCodeBackend implements AgentBackend {
       };
       const q = run({ prompt: args.prompt, options: { ...o, mcpServers: servers as Options["mcpServers"], canUseTool } }) as unknown as AcpQuery;
       const watched = stoppingTasksWhilePaused(q, gate, abort.signal, deps.log);
-      return onContext === undefined ? watched : reportingContext(watched, onContext);
+      const told = onTasks === undefined ? watched : reportingTasks(watched, onTasks);
+      return onContext === undefined ? told : reportingContext(told, onContext);
     };
     return { query, options, abort, bridgeCalls };
   }
@@ -563,6 +580,47 @@ function stoppingTasksWhilePaused(q: AcpQuery, gate: AgentPauseGate | undefined,
             }
           } finally {
             unwatch();
+          }
+        })();
+      }
+      const v = Reflect.get(target, prop, recv) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+}
+
+/** One session's background tasks, as `reportingTasks` tells them. */
+export interface TaskFrames {
+  started(task: string): void;
+  ended(task: string): void;
+  gone(): void;
+}
+
+/** The query, with the runtime's task frames told (§9.5 "Waiting"): a task that will wake the session begins at its
+ *  start (every one but a foreground command, `is_backgrounded: false`, by the pause's own rule; a later
+ *  `task_updated` that backgrounds one too), and ends at its notification or an update to a final status; when the query
+ *  ends, every task it had ends with it. The subagents' own frames (`parent_tool_use_id`) are theirs, not the session's. */
+export function reportingTasks(q: AcpQuery, tell: TaskFrames): AcpQuery {
+  const say = (fn: () => void) => {
+    try { fn(); } catch { /* a report never stops the agent */ }
+  };
+  return new Proxy(q, {
+    get(target, prop, recv) {
+      if (prop === Symbol.asyncIterator) {
+        return () => (async function* () {
+          try {
+            for await (const m of target) {
+              const msg = m as { type?: unknown; subtype?: unknown; task_id?: unknown; is_backgrounded?: unknown; parent_tool_use_id?: unknown; patch?: { is_backgrounded?: unknown; status?: unknown } };
+              if (msg?.type === "system" && typeof msg.task_id === "string" && !(typeof msg.parent_tool_use_id === "string" && msg.parent_tool_use_id !== "")) {
+                const id = msg.task_id;
+                const patch = msg.subtype === "task_updated" ? msg.patch : undefined;
+                if (msg.subtype === "task_notification" || (patch !== undefined && (patch.status === "completed" || patch.status === "failed" || patch.status === "killed"))) say(() => tell.ended(id));
+                else if ((msg.subtype === "task_started" && msg.is_backgrounded !== false) || patch?.is_backgrounded === true) say(() => tell.started(id));
+              }
+              yield m;
+            }
+          } finally {
+            say(() => tell.gone());
           }
         })();
       }

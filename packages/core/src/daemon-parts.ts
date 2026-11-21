@@ -435,6 +435,8 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
             mossCode: {
               baseOptions: (s) => embeddedSessionOptions({ home: input.mossHome, spawn: a.spawn }, s),
               defaultModel: a.defaultModel, ...(a.defaultEffort ? { defaultEffort: a.defaultEffort } : {}), ...(a.fillProvider ? { fillProvider: a.fillProvider } : {}),
+              // Its background tasks that will wake a session (§9.5 "Waiting"): the host's graph.
+              tasks: { started: (s, t) => d.host.taskStarted(s, t), ended: (s, t) => d.host.taskEnded(s, t), gone: (s) => d.host.tasksGone(s) },
             },
             inProcess: {
               home: input.mossHome, spawn: a.spawn, defaultModel: a.defaultModel, ...(a.fillProvider ? { provider: a.fillProvider } : {}),
