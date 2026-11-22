@@ -24,6 +24,7 @@
 //     TEMP/TMP, a fixed PATH and MOSS's empty git template. Nothing of the daemon's environment reaches it.
 //  7. Run later: a git config key a command set in a repo under its write roots is reverted after the run, and a hook
 //     it planted in such a repo's `.git/hooks` is moved aside (`revertPlantedGitKeys`, `quarantineHooks`).
+//  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
@@ -268,12 +269,24 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     if (marker.members.some((m) => m.principalSid === null)) return { why: setupBashRefusal("a principal's SID isn't recorded") };
     return { marker };
   };
+  // The read half of the Mac's fence (rule 8): the principal reads the user's home as a Mac command does, through
+  // srt-win's profile read grant, which never grants the key and credential stores, browser data or the registry hives
+  // (they get a read deny instead). Written once per daemon, before its first command (srt-win refuses to change it
+  // while a session it holds runs): a folder made in the home after it is not readable until the next daemon start.
+  let profileGrant: Promise<string | null> | undefined;
+  const grantProfile = (): Promise<string | null> => (profileGrant ??= (async () => {
+    const started = Date.now();
+    const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json"], { timeoutMs: 1_800_000 });
+    const took = `${Math.round((Date.now() - started) / 1000)} s`;
+    return r.code === 0 ? null : `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
+  })());
   return {
     get available() { return !("why" in install()); },
     run: async (r: FencedRun): Promise<FencedRunResult> => {
       if (r.signal?.aborted) return { kind: "refused", reason: "cancelled before it started" };
       const got = install();
       if ("why" in got) return refuse(got.why);
+      const readNote = await grantProfile();
       const shell: WinShell = r.shell ?? "bash";
       const exe = shell === "powershell" ? deps.shells.powershell : deps.shells.bash;
       if (exe === null) return refuse(shell === "powershell" ? "Windows PowerShell isn't in System32" : "Git for Windows' bash isn't installed (Program Files\\Git, or this user's Programs\\Git)");
@@ -322,7 +335,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (result.kind === "refused") return result;
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
-          const notes = [revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome)].filter((n): n is string => n !== null);
+          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome)].filter((n): n is string => n !== null);
           return notes.length === 0 ? result : { ...result, stderr: result.stderr + notes.join("") };
         } finally {
           // The command's per-session claims end with it; the persistent roots stay (only a token carrying a root's
