@@ -2094,7 +2094,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           const desc = await run([...getDescriptionArgs(slot.principal)]);
           owned = desc.code === 0 && descriptionMatches(desc.out, ownerSid);
         }
-        // The profile check (brief item 7): resolve by SID, fail closed on missing or temporary.
+        // The profile check (brief item 7): resolved by SID; a temporary one fails closed. None is ready (the reset
+        // deletes it after each command; the next logon makes a fresh one).
         const principalSid = base.user?.sid ?? null;
         let profile: { sid: string; path: string } | null = null;
         if (principalSid !== null) {
