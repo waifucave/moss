@@ -73,6 +73,7 @@ import {
 import { readJson, writeJsonAtomic } from "./atomic-file";
 import { MAX_RECORD_BYTES, RecordTooLargeError, SessionLogFile, shrinkRecord } from "./event-log";
 import { mainSessionIdFor, mintSessionId, SESSION_ID_PREFIX, sessionLogPath, sessionMetaPath, transcriptsDir } from "./ids";
+import { ExchangeDepths } from "./exchange-depth";
 import { EngineSessionGraph, derivedStarter } from "./session-graph";
 import { EngineSessionTitles, titleText, type TitleStore, type Titler } from "./session-titles";
 
@@ -581,6 +582,9 @@ export class DurableSessionHost implements SessionHost {
   readonly #offApprovals: Unsubscribe | undefined;
   /** How the sessions hang together (§9.5): who started each, what each waits on, its agent's subagents, the links. */
   readonly graph: EngineSessionGraph;
+  /** How far each session's exchange with other sessions has gone without the person (the loop brake): fed here as each turn of
+   *  any session starts, read by both `SendMessage` tools (agents/bridge/messenger.ts, bots/tools.ts). */
+  readonly depths = new ExchangeDepths();
   /** The engine's titles of code sessions, when a titler is given. */
   readonly titles: EngineSessionTitles | undefined;
 
@@ -1625,7 +1629,11 @@ export class DurableSessionHost implements SessionHost {
       },
     };
     void Promise.resolve()
-      .then(() => driver.turn(structuredClone(input), ctl))
+      .then(() => {
+        // The brake's depth of this turn, set before the session can send anything (a turn's input puts it at one).
+        this.depths.turnStarted(s.meta.id, input);
+        return driver.turn(structuredClone(input), ctl);
+      })
       .then(
         (end) => this.#ended(s, running, end),
         (err: unknown) => this.#ended(s, running, { reason: "failed", failure: "error", text: errorText(err) }),

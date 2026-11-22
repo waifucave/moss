@@ -15,13 +15,15 @@
 //   ruling of 2026-11-22), never itself. Another bot's agents and side threads, and a session another session started,
 //   are refused (`sendMessageRefusal`, which is the protocol's `reachRefusal`, spec revision 20, §9.5: the same function
 //   the bridge's `SendMessage` of every agent session reads). A message to a session the user started reaches it as
-//   that session's (`from: "session"`, `session_message`), never the user's, at depth 1 of the exchange brake: the user's
-//   session cannot answer a bot (it reaches no bot's session), so the exchange cannot loop back, and what it goes on to
-//   send is counted from there (agents/bridge/messenger.ts).
+//   that session's (`from: "session"`, `session_message`), never the user's, at the exchange brake's depth of the sending
+//   session's turn + 1, as the bridge's own send gives it (`host.depths`, sessions/exchange-depth.ts: the host sets it as
+//   each turn of any session starts), and one beyond EXCHANGE_DEPTH_LIMIT is refused. A bot deep in an exchange never starts
+//   again at 1, so the person's session answering it (should the owner allow that) could not be a way round the brake.
 import { reachRefusal, type SessionView } from "@waifucave/moss-protocol";
 import { isContractError } from "../contracts/common";
 import type { DeliveredInput, Disposition } from "../contracts/session-host";
 import type { DurableSessionHost } from "../sessions/durable-host";
+import { EXCHANGE_DEPTH_LIMIT, brakeRefusal } from "../sessions/exchange-depth";
 import { plainText, type BotService } from "./service";
 
 /** A core tool in the neutral shape the runtime registers (lane K's `CoreToolDef`). */
@@ -69,7 +71,7 @@ export interface AgentRows {
 }
 
 export interface BotToolsDeps {
-  host: Pick<DurableSessionHost, "get" | "list" | "deliver" | "callerOf">;
+  host: Pick<DurableSessionHost, "get" | "list" | "deliver" | "callerOf" | "depths">;
   bots: Pick<BotService, "list" | "has" | "mainSession" | "deliverTo">;
   /** Lane K's agent rows; without them, the agents are the host's own agent sessions. */
   agents?: AgentRows;
@@ -217,8 +219,10 @@ export function botToolDefs(deps: BotToolsDeps, sessionId: string): CoreToolDef[
         const input2: DeliveredInput = caller.sessionKind === "agent"
           ? { from: "agent", agent: sessionId, text: message }
           : { from: "bot", bot: caller.bot, session: sessionId, text: message };
-        // To a session the user started, it is that session's own message with its place in the exchange (see above).
-        const asSession: DeliveredInput = { from: "session", session: sessionId, text: message, depth: 1 };
+        // To a session the user started, it is that session's own message with its place in the exchange (see above): the sender's
+        // turn depth + 1, read from the host's store (never from anything in the message).
+        const sentAt = host.depths.depthOf(sessionId) + 1;
+        const asSession: DeliveredInput = { from: "session", session: sessionId, text: message, depth: sentAt };
         try {
           if (bot !== undefined) {
             const { disposition } = await bots.deliverTo(bot, input2);
@@ -229,6 +233,7 @@ export function botToolDefs(deps: BotToolsDeps, sessionId: string): CoreToolDef[
           const refused = sendMessageRefusal(from, view);
           if (refused !== undefined) return fail(refused);
           if (isEnded(view)) return fail(`The session ${target} has ended (${view.status}); it takes no messages.`);
+          if (view.bot === undefined && sentAt > EXCHANGE_DEPTH_LIMIT) return fail(brakeRefusal(sentAt - 1));
           const { disposition } = await host.deliver(target, view.bot === undefined ? asSession : input2);
           return { text: `Sent to ${target} (${view.kind}${view.bot === undefined ? "" : ` of ${names.get(view.bot) ?? view.bot}`}): ${what(disposition)}.`, isError: false };
         } catch (err) {
