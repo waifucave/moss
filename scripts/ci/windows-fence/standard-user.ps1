@@ -89,7 +89,17 @@ $e2e = @(
   "echo exit=%ERRORLEVEL%"
 )
 # 1. As the login item runs it: the user's interactive session.
-Invoke-AsUserHere "e2e-interactive" $e2e 2400
+# Start-Process -Credential hands the child this (administrator's) environment block: the user's own folders are set
+# here, as a logon would set them.
+$userProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $ownerSid }).LocalPath
+if (-not $userProfile) { $userProfile = "C:\Users\$name" }
+$own = @(
+  "set USERPROFILE=$userProfile", "set HOME=$userProfile", "set USERNAME=$name",
+  "set APPDATA=$userProfile\AppData\Roaming", "set LOCALAPPDATA=$userProfile\AppData\Local",
+  "set TEMP=$userProfile\AppData\Local\Temp", "set TMP=$userProfile\AppData\Local\Temp",
+  "set HOMEDRIVE=C:", "set HOMEPATH=$($userProfile.Substring(2))"
+)
+Invoke-AsUserHere "e2e-interactive" ($own + $e2e) 2400
 $here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
 # 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0. Measured and reported, a
 #    known gap (spec §14.1 item 2: the Session 0 launch); it fails the job only if it fails some other way.
