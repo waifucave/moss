@@ -1690,7 +1690,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     poolLockPath,
     sandboxLeasesDir,
   } = await import("@waifucave/moss-core");
-  const usage = "usage: moss-core sandbox setup [--force]|remove|reset|status [--json]";
+  const usage = "usage: moss-core sandbox setup [--force]|remove|forget|reset|status [--json]";
   if (process.platform !== "win32") {
     console.error("sandbox setup runs on Windows only");
     process.exitCode = 1;
@@ -1959,6 +1959,22 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         console.log("Bash's fence is removed");
         return;
       }
+    }
+    case "forget": {
+      // As the user, unelevated (the uninstaller runs it before `remove`): drop the grants srt-win keeps for this user,
+      // the session write roots (`acl forget --all`) and the profile read grant (`profile forget`). `remove` run by an
+      // administrator for a standard user forgets only the administrator's own, so without this they stay behind.
+      const launcher = srtWinPath(fromProtected ? undefined : await protectedCopyPath());
+      const problem = launcherProblem(launcher, arch);
+      if (problem !== null) { console.log("nothing to forget: the launcher isn't installed"); return; }
+      let failed = false;
+      for (const argv of [[launcher, "acl", "forget", "--all"], [launcher, "profile", "forget"]]) {
+        const r = await run(argv);
+        if (r.code !== 0) { failed = true; console.error(`sandbox forget: ${argv.slice(1).join(" ")} exited ${r.code}${r.out.trim() ? `\n${r.out.trim().slice(0, 1000)}` : ""}`); }
+      }
+      process.exitCode = failed ? SANDBOX_EXIT.FAILED : SANDBOX_EXIT.OK;
+      if (!failed) console.log("the sandbox's grants for this user are forgotten");
+      return;
     }
     case "reset": {
       // The per-session reset (spec §9.1: nothing a command writes carries over): run by the reset task as SYSTEM, from
