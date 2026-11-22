@@ -9,8 +9,8 @@
 //    anything not a regular file, a file over `BOT_FILE_MAX_BYTES`, a file that can't be read, a file inside MOSS's own
 //    folder (its settings, secrets and logs are the core's, and a copy would hand them to the bot past the fence).
 // The path is the user's own pick: the protocol lets only the app's main process call `user.send`, as the user.
-import { createReadStream, createWriteStream, realpathSync } from "node:fs";
-import { mkdir, open, rm } from "node:fs/promises";
+import { constants, createWriteStream, realpathSync } from "node:fs";
+import { lstat, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
@@ -35,9 +35,11 @@ const shown = (path: string): string => `“${basename(path).replace(/[\p{Cc}\p{
 
 const MB = 1024 * 1024;
 
-const inside = (parent: string, child: string): boolean => {
+/** Whether `child` is `parent` or under it. A folder whose own name begins with two dots (`..x`) is inside; only `..` itself
+ *  or a `..` step (either separator) leaves. */
+export const inside = (parent: string, child: string): boolean => {
   const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel));
 };
 
 /** The `files` of a message to `bot`, with each one's `n` (1-based, in the order given). Throws a `MethodError` with a plain
@@ -54,61 +56,79 @@ export async function attachFilesForBot(deps: AttachFilesDeps, o: { bot: string;
   const mossHome = resolve(deps.home);
   const userHome = resolve(deps.userHome);
   // Look at every file first (the whole message is refused or none of it is kept), then copy the ones the tree can't name.
-  const looked: { path: string; size: number }[] = [];
-  for (const f of o.files) {
-    if (!isAbsolute(f.path) || /[\p{Cc}\u2028\u2029]/u.test(f.path)) throw refuse(`${shown(f.path)} isn't a file path MOSS can use.`);
-    let path: string;
-    let size: number;
-    try {
-      // The real file (a link is followed, so the checks below judge where it leads, never the link's own spelling).
-      path = realpathSync.native(f.path);
-      const h = await open(path, "r");
+  // Each file is opened ONCE, here, and what is copied is that handle: the kind and size judged below are the ones copied.
+  const looked: { path: string; size: number; handle: FileHandle }[] = [];
+  const closeAll = async (): Promise<void> => {
+    for (const l of looked) await l.handle.close().catch(() => undefined);
+  };
+  try {
+    for (const f of o.files) {
+      if (!isAbsolute(f.path) || /[\p{Cc}\u2028\u2029]/u.test(f.path)) throw refuse(`${shown(f.path)} isn't a file path MOSS can use.`);
+      let path: string;
+      let handle: FileHandle | undefined;
+      let size: number;
       try {
-        const st = await h.stat();
+        // The real file (a link is followed, so the checks below judge where it leads, never the link's own spelling).
+        path = realpathSync.native(f.path);
+        // The kind BEFORE any open: opening a pipe or a device for reading can wait forever.
+        if (!(await lstat(path)).isFile()) throw refuse(`${shown(f.path)} is a folder or not an ordinary file: only files can be attached.`);
+        // O_NONBLOCK so a file swapped for a pipe after that look still never blocks the open; the handle is judged again.
+        handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+        const st = await handle.stat();
         if (!st.isFile()) throw refuse(`${shown(f.path)} is a folder or not an ordinary file: only files can be attached.`);
         size = st.size;
-      } finally {
-        await h.close();
+      } catch (err) {
+        await handle?.close().catch(() => undefined);
+        if (err instanceof MethodError) throw err;
+        throw refuse(`${shown(f.path)} can't be read: it may have moved, or MOSS may not be allowed to open it.`);
+      }
+      looked.push({ path, size, handle });
+      if (inside(mossHome, path)) throw refuse(`${shown(f.path)} is inside MOSS's own folder, which isn't shared with bots.`);
+      if (size > BOT_FILE_MAX_BYTES) throw refuse(`${shown(f.path)} is ${Math.ceil(size / MB)} MB: a file can be at most ${BOT_FILE_MAX_BYTES / MB} MB.`);
+    }
+    return await copyAll(looked);
+  } finally {
+    await closeAll();
+  }
+
+  async function copyAll(files: readonly { path: string; size: number; handle: FileHandle }[]): Promise<NonNullable<UserMessageInput["files"]>> {
+    const out: { n: number; path: string }[] = [];
+    const dir = join(botPaths(mossHome, o.bot).scratch, "attachments", sessionFileStem(o.clientMessageId));
+    let cleared = false;
+    try {
+      for (const [i, f] of files.entries()) {
+        const n = i + 1;
+        const named = inside(userHome, f.path) ? homeTreePath({ userHome, computer: deps.computer, dir: f.path }) : undefined;
+        if (named !== undefined) {
+          out.push({ n, path: named });
+          continue;
+        }
+        // Not in the tree: a copy in the bot's scratch folder, one folder per message so two files of one name don't meet. A
+        // retry of the same message (the same id: its send failed after the copy) starts from an empty folder, never EEXIST.
+        const safeName = basename(f.path).replace(/[\p{Cc}\p{Cf}\u2028\u2029/\\:*?"<>|]+/gu, "_").slice(0, 120) || "file";
+        const dest = join(dir, `${n}-${safeName}`);
+        const tree = homeTreePath({ userHome, computer: deps.computer, dir: dest });
+        if (tree === undefined) throw refuse(`${shown(f.path)} is outside your home folder, and the bot can't reach it from there.`);
+        if (!cleared) {
+          await rm(dir, { recursive: true, force: true });
+          cleared = true;
+        }
+        await mkdir(dir, { recursive: true });
+        await copyBounded(f.handle, dest, BOT_FILE_MAX_BYTES);
+        out.push({ n, path: tree });
       }
     } catch (err) {
+      if (cleared) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
       if (err instanceof MethodError) throw err;
-      throw refuse(`${shown(f.path)} can't be read: it may have moved, or MOSS may not be allowed to open it.`);
+      throw refuse(`A file couldn't be copied for the bot: ${err instanceof Error && err.message === "too-big" ? `it grew past ${BOT_FILE_MAX_BYTES / MB} MB.` : "it may have moved."}`);
     }
-    if (inside(mossHome, path)) throw refuse(`${shown(f.path)} is inside MOSS's own folder, which isn't shared with bots.`);
-    if (size > BOT_FILE_MAX_BYTES) throw refuse(`${shown(f.path)} is ${Math.ceil(size / MB)} MB: a file can be at most ${BOT_FILE_MAX_BYTES / MB} MB.`);
-    looked.push({ path, size });
+    return out;
   }
-  const out: { n: number; path: string }[] = [];
-  const made: string[] = [];
-  try {
-    for (const [i, f] of looked.entries()) {
-      const n = i + 1;
-      const named = inside(userHome, f.path) ? homeTreePath({ userHome, computer: deps.computer, dir: f.path }) : undefined;
-      if (named !== undefined) {
-        out.push({ n, path: named });
-        continue;
-      }
-      // Not in the tree: a copy in the bot's scratch folder, one folder per message so two files of one name don't meet.
-      const dir = join(botPaths(mossHome, o.bot).scratch, "attachments", sessionFileStem(o.clientMessageId));
-      const safeName = basename(f.path).replace(/[\p{Cc}\p{Cf}\u2028\u2029/\\:*?"<>|]+/gu, "_").slice(0, 120) || "file";
-      const dest = join(dir, `${n}-${safeName}`);
-      const tree = homeTreePath({ userHome, computer: deps.computer, dir: dest });
-      if (tree === undefined) throw refuse(`${shown(f.path)} is outside your home folder, and the bot can't reach it from there.`);
-      await mkdir(dir, { recursive: true });
-      made.push(dir);
-      await copyBounded(f.path, dest, BOT_FILE_MAX_BYTES);
-      out.push({ n, path: tree });
-    }
-  } catch (err) {
-    for (const dir of made) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    if (err instanceof MethodError) throw err;
-    throw refuse(`A file couldn't be copied for the bot: ${err instanceof Error && err.message === "too-big" ? `it grew past ${BOT_FILE_MAX_BYTES / MB} MB.` : "it may have moved."}`);
-  }
-  return out;
 }
 
-/** Copies `from` to `to`, never more than `max` bytes (a file that grows while it is copied is cut off and refused). */
-async function copyBounded(from: string, to: string, max: number): Promise<void> {
+/** Copies the file the handle holds (the one that was checked, from its start) to `to`, never more than `max` bytes (a file that
+ *  grows while it is copied is cut off and refused). */
+async function copyBounded(from: FileHandle, to: string, max: number): Promise<void> {
   let seen = 0;
   const cap = new Transform({
     transform(chunk: Buffer, _enc, cb) {
@@ -117,7 +137,7 @@ async function copyBounded(from: string, to: string, max: number): Promise<void>
     },
   });
   try {
-    await pipeline(createReadStream(from), cap, createWriteStream(to, { flags: "wx", mode: 0o600 }));
+    await pipeline(from.createReadStream({ start: 0, autoClose: false }), cap, createWriteStream(to, { flags: "wx", mode: 0o600 }));
   } catch (err) {
     await rm(to, { force: true }).catch(() => undefined);
     throw err;

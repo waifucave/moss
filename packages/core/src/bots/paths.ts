@@ -45,7 +45,8 @@ export function sessionScratchDir(home: string, session: { id: string; bot?: str
  *  folder. Undefined for a folder outside the user's home (a test's temp home), which the tree doesn't name. */
 export function homeTreePath(o: { userHome: string; computer: string; dir: string }): string | undefined {
   const rel = relative(o.userHome, o.dir);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+  // A `..` step leaves the home; a folder whose own name begins with two dots (`..hidden`) does not.
+  if (rel === "" || rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) return undefined;
   return `home/${o.computer}/${rel.split(sep).join("/")}`;
 }
 

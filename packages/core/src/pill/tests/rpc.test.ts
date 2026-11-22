@@ -14,7 +14,7 @@ import { MethodError, sessionsMethods, type MethodContext } from "../../bots/rpc
 import { ALPHA_FOLDER, boot, pluginFromFolder, removeTemps, tempDir } from "../../bots/tests/fixtures";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { userSendMethods, withImageMarks } from "../rpc";
-import { withFileMarks } from "../attach-files";
+import { attachFilesForBot, withFileMarks } from "../attach-files";
 
 afterEach(removeTemps);
 
@@ -242,6 +242,43 @@ describe("user.send with files", () => {
     expect(await call(M.userSend, words)).toEqual(first);
     expect(existsSync(join(home, "scratch", "alpha", "attachments"))).toBe(false);
     await b.shutdown();
+  });
+
+  // A folder whose own name starts with two dots is inside its parent, not outside it.
+  test("a folder named `..x` is not a way out: one in MOSS's home is refused, one in the user's home keeps its tree path", async () => {
+    const { b, call, fails, userHome, home } = await setup();
+    mkdirSync(join(home, "..x"));
+    writeFileSync(join(home, "..x", "secret.txt"), "s");
+    const err = await fails({ to: { bot: "alpha" }, text: "x", files: [{ path: join(home, "..x", "secret.txt") }], clientMessageId: "f-dd1" });
+    expect(err.message).toMatch(/inside MOSS's own folder/);
+    mkdirSync(join(userHome, "..hidden"));
+    writeFileSync(join(userHome, "..hidden", "f.txt"), "h");
+    await call(M.userSend, { to: { bot: "alpha" }, text: "x", files: [{ path: join(userHome, "..hidden", "f.txt") }], clientMessageId: "f-dd2" });
+    expect(filesOf((await sentTurns(b))[0]!).files).toEqual([{ n: 1, path: "home/Studio/..hidden/f.txt" }]);
+    await b.shutdown();
+  });
+
+  test("a named pipe is refused at once (the kind is judged before any open can wait on it)", async () => {
+    const { b, fails, userHome } = await setup();
+    const fifo = join(userHome, "pipe");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const err = await Promise.race([
+      fails({ to: { bot: "alpha" }, text: "x", files: [{ path: fifo }], clientMessageId: "f-fifo" }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the open of a pipe blocked")), 5_000)),
+    ]);
+    expect(err.message).toMatch(/folder or not an ordinary file/);
+    await b.shutdown();
+  });
+
+  test("a retry of a message whose copy is already there (its send failed after the copy) copies again, not EEXIST", async () => {
+    const { userHome, home } = await setup();
+    const elsewhere = tempDir("moss-usb-");
+    writeFileSync(join(elsewhere, "a.txt"), "first");
+    const ask = () => attachFilesForBot({ home, userHome, computer: "Studio" }, { bot: "alpha", clientMessageId: "f-retry", files: [{ path: join(elsewhere, "a.txt") }] });
+    const one = await ask();
+    writeFileSync(join(elsewhere, "a.txt"), "second");
+    expect(await ask()).toEqual(one);
+    expect(readFileSync(join(home, "scratch", "alpha", "attachments", "f-retry", "1-a.txt"), "utf8")).toBe("second");
   });
 
   test("the marks: one for each file the text doesn't name yet", () => {
