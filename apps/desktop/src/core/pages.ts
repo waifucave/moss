@@ -284,6 +284,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
     // The model named as step 2 names it: name · effort (provider).
     const said = withEffort(m?.name ?? model, effort);
     page.body.append(stepNote(3), el("p", { "data-moss-done-model": `${said} (${m?.providerName ?? model.slice(0, model.indexOf("/"))})` }, t("welcome.done-intro", { model: said, provider: m?.providerName ?? model.slice(0, model.indexOf("/")) })));
+    page.body.append(button(t("welcome.devices"), () => relayStep(model, m, effort), { class: "moss-page__link", "data-moss-welcome": "relay" }));
     page.actions.append(
       button(t("welcome.back"), () => modelStep(), { "data-moss-welcome": "back" }),
       button(t("welcome.start-code"), async () => {
@@ -291,6 +292,62 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
         done();
       }, { class: "moss-page__primary", "data-moss-welcome": "start" }),
     );
+  };
+
+  // The relay page (spec §8.3), reached from the done step: what a relay is for, n0's public relays on by default, the person's
+  // own server, or none. The cloud computer's relay and a Cloudflare relay are shown and not offered (relay plugins the links
+  // don't take yet).
+  const relayStep = async (model: string, m: PickView | undefined, effort: string | undefined): Promise<void> => {
+    const page = frame(host, t("welcome.relay-title"), undefined, t);
+    host.querySelector("section")?.setAttribute("data-moss-welcome-step", "relay");
+    let saved: { mode: string; url?: string } | undefined;
+    let mode = "n0";
+    const url = el("input", { type: "url", placeholder: "https://relay.example.com", "aria-label": t("welcome.relay-custom-label"), "data-moss-relay-url": "" });
+    url.hidden = true;
+    const save = button(t("welcome.relay-save"), async () => {
+      try {
+        const r = (await call("welcome.setRelay", { mode, ...(mode === "custom" ? { url: url.value.trim() } : {}) })) as { mode: string; url?: string };
+        saved = r;
+        url.value = r.url ?? "";
+        page.status.textContent = t("welcome.relay-saved");
+      } catch (err) {
+        page.status.textContent = t("welcome.failed", { error: message(err) });
+      }
+      refresh();
+    }, { class: "moss-page__primary", "data-moss-welcome": "relay-save" });
+    const refresh = (): void => {
+      url.hidden = mode !== "custom";
+      save.disabled = saved === undefined || (saved.mode === mode && (mode !== "custom" || (saved.url ?? "") === url.value.trim())) || (mode === "custom" && url.value.trim() === "");
+    };
+    const choice = (value: string, title: string, detail: string, off = false): HTMLElement => {
+      const input = el("input", { type: "radio", name: "relay", value });
+      input.disabled = off;
+      input.checked = !off && mode === value;
+      input.addEventListener("click", () => { mode = value; page.status.textContent = ""; refresh(); });
+      return el("label", { class: "moss-page__field", "data-moss-relay": value }, input, el("strong", {}, ` ${title} `), el("span", {}, detail));
+    };
+    page.body.append(
+      el("p", {}, t("welcome.relay-intro")),
+      el("p", { class: "moss-page__note" }, t("welcome.relay-privacy")),
+      choice("n0", t("welcome.relay-n0"), t("welcome.relay-n0-detail")),
+      choice("custom", t("welcome.relay-custom"), t("welcome.relay-custom-detail")),
+      url,
+      choice("cloud", t("welcome.relay-cloud"), t("welcome.relay-cloud-detail"), true),
+      choice("cloudflare", t("welcome.relay-cloudflare"), t("welcome.relay-cloudflare-detail"), true),
+      choice("off", t("welcome.relay-off"), t("welcome.relay-off-detail")),
+    );
+    url.addEventListener("input", () => { page.status.textContent = ""; refresh(); });
+    page.actions.append(button(t("welcome.back"), () => doneStep(model, m, effort), { "data-moss-welcome": "back" }), save);
+    save.disabled = true;
+    try {
+      saved = (await call("welcome.relay")) as { mode: string; url?: string };
+      mode = saved.mode;
+      url.value = saved.url ?? "";
+      for (const input of host.querySelectorAll<HTMLInputElement>("input[name=relay]")) input.checked = !input.disabled && input.value === mode;
+    } catch (err) {
+      page.status.textContent = t("welcome.failed", { error: message(err) });
+    }
+    refresh();
   };
 
   await providersStep();

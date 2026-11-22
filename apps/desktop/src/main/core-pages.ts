@@ -157,7 +157,7 @@ export interface PageDeps {
 }
 
 /** The calls the root's pages make, by name. Anything else is refused. */
-export const PAGE_CALLS = ["page.current", "registry.state", "page.close", "welcome.providers", "welcome.signIn", "welcome.openTerms", "welcome.done", "welcome.skip", "welcome.setup", "welcome.models", "welcome.setDefault", "plugins.list", "plugins.turnOff", "plugins.remove", "key.view", "key.save", "key.remove", "release.switchNow", "release.retry"] as const;
+export const PAGE_CALLS = ["page.current", "registry.state", "page.close", "welcome.providers", "welcome.signIn", "welcome.openTerms", "welcome.done", "welcome.skip", "welcome.setup", "welcome.models", "welcome.setDefault", "welcome.relay", "welcome.setRelay", "plugins.list", "plugins.turnOff", "plugins.remove", "key.view", "key.save", "key.remove", "release.switchNow", "release.retry"] as const;
 export type PageCall = (typeof PAGE_CALLS)[number];
 
 const ID_RE = /^[a-z][a-z0-9-]*(\/[a-z][a-z0-9-]*)?$/;
@@ -221,6 +221,13 @@ export async function pageCall(name: string, params: unknown, deps: PageDeps): P
     return { ...state, signedOutAs: { model: row === undefined ? state.signedOut : textIn(row.name, lang) || state.signedOut, provider: row === undefined ? (state.signedOut.split("/")[0] ?? state.signedOut) : textIn(row.providerName, lang) || row.provider } };
   }
   if (name === "welcome.models") return { models: await signedInModels(client, deps.lang()) };
+  if (name === "welcome.relay") return client.request("device.relay.get", {});
+  if (name === "welcome.setRelay") {
+    const mode = p.mode === "n0" || p.mode === "off" || p.mode === "custom" ? p.mode : undefined;
+    const url = typeof p.url === "string" && p.url.length > 0 && p.url.length <= 2048 ? p.url : undefined;
+    if (mode === undefined) throw new Error("which relay?");
+    return client.request("device.relay.set", { mode, ...(mode === "custom" && url !== undefined ? { url } : {}) });
+  }
   if (name === "welcome.setDefault") {
     const model = typeof p.model === "string" && p.model.length > 0 && p.model.length <= 200 ? p.model : undefined;
     if (model === undefined) throw new Error("which model?");
