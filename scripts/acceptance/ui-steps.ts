@@ -15,6 +15,7 @@ import type { MossClient } from "./client";
 import { BOT_PARTS_BOT, BOT_PARTS_CLIENT, BOT_PARTS_SETTINGS, BACKGROUND_IDS, FIELDS_IDS, MIC_IDS, OFFICE_ID, OFFICE_REFUSAL, writeBackground, writeBotParts, writeMicrophone, writeOfficePanels } from "./manifest-fields-step";
 import { ACTIVE_IDS, ACTIVE_NAMES, ACTIVE_POINT, ACTIVE_TITLE, activeWrong, writeActiveOne, type ActiveSeen } from "./active-one-step";
 import { FIGURE_PACK_STEP, FIGURE_REACTS_STEP, FIGURE_RENDERER_STEP, GENERAL_POINTS_STEP, figurePackStep, figureReactsStep, figureRendererStep, generalPointsStep, type FigureCtx } from "./figure-steps";
+import { cardShownJs } from "./island-shown";
 import { linesSince } from "./log-since";
 import { scaled } from "./time-scale";
 import { MEASURED_ON_MAC_ONLY, MEASURED_ROWS, measuredOnMacOnly } from "./measured";
@@ -770,14 +771,17 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // The island's own part draws in a frame of the island's surface page; its card is the element that carries the card's id.
       const surfacePage = await until("the island's surface page", 20_000, async () => (await cdp.documents()).find((d) => /[?&]surface=island/.test(d.url)), undefined);
       const dumpIsland = async () => `island surface text: "${surfacePage.text.slice(0, 120)}"`;
-      const frames = await until(`the island to place the ${card.kind} card's sealed frames`, 20_000, async () => {
+      // The island's own part is a document its surface page frames (the main window draws the card in its own frames too).
+      const part = await until(`the island to place the ${card.kind} card's sealed frames`, 20_000, async () => {
+        const own = new Set<string>(((await cdp.evaluate(surfacePage.session, "[...document.querySelectorAll('iframe')].map((f) => f.src)").catch(() => [])) as string[]) ?? []);
         for (const d of await cdp.documents()) {
-          if (!d.url.startsWith("moss-plugin://moss/")) continue;
+          if (!own.has(d.url)) continue;
           const n = Number(await cdp.evaluate(d.session, `document.querySelectorAll('[data-moss-card="${card.id}"] iframe[data-moss-sealed]').length`).catch(() => 0));
-          if (n >= 3) return n;
+          if (n >= 3) return { session: d.session, n };
         }
         return undefined;
       }, dumpIsland);
+      const frames = part.n;
       const mine = (await cdp.documents()).filter((d) => d.url.startsWith(`moss-sealed://card/${encodeURIComponent(card.id)}/`));
       const words = mine.filter((d) => decodeURIComponent(d.url).includes("/field:")).map((d) => d.text).join(" ").trim();
       if (words === "") fail(`the island's card frames hold no words (${frames} frames, ${mine.length} sealed documents)`);
@@ -794,6 +798,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (raw !== null) fail(`the island's card shows raw JSON: "${words.slice(Math.max(0, raw.index - 20), raw.index + 40).replace(/\n/g, " ")}"`);
       // The picture of the island: more than one colour in it (a black or empty rectangle is one), measured over the whole
       // page the app drew (the island's window, which is transparent outside the card).
+      // The island holds the card hidden until its sealed frames are whole (see island-shown.ts); the picture is of what it then shows.
+      await until("the island to show the card (not held back)", 30_000, async () => ((await cdp.evaluate(part.session, cardShownJs(card.id)).catch(() => false)) === true ? true : undefined), dumpIsland);
       await sleep(600);
       const shot = (await cdp.send("Page.captureScreenshot", { format: "png" }, surfacePage.session)) as { data: string };
       const { colours, width, height } = distinctColours(Buffer.from(shot.data, "base64"));
