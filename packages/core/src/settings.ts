@@ -2414,7 +2414,9 @@ export function internalRoleDefaultTagFor(
  * is also the plugin Review). THE RULE (2026-11-22, backlog 498 and 521): an internal job runs on a model the person chose
  * for that kind of work (a pin in Settings, or the default model's own provider) and never on a costlier one than the
  * light model of the default model's family. When no light model can be had it does not run; it says so once in the log.
- * A job never falls to the default model, and never to another provider than the default's.
+ * A job never falls to the default model, and never to another provider than the default's. THE ONE EXCEPTION is the
+ * reviewer, a safety gate (the controller's ruling): with no light model of the default's family it runs on the default
+ * model itself on its own provider (`internalRoleOwnDefault`), and with that unusable it asks, never allows.
  */
 export const LIGHT_MODEL_ROLES: readonly InternalJobRole[] = ["titles.model", "pins.dream", "pins.cleaner", "reviewer.model"];
 
@@ -2443,6 +2445,15 @@ export function internalRoleLight(
   return choice === undefined ? undefined : { choice };
 }
 
+/** The default model's own tag when its provider is eligible and holds a credential: what the reviewer runs on when its family has
+ *  no light model there (`internalRoleEffectiveTag`). `undefined` with no default, or when its provider can't be used. */
+export function internalRoleOwnDefault(settings: Settings | null | undefined, snapshot: InternalProviderSnapshot): ModelTag | undefined {
+  const own = ownProviderFor(settings);
+  const model = settings?.provider?.model;
+  if (own === undefined || model === undefined || !internalEligibleProviderIds().has(own) || !snapshot.credentialed.has(own)) return undefined;
+  return model as ModelTag;
+}
+
 /** The part of the start-up line that says which model each internal job runs on and why (no secrets: model tags and reasons only). */
 export function describeInternalJobModels(settings: Settings | null | undefined, snapshot: InternalProviderSnapshot): string {
   const label: Readonly<Record<InternalJobRole, string>> = { "titles.model": "titles", "pins.dream": "the dreamer", "pins.cleaner": "the cleaner", "reviewer.model": "the bash safety reviewer and the plugin Review" };
@@ -2451,7 +2462,8 @@ export function describeInternalJobModels(settings: Settings | null | undefined,
     const tag = internalRoleEffectiveTag(settings, role, snapshot);
     let why: string;
     if (explicitInternalRolePin(settings, role) !== undefined) why = "set in settings";
-    else if (tag === null) why = "not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles";
+    else if (tag === null) why = role === "reviewer.model" ? "no review can run: the chosen model's provider can't be used for it; pin a model in Settings › Roles" : "not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles";
+    else if (internalRoleLight(settings, role, snapshot) === undefined) why = "the default model itself: its family has no light model on its provider";
     else why = `the light model of the default's ${internalRoleLight(settings, role, snapshot)?.choice.family ?? "own"} family`;
     parts.push(`${label[role]} on ${tag ?? "nothing"} (${why})`);
   }
@@ -2486,6 +2498,10 @@ export function internalRoleEffectiveTag(
   // The light model of the default's family, else nothing (`LIGHT_MODEL_ROLES`: never the default model itself).
   const light = internalRoleLight(settings, role, snapshot);
   if (light !== undefined) return light.choice.tag as ModelTag;
+  // The reviewer is a safety gate, not a chore (the controller's ruling, 2026-11-22): where the default's family has no light
+  // model on the default's own provider, it runs on the DEFAULT MODEL ITSELF on that provider, as it did before. Never another
+  // provider: a default whose provider holds no key leaves it with no model (the hook then asks, `ReviewerNoRunnableModel`).
+  if (role === "reviewer.model" && snapshot !== undefined) return internalRoleOwnDefault(settings, snapshot) ?? null;
   // No snapshot: the pre-2026-09-19 question, kept for a caller that threads none.
   if (snapshot !== undefined) return null;
   const preferred = preferredInternalProviderFor(settings, snapshot);

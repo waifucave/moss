@@ -471,7 +471,7 @@ export function pluginRegistryMethods(o: {
         const had = reviews.get(card);
         if (had !== undefined) return answer(had);
         const model = reviews.model();
-        return answer(model === undefined ? { state: "unavailable", why: "No model is set for reviews: choose one in Settings › Models (the reviewer role)." } : { state: "idle", model });
+        return answer(model === undefined ? { state: "unavailable", why: "No review could be run: no model can be used for it on this computer. Choose one in Settings › Models (the reviewer role)." } : { state: "idle", model });
       }
       const had = reviews.get(card);
       if (had !== undefined && (had.state === "running" || had.state === "done")) return answer(had);

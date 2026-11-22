@@ -128,11 +128,15 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     expect(session.problem.detail).toContain("not in this build's model catalog");
     // 2026-11-22: the internal roles used to sit on the retired tag itself (the default rule); a default in no family has no
     // light model, so they run nothing and say to pin one.
-    for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
+    for (const role of ["titles.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
       expect(info.model).toBeNull();
       expect(info.problem?.reason).toBe("no-default-model");
     }
+    // The reviewer, a safety gate, keeps its old claim: it sits on the default model itself and says it is not in the catalog.
+    const reviewer = res.result.roles["reviewer.model"];
+    expect(reviewer.model).toBe("deepseek/deepseek-reasoner");
+    expect(reviewer.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
     // …and the note clears the moment the user picks a live model (derived, never persisted).
     const fixed = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "deepseek/deepseek-v4-pro" });
     expect(fixed.error).toBeUndefined();
@@ -488,7 +492,11 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const { socketPath, harnessToken } = await boot("groq/llama-3.3-70b-versatile", { internalCredentials: ["groq:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
-    expect((await c.request(METHODS.settingsModelRoles, {})).result.roles["titles.model"].model).toBeNull();
+    const first = (await c.request(METHODS.settingsModelRoles, {})).result.roles;
+    expect(first["titles.model"].model).toBeNull();
+    // The reviewer, a safety gate, runs on the default model itself (claim restored: it never goes unreviewed while its own provider is credentialed).
+    expect(first["reviewer.model"].model).toBe("groq/llama-3.3-70b-versatile");
+    expect(first["reviewer.model"].problem).toBeNull();
     // Move the session default to a Claude row: groq is still the only credential, but it is not the default's
     // provider, so no job runs on it (was: a light job took groq's gpt-oss-20b).
     const moved = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "anthropic/claude-opus-5" });
@@ -499,7 +507,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
       // `no-default-model`, NOT `no-internal-credential`: a credential exists, so "add a key" would be
       // both wrong and unactionable. The fix is a pin, and the detail names the provider.
       expect(info.problem?.reason).toBe("no-default-model");
-      expect(info.problem?.detail).toBe("no light model of your default model's family can be had (Groq is signed in): pick a model for this job in Settings › Roles");
+      expect(info.problem?.detail).toBe(role === "reviewer.model"
+        ? "the default model's provider can't be used for the review (Groq is signed in): pick a model for the reviewer in Settings › Roles"
+        : "no light model of your default model's family can be had (Groq is signed in): pick a model for this job in Settings › Roles");
       expect(info.problem?.model).toBe("");
     }
     // A pin on a provider that DOES have a slot clears it immediately.

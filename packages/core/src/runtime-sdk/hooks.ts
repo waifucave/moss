@@ -1435,7 +1435,7 @@ function bashReviewerHook(deps: SessionHooksDeps): HookCallback {
       // review to be had and there never was one: `allow()`, exactly what this hook's own first line
       // answered when such a home had no `BashReviewer` at all. The reviewer has already logged the
       // state change once; nothing is logged per call here.
-      if (err instanceof ReviewerNoRunnableModel) { progress("ended"); return allow(); }
+      if (err instanceof ReviewerNoRunnableModel && err.structural) { progress("ended"); return allow(); }
       progress("ended", "escalated");
       // C3 (2026-09-22) — traced in the SDK source, not yet measured on a live child: this `ask`
       // reaches `canUseTool`, where the gate's `auto` allow used to answer it, i.e. silently ran it.

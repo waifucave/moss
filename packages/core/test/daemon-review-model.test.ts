@@ -103,17 +103,20 @@ async function home(provider: string, withBundled = false) {
   return { app, settings, peek, peekUntil };
 }
 
-// 2026-11-22: with no role set Review runs on the light model of the default's family on the default's own provider (never the
-// default itself): was the default model (or the one provider's recommended model, for a default with no key).
+// 2026-11-22: with no role set Review runs on the light model of the default's family on the default's own provider (the
+// default itself only where that family has no light model there): was the default model (or the one provider's recommended
+// model, for a default with no key).
 const LIGHT = "anthropic/claude-haiku-5-5";
 
 test("the reviewer role names a signed-in provider's model: Review runs on it though the default model is elsewhere, within a few seconds with the bundled model plugins watched", async () => {
   // The bundled tree (178 model plugins and the rest) staged as a source run stages it: the registry's watches on its
   // folders are what delayed the settings file's own event (14f's second table: past 30 s).
   const h = await home("codex-oauth/gpt-5.6-sol", true);
-  // Before the role is set: the older build's Codex default has no key here, so the one provider's recommended model is
-  // the default (2026-11-20, default-model.ts), and Review runs on that.
-  void recommendedModel;
+  // Before the role is set: the older build's Codex default has no key here, so the boot's own layer (default-model.ts,
+  // 2026-11-20) REPLACES that default with the one provider's recommended model; the default is then an Anthropic model on
+  // the home's own provider, and Review runs on the light model of ITS family there. Not a crossing: the replaced default
+  // is what the rule reads (a Codex default left as it was would have no review model and the hook would ask).
+  expect(String(recommendedModel(loadCatalog(), "anthropic")).startsWith("anthropic/")).toBe(true);
   expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: LIGHT });
   const t0 = Date.now();
   h.settings({ reviewer: { model: "anthropic/claude-sonnet-5-5" } });

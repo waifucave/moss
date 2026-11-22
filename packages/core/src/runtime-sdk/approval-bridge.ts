@@ -595,7 +595,7 @@ export function canUseToolFor(deps: CanUseToolDeps): ApprovalBridge {
         signal.removeEventListener("abort", onAbort);
       }
     } catch (err) {
-      return err instanceof ReviewerNoRunnableModel ? { kind: "allow" } : { kind: "ask" };
+      return err instanceof ReviewerNoRunnableModel && err.structural ? { kind: "allow" } : { kind: "ask" };
     }
   };
 

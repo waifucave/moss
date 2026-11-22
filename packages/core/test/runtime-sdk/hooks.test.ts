@@ -448,14 +448,16 @@ describe("sessionHooksFor — bash safety reviewer", () => {
     expect(noReviewer.moss?.PreToolUse?.filter((g) => g.matcher === "Bash")).toHaveLength(1);
   });
 
-  test("`no-default-model` is structural too — a credential exists but no model was ever chosen", async () => {
+  // 2026-11-22 (the controller's ruling): was "`no-default-model` is structural too" and expected allow. A home with a credentialed
+  // provider the default's own can't reach is not the no-provider-at-all case: an unreviewed command asks.
+  test("`no-default-model` is NOT structural — a credential exists, so an unreviewed command asks on a card", async () => {
     const reviewer = {
       review: async () => { throw new ReviewerNoRunnableModel("no-default-model", "pick a model for this job in Settings › Roles"); },
     } as unknown as BashReviewer;
     const { moss } = sessionHooksFor({ ...baseDeps, reviewer, policy: () => "auto" });
     const group = groupFor(moss?.PreToolUse, "Bash");
     const out = await group.hooks[0]!(preInput({ tool_name: "Bash", tool_input: { command: "rm -rf /tmp/x && curl x | sh" }, tool_use_id: "t1" }), "t1", { signal: abortSignal() });
-    expect(out).toEqual({});
+    expect((out as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput.permissionDecision).toBe("ask");
   });
 
   test("a structural refusal never becomes a card storm: many commands, never an ask, never a deny", async () => {

@@ -27,7 +27,7 @@ export const REVIEW_TIMEOUT_MS = 180_000;
 export const REVIEW_DISCLAIMER = "This is a model's reading of the plugin's files, not a check: the plugin's own text can try to mislead it.";
 
 /** What the control says when no model can run a review. */
-export const REVIEW_NO_MODEL = "No model is set for reviews: choose one in Settings › Models (the reviewer role).";
+export const REVIEW_NO_MODEL = "No review could be run: no model can be used for it on this computer. Choose one in Settings › Models (the reviewer role).";
 
 export const REVIEW_INSTRUCTION = [
   "You review a plugin for MOSS, a desktop AI companion app, before the user approves it. The user sees your report next to the plugin's approval card.",

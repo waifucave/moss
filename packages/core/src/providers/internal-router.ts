@@ -368,6 +368,13 @@ export function createInternalRouter(deps: {
     const why = internalRoleNoTagReason(settings, role, deps.view.snapshot());
     if (why?.reason === "no-default-model") {
       // A credential IS present — a probe would not change this answer, so no self-heal here.
+      if (role === "reviewer.model") {
+        return {
+          reason: "no-default-model",
+          detail: `the default model's provider can't be used for the review${why.providerId === undefined ? "" : ` (${providerDisplayName(why.providerId)} is signed in)`}: pick a model for the reviewer in Settings › Roles`,
+          tag: null,
+        };
+      }
       return {
         reason: "no-default-model",
         detail: `no light model of your default model's family can be had${why.providerId === undefined ? "" : ` (${providerDisplayName(why.providerId)} is signed in)`}: pick a model for this job in Settings › Roles`,
@@ -405,6 +412,14 @@ export function createInternalRouter(deps: {
       // Titles ask for the family's light effort; the dreamer and the cleaner keep theirs; the reviewer sends none.
       const light = explicitInternalRolePin(settings, role) === undefined ? internalRoleLight(settings, role, deps.view.snapshot()) : undefined;
       const lightEffort = role === "reviewer.model" ? undefined : light?.choice.effort;
+      // The reviewer is a safety gate: with no light model it runs on the default model itself on its own provider, said once.
+      if (role === "reviewer.model" && light === undefined && explicitInternalRolePin(settings, role) === undefined) {
+        const key = `reviewer-default|${tag}`;
+        if (!said.has(key)) {
+          said.add(key);
+          log(`internal-provider: the default model's family has no light model on its provider, so the command safety check and the plugin Review run on the default model itself, ${tag}`);
+        }
+      }
       const first = resolveTag(role, settings, tag, lightEffort);
       if (!isInternalRefusal(first)) return light === undefined ? first : noteLightNotOffered(first, log, said);
       // THE REVIEWER'S PIN FALLBACK (user ruling — see `ResolveOptions`). Only for a refusal about the PIN

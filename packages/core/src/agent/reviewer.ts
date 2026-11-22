@@ -9,7 +9,7 @@ import { isBashCommandReadOnly } from "../runtime-sdk/bash-read-only";
  * This is a DIFFERENT failure from "the call was attempted and did not produce a verdict" (a timeout, a
  * malformed verdict, a 429), and the hook has to tell them apart because the safe answer differs:
  *
- *  - STRUCTURAL (`no-internal-credential` / `no-default-model`): no provider MOSS's own jobs can use is
+ *  - STRUCTURAL (`no-internal-credential` ONLY since 2026-11-22; `no-default-model` is a home that has a provider): no provider MOSS's own jobs can use is
  *    configured on this home AT ALL. Before the per-provider fan-out such a home had no `BashReviewer`
  *    instance at all and `bashReviewerHook`'s very first line answered `allow()` — i.e. MOSS never
  *    reviewed bash there. A Claude-only home is exactly this case BY THE USER'S OWN RULING (Claude
@@ -23,6 +23,12 @@ import { isBashCommandReadOnly } from "../runtime-sdk/bash-read-only";
  *    human decide — which is what shipped and stays.
  */
 export class ReviewerNoRunnableModel extends Error {
+  /** Only a home with NO provider MOSS's own jobs can use at all is structural (2026-11-22, the controller's ruling): the
+   *  hook allows there. Any other refusal (a credentialed provider the default's own can't reach, a default not in the
+   *  catalog) is a home that HAS a provider, and an unreviewed command there asks on a card. */
+  get structural(): boolean {
+    return this.reason === "no-internal-credential";
+  }
   constructor(readonly reason: string, detail: string) {
     super(`the bash safety reviewer has no runnable model (${reason}): ${detail}`);
     this.name = "ReviewerNoRunnableModel";
