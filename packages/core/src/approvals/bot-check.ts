@@ -345,9 +345,9 @@ export function outsideSandboxInputError(tool: string, input: Record<string, unk
 export const OUTSIDE_SANDBOX_SENTENCE = "It runs as you, with the network and everything your account can reach.";
 
 /** The same sentence on Windows, where what the user lets out is narrower and the card says so (lane WS,
- *  `fence/win-shell-tools.ts` rule E): the command still runs as MOSS's sandbox account, can write the user's home and
- *  temp folder, never MOSS's own settings and secrets, and has no network. */
-export const OUTSIDE_SANDBOX_SENTENCE_WINDOWS = "It can write your home folder, but not MOSS's own settings, and it has no network.";
+ *  `fence/win-shell-tools.ts` rule E): the command still runs as MOSS's sandbox account, can write the home's ordinary
+ *  folders and its temp folder, never MOSS's own settings and secrets nor a dot-folder, and has no network. */
+export const OUTSIDE_SANDBOX_SENTENCE_WINDOWS = "It can write the folders in your home, but not MOSS's own settings or your dot-folders, and it has no network.";
 
 /** MOSS's words after the bot's name on the card for a command that leaves the sandbox (`headlineByBot`). */
 export const OUTSIDE_SANDBOX_HEADLINE_WORDS = "wants to run a command outside the sandbox";

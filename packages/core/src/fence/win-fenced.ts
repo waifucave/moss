@@ -36,6 +36,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { fenceContextFor } from "../contracts/fence";
 import type { MossFence } from "./fence";
 import { gitTemplateDir } from "./layout";
+import { ordinaryTopFolders } from "./sandbox-settings";
 import { quarantinePlanted, reposUnder, revertPlantedGitKeys, snapshotFiles } from "./fenced-process";
 import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner, type RunShell } from "./spawn";
 import {
@@ -109,6 +110,21 @@ export function planFromPolicy(fence: Pick<MossFence, "policy" | "mossHome" | "t
   const cwdRoot = policy.allowWrite.some((a) => winUnder(cwd, a)) && !denied(cwd) ? [cwd] : [];
   const roots = uniq([...plan.grantWrite, fence.temp, ...cwdRoot]);
   return { writeRoots: roots, readGrants: uniq(plan.grantRead), denyRead: plan.denyRead, denyWrite: plan.denyWrite, denyReadExcept: uniq([...roots, ...plan.grantRead]) };
+}
+
+/** srt-win refuses a write root on the user's temp folder or on anything above it (its profile read grant leaves the
+ *  temp folder ungranted as a whole, and its protected exclusions, `.ssh` and the like, sit under the home). So, on
+ *  Windows, a root that is the temp folder becomes the session's own folder inside it (the M1 floor's "temp folder per
+ *  session"), and a root that is the home becomes the home's ordinary top-level folders (what "accept edits" writes on
+ *  every OS: never a dot-folder, AppData or the MOSS home's way). Any other root above the temp folder is dropped. */
+export function windowsRoots(roots: readonly string[], o: { home: string; temp: string; sessionTemp: string; homeFolders: () => readonly string[] }): string[] {
+  const out: string[] = [];
+  for (const r of roots) {
+    if (fold(r) === fold(o.home)) { out.push(...o.homeFolders(), o.sessionTemp); continue; }
+    if (winUnder(o.temp, r)) { if (fold(r) === fold(o.temp)) out.push(o.sessionTemp); continue; }
+    out.push(r);
+  }
+  return uniq(out);
 }
 
 const GLOB = /[*?[\]{}]/;
@@ -309,14 +325,20 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       try {
         const member = got.marker.members.find((m) => m.principal === lease.principal)!;
         const sid = member.principalSid!;
-        const plan = r.sandbox !== undefined ? planFromSettings(r.sandbox) : planFromPolicy(fence, r.who.caller, r.cwd, { ...(o.bots ? { bots: o.bots() } : {}) });
+        const drawn = r.sandbox !== undefined ? planFromSettings(r.sandbox) : planFromPolicy(fence, r.who.caller, r.cwd, { ...(o.bots ? { bots: o.bots() } : {}) });
+        const session = r.who.caller.kind === "session" ? r.who.caller.sessionId : "shared";
+        const sessionTemp = win32.join(fence.temp, `moss-${session.replace(/[^A-Za-z0-9._-]/g, "_")}`);
+        try { mkdirSync(sessionTemp, { recursive: true }); } catch { /* the grant below reports it */ }
+        const mapped = windowsRoots(drawn.writeRoots, { home: fence.home, temp: fence.temp, sessionTemp,
+          homeFolders: () => ordinaryTopFolders(fence.home, { os: "windows", mossHome: fence.mossHome, pathFolders: [] }) });
+        const plan: WinPlan = { ...drawn, writeRoots: mapped, denyReadExcept: uniq([...mapped, ...drawn.readGrants]) };
         // The caller's own folders exist before they are granted: a root must be on the disk to carry its ACE.
         for (const root of plan.writeRoots) {
           if (winUnder(root, fence.mossHome)) { try { mkdirSync(root, { recursive: true }); } catch { /* the grant below reports it */ } }
         }
         const roots = plan.writeRoots.filter((p) => existsSync(p));
         const grantPlan = { ...plan, writeRoots: roots };
-        const temp = r.env.TMPDIR !== undefined && roots.some((x) => winUnder(r.env.TMPDIR!, x)) ? r.env.TMPDIR : fence.temp;
+        const temp = r.env.TMPDIR !== undefined && roots.some((x) => winUnder(r.env.TMPDIR!, x)) ? r.env.TMPDIR : sessionTemp;
         // Rule 6: the command's home is a folder of its own inside its temp folder, made now and removed after it,
         // so what a tool keeps in its home (a git config, a cache) goes with the command too.
         runHome = win32.join(temp, `.moss-home-${randomBytes(6).toString("hex")}`);

@@ -180,7 +180,9 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
   }, 300_000);
 
   test("the escape: a bot's own conversation's approved command writes the home, never MOSS's settings, and has no network", async () => {
-    const target = fresh("ws-escape.txt");
+    mkdirSync(join(home, "ws-escape-dir"), { recursive: true });
+    const target = join(home, "ws-escape-dir", "x.txt");
+    rmSync(target, { force: true });
     const e = await call(tools.Bash!, { command: `echo escaped > '${target.replace(/\\/g, "/")}'`, dangerouslyDisableSandbox: true });
     expect(e.isError).toBe(false);
     expect(readFileSync(target, "utf8").trim()).toBe("escaped");
