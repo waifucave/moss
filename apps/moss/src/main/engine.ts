@@ -19,7 +19,7 @@ import { oneLine, safeDetail } from "../shared/status-line";
 import type { SealedFrames } from "./sealed";
 import { talkCommandOf, type TalkCommand } from "./voice";
 import type {
-  BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, PairingRow, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
+  BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, PairingRow, RelayRow, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
 } from "../shared/view";
 
 export interface EngineClient {
@@ -768,6 +768,17 @@ export class MossEngine {
     this.changed();
     if (now !== undefined && now.row.ended === undefined) void this.client?.request("device.pair.cancel", { pairingId: now.id }, 5_000).catch(() => undefined);
     return true;
+  }
+
+  /** The relay the links use (the setup guide's relay page, spec §8.3). */
+  async relay(): Promise<RelayRow | { waiting: true }> {
+    const r = await this.read<RelayRow>("devices", "device.relay.get");
+    return r === undefined ? { waiting: true } : { mode: r.mode, ...(r.url !== undefined ? { url: r.url } : {}) };
+  }
+
+  async setRelay(choice: RelayRow): Promise<{ ok: true; relay: RelayRow } | { ok: false; why: string }> {
+    const r = await this.act<RelayRow>("device.relay.set", { mode: choice.mode, ...(choice.mode === "custom" && choice.url !== undefined ? { url: choice.url } : {}) }, "Choosing the relay", 15_000);
+    return r.ok ? { ok: true, relay: { mode: r.value.mode, ...(r.value.url !== undefined ? { url: r.value.url } : {}) } } : r;
   }
 
   async removeDevice(id: string): Promise<boolean> {

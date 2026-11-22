@@ -26,6 +26,7 @@ const { createElement: h } = await import("react");
 const { SidePanel, inertFrame } = await import("../src/window/panel/SidePanel");
 const { PluginsPage, WHAT_MOSS_SHOWS } = await import("../src/window/plugins/PluginsPage");
 const { SettingsPage, PluginSettings } = await import("../src/window/settings/SettingsPage");
+const { SetupGuide } = await import("../src/window/setup/SetupGuide");
 
 /** A 1x1 PNG, the fixture picture's frame. */
 const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64"));
@@ -75,6 +76,7 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
     settings: () => engine.settings(), botSettings: (b) => engine.botSettings(b), setBotSetting: (b, p, k, v) => engine.setBotSetting(b, p, k, v),
     botInstructions: (id) => engine.botInstructions(id),
     setLevel: (c, l) => engine.setLevel(c, l),
+    relay: () => engine.relay(), setRelay: (c) => engine.setRelay(c),
     pairBegin: () => engine.pairBegin(), pairJoin: (c) => engine.pairJoin(c), pairConfirm: () => engine.pairConfirm(), pairCancel: () => engine.pairCancel(), removeDevice: (id) => engine.removeDevice(id),
     setPermission: (s, t, p) => engine.setPermission(s, t, p),
     signIn: (p, i, k) => engine.signIn(p, i, k), signOut: (p, i) => engine.signOut(p, i),
@@ -319,6 +321,45 @@ describe("Settings", () => {
     await until(() => callsOf(e, "device.revoke").length === 1);
     expect(callsOf(e, "device.revoke")[0]).toEqual({ id: "devphone000000000001" });
     r.unmount();
+  });
+
+  test("the guide's relay page: what a relay is for, n0's public relays on by default, the person's own server, none; the cloud computer's and Cloudflare's shown and not offered", async () => {
+    const { e } = await setup();
+    const r = render(h(SetupGuide, { setup: undefined, botName: "Alpha", initialStep: "relay", onClose: () => {}, onDone: () => {} }));
+    await until(() => r.container.querySelector("[data-setup-relay=n0] input") !== null);
+    const text = r.container.textContent ?? "";
+    expect(text).toContain("a relay carries their traffic");
+    expect(text).toContain("never sees what your devices say");
+    // n0's relays are the choice until another is saved; saving needs a change.
+    expect((r.container.querySelector("[data-setup-relay=n0] input") as HTMLInputElement).checked).toBe(true);
+    expect((r.container.querySelector("[data-setup=relay-save]") as HTMLButtonElement).disabled).toBe(true);
+    // The two relay plugins the links don't take yet are shown and cannot be picked.
+    for (const v of ["cloud", "cloudflare"]) {
+      expect((r.container.querySelector(`[data-setup-relay=${v}] input`) as HTMLInputElement).disabled).toBe(true);
+    }
+    expect(text).toContain("Available once you have a cloud computer");
+    expect(text).toContain("Not available in this build yet");
+    // The person's own server: its address, saved through the engine's relay method.
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-setup-relay=custom] input")!); });
+    await act(async () => { fireEvent.change(r.container.querySelector("[data-setup-relay-url]")!, { target: { value: "http://not-https.example.test" } }); });
+    await settle();
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-setup=relay-save]")!); });
+    await until(() => (r.container.querySelector("[data-setup-relay-note]")?.textContent ?? "").includes("https://"));
+    expect(callsOf(e, "device.relay.set")[0]).toEqual({ mode: "custom", url: "http://not-https.example.test" });
+    await act(async () => { fireEvent.change(r.container.querySelector("[data-setup-relay-url]")!, { target: { value: "https://relay.example.test" } }); });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-setup=relay-save]")!); });
+    await until(() => r.container.querySelector("[data-setup-relay-note]")?.textContent === "Saved.");
+    expect(callsOf(e, "device.relay.set")[1]).toEqual({ mode: "custom", url: "https://relay.example.test" });
+    // No relay at all, then back to n0's: each saved.
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-setup-relay=off] input")!); });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-setup=relay-save]")!); });
+    await until(() => callsOf(e, "device.relay.set").length === 3);
+    expect(callsOf(e, "device.relay.set")[2]).toEqual({ mode: "off" });
+    r.unmount();
+    // Opened again, the page shows what the engine has kept.
+    const again = render(h(SetupGuide, { setup: undefined, botName: "Alpha", initialStep: "relay", onClose: () => {}, onDone: () => {} }));
+    await until(() => (again.container.querySelector("[data-setup-relay=off] input") as HTMLInputElement | null)?.checked === true);
+    again.unmount();
   });
 
   test("one bot's page: its name, model, instructions size and face pins, each change a bot.edit", async () => {

@@ -122,6 +122,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
   const log: { method: string; params: unknown; conn: number }[] = [];
   const answered: { id: string; option: string; program: string }[] = [];
   let actingNow = false;
+  let relay: { mode: "n0" | "off" | "custom"; url?: string } = { mode: "n0" };
   let beforeList: (() => void) | undefined;
 
   const now = Date.now();
@@ -488,6 +489,12 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
         return { computers: [{ name: "Studio", level: "ask-risky" }, { name: "Laptop", level: "ask" }] };
       // Pairing and removing a device, as the engine answers them for the app's own press: a code, the words, and a sealed card
       // for the add and the removal (`applied: false`).
+      case "device.relay.get":
+        return relay;
+      case "device.relay.set":
+        if (params.mode === "custom" && !/^https:\/\/[^/@\s]+\/?$/.test(String(params.url ?? ""))) throw new RpcError(-32602, "a relay server's address is an https:// address with no login or query in it");
+        relay = { mode: params.mode as "n0" | "off" | "custom", ...(params.mode === "custom" ? { url: String(params.url) } : {}) };
+        return relay;
       case "device.pair.begin":
         return { pairingId: "pair_host", qr: "clover-pair:1:AAAA", code: "KQ7-M2P", expiresAt: now + 600_000 };
       case "device.pair.join":

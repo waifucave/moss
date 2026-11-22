@@ -736,6 +736,14 @@ function wireBridge(): void {
     const code = str(a.code, 4_096);
     return pairingPress(w) ?? (code === undefined ? { ok: false as const, why: "No code." } : engine.pairJoin(code));
   });
+  handle("moss:relay", () => engine.relay());
+  handle("moss:set-relay", (w, a) => {
+    const c = (a.choice !== null && typeof a.choice === "object" ? a.choice : {}) as { mode?: unknown; url?: unknown };
+    const mode = c.mode === "n0" || c.mode === "off" || c.mode === "custom" ? c.mode : undefined;
+    const url = str(c.url, 2_048);
+    if (mode === undefined || !personPressed(w)) return { ok: false as const, why: "The relay is chosen only right after your own key press or click." };
+    return engine.setRelay({ mode, ...(url !== undefined ? { url } : {}) });
+  });
   handle("moss:pair-confirm", (w) => pairingPress(w) ?? engine.pairConfirm());
   handle("moss:pair-cancel", (w) => (personPressed(w) ? engine.pairCancel() : false));
   handle("moss:remove-device", (w, a) => {
