@@ -16,7 +16,7 @@ import { hello, MossClient, RpcError } from "../acceptance/client";
 import { Cdp, MAIN_PAGE_URL, type WsLike } from "../acceptance/cdp";
 import { folderProblem } from "../../apps/desktop/src/main/preview-control-rules";
 import { LineReader, MAX_LINE, encodeLine, sameToken, type CtlRequest, type Target } from "./control-lib";
-import { CLEAR_TARGET_JS, DUMP_JS, FOCUS_JS, findJs } from "./page-js";
+import { CENTER_JS, CLEAR_TARGET_JS, DUMP_JS, FOCUS_JS, findJs } from "./page-js";
 import { readSpent, renderSpent } from "./real-lib";
 import { seedScene, type SceneName, type SeedInput } from "./seed";
 
@@ -144,7 +144,7 @@ class Control {
     for (const doc of await this.docs()) {
       const n = Number(await this.cdp.evaluate(doc.session, findJs(t)).catch(() => 0));
       if (!(n > 0)) continue;
-      const at = await this.cdp.centerOf(doc.session, "[data-moss-ctl-target]").catch(() => undefined);
+      const at = (await this.cdp.evaluate(doc.session, CENTER_JS).catch(() => undefined)) as { x: number; y: number } | null | undefined ?? undefined;
       await this.cdp.evaluate(doc.session, CLEAR_TARGET_JS).catch(() => undefined);
       if (at !== undefined) return { session: doc.session, x: at.x, y: at.y, matches: n };
     }
@@ -290,6 +290,12 @@ class Control {
       }
       case "events": return await this.events(a as { areas: string[]; forS: number; count: number }, stream);
       case "logs": return { text: this.logs(a as { which: string; sinceMs?: number; tail: number }) };
+      case "frames": return { frames: [...this.cdp.frames.values()], text: [...this.cdp.frames.values()].map((f) => `${f.type}  ${f.session}  ${f.url}`).join("\n") };
+      case "eval": {
+        const docs = (await this.docs()).filter((x) => a.frame === undefined || x.url.includes(String(a.frame)));
+        if (docs.length === 0) throw new Error(a.frame === undefined ? "no page is drawn" : `no frame has "${a.frame}" in its address`);
+        return { value: await this.cdp.evaluate(docs[0]!.session, String(a.js)), url: docs[0]!.url };
+      }
       case "spent": return { spent: this.d.budgetDir === undefined ? [] : readSpent(this.d.budgetDir), text: this.d.budgetDir === undefined ? "this preview has no real agents (start it with --real-agents)" : renderSpent(readSpent(this.d.budgetDir)) };
       default: throw new Error(`unknown command ${req.cmd}`);
     }
