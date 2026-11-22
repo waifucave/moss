@@ -2,8 +2,8 @@
 // relays are the default; the person can turn relays off or point the links at a relay server of their own. The choice is the
 // person's own press (`userOnly`), kept in the settings (`settings.links.relay`, read only through `relayChoiceFrom`) and put
 // to the link sidecar at once (`DeviceLinks.setRelay`). General: nothing here knows which window asked.
-import { DEVICES_METHODS, type RelayView } from "@waifucave/moss-protocol";
-import { handler, type MethodHandler } from "../rpc/handler";
+import { DEVICES_METHODS, MOSS_ERR, type RelayView } from "@waifucave/moss-protocol";
+import { handler, MethodError, type MethodHandler } from "../rpc/handler";
 import { validRelayUrl } from "../settings";
 import { ContractError } from "../contracts/common";
 
@@ -16,7 +16,9 @@ export interface DeviceRelayDeps {
 export function deviceRelayMethods(deps: DeviceRelayDeps): Record<string, MethodHandler> {
   return {
     [DEVICES_METHODS.deviceRelayGet.name]: handler(DEVICES_METHODS.deviceRelayGet, () => deps.get()),
-    [DEVICES_METHODS.deviceRelaySet.name]: handler(DEVICES_METHODS.deviceRelaySet, async (p) => {
+    [DEVICES_METHODS.deviceRelaySet.name]: handler(DEVICES_METHODS.deviceRelaySet, async (p, ctx) => {
+      // The person's own choice: never a plugin's part, a session or a peer (the server's `userOnly` already says so; checked again here).
+      if (ctx.caller.kind !== "user") throw new MethodError(MOSS_ERR.NOT_THE_USER, "only the user can choose the relay");
       let choice: RelayView;
       if (p.mode === "custom") {
         // Only an `https:` address with no login in it: a relay the person means, never one that sends a secret somewhere.

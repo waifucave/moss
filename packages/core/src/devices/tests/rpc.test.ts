@@ -34,11 +34,11 @@ const terminal: Caller = { kind: "user", client: "cli" };
 const app: Caller = { kind: "user", client: "app" };
 const bot: Caller = { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" };
 
-async function computer(net: MemoryNetwork, name: string) {
+async function computer(net: MemoryNetwork, name: string, ttlMs?: number) {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
   const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-rpc-")), key, clock, self: { name } });
-  const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null });
+  const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, ...(ttlMs !== undefined ? { ttlMs } : {}) });
   stops.push(() => pairing.close());
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
   const transport = { links: () => [], watch: () => () => undefined, connect: () => Promise.reject(new Error("no links in this test")) };
@@ -82,6 +82,88 @@ describe("devices methods", () => {
     for (const [m, p] of [["device.pair.begin", {}], ["device.rename", { id: a.key.id, name: "x" }], ["device.revoke", { id: a.key.id }]] as const) {
       const err = (await a.call(m, p, bot).catch((e: unknown) => e)) as MethodError;
       expect(err.code).toBe(MOSS_ERR.NOT_THE_USER);
+    }
+  });
+});
+
+const pluginCaller: Caller = { kind: "plugin", pluginId: "acme/pairer" } as Caller;
+const peerCaller: Caller = { kind: "peer", device: "dev_peer" } as Caller;
+
+async function showWords(a: Awaited<ReturnType<typeof computer>>, b: Awaited<ReturnType<typeof computer>>) {
+  const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+  const joined = (await b.call("device.pair.join", { code: view.qr }, app)) as { pairingId: string; words: string[] };
+  await waitFor(() => a.pairing.get(view.pairingId)?.status === "words");
+  return { view, joined };
+}
+
+describe("pairing's edges", () => {
+  test("the add card carries the engine's own four words and where it joins; words handed back wrong fail the pairing with no card", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view, joined } = await showWords(a, b);
+    // A part that hands back words it drew itself (not the pairing's): refused, the pairing failed, no card was raised.
+    await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
+    expect(a.broker.cards()).toHaveLength(0);
+    expect(a.pairing.get(view.pairingId)?.status).toBe("failed");
+    // A fresh pairing: the card names the engine's words, whatever the caller drew, and the computer it joins.
+    const second = await showWords(a, b);
+    const res = (await a.call("device.pair.confirm", { pairingId: second.view.pairingId, words: second.joined.words }, app)) as { applied: false; card: string };
+    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    const lines = JSON.stringify(card);
+    expect(lines).toContain(second.joined.words.join(" "));
+    expect(lines).toContain("same on the other device's screen");
+    expect(lines).toContain("It joins Studio.");
+    void joined;
+  });
+
+  test("a refused add card leaves no device on either side", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view, joined } = await showWords(a, b);
+    await b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal);
+    const res = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, app)) as { card: string };
+    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: { via: "sealed-frame", frame: a.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
+    await waitFor(() => a.pairing.get(view.pairingId)?.status === "failed");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(a.registry.get(b.key.id)).toBeUndefined();
+    expect(b.registry.get(a.key.id)).toBeUndefined();
+  });
+
+  test("two pairings at once keep their own words and each ends with its own device", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const c = await computer(net, "Tablet");
+    const one = await showWords(a, b);
+    const two = await showWords(a, c);
+    expect(one.view.pairingId).not.toBe(two.view.pairingId);
+    for (const [x, who] of [[one, b], [two, c]] as const) {
+      await who.call("device.pair.confirm", { pairingId: x.view.pairingId, words: x.joined.words }, terminal);
+      expect(await a.call("device.pair.confirm", { pairingId: x.view.pairingId, words: x.joined.words }, terminal)).toEqual({ applied: true });
+    }
+    await waitFor(() => a.registry.get(b.key.id) !== undefined && a.registry.get(c.key.id) !== undefined);
+  });
+
+  test("an expired code can't be joined", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio", 20);
+    const b = await computer(net, "Laptop");
+    const view = (await a.call("device.pair.begin", {}, app)) as { qr: string };
+    await new Promise((r) => setTimeout(r, 60));
+    await expect(b.call("device.pair.join", { code: view.qr }, app)).rejects.toThrow();
+  });
+
+  test("a remote device and a non-person caller can't pair, revoke or choose the relay", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    for (const caller of [peerCaller, pluginCaller, bot]) {
+      for (const [m, p] of [["device.pair.begin", {}], ["device.revoke", { id: a.key.id }], ["device.pair.confirm", { pairingId: "x", words: ["a", "b", "c", "d"] }]] as const) {
+        const err = (await a.call(m, p, caller).catch((e: unknown) => e)) as MethodError;
+        expect(err.code).toBe(MOSS_ERR.NOT_THE_USER);
+      }
     }
   });
 });

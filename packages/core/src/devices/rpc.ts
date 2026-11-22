@@ -155,9 +155,9 @@ const ROTATION_REFUSED: Record<AnswerKeyRotationRefusal, string> = {
 export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodHandler> {
   const M = DEVICES_METHODS;
   const { registry, pairing } = deps;
-  const changeCard = (change: "device-add" | "device-revoke", what: string, device: string): ApprovalRequest => ({
+  const changeCard = (change: "device-add" | "device-revoke", what: string, device: string, more: string[] = []): ApprovalRequest => ({
     kind: "change", origin: "user", computers: [], effect: "other", change,
-    fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device] } },
+    fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device, ...more] } },
   });
 
   return {
@@ -222,8 +222,19 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
         return { applied: true };
       }
+      // The words the person compares are the engine's own, drawn in the card's sealed frame: a part that holds `devices.manage` hears
+      // them and hands them back here, so its own drawing of them proves nothing. Words that aren't the pairing's fail it at once, with
+      // no card.
+      const real = state.view.words;
+      if (real === undefined || p.words.length !== 4 || p.words.some((w, i) => w.toLowerCase() !== real[i])) {
+        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(false) });
+        throw new MethodError(ERR.INVALID_REQUEST, "the words don't match: pair again");
+      }
       const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
-      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name));
+      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
+        `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
+        `It joins ${registry.self().name}.`,
+      ]));
       if (!opened.card) {
         // Answered before its id was known: still a card's answer, never the user's terminal.
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");

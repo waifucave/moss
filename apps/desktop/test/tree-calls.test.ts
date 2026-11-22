@@ -518,7 +518,7 @@ const WORST: Record<string, Worst> = {
   "plugin.logs": "read", // its own file only, key-looking runs cut to "…"
   "tool.permissions": "read", // plugin tools by their own names, each with its value and the bots' saved card rules
   "device.pair.begin": "harmless change", // shows a code for another device to enter; nothing is added by it
-  "device.pair.join": "harmless change", // dials the code's device; both then show four words, and nothing is added until the card
+  "device.pair.join": "user's permission press", // dials out to the device a typed code names and starts a pairing with it; the person's own press, and nothing is added until the add card (which shows the four words itself)
   "device.pair.confirm": "sealed card", // adding the device: the engine raises the sealed card (or answers it, in the user's terminal only), never this call
   "device.pair.cancel": "harmless change", // ends a pairing under way
   "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
