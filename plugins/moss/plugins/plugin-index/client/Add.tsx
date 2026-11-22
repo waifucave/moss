@@ -22,7 +22,8 @@ export function Add(props: AddProps) {
   const [pickKind, setPickKind] = useState<PickKind>("folder");
   const [npm, setNpm] = useKept<string>("plugins.add.npm", "");
   const [npmVersion, setNpmVersion] = useKept<string>("plugins.add.npmVersion", "");
-  const [config, setConfig] = useKept<string>("plugins.add.config", "");
+  // Not kept across a reload: a pasted MCP config can hold a key, and what `useKept` holds sits in the window's session storage.
+  const [config, setConfig] = useState<string>("");
   const [url, setUrl] = useKept<string>("plugins.add.url", "");
   const picked = props.picked;
   const busy = props.busy === true;

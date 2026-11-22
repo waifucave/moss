@@ -258,7 +258,9 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
       case "hook_notice": {
         // The engine's word on why a turn failed (`agent_notice` in a code session's agent log) says it in the failed turn's own
         // line, never as a second one; it comes just before the turn's end, or just after it. Other notices aren't shown here.
-        const text = str(e.text)?.trim();
+        // A provider's error can be pages long: the line keeps its first 300 characters.
+        const whole = str(e.text)?.trim();
+        const text = whole !== undefined && whole.length > 300 ? `${whole.slice(0, 300).trimEnd()}…` : whole;
         if (text === undefined || text === "" || e.level !== "notice") break;
         if (failedNote !== undefined && items[items.length - 1] === failedNote) failedNote.text = text;
         else failedWhy = text;
