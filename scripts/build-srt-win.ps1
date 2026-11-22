@@ -50,7 +50,7 @@ $outExe = Join-Path $outDir "srt-win.exe"
 # Pinned MOSS patches (file name -> SHA-256). `Apply-Patches` refuses
 # unknown or extra `*.patch` files and any hash mismatch before building.
 $PinnedPatches = @{
-  "0001-per-principal-setup-records.patch" = "6321a2922db67b4d19cb40728071af88f6635de761bba3aee2784431fd0e6341"
+  "0001-per-principal-setup-records.patch" = "188ad4c0c5ed37bc9cdba8db821fc5d0a82fb380b79278c300a1507afe81f55d"
 }
 
 # What the pinned patch set must change (per-principal records). After

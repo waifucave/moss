@@ -39,10 +39,13 @@ describe("dialling the daemon safely (E-M1's review)", () => {
     const server = Bun.listen({ unix: path, socket: { data() {} } });
     expect(() => Bun.listen({ unix: path, socket: { data() {} } })).toThrow(); // FILE_FLAG_FIRST_PIPE_INSTANCE
     expect(lockPipeDacl(path, sid)).toBeGreaterThan(0);
-    expect(pipeDaclSddl(path)).toBe(`D:P(A;;FA;;;${sid})(A;;FA;;;SY)`);
+    // SDDL writes the local machine's built-in Administrator (RID 500, the account GitHub's Windows runner runs as)
+    // as its alias `LA`, never as the SID: the same one trustee either way.
+    const trustee = /^S-1-5-21-\d+-\d+-\d+-500$/.test(sid) ? "LA" : sid;
+    expect(pipeDaclSddl(path)).toBe(`D:P(A;;FA;;;${trustee})(A;;FA;;;SY)`);
     const client = await Bun.connect({ unix: path, socket: { data() {} } });
     await Bun.sleep(100);
-    expect(pipeDaclSddl(path, "client")).toBe(`D:P(A;;FA;;;${sid})(A;;FA;;;SY)`); // the pipe's, not one instance's
+    expect(pipeDaclSddl(path, "client")).toBe(`D:P(A;;FA;;;${trustee})(A;;FA;;;SY)`); // the pipe's, not one instance's
     const who = pipeServerIdentity(path);
     expect(who?.pid).toBe(process.pid);
     expect(isOurDaemon(who, { userSid: sid, image: process.execPath })).toBe(true);
