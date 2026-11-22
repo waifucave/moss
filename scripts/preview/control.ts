@@ -17,6 +17,7 @@ import { Cdp, MAIN_PAGE_URL, type WsLike } from "../acceptance/cdp";
 import { folderProblem } from "../../apps/desktop/src/main/preview-control-rules";
 import { LineReader, MAX_LINE, encodeLine, sameToken, type CtlRequest, type Target } from "./control-lib";
 import { CLEAR_TARGET_JS, DUMP_JS, FOCUS_JS, findJs } from "./page-js";
+import { readSpent, renderSpent } from "./real-lib";
 import { seedScene, type SceneName, type SeedInput } from "./seed";
 
 export interface ControlDeps {
@@ -29,6 +30,8 @@ export interface ControlDeps {
   /** What `seed` needs but the client: the engine client is made per request. */
   seed: Omit<SeedInput, "c">;
   logs: { app: string; engine: string; appOut: string };
+  /** A real-agents preview: where the budget's counters are (real-lib.ts), else undefined. */
+  budgetDir?: string;
   say(line: string): void;
 }
 
@@ -287,6 +290,7 @@ class Control {
       }
       case "events": return await this.events(a as { areas: string[]; forS: number; count: number }, stream);
       case "logs": return { text: this.logs(a as { which: string; sinceMs?: number; tail: number }) };
+      case "spent": return { spent: this.d.budgetDir === undefined ? [] : readSpent(this.d.budgetDir), text: this.d.budgetDir === undefined ? "this preview has no real agents (start it with --real-agents)" : renderSpent(readSpent(this.d.budgetDir)) };
       default: throw new Error(`unknown command ${req.cmd}`);
     }
   }

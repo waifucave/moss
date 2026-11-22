@@ -38,6 +38,8 @@ export interface SeedInput {
   keyedModel: string;
   dummyKey: string;
   fakeAcpAgent: string;
+  /** A real-agents preview: Claude Code and Codex are the owner's real programs, so the scenes that use them (`message`) are not made. */
+  real?: boolean;
   /** Each seeded backend's quirks, read from its bundled plugin's quirks.json. */
   quirks: Record<string, unknown>;
   say(line: string): void;
@@ -202,7 +204,7 @@ const SCENES: Record<SceneName, (k: Kit, i: SeedInput) => Promise<void>> = {
 export async function seed(i: SeedInput): Promise<Seeded> {
   return await withKit(i, async (k) => {
     await signIn(i);
-    for (const name of ["idle", "waiting", "child", "message", "ended", "running"] as const) await SCENES[name](k, i);
+    for (const name of ["idle", "waiting", "child", "message", "ended", "running"] as const) if (!(name === "message" && i.real === true)) await SCENES[name](k, i);
     await sleep(1_200);
     await k.sweep();
     const left = (await k.c.request<{ cards: CardRow[] }>("card.list")).cards;
@@ -214,6 +216,7 @@ export async function seed(i: SeedInput): Promise<Seeded> {
 
 /** One scene on a preview that is already up (its model is signed in): the sessions it made. */
 export async function seedScene(name: SceneName, i: SeedInput): Promise<Seeded["sessions"]> {
+  if (name === "message" && i.real === true) throw new Error("the message scene uses Claude Code and Codex, which are the real programs in this preview (it would spend the owner's plans): start those sessions yourself, within the budget");
   return await withKit(i, async (k) => {
     await SCENES[name](k, i);
     await sleep(1_200);

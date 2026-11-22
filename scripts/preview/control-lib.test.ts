@@ -90,6 +90,7 @@ describe("the command line", () => {
     expect(ok("call", "bot.list").request.args.params).toEqual({});
     expect(ok("events", "--area", "sessions", "--for", "3").request.args).toMatchObject({ areas: ["sessions"], forS: 3 });
     expect(ok("sessions").request.cmd).toBe("sessions");
+    expect(ok("spent").request.cmd).toBe("spent");
     for (const s of SCENES) expect(ok("seed", s).request.args.scene).toBe(s);
     expect(ok("logs", "--app", "--since", "5m").request.args).toMatchObject({ which: "app", sinceMs: 300_000 });
     expect(ok("logs").request.args).toMatchObject({ which: "both", tail: 60 });
