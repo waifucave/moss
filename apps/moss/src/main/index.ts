@@ -17,6 +17,7 @@ import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
 import { EngineConnection, locateEngine, tokenPath, type ConnectionState } from "./connection";
 import { asksAgain, mossInstallGateDeps, releaseBanner, releaseChoice } from "./release";
 import { MossEngine, routineEditOf } from "./engine";
+import { PickedAttachments, STORE_FILES_MAX } from "./attachments";
 import { tellQuit, windowsClosedQuits } from "./quit";
 import type { BotEdit } from "../shared/view";
 import { engineHome, MAIN_WINDOW_ID, mossIdentity, parseLaunchArgs, resolveProfile, WINDOW_PARTITION } from "./identity";
@@ -548,34 +549,8 @@ function fromPage(event: IpcMainEvent | IpcMainInvokeEvent): BrowserWindow | und
   return w;
 }
 
-/** Pictures the person picked for the composer, by id, until sent (the window holds only their names). */
-const picked = new Map<string, { name: string; mediaType: "image/png" | "image/jpeg" | "image/webp"; data: string }>();
-/** Files the person picked or dropped for a bot, by id, until sent: main keeps the path (what `user.send`'s `files` takes: the
- *  engine looks, never reads, a file in the home folder, and copies one outside it); the window holds only the name. */
-const pickedFiles = new Map<string, { name: string; path: string }>();
-const FILES_MAX = 10;
-const IMAGES_MAX = 4;
-
-/** One path the person chose (the dialog's or a drop's): a PNG, JPEG or WebP up to 10 MB goes as a picture, anything else as a
- *  file for the engine to carry. A path that isn't absolute is dropped. */
-function takePicked(path: string): { id: string; name: string; kind: "image" | "file" } | undefined {
-  if (!isAbsolute(path) || path.length > 4096) return undefined;
-  const name = basename(path);
-  const ext = extname(path).toLowerCase();
-  const mediaType = ext === ".png" ? "image/png" as const : ext === ".webp" ? "image/webp" as const : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" as const : undefined;
-  const id = randomUUID();
-  if (mediaType !== undefined && picked.size < IMAGES_MAX) {
-    let bytes: Buffer | undefined;
-    try { bytes = readFileSync(path); } catch { bytes = undefined; }
-    if (bytes !== undefined && bytes.length <= 10 * 1024 * 1024) {
-      picked.set(id, { name, mediaType, data: bytes.toString("base64") });
-      return { id, name, kind: "image" };
-    }
-  }
-  if (pickedFiles.size >= FILES_MAX) return undefined;
-  pickedFiles.set(id, { name, path });
-  return { id, name, kind: "file" };
-}
+/** What the person picked or dropped for the composer, by id, until sent, removed or its composer goes (attachments.ts). */
+const attachments = new PickedAttachments();
 
 const str = (v: unknown, max: number): string | undefined => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 
@@ -633,28 +608,32 @@ function wireBridge(): void {
     const bot = str(a.bot, 64);
     const text = typeof a.text === "string" ? a.text.slice(0, 100_000).trim() : "";
     const ids = Array.isArray(a.images) ? a.images.filter((x): x is string => typeof x === "string").slice(0, 4) : [];
-    const images = ids.flatMap((id) => { const p = picked.get(id); return p === undefined ? [] : [p]; });
-    const fileIds = Array.isArray(a.files) ? a.files.filter((x): x is string => typeof x === "string").slice(0, FILES_MAX) : [];
-    const files = fileIds.flatMap((id) => { const f = pickedFiles.get(id); return f === undefined ? [] : [f]; });
+    const images = ids.flatMap((id) => { const p = attachments.images.get(id); return p === undefined ? [] : [p]; });
+    const fileIds = Array.isArray(a.files) ? a.files.filter((x): x is string => typeof x === "string").slice(0, 10) : [];
+    const files = fileIds.flatMap((id) => { const f = attachments.files.get(id); return f === undefined ? [] : [f]; });
     if (bot === undefined || (text === "" && images.length === 0 && files.length === 0)) return { ok: false, why: "Nothing to send." };
     if (!personPressed(w)) {
       log("send: refused (no press of the person's own just before)");
       return { ok: false, why: "Words go only right after your own key press or click." };
     }
     const r = await engine.send(bot, text === "" ? (files.length > 0 ? "(a file)" : "(a picture)") : text, randomUUID(), images.map((p) => ({ mediaType: p.mediaType, data: p.data })), files.map((f) => ({ path: f.path })));
-    if (r.ok) { for (const id of ids) picked.delete(id); for (const id of fileIds) pickedFiles.delete(id); }
+    if (r.ok) attachments.release([...ids, ...fileIds]);
     return r;
   });
   handle("moss:pick-attachments", async (w) => {
     if (headless) return [];
     const r = await dialog.showOpenDialog(w, { properties: ["openFile", "multiSelections"] });
     if (r.canceled) return [];
-    return r.filePaths.slice(0, FILES_MAX).flatMap((path) => { const t = takePicked(path); return t === undefined ? [] : [t]; });
+    return r.filePaths.slice(0, STORE_FILES_MAX).flatMap((path) => { const t = attachments.take(path); return t === undefined ? [] : [t]; });
   });
   // Files dropped on the composer: the preload read each one's path (`webUtils.getPathForFile`); main takes them as the dialog's.
   handle("moss:drop-attachments", (_w, a) => {
-    const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === "string").slice(0, FILES_MAX) : [];
-    return paths.flatMap((path) => { const t = takePicked(path); return t === undefined ? [] : [t]; });
+    const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === "string").slice(0, STORE_FILES_MAX) : [];
+    return paths.flatMap((path) => { const t = attachments.take(path); return t === undefined ? [] : [t]; });
+  });
+  // A chip's x, or a composer going away: main lets go of what it kept for these ids.
+  on("moss:release-attachments", (_w, a) => {
+    attachments.release(Array.isArray(a.ids) ? a.ids.filter((x): x is string => typeof x === "string").slice(0, 64) : []);
   });
   handle("moss:create-bot", async (w, a) => {
     const name = typeof a.name === "string" ? a.name.trim().slice(0, 80) : "";

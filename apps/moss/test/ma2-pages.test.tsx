@@ -66,7 +66,7 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
   const real: MossBridge = {
     view: async () => engine.view(), onView: (fn) => engine.onView(fn), showing: () => {}, pendingShow: async () => undefined, onShow: () => () => {},
     conversation: (b, before) => engine.conversation(b, before), onMessage: none,
-    send: async () => ({ ok: true }), pickAttachments: async () => [], dropAttachments: async () => [], createBot: (n, m) => engine.createBot(n, m), markRead: () => {},
+    send: async () => ({ ok: true }), pickAttachments: async () => [], dropAttachments: async () => [], releaseAttachments: () => {}, createBot: (n, m) => engine.createBot(n, m), markRead: () => {},
     routines: (b) => engine.routines(b), routineInstructions: (b, id) => engine.routineInstructions(b, id), runRoutine: (id) => engine.runRoutine(id),
     editRoutine: (b, id, p) => engine.editRoutine(b, id, p), memory: (b) => engine.memory(b), memoryFile: (b, p) => engine.memoryFile(b, p), pictures: (b) => engine.pictures(b), openPicture: (id) => engine.openPicture(id),
     closePicture: (id) => engine.closePicture(id), onPictureFrame: (fn) => engine.onPictureFrame(fn),

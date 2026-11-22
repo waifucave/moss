@@ -250,6 +250,10 @@ export interface ModelRow {
 }
 
 /** What the window may ask MOSS's main process: a fixed list, never a generic call (preload.ts). */
+/** One thing picked or dropped for the composer: its name and id (never a path or bytes); `note` is one plain line to show
+ *  (a picture over 10 MB goes as a file). */
+export interface Attached { id: string; name: string; kind: "image" | "file"; note?: string }
+
 export interface MossBridge {
   view(): Promise<MossView>;
   onView(fn: (view: MossView) => void): () => void;
@@ -267,10 +271,12 @@ export interface MossBridge {
   send(bot: string, text: string, images?: readonly string[], files?: readonly string[]): Promise<{ ok: true } | { ok: false; why: string }>;
   /** The person picks what to attach (main's own file dialog, any file): a PNG, JPEG or WebP up to 10 MB is a picture (at most
    *  4), anything else a file (at most 10); their names and the ids `send` takes. Never their bytes or paths in the window. */
-  pickAttachments(): Promise<{ id: string; name: string; kind: "image" | "file" }[]>;
+  pickAttachments(): Promise<Attached[]>;
   /** Files dropped on the composer: the preload reads each one's path (`webUtils.getPathForFile`), main takes them as the
    *  dialog's. The window gets names and ids, never a path. */
-  dropAttachments(files: readonly File[]): Promise<{ id: string; name: string; kind: "image" | "file" }[]>;
+  dropAttachments(files: readonly File[]): Promise<Attached[]>;
+  /** The person removed a chip, or its composer went away (they switched bots): main lets go of what it kept for these ids. */
+  releaseAttachments(ids: readonly string[]): void;
   /** Makes a bot with the model the person chose in the + flow (one of `models`), so its first turn has a credential. */
   createBot(name: string, model?: string): Promise<{ ok: true; id: string } | { ok: false; why: string }>;
   markRead(bot: string): void;

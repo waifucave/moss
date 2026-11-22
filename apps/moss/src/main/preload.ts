@@ -53,6 +53,7 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
     onMessage: (fn) => listen<[string, Message]>("moss:message", fn),
     send: (bot, text, images, files) => ipcRenderer.invoke("moss:send", { bot, text, ...(images !== undefined ? { images } : {}), ...(files !== undefined ? { files } : {}) }),
     pickAttachments: () => ipcRenderer.invoke("moss:pick-attachments"),
+    releaseAttachments: (ids) => ipcRenderer.send("moss:release-attachments", { ids }),
     dropAttachments: (dropped) => ipcRenderer.invoke("moss:drop-attachments", { paths: dropped.map((f) => { try { return webUtils.getPathForFile(f); } catch { return ""; } }).filter((p) => p !== "") }),
     createBot: (name, model) => ipcRenderer.invoke("moss:create-bot", { name, ...(model !== undefined ? { model } : {}) }),
     markRead: (bot) => ipcRenderer.send("moss:mark-read", { bot }),

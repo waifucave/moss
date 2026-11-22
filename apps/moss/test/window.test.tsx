@@ -38,7 +38,7 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
   const none = () => () => {};
   return {
     view: async () => v, onView: (fn) => { viewTo.push(fn); return () => {}; }, showing: () => {}, pendingShow: async () => pendingBot, onShow: (fn) => { showTo.push(fn); return () => {}; }, conversation: async () => page, onMessage: (fn) => { messageTo.push(fn); return () => {}; },
-    send: async () => ({ ok: true }), pickAttachments: async () => [], dropAttachments: async () => [], createBot: async () => ({ ok: false, why: "no" }), markRead: () => {},
+    send: async () => ({ ok: true }), pickAttachments: async () => [], dropAttachments: async () => [], releaseAttachments: () => {}, createBot: async () => ({ ok: false, why: "no" }), markRead: () => {},
     routines: async () => [], routineInstructions: async () => ({ ok: false, why: "no" }), runRoutine: async () => ({ ok: false, why: "no" }),
     editRoutine: async () => ({ ok: false, why: "no" }), memory: async () => ({ waiting: true }), memoryFile: async () => ({ ok: false, why: "no" }),
     pictures: async () => [], openPicture: async () => false, closePicture: () => {}, onPictureFrame: none,
@@ -193,6 +193,36 @@ describe("the composer and dropped things", () => {
     answer = { ok: true };
     await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
     expect(r.container.querySelector("[data-attached-file]")).toBeNull();
+    r.unmount();
+  });
+
+  test("an eleventh file in one message is said, a chip's x and another bot shown both tell main to let go of the ids", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });
+    const composer = r.container.querySelector("[data-composer]")!;
+    const bridge = (window as unknown as { moss: MossBridge }).moss;
+    const released: string[][] = [];
+    bridge.releaseAttachments = (ids) => { released.push([...ids]); };
+    const twelve = Array.from({ length: 12 }, (_, i) => ({ id: `f${i}`, name: `n${i}.txt`, kind: "file" as const }));
+    bridge.dropAttachments = async () => twelve;
+    await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "n.txt")] } }); });
+    expect(r.container.querySelectorAll("[data-attached-file]")).toHaveLength(10);
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("A message can carry at most 10 files: 2 not attached.");
+    expect(released).toEqual([["f10", "f11"]]); // the two that didn't fit are given back at once
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-attached-file] button")!); });
+    expect(released[1]).toEqual(["f0"]);
+    expect(r.container.querySelectorAll("[data-attached-file]")).toHaveLength(9);
+    r.unmount(); // the composer goes away: what it still held is given back
+    expect(released[2]!.sort()).toEqual(["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"]);
+  });
+
+  test("a picture over 10 MB that went as a file is said in one plain line", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });
+    const composer = r.container.querySelector("[data-composer]")!;
+    (window as unknown as { moss: MossBridge }).moss.dropAttachments = async () => [{ id: "b1", name: "big.png", kind: "file", note: "“big.png” is over 10 MB, so it goes as a file, not as a picture." }];
+    await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "big.png", { type: "image/png" })] } }); });
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("“big.png” is over 10 MB, so it goes as a file, not as a picture.");
     r.unmount();
   });
 

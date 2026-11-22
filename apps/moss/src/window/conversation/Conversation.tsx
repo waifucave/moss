@@ -10,7 +10,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, typ
 import { Face, MoodWords } from "../faces/Face";
 import { bridge, shortTime } from "../bridge";
 import { CardFrame } from "../cards/CardFrame";
-import type { BotRow, CardRow, Message, MossView } from "../../shared/view";
+import type { Attached, BotRow, CardRow, Message, MossView } from "../../shared/view";
 import { statusPhrase } from "../../shared/status-line";
 
 /** How close to the top (in pixels) a scroll starts reading the page before. */
@@ -249,11 +249,32 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
     const r = await bridge().send(props.bot.id, t, images.map((i) => i.id), files.map((f) => f.id));
     if (r.ok) { setText(""); setImages([]); setFiles([]); setWhy(undefined); } else setWhy(r.why);
   };
-  const take = (got: { id: string; name: string; kind: "image" | "file" }[]): void => {
+  // What the window keeps (names and ids): a message carries at most 4 pictures and 10 files. What won't fit is let go of in main
+  // and said, never silently cut. A chip's x, and this composer going away (another bot shown), tell main to drop the id.
+  const held = useRef({ images, files });
+  held.current = { images, files };
+  useEffect(() => () => {
+    const ids = [...held.current.images, ...held.current.files].map((x) => x.id);
+    if (ids.length > 0) bridge().releaseAttachments(ids);
+    setImages([]); setFiles([]);
+  }, [props.bot.id]);
+  const drop = (id: string): void => bridge().releaseAttachments([id]);
+  const take = (got: Attached[]): void => {
     if (got.length === 0) return;
-    setImages((now) => [...now, ...got.filter((g) => g.kind === "image")].slice(0, 4));
-    setFiles((now) => [...now, ...got.filter((g) => g.kind === "file")].slice(0, 10));
-    setWhy(undefined);
+    const now = held.current;
+    const pics = got.filter((g) => g.kind === "image");
+    const docs = got.filter((g) => g.kind === "file");
+    const keepPics = pics.slice(0, Math.max(0, 4 - now.images.length));
+    const keepDocs = docs.slice(0, Math.max(0, 10 - now.files.length));
+    const extra = [...pics.slice(keepPics.length), ...docs.slice(keepDocs.length)];
+    if (extra.length > 0) bridge().releaseAttachments(extra.map((x) => x.id));
+    setImages((was) => [...was, ...keepPics]);
+    setFiles((was) => [...was, ...keepDocs]);
+    const said: string[] = [];
+    if (docs.length > keepDocs.length) said.push(`A message can carry at most 10 files: ${docs.length - keepDocs.length} not attached.`);
+    if (pics.length > keepPics.length) said.push(`A message can carry at most 4 pictures: ${pics.length - keepPics.length} not attached.`);
+    for (const g of got) if (g.note !== undefined) said.push(g.note);
+    setWhy(said.length > 0 ? said.join(" ") : undefined);
   };
   const attach = async (): Promise<void> => take(await bridge().pickAttachments());
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -283,13 +304,13 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
           {images.map((i) => (
             <span key={i.id} className="file-chip">
               {i.name}
-              <button type="button" aria-label={`Remove ${i.name}`} onClick={() => setImages((now) => now.filter((x) => x.id !== i.id))}>×</button>
+              <button type="button" aria-label={`Remove ${i.name}`} onClick={() => { drop(i.id); setImages((now) => now.filter((x) => x.id !== i.id)); }}>×</button>
             </span>
           ))}
           {files.map((f) => (
             <span key={f.id} className="file-chip" data-attached-file>
               {f.name}
-              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((now) => now.filter((x) => x.id !== f.id))}>×</button>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => { drop(f.id); setFiles((now) => now.filter((x) => x.id !== f.id)); }}>×</button>
             </span>
           ))}
         </div>
