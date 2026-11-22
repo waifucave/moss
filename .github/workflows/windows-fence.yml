@@ -1,0 +1,71 @@
+name: windows-fence
+
+# Windows Bash and PowerShell under MOSS's fence (spec §4, §9.1, §14.1 item 2), on GitHub's windows-latest runner: the
+# lane WS jobs. ci.yml calls this workflow (`windows-fence`); a push to a `lane/ws-*` branch runs it alone, so the lane
+# can iterate on the Windows legs without the whole CI.
+on:
+  workflow_call:
+  push:
+    branches: ["lane/ws-*"]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    name: windows fence · probe
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Where the job runs
+        run: scripts/ci/windows-fence/probe-env.ps1
+
+      - name: Build srt-win from the pinned source and compare its digest with the pin
+        run: scripts/ci/windows-fence/build-launcher.ps1
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build moss-core.exe
+        run: bun scripts/build-daemon.ts --target windows-x64
+
+      - name: Probe the launcher as the sandbox principal
+        run: scripts/ci/windows-fence/probe-launch.ps1
+
+  # The Windows fence's own unit tests, which no other job ran (the core suite's Windows run doesn't exist; the Linux
+  # shards skip them): the named pipe, the job object and the launcher's pure half.
+  unit:
+    name: windows fence · unit
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Core · the Windows fence's unit tests
+        working-directory: packages/core
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts
