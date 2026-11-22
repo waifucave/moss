@@ -92,7 +92,7 @@ describe("the pinned launcher", () => {
   });
 
   test("the launcher has Authenticode digest pins for x64 and arm64", () => {
-    expect(SRT_WIN_PINS.x64).toBe("95b2c474943b9cae55a2521a643e9a09aa34847e05c79796316c6ca819b4ae92");
+    expect(SRT_WIN_PINS.x64).toBe("3ea5afb79ff090460d8c7fb1c32fc782c60fb18c41a0689caa66c160afb7c2a9"); // re-measured 2026-11-22 (windows-launcher.ts)
     expect(SRT_WIN_PINS.arm64).toBe("bcd117665fe9f64494bd535b9508e4808ae99ad0ff6118fb410a7f60bb47abb9");
   });
 
