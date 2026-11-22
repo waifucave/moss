@@ -1990,53 +1990,64 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       // taken here for the reset's length, so no command starts on a half-deleted profile) has its whole profile and
       // hive deleted; its next logon makes a fresh one from the default profile. A held member is left for the next
       // reset. Exit 0 when every free member is clean, 1 when a profile couldn't be deleted (the next launch refuses it).
+      // What it did is also kept in `%ProgramData%\\MOSS Sandbox\\reset-<owner SID>.log`: the task has no console.
+      const said: string[] = [];
+      const say = (line: string) => { said.push(line); console.error(line); };
+      const keepLog = async () => {
+        const pd = await knownFolder("CommonApplicationData");
+        if (pd === null || targetSid === null) return;
+        const { appendFile, mkdir } = await import("node:fs/promises");
+        const { join } = await import("node:path");
+        await mkdir(join(pd, "MOSS Sandbox"), { recursive: true }).catch(() => {});
+        await appendFile(join(pd, "MOSS Sandbox", `reset-${targetSid}.log`), `${new Date().toISOString()} exit ${process.exitCode ?? 0}: ${said.join(" | ")}\n`).catch(() => {});
+      };
       const elevated = (await run([...NET_SESSION_PROBE])).code === 0;
       if (!elevated) {
-        console.error("sandbox reset needs elevation: the reset task runs it as SYSTEM");
+        say("sandbox reset needs elevation: the reset task runs it as SYSTEM");
         process.exitCode = SANDBOX_EXIT.NOT_ELEVATED;
-        return;
+        await keepLog(); return;
       }
       if (!fromProtected || targetSid === null) {
-        console.error("sandbox reset runs from the protected copy %ProgramFiles%\\MOSS Sandbox\\<your SID>\\moss-core.exe");
+        say("sandbox reset runs from the protected copy %ProgramFiles%\\MOSS Sandbox\\<your SID>\\moss-core.exe");
         process.exitCode = 1;
-        return;
+        await keepLog(); return;
       }
       const programData = await knownFolder("CommonApplicationData");
       const ownerReg = await run([...profileQueryArgs(targetSid)]);
       const ownerProfile = ownerReg.code === 0 ? parseProfileImagePath(ownerReg.out) : null;
       if (programData === null || ownerProfile === null) {
-        console.error("sandbox reset: could not resolve ProgramData or the owner's profile");
+        say("sandbox reset: could not resolve ProgramData or the owner's profile");
         process.exitCode = 1;
-        return;
+        await keepLog(); return;
       }
       const { readFile } = await import("node:fs/promises");
       const { join } = await import("node:path");
       const marker = await readFile(installMarkerPath(programData, targetSid), "utf8").then((t) => parseInstallMarker(t), () => null);
       if (marker === null || marker.ownerSid !== targetSid) {
-        console.log("nothing to reset: Bash isn't set up for this user");
-        return;
+        say("nothing to reset: Bash isn't set up for this user");
+        await keepLog(); return;
       }
       // The owner's default MOSS home holds the leases (`<profile>\.moss\sandbox\leases`, as the daemon's).
       const leasesDir = sandboxLeasesDir(join(ownerProfile, ".moss"));
       let store: ReturnType<typeof createWindowsLockStore>;
       try { store = createWindowsLockStore(leasesDir, { trustedOwner: targetSid }); } catch (e) {
-        console.error(`sandbox reset: ${(e as Error).message}`);
+        say(`sandbox reset: ${(e as Error).message}`);
         process.exitCode = 1;
-        return;
+        await keepLog(); return;
       }
       let failed = 0;
       for (const m of marker.members) {
         if (m.principalSid === null) continue;
         const guard = store.tryLock(poolLockPath(leasesDir, m.principal));
-        if (guard === null) { console.log(`${m.principal}: in use, left for the next reset`); continue; }
+        if (guard === null) { say(`${m.principal}: in use, left for the next reset`); continue; }
         try {
           const gone = await run([...deleteProfileArgs(m.principalSid)]);
-          if (gone.code !== 0) { failed++; console.error(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
-          else console.log(`${m.principal}: reset`);
+          if (gone.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
+          else say(`${m.principal}: reset`);
         } finally { guard.release(); }
       }
       process.exitCode = failed === 0 ? SANDBOX_EXIT.OK : SANDBOX_EXIT.FAILED;
-      return;
+      await keepLog(); return;
     }
     case "status": {
       // status works from either location; the launcher is the protected copy's when we run from there,

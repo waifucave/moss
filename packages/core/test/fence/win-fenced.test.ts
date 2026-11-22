@@ -116,6 +116,7 @@ function machine(o: { pinned?: boolean; marker?: string | null; profile?: (sid: 
         const p = (o.profile ?? (() => null))(sid);
         return p === null ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: `    ProfileImagePath    REG_EXPAND_SZ    ${p}\r\n`, stderr: "" };
       }
+      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ marker_user_sid: "S-1-5-21-1002" }), stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
     readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : null),
