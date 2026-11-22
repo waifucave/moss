@@ -50,7 +50,9 @@ export interface McpAppsDeps {
 const BINDINGS_MAX = 64;
 const READ_MS = 15_000;
 
-interface Binding { site: AppSite; bridge?: AppBridge; approvals: number; budget: { sent: number } }
+/** `bridge` is made by the first open and lives as long as the binding: later opens (a view that woke, a re-mounted conversation, a
+ *  second holder part) attach to it. `opens` counts the attachments; `late` holds answers that landed after a newer view attached. */
+interface Binding { site: AppSite; bridge?: AppBridge; approvals: number; budget: { sent: number }; opens: number; late: Record<string, unknown>[] }
 
 /** What a driver keeps between a call's result and its projected `tool_result`: the page's address, taken once. */
 export class ToolApps {
@@ -80,7 +82,7 @@ export class McpAppsService {
     if (mine === undefined) this.#sessions.set(sessionId, (mine = new Map()));
     mine.get(callId)?.bridge?.close();
     mine.delete(callId);
-    mine.set(callId, { site, approvals: 0, budget: { sent: 0 } });
+    mine.set(callId, { site, approvals: 0, budget: { sent: 0 }, opens: 0, late: [] });
     while (mine.size > BINDINGS_MAX) {
       const oldest = mine.keys().next().value!;
       mine.get(oldest)?.bridge?.close();
@@ -111,8 +113,11 @@ export class McpAppsService {
     const tool = (await withTimeout(site.listTools(), READ_MS)).find((t) => t.name === site.tool);
     if (tool === undefined || uiResourceUriOf(tool) !== site.resourceUri) throw new McpAppRefusal("not_found", "the server no longer names this page for that tool");
     const page = parseUiResource(site.resourceUri, await withTimeout(site.readResource(site.resourceUri), READ_MS));
-    b.bridge?.close();
-    b.bridge = new AppBridge(this.#hostFor(sessionId, callId, b, tool));
+    // ONE BRIDGE PER BINDING, for the binding's life: a second open (an ordinary event here: a far frame sleeps and wakes, the
+    // conversation re-mounts, the shell reloads) attaches another view to it, so a call waiting for its card is never cut off.
+    // Only the binding's end (`detach`, `bind` of the same call again, the cap) closes it.
+    b.bridge ??= new AppBridge(this.#hostFor(sessionId, callId, b, tool));
+    b.opens++;
     return { csp: uiCspHeader(page.csp), html: page.html, ...(page.prefersBorder !== undefined ? { prefersBorder: page.prefersBorder } : {}), maxHeight: MCP_APP_HEIGHT_MAX };
   }
 
@@ -120,7 +125,15 @@ export class McpAppsService {
   async request(sessionId: string, callId: string, message: unknown, pressed = false): Promise<McpAppReply> {
     const b = this.#binding(sessionId, callId);
     if (b.bridge === undefined) throw new McpAppRefusal("not_here", "this page isn't open");
-    return await b.bridge.handle(message, pressed);
+    const at = b.opens;
+    const reply = await b.bridge.handle(message, pressed);
+    // Answers that landed while a newer view was attached, to the view that is there now: the one asking next gets them first.
+    if (b.opens !== at && b.late.length < 8) b.late.push(...reply.messages.filter((m) => m["id"] !== undefined).slice(0, 8 - b.late.length));
+    if (b.late.length > 0 && b.opens === at) {
+      const parked = b.late.splice(0);
+      return { ...reply, messages: [...parked, ...reply.messages].slice(0, 8) };
+    }
+    return reply;
   }
 
   #hostFor(sessionId: string, callId: string, b: Binding, tool: BridgeTool): BridgeHost {

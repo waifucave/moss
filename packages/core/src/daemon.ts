@@ -4765,6 +4765,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             return routed !== undefined && pluginToolReadOnly(registry, routed.plugin, routed.server, routed.tool, { built });
           },
           // What the user set for this tool in Settings (Tools), read live from the connector store at each call.
+          log: (line) => console.error(`[approvals] ${line}`),
           toolSetting: (_ctx, tool) => toolSettingFor(connectorPermissions, pluginMcp?.toolListing() ?? [], tool, (server, name) => toolSettings.availabilityOf(server, name)),
           seenUrl: (ctx, url) => seenUrls.seen(ctx.sessionId, url),
           fetchBudget: (ctx, url) => seenUrls.take(ctx.sessionId, url),
