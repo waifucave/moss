@@ -594,16 +594,10 @@ function InlineItem({ item, parent, spot, spotKey, props, stopped }: { item: Ext
 }
 
 
-/** How long a frame placed away from the screen waits for the first word on where it is (below), before it loads as it would
- *  anywhere that cannot say (a document that paints no frames). */
-const FIRST_VERDICT_WAIT_MS = 1_500;
-
 /** Whether an element is near the screen: in its document's viewport or within one viewport of it, while the
- *  document itself shows (a hidden or minimized window counts as away). `seen` is false until the first word on it (an
- *  `IntersectionObserver`'s first answer, or `FIRST_VERDICT_WAIT_MS`); where there is no observer it is true from the start. */
-function useNear(el: Element | null): { near: boolean; seen: boolean } {
+ *  document itself shows (a hidden or minimized window counts as away). */
+function useNear(el: Element | null): boolean {
   const [near, setNear] = useState(true);
-  const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
   const [shown, setShown] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   useEffect(() => {
     const onVisibility = () => setShown(document.visibilityState !== "hidden");
@@ -614,20 +608,12 @@ function useNear(el: Element | null): { near: boolean; seen: boolean } {
     if (el === null || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver((entries) => {
       const last = entries[entries.length - 1];
-      if (last !== undefined) {
-        setNear(last.isIntersecting);
-        setSeen(true);
-      }
+      if (last !== undefined) setNear(last.isIntersecting);
     }, { rootMargin: "100% 100% 100% 100%" });
     io.observe(el);
     return () => io.disconnect();
   }, [el]);
-  useEffect(() => {
-    if (seen) return;
-    const timer = setTimeout(() => setSeen(true), FIRST_VERDICT_WAIT_MS);
-    return () => clearTimeout(timer);
-  }, [seen]);
-  return { near: near && shown, seen };
+  return near && shown;
 }
 
 /** A part from another layer: a frame from that plugin's own origin, drawn by its own process. Away from the screen
@@ -650,16 +636,8 @@ function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Ext
   const [gone, setGone] = useState<string | undefined>(undefined);
   const toldProps = useRef<string | undefined>(undefined);
   const [el, setEl] = useState<Element | null>(null);
-  const { near, seen } = useNear(el);
+  const near = useNear(el);
   const fill = fillAsked === true || FILL_SPOTS.includes(spot);
-  // A frame that is one of many (a message's add-on, drawn once for each message of a long transcript) must not load its document
-  // where it is not near the screen: it draws a placeholder until the first word on where it is. Near, it loads at once, with the
-  // address it was placed with; away, it goes to sleep now (its address is let go) and wakes when it comes near, as one that had
-  // been away for a while does. Not for a frame that fills the room it is given (it is the view), nor for a document that is
-  // hidden when the frame is placed (a background part's, which loads as ever), nor where there is no way to tell.
-  const [deferred] = useState(() => !fill && item.asleep !== true && typeof IntersectionObserver !== "undefined" && typeof document !== "undefined" && document.visibilityState !== "hidden");
-  const [started, setStarted] = useState(!deferred);
-  if (!started && seen && near) setStarted(true);
   useEffect(() => {
     if (item.url !== "") setUrl(item.url);
   }, [item.url]);
@@ -673,7 +651,6 @@ function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Ext
     if (m.type === "child-reload" && m.child === item.mount) {
       setGone(undefined);
       setAsleep(false);
-      setStarted(true);
       setUrl(m.url);
     }
   }), [item.mount]);
@@ -686,20 +663,18 @@ function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Ext
         if (!live || next === undefined) return;
         setUrl(next);
         setAsleep(false);
-        setStarted(true);
       });
       return () => {
         live = false;
       };
     }
     if (near) return;
-    // Away from the screen for a while it sleeps; one that never loaded (its first word said it is away) sleeps at once.
     const timer = setTimeout(() => {
       r.bridge.sleep(item.mount);
       setAsleep(true);
-    }, started ? r.sleepAfterMs : 0);
+    }, r.sleepAfterMs);
     return () => clearTimeout(timer);
-  }, [near, asleep, gone, started, item.mount, r]);
+  }, [near, asleep, gone, item.mount, r]);
   useEffect(() => {
     const fns = new Map<string, (...args: unknown[]) => unknown>();
     let n = 0;
@@ -729,15 +704,14 @@ function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Ext
           if (next !== undefined) {
             setGone(undefined);
             setAsleep(false);
-            setStarted(true);
             setUrl(next);
           }
         })}>Reload</button>
       </div>
     );
   }
-  if (asleep || !started) {
-    // Keeps its place while it sleeps (or waits for its first word), so nothing around it moves.
+  if (asleep) {
+    // Keeps its place while it sleeps, so nothing around it moves.
     return <div ref={setEl} data-moss-entry={item.ref} data-moss-mount={item.mount} data-moss-asleep="" style={{ display: "block", width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }) }} />;
   }
   return (

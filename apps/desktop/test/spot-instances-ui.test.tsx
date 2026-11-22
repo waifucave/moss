@@ -107,9 +107,9 @@ function Transcript() {
   return h("div", null, ids.map((id) => h("section", { key: id, "data-message": id }, h(ui.Spot, { name: "conversation.message.extra", props: { item: { id } } }))));
 }
 
-function mountTranscript(w: ReturnType<typeof world>, ids: string[]) {
+function mountTranscript(w: ReturnType<typeof world>, ids: string[], sleepAfterMs = 20) {
   store.ids = ids;
-  ui.configureLayer({ bridge: w.bridge, modules: { "moss/conversation": { Transcript } }, sleepAfterMs: 20 });
+  ui.configureLayer({ bridge: w.bridge, modules: { "moss/conversation": { Transcript } }, sleepAfterMs });
   const view = render(h(ui.SpotHints.Provider, { value: { session: "coding" } }, h(ui.LayerRoot, { info: w.info })));
   return {
     view,
@@ -171,7 +171,7 @@ describe("<Spot> instances against the real runtime", () => {
     expect(w.mine()).toHaveLength(0);
   });
 
-  test("a frame placed away from the screen holds no document: it sleeps at once, its address let go, and wakes with a fresh one when it comes near", async () => {
+  test("a frame placed away from the screen loads as ever and sleeps after a while, its address let go, and wakes with a fresh one when it comes near", async () => {
     const w = world();
     const ids = Array.from({ length: 12 }, (_, i) => `m${i}`);
     // The first two are near; the rest are far.
@@ -181,7 +181,7 @@ describe("<Spot> instances against the real runtime", () => {
     expect(w.mine()).toHaveLength(12);
     expect(iframes()).toHaveLength(2);
     expect(placeholders()).toHaveLength(10);
-    // In the runtime: two frames with an address, ten asleep with none (live documents at most the near ones).
+    // In the runtime: two frames with an address, ten asleep with none (each loaded as it was placed, as ever, then slept).
     const states = w.mine().map(([, m]) => m.tokenState);
     expect(states.filter((s) => s === "asleep")).toHaveLength(10);
     expect(states.filter((s) => s !== "asleep")).toHaveLength(2);
@@ -195,12 +195,16 @@ describe("<Spot> instances against the real runtime", () => {
     t.view.unmount();
   });
 
-  test("three hundred messages, one add-on each, the reader at the end: 300 mounts, only the near ones' documents", async () => {
+  test("three hundred messages, one add-on each, the reader at the end: 300 mounts, each loads as ever and the far ones sleep, ten documents settle", async () => {
     const w = world();
     const ids = Array.from({ length: 300 }, (_, i) => `m${i}`);
     isNear = (el) => [...document.querySelectorAll("[data-message]")].findIndex((s) => s.contains(el)) >= 290;
+    // The most documents live at once (sampled on every turn of the loop while the transcript opens and settles).
+    let peak = 0;
+    const sampler = setInterval(() => { peak = Math.max(peak, iframes().length); }, 1);
     const t = mountTranscript(w, ids);
     await until(() => w.mine().filter(([, m]) => m.tokenState === "asleep").length === 290 && iframes().length === 10, 20000);
+    clearInterval(sampler);
     const states = w.mine().map(([, m]) => m.tokenState);
     expect(states).toHaveLength(300);
     expect(states.filter((s) => s === "asleep")).toHaveLength(290);
@@ -209,7 +213,21 @@ describe("<Spot> instances against the real runtime", () => {
     const before = w.calls.length;
     await wait(300);
     expect(w.calls.length).toBe(before);
-    process.stdout.write(`300 messages: ${states.length} mounts, ${iframes().length} live frames, ${states.filter((s) => s === "asleep").length} asleep, ${w.calls.filter((c) => c.op === "resolve").length} resolves, ${w.calls.filter((c) => c.op === "sleep").length} sleeps\n`);
+    process.stdout.write(`300 messages: ${states.length} mounts, ${iframes().length} live frames, ${states.filter((s) => s === "asleep").length} asleep, ${w.calls.filter((c) => c.op === "resolve").length} resolves, ${w.calls.filter((c) => c.op === "sleep").length} sleeps, at most ${peak} documents at once\n`);
+    t.view.unmount();
+  });
+
+  // A part that runs once as it appears (a sidebar badge's frame whose page says it is ready, an add-on that registers what it takes)
+  // must run even where the first word says it is away: a frame is never held back from its first load, only slept after a while.
+  test("a frame whose first word is that it is away still loads when it is placed, and sleeps only after its time", async () => {
+    isNear = () => false;
+    const w = world();
+    const t = mountTranscript(w, ["m1", "m2"], 10_000);
+    await until(() => iframes().length === 2);
+    await wait(150);
+    expect(iframes()).toHaveLength(2);
+    expect(w.mine().every(([, m]) => m.tokenState !== "asleep")).toBe(true);
+    expect(w.calls.filter((c) => c.op === "sleep")).toHaveLength(0);
     t.view.unmount();
   });
 
@@ -228,13 +246,12 @@ describe("<Spot> instances against the real runtime", () => {
     }
   });
 
-  test("a document that never says where a frame is: it loads after 1.5 s, as it would anywhere that cannot tell", async () => {
+  test("a document that never says where a frame is: it loads at once and stays", async () => {
     answers = false;
     const w = world();
     const t = mountTranscript(w, ["m1"]);
+    await until(() => iframes().length === 1);
     await wait(100);
-    expect(iframes()).toHaveLength(0);
-    await wait(1500);
     expect(iframes()).toHaveLength(1);
     expect(w.calls.filter((c) => c.op === "sleep")).toHaveLength(0);
     t.view.unmount();
