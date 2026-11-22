@@ -173,10 +173,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .conversation, .page { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; --under: var(--bar-h); }
 /* While a card waits in a column (its strip, or in the conversation) the bar is docked: back in the column's flow, nothing
    scrolling under it. A sealed card's button counts as pressed only if nothing lies over its frame, and a bar floating over
-   a card taller than the room under it would lie over it, so that press would never be taken. */
+   a card taller than the room under it would lie over it, so that press would never be taken. (Docked, it has no blur
+   either: nothing is under it to frost, and a backdrop blur makes the compositor count its spill, a few dozen px below it,
+   as lying over what is there: a strip's card just under the bar read as covered.) */
 .conversation:has(.card), .page:has(.card) { --under: 0px; }
 .conversation--empty { display: grid; place-items: center; }
-.conversation:has(.card) > .conversation__head, .page:has(.card) > .page__head { position: relative; flex: none; }
+.conversation:has(.card) > .conversation__head, .page:has(.card) > .page__head { position: relative; flex: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* The top bars float over the top of their column, frosted: the conversation (a page's content) scrolls up under them. */
 .conversation__head, .page__head, .panel__head { position: absolute; top: 0; left: 0; right: 0; z-index: 2; background: var(--glass-tint); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.6); backdrop-filter: blur(var(--glass-blur)) saturate(1.6); }
 .conversation__head, .page__head { display: flex; align-items: center; gap: 12px; height: var(--bar-h); padding: 14px 18px 10px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
