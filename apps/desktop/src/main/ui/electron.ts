@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { app, ipcMain, protocol, webFrameMain, BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Session, type WebContents, type WebFrameMain } from "electron";
 import type { ShellApp, ShellState } from "@waifucave/moss-plugin-sdk";
 import { type LayerMessage, type OpenTarget, type SurfaceEnvironment } from "@waifucave/moss-plugin-sdk/ui/bridge";
-import { CORE_CSP, CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, commonHeaders, layerDocument, layerHeaders, layerMicrophone, withMicrophone } from "./documents";
+import { APP_SCHEME, CORE_CSP, CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, commonHeaders, layerDocument, layerHeaders, layerMicrophone, withMicrophone } from "./documents";
 import { checkMenu, frameGesture, openRefusal, mayPlaceView, menuPoint, openTarget, viewRect, type MenuItem, type Rect } from "./brokers";
 import { builtClientFile, dataFile, isInside, mediaType, modelResponse, ownDataFile, ownDataPlugin, ownDataRequest, pluginFile } from "./files";
 import { SEALED_PRESS_WORDS } from "../sealed-pages";
@@ -21,11 +21,12 @@ import { routeComposer } from "./composer-calls";
 import { cleanReport, hearsShell, providedNow, routeShell } from "./shell-calls";
 import type { UiPlugin } from "./model";
 import type { IpcStats } from "./ipc-stats";
+import type { AppNote } from "./web-views";
 
 /** Registers the app's schemes as standard and secure origins, before the app is ready. Service workers and
  *  `bypassCSP` are never granted. */
 export function registerSchemes(): void {
-  protocol.registerSchemesAsPrivileged([CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME].map((scheme) => ({
+  protocol.registerSchemesAsPrivileged([CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, APP_SCHEME].map((scheme) => ({
     scheme,
     // `stream`: a layer's <video> and <audio> may play from the app's own scheme (the granted-file route answers Range requests).
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
@@ -442,6 +443,9 @@ export interface IpcHooks {
   activeSession(windowId: number, session: string | null): void;
   /** Where a web page part's view goes in the window (undefined: hidden). */
   webFrame(windowId: number, mount: string, web: { plugin: UiPlugin; web: Readonly<Record<string, unknown>> }, bounds: Rect | undefined): void;
+  /** Where the page of an MCP tool call goes in the window (undefined: hidden), `key` naming the placement; `note` carries what
+   *  the window hears of it (its height, or that no page could be shown). The state the view is in now. */
+  appFrame?(windowId: number, key: string, call: { session: string; callId: string }, bounds: Rect | undefined, note: (n: AppNote) => void): "pending" | "shown" | "hidden";
   /** Shows a checked menu at a point in the window; the id picked, or null. */
   menu(windowId: number, items: MenuItem[], point: { x: number; y: number }): Promise<string | null>;
   /** A sealed button's answer: the app signs it with the answer key over the frame's own channel (§5.5; E-M3), the
@@ -679,6 +683,40 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       const bounds = chain.some((c) => c === undefined) ? undefined : viewRect(r, chain as Rect[]);
       hooks.webFrame(place.windowId, mount, web, bounds);
     });
+  });
+  // An MCP Apps page's view (§5.5 "MCP Apps"): the component `<AppView call>` reports the place it holds; the page is read
+  // through the engine for that (session, call) and shown in a view of its own, clipped to the part's frame like a web
+  // page's. Reports from one place go in order. What the view says back (its height, or that it can't be shown) goes to
+  // the asking frame as an `app-view` message.
+  const appSeq = new Map<string, number>();
+  handle("moss:app-view", async (event, a) => {
+    const s = sender(event);
+    const mount = str(a.mount, 32);
+    const session = str(a.session, 64);
+    const callId = str(a.callId, 128);
+    if (mount === undefined || session === undefined || callId === undefined) throw new LayerError("bad request");
+    runtime.partOf(s.frame, mount);
+    if (hooks.appFrame === undefined) return { state: "hidden" };
+    const key = `${mount}|${session}|${callId}`;
+    const seq = (appSeq.get(key) ?? 0) + 1;
+    appSeq.set(key, seq);
+    const frame = s.frame;
+    const note = (n: AppNote) => {
+      try {
+        runtime.send(frame, { type: "app-view", session, callId, ...(n.state === "unavailable" ? { unavailable: true } : n.height !== undefined ? { height: n.height } : {}) });
+      } catch { /* the frame went */ }
+    };
+    const call = { session, callId };
+    const r = a.rect === null ? undefined : rect(a.rect);
+    if (r === undefined) {
+      appSeq.delete(key);
+      return { state: hooks.appFrame(s.windowId, key, call, undefined, note) };
+    }
+    const place = runtime.placeOf(s.frame);
+    const chain = await Promise.all(place.steps.map((step) => askRect(step.parent, step.child)));
+    if (appSeq.get(key) !== seq) return { state: "pending" };
+    const bounds = chain.some((c) => c === undefined) ? undefined : viewRect(r, chain as Rect[]);
+    return { state: hooks.appFrame(place.windowId, key, call, bounds, note) };
   });
   // The Plugins page's picked folders, as one-use tokens (tree-calls.ts): their paths stay in main.
   const pickTokens = new PickTokens();
@@ -1050,7 +1088,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
 
   return () => {
-    for (const c of ["moss:describe", "moss:resolve", "moss:reload", "moss:wake", "moss:menu", "moss:drag-offer", "moss:drag-claim", "moss:surface-environment", "moss:open", "moss:root-call", "moss:entries", "moss:user-send", "moss:composer", "moss:api", "moss:terminal-input", "moss:shell", "moss:sealed-frame", "moss:sealed-answer", "moss:sealed-visible", "moss:sealed-fresh"]) ipcMain.removeHandler(c);
+    for (const c of ["moss:describe", "moss:resolve", "moss:reload", "moss:wake", "moss:menu", "moss:drag-offer", "moss:drag-claim", "moss:surface-environment", "moss:open", "moss:root-call", "moss:entries", "moss:user-send", "moss:composer", "moss:api", "moss:terminal-input", "moss:shell", "moss:sealed-frame", "moss:app-view", "moss:sealed-answer", "moss:sealed-visible", "moss:sealed-fresh"]) ipcMain.removeHandler(c);
     for (const c of ["moss:props", "moss:callback", "moss:size", "moss:release", "moss:sleep", "moss:surface", "moss:rect-reply", "moss:frame-metrics", "moss:root-command", "moss:view-frame", "moss:web-frame", "moss:active-session", "moss:window-drag", "moss:shell-report", "moss:sealed-size", "moss:sealed-press"]) ipcMain.removeAllListeners(c);
   };
 }

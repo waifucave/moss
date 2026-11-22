@@ -25,6 +25,8 @@ export const CORE_SCHEME = "moss-core";
 export const SEALED_SCHEME = "moss-sealed";
 /** A web page entry's folder page (§5.5 "Web pages"), in that plugin's own web session only. */
 export const WEB_SCHEME = "moss-web";
+/** An MCP Apps view's own documents (§5.5 "MCP Apps"), one session and one origin per view (`web-views.ts`). */
+export const APP_SCHEME = "moss-app";
 
 /** What the layer runtime serves under `/_moss/`. */
 export const RUNTIME_PATH = "/_moss/";

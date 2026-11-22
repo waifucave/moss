@@ -1,0 +1,102 @@
+// MCP Apps views (spec §5.5 "MCP Apps", the extension `io.modelcontextprotocol/ui` 2026-01-26): the documents the app serves
+// for ONE view, pure so they are unit-tested. A view is a `WebContentsView` of its own session whose top document is the
+// host page below: it holds the server's page in an inner `<iframe sandbox="allow-scripts">` (no `allow-same-origin`: the
+// page has an opaque origin, so it cannot read the host page, the app, a cookie or a file), and relays the page's
+// JSON-RPC to the engine through `fetch` on its own scheme. The page itself is served with the content policy the engine
+// built from its declared domains (default: no network), so it reaches only what the extension lets it.
+import { APP_SCHEME, webHeaders } from "./documents";
+
+/** The most a page may post in one message, in UTF-16 units (the engine's own bound; the relay checks it first). */
+export const APP_RELAY_MAX = 1_000_000;
+
+/** The host page's own policy: its one script is the app's, the page is its one frame, and the relay is its one fetch. */
+export const HOST_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'unsafe-inline'",
+  "frame-src 'self'",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+].join("; ");
+
+export function hostDocument(id: string, token: string): string {
+  return [
+    "<!doctype html>",
+    '<html><head><meta charset="utf-8">',
+    `<meta name="moss-app-token" content="${token}">`,
+    "<style>html,body{margin:0;height:100%;overflow:hidden;background:transparent}iframe{border:0;display:block;width:100%;height:100%;color-scheme:light dark}</style>",
+    "</head><body>",
+    `<iframe id="v" sandbox="allow-scripts" src="${APP_SCHEME}://${id}/view" referrerpolicy="no-referrer"></iframe>`,
+    '<script src="/host.js"></script>',
+    "</body></html>",
+  ].join("\n");
+}
+
+/** The relay. It forwards only JSON-RPC 2.0 objects that came from its own frame, bounded, and posts back what the engine
+ *  answers; it decides nothing. `__mossTeardown` is the extension's `ui/resource-teardown`, which the app calls before the
+ *  view closes and waits briefly for the page's answer. */
+export const HOST_SCRIPT = `(() => {
+  const frame = document.getElementById("v");
+  const token = document.querySelector('meta[name="moss-app-token"]').content;
+  const post = (m) => { try { if (frame.contentWindow) frame.contentWindow.postMessage(m, "*"); } catch (e) {} };
+  window.addEventListener("message", async (e) => {
+    if (e.source !== frame.contentWindow) return;
+    const d = e.data;
+    if (d === null || typeof d !== "object" || d.jsonrpc !== "2.0") return;
+    let body;
+    try { body = JSON.stringify(d); } catch (e2) { return; }
+    if (typeof body !== "string" || body.length > ${APP_RELAY_MAX}) return;
+    try {
+      const r = await fetch("/_bridge", { method: "POST", headers: { "content-type": "application/json", "x-moss-app-token": token }, body });
+      if (!r.ok) {
+        if (d.id !== undefined && typeof d.method === "string") post({ jsonrpc: "2.0", id: d.id, error: { code: -32000, message: "the host refused that" } });
+        return;
+      }
+      const out = await r.json();
+      if (out && Array.isArray(out.messages)) for (const m of out.messages) post(m);
+    } catch (e3) { /* the host is gone */ }
+  });
+  window.__mossTeardown = () => new Promise((resolve) => {
+    const id = "teardown-" + Date.now();
+    const done = (ev) => { if (ev.source === frame.contentWindow && ev.data && ev.data.id === id) { window.removeEventListener("message", done); resolve(); } };
+    window.addEventListener("message", done);
+    post({ jsonrpc: "2.0", id, method: "ui/resource-teardown", params: { reason: "the view was closed" } });
+    setTimeout(resolve, 250);
+  });
+})();
+`;
+
+/** Headers of the host page and its script: the app's own, with no isolation pair (as a web page's). */
+export function hostHeaders(contentType: string): Record<string, string> {
+  return { ...webHeaders(), "Content-Type": contentType, "Content-Security-Policy": HOST_CSP };
+}
+
+/** Headers of the page itself: the engine's content policy, and nothing else a page could use (`webHeaders` carries the
+ *  permissions policy that gives it no camera, microphone, location or clipboard). */
+export function pageHeaders(csp: string): Record<string, string> {
+  return { ...webHeaders(), "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": csp };
+}
+
+/** Whether a navigation inside the view stays in it: the host page and the page, on the view's own origin, and nothing else
+ *  (`about:srcdoc` and `about:blank` carry no content a page could use to leave). */
+export function appNavigationAllowed(id: string, url: string): boolean {
+  if (url === "about:blank") return true;
+  try {
+    const u = new URL(url);
+    return u.protocol === `${APP_SCHEME}:` && u.host === id && (u.pathname === "/" || u.pathname === "/view") && u.search === "" && u.hash === "";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the session may fetch from the network at all: only a page that declared a host can reach one. Everything but the
+ *  app's own scheme, `data:` and `blob:` is cancelled otherwise (belt beside the policy). */
+export function appNetworkWanted(csp: string): boolean {
+  return /https:\/\//.test(csp);
+}
+export function appRequestAllowed(url: string, networkWanted: boolean): boolean {
+  return /^(moss-app|data|blob):/.test(url) || (networkWanted && url.startsWith("https://"));
+}

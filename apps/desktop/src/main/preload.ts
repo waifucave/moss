@@ -77,6 +77,7 @@ if (isRoot || isLayer) {
     terminalInput: (mount, terminalId, input) => ipcRenderer.invoke("moss:terminal-input", { mount, terminalId, input }),
     dragOffer: (mount, offer) => ipcRenderer.invoke("moss:drag-offer", { mount, offer }),
     dragClaim: (mount, token) => ipcRenderer.invoke("moss:drag-claim", { mount, token }),
+    appView: (mount, call, rect) => ipcRenderer.invoke("moss:app-view", { mount, session: call.session, callId: call.callId, rect }),
     sealedFrame: (mount, cardId, element, look, tokens) => ipcRenderer.invoke("moss:sealed-frame", { mount, cardId, element, ...(look !== undefined ? { look } : {}), ...(tokens !== undefined ? { tokens } : {}) }),
     cardPage: (mount, cardId) => ipcRenderer.invoke("moss:card-page", { mount, cardId, active: activated() }),
     onMessage: (listener) => {

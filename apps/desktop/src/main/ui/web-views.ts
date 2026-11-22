@@ -11,8 +11,10 @@ import { session as sessions, WebContentsView, type BaseWindow, type Session, ty
 import type { Rect } from "./brokers";
 import { mediaType, pluginFile } from "./files";
 import type { UiPlugin } from "./model";
-import { WEB_SCHEME, webHeaders } from "./documents";
+import { APP_SCHEME, WEB_SCHEME, webHeaders } from "./documents";
 import { hardenSession } from "./electron";
+import { APP_RELAY_MAX, appNavigationAllowed, appNetworkWanted, appRequestAllowed, HOST_SCRIPT, hostDocument, hostHeaders, pageHeaders } from "./app-page";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 export { WEB_SCHEME };
@@ -67,13 +69,41 @@ interface View {
   address: string;
 }
 
+/** What an MCP Apps view needs of the engine (`mcpApp.open`, `mcpApp.request`): the page, and the answer to one message. */
+export interface AppEngine {
+  open(session: string, callId: string): Promise<{ csp: string; html: string; prefersBorder?: boolean; maxHeight: number }>;
+  request(session: string, callId: string, message: unknown): Promise<{ messages: Record<string, unknown>[]; size?: { width: number; height: number }; openLink?: string }>;
+}
+
+/** What the window hears of one view: its content height, or that no page could be shown. */
+export type AppNote = { state: "shown"; height?: number } | { state: "unavailable"; why: string };
+
+interface AppViewRecord {
+  view?: WebContentsView;
+  window: BaseWindow;
+  windowId: number;
+  session: string;
+  callId: string;
+  /** The last user input the view's own contents saw (a press or a key), for `ui/open-link`. */
+  lastInput: number;
+  height?: number;
+  closed: boolean;
+  wanted: Rect | undefined;
+}
+
+/** A link a page asks to open goes to the user's browser only within this long of their own press in the view. */
+export const APP_LINK_WINDOW_MS = 1_500;
+
 export class WebViews {
   private readonly views = new Map<string, View>();
   private readonly prepared = new Map<string, Promise<Session>>();
 
+  private readonly apps = new Map<string, AppViewRecord>();
+
   constructor(
     private readonly windowOf: (windowId: number) => BaseWindow | undefined,
     private readonly log: (line: string) => void,
+    private readonly appHooks?: { engine: () => AppEngine | undefined; openLink: (url: string) => void },
   ) {}
 
   /** The plugin's session, hardened, with its folder served when the page is a folder page. */
@@ -150,8 +180,145 @@ export class WebViews {
     v.view.setVisible(true);
   }
 
+  /** An MCP Apps page's view (§5.5): where the component that places it says (undefined: hidden), for the tool call's page.
+   *  The first call with a place opens the page through the engine and makes the view; a page the engine refuses has no
+   *  view at all, and `note` says so once. `key` names this placement (the part and the call). */
+  placeApp(windowId: number, key: string, call: { session: string; callId: string }, bounds: Rect | undefined, note: (n: AppNote) => void): "pending" | "shown" | "hidden" {
+    let rec = this.apps.get(key);
+    if (rec === undefined) {
+      if (bounds === undefined) return "hidden";
+      const window = this.windowOf(windowId);
+      const engine = this.appHooks?.engine();
+      if (window === undefined || engine === undefined) return "hidden";
+      rec = { window, windowId, session: call.session, callId: call.callId, lastInput: 0, closed: false, wanted: bounds };
+      this.apps.set(key, rec);
+      const made = rec;
+      void (async () => {
+        try {
+          const page = await engine.open(call.session, call.callId);
+          if (made.closed) return;
+          await this.makeAppView(key, made, engine, page, note);
+        } catch (err) {
+          if (made.closed) return;
+          // Refused or unreachable: no view; the tool's text is what shows.
+          this.log(`mcp-apps: a page wasn't shown (${err instanceof Error ? err.message : String(err)})`);
+          note({ state: "unavailable", why: err instanceof Error ? err.message.slice(0, 200) : "the page couldn't be shown" });
+        }
+      })();
+      return "pending";
+    }
+    rec.wanted = bounds;
+    const view = rec.view;
+    if (view === undefined) return "pending";
+    if (bounds === undefined) {
+      view.setVisible(false);
+      return "hidden";
+    }
+    view.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.max(0, Math.round(bounds.width)), height: Math.max(0, Math.round(bounds.height)) });
+    view.setVisible(true);
+    return "shown";
+  }
+
+  private async makeAppView(key: string, rec: AppViewRecord, engine: AppEngine, page: { csp: string; html: string; maxHeight: number }, note: (n: AppNote) => void): Promise<void> {
+    // ONE SESSION AND ONE ORIGIN PER VIEW: in memory (no `persist:`), so nothing a page stores outlives it, and the origin
+    // `moss-app://<id>` is this view's alone.
+    const id = randomBytes(12).toString("hex");
+    const token = randomBytes(16).toString("hex");
+    const ses = sessions.fromPartition(`moss-app-${id}`);
+    webSessions.add(ses);
+    await hardenSession(ses, this.log);
+    if (rec.closed) return;
+    const networkWanted = appNetworkWanted(page.csp);
+    ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !appRequestAllowed(details.url, networkWanted) }));
+    ses.protocol.handle(APP_SCHEME, async (request) => {
+      const url = new URL(request.url);
+      const refuse = (status: number) => new Response(status === 404 ? "not found" : "forbidden", { status, headers: webHeaders() });
+      if (url.host !== id) return refuse(403);
+      if (request.method === "GET") {
+        if (url.pathname === "/") return new Response(hostDocument(id, token), { headers: hostHeaders("text/html; charset=utf-8") });
+        if (url.pathname === "/host.js") return new Response(HOST_SCRIPT, { headers: hostHeaders("text/javascript; charset=utf-8") });
+        if (url.pathname === "/view") return new Response(page.html, { headers: pageHeaders(page.csp) });
+        return refuse(404);
+      }
+      if (request.method === "POST" && url.pathname === "/_bridge") {
+        // Only the host page's own script holds the token (the page is in a frame of an opaque origin and has no way to it).
+        if (request.headers.get("x-moss-app-token") !== token) return refuse(403);
+        const length = Number(request.headers.get("content-length") ?? "0");
+        if (!Number.isFinite(length) || length > APP_RELAY_MAX * 3) return refuse(403);
+        let message: unknown;
+        try { message = JSON.parse(await request.text()); } catch { return refuse(403); }
+        try {
+          const reply = await engine.request(rec.session, rec.callId, message);
+          if (reply.size !== undefined && reply.size.height !== rec.height) {
+            rec.height = reply.size.height;
+            note({ state: "shown", height: Math.min(reply.size.height, page.maxHeight) });
+          }
+          // A link counts only right after the person's own press in this view (one press, one link).
+          if (reply.openLink !== undefined && Date.now() - rec.lastInput <= APP_LINK_WINDOW_MS) {
+            rec.lastInput = 0;
+            this.appHooks?.openLink(reply.openLink);
+          } else if (reply.openLink !== undefined) {
+            this.log("mcp-apps: a page asked to open a link with no press just before; it didn't");
+          }
+          return new Response(JSON.stringify({ messages: reply.messages }), { headers: { ...webHeaders(), "Content-Type": "application/json" } });
+        } catch (err) {
+          this.log(`mcp-apps: a page's message was refused (${err instanceof Error ? err.message : String(err)})`);
+          return new Response("{}", { status: 502, headers: webHeaders() });
+        }
+      }
+      return refuse(404);
+    });
+    const view = new WebContentsView({
+      webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, webviewTag: false, spellcheck: false, safeDialogs: true },
+    });
+    const wc = view.webContents;
+    const home = `${APP_SCHEME}://${id}/`;
+    guardWebPage(wc, home, this.log);
+    // Any frame of the view (the page's own included) stays in the view's two documents: no navigation away, nothing in a popup.
+    wc.on("will-frame-navigate", (e) => {
+      if (!appNavigationAllowed(id, e.url)) {
+        this.log("mcp-apps: a page tried to navigate away; it stays");
+        e.preventDefault();
+      }
+    });
+    wc.on("before-input-event", (_e, input) => {
+      if (input.type === "mouseDown" || input.type === "keyDown") rec.lastInput = Date.now();
+    });
+    wc.on("render-process-gone", (_e, details) => this.log(`mcp-apps: a page's process went (${details.reason})`));
+    rec.view = view;
+    rec.window.contentView.addChildView(view);
+    const b = rec.wanted;
+    view.setBounds(b === undefined ? { x: 0, y: 0, width: 0, height: 0 } : { x: Math.round(b.x), y: Math.round(b.y), width: Math.max(0, Math.round(b.width)), height: Math.max(0, Math.round(b.height)) });
+    view.setVisible(b !== undefined);
+    void wc.loadURL(home).catch((err: unknown) => this.log(`mcp-apps: a page didn't load: ${err instanceof Error ? err.message : String(err)}`));
+    note({ state: "shown" });
+  }
+
+  /** A placement gone: the page is told to tear down (the extension's `ui/resource-teardown`, bounded), then the view closes. */
+  dropApp(key: string): void {
+    const rec = this.apps.get(key);
+    if (rec === undefined) return;
+    this.apps.delete(key);
+    rec.closed = true;
+    const view = rec.view;
+    if (view === undefined) return;
+    const close = () => {
+      try { rec.window.contentView.removeChildView(view); } catch { /* the window went first */ }
+      if (!view.webContents.isDestroyed()) view.webContents.close();
+    };
+    view.setVisible(false);
+    if (view.webContents.isDestroyed()) return close();
+    void Promise.race([view.webContents.executeJavaScript("window.__mossTeardown ? window.__mossTeardown() : undefined", true).catch(() => undefined), new Promise((r) => setTimeout(r, 400))]).finally(close);
+  }
+
+  /** The keys of every placement of a part (a part's frame gone drops its views). */
+  appKeysOf(prefix: string): string[] {
+    return [...this.apps.keys()].filter((k) => k.startsWith(prefix));
+  }
+
   /** A part gone: its view and page with it. */
   drop(mount: string): void {
+    for (const k of this.appKeysOf(`${mount}|`)) this.dropApp(k);
     const v = this.views.get(mount);
     if (v === undefined) return;
     this.views.delete(mount);
@@ -165,6 +332,7 @@ export class WebViews {
 
   dropWindow(windowId: number): void {
     for (const [mount, v] of [...this.views]) if (v.windowId === windowId) this.drop(mount);
+    for (const [key, a] of [...this.apps]) if (a.windowId === windowId) this.dropApp(key);
   }
 
   /** What the smoke run reports: each view's page and whether it shows. */

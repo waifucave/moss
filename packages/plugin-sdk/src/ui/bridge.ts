@@ -227,7 +227,10 @@ export type LayerMessage =
   /** A surface window's display changed (resolution, arrangement, the menu bar): its environment as it is now. */
   | { type: "surface-environment"; environment: SurfaceEnvironment }
   /** The core asks where a child frame is in this document's viewport (the menu broker); answered by `rectReply`. */
-  | { type: "rect-query"; id: string; child: string };
+  | { type: "rect-query"; id: string; child: string }
+  /** An MCP Apps page's view of a tool call (`<AppView call>`): its content height as the page last said it, or that the page
+   *  can't be shown (the tool's text result is what shows then). */
+  | { type: "app-view"; session: string; callId: string; height?: number; unavailable?: true };
 
 
 /** An item of a menu the core shows for a part (it crosses frames, so the core draws it): data only. */
@@ -384,6 +387,10 @@ export interface LayerBridge {
    *  scheme, which the part can position and style but never read. `option` names the option a button answers;
    *  undefined for a field. */
   sealedFrame(mount: string, cardId: string, element: `field:${string}` | `button:${string}`, look?: "label" | "check" | "cross" | "open", tokens?: Readonly<Record<string, TokenValue>>): Promise<string | undefined>;
+  /** MCP Apps (`<AppView call>`): where the page of a tool call goes, in this document's viewport (null: hidden). The core
+   *  reads the page through the engine and draws it in a view of its own over that place; its answer is the state of the
+   *  view now (`pending` until the page is read), and later changes arrive as `app-view` messages. Absent: no pages. */
+  appView?(mount: string, call: { session: string; callId: string }, rect: Rect | null): Promise<{ state: "pending" | "shown" | "hidden" } | undefined>;
   /** Opens the app's own page for a plugin's OK card the part `mount` places (navigation, never an answer): the card
    *  whole, with its Review (the owner's ruling, 2026-11-13). The user's click only. True when it opened. */
   cardPage?(mount: string, cardId: string): Promise<boolean>;

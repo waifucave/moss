@@ -802,6 +802,8 @@ async function ready(): Promise<void> {
       }
       void webViews.place(windowId, mount, web.plugin, spec, bounds).catch((err) => log(`web: ${why(err)}`));
     },
+    // An MCP Apps page's view: the engine reads the page and answers its messages (`mcpApp.*`, the window's own door).
+    appFrame: (windowId, key, call, bounds, note) => webViews.placeApp(windowId, key, call, bounds, note),
   }, log, ipcStats);
   startCensus(runtime);
   // Asked for (`MOSS_IPC_STATS=1`, or an `ipc-stats` file in the home): every five seconds, in this log, what crossed and what each process cost (counts, no payloads).
@@ -3106,7 +3108,20 @@ const notifications = new Notifications((req, onClick) => {
 const webViews = new WebViews((windowId) => {
   const w = BrowserWindow.fromId(windowId);
   return w === null || w.isDestroyed() ? undefined : w;
-}, log);
+}, log, {
+  engine: () => {
+    const client = pair.client;
+    if (client === undefined || client === null) return undefined;
+    return {
+      open: (session, callId) => client.request("mcpApp.open", { session, callId }, 30_000),
+      request: (session, callId, message) => client.request("mcpApp.request", { session, callId, message }, 90_000),
+    };
+  },
+  // A page's link goes to the person's browser (http and https only; the engine checked, this does again).
+  openLink: (url) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+  },
+});
 
 /** The MOSS Browser in this process (lane L, spec §12.1): made once the app is ready; what it reports goes to the
  *  daemon over the pair. */

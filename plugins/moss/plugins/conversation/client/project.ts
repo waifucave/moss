@@ -176,6 +176,9 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
         if (diff?.path && diff.diffId) item.call.diff = { path: diff.path, added: diff.added ?? 0, removed: diff.removed ?? 0, diffId: diff.diffId };
         const icons = e.siteIcons as { url: string; icon?: string }[] | undefined;
         if (Array.isArray(icons)) item.call.sites = icons.map((s) => ({ url: s.url, ...(s.icon ? { icon: s.icon } : {}) }));
+        // MCP Apps: the engine stamped the page this result names (§5.5); `<AppView>` asks the core for it.
+        const app = e.app as { resourceUri?: unknown } | undefined;
+        if (typeof app?.resourceUri === "string") item.call.app = { resourceUri: app.resourceUri };
         break;
       }
       case "card_pending":
