@@ -197,6 +197,9 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
     void (core!.call as (m: string, p: unknown) => Promise<unknown>)(m, p).then(() => setToolsRev((r) => r + 1), () => setFailure(S.choiceFailed(S.section.tools)));
   };
   const [own, setOwn] = useState<{ appearance?: SettingsValues["appearance"]; notifications?: SettingsValues["notifications"] }>({});
+  // The controls pressed since the last read of the settings began: that read was asked before the press, so its answer holds the
+  // value as it was and must not put it back on the screen (the stored value is the press's already; window row 13).
+  const pressedSince = useRef(new Set<string>());
   // Pairing a device is not offered on this page: it adds a device to what the user's computers trust, which is a sealed
   // card (or the user's own terminal), and the door has no `device.pair.*` call for a part. So the page starts no pairing
   // and listens for no `pairing_changed` (that event goes to the app and the CLI only). If the page offers it later, the
@@ -206,6 +209,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
 
   useEffect(() => {
     let live = true;
+    pressedSince.current.clear();
     if (core) load(core).then((l) => live && setLoaded(l), () => undefined);
     api.computers?.list?.().then((c) => live && setComputers(c), () => undefined);
     api.devices?.list().then((d) => live && setDevices(d), () => undefined);
@@ -217,7 +221,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
           const out: Record<string, unknown> = {};
           for (const f of fields) {
             const v = got.get(settingKey(group, f));
-            if (v !== undefined) out[f] = v;
+            if (v !== undefined && !pressedSince.current.has(settingKey(group, f))) out[f] = v;
           }
           return Object.keys(out).length > 0 ? out : undefined;
         };
@@ -286,6 +290,7 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
         ? { ...o, appearance: { ...(o.appearance ?? values.appearance), [key]: v } as SettingsValues["appearance"] }
         : { ...o, notifications: { ...(o.notifications ?? values.notifications), [key]: v } as SettingsValues["notifications"] }));
       put(value);
+      pressedSince.current.add(settingKey(head, key));
       void Promise.resolve().then(() => api.settings.set(settingKey(head, key), value)).then(
         () => endSave(path, true),
         () => { put(stored); endSave(path, false); },
