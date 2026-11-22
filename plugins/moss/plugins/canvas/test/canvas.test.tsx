@@ -463,6 +463,49 @@ describe("+ New session", () => {
   });
 });
 
+describe("+ New session, an agent with a list of its own (lane MS)", () => {
+  const own = { backend: "opencode", known: true, source: "command", models: [{ id: "o-1", name: "O One", efforts: ["low", "high"], defaultEffort: "low" }, { id: "o-2", name: "O Two", efforts: ["low", "high"] }] };
+  const was = OPTIONS["opencode"];
+  // The fixtures are shared: put back what a case changed.
+  afterEach(() => {
+    if (was !== undefined) OPTIONS["opencode"] = was; else delete OPTIONS["opencode"];
+    delete (RECENT as { byBackend?: unknown }).byBackend;
+  });
+  const asked = async (byBackend: { backend: string; model?: string; effort?: string }[] | undefined) => {
+    OPTIONS["opencode"] = own as never;
+    if (byBackend !== undefined) Object.assign(RECENT, { byBackend });
+    const h = mount({ playedTo: 1_000 });
+    fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+    const panel = await screen.findByRole("dialog", { name: "New session" });
+    await waitFor(() => expect(within(panel).getByRole("radio", { name: /Claude Code/ }).getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(within(panel).getByRole("radio", { name: /OpenCode/ }));
+    return { h, panel };
+  };
+
+  test("the last the person chose FOR THAT AGENT is preselected (not the agent started last), and goes to agent.start with the folder", async () => {
+    const { h, panel } = await asked([{ backend: "claude-code", model: "anthropic/claude-opus-5-5" }, { backend: "opencode", model: "o-2", effort: "high" }]);
+    await waitFor(() => expect(within(panel).getByText("O Two · high")).toBeDefined());
+    fireEvent.click(within(panel).getAllByRole("button", { name: "Change" })[0]!);
+    expect([...panel.querySelectorAll("select")[0]!.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["OpenCode's own default", "O One", "O Two"]);
+    press(within(panel).getByRole("button", { name: "Create session" }));
+    expect(h.core.calls.filter((c) => c.method === "agent.start").map((c) => c.params)).toEqual([{ backend: "opencode", root: "pick-1", model: "o-2", effort: "high" }]);
+  });
+
+  test("with none chosen the agent starts on its own default: no model is sent; a pick in the panel is what goes", async () => {
+    const { h, panel } = await asked(undefined);
+    const summary = () => panel.querySelectorAll(".cv-step__value")[0]!.textContent;
+    await waitFor(() => expect(summary()).toBe("OpenCode's own default"));
+    fireEvent.click(within(panel).getAllByRole("button", { name: "Change" })[0]!);
+    const model = panel.querySelectorAll("select")[0] as HTMLSelectElement;
+    fireEvent.change(model, { target: { value: "o-1" } });
+    await waitFor(() => expect(summary()).toBe("O One · low"));
+    fireEvent.change(model, { target: { value: "" } });
+    await waitFor(() => expect(summary()).toBe("OpenCode's own default"));
+    press(within(panel).getByRole("button", { name: "Create session" }));
+    expect(h.core.calls.filter((c) => c.method === "agent.start").map((c) => c.params)).toEqual([{ backend: "opencode", root: "pick-1" }]);
+  });
+});
+
 test("+ before the engine serves agent.recent: no folder dialog opens; the folder step asks for one", async () => {
   const h = mount({ playedTo: 1_000, unserved: ["agent.recent"] });
   fireEvent.click(await screen.findByRole("button", { name: "New session" }));

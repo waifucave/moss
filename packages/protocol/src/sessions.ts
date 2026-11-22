@@ -260,7 +260,8 @@ export type SessionDiff = z.infer<typeof SessionDiff>;
 
 /** A model as a picker lists it (`models.list`). */
 export const ModelListing = z.object({
-  /** The qualified catalog id `session.setModel` takes. */
+  /** The model id `session.setModel` takes: a qualified catalog id, or, for a session on an ACP agent (`provider` is then
+   *  the agent's backend id), the agent's own model id as it reported it. */
   id: utf16(200, 1),
   name: Text,
   /** The provider entry, its name as the plugin's manifest gives it (in the user's locale), and the plugin that
@@ -450,7 +451,7 @@ export const SESSIONS_METHODS = {
     name: "models.list", owner: "A", roles: ["app", "cli", "remote"],
     params: z.object({ session: SessionId.optional() }),
     result: z.object({ models: z.array(ModelListing).max(10_000), default: utf16(200).optional() }),
-    doc: "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes. `default` is the user's default model.",
+    doc: "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes: an ACP agent's session lists the models its agent reported (or, before its first turn, the agent's own list as MOSS knows it), under the agent's backend id. `default` is the user's default model.",
   }),
   modelsSetDefault: defineMethod({
     name: "models.setDefault", owner: "A", roles: ["app", "cli"], userOnly: true,

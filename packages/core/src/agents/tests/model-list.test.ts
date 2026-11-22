@@ -9,6 +9,10 @@ import {
   type ListableBackend, type ModelListDecl, type ModelReader,
 } from "../model-list";
 import { EngineAgentStartOptions, MemoryRecentStore } from "../start-options";
+import { FakeClock } from "../../contracts/fakes/clock";
+import { FakeFence } from "../../contracts/fakes/fence";
+import { S5_ANTIGRAVITY_QUIRKS } from "../../contracts/fakes/agent-backend";
+import { acpHarness, FAKE_AGENT_PATH, fakeLaunch, readReport, writeFakeAgent } from "../testing/harness";
 import { agentMethods } from "../rpc";
 
 const READER: ModelReader = { list: "models", id: "slug", name: "display_name", hideUnless: { key: "visibility", value: "list" }, efforts: { list: "levels", id: "effort" }, defaultEffort: "def" };
@@ -282,6 +286,38 @@ describe("the person's choice stays their own", () => {
     }
     expect(JSON.stringify(start.recent())).toBe(before);
   });
+});
+
+describe("with a real fake ACP agent process: its declared list command, and a session started on one of its models", () => {
+  test("the list command is the agent's own (identity checked, no session); the session's model and effort are set before its first prompt, and a pick reaches the agent", async () => {
+    const dir = fresh("fake-agent");
+    const models = [{ slug: "m-one", display_name: "One", visibility: "list", levels: [{ effort: "low" }, { effort: "high" }] }, { slug: "m-hidden", visibility: "hide" }];
+    const quirks = fakeLaunch(S5_ANTIGRAVITY_QUIRKS);
+    const run = writeFakeAgent(join(dir, "list"), { quirks, script: [], version: "fake-agent 1.0.0", modelsList: models });
+    const decl = ModelListDeclSchema.parse({
+      command: { program: process.execPath, args: [FAKE_AGENT_PATH, run.config, "models"], identity: { versionArgs: [FAKE_AGENT_PATH, run.config, "--version"], versionPattern: "^fake-agent (\\d+\\.\\d+\\.\\d+)$" } },
+      reader: READER,
+    });
+    const lists = new BackendModelLists({ home: dir, userHome: dir });
+    const got = await lists.get({ id: "demo", modelList: decl, listEnv: () => ({ PATH: process.env["PATH"] ?? "" }) });
+    expect(got).toMatchObject({ source: "command", models: [{ id: "m-one", name: "One", efforts: ["low", "high"] }] });
+    expect(readReport(run.report).some((r) => r.type === "prompt")).toBe(false);
+    // The same agent as a backend: a session started on the model at an effort has both set before the first prompt.
+    const clock = new FakeClock();
+    const h = acpHarness(join(dir, "session"), { id: "demo", clock, quirks: S5_ANTIGRAVITY_QUIRKS, script: [[{ say: "hello" }]] });
+    const fence = new FakeFence({ home: "/Users/me", mossHome: "/Users/me/.moss" }).policy();
+    const s = await h.start({ sessionId: "s1", root: "/Users/me/p", fence, model: "fake-model-b", effort: "high", bridge: { name: "moss-bridge", command: "/opt/moss/moss-core", args: ["bridge"], env: { MOSS_BRIDGE_TOKEN: "x" }, tools: [] } });
+    await s.prompt({ text: "go" });
+    const report = readReport(h.run.report);
+    const at = (type: string, option?: string) => report.findIndex((r) => r.type === type && (option === undefined || r["option"] === option));
+    expect(report[at("config", "model")]!["value"]).toBe("fake-model-b");
+    expect(report[at("config", "effort")]!["value"]).toBe("high");
+    expect(Math.max(at("config", "model"), at("config", "effort"))).toBeLessThan(at("prompt"));
+    // …and a pick after it takes.
+    await s.setConfig("model", "fake-model-a");
+    expect(h.sessions[0]!.config.model).toBe("fake-model-a");
+    await s.stop();
+  }, 30_000);
 });
 
 beforeAll(() => { try { chmodSync(root, 0o700); } catch { /* best effort */ } });
