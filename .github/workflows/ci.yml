@@ -1408,12 +1408,21 @@ jobs:
         working-directory: apple/Cowork/WinterCoworkLibkrun
         run: python3 -I -B tests/test_queue_guards.py
 
+  # Windows Bash and PowerShell under MOSS's fence (lane WS; spec §4, §14.1 item 2), on windows-latest: the Windows
+  # fence's unit tests, and setup, a bot's Bash and PowerShell and the node's Bash fenced for real, and remove
+  # (.github/workflows/windows-fence.yml). Like the other Windows jobs: not on a pull request, and not in the lane gate.
+  windows-fence:
+    name: windows fence
+    needs: changes
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true')
+    uses: ./.github/workflows/windows-fence.yml
+
   # The one check branch protection needs: it passes when every job above passed or was skipped because this change
   # does not touch its inputs, and fails when any failed or was cancelled.
   gate:
     name: gate
     if: always()
-    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift]
+    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, windows-fence]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
