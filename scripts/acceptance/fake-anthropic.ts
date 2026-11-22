@@ -231,7 +231,11 @@ export function newestDirective(text: string): string {
   return at < 0 ? text : text.slice(at);
 }
 
-export function startFakeAnthropic(o: { key: string; writePath: string; writeContent: string; ordinaryWritePath?: string; composedFetchUrl?: string; linkedFetchUrl?: string; hitFetchUrl?: string }): FakeProvider {
+export function startFakeAnthropic(o: { key: string; writePath: string; writeContent: string; ordinaryWritePath?: string; composedFetchUrl?: string; linkedFetchUrl?: string; hitFetchUrl?: string;
+  /** The live preview's (scripts/preview): the title a session's title request gets, by the request's text (`USER MESSAGE:` and the first message); undefined answers as always. */
+  titleFor?: (requestText: string) => string | undefined;
+  /** The live preview's: how long an `ACCEPTANCE-SLOW` turn is held, where the acceptance's is two minutes. */
+  slowHoldMs?: number }): FakeProvider {
   const requests: FakeRequest[] = [];
   const healed = new Set<string>();
   let n = 0;
@@ -336,13 +340,15 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       }
       const id = `msg_acceptance_${++n}`;
       const model = body.model ?? "acceptance";
-      if (said.includes("ACCEPTANCE-STREAM") && result === undefined) {
+      // The preview's titles (`titleFor`): a title request is answered with its title whatever directive its first message carries.
+      const titleText = record.lastUserText.startsWith("USER MESSAGE:") ? o.titleFor?.(record.lastUserText) : undefined;
+      if (said.includes("ACCEPTANCE-STREAM") && result === undefined && titleText === undefined) {
         record.answered = "stream";
         return streamTurn(req.signal, id, model, record.stream);
       }
-      if (said.includes("ACCEPTANCE-SLOW") && result === undefined) {
+      if (said.includes("ACCEPTANCE-SLOW") && result === undefined && titleText === undefined) {
         record.answered = "slow";
-        return slowTurn(req.signal, id, model, record.stream);
+        return slowTurn(req.signal, id, model, record.stream, o.slowHoldMs);
       }
       let content: Record<string, unknown>[];
       let stop: string;
@@ -380,7 +386,10 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       // A plugin's Review (the internal `reviewer.model` job, registry/plugin-review.ts): its report, naming the plugin
       // it was given, so the run sees the job got that plugin's tree.
       const reviewing = JSON.stringify((body as { system?: unknown }).system ?? "").includes("You review a plugin for MOSS");
-      if (reviewing) {
+      if (titleText !== undefined) {
+        content = [{ type: "text", text: titleText }];
+        stop = "end_turn";
+      } else if (reviewing) {
         const reviewed = /PLUGIN: (\S+)/.exec(record.lastUserText)?.[1] ?? /PLUGIN: (\S+)/.exec(textOf(messages[0]?.content))?.[1] ?? "unknown";
         content = [{ type: "text", text: `${REVIEW_MARK} ${reviewed}: it echoes text back. Nothing odd found.` }];
         stop = "end_turn";
@@ -647,10 +656,10 @@ function streamTurn(signal: AbortSignal, id: string, model: string, stream: bool
 
 /** A turn that keeps running (ACCEPTANCE-SLOW): the stream's start and a partial text at once, then nothing for two
  *  minutes or until the caller drops the request; a non-streaming request waits the same and then answers. */
-function slowTurn(signal: AbortSignal, id: string, model: string, stream: boolean): Response | Promise<Response> {
+function slowTurn(signal: AbortSignal, id: string, model: string, stream: boolean, holdMs = 120_000): Response | Promise<Response> {
   const usage = { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   const hold = (): Promise<void> => new Promise((resolve) => {
-    const t = setTimeout(resolve, 120_000);
+    const t = setTimeout(resolve, holdMs);
     signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
   if (!stream) {

@@ -20,11 +20,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statS
 import { dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { CLIENT_BARE_IMPORTS } from "../../../packages/plugin-sdk/src/manifest/schema";
-import { acceptanceBuildDefine, RELEASE_BUILD_BANNER, releaseBuildDefine, testBuildDefine } from "../../../scripts/test-build";
+import { acceptanceBuildDefine, previewBuildDefine, RELEASE_BUILD_BANNER, releaseBuildDefine, testBuildDefine } from "../../../scripts/test-build";
 
-const unknown = process.argv.slice(2).filter((a) => a !== "--test-build" && a !== "--acceptance" && a !== "--release");
+const unknown = process.argv.slice(2).filter((a) => a !== "--test-build" && a !== "--acceptance" && a !== "--release" && a !== "--preview");
 if (unknown.length > 0) {
-  console.error(`build: unknown argument ${unknown[0]} (usage: build [--test-build | --acceptance | --release])`);
+  console.error(`build: unknown argument ${unknown[0]} (usage: build [--test-build | --acceptance | --release | --preview])`);
   process.exit(2);
 }
 const testBuild = process.argv.includes("--test-build");
@@ -41,6 +41,14 @@ if (testBuild && acceptanceBuild) {
 const releaseBuild = process.argv.includes("--release");
 if (releaseBuild && (testBuild || acceptanceBuild)) {
   console.error("build: --release is a build of its own (not with --test-build or --acceptance)");
+  process.exit(2);
+}
+// `--preview` (scripts/preview/run.ts only): the live preview's own build of the app, whose label guards the one-window
+// preview on a throwaway home (a window of its own kind, no tray, no updater, nothing else on the screen). It is a build
+// of its own: never with a release, the test twin or the acceptance build.
+const previewBuild = process.argv.includes("--preview");
+if (previewBuild && (testBuild || acceptanceBuild || releaseBuild)) {
+  console.error("build: --preview is a build of its own (not with --test-build, --acceptance or --release)");
   process.exit(2);
 }
 const root = join(import.meta.dir, "..");
@@ -67,7 +75,7 @@ const browser = { target: "browser" as const, format: "esm" as const, minify: tr
 const LAYER_EXTERNALS: string[] = [...CLIENT_BARE_IMPORTS];
 
 // ---- The main process and the preload ----
-await build({ entrypoints: [join(root, "src", "main", "index.ts")], outdir: join(out, "main"), target: "node", format: "esm", external: ["electron"], sourcemap: "linked", define: { ...testBuildDefine(testBuild), ...acceptanceBuildDefine(acceptanceBuild), ...releaseBuildDefine(releaseBuild) }, ...(releaseBuild ? { banner: RELEASE_BUILD_BANNER } : {}) }, "the main process");
+await build({ entrypoints: [join(root, "src", "main", "index.ts")], outdir: join(out, "main"), target: "node", format: "esm", external: ["electron"], sourcemap: "linked", define: { ...testBuildDefine(testBuild), ...acceptanceBuildDefine(acceptanceBuild), ...releaseBuildDefine(releaseBuild), ...previewBuildDefine(previewBuild) }, ...(releaseBuild ? { banner: RELEASE_BUILD_BANNER } : {}) }, "the main process");
 await build({ entrypoints: [join(root, "src", "main", "preload.ts")], outdir: join(out, "main"), target: "node", format: "cjs", external: ["electron"], naming: "[name].cjs" }, "the preload");
 
 // ---- The MOSS Browser's viewport page and its preload (lane L's `BROWSER_ASSETS`) ----

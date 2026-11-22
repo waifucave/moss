@@ -109,10 +109,18 @@ const program = desktopProgram(process.argv, process.execPath);
 const hostWhere = program === "host" ? hostProfileAndHome(process.env, process.execPath, homedir()) : undefined;
 const identity = hostWhere !== undefined ? hostIdentity(hostWhere.profile) : appIdentity(resolveAppProfile(process.env));
 let hostLock: HostLock | null | undefined;
+// The live preview's own build of the app (apps/desktop/scripts/build.ts --preview, which only scripts/preview/run.ts passes): `false`
+// in every other build. Compile-time only, tested inline wherever a path or a name of its own is read, so a release build and the test
+// twin carry none of it (scripts/test-build.ts PREVIEW_ONLY_APP_STRINGS and the label are what the build's gate looks for).
+declare const __MOSS_PREVIEW_BUILD__: string | false | undefined;
+/** This process is the preview: ONE window of MOSS Code from source on a throwaway home, and nothing else on the screen. */
+const preview: boolean = typeof __MOSS_PREVIEW_BUILD__ === "string";
+/** What the preview mounts: its main window and nothing else (mount-plan.ts's MountPlan, fixed). */
+const PREVIEW_PLAN: MountPlan = { mainWindow: true, surfaces: false, background: false, tray: "none", browser: false, drawsCards: true };
 /** What this process runs (mount-plan.ts): from the hello's mount list, and the host's state for a window. */
 // lane HS: a window mounts only its own points until the engine's hello says more (never an island the host may own,
 // drawn for a moment before the mount comes); an engine whose hello names no mount gets today's whole list then.
-let mountNow: MountPlan = mountPlan(program, program === "host" ? SURFACE_MOUNTS.host : SURFACE_MOUNTS.code);
+let mountNow: MountPlan = preview ? PREVIEW_PLAN : mountPlan(program, program === "host" ? SURFACE_MOUNTS.host : SURFACE_MOUNTS.code);
 let helloMount: MountList | undefined;
 let mountSaid = false;
 let hostStateNow: HostState | undefined;
@@ -130,6 +138,13 @@ const invisible: "shown" | "hidden" | undefined = headless && args.capture === u
   ? (process.env.MOSS_TEST_INVISIBLE === "1" ? "shown" : process.env.MOSS_TEST_INVISIBLE === "hidden" ? "hidden" : undefined)
   : undefined;
 const home = hostWhere?.home ?? daemonHome(process.env);
+/** No other surface than the one window: a headless run draws nothing, the preview draws only its window. */
+const quiet: boolean = headless || preview;
+/** What the preview's command hands its app: the words the window says it is (its title and one plain line), the file whose changes
+ *  reload the window, and a fixed appearance. Read inline from the compile-time mark, never from a helper. */
+const previewBanner: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_BANNER : undefined;
+const previewReloadFile: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_RELOAD_FILE : undefined;
+const previewAppearance: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_APPEARANCE : undefined;
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
 // The source acceptance run's own build of the app (apps/desktop/scripts/build.ts --acceptance, which only
@@ -156,6 +171,20 @@ if (typeof __MOSS_TEST_BUILD__ === "string") {
     process.exit(2);
   }
 }
+// The preview (compile-time mark): Chromium's mock keychain from the start, and a refusal to start where it would reach the login
+// keychain, the live home or a packaged install: it runs from source (unpackaged), on a temp home, nowhere else.
+if (typeof __MOSS_PREVIEW_BUILD__ === "string") {
+  process.stdout.write(`[moss-app] ${__MOSS_PREVIEW_BUILD__}: the live preview's build, never for release\n`);
+  app.commandLine.appendSwitch("use-mock-keychain");
+  const refused = app.isPackaged
+    ? "moss: refusing to start: this is the live preview's build, and a packaged app never runs it"
+    : testBuildAppRefusal({ mockKeychain: app.commandLine.hasSwitch("use-mock-keychain"), home, account: userInfo().homedir });
+  if (refused !== undefined) {
+    process.stderr.write(`${refused}\n`);
+    app.exit(2);
+    process.exit(2);
+  }
+}
 const here = dirname(fileURLToPath(import.meta.url));
 const dirs = { core: join(here, "..", "renderer", "core"), layer: join(here, "..", "renderer", "layer") };
 const devIcon = devAppIcon({ profile: identity.profile, packaged: app.isPackaged, platform: process.platform });
@@ -166,14 +195,14 @@ if (process.platform === "darwin") app.setActivationPolicy("accessory");
 app.setName(identity.productName);
 if (process.platform === "win32") app.setAppUserModelId(identity.appId);
 // A headless run keeps everything it writes in its own (temporary) home; so does a test-marked build.
-if (headless || typeof __MOSS_TEST_BUILD__ === "string") {
+if (headless || preview || typeof __MOSS_TEST_BUILD__ === "string") {
   // lane HS: the host's own folder, never the window's (host-program.ts).
   app.setPath("userData", headlessUserData(home, program, identity.profile));
   app.setPath("sessionData", join(headlessUserData(home, program, identity.profile), "session"));
 }
 // A headless run, a test-marked build and the acceptance run's build play no sound: the bots' voices still play through
 // the player (its clock and counters run), muted at Chromium's output.
-const silent = headless || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
+const silent = headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 if (silent) app.commandLine.appendSwitch("mute-audio");
 // Every plugin origin in a process of its own (S9).
 app.commandLine.appendSwitch("site-per-process");
@@ -289,7 +318,9 @@ if (!app.requestSingleInstanceLock()) {
     else if (!headless) void openMainWindow();
   });
   app.on("window-all-closed", () => {
-    // Closing a window only closes it: the app stays in the menu bar.
+    // Closing a window only closes it: the app stays in the menu bar. The preview has no menu-bar icon: closing its window ends it
+    // (and the command that started it ends the engine and the fakes it started, and removes its folders).
+    if (preview) void requestQuit("window");
   });
   // The app's guards on every webContents but the MOSS Browser's (its tabs, the windows its pages open and its
   // viewport pages), which lane L's own policy covers (ruling R11); `isBrowserContents` holds from creation on.
@@ -380,7 +411,7 @@ async function ready(): Promise<void> {
   // answers the check and the request but never asks the system (nothing in a test calls getUserMedia).
   const testBuild = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
   const mic = micHandlers({
-    layerScheme: LAYER_SCHEME, holds: (layer) => runtime?.layerHolds(layer, "microphone") === true, testBuild,
+    layerScheme: LAYER_SCHEME, holds: (layer) => !preview && runtime?.layerHolds(layer, "microphone") === true, testBuild,
     windowOf: (wc) => (wc === null ? undefined : BrowserWindow.fromWebContents(wc as Electron.WebContents)?.id),
     systemProblem: microphoneProblem,
   });
@@ -502,6 +533,8 @@ async function ready(): Promise<void> {
     // acceptance build takes the path the harness named instead (never in a release, which compiles both marks out; the
     // marker gate's TEST_ONLY_APP_STRINGS checks it).
     pick: async (windowId, kind, filters, use) => {
+      // The preview opens no dialog of the system's (a window of its own only).
+      if (preview) return undefined;
       if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless) {
         const named = process.env.MOSS_TEST_PICK;
         // A `.pick` file names the folder at each pick, so one run picks several in turn (the harness rewrites it).
@@ -536,8 +569,8 @@ async function ready(): Promise<void> {
           return [];
         }
       }
-      // A headless run (a test's, nobody at the screen) never opens a dialog: nothing may appear on the user's screen.
-      if (headless) return [];
+      // A headless run (a test's, nobody at the screen) never opens a dialog: nothing may appear on the user's screen; nor does the preview.
+      if (quiet) return [];
       const win = BrowserWindow.fromId(windowId);
       const parent = win !== null && !win.isDestroyed() ? win : undefined;
       const filters = request.filters?.map((f) => ({ name: f.name, extensions: [...f.extensions] }));
@@ -850,6 +883,22 @@ async function ready(): Promise<void> {
     // when it changes, which process draws which window's frames (origins only, never a URL's path or query).
     startProcessDiag();
   }
+  // The preview (compile-time mark): the window reloads when the command says its files changed (a counter in a file, read
+  // twice a second, as the acceptance's key file is), and holds the pinned appearance from its first paint.
+  if (previewAppearance !== undefined) applyThemeSource(coreThemeSource);
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewReloadFile !== undefined && isAbsolute(previewReloadFile)) {
+    let last = "";
+    watchFile(previewReloadFile, { interval: 500 }, () => {
+      let now = "";
+      try { now = readFileSync(previewReloadFile, "utf8").trim(); } catch { return; }
+      if (now === last) return;
+      const first = last === "";
+      last = now;
+      if (first || mainWindow === undefined || mainWindow.isDestroyed()) return;
+      log("preview: the window's files changed; reloading it");
+      mainWindow.webContents.reloadIgnoringCache();
+    });
+  }
   startFrontSeam();
   startViewportPressSeam();
   startWindowSeam();
@@ -887,7 +936,7 @@ async function ready(): Promise<void> {
     refreshTray();
   }
   // lane HS: end
-  if (program === "code" && !headless && typeof __MOSS_TEST_BUILD__ !== "string") {
+  if (program === "code" && !headless && !preview && typeof __MOSS_TEST_BUILD__ !== "string") {
     // The app's own updates (updater.ts): packaged builds only, never a headless or test run (no network from those).
     void startUpdater({
       packaged: app.isPackaged,
@@ -1263,7 +1312,7 @@ async function showFallbackCard(cardId: string, strip = false): Promise<void> {
   // registered answer key, the core broker's proof check. Nothing else about the card or its gates changes.
   // Compile-time first (the test mark, or the acceptance build's), so a release build carries no part of it.
   const offscreenPress = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_SEALED_PRESS === "1";
-  if (!offscreenPress && !fallbackMayShow({ headless, smokeFallback, testInput: (typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless }) })) {
+  if (!offscreenPress && !fallbackMayShow({ headless: quiet, smokeFallback, testInput: (typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless }) })) {
     log(`card: ${strip ? "the window's strip" : "the fallback card"} for ${cardId} was not shown (headless)`);
     return;
   }
@@ -1692,14 +1741,15 @@ function hostStatusHeard(params: unknown): void {
   const title = translate(strings, "moss.core.host-down.title");
   const body = translate(strings, "moss.core.host-down.body");
   // One plain notice, silent; a headless run shows none and says so.
-  if (headless || !Notification.isSupported()) { log(`host: the engine gave up starting the host (the notice not shown: ${headless ? "headless" : "no notifications"})`); return; }
+  if (quiet || !Notification.isSupported()) { log(`host: the engine gave up starting the host (the notice not shown: ${quiet ? "headless" : "no notifications"})`); return; }
   log("host: the engine gave up starting the host (the notice shown)");
   try { new Notification({ title, body, silent: true }).show(); } catch { /* the desktop has no notifications */ }
 }
 
 /** Applies the mount plan now: the screen's surfaces, the background parts, the pages, and whose menu-bar icon. */
 function applyMount(): void {
-  const next = mountPlan(program, helloMount, hostStateNow, hostGaveUp);
+  // The preview is one window whatever the engine's hello and a host's state say: no island, no pill, no background part, no pages, no menu-bar icon.
+  const next = preview ? PREVIEW_PLAN : mountPlan(program, helloMount, hostStateNow, hostGaveUp);
   const was = mountNow;
   mountNow = next;
   // Said on the first mount the engine's hello brings, and on every change after.
@@ -1873,7 +1923,7 @@ const pageDeps = {
   lang: () => runtime.language,
   openExternal: async (url: string) => {
     // A headless run opens nothing on the screen.
-    if (headless) log(`open: would open a page in the browser (${new URL(url).host})`);
+    if (quiet) log(`open: would open a page in the browser (${new URL(url).host})`);
     else await shell.openExternal(url);
   },
   // The guide finished: the window lands on the coding side, a new code session when there's none (the shell's own act).
@@ -1961,7 +2011,8 @@ function stateChanged(s: PairState): void {
 async function show(what: { kind: string; url?: string; section?: string; item?: string; bot?: string }): Promise<{ ok: true }> {
   if (what.kind === "url" && typeof what.url === "string") {
     const url = new URL(what.url);
-    if (url.protocol === "https:" || url.protocol === "http:") await shell.openExternal(url.toString());
+    if (quiet) log(`open: would open a page in the browser (${url.host})`);
+    else if (url.protocol === "https:" || url.protocol === "http:") await shell.openExternal(url.toString());
     return { ok: true };
   }
   const win = await openMainWindow();
@@ -1996,7 +2047,8 @@ async function requestQuit(source: string): Promise<void> {
   const q = quitQuestion(status);
   let choice: QuitChoice = "quit";
   if (q.ask) {
-    if (headless) {
+    if (preview) choice = "quit";
+    else if (headless) {
       const env = process.env.MOSS_TEST_QUIT_CHOICE;
       choice = env === "handover" || env === "cancel" ? env : "quit";
     } else {
@@ -2065,7 +2117,9 @@ let testThemeOverride: "dark" | "light" | undefined;
 function applyThemeSource(value: unknown): void {
   coreThemeSource = value;
   const override = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string" ? testThemeOverride : undefined;
-  const next = override ?? themeSourceOf(value);
+  // The preview's command may pin the window to light or dark (its pictures); any other value follows the core's Theme choice as ever.
+  const pinned = previewAppearance === "light" || previewAppearance === "dark" ? previewAppearance : undefined;
+  const next = pinned ?? override ?? themeSourceOf(value);
   if (nativeTheme.themeSource !== next) nativeTheme.themeSource = next;
 }
 
@@ -2164,7 +2218,7 @@ async function openMainWindow(): Promise<BrowserWindow | undefined> {
   const plan = mainWindowPlan({
     platform: process.platform,
     acrylic: process.platform === "win32" && windowsHasAcrylic(osRelease()),
-    title: identity.productName,
+    title: previewBanner !== undefined ? `${identity.productName} · ${previewBanner}` : identity.productName,
     dark,
     solid: dark ? "#202020" : "#F5F5F5",
     symbol: dark ? "#F2F2F2" : "#1F1F1F",
@@ -2193,6 +2247,15 @@ async function openMainWindow(): Promise<BrowserWindow | undefined> {
   win.on("focus", () => runtime.focusReturned(id));
   win.webContents.on("before-input-event", (event, input) => shortcut(event, input, win));
   win.once("ready-to-show", () => showMainWindow(win));
+  // The preview says what it is: its title stays as set (the page's own title never replaces it), and one small plain line sits at the
+  // window's bottom right, on top of the page and deaf to the mouse, so it can never be taken for the installed app.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewBanner !== undefined) {
+    win.on("page-title-updated", (event) => event.preventDefault());
+    const line = previewBanner;
+    win.webContents.on("did-finish-load", () => {
+      void win.webContents.executeJavaScript(`(() => { if (document.getElementById("moss-preview-line")) return; const e = document.createElement("div"); e.id = "moss-preview-line"; e.textContent = ${JSON.stringify(line)}; const s = e.style; s.position = "fixed"; s.right = "10px"; s.bottom = "6px"; s.zIndex = "2147483647"; s.font = "11px -apple-system, system-ui, sans-serif"; s.color = "rgba(128,128,128,0.95)"; s.pointerEvents = "none"; s.userSelect = "none"; document.body.appendChild(e); })()`).catch(() => undefined);
+    });
+  }
   await win.loadURL("moss-core://app/");
   return win;
 }
@@ -2410,7 +2473,7 @@ function syncFourFingerTap(): void {
   }
 }
 function syncFourFingerTapUnguarded(): void {
-  if (headless || typeof __MOSS_TEST_BUILD__ === "string" || process.platform !== "darwin") return;
+  if (headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || process.platform !== "darwin") return;
   if (touches === null) touches = loadTouches(join(here, "native", "touches.node"), log);
   if (touches === undefined) return;
   if (fourFingerTap === undefined) {
@@ -2898,6 +2961,7 @@ async function terminalInput(windowId: number, frameId: string, pluginId: string
 
 /** Asks before a paste of more than one line goes to a terminal (a headless run answers with MOSS_TEST_PASTE_OK). */
 async function okToPaste(windowId: number, lines: number): Promise<boolean> {
+  if (preview) return false;
   if (headless) return process.env.MOSS_TEST_PASTE_OK === "1";
   const t = (key: string, params?: Record<string, string | number>) => translate(runtime.coreStrings(), `moss.core.${key}`, params);
   const win = BrowserWindow.fromId(windowId);
@@ -3021,8 +3085,8 @@ function front(): { focused: boolean; session?: string | null } {
 
 const notifications = new Notifications((req, onClick) => {
   // A headless run shows nothing and plays nothing.
-  if (headless || !Notification.isSupported()) {
-    log(`notify: ${headless ? "a headless run shows no notification" : "this desktop has no notifications"} (${req.id})`);
+  if (quiet || !Notification.isSupported()) {
+    log(`notify: ${quiet ? "a headless run shows no notification" : "this desktop has no notifications"} (${req.id})`);
     return undefined;
   }
   const n = new Notification({ title: req.title, ...(req.body !== undefined ? { body: req.body } : {}), ...(req.silent === true ? { silent: true } : {}), ...(process.platform === "linux" && req.urgent === true ? { urgency: "critical" as const } : {}) });

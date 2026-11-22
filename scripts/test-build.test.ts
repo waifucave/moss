@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACCEPTANCE_BUILD_LABEL, RELEASE_BUILD_BANNER, RELEASE_BUILD_DEFINE_NAME, RELEASE_BUILD_LABEL, releaseBuildDefine, releaseMarkerProblems, TEST_ONLY_APP_STRINGS, TEST_ONLY_MOSS_APP_STRINGS, TEST_ONLY_CORE_STRINGS, asarFiles, asarMarkerProblems, carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, testBuildDefine, testBuildDefineArg, testBuildMarkerProblems } from "./test-build";
+import { ACCEPTANCE_BUILD_LABEL, PREVIEW_BUILD_DEFINE_NAME, PREVIEW_BUILD_LABEL, PREVIEW_ONLY_APP_STRINGS, previewBuildDefine, RELEASE_BUILD_BANNER, RELEASE_BUILD_DEFINE_NAME, RELEASE_BUILD_LABEL, releaseBuildDefine, releaseMarkerProblems, TEST_ONLY_APP_STRINGS, TEST_ONLY_MOSS_APP_STRINGS, TEST_ONLY_CORE_STRINGS, asarFiles, asarMarkerProblems, carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, testBuildDefine, testBuildDefineArg, testBuildMarkerProblems } from "./test-build";
 import { verifySealedCore } from "./verify-sealed-core";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -108,6 +108,26 @@ describe("the test-marked build's marker (scripts/test-build.ts)", () => {
     expect(releaseMarkerProblems("app.asar", packAsar({ "package.json": "{}" }), true)[0]).toContain("no out/main/index.js");
     // A release's app.asar passes the test-build gate as a real build.
     expect(asarMarkerProblems("app.asar", release, false)).toEqual([]);
+  });
+
+  test("the live preview's define: the label only in its own build; a release's and the test twin's app.asar carry neither it nor a name only it reads", () => {
+    expect(previewBuildDefine(true)).toEqual({ [PREVIEW_BUILD_DEFINE_NAME]: JSON.stringify(PREVIEW_BUILD_LABEL) });
+    expect(previewBuildDefine(false)).toEqual({ [PREVIEW_BUILD_DEFINE_NAME]: "false" });
+    expect(carriesTestBuild(utf8(PREVIEW_BUILD_LABEL))).toBe(false);
+    const labelled = packAsar({ "out/main/index.js": `log('${PREVIEW_BUILD_LABEL}')` });
+    for (const test of [false, true]) {
+      // The test twin's own label and sentinel make it a passing test build; the preview's label in either is a problem.
+      const base = test ? `${TEST_BUILD_LABEL} ${TEST_BUILD_SENTINEL} ` : "";
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}console.log(1)` }), test)).toEqual([]);
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}log('${PREVIEW_BUILD_LABEL}')` }), test)[0]).toContain("preview build's label");
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js.map": `${base}${PREVIEW_BUILD_LABEL}` }), test).join(" ")).toContain("preview build's label");
+      for (const t of PREVIEW_ONLY_APP_STRINGS) {
+        expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}x ${t} y` }), test)).toContain(`app.asar's code reads ${t}: the preview's path must be compiled out of a real build and the test twin`);
+        // The source map carries the source in every build: not a leak.
+        expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}ok`, "out/main/index.js.map": `${t}` }), test)).toEqual([]);
+      }
+    }
+    expect(labelled.length).toBeGreaterThan(0);
   });
 
   test("verify:sealed-core refuses a test-marked core before running it", async () => {

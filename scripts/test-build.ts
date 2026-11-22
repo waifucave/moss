@@ -31,6 +31,18 @@ export function acceptanceBuildDefine(acceptance: boolean): Record<string, strin
   return { [ACCEPTANCE_BUILD_DEFINE_NAME]: acceptance ? JSON.stringify(ACCEPTANCE_BUILD_LABEL) : "false" };
 }
 
+/** The live preview's own build of the app (apps/desktop/scripts/build.ts --preview, which only scripts/preview/run.ts
+ *  passes): its define and label, `false` in every other build, a release's, the test twin's and the acceptance build's
+ *  included. What it guards (the one-window preview on a throwaway home) is compiled out of every other build. */
+export const PREVIEW_BUILD_DEFINE_NAME = "__MOSS_PREVIEW_BUILD__";
+export const PREVIEW_BUILD_LABEL = "MOSS-PREVIEW-BUILD";
+export function previewBuildDefine(preview: boolean): Record<string, string> {
+  return { [PREVIEW_BUILD_DEFINE_NAME]: preview ? JSON.stringify(PREVIEW_BUILD_LABEL) : "false" };
+}
+/** What only the preview build's code reads (the environment variables the preview command hands its app). Every other
+ *  build's app code carries none of them, nor the label. */
+export const PREVIEW_ONLY_APP_STRINGS = ["MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_APPEARANCE", "MOSS_PREVIEW_BANNER", "moss-preview-line", "the window's files changed; reloading it"] as const;
+
 /** The release build's own define (apps/desktop/scripts/build.ts --release, which release/build.ts passes for every
  *  build but the test twin): `__MOSS_RELEASE_BUILD__`, the label in a release-shaped build (signed, sign-only,
  *  dev-signed, CI's unsigned), `false` in a test twin, an acceptance build and a dev build. It is for the app's
@@ -144,10 +156,16 @@ export function asarMarkerProblems(what: string, bytes: Uint8Array, test: boolea
   const code = [...files].filter(([path]) => !path.endsWith(".map"));
   const label = contains(bytes, TEST_BUILD_LABEL);
   const sentinel = code.some(([, b]) => contains(b, TEST_BUILD_SENTINEL));
+  // The live preview's build: neither a real build nor the test twin carries its label or the names only it reads.
+  const preview = [
+    ...(contains(bytes, PREVIEW_BUILD_LABEL) ? [`${what} carries the preview build's label ${PREVIEW_BUILD_LABEL}: only scripts/preview/run.ts's own build does, never a real build or the test twin`] : []),
+    ...PREVIEW_ONLY_APP_STRINGS.filter((t) => code.some(([, b]) => contains(b, t))).map((t) => `${what}'s code reads ${t}: the preview's path must be compiled out of a real build and the test twin`),
+  ];
   if (test) {
     return [
       ...(label ? [] : [`${what} is a test build but doesn't carry the label ${TEST_BUILD_LABEL} (the define didn't reach it)`]),
       ...(sentinel ? [] : [`${what} is a test build but its code doesn't carry the test-only branch ("${TEST_BUILD_SENTINEL}")`]),
+      ...preview,
     ];
   }
   const testOnly = [...TEST_ONLY_APP_STRINGS, ...TEST_ONLY_MOSS_APP_STRINGS].filter((t) => code.some(([, b]) => contains(b, t)));
@@ -156,5 +174,6 @@ export function asarMarkerProblems(what: string, bytes: Uint8Array, test: boolea
     ...(sentinel ? [`${what}'s code carries the test-only branch ("${TEST_BUILD_SENTINEL}"): a real build's must be compiled out`] : []),
     ...(contains(bytes, ACCEPTANCE_BUILD_LABEL) ? [`${what} carries the acceptance build's label ${ACCEPTANCE_BUILD_LABEL}: a real build never does`] : []),
     ...testOnly.map((t) => `${what}'s code reads ${t}: a real build's test-only path must be compiled out`),
+    ...preview,
   ];
 }
