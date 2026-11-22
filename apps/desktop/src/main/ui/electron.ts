@@ -13,7 +13,7 @@ import { CORE_CSP, CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, commonH
 import { checkMenu, frameGesture, openRefusal, mayPlaceView, menuPoint, openTarget, viewRect, type MenuItem, type Rect } from "./brokers";
 import { builtClientFile, dataFile, isInside, mediaType, modelResponse, ownDataFile, ownDataPlugin, ownDataRequest, pluginFile } from "./files";
 import { SEALED_PRESS_WORDS } from "../sealed-pages";
-import { LayerError, type FrameRef, type UiRuntime } from "./runtime";
+import { LayerError, isInstanceId, type FrameRef, type UiRuntime } from "./runtime";
 import { FileGrants, PICK_METHODS, grantResponse, routeDrop, routePick, type DialogRequest, type Grant } from "./file-grants";
 import { PickTokens, routeCall, type KeyTarget, type PickUse } from "./tree-calls";
 import { iconRequest } from "./plugin-icon";
@@ -522,8 +522,11 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     const mount = str(a.mount, 32);
     const spot = str(a.spot, 128);
     if (mount === undefined || spot === undefined) throw new LayerError("bad request");
-    const hints = typeof a.hints === "object" && a.hints !== null ? (a.hints as { session?: unknown; entry?: unknown; bot?: unknown }) : {};
-    return runtime.resolve(s.frame, mount, spot, str(a.key), { ...(str(hints.session, 32) ? { session: str(hints.session, 32)! } : {}), ...(str(hints.entry, 300) ? { entry: str(hints.entry, 300)! } : {}), ...(str(hints.bot, 81) ? { bot: str(hints.bot, 81)! } : {}) });
+    const hints = typeof a.hints === "object" && a.hints !== null ? (a.hints as { session?: unknown; entry?: unknown; bot?: unknown; instance?: unknown }) : {};
+    // The `<Spot>` instance asking: one that is sent must be a valid id (answering a bad one as if none came would put it back on the
+    // places every caller without one shares, the very thing an instance is for); one that is not sent is a caller built before them.
+    if (hints.instance !== undefined && !isInstanceId(hints.instance)) throw new LayerError("bad request");
+    return runtime.resolve(s.frame, mount, spot, str(a.key), { ...(str(hints.session, 32) ? { session: str(hints.session, 32)! } : {}), ...(str(hints.entry, 300) ? { entry: str(hints.entry, 300)! } : {}), ...(str(hints.bot, 81) ? { bot: str(hints.bot, 81)! } : {}), ...(isInstanceId(hints.instance) ? { instance: hints.instance } : {}) });
   });
   handle("moss:entries", (event, a) => {
     const s = sender(event);

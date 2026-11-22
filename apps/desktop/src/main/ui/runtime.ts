@@ -46,6 +46,26 @@ export type SealedAskOutcome = "made" | "not yet" | "absent" | "refused";
 
 export const MOUNT_TOKEN_TTL_MS = 60_000;
 
+/** Most places (children, in any state: an asleep one still costs its record) one part may hold. Every `<Spot>` instance a part
+ *  draws places its own children, so a long transcript holds a few for each message, each tool result and each add-on; the
+ *  conversation reads 500 events a page and a reader may open several, so this is far above what reading one reaches.
+ *  A part at the cap places no more: the instance that asked shows the spot's fallback (`resolve`). */
+export const MAX_PART_CHILDREN = 4096;
+
+/** A spot instance's name (`hints.instance`): the id a `<Spot>` mints once and keeps for its life, so each drawing of a spot has its
+ *  own places. It comes from a page: short, and only these characters, so it can say nothing but which of the calling part's own
+ *  places it means (places are looked up under the part the document placed, never across parts or documents). */
+const INSTANCE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+export const isInstanceId = (v: unknown): v is string => typeof v === "string" && INSTANCE_ID.test(v);
+
+/** A place under a part: which `<Spot>` instance drew it (none: a caller that sends no instance, the core's root and a client built
+ *  before instances, all of whom share one place per entry as before), the spot, its key and the entry. JSON, so a spot, key or entry
+ *  that holds any character can never read as another place's (page-given text sits in all three). */
+const placeOf = (instance: string | undefined, spot: string, key: string | undefined, ref: string): string => JSON.stringify([instance ?? null, spot, key ?? "", ref]);
+/** What every place of one instance, spot and key starts with: the places `resolve` may drop. An instance never matches another's
+ *  (nor the no-instance callers'), since the instance is the first element and the array closes the key. */
+const placesOf = (instance: string | undefined, spot: string, key: string | undefined): string => `${JSON.stringify([instance ?? null, spot, key ?? ""]).slice(0, -1)},`;
+
 const frameKey = (f: Pick<FrameRef, "processId" | "routingId">) => `${f.processId}:${f.routingId}`;
 
 /** The window's own spots that offer `when.bot` (and a bot's own plugin's panel for its tab): the `moss` shell says which bot's tab shows (`forBot`). */
@@ -77,7 +97,7 @@ interface Mount {
   tokenState?: "issued" | "served" | "bound" | "gone" | "asleep";
   issuedAt?: number;
   frame?: { key: string; processId: number; routingId: number; osPid?: number };
-  /** Children by place: `<spot>|<key>|<entry ref>`. */
+  /** Children by place (`placeOf`: the `<Spot>` instance, the spot, its key, the entry ref). */
   children: Map<string, string>;
   /** Placed by the moss layer with a session kind (`when.session`). */
   session?: string;
@@ -112,6 +132,8 @@ export interface RuntimeOptions {
   log?: (line: string) => void;
   now?: () => number;
   token?: () => string;
+  /** The most children one part may hold (`MAX_PART_CHILDREN` by default; a test lowers it). */
+  maxPartChildren?: number;
   /** Delivers a message to a bound document. */
   send?: (frame: { processId: number; routingId: number }, message: LayerMessage) => void;
   themes?: ThemeStore;
@@ -802,14 +824,18 @@ export class UiRuntime {
   }
 
   /** Resolves a spot that the part `mountId` declares, for the document `frame`. With `entry`, only that entry shows
-   *  (`<Spot entry>`). */
-  resolve(frame: FrameRef, mountId: string, spot: string, key?: string, hints: { session?: string; entry?: string; bot?: string } = {}): SpotView {
+   *  (`<Spot entry>`). With `instance` (the `<Spot>` asking), the answer's places are that instance's alone: two drawings of one
+   *  spot and key (a message's add-on under each message) each get their own mounts, with their own address, props and size, and
+   *  this resolve keeps and drops only its own instance's places, never a sibling's. */
+  resolve(frame: FrameRef, mountId: string, spot: string, key?: string, hints: { session?: string; entry?: string; bot?: string; instance?: string } = {}): SpotView {
     const doc = this.requireDoc(frame);
     const part = this.mounts.get(mountId);
     if (part === undefined || this.docOf(part)?.id !== doc.id) {
       this.logRefusedPart("resolve", doc, mountId, part);
       throw new LayerError("that part isn't in this document");
     }
+    if (hints.instance !== undefined && !isInstanceId(hints.instance)) throw new LayerError("bad request");
+    const instance = hints.instance;
     // Only the trusted `moss` layer may say which kind of session a part shows (`when.session`).
     const { shape, cellKey, session, ctx } = this.cellOf(doc, part, spot, key, hints);
     const declared = this.declares(part, spot);
@@ -832,10 +858,16 @@ export class UiRuntime {
     const places = new Set<string>();
     const items: SpotItem[] = [];
     for (const c of shown) {
-      const place = `${spot}|${cellKey ?? ""}|${entryRef(c.entry)}`;
-      places.add(place);
+      const place = placeOf(instance, spot, cellKey, entryRef(c.entry));
       const existing = part.children.get(place);
       const child = existing === undefined ? undefined : this.mounts.get(existing);
+      if (child === undefined && part.children.size >= (this.opts.maxPartChildren ?? MAX_PART_CHILDREN)) {
+        // The cap holds a part to what it can hold: this instance gets no mount (it shows the spot's fallback, never an address
+        // that would not serve), and the ones it has stay. Said once in a while, not at every respot of every instance.
+        this.logChildCap(part, spot);
+        continue;
+      }
+      places.add(place);
       const m = child ?? this.place(part, doc, c, spot, cellKey, ctx, cell.styles, session);
       if (child !== undefined) {
         m.styles = cell.styles;
@@ -844,10 +876,11 @@ export class UiRuntime {
       part.children.set(place, m.id);
       items.push(this.item(m, part));
     }
-    // A `<Spot entry>` holds only its own entry's place: the same spot's other `<Spot entry>`s (one per sidebar app
-    // button, say) hold theirs, and each lets its own go when it unmounts (`release`).
-    const prefix = `${spot}|${cellKey ?? ""}|`;
-    const mine = (place: string) => (hints.entry === undefined ? place.startsWith(prefix) : place === `${prefix}${hints.entry}`);
+    // What this resolve lets go: its own instance's places of this spot and key that no longer show. A `<Spot entry>` of a caller that
+    // sends no instance holds only its own entry's place (the same spot's other `<Spot entry>`s, one per sidebar app button, hold
+    // theirs, and each lets its own go when it unmounts: `release`); with an instance, the whole place set is the instance's own.
+    const prefix = placesOf(instance, spot, cellKey);
+    const mine = (place: string) => (hints.entry === undefined || instance !== undefined ? place.startsWith(prefix) : place === placeOf(undefined, spot, cellKey, hints.entry));
     for (const [place, id] of [...part.children]) {
       if (mine(place) && !places.has(place)) {
         part.children.delete(place);
@@ -858,6 +891,16 @@ export class UiRuntime {
     // A part placed or restyled inline changes the document's sheets.
     this.restyle(doc);
     return { spot, ...(cellKey !== undefined ? { key: cellKey } : {}), shape: cell.shape, items, hidden: cell.hidden, conflict: cell.conflict };
+  }
+
+  private capLoggedAt = new Map<string, number>();
+  /** A part at `MAX_PART_CHILDREN` was asked to place one more: said in the log at most once a minute for each part. */
+  private logChildCap(part: Mount, spot: string): void {
+    const at = this.capLoggedAt.get(part.id);
+    if (at !== undefined && this.now() - at < 60_000) return;
+    this.capLoggedAt.set(part.id, this.now());
+    if (this.capLoggedAt.size > 256) this.capLoggedAt.delete(this.capLoggedAt.keys().next().value!);
+    this.log(`layers: ${part.id} (${part.plugin?.id ?? "core"}) already holds ${part.children.size} parts, the most it may: a ${spot} instance of it gets no part placed and shows its fallback`);
   }
 
   private place(parent: Mount, doc: Mount, c: Candidate, spot: string, key: string | undefined, ctx: CellContext, styles: Candidate[], session: string | undefined): Mount {
