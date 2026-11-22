@@ -332,8 +332,10 @@ export const DEVICES_METHODS = {
       /** The sending computer's tree name; the receiver refuses one that isn't the link's peer. */
       computer: ComputerName,
       input: z.discriminatedUnion("from", [
-        z.strictObject({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(1_000_000) }),
-        z.strictObject({ from: z.literal("agent"), agent: utf16(128, 1), text: utf16(1_000_000) }),
+        // `depth`: how far the exchange has gone without the person (the loop brake, sessions/exchange-depth.ts); the receiver
+        // reads one beyond its limit as the limit.
+        z.strictObject({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(1_000_000), depth: z.number().int().nonnegative().max(1_000).optional() }),
+        z.strictObject({ from: z.literal("agent"), agent: utf16(128, 1), text: utf16(1_000_000), depth: z.number().int().nonnegative().max(1_000).optional() }),
         z.strictObject({ from: z.literal("routine"), routine: utf16(128, 1), name: utf16(200), sideThread: SessionId, text: utf16(1_000_000), failed: z.boolean().optional() }),
         /** An agent's final report reaching its bot. */
         z.strictObject({

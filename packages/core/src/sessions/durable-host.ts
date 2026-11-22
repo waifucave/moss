@@ -1520,6 +1520,7 @@ export class DurableSessionHost implements SessionHost {
     }
     if (input.from !== "user" && s.driver?.canFold) {
       const record = this.#record(s, { type: "input", input, disposition: "folded" });
+      this.depths.folded(s.meta.id, input);
       s.running.folds.emit({ seq: record.seq, input });
       return { disposition: "folded", seq: record.seq };
     }

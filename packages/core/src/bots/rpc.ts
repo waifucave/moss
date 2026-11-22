@@ -374,8 +374,9 @@ export const PeerSessionDeliverParams = z.object({
   /** The computer the message comes from; it must be the one the link authenticated. */
   computer: ComputerName,
   input: z.discriminatedUnion("from", [
-    z.object({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(100_000, 1) }),
-    z.object({ from: z.literal("agent"), agent: SessionId, text: utf16(100_000, 1) }),
+    // `depth`: the exchange brake's count, carried across the link (sessions/exchange-depth.ts; one beyond its limit reads as the limit).
+    z.object({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(100_000, 1), depth: z.number().int().nonnegative().max(1_000).optional() }),
+    z.object({ from: z.literal("agent"), agent: SessionId, text: utf16(100_000, 1), depth: z.number().int().nonnegative().max(1_000).optional() }),
     z.object({ from: z.literal("routine"), routine: utf16(128, 1), name: utf16(200, 1), sideThread: SessionId, text: utf16(100_000) }),
     z.object({
       from: z.literal("task-notification"), agent: SessionId, backend: utf16(128, 1),
