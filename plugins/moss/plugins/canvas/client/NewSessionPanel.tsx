@@ -148,7 +148,8 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
         <div className="cv-step__body">
           <label className="cv-field">
             <span>{S.model}</span>
-            <select value={pick.model ?? ""} onChange={(e) => { const m = e.target.value; const efforts = effortsFor(opts, m); setPick({ model: m, ...(pick.effort !== undefined && efforts.includes(pick.effort) ? { effort: pick.effort } : opts.models.find((x) => x.id === m)?.defaultEffort !== undefined ? { effort: opts.models.find((x) => x.id === m)!.defaultEffort! } : {}), from: pick.from }); }}>
+            <select value={pick.model ?? ""} onChange={(e) => { const m = e.target.value; if (m === "") { setPick({ from: pick.from }); return; } const efforts = effortsFor(opts, m); setPick({ model: m, ...(pick.effort !== undefined && efforts.includes(pick.effort) ? { effort: pick.effort } : opts.models.find((x) => x.id === m)?.defaultEffort !== undefined ? { effort: opts.models.find((x) => x.id === m)!.defaultEffort! } : {}), from: pick.from }); }}>
+              {chosen !== undefined && opts.source !== "catalog" && <option value="">{S.agentsDefault(chosen.name)}</option>}
               {opts.models.map((m) => <option key={m.id} value={m.id}>{modelName(opts, m.id)}</option>)}
             </select>
           </label>

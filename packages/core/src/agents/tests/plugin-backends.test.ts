@@ -81,6 +81,31 @@ describe("agent backends from plugins", () => {
     expect(mine).toMatchObject({ pluginId: "my-agent", bundled: false, command: { program: "my-agent", acpArgs: ["acp"] }, file: { source: "its own" } });
   });
 
+  test("a model list declared by another plugin runs only its own program's list command, never a file or another program; the bundled codex declares its own", async () => {
+    const w = world();
+    const reader = { list: "models", id: "slug" };
+    const command = (program: string) => ({ program, args: ["models"], identity: { versionArgs: ["--version"], versionPattern: "." } });
+    const make = (id: string, modelList: unknown) => {
+      const folder = join(w.pluginsDir, id);
+      mkdirSync(join(folder, "rows"), { recursive: true });
+      writeFileSync(join(folder, "moss.json"), JSON.stringify({
+        manifest: 1, id, name: id, version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` },
+        contributes: { agentBackends: [{ id, name: id, protocol: "acp", command: "own-program", args: ["acp"], quirks: "rows/quirks.json" }] },
+      }));
+      writeFileSync(join(folder, "rows", "quirks.json"), JSON.stringify({ ...QUIRKS_OF("grok"), modelList }));
+    };
+    make("same-program", { command: command("own-program"), file: { home: ".x", path: "m.json" }, reader });
+    make("other-program", { command: command("/bin/sh"), reader });
+    make("file-only", { file: { home: ".x", path: "m.json" }, reader });
+    await w.folders.scan();
+    for (const id of ["same-program", "other-program", "file-only"]) await w.core.approve(id, w.core.get(id)!.treeHash!);
+    const got = contributedBackends(w.core);
+    expect(got.find((c) => c.id === "same-program")!.modelList).toEqual({ command: { ...command("own-program"), timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024 }, reader });
+    expect(got.find((c) => c.id === "other-program")!.modelList).toBeUndefined();
+    expect(got.find((c) => c.id === "file-only")!.modelList).toBeUndefined();
+    expect(got.find((c) => c.id === "codex")!.modelList?.command?.program).toBe("codex");
+  });
+
   test("a quirks file outside the plugin, through a link, or that isn't a backend's quirks is refused", () => {
     const root = mkdtempSync(join(tmpdir(), "moss-k-quirks-"));
     temps.push(root);

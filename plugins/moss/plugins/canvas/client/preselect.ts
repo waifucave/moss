@@ -32,6 +32,8 @@ export interface RecentStart {
   backend?: string;
   model?: string;
   effort?: string;
+  /** Each agent's own last choice (the person's starts only): a row with no model is "the agent's own default". */
+  byBackend?: readonly { backend: string; model?: string; effort?: string }[];
 }
 
 export interface FolderToken {
@@ -79,11 +81,15 @@ export function pickModel(agent: string, options: AgentOptions | undefined, rece
   const offered = (model: string | undefined) => options.models.find((m) => m.id === model);
   const effortOk = (model: AgentOptions["models"][number] | undefined, effort: string | undefined) =>
     effort !== undefined && ((model?.efforts.length ?? 0) > 0 ? model!.efforts.includes(effort) : (options.efforts ?? []).includes(effort));
-  if (recent?.backend === agent && recent.model !== undefined) {
-    const m = offered(recent.model);
-    if (m !== undefined) return { model: m.id, ...(effortOk(m, recent.effort) ? { effort: recent.effort! } : m.defaultEffort !== undefined ? { effort: m.defaultEffort } : {}), from: "last" };
+  // The last this person chose for THIS agent (not the agent they started last), and only while the list still has it.
+  const mine = recent?.byBackend?.find((b) => b.backend === agent) ?? (recent?.backend === agent ? recent : undefined);
+  if (mine?.model !== undefined) {
+    const m = offered(mine.model);
+    if (m !== undefined) return { model: m.id, ...(effortOk(m, mine.effort) ? { effort: mine.effort! } : m.defaultEffort !== undefined ? { effort: m.defaultEffort } : {}), from: "last" };
   }
-  const d = offered(options.default?.model) ?? options.models[0];
+  // An agent whose list is its own (a command, a file, what a session reported) names no default model: nothing is sent
+  // and the agent starts on its own; only MOSS's coding agent (the catalog) has the person's default model.
+  const d = offered(options.default?.model) ?? (options.source === "catalog" || options.source === undefined ? options.models[0] : undefined);
   const effort = options.default?.effort !== undefined && effortOk(d, options.default.effort) ? options.default.effort : d?.defaultEffort;
   return { ...(d !== undefined ? { model: d.id } : {}), ...(effort !== undefined ? { effort } : {}), from: "default" };
 }

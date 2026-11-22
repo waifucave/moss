@@ -240,6 +240,39 @@ describe("the page that starts a session (spec §9.4)", () => {
     expect(core.calls.find((c) => c.method === "agent.start")?.params).toEqual({ backend: "gemini", root: "pick-b" });
   });
 
+  test("an agent whose models are known offers them: the last the person chose for THAT agent is preselected, a change goes to agent.start, and an agent with none known shows no picker", async () => {
+    const backends = [
+      { id: "codex", name: "Codex", computers: [{ computer: "Studio", installed: true }] },
+      { id: "gemini", name: "Gemini", computers: [{ computer: "Studio", installed: true }] },
+      { id: "moss-code", name: "MOSS", computers: [{ computer: "Studio", installed: true }] },
+    ];
+    const codex = { known: true, source: "command", models: [{ id: "c1", name: "Codex One", efforts: ["low", "high"], defaultEffort: "low" }, { id: "c2", name: "Codex Two", efforts: [] }] };
+    const { core } = await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, {
+      "agent.backends": () => ({ backends }),
+      "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
+      // Gemini was started last; codex has its own last choice in the per-agent memory.
+      "agent.recent": () => ({ backend: "gemini", folders: 0, byBackend: [{ backend: "gemini" }, { backend: "codex", model: "c1", effort: "high" }] }),
+      "agent.options": (p) => (p.backend === "codex" ? codex : { known: false, source: "unknown", models: [] }),
+      "ui.pick": () => ({ token: "pick-1", name: "projects" }),
+      "agent.start": () => ({ session: "code-9" }),
+    });
+    // Gemini (the last started) has no list known: no picker.
+    expect(document.querySelectorAll(".cl-new-session__select").length).toBe(0);
+    fireEvent.click([...document.querySelectorAll<HTMLInputElement>(".cl-new-session__agent input")].find((r) => r.value === "codex")!);
+    await act(() => settle(20));
+    const [model, effort] = [...document.querySelectorAll<HTMLSelectElement>(".cl-new-session__select")];
+    expect([model!.value, effort!.value]).toEqual(["c1", "high"]);
+    expect([...model!.options].map((o) => o.textContent)).toEqual(["Codex's own default", "Codex One", "Codex Two"]);
+    fireEvent.change(model!, { target: { value: "c2" } });
+    await act(() => settle(20));
+    expect(document.querySelectorAll(".cl-new-session__select").length).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Choose a folder…" }));
+    await act(() => settle(20));
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await act(() => settle(20));
+    expect(core.calls.find((c) => c.method === "agent.start")?.params).toEqual({ backend: "codex", root: "pick-1", model: "c2" });
+  });
+
   test("a session's tab names its agent by the backend's display name, not its id, and falls back to the id for a backend with no name", async () => {
     await mount({ route: { route: "agent", params: { session: "code-0" } } }, [], SESSIONS, undefined, {}, {
       "agent.backends": () => ({ backends: [{ id: "moss-code", name: "MOSS's coding agent", computers: [] }] }),

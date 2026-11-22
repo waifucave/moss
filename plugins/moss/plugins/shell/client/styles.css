@@ -503,6 +503,17 @@ button.cl-window__title:hover {
   overflow-wrap: anywhere;
 }
 
+.cl-new-session__select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px var(--moss-space-s);
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-medium);
+  background: var(--moss-color-control);
+  color: var(--moss-color-text);
+  font-size: var(--moss-font-size-label);
+}
+
 .cl-new-session__actions {
   display: flex;
   justify-content: flex-end;
