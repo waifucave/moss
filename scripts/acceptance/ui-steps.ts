@@ -2250,7 +2250,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const messageCount = async () => Number((await inTree<number>(cdp, "document.querySelectorAll('.cl-conv__extra').length"))?.value ?? 0);
       // At least three messages (a session of its own has the turn's message and its answer): one more turn when there are fewer.
       if ((await messageCount()) < 3) {
-        await rpc.request("session.send", { id: session, message: { text: `window follow-up ${tag}`, clientMessageId: `window-more-${tag}` } }, 30_000);
+        // The same kind of turn as the first (the fake provider answers it with the plugin's read-only tool and then its words).
+        await rpc.request("session.send", { id: session, message: { text: `ACCEPTANCE-CALL Window {"text":"${tag}-again"}`, clientMessageId: `window-more-${tag}` } }, 30_000);
         await until("the follow-up's messages in the conversation", 60_000, async () => ((await messageCount()) >= 3 ? true : undefined), () => dumpFrames(cdp));
       }
       const everyMessage = await until("an add-on frame under each message", 30_000, async () => {
