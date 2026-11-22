@@ -46,7 +46,7 @@ export async function isProtectedCopy(execPath: string = process.execPath): Prom
   const sid = installerTargetSid(execPath);
   if (sid === null) return false;
   const { execFileSync } = await import("node:child_process");
-  const pf = String(execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "[Environment]::GetFolderPath('ProgramFiles')"], { encoding: "utf8", windowsHide: true })).trim();
+  const pf = String(execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "[Environment]::GetFolderPath('ProgramFiles')"], { encoding: "utf8", windowsHide: true, env: minimalChildEnv() })).trim();
   return win32.normalize(execPath).toUpperCase() === win32.join(pf, "MOSS Sandbox", sid, "moss-core.exe").toUpperCase();
 }
 
@@ -644,10 +644,12 @@ export function readLeasesDirSecurity(leasesDir: string): LeasesDirSecurity | nu
       "$allows=@($a.Access | ForEach-Object { @{ sid=(& $toSid $_.IdentityReference.Value); allow=($_.AccessControlType.ToString() -eq 'Allow') } })",
       "@{ userSid=$user; ownerSid=$owner; allows=$allows } | ConvertTo-Json -Compress -Depth 4",
     ].join("; ");
+    // The minimal environment: a PowerShell 7 parent's PSModulePath would hide Windows PowerShell's own Get-Acl.
     const out = execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 5000,
+      timeout: 15_000,
+      env: minimalChildEnv(),
     }) as string;
     const o = JSON.parse(out) as { userSid?: unknown; ownerSid?: unknown; allows?: unknown };
     if (typeof o.userSid !== "string" || typeof o.ownerSid !== "string" || !Array.isArray(o.allows)) return null;

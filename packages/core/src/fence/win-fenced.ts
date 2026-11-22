@@ -299,6 +299,13 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   // srt-win's profile read grant, which never grants the key and credential stores, browser data or the registry hives
   // (they get a read deny instead). Written once per daemon, before its first command (srt-win refuses to change it
   // while a session it holds runs): a folder made in the home after it is not readable until the next daemon start.
+  /** The install record's sandbox user (`srt-win user status`, `marker_user_sid`): the SID the persistent grants are
+   *  recorded against. Read at each command (a `setup --force` may change it). */
+  const installedSandboxSid = async (): Promise<string | null> => {
+    const r = await deps.exec([deps.launcher, "user", "status"], { timeoutMs: 30_000 });
+    if (r.code !== 0) return null;
+    try { const o = JSON.parse(r.stdout) as { marker_user_sid?: unknown }; return typeof o.marker_user_sid === "string" ? o.marker_user_sid : null; } catch { return null; }
+  };
   let profileGrant: Promise<string | null> | undefined;
   const grantProfile = (): Promise<string | null> => (profileGrant ??= (async () => {
     const started = Date.now();
@@ -323,8 +330,6 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       if (!lease.ok) return refuse(lease.reason);
       let runHome: string | null = null;
       try {
-        const member = got.marker.members.find((m) => m.principal === lease.principal)!;
-        const sid = member.principalSid!;
         const drawn = r.sandbox !== undefined ? planFromSettings(r.sandbox) : planFromPolicy(fence, r.who.caller, r.cwd, { ...(o.bots ? { bots: o.bots() } : {}) });
         const session = r.who.caller.kind === "session" ? r.who.caller.sessionId : "shared";
         const sessionTemp = win32.join(fence.temp, `moss-${session.replace(/[^A-Za-z0-9._-]/g, "_")}`);
@@ -346,9 +351,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         catch (e) { return refuse(`its home folder ${runHome} can't be made (${e instanceof Error ? e.message : String(e)})`); }
         const template = gitTemplateDir(fence.mossHome);
         try { mkdirSync(template, { recursive: true }); } catch { /* git then finds no template, and copies nothing */ }
-        // Rule 3: the session's write roots, held by the daemon (`--holder-pid`), each with its capability SID.
-        const grant = await deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid, holderPid: process.pid }), {
-          stdin: sessionGrantInput({ read: grantPlan.readGrants, write: roots }), timeoutMs: 600_000,
+        // Rule 3: the session's write roots, held by the daemon (`--holder-pid`), each with its capability SID. The
+        // roots' entries are for the sandbox group every pool member is in (the patched launcher's shared group), and
+        // srt-win records them against the installed sandbox user, the install record's own (`marker_user_sid`):
+        // so they are granted as that user, whichever member runs this command.
+        const installed = await installedSandboxSid();
+        if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
+        const grantSid = installed;
+        const grant = await deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
+          stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
         });
         if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
         try {
@@ -373,7 +384,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         } finally {
           // The command's per-session claims end with it; the persistent roots stay (only a token carrying a root's
           // capability SID writes there, and only a command whose sandbox names the root gets it).
-          await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid, holderPid: process.pid }), { timeoutMs: 120_000 });
+          await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
         }
       } finally {
         lease.release();
