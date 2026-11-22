@@ -40,7 +40,7 @@ export interface ModelsListDeps {
   /** The user's default model (§6.1), a qualified catalog id. */
   defaultModel?(): string | undefined;
   /** What a session's runtime takes (lanes D and K); without it every session takes the catalog. */
-  sessionModels?(session: string): SessionModels | undefined;
+  sessionModels?(session: string): SessionModels | undefined | Promise<SessionModels | undefined>;
   /** Test seam: the catalog. */
   catalog?: () => WinterCatalog;
 }
@@ -132,7 +132,7 @@ export async function listModels(deps: ModelsListDeps, params: { session?: strin
     ...(def !== undefined && def.length > 0 && def.length <= 200 ? { default: def } : {}),
   });
   if (params.session !== undefined && deps.sessionModels !== undefined) {
-    const takes = deps.sessionModels(params.session);
+    const takes = await deps.sessionModels(params.session);
     if (takes === undefined) throw new ContractError("not_found", `no session ${params.session}`);
     if (takes.kind === "own") return withDefault(takes.models);
   }

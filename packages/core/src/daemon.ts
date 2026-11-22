@@ -72,6 +72,8 @@ import { ProgramKeyTable } from "./surfaces/program-keys";
 import { cardPressGate, routeBrokerCards } from "./surfaces/routing";
 import { programKeyMethods } from "./surfaces/rpc";
 import { lateAgentMethods } from "./agents/rpc";
+import { AcpAgentBackend } from "./agents/backend";
+import { agentSessionListing } from "./agents/model-list";
 import { EngineAgentStartOptions, FileRecentStore } from "./agents/start-options";
 import { BackendLooks } from "./agents/backend-look";
 import { EngineBackendIcons } from "./agents/backend-icons";
@@ -3580,6 +3582,14 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods({
     signedIn: signedInNow,
     defaultModel: () => liveModel?.() || undefined,
+    // An agent session's own models (lane MS): what its agent reported, else the agent's list as known; any other
+    // session takes the catalog, as before.
+    sessionModels: async (id) => {
+      const info = daemonParts?.agents?.manager.sessionOptions(id);
+      const lists = daemonParts?.agents?.lists;
+      if (info === undefined || lists === undefined || !(info.backend instanceof AcpAgentBackend)) return { kind: "catalog" };
+      return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists) };
+    },
   })));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
   if (settings) Object.assign(mossLaneHandlers, laneMethodHandlers(setupMethods(setup)));
@@ -3722,7 +3732,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   const startOptions = new EngineAgentStartOptions({
     source: (id) => {
       const b = daemonParts?.agents?.backends().find((x) => x.id === id);
-      return b === undefined || b.userStartable === false ? undefined : id === MOSS_CODE_ID ? { from: "catalog" } : { from: "unknown" };
+      return b === undefined || b.userStartable === false ? undefined : id === MOSS_CODE_ID ? { from: "catalog" } : { from: "listed" };
+    },
+    // An ACP agent's own models (lane MS): its plugin's declared list, else what a session of it reported.
+    listed: async (id) => {
+      const b = daemonParts?.agents?.backends().find((x) => x.id === id);
+      const got = b === undefined ? undefined : await daemonParts?.agents?.lists.get(b);
+      return got === undefined ? undefined : { source: got.source, models: got.models };
     },
     catalog: async () => {
       const models = catalogModelListings(activeCatalog(), await signedInNow()).filter((m) => m.signedIn).slice(0, 1_000)

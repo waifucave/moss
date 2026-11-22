@@ -13,14 +13,17 @@
 //     home finds no such file at all.
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { RECENT_FOLDERS_MAX, RecentStart, type AgentBackendOptions, type BackendModelOption } from "@waifucave/moss-protocol";
+import { RECENT_BACKENDS_MAX, RECENT_FOLDERS_MAX, RecentStart, type AgentBackendOptions, type BackendModelOption } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import type { AgentStartOptions, PersonStart } from "../contracts/agent-start";
 
 /** How a backend knows its options. */
 export type BackendOptionSource =
   | { from: "catalog" }
-  | { from: "quirks" | "probe"; models: BackendModelOption[]; default?: { model?: string; effort?: string } }
+  /** An ACP agent: the list its plugin declares (its own command, or one file of its folder), else what a session of it
+   *  reported (`EngineStartOptionsDeps.listed`); unknown while neither is known. */
+  | { from: "listed" }
+  | { from: "quirks" | "probe" | "command" | "file" | "session"; models: BackendModelOption[]; default?: { model?: string; effort?: string } }
   | { from: "unknown" };
 
 /** Where the person's last start is kept. */
@@ -66,6 +69,8 @@ export interface EngineStartOptionsDeps {
   /** The models a person can run now and their default, read at each ask (the catalog and the setup state move). */
   catalog(): Promise<{ models: BackendModelOption[]; default?: { model: string; effort?: string } }> | { models: BackendModelOption[]; default?: { model: string; effort?: string } };
   store: RecentStore;
+  /** What an ACP agent's list says now: where it came from and its models (`BackendModelLists.get`); none: not known. */
+  listed?(backend: string): Promise<{ source: "command" | "file" | "session"; models: BackendModelOption[] } | undefined>;
 }
 
 export class EngineAgentStartOptions implements AgentStartOptions {
@@ -80,6 +85,10 @@ export class EngineAgentStartOptions implements AgentStartOptions {
       const c = await this.deps.catalog();
       return { backend, known: true, source: "catalog", models: c.models, ...(c.default ? { default: c.default } : {}) };
     }
+    if (src.from === "listed") {
+      const l = await this.deps.listed?.(backend).catch(() => undefined);
+      return l === undefined ? { backend, known: false, source: "unknown", models: [] } : { backend, known: true, source: l.source, models: l.models };
+    }
     if (src.from === "unknown") return { backend, known: false, source: "unknown", models: [] };
     return { backend, known: true, source: src.from, models: src.models, ...(src.default ? { default: src.default } : {}) };
   }
@@ -87,8 +96,15 @@ export class EngineAgentStartOptions implements AgentStartOptions {
   remember(start: PersonStart, at: number): void {
     const was = this.#load();
     const roots = [{ root: start.root, at }, ...was.roots.filter((r) => r.root !== start.root)].slice(0, RECENT_FOLDERS_MAX);
+    // Each agent's own last choice, newest first: the model the person picked for THAT agent. Only the person's starts
+    // come here, so a bot's or another session's start never moves it; a start with no model clears this agent's choice
+    // (they chose the agent's own default).
+    const byBackend = [
+      { backend: start.backend, ...(start.model !== undefined ? { model: start.model } : {}), ...(start.effort !== undefined ? { effort: start.effort } : {}) },
+      ...(was.byBackend ?? []).filter((b) => b.backend !== start.backend),
+    ].slice(0, RECENT_BACKENDS_MAX);
     const next: RecentStart = {
-      backend: start.backend, computer: start.computer, roots,
+      backend: start.backend, computer: start.computer, roots, byBackend,
       ...(start.model !== undefined ? { model: start.model } : {}), ...(start.effort !== undefined ? { effort: start.effort } : {}),
     };
     this.#recent = next;
@@ -101,7 +117,7 @@ export class EngineAgentStartOptions implements AgentStartOptions {
 
   recent(): RecentStart {
     const r = this.#load();
-    return { ...r, roots: [...r.roots] };
+    return { ...r, roots: [...r.roots], ...(r.byBackend === undefined ? {} : { byBackend: r.byBackend.map((b) => ({ ...b })) }) };
   }
 
   #load(): RecentStart {

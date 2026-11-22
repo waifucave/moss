@@ -22,6 +22,8 @@ export interface AgentDriverOptions {
   start(): Promise<AgentSession>;
   /** The prompt a turn's input becomes. */
   promptOf(input: TurnInput): Promise<{ text: string; images?: { mimeType: string; data: string }[] }>;
+  /** The agent started (each time it does): what it reported of itself, for the per-agent memory of its models. */
+  started?(session: AgentSession): void;
   /** Called once the agent's process is gone for good: revoke the token, stop watching. */
   ended?(): void;
   /** A turn failed and the agent's process was stopped, but the session stays open: revoke the token, stop watching,
@@ -118,6 +120,7 @@ export class AgentDriver implements SessionDriver {
     if (this.#session) return this.#session;
     const starting: Promise<AgentSession> = this.#opts.start().then(async (s) => {
       this.#session = s;
+      try { this.#opts.started?.(s); } catch { /* a memory that can't be written never stops a session */ }
       if (this.#pendingModel) {
         const m = this.#pendingModel;
         this.#pendingModel = undefined;
