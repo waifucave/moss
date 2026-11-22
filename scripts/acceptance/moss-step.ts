@@ -14,7 +14,7 @@
 // Kept apart from run.ts: run.ts gives it the run's helpers (`MossUnitCtx`) and records its rows.
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { instructionsEditRule, LEVELS, programCardAnswerSigningInput } from "../../packages/protocol/src/index";
 import { answerKeyStatement } from "../../packages/core/src/devices/registry";
@@ -40,7 +40,7 @@ export const MOSS_ROUTINE_PAUSE_STEP = "MOSS's side panel: Pause on MOSS's routi
 export const MOSS_ROUTINE_EDIT_STEP = "MOSS's side panel: Edit on MOSS's routine shows what it does as its file has it now (routine.get) and saves a new name, schedule and instructions to its file (routine.edit); a routine above the computer's level waits for its OK card, pressed in MOSS, and an edit to it raises the card again, pressed in MOSS";
 export const MOSS_MEMORY_STEP = "MOSS's Settings, a bot's own page: its memory folder's files listed as the engine serves them (memory.list), and a file opened shows its text as text (memory.read), read only";
 export const MOSS_ROUTINE_FAIL_STEP = "MOSS's side panel: a routine whose run fails (Run now on MOSS's routine, its model's call refused) shows in her conversation that it failed and why, marked as a failure";
-export const MOSS_DROP_STEP = "MOSS's composer: a file dropped on it is said plainly (MOSS sends pictures only, with the paperclip) and nothing is sent";
+export const MOSS_DROP_STEP = "MOSS's composer: a file dropped on it is named in the composer, Send carries it to the bot, and the bot's turn names its folder-tree path";
 export const MOSS_STATUS_STEP = "MOSS: while MOSS's turn runs her conversation shows ONE plain status line (no tool name, no argument, not a control) and her list row says the same short phrase; when the turn ends the line is gone, and no tool row or \"Used …\" line was ever drawn";
 export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a vivid colour painted under the page shows through the list column and not the conversation, in light and dark; with nothing painted the list is see-through and the conversation opaque; a message scrolled half under the conversation's bar passes beneath it, frosted; the first message and the newest keep clear of the bar; where the window has none, the list is its solid colour";
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
@@ -1070,22 +1070,31 @@ async function routineFailRow(s: UnitState): Promise<string> {
   }
 }
 
-/** A file dropped on the composer, by the browser's own drag events (DevTools' Input.dispatchDragEvent with a real file). */
+/** A file dropped on the composer, by the browser's own drag events (DevTools' Input.dispatchDragEvent with a real file): it is
+ *  named in the composer, Send carries it, and the bot's turn names its folder-tree path (a file outside the home folder is
+ *  copied into the bot's scratch: the copy has the file's bytes). */
 async function dropRow(s: UnitState): Promise<string> {
   await openBot(s, "alpha", "MOSS");
-  const file = join(s.x.root, "acceptance-drop.pdf");
-  writeFileSync(file, "%PDF-1.4 acceptance\n");
-  const before = (await s.c.request<{ events: { type: string }[] }>("bot.conversation", { id: "alpha", limit: 200 })).events.filter((e) => e.type === "user_message").length;
+  const tag = `ACCEPTANCE-DROP-${randomBytes(3).toString("hex").toUpperCase()}`;
+  const body = `%PDF-1.4 ${tag}\n`;
+  const file = join(s.x.root, `acceptance-drop-${tag}.pdf`);
+  writeFileSync(file, body);
   const page = await s.w.main();
   const at = await s.x.until("the composer's place", 10_000, () => s.w.cdp.centerOf(page, "[data-composer]"), 250);
   const data = { items: [], files: [file], dragOperationsMask: 1 };
   for (const type of ["dragEnter", "dragOver", "drop"]) await s.w.cdp.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data }, page);
-  const said = await s.w.waitFor<string>("MOSS's word on the dropped file", "document.querySelector('.composer__why')?.textContent ?? null", 15_000);
-  if (!/Files aren't supported yet/.test(said)) s.x.fail(`MOSS said "${said}"`);
-  await sleep(1_000);
-  const after = (await s.c.request<{ events: { type: string }[] }>("bot.conversation", { id: "alpha", limit: 200 })).events.filter((e) => e.type === "user_message").length;
-  if (after !== before) s.x.fail("something was sent after the drop");
-  return `a PDF dropped on the composer: "${said}"; nothing sent`;
+  await s.w.waitFor("the dropped file named in the composer", `[...document.querySelectorAll('.composer [data-attached-file]')].map((n) => n.textContent).find((t) => t.includes(${JSON.stringify(basename(file))})) ?? null`, 15_000);
+  const asked = s.x.fake.requests.length;
+  await sendInMoss(s, "MOSS", `${tag} please read the file`);
+  const turn = await s.x.until("the bot's turn naming the file", 120_000, async () => {
+    const mine = s.x.fake.requests.slice(asked) as { lastUserText: string }[];
+    return mine.find((r) => r.lastUserText.includes(tag) && r.lastUserText.includes("[File #1:"));
+  }, 500);
+  const named = /\[File #1: ([^\]]+)\]/.exec(turn.lastUserText)?.[1];
+  if (named === undefined || !named.startsWith("home/")) s.x.fail(`the turn names the file as "${named}", not a folder-tree path`);
+  const copy = join(s.x.userHome, named!.split("/").slice(2).join("/"));
+  if (!existsSync(copy) || readFileSync(copy, "utf8") !== body) s.x.fail(`the bot's copy at ${copy} is missing or differs from the dropped file`);
+  return `a PDF dropped on the composer is named there, Send carries it, and the bot's turn names ${named}, a copy with the file's bytes`;
 }
 
 /** A turn that keeps running (the fake model's ACCEPTANCE-SLOW): the conversation's one status line, then its end. */

@@ -118,6 +118,14 @@ describe("the conversation", () => {
     expect(await engine.send("kite", "Yes, go ahead", "m1")).toEqual({ ok: true });
     await until(() => got.includes("kite:Yes, go ahead"));
   });
+
+  test("files go with the words, and the engine's own sentence about a refused file is the reason shown, as it is", async () => {
+    const { engine } = await setup();
+    expect(await engine.send("kite", "see this", "m2", [], [{ path: "/Users/x/a.pdf" }])).toEqual({ ok: true });
+    const many = Array.from({ length: 11 }, (_, i) => ({ path: `/Users/x/f${i}.txt` }));
+    expect(await engine.send("kite", "too many", "m3", [], many)).toEqual({ ok: false, why: "A message can carry at most 10 files; you picked 11." });
+    expect(await engine.send("nobody", "x", "m4")).toEqual({ ok: false, why: "The engine didn't take the message." });
+  });
 });
 
 describe("a bot's own choices", () => {

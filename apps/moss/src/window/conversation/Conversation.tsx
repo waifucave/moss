@@ -240,18 +240,22 @@ export function kindOf(name: string): string {
 function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<{ id: string; name: string }[]>([]);
+  const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
   const [why, setWhy] = useState<string | undefined>(undefined);
   const [holding, setHolding] = useState(false);
   const send = async (): Promise<void> => {
     const t = text.trim();
-    if (t === "" && images.length === 0) return;
-    const r = await bridge().send(props.bot.id, t, images.map((i) => i.id));
-    if (r.ok) { setText(""); setImages([]); setWhy(undefined); } else setWhy(r.why);
+    if (t === "" && images.length === 0 && files.length === 0) return;
+    const r = await bridge().send(props.bot.id, t, images.map((i) => i.id), files.map((f) => f.id));
+    if (r.ok) { setText(""); setImages([]); setFiles([]); setWhy(undefined); } else setWhy(r.why);
   };
-  const attach = async (): Promise<void> => {
-    const got = await bridge().pickImages();
-    if (got.length > 0) setImages((now) => [...now, ...got].slice(0, 4));
+  const take = (got: { id: string; name: string; kind: "image" | "file" }[]): void => {
+    if (got.length === 0) return;
+    setImages((now) => [...now, ...got.filter((g) => g.kind === "image")].slice(0, 4));
+    setFiles((now) => [...now, ...got.filter((g) => g.kind === "file")].slice(0, 10));
+    setWhy(undefined);
   };
+  const attach = async (): Promise<void> => take(await bridge().pickAttachments());
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -263,19 +267,18 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
     setHolding(false);
     bridge().talk("up");
   };
-  // Something dropped on the composer: MOSS takes pictures only, through the attach button (main's own dialog, so their
-  // bytes never pass through the window); a dropped file or picture is said so, plainly, and nothing is sent.
+  // Something dropped on the composer: the preload reads each file's path, main keeps it (the window holds names only), and the
+  // engine carries the file to the bot (a picture goes as a picture). A refusal is the engine's own sentence, shown as it is.
   const onDrop = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
-    const items = [...e.dataTransfer.files];
-    if (items.length === 0) return;
-    const pictures = items.every((f) => /^image\/(png|jpeg|webp)$/.test(f.type));
-    setWhy(pictures ? "Dropping isn't supported yet: attach pictures with the + button." : "Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the + button.");
+    const dropped = [...e.dataTransfer.files];
+    if (dropped.length === 0) return;
+    void bridge().dropAttachments(dropped).then(take);
   };
   return (
     <div className="composer" data-composer onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       {why !== undefined ? <p className="composer__why" role="status">{why}</p> : null}
-      {images.length > 0 ? (
+      {images.length > 0 || files.length > 0 ? (
         <div className="composer__files">
           {images.map((i) => (
             <span key={i.id} className="file-chip">
@@ -283,15 +286,21 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
               <button type="button" aria-label={`Remove ${i.name}`} onClick={() => setImages((now) => now.filter((x) => x.id !== i.id))}>×</button>
             </span>
           ))}
+          {files.map((f) => (
+            <span key={f.id} className="file-chip" data-attached-file>
+              {f.name}
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((now) => now.filter((x) => x.id !== f.id))}>×</button>
+            </span>
+          ))}
         </div>
       ) : null}
       <div className="composer__box">
-        <button type="button" className="icon-button" aria-label="Attach pictures" title="Attach pictures" onClick={() => void attach()}>
+        <button type="button" className="icon-button" aria-label="Attach files" title="Attach files" onClick={() => void attach()}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
         </button>
         <textarea rows={1} placeholder={`Message ${props.bot.name}`} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} aria-label={`Message ${props.bot.name}`} />
         {/* One round black button at the right: the mic while there is nothing to send, Send once there is (a held mic stays). */}
-        {text.trim() === "" && images.length === 0 || holding ? (
+        {text.trim() === "" && images.length === 0 && files.length === 0 || holding ? (
         <button
           type="button" className={`icon-button mic${holding ? " is-on" : ""}`} aria-label="Hold to talk" aria-pressed={holding}
           // Without a voice plugin's talk command the button stays, dimmed, and says why (voice.ts talkCommandOf).

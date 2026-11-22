@@ -2,7 +2,7 @@
 // (`moss-app://app/`, top frame only) the fixed bridge of shared/view.ts `MossBridge`, and a sealed card's frame
 // (`moss-sealed://card/…`) its own channel, and nothing to any other document. There is no generic call: the page can ask
 // only for what the bridge lists, and nothing it can reach answers a card or signs.
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { MossBridge, MossView, Message, PictureFrameView } from "../shared/view";
 
 const where = location.protocol;
@@ -51,8 +51,9 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
     onShow: (fn) => listen<[{ bot: string }]>("moss:show", fn),
     conversation: (bot, before) => ipcRenderer.invoke("moss:conversation", { bot, ...(before !== undefined ? { before } : {}) }),
     onMessage: (fn) => listen<[string, Message]>("moss:message", fn),
-    send: (bot, text, images) => ipcRenderer.invoke("moss:send", { bot, text, ...(images !== undefined ? { images } : {}) }),
-    pickImages: () => ipcRenderer.invoke("moss:pick-images"),
+    send: (bot, text, images, files) => ipcRenderer.invoke("moss:send", { bot, text, ...(images !== undefined ? { images } : {}), ...(files !== undefined ? { files } : {}) }),
+    pickAttachments: () => ipcRenderer.invoke("moss:pick-attachments"),
+    dropAttachments: (dropped) => ipcRenderer.invoke("moss:drop-attachments", { paths: dropped.map((f) => { try { return webUtils.getPathForFile(f); } catch { return ""; } }).filter((p) => p !== "") }),
     createBot: (name, model) => ipcRenderer.invoke("moss:create-bot", { name, ...(model !== undefined ? { model } : {}) }),
     markRead: (bot) => ipcRenderer.send("moss:mark-read", { bot }),
     routines: (bot) => ipcRenderer.invoke("moss:routines", { bot }),

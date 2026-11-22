@@ -404,6 +404,9 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
         const id = to?.bot;
         const v = id !== undefined ? bots.get(id) : undefined;
         if (v === undefined) throw new RpcError(-32004, "no such bot");
+        // The real engine's refusal of a file: -32602 with its own plain sentence and `data.code` (spec §6, `file_reference_invalid`).
+        const files = params.files as { path: string }[] | undefined;
+        if (files !== undefined && files.length > 10) throw new RpcError(-32602, `A message can carry at most 10 files; you picked ${files.length}.`, { code: "file_reference_invalid" });
         const events = talk.get(v.id) ?? [];
         const e = { type: "user_message", seq: events.length + 1, sessionId: v.mainSession, ts: Date.now(), threadId: "main", text: String(params.text), clientName: "MOSS" };
         events.push(e);

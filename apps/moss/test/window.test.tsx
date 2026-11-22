@@ -38,7 +38,7 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
   const none = () => () => {};
   return {
     view: async () => v, onView: (fn) => { viewTo.push(fn); return () => {}; }, showing: () => {}, pendingShow: async () => pendingBot, onShow: (fn) => { showTo.push(fn); return () => {}; }, conversation: async () => page, onMessage: (fn) => { messageTo.push(fn); return () => {}; },
-    send: async () => ({ ok: true }), pickImages: async () => [], createBot: async () => ({ ok: false, why: "no" }), markRead: () => {},
+    send: async () => ({ ok: true }), pickAttachments: async () => [], dropAttachments: async () => [], createBot: async () => ({ ok: false, why: "no" }), markRead: () => {},
     routines: async () => [], routineInstructions: async () => ({ ok: false, why: "no" }), runRoutine: async () => ({ ok: false, why: "no" }),
     editRoutine: async () => ({ ok: false, why: "no" }), memory: async () => ({ waiting: true }), memoryFile: async () => ({ ok: false, why: "no" }),
     pictures: async () => [], openPicture: async () => false, closePicture: () => {}, onPictureFrame: none,
@@ -171,17 +171,28 @@ describe("MOSS's window", () => {
 });
 
 describe("the composer and dropped things", () => {
-  test("a file dropped on it is said plainly (pictures only, with the + button), and nothing is sent", async () => {
+  // 2026-11-22: was "a file dropped on it is said plainly (pictures only, with the + button), and nothing is sent": a dropped file
+  // is now carried. Its path is read by the preload (webUtils), main keeps it, and the window holds only the name and an id.
+  test("a file dropped on it is named in the composer and Send carries its id; the engine's refusal is shown as it is", async () => {
     const { fireEvent } = await import("@testing-library/react");
     const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });
     const composer = r.container.querySelector("[data-composer]")!;
-    const sent: unknown[] = [];
-    (window as unknown as { moss: MossBridge }).moss.send = async (...a: unknown[]) => { sent.push(a); return { ok: true }; };
+    const bridge = (window as unknown as { moss: MossBridge }).moss;
+    const dropped: File[][] = [];
+    bridge.dropAttachments = async (files) => (dropped.push([...files]), [{ id: "f1", name: "report.pdf", kind: "file" }]);
+    const sent: unknown[][] = [];
+    let answer: { ok: true } | { ok: false; why: string } = { ok: false, why: "“big.bin” is 51 MB: a file can be at most 50 MB." };
+    bridge.send = async (...a: unknown[]) => { sent.push(a); return answer; };
     await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "report.pdf", { type: "application/pdf" })] } }); });
-    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the + button.");
-    await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "a.png", { type: "image/png" })] } }); });
-    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Dropping isn't supported yet: attach pictures with the + button.");
-    expect(sent).toEqual([]);
+    expect(dropped).toHaveLength(1);
+    expect(r.container.querySelector("[data-attached-file]")?.textContent).toContain("report.pdf");
+    await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
+    expect(sent).toEqual([["juniper", "", [], ["f1"]]]);
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("“big.bin” is 51 MB: a file can be at most 50 MB.");
+    expect(r.container.querySelector("[data-attached-file]")).not.toBeNull(); // kept: the person can remove it and try again
+    answer = { ok: true };
+    await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
+    expect(r.container.querySelector("[data-attached-file]")).toBeNull();
     r.unmount();
   });
 

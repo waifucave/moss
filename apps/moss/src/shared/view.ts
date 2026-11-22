@@ -261,12 +261,16 @@ export interface MossBridge {
   onShow(fn: (what: { bot: string }) => void): () => void;
   conversation(bot: string, before?: number): Promise<ConversationPage | { waiting: true }>;
   onMessage(fn: (bot: string, message: Message) => void): () => void;
-  /** Sends the person's words to a bot, with the pictures they picked (`pickImages`' ids); main takes it only right
-   *  after their own key press or click. */
-  send(bot: string, text: string, images?: readonly string[]): Promise<{ ok: true } | { ok: false; why: string }>;
-  /** The person picks pictures to attach (main's own file dialog; PNG, JPEG or WebP, at most 4, 10 MB each): their names
-   *  and the ids `send` takes. Never their bytes in the window. */
-  pickImages(): Promise<{ id: string; name: string }[]>;
+  /** Sends the person's words to a bot, with the pictures and the files they picked (`pickAttachments`' and `dropAttachments`'
+   *  ids, by kind); main takes it only right after their own key press or click. The engine's refusal of a file (too many,
+   *  too big, a folder) comes back as its own plain sentence in `why`. */
+  send(bot: string, text: string, images?: readonly string[], files?: readonly string[]): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** The person picks what to attach (main's own file dialog, any file): a PNG, JPEG or WebP up to 10 MB is a picture (at most
+   *  4), anything else a file (at most 10); their names and the ids `send` takes. Never their bytes or paths in the window. */
+  pickAttachments(): Promise<{ id: string; name: string; kind: "image" | "file" }[]>;
+  /** Files dropped on the composer: the preload reads each one's path (`webUtils.getPathForFile`), main takes them as the
+   *  dialog's. The window gets names and ids, never a path. */
+  dropAttachments(files: readonly File[]): Promise<{ id: string; name: string; kind: "image" | "file" }[]>;
   /** Makes a bot with the model the person chose in the + flow (one of `models`), so its first turn has a credential. */
   createBot(name: string, model?: string): Promise<{ ok: true; id: string } | { ok: false; why: string }>;
   markRead(bot: string): void;
