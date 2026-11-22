@@ -18,6 +18,10 @@ export interface McpAppFixture {
   seen: string[];
   /** Times the app-only tool ran. */
   refreshes: () => number;
+  /** Opens the gate the page waits at before it asks for any tool (so a card appears only when the run is watching for it). */
+  openGate: () => void;
+  /** When (ms since the epoch, this process) each run of the app-only tool began. */
+  refreshTimes: () => number[];
   /** What the page reported, in order. */
   reports: () => string[];
   /** Requests to `/probe` (what the page's own network attempts would reach). */
@@ -48,6 +52,8 @@ const out = (d) => (d.error ? "error:" + d.error.message : JSON.stringify(d.resu
   const file = await call("resources/read", { uri: "file:///etc/hosts" });
   await say("nopress message=" + out(msg) + " link=" + out(link) + " file=" + out(file));
   say("isolation parent=" + parentRead + " nav=" + nav + " net=" + net + " file=" + fileRead + " storage=" + store);
+  // Nothing below asks for a tool until the run opens the gate.
+  for (;;) { const g = await call("resources/read", { uri: "ui://acc/gate" }); if (g.result && g.result.contents && g.result.contents[0].text === "open") break; await new Promise((r) => setTimeout(r, 250)); }
   say("other=" + out(await call("tools/call", { name: "Other", arguments: {} })));
   say("refresh1=" + out(await call("tools/call", { name: "Refresh", arguments: { n: 1 } })));
   say("refresh2=" + out(await call("tools/call", { name: "Refresh", arguments: { n: 2 } })));
@@ -58,6 +64,8 @@ const out = (d) => (d.error ? "error:" + d.error.message : JSON.stringify(d.resu
 export function mcpAppFixture(opts: { name: string; tools: "app" | "other" }): McpAppFixture {
   const seen: string[] = [];
   const reports: string[] = [];
+  const refreshTimes: number[] = [];
+  let gate = false;
   let refreshes = 0;
   let probes = 0;
   const session = `acc-${crypto.randomUUID()}`;
@@ -89,6 +97,9 @@ export function mcpAppFixture(opts: { name: string; tools: "app" | "other" }): M
       }
       if (m.method === "resources/read") {
         const uri = m.params?.uri ?? "";
+        // The gate: the page polls it and asks for no tool until the run opens it (the run's own turn helper answers any card of
+        // the session that appears while it waits for a turn to end, so a page's card must not appear before the run looks for it).
+        if (uri === "ui://acc/gate") return ok({ contents: [{ uri, mimeType: "text/plain", text: gate ? "open" : "closed" }] });
         if (uri.startsWith("ui://acc/report/")) {
           try { reports.push(decodeURIComponent(uri.slice("ui://acc/report/".length))); } catch { /* ignored */ }
           return ok({ contents: [{ uri, mimeType: "text/plain", text: "noted" }] });
@@ -98,7 +109,7 @@ export function mcpAppFixture(opts: { name: string; tools: "app" | "other" }): M
       }
       if (m.method === "tools/call") {
         const name = m.params?.name;
-        if (name === "Refresh") refreshes++;
+        if (name === "Refresh") { refreshes++; refreshTimes.push(Date.now()); }
         const text = name === "Chart" ? MCP_APP_MARK : name === "Refresh" ? "acc-refresh-done" : name === "Other" ? "acc-other-ran" : "acc-ran";
         return ok({ content: [{ type: "text", text }] });
       }
@@ -106,5 +117,5 @@ export function mcpAppFixture(opts: { name: string; tools: "app" | "other" }): M
     },
   });
   port = server.port ?? 0;
-  return { url: `http://localhost:${port}/mcp`, port, seen, refreshes: () => refreshes, reports: () => reports, probes: () => probes, stop: () => server.stop(true) };
+  return { url: `http://localhost:${port}/mcp`, port, seen, refreshes: () => refreshes, reports: () => reports, openGate: () => { gate = true; }, refreshTimes: () => refreshTimes, probes: () => probes, stop: () => server.stop(true) };
 }
