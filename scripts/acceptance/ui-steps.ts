@@ -2247,7 +2247,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // One frame for each place a part appears (spec §14.2 item 77): the add-on is drawn under EACH message of the conversation, each in a
       // frame of its own (its own mount and address), given THAT message's own item, and no frame of the plugin reads "forbidden" (a second
       // frame on one address was served nothing, and the one page that drew was given the last message's item).
-      const messageCount = async () => Number((await inTree<number>(cdp, "document.querySelectorAll('.cl-conv__extra').length"))?.value ?? 0);
+      // Counted in every tree document and summed (inTree answers with the FIRST document whose value is not false, and 0 is not false).
+      const messageCount = async () => {
+        let n = 0;
+        for (const d of await treeDocs(cdp)) n += Number(await cdp.evaluate(d.session, "document.querySelectorAll('.cl-conv__extra').length").catch(() => 0)) || 0;
+        return n;
+      };
       // At least three messages (a session of its own has the turn's message and its answer): one more turn when there are fewer.
       if ((await messageCount()) < 3) {
         // The same kind of turn as the first (the fake provider answers it with the plugin's read-only tool and then its words).
