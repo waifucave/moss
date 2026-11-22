@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createThrowawaySecretStore, throwawaySecretStoreAvailable } from "@waifucave/moss-test-harness";
-import { KeychainSecretStore, defaultSecretsBackend, osSecretsBackend } from "../../src/auth/secret-store";
+import { KeychainSecretStore, daemonSecretStore, osSecretsBackend } from "../../src/auth/secret-store";
 import { daemonMcpOAuthStore } from "../../src/runtime-sdk/mcp-oauth-store";
 import { TokenAuthority, TOKEN_NAMES } from "../../src/auth/tokens";
 import { ContractError } from "../../src/contracts/common";
@@ -337,14 +337,16 @@ describe.skipIf(realStore === "skip")("the real OS store holds the key", () => {
     const service = store.service, h = home();
     const osStore = osSecretsBackend(); // what the daemon's own raw store is: the real one, isolated to this run's bus or service
     try {
-      // The very expressions the daemon makes (daemon.ts), with a throwaway home and service, `file: true` only so a test process takes them.
-      const secrets = new KeychainSecretStore(defaultSecretsBackend({ home: h, service, file: true }), service);
+      // The function `daemon.ts` calls for its store, with a throwaway home and service; `file: true` is the test-only door that
+      // lets a test process take the Windows and Linux path (home and service must both be named; the key still goes through
+      // the isolated OS store).
+      const secrets = daemonSecretStore({ home: h, service, file: true });
       const minted = await new TokenAuthority(secrets).ensureTokens();
       await secrets.set("anthropic:default", VALUE);
       const oauth = daemonMcpOAuthStore(service, h, { file: true });
       await oauth.write("mcp-oauth:srv", JSON.stringify({ access_token: VALUE }));
       expect(JSON.parse((await oauth.read("mcp-oauth:srv"))!).access_token).toBe(VALUE);
-      expect(await new KeychainSecretStore(defaultSecretsBackend({ home: h, service, file: true }), service).get("anthropic:default")).toBe(VALUE);
+      expect(await daemonSecretStore({ home: h, service, file: true }).get("anthropic:default")).toBe(VALUE);
       expect(await new TokenAuthority(secrets).ensureTokens()).toEqual(minted); // the same tokens, not new ones
 
       // The real OS store holds the file's key and nothing else of MOSS's.

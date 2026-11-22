@@ -18,7 +18,6 @@ import { SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_MADE_SEGMENTS } fro
 const home = () => mkdtempSync(join(tmpdir(), "moss-sfd-"));
 const SVC = "svc";
 const VALUE = ["sk", "dur", Math.random().toString(36).slice(2)].join("-");
-const win = process.platform === "win32";
 const quiet = () => {};
 
 const fileOf = (h: string) => join(h, SECRETS_FILE_NAME);
@@ -54,9 +53,8 @@ describe("a write is on the disk before it counts as saved", () => {
       },
     });
     expect(steps.slice(0, 4)).toEqual(["created", "locked", "written", "file-flushed"]);
-    // Windows: MoveFileExW with MOVEFILE_WRITE_THROUGH (no folder can be flushed there); elsewhere a rename, then fsync of the folder.
-    expect(steps[4]).toBe(win ? "renamed:write-through" : "renamed");
-    expect(steps.slice(5)).toEqual(["folder-flushed"]);
+    // Linux and macOS: fsync of the folder after the rename; Windows: FlushFileBuffers on the renamed file (no folder can be flushed there).
+    expect(steps.slice(4)).toEqual(["renamed", "rename-flushed"]);
     // The half-made copy lived in the run folder, never beside the file under a name no deny list knows.
     expect(tmpWhileHalfMade.length).toBe(1);
     expect(readdirSync(h).filter((f) => f.endsWith(".tmp"))).toEqual([]);
@@ -70,7 +68,7 @@ describe("a write is on the disk before it counts as saved", () => {
     const steps: string[] = [];
     await valuesOn(h, keys, (n) => steps.push(n)).set("a", "2");
     // Two files this time (the previous copy, then the new file); the note already exists.
-    const one = ["created", "locked", "written", "file-flushed", "renamed", "folder-flushed"];
+    const one = ["created", "locked", "written", "file-flushed", "renamed", "rename-flushed"];
     expect(steps).toEqual([...one, ...one]);
     expect(existsSync(bakOf(h))).toBe(true);
     expect(existsSync(madeOf(h))).toBe(true);
@@ -117,7 +115,7 @@ describe("a file a power cut left short, empty or changed is not the end of the 
     const whole = readFileSync(fileOf(h));
     const cases: [string, Buffer][] = [["empty", Buffer.alloc(0)]];
     for (const len of [1, 2, 14, 30, 45, whole.length - 1]) cases.push([`cut at ${len}`, whole.subarray(0, len)]);
-    for (const at of [0, 5, 20, 33, whole.length - 1]) { const b = Buffer.from(whole); b[at] = b[at]! ^ 0xff; cases.push([`byte ${at} changed`, b]); }
+    for (const at of [0, 1, 5, 20, 33, whole.length - 1]) { const b = Buffer.from(whole); b[at] = b[at]! ^ 0xff; cases.push([`byte ${at} changed`, b]); }
     for (const [name, bytes] of cases) {
       writeFileSync(fileOf(h), bytes);
       const lines: string[] = [];
@@ -129,6 +127,18 @@ describe("a file a power cut left short, empty or changed is not the end of the 
     // The next write puts a whole file back, and the previous copy is not the damaged one.
     await valuesOn(h, keys).set(itemKey(SVC, "harness-token"), "tok-3");
     expect(await valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).toBe("tok-3");
+  });
+
+  test("a header byte naming no key source is damage and is read from the previous copy; one naming another real source is the downgrade rule: locked", async () => {
+    const { h, keys } = await seeded();
+    const whole = readFileSync(fileOf(h));
+    expect(whole[1]).toBe(2); // secret-service
+    const unknown = Buffer.from(whole); unknown[1] = 0x7f;
+    writeFileSync(fileOf(h), unknown);
+    expect(await valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).toBe("tok-1");
+    const other = Buffer.from(whole); other[1] = 4; // key-file: a file claiming another (weaker) source is not "damaged"
+    writeFileSync(fileOf(h), other);
+    await expect(valuesOn(h, keys).get(itemKey(SVC, "harness-token"))).rejects.toMatchObject({ code: "locked" });
   });
 
   test("damaged with no previous copy is an error, never an empty store", async () => {
@@ -215,7 +225,7 @@ describe("the one-time move: order, crashes, and the pairing tokens", () => {
     expect(await moveOsStoreItems({ values, from, service: SVC, names: ["a", "b"], log: quiet })).toBe("moved");
     const firstDelete = events.findIndex((e) => e.startsWith("os-delete:"));
     expect(firstDelete).toBeGreaterThan(0);
-    expect(events[firstDelete - 1]).toBe("file:folder-flushed"); // the file's rename was flushed right before
+    expect(events[firstDelete - 1]).toBe("file:rename-flushed"); // the file's rename was flushed right before
     expect(events.slice(0, firstDelete).filter((e) => e === "file:file-flushed").length).toBeGreaterThanOrEqual(1);
     // One write of the file for both items (one hold), then the two deletes, then the note's own write.
     expect(events.filter((e) => e.startsWith("os-delete:")).length).toBe(2);
@@ -308,6 +318,22 @@ describe("the one-time move: order, crashes, and the pairing tokens", () => {
     const next = open();
     const tokens = await new TokenAuthority(new KeychainSecretStore(next, `${SVC}-silent`)).ensureTokens();
     expect(Object.values(tokens)).toEqual(expect.arrayContaining(["old-1", "old-2", "old-3"]));
+  });
+
+  test("a name the move may still find is not deleted while the OS store is silent: it would come back into the file at the next start", async () => {
+    const h = home(), keys = memoryVault();
+    let answers = false;
+    const { backend: real, m } = osStore({ "remote-token": "still-in-keyring" });
+    const from: SecretsBackend = { ...real, get: (async (a: { service: string; name: string }) => { if (!answers) throw new Error("the collection is locked"); return real.get(a); }) as SecretsBackend["get"] };
+    const open = () => fileSecretsBackend({ home: h, service: `${SVC}-del`, os: "linux", vault: () => keys, moveFrom: from, names: () => ["remote-token", "admin-token"], log: quiet });
+    const b = open();
+    await expect(b.delete({ service: `${SVC}-del`, name: "remote-token" })).rejects.toMatchObject({ code: "locked" });
+    // A name outside the move's list is deleted as usual, and a set still works.
+    await b.set({ service: `${SVC}-del`, name: "exa-api-key", value: "k" });
+    expect(await b.delete({ service: `${SVC}-del`, name: "exa-api-key" })).toBe(true);
+    answers = true;
+    expect(await open().get({ service: `${SVC}-del`, name: "remote-token" })).toBe("still-in-keyring");
+    expect(m.size).toBe(0);
   });
 
   test("no Secret Service at all (a headless computer): nothing to move, and nothing waits", async () => {
