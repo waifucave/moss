@@ -411,6 +411,9 @@
               "catalog",
               "quirks",
               "probe",
+              "command",
+              "file",
+              "session",
               "unknown"
             ]
           },
@@ -563,6 +566,34 @@
               "required": [
                 "root",
                 "at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "byBackend": {
+            "maxItems": 32,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "backend": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "effort": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "backend"
               ],
               "additionalProperties": false
             }
