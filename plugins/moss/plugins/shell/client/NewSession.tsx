@@ -33,6 +33,34 @@ export function agentsHere(backends: readonly { id: string; name: unknown; userS
   return list.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
+/** `agent.options`'s answer as this page reads it (an agent whose models are known before a session exists). */
+export interface StartOptions {
+  known?: boolean;
+  source?: string;
+  models?: { id: string; name: unknown; efforts?: string[]; defaultEffort?: string }[];
+  default?: { model?: string; effort?: string };
+}
+export interface RecentChoices {
+  backend?: string;
+  model?: string;
+  effort?: string;
+  byBackend?: { backend: string; model?: string; effort?: string }[];
+}
+
+/** The model and effort chosen at first for `agent`: the last the person chose for THAT agent while its list still has it,
+ *  else MOSS's coding agent's default (the catalog), else none: an agent with a list of its own starts on its own default
+ *  and nothing is sent. */
+export function startChoice(agent: string, options: StartOptions | undefined, recent: RecentChoices | undefined): { model?: string; effort?: string } {
+  const models = options?.known === true ? options.models ?? [] : [];
+  const mine = recent?.byBackend?.find((b) => b.backend === agent) ?? (recent?.backend === agent ? recent : undefined);
+  const offered = (id: string | undefined) => models.find((m) => m.id === id);
+  const effortOf = (m: NonNullable<ReturnType<typeof offered>>, asked: string | undefined) => (asked !== undefined && (m.efforts ?? []).includes(asked) ? asked : m.defaultEffort);
+  const from = offered(mine?.model) ?? offered(options?.default?.model) ?? (options?.source === "catalog" ? models[0] : undefined);
+  if (from === undefined) return {};
+  const effort = effortOf(from, from.id === mine?.model ? mine?.effort : options?.default?.effort);
+  return { model: from.id, ...(effort !== undefined ? { effort } : {}) };
+}
+
 /** `layout`: "page" fills the window's main column under the title bar and scrolls; "panel" lays out in whatever container it is put in (a panel or a dialog about 420 to 560 px wide), assuming nothing about the window. */
 export function NewSession({ onStarted, layout = "page" }: { onStarted: (session: string) => void; layout?: "page" | "panel" }) {
   const core = useCore();
@@ -42,6 +70,9 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
   const [error, setError] = useState<string | undefined>();
   const [starting, setStarting] = useState(false);
   const [recent, setRecent] = useState<{ token: string; name: string }[]>([]);
+  const [last, setLast] = useState<RecentChoices | undefined>();
+  const [options, setOptions] = useState<Record<string, StartOptions | undefined>>({});
+  const [choice, setChoice] = useState<{ model?: string; effort?: string }>({});
 
   useEffect(() => {
     let live = true;
@@ -55,6 +86,7 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
       const here = ((c as { computers?: { name: string; link?: string }[] } | undefined)?.computers ?? []).find((x) => x.link === "self")?.name;
       const list = agentsHere(((b as { backends?: never[] } | undefined)?.backends ?? []), here);
       setAgents(list);
+      setLast(last as RecentChoices | undefined);
       const lastAgent = (last as { backend?: string } | undefined)?.backend;
       setAgent((was) => was ?? list.find((a) => a.installed && a.id === lastAgent)?.id ?? list.find((a) => a.installed)?.id);
       if (((last as { folders?: number } | undefined)?.folders ?? 0) > 0) {
@@ -64,6 +96,21 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
     });
     return () => { live = false; };
   }, [core]);
+
+  // The agent's models, where it has a list before a session exists (`agent.options`); a refusal is just "none known".
+  useEffect(() => {
+    if (agent === undefined || Object.hasOwn(options, agent)) return;
+    let live = true;
+    void Promise.resolve(core?.call("agent.options", { backend: agent })).then(
+      (o) => live && setOptions((was) => ({ ...was, [agent]: o as StartOptions })),
+      () => live && setOptions((was) => ({ ...was, [agent]: undefined })),
+    );
+    return () => { live = false; };
+  }, [core, agent]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The pick follows the agent (and what is known of it), preselected as `startChoice` says.
+  useEffect(() => {
+    if (agent !== undefined && Object.hasOwn(options, agent)) setChoice(startChoice(agent, options[agent], last));
+  }, [agent, options, last]);
 
   const pickFolder = async () => {
     setError(undefined);
@@ -80,7 +127,7 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
     setError(undefined);
     setStarting(true);
     try {
-      const got = (await core?.call("agent.start", { backend: agent, root: folder.token })) as { session?: string } | undefined;
+      const got = (await core?.call("agent.start", { backend: agent, root: folder.token, ...(choice.model !== undefined ? { model: choice.model } : {}), ...(choice.effort !== undefined ? { effort: choice.effort } : {}) })) as { session?: string } | undefined;
       if (got?.session !== undefined) onStarted(got.session);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -96,6 +143,7 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
         <h1 className="cl-new-session__title">{S.newSession}</h1>
         <p className="cl-new-session__detail">{S.newSessionDetail}</p>
         <AgentList agents={agents} value={agent} onChange={setAgent} />
+        {agent !== undefined && <ModelRow agent={agents?.find((a) => a.id === agent)?.name ?? agent} options={options[agent]} value={choice} onChange={setChoice} />}
         <FolderRow folder={folder} onPick={() => void pickFolder()} recent={recent} onRecent={setFolder} />
         <div className="cl-new-session__actions">
           <StartButton disabled={!ready} onStart={() => void start()} />
@@ -123,6 +171,36 @@ export function AgentList({ agents, value, onChange }: { agents: readonly NewSes
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The model and effort step, for an agent whose models are known before a session exists: a list to pick from (the agent's
+ *  own default first, unless it is MOSS's coding agent), and the efforts of the chosen model. Nothing is shown otherwise. */
+export function ModelRow({ agent, options, value, onChange }: { agent: string; options: StartOptions | undefined; value: { model?: string; effort?: string }; onChange: (v: { model?: string; effort?: string }) => void }) {
+  const models = options?.known === true ? options.models ?? [] : [];
+  if (models.length === 0) return null;
+  const efforts = models.find((m) => m.id === value.model)?.efforts ?? [];
+  return (
+    <div className="cl-new-session__section">
+      <h2 className="cl-new-session__label" id="cl-new-session-model">{S.pickModel}</h2>
+      <div className="cl-new-session__folder">
+        <select className="cl-new-session__select" aria-labelledby="cl-new-session-model" value={value.model ?? ""} onChange={(e) => {
+          const m = models.find((x) => x.id === e.target.value);
+          if (m === undefined) return onChange({});
+          const keep = value.effort !== undefined && (m.efforts ?? []).includes(value.effort) ? value.effort : m.defaultEffort;
+          onChange({ model: m.id, ...(keep !== undefined ? { effort: keep } : {}) });
+        }}>
+          {options?.source !== "catalog" && <option value="">{S.agentsOwnDefault(agent)}</option>}
+          {models.map((m) => <option key={m.id} value={m.id}>{plain(m.name as never) || m.id}</option>)}
+        </select>
+        {efforts.length > 0 && (
+          <select className="cl-new-session__select" aria-label={S.pickEffort} value={value.effort ?? ""} onChange={(e) => onChange({ ...(value.model !== undefined ? { model: value.model } : {}), ...(e.target.value !== "" ? { effort: e.target.value } : {}) })}>
+            <option value="">{S.defaultEffort}</option>
+            {efforts.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        )}
+      </div>
     </div>
   );
 }

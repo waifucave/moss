@@ -231,8 +231,7 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
     admissions: c.bundled ? ADMISSIONS : {},
     ...(c.bundled && c.id in place ? { place: place[c.id as keyof typeof place] } : {}),
     ...(c.file.readOnlyMode ? { readOnlyMode: c.file.readOnlyMode } : {}),
-    // Only MOSS's own plugin's declaration runs a program or reads a file (see `QuirksFileSchema.modelList`).
-    ...(c.bundled && c.file.modelList ? { modelList: c.file.modelList } : {}),
+    ...(c.modelList ? { modelList: c.modelList } : {}),
   });
   const cache = new ContributedBackendCache(build);
   // Core backends: MOSS's own coding agent and lane A's in-process subagents.

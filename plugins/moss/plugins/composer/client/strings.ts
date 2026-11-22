@@ -10,6 +10,8 @@ export const S = {
   modelMenu: "Model and effort",
   modelFrom: (plugin: string) => `from ${plugin}`,
   modelSection: "Model",
+  /** The pill's label for an agent session started on the agent's own default (it has no model of its own yet). */
+  defaultModel: "Default model",
   allModels: (n: number) => `Show all models (${n} more)`,
   level: (computer: string, label: string, requested?: string) =>
     requested ? `Approval level on ${computer}: ${label}, ${requested} asked for` : `Approval level on ${computer}: ${label}`,

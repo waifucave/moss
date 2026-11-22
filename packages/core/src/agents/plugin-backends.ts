@@ -92,8 +92,8 @@ export const QuirksFileSchema = z.strictObject({
   source: z.string().max(256),
   readOnlyMode: z.strictObject({ option: z.string().max(128), values: z.array(z.string().max(128)).min(1).max(8) }).optional(),
   /** Where the agent keeps its own model list (its list command, or one file of its own folder), read before any session
-   *  exists (`agents/model-list.ts`). Only MOSS's own bundled plugin's declaration is acted on: another plugin's would
-   *  run its program, or read a file of the user's home, with no OK. */
+   *  exists (`agents/model-list.ts`). Another plugin's is acted on only as its list command, and only for the backend's
+   *  own program (`ContributedBackend.modelList`): reading a file of the user's home, or running another program, needs no OK. */
   modelList: ModelListDeclSchema.optional(),
   quirks: AgentQuirksSchema,
 });
@@ -178,6 +178,10 @@ export interface ContributedBackend {
   command: { program: string; acpArgs: readonly string[] };
   /** The file's quirks with that command. */
   quirks: AgentQuirks;
+  /** Where the agent's own model list is read from (`agents/model-list.ts`). MOSS's bundled plugin's declaration as it is;
+   *  another plugin's only as its list COMMAND, and only when that command's program is the backend's own (what its OK
+   *  covers: it can already run that program with any arguments), never a file of the user's home. */
+  modelList?: ModelListDecl;
   /** Its look as the entry gives it (spec revision 20, §9.5): an icon file in the plugin's folder and its colours. Read
    *  by `BackendLooks`, never here: a bad icon never keeps a backend out. */
   look: { icon?: string; iconDark?: string; color?: string; color2?: string };
@@ -226,7 +230,9 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
     // Another plugin's backend is listed with its plugin's id beside its name.
     const name = bundled ? (v.name ?? id) : `${v.name ?? id} (${c.pluginId})`;
     const look = { ...(typeof v.icon === "string" ? { icon: v.icon } : {}), ...(typeof v.iconDark === "string" ? { iconDark: v.iconDark } : {}), ...(typeof v.color === "string" ? { color: v.color } : {}), ...(typeof v.color2 === "string" ? { color2: v.color2 } : {}) };
-    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look });
+    const declared = file.modelList;
+    const modelList = bundled ? declared : declared?.command !== undefined && declared.command.program === command.program ? { command: declared.command, reader: declared.reader } : undefined;
+    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look, ...(modelList === undefined ? {} : { modelList }) });
   }
   // One entry per id: MOSS's bundled one while it is on, else the first claim.
   const out: ContributedBackend[] = [];

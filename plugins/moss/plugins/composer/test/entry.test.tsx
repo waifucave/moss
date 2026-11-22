@@ -119,6 +119,19 @@ describe("the composer entry", () => {
     expect(agent.host).toEqual([["setModel", "xai/grok-5", ""]]);
   });
 
+  test("a coding session on an agent's own default still offers the models its agent has, and a pick goes through the host", async () => {
+    const own = [{ id: "a-1", name: "Agent One", providerName: "Demo", signedIn: true, efforts: ["low", "high"] }, { id: "a-2", name: "Agent Two", providerName: "Demo", signedIn: true }];
+    const coding = await mount(session({ id: "code-1", kind: "coding", bot: undefined, backend: "demo" }), { models: own });
+    fireEvent.click(screen.getByRole("button", { name: "Model: Default model" }));
+    expect(screen.getAllByRole("menuitemradio").map((r) => r.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("Agent One"), expect.stringContaining("Agent Two")]));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Agent Two/ }));
+    expect(coding.host).toEqual([["setModel", "a-2", ""]]);
+    cleanup();
+    // A bot's conversation with no model of its own, or an agent the user didn't start, gets no picker as before.
+    await mount(session({ id: "s_x", kind: "bot" }), { models: own });
+    expect(screen.queryByRole("button", { name: "Model: Default model" })).toBeNull();
+  });
+
   test("after a pick the label says the model the daemon now holds, at once", async () => {
     await mount();
     fireEvent.click(screen.getByRole("button", { name: "Model: GPT-6, medium" }));

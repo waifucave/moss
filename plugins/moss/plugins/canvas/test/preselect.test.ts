@@ -45,4 +45,18 @@ describe("the + flow's preselection", () => {
     expect(startParams("claude-code", FOLDERS[1]!, { model: "anthropic/claude-opus-5-5", effort: "high" })).toEqual({ backend: "claude-code", root: "pick-2", model: "anthropic/claude-opus-5-5", effort: "high" });
     expect(effortsFor(OPTIONS["claude-code"], "anthropic/claude-opus-5-5")).toEqual(["low", "medium", "high", "max"]);
   });
+
+  describe("an agent's own list (lane MS): the last the person chose for THAT agent, else the agent's own default", () => {
+    const own = { backend: "codex", known: true, source: "command", models: [{ id: "m1", name: "M1", efforts: ["low", "high"], defaultEffort: "low" }, { id: "m2", name: "M2", efforts: [] }] };
+    test("each agent keeps its own last model, not only the agent started last; a model the list dropped falls back", () => {
+      const recent = { backend: "gemini", model: "g", byBackend: [{ backend: "gemini", model: "g" }, { backend: "codex", model: "m1", effort: "high" }] };
+      expect(pickModel("codex", own, recent)).toEqual({ model: "m1", effort: "high", from: "last" });
+      expect(pickModel("codex", own, { byBackend: [{ backend: "codex", model: "gone" }] })).toEqual({ from: "default" });
+    });
+    test("with none chosen the agent starts on its own default: no model is sent", () => {
+      expect(pickModel("codex", own, undefined)).toEqual({ from: "default" });
+      expect(pickModel("codex", own, { byBackend: [{ backend: "codex" }] })).toEqual({ from: "default" });
+      expect(startParams("codex", FOLDERS[0]!, pickModel("codex", own, undefined))).toEqual({ backend: "codex", root: "pick-1" });
+    });
+  });
 });

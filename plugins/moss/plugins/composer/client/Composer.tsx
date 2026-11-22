@@ -319,7 +319,7 @@ export function Composer(props: ComposerProps) {
       )
     : null;
 
-  const modelLabel = model ? (model.models.find((m) => m.id === model.model)?.label ?? model.model) : "";
+  const modelLabel = model ? (model.models.find((m) => m.id === model.model)?.label ?? model.model) || S.defaultModel : "";
   const modelButton = model
     ? action(
         "model",

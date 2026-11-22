@@ -51,6 +51,11 @@ export interface FakeAcpConfig {
   report: string;
   /** The "user's own settings": where a persisting model choice lands. */
   selection: string;
+  /** The models its session offers (the `model` option's values; `fake-model-a` and `fake-model-b` when not given). */
+  modelValues?: string[];
+  /** What its list command prints (`<program> <config> models`): the models as JSON, one `{ slug, display_name,
+   *  visibility, levels }` each; the agent's own model list, as a real one's list command gives it. */
+  modelsList?: { slug: string; display_name?: string; visibility?: string; levels?: { effort: string }[] }[];
   /** A `mode` config option with these values (Cursor's `agent`, `plan`, `ask`), the first one current. */
   modes?: string[];
   /** ACP's session modes (`modes` at `session/new`, `session/set_mode`, `current_mode_update`), the first current. */
@@ -70,6 +75,11 @@ export interface FakeAcpConfig {
 const [configPath, mode] = process.argv.slice(2);
 const cfg = JSON.parse(readFileSync(configPath!, "utf8")) as FakeAcpConfig;
 const q = cfg.quirks;
+
+if (mode === "models") {
+  process.stdout.write(`${JSON.stringify({ models: cfg.modelsList ?? [] })}\n`);
+  process.exit(0);
+}
 
 if (mode === "--version") {
   process.stdout.write(`${cfg.version}\n`);
@@ -128,7 +138,7 @@ function configOptions(): unknown[] {
   } catch {
     // No selection yet.
   }
-  if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: [{ value: "fake-model-a", name: "A" }, { value: "fake-model-b", name: "B" }] });
+  if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: (cfg.modelValues ?? ["fake-model-a", "fake-model-b"]).map((v) => ({ value: v, name: v })) });
   if (q.config.effortOption) out.push({ id: q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
   if (cfg.modes?.length) out.push({ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: current.mode ?? cfg.modes[0], options: cfg.modes.map((v) => ({ value: v, name: v })) });
   return out;

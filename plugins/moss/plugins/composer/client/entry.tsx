@@ -134,12 +134,15 @@ export function ComposerEntry({ props }: { props: ComposerEntryProps }) {
         }
       : undefined;
 
+  // A coding session on an agent that was started on its own default has no model of its own yet: the picker still lists
+  // what the agent offers (`models.list {session}`: the models its agent reported, or its list as known), and the pill
+  // says so. A pick takes through `session.setModel`, and a refusal shows as it does for any model.
   const model: ComposerModelChoice | undefined =
-    host && current
+    host && (current || (kind === "coding" && models.length > 0))
       ? {
-          model: current,
+          model: current ?? "",
           ...(effort ? { effort } : {}),
-          models: models.some((m) => m.id === current) ? models : [{ id: current, label: current }, ...models],
+          models: current === undefined || models.some((m) => m.id === current) ? models : [{ id: current, label: current }, ...models],
           ...(currentModel?.efforts ? { efforts: currentModel.efforts } : {}),
           ...(currentModel?.defaultEffort ? { defaultEffort: currentModel.defaultEffort } : {}),
           onChange: ({ model: next, effort: asked }) => {
