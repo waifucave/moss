@@ -25,26 +25,32 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - &checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - &bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
 
-      - name: Where the job runs
+      - &where
+        name: Where the job runs
         run: scripts/ci/windows-fence/probe-env.ps1
 
-      - name: Build srt-win from the pinned source and compare its digest with the pin
+      - &launcher
+        name: Build srt-win from the pinned source and compare its digest with the pin
         run: scripts/ci/windows-fence/build-launcher.ps1
 
-      - name: Install dependencies
+      - &install
+        name: Install dependencies
         run: bun install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build moss-core.exe
+      - &daemon
+        name: Build moss-core.exe
         run: bun scripts/build-daemon.ts --target windows-x64
 
       - name: sandbox setup, from the protected copy, twice
@@ -63,6 +69,27 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: scripts/ci/windows-fence/remove.ps1
+
+  # The daemon as it runs for real: a standard user's, started by its password startup task, so in Session 0 with a
+  # password logon. The user's unelevated setup refuses with exit 2; an administrator sets the sandbox up for it from
+  # the user's protected copy; the same end-to-end suite runs inside the user's task; the administrator removes it.
+  standard-user:
+    name: windows fence · a standard user's startup task (Session 0)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - *checkout
+      - *bun
+      - *where
+      - *launcher
+      - *install
+      - *daemon
+      - name: Set up, run the fenced suite as the user's task, remove
+        timeout-minutes: 60
+        run: scripts/ci/windows-fence/standard-user.ps1
 
   # The Windows fence's own unit tests, which no other job ran (the core suite's Windows run doesn't exist; the Linux
   # shards skip them): the named pipe, the job object and the launcher's pure half.
