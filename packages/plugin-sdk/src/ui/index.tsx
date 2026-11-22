@@ -738,7 +738,7 @@ function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Ext
   }
   if (asleep || !started) {
     // Keeps its place while it sleeps (or waits for its first word), so nothing around it moves.
-    return <div ref={setEl} data-moss-entry={item.ref} data-moss-asleep="" style={{ display: "block", width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }) }} />;
+    return <div ref={setEl} data-moss-entry={item.ref} data-moss-mount={item.mount} data-moss-asleep="" style={{ display: "block", width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }) }} />;
   }
   return (
     <iframe

@@ -27,10 +27,10 @@ export function UserMessage({ props }: { props: { item: Item } }) {
   );
 }
 
-/** The `conversation.message.extra` add-on under each message. */
+/** The `conversation.message.extra` add-on under each message: it shows its own message's item (the row reads which message each frame was given). */
 export function MessageExtra({ props }: { props: { item: Item } }) {
   return (
-    <div data-acceptance-window="extra" data-kind={props.item.kind ?? ""} data-id={props.item.id ?? ""}>
+    <div data-acceptance-window="extra" data-kind={props.item.kind ?? ""} data-id={props.item.id ?? ""} data-at={String(props.item.at ?? "")} data-text={(props.item.text ?? "").slice(0, 80)}>
       extra
       {props.item.kind !== "user" ? <HooksProbe /> : null}
     </div>

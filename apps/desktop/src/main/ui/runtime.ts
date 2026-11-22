@@ -611,7 +611,7 @@ export class UiRuntime {
     }
     if (m.token === token) this.sendFreshAddress(m, "its frame loaded its address again");
     else if (m.tokenState === "issued") this.sendFreshAddress(m, "its frame loaded an address it had replaced", false);
-    else this.log(`layers: ${m.id}: refused a load of an address it replaced (its frame has the newer one)`);
+    else this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}): refused a load of an address it replaced (its frame has the newer one)`);
   }
 
   /** Sends a mount's parent the address to load now: a new one (`fresh`), or the current unspent one again. At most once a second
@@ -619,7 +619,7 @@ export class UiRuntime {
   private sendFreshAddress(m: Mount, why: string, fresh = true): void {
     const at = this.reloadedAt.get(m.id);
     if (at !== undefined && this.now() - at < 1_000) {
-      this.log(`layers: ${m.id}: refused a document load (${why}; a fresh address went less than a second ago)`);
+      this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}): refused a document load (${why}; a fresh address went less than a second ago)`);
       return;
     }
     this.reloadedAt.set(m.id, this.now());
@@ -632,7 +632,7 @@ export class UiRuntime {
     const parent = this.mounts.get(m.parent);
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
-    this.log(`layers: ${m.id} loads again (${why})`);
+    this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}) loads again (${why})`);
     this.post(parentDoc.id, { type: "child-reload", child: m.id, url: this.frameUrl(m), ...this.frameFlags(m) });
   }
 
@@ -649,7 +649,7 @@ export class UiRuntime {
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
     const url = this.reissue(doc);
-    this.log(`layers: ${doc.id} loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
+    this.log(`layers: ${doc.id} (${doc.plugin?.id ?? "core"}) loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
     // The frame's flags go with it: a parent that builds the frame again (the core root) gives the new one the same `allow`.
     this.post(parentDoc.id, { type: "child-reload", child: doc.id, url, ...this.frameFlags(doc) });
   }

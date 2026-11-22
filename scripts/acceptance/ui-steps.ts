@@ -2055,9 +2055,32 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const id = "acceptance-window";
     const folder = join(import.meta.dir, "fixtures", id);
     const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`moss-plugin://${id}/`));
-    /** The first element `sel` matches in any of the plugin's frames: its session and its attributes. */
+    /** The plugin's add-on frames as the window shows them (a frame, or the placeholder of one asleep), one under each message: its mount
+     *  (the place), its address now, whether it sleeps, and the message it is under (that row's key and kind). */
+    const hostFrames = async () => {
+      const out: { mount: string; src: string; asleep: boolean; message: string; kind: string }[] = [];
+      for (const d of await treeDocs(cdp)) {
+        const v = await cdp.evaluate(d.session, `JSON.stringify([...document.querySelectorAll('.cl-conv__extra [data-moss-entry="${id}#acceptance-window-extra"]')].map((e) => { const u = e.closest('.cl-conv__unit'); return { mount: e.getAttribute('data-moss-mount') || '', src: e.getAttribute('src') || '', asleep: e.hasAttribute('data-moss-asleep'), message: u ? u.getAttribute('data-key') || '' : '', kind: u ? u.getAttribute('data-unit') || '' : '' }; }))`).catch(() => "[]");
+        out.push(...(JSON.parse(String(v)) as { mount: string; src: string; asleep: boolean; message: string; kind: string }[]));
+      }
+      return out;
+    };
+    // The hooks probe is drawn under every message but the user's, one in each frame, so the row reads and presses ONE of them: the frame
+    // under the last such message (the reader is at the end of the conversation, so it is near the screen). It is named by its place, never
+    // by its address, which changes when it wakes.
+    let probeMount: string | undefined;
+    /** The address a frame was given (its single-use token): what a frame's `src` and its document's own URL share. */
+    const addressOf = (url: string) => { try { return new URL(url).searchParams.get("mount") ?? ""; } catch { return ""; } };
+    const probeDocs = async () => {
+      const all = await layerDocs();
+      if (probeMount === undefined) return all;
+      const src = (await hostFrames()).find((f) => f.mount === probeMount)?.src;
+      return src === undefined || src === "" ? [] : all.filter((d) => addressOf(d.url) === addressOf(src));
+    };
+    const PROBE_PARTS = ["page", "box", "kept", "remount", "drag", "menu", "open"].map((n) => `[data-acceptance-window="${n}"]`);
+    /** The first element `sel` matches in any of the plugin's frames (in the probe's own frame, for the probe's parts): its session and its attributes. */
     const find = async (sel: string): Promise<{ session: string; attrs: Record<string, string>; text: string } | undefined> => {
-      for (const d of await layerDocs()) {
+      for (const d of await (PROBE_PARTS.includes(sel) ? probeDocs() : layerDocs())) {
         const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector(${JSON.stringify(sel)}); return e ? JSON.stringify({ attrs: Object.fromEntries([...e.attributes].map((a) => [a.name, a.value])), text: e.textContent || "" }) : "" })()`).catch(() => undefined);
         if (typeof v === "string" && v !== "") return { session: d.session, ...(JSON.parse(v) as { attrs: Record<string, string>; text: string }) };
       }
@@ -2088,7 +2111,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     /** Brings the plugin's frames into view one at a time, as a person scrolls the conversation to a message further up: a part in a
      *  long conversation is away from the screen, asleep, and wakes when it comes near. */
     let revealed = 0;
+    /** Scrolls the frame of one place into view (and wakes it): by its mount. */
+    const scrollTo = async (mount: string) => {
+      for (const d of await treeDocs(cdp)) {
+        await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-moss-mount="${mount}"]'); if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); return !!e; })()`).catch(() => undefined);
+      }
+    };
     const reveal = async () => {
+      if (probeMount !== undefined) return scrollTo(probeMount);
       for (const d of await treeDocs(cdp)) {
         await cdp.evaluate(d.session, `(() => { const els = [...document.querySelectorAll('[data-moss-entry^="${id}#"]')]; const e = els[${revealed++} % Math.max(els.length, 1)]; if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); return els.length; })()`).catch(() => undefined);
       }
@@ -2096,7 +2126,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const press = async (what: string, sel: string) => {
       let tries = 0;
       const at = await until(what, 20_000, async () => {
-        for (const d of await layerDocs()) {
+        for (const d of await (PROBE_PARTS.includes(sel) ? probeDocs() : layerDocs())) {
           const c = await cdp.centerOf(d.session, sel).catch(() => undefined);
           if (c !== undefined) return { session: d.session, c };
         }
@@ -2160,6 +2190,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (toolResult.attrs["data-tool"] !== "mcp__acceptance-window-tools__Window") fail(`its tool.result cell was given ${JSON.stringify(toolResult.attrs["data-tool"])}`);
       if (!(toolResult.attrs["data-result"] ?? "").includes(tag)) fail(`its tool.result cell's call didn't carry the result (${(toolResult.attrs["data-result"] ?? "").slice(0, 120)})`);
       // Its probe under the user's message (in the plugin's own frame in Alpha's tab): the hooks.
+      // The probe is drawn under every message but the user's, in a frame of its own under each: this row reads and presses one, the one
+      // under the last such message, named by its place.
+      probeMount = (await until("its add-on frame under the last message that is not the user's", 45_000, async () => (await hostFrames()).filter((f) => f.kind !== "user" && f.mount !== "").at(-1)?.mount, async () => `frames ${JSON.stringify(await hostFrames())}`));
+      await scrollTo(probeMount);
       const page = await waitFor("its hooks probe under the user's message", '[data-acceptance-window="page"]');
       const attrOf = async (name: string) => (await find('[data-acceptance-window="page"]'))?.attrs[`data-${name}`] ?? "";
       await until("the hooks' first answers", 20_000, async () => ((await attrOf("approvals")) !== "" && (await attrOf("questions")) !== "" ? true : undefined), async () => `page said ${JSON.stringify((await find('[data-acceptance-window="page"]'))?.attrs)}`);
@@ -2176,7 +2210,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // The frame is laid out after the probe mounts (and a row run after others finds it grown later), so the probe says its element's box again
       // whenever it changes and the row brings the frame into view when it has no box and waits for the drawn box (a width, 24 tall) the harness's own measure agrees with.
       const ownBox = async () => {
-        for (const d of await layerDocs()) {
+        for (const d of await probeDocs()) {
           const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acceptance-window="box"]'); if (!e) return null; const b = e.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height), vw: innerWidth, vh: innerHeight }; })()`).catch(() => null);
           if (v !== null && typeof v === "object") return v as { x: number; y: number; w: number; h: number; vw: number; vh: number };
         }
@@ -2210,6 +2244,49 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (surfaceSaid !== "function; asked: undefined") fail(`useSurface from a tab's frame gave ${JSON.stringify(surfaceSaid)}`);
       if (envSaid !== "none") fail(`useSurfaceEnvironment in a tab's frame gave ${JSON.stringify(envSaid)}, not none`);
       const hooksSaid = `useViewFrame was given the probe's box and the frame measured it at ${frameSaid} (the harness measured the same element at ${mine.x},${mine.y} ${mine.w}x${mine.h} in ${mine.vw}x${mine.vh}); main answered its report: ${refused[0]!.replace(/^\S+\s*/, "").slice(0, 110)}; useSurface (${surfaceSaid}) and useSurfaceEnvironment (${envSaid}) answered for a frame on a tab, not on a surface window`;
+      // One frame for each place a part appears (spec §14.2 item 77): the add-on is drawn under EACH message of the conversation, each in a
+      // frame of its own (its own mount and address), given THAT message's own item, and no frame of the plugin reads "forbidden" (a second
+      // frame on one address was served nothing, and the one page that drew was given the last message's item).
+      const messageCount = async () => Number((await inTree<number>(cdp, "document.querySelectorAll('.cl-conv__extra').length"))?.value ?? 0);
+      // At least three messages (a session of its own has the turn's message and its answer): one more turn when there are fewer.
+      if ((await messageCount()) < 3) {
+        await rpc.request("session.send", { id: session, message: { text: `window follow-up ${tag}`, clientMessageId: `window-more-${tag}` } }, 30_000);
+        await until("the follow-up's messages in the conversation", 60_000, async () => ((await messageCount()) >= 3 ? true : undefined), () => dumpFrames(cdp));
+      }
+      const everyMessage = await until("an add-on frame under each message", 30_000, async () => {
+        const frames = await hostFrames();
+        const messages = await messageCount();
+        return messages >= 3 && frames.length === messages && frames.every((f) => f.mount !== "") ? frames : undefined;
+      }, async () => `the window's add-on frames: ${JSON.stringify(await hostFrames())}`);
+      if (new Set(everyMessage.map((f) => f.mount)).size !== everyMessage.length) fail(`two messages' add-ons share a mount: ${JSON.stringify(everyMessage)}`);
+      if (new Set(everyMessage.map((f) => f.message)).size !== everyMessage.length) fail(`two rows of the conversation share a key: ${JSON.stringify(everyMessage)}`);
+      const awakeNow = everyMessage.filter((f) => !f.asleep);
+      if (new Set(awakeNow.map((f) => addressOf(f.src))).size !== awakeNow.length) fail(`two add-on frames hold one address: ${JSON.stringify(awakeNow)}`);
+      // Each frame, brought into view (as a person scrolls to a message further up), is given its own message's item: the first, the last three
+      // and a few between (all of them when there are eight or fewer).
+      const last = everyMessage.length - 1;
+      const picks = [...new Set(everyMessage.length <= 8 ? everyMessage.map((_, i) => i) : [0, 1, Math.floor(last / 3), Math.floor((2 * last) / 3), last - 2, last - 1, last])];
+      const checked: string[] = [];
+      for (const i of picks) {
+        const f = everyMessage[i]!;
+        await scrollTo(f.mount);
+        const given = await until(`the add-on under message ${f.message} drawn, with its own item`, 30_000, async () => {
+          const now = (await hostFrames()).find((x) => x.mount === f.mount);
+          if (now === undefined || now.asleep || now.src === "") { await scrollTo(f.mount); return undefined; }
+          for (const d of await layerDocs()) {
+            if (addressOf(d.url) !== addressOf(now.src)) continue;
+            const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acceptance-window="extra"]'); return e ? JSON.stringify({ id: e.getAttribute("data-id"), kind: e.getAttribute("data-kind") }) : ""; })()`).catch(() => "");
+            if (typeof v === "string" && v !== "") return JSON.parse(v) as { id: string; kind: string };
+          }
+          return undefined;
+        }, async () => `its frames: ${JSON.stringify(await hostFrames())}; documents: ${(await layerDocs()).map((d) => d.url).join(" ")}`);
+        if (given.id !== f.message || given.kind !== f.kind) fail(`the add-on under message ${f.message} (${f.kind}) was given the item ${JSON.stringify(given)}`);
+        checked.push(`${f.kind}:${f.message}`);
+      }
+      const forbidden = (await layerDocs()).filter((d) => /forbidden/i.test(d.text));
+      if (forbidden.length > 0) fail(`${forbidden.length} frame(s) of the plugin read "forbidden": ${forbidden.map((d) => d.url).join(" ")}`);
+      await reveal();
+      const eachSaid = `its add-on was drawn under each of the ${everyMessage.length} messages, each in a frame of its own (${everyMessage.length} mounts, ${awakeNow.length} awake with ${awakeNow.length} addresses) and, brought into view, given that message's own item (${checked.length} checked: ${checked.slice(0, 4).join(", ")}${checked.length > 4 ? ", ..." : ""}); no frame of the plugin reads "forbidden"`;
       // useKept: counted twice, the child remounted, the count is kept.
       await press("kept +1", '[data-acceptance-window="kept"]');
       await press("kept +1 again", '[data-acceptance-window="kept"]');
@@ -2283,7 +2360,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       }
       if (stillListed !== false) fail(`the pill still lists the plugin as a target while it is off (menu: ${String(listed)})`);
       const offSaid = `switched off (plugin.setEnabled), the pill's menu no longer lists it (it lists: ${String(listed).slice(0, 80)})`;
-      return `${id} installed from its folder, OK'd on its card ${ok}; in Alpha's tab it filled composer.action (its button pressed in the window), conversation.message keyed user (it drew ${JSON.stringify(user.slice(0, 40))}), the tool call's card (${carded}), conversation.message.extra (${extra.attrs["data-kind"]} under a message) and tool.result for ${toolResult.attrs["data-tool"]} (the call's result in its cell); the Dispatch pill listed its pill.target, a pick and the Send circle sent the words to its host handler (${reported.slice(0, 80)}); its probe: ${listsSaid}; ${hooksSaid}; useUserSend and useComposerHost are undefined for it; useKept kept 2 over a remount; useDrag offered text and claimed it; useMenu from a click answered ${menuSaid}; useOpen answered ${openSaid.slice(0, 80)}; ${offSaid}`;
+      // The frames of the plugin were served each its own address once: the app's log has no refused document load for any of its mounts.
+      const refusedLoads = ctx.appLog().split("\n").filter((l) => l.includes(`(${id})`) && /refused a document load|refused a load of an address it replaced/.test(l));
+      if (refusedLoads.length > 0) fail(`the app refused ${refusedLoads.length} document load(s) of the plugin's frames (a frame that loaded an address it had been served): ${refusedLoads[0]!.slice(0, 200)}`);
+      return `${id} installed from its folder, OK'd on its card ${ok}; ${eachSaid}; the app log has no refused document load for its mounts; in Alpha's tab it filled composer.action (its button pressed in the window), conversation.message keyed user (it drew ${JSON.stringify(user.slice(0, 40))}), the tool call's card (${carded}), conversation.message.extra (${extra.attrs["data-kind"]} under a message) and tool.result for ${toolResult.attrs["data-tool"]} (the call's result in its cell); the Dispatch pill listed its pill.target, a pick and the Send circle sent the words to its host handler (${reported.slice(0, 80)}); its probe: ${listsSaid}; ${hooksSaid}; useUserSend and useComposerHost are undefined for it; useKept kept 2 over a remount; useDrag offered text and claimed it; useMenu from a click answered ${menuSaid}; useOpen answered ${openSaid.slice(0, 80)}; ${offSaid}`;
     } finally {
       await rpc.request("plugin.remove", { id }).catch(() => undefined);
     }
