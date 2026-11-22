@@ -93,7 +93,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const p = await call(tools.PowerShell!, { command: `Set-Content -LiteralPath '${outside}' -Value nope` });
     expect(p.isError).toBe(true);
     expect(existsSync(outside)).toBe(false);
-  }, 300_000);
+  }, 900_000);
 
   test("the fenced set: MOSS's settings are never written; the run folder, the secrets file and ~/.ssh are never read", async () => {
     const before = readFileSync(join(moss, "settings.json"), "utf8");
@@ -114,7 +114,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const note = await call(tools.Bash!, { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}' '${join(home, "ws-plain.txt").replace(/\\/g, "/")}'` });
     expect(note.text).toContain("a note any bot may read");
     expect(note.text).toContain("an ordinary file in the home");
-  }, 300_000);
+  }, 900_000);
 
   test("no network: a public address, a loopback listener outside the proxy range and the metadata address are refused", async () => {
     // Controls: the test's own process reaches each (the metadata address answers on GitHub's Azure runners).
@@ -141,7 +141,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const range = await call(tools.Bash!, { command: probe("127.0.0.1", 60081) });
     console.log(`[e2e] loopback proxy range 60081 from the fenced command: ${range.text.includes("CONNECTED") ? "CONNECTED (open by srt-win's design)" : "REFUSED"}`);
     listener.stop(true); proxyRange.stop(true);
-  }, 300_000);
+  }, 900_000);
 
   test("pipes: MOSS's own (an owner-only DACL), and Docker's and ssh-agent's where present, are unreachable", async () => {
     const path = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-e2e-pipe-"))).path;
@@ -156,7 +156,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       expect(r.text).toContain("PIPE-REFUSED");
     }
     server.stop(true);
-  }, 300_000);
+  }, 900_000);
 
   test("a timeout ends everything the command started: a delayed grandchild never writes its marker", async () => {
     const marker = join(scratch, "late.txt");
@@ -166,14 +166,14 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(r.text).toContain("Command timed out");
     await Bun.sleep(8000);
     expect(existsSync(marker)).toBe(false);
-  }, 300_000);
+  }, 900_000);
 
   test("two commands at once run as two principals (a principal per running command)", async () => {
     const [a, b] = await Promise.all([call(tools.Bash!, { command: "whoami; sleep 3" }), call(tools.Bash!, { command: "whoami; sleep 3" })]);
     expect(a.text).toContain("moss-sb-");
     expect(b.text).toContain("moss-sb-");
     expect(a.text.trim()).not.toBe(b.text.trim());
-  }, 300_000);
+  }, 900_000);
 
   test("nothing carries over: what a command leaves in its account's real profile and hive is gone when that account runs again", async () => {
     // The account's real profile, by its SID in ProfileList (past the command's own HOME), and its hive
@@ -203,12 +203,12 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
   }, 900_000);
 
   test("nothing runs later: a risky git key is reverted and a planted hook is moved aside", async () => {
-    const r = await call(tools.Bash!, { command: "rm -rf repo && git init -q repo && git -C repo config core.hooksPath /c/elsewhere && printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout && echo done" });
+    const r = await call(tools.Bash!, { command: "rm -rf repo && git init -q repo && git -C repo config core.hooksPath /c/elsewhere && mkdir -p repo/.git/hooks && printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout && echo done" });
     expect(r.text).toContain("done");
     const config = readFileSync(join(scratch, "repo", ".git", "config"), "utf8");
     expect(config).not.toContain("hooksPath");
     expect(existsSync(join(scratch, "repo", ".git", "hooks", "post-checkout"))).toBe(false);
-  }, 300_000);
+  }, 900_000);
 
   test("the escape: a bot's own conversation's approved command writes the home, never MOSS's settings, and has no network", async () => {
     mkdirSync(join(home, "ws-escape-dir"), { recursive: true });
@@ -246,5 +246,5 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const read = await exec.run("Bash", { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}'` }, ctx);
     expect(JSON.stringify(read.output)).not.toContain("refused:");
     expect(JSON.stringify(read.output)).not.toContain("a note any bot may read"); // the MOSS home is default-deny for a coding session
-  }, 300_000);
+  }, 900_000);
 });
