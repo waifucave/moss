@@ -233,7 +233,8 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
     return r.length >= 2 ? r : undefined;
   }, async () => `C's report: ${reportOf(reportC).map((x) => x.type).join(", ") || "none"}`);
   for (const r of results) if (r.isError !== true || !String(r.text).includes("No session you may message")) fail(`C's SendMessage answered ${JSON.stringify(r).slice(0, 300)}, not a refusal`);
-  if (String(results[0]!.text).replace(k.id, "X") !== String(results[1]!.text).replace(bot.mainSession, "X")) fail(`the two refusals differ beyond the name asked for: "${String(results[0]!.text)}" and "${String(results[1]!.text)}"`);
+  const sameWords = (t: unknown) => String(t).replace(/"[^"]*"/, "X");
+  if (sameWords(results[0]!.text) !== sameWords(results[1]!.text) || ![k.id, bot.mainSession].every((id) => results.some((r) => String(r.text).includes(`"${id}"`)))) fail(`the two refusals differ beyond the name asked for: "${String(results[0]!.text)}" and "${String(results[1]!.text)}"`);
   const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
   const cText = String(cList?.text ?? "");
   if (!cText.includes(b) || cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and neither K nor Alpha's conversation`);
