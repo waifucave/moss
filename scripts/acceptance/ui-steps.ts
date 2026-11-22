@@ -2200,8 +2200,13 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const refused = ctx.appLog().split("\n").filter((l) => l.includes("may not place the acceptance-window view"));
       if (refused.length === 0) fail("main didn't answer the view frame's report (no `may not place the acceptance-window view` line in the app log)");
       // useSurface / useSurfaceEnvironment: this frame is a tab's, not a surface window's root, so the request answers nothing and the environment is none.
-      const surfaceSaid = await attrOf("surface");
-      const envSaid = await attrOf("surfaceenv");
+      // The probe's frame may have loaded again since the wait above (the reveal wakes a frame that slept far up a long transcript,
+      // and its page starts with no answers): both answers are waited for anew, then judged exactly as before.
+      const [surfaceSaid, envSaid] = await until("the probe's surface answers once its frame settled", 20_000, async () => {
+        const s = await attrOf("surface");
+        const e = await attrOf("surfaceenv");
+        return s !== "" && e !== "" ? ([s, e] as const) : undefined;
+      }, async () => `page said ${JSON.stringify((await find('[data-acceptance-window="page"]'))?.attrs)}`);
       if (surfaceSaid !== "function; asked: undefined") fail(`useSurface from a tab's frame gave ${JSON.stringify(surfaceSaid)}`);
       if (envSaid !== "none") fail(`useSurfaceEnvironment in a tab's frame gave ${JSON.stringify(envSaid)}, not none`);
       const hooksSaid = `useViewFrame was given the probe's box and the frame measured it at ${frameSaid} (the harness measured the same element at ${mine.x},${mine.y} ${mine.w}x${mine.h} in ${mine.vw}x${mine.vh}); main answered its report: ${refused[0]!.replace(/^\S+\s*/, "").slice(0, 110)}; useSurface (${surfaceSaid}) and useSurfaceEnvironment (${envSaid}) answered for a frame on a tab, not on a surface window`;
