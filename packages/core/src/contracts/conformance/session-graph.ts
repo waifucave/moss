@@ -42,6 +42,33 @@ export function runSessionGraphConformance(make: SessionGraphFactory): void {
       expect(g.fields("s_d").waiting).toBeUndefined();
     });
 
+    // 2026-11-22 (backlog 522): an agent that finished its turn and waits for its next message is idle, not waited for.
+    test("an idle child is not waited for; its next turn makes it a child to wait for again; ended is still ended", () => {
+      const g = make(() => 1);
+      g.started("s_moss", "bot", user, "moss");
+      g.started("s_d", "agent", { kind: "bot", bot: "moss", session: "s_moss" }, "moss");
+      g.started("s_e", "agent", { kind: "bot", bot: "moss", session: "s_moss" }, "moss");
+      expect(g.fields("s_moss").waiting).toEqual({ tasks: 0, children: 2 });
+      g.idled("s_d");
+      expect(g.fields("s_moss").waiting).toEqual({ tasks: 0, children: 1 });
+      expect(sessionMotion({ status: "idle", waiting: g.fields("s_moss").waiting })).toBe("waiting");
+      g.idled("s_d"); // again: nothing changes
+      g.idled("s_e");
+      expect(g.fields("s_moss").waiting).toBeUndefined();
+      expect(sessionMotion({ status: "idle", waiting: g.fields("s_moss").waiting })).toBe("still");
+      g.busy("s_d");
+      expect(g.fields("s_moss").waiting).toEqual({ tasks: 0, children: 1 });
+      g.busy("s_d"); // again: nothing changes
+      g.ended("s_d");
+      g.ended("s_e"); // an idle child that ends: no count either way
+      expect(g.fields("s_moss").waiting).toBeUndefined();
+      // Its own background tasks still make the idle child's own view wait.
+      g.started("s_f", "agent", { kind: "bot", bot: "moss", session: "s_moss" }, "moss");
+      g.idled("s_f");
+      g.taskStarted("s_f", "bash_1");
+      expect(g.fields("s_f").waiting).toEqual({ tasks: 1, children: 0 });
+    });
+
     test("a subagent row keeps its id, is replaced in place, ends with a time, and the list is bounded", () => {
       let t = 100;
       const g = make(() => t);

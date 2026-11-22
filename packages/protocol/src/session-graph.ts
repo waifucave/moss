@@ -39,7 +39,8 @@ export type SessionStarter = z.infer<typeof SessionStarter>;
 
 /** What a session waits on, as counts only: its own background tasks that will wake it when they end (a background
  *  command, a monitor: what the host's `wake` hands back as a `task` input), and the sessions it started that have not
- *  ended (`startedBy.session` or `parent` is it, status not `stopped` or `failed`). Absent, or both zero: nothing. An
+ *  ended and aren't idle (`startedBy.session` or `parent` is it, status not `stopped` or `failed`; a child whose turn ended and waits
+ *  for its next message is idle, not waited for). Absent, or both zero: nothing. An
  *  outside ACP agent's own jobs are not seen (its quirks say `countsChildProcesses: false`), so they never count. */
 export const SessionWaiting = z.object({
   tasks: z.number().int().nonnegative(),

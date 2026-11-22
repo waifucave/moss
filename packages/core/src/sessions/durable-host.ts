@@ -1771,6 +1771,7 @@ export class DurableSessionHost implements SessionHost {
         // error row shows, it is idle, and the next message starts a new turn. The failure stays on its view, so a feed reads
         // it stuck, until a turn ends well.
         this.#setStatus(s, "idle", end.failure ?? "error");
+        this.#idleChild(s);
         if (s.meta.kind === "agent") this.#notifyParent(s, stopReasonOf(end), end);
         return;
       }
@@ -1782,7 +1783,14 @@ export class DurableSessionHost implements SessionHost {
       this.#pump(s);
       if (s.queue.length > 0 || s.running || s.compacting) return;
     }
+    this.#idleChild(s);
     if (s.meta.kind === "agent" && end.reason !== "interrupted") this.#notifyParent(s, stopReasonOf(end), end);
+  }
+
+  /** A session's turn ended and nothing waits for it to run: the session that started it no longer waits for it (§9.5
+   *  "Waiting"; backlog 522). Its next turn makes it a child to wait for again (`#setStatus`). */
+  #idleChild(s: Hosted): void {
+    if (this.graph.has(s.meta.id)) this.graph.idled(s.meta.id);
   }
 
   /** A background agent's task notification to its bot's main conversation (§9.3, S5 §8). */
@@ -1945,6 +1953,8 @@ export class DurableSessionHost implements SessionHost {
       this.#markEnded(s);
       if (this.graph.has(s.meta.id)) this.graph.ended(s.meta.id);
     }
+    // A turn (or a compaction) began: its starter waits for it again (`waiting.children`, §9.5).
+    if (status === "prompting" && this.graph.has(s.meta.id)) this.graph.busy(s.meta.id);
     this.#emitView(s);
   }
 

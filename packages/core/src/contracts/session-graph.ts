@@ -8,7 +8,7 @@
 //
 // What the contract promises:
 // * `startedBy` is set once, at the start, and never changes; a session started by another counts as that one's child
-//   until it ends (`waiting.children`), and a background task counts until it ends (`waiting.tasks`). Counts only.
+//   until it ends or sits idle (`waiting.children`), and a background task counts until it ends (`waiting.tasks`). Counts only.
 // * A subagent row keeps its id for the parent's life; an update by the same id replaces it in place; `done` or `failed`
 //   sets `endedAt` (the time given, or now); at most `SUBAGENTS_MAX`, dropping the oldest ended rows first, and never a
 //   running one while an ended one remains.
@@ -35,6 +35,10 @@ export interface SessionGraph {
   started(session: string, kind: SessionKind, by: SessionStarter, bot?: string): void;
   /** It stopped or failed: it no longer counts as its starter's child; its own tasks end with it. */
   ended(session: string): void;
+  /** Its turn ended with nothing queued, or a turn began: while it is idle it is not its starter's child to wait for
+   *  (`waiting.children` counts the children that haven't ended and aren't idle). A child that has not run yet is not idle. */
+  idled(session: string): void;
+  busy(session: string): void;
   /** One of its background tasks that will wake it began, or ended. */
   taskStarted(session: string, task: string): void;
   taskEnded(session: string, task: string): void;

@@ -77,6 +77,37 @@ describe("waiting", () => {
     host.taskEnded("b_moss", "never");
   });
 
+  // Backlog 522: the canvas showed a bot "waiting" on an agent that was only idle (it had reported and waits for the next message).
+  test("an agent that reported and sits idle is not waited for; its next turn is", async () => {
+    const { host } = hostOn();
+    const views: SessionView[] = [];
+    host.watch((v) => views.push(v));
+    host.open({ id: "b_moss", kind: "bot", bot: "moss", computer: "Studio" }, new FakeSessionDriver());
+    const agent = new FakeSessionDriver({ canFold: false });
+    host.open({ id: "agent_1", kind: "agent", bot: "moss", parent: "b_moss", computer: "Studio" }, agent);
+    // Not run yet: its bot waits for it.
+    expect(host.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 });
+    await host.deliver("agent_1", { from: "bot", bot: "moss", session: "b_moss", text: "Write the tests." });
+    await flush();
+    expect(host.get("agent_1")!.status).toBe("prompting");
+    expect(host.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 });
+    agent.end({ text: "Done." });
+    await flush();
+    expect(host.get("agent_1")!.status).toBe("idle");
+    expect(host.get("b_moss")!.waiting).toBeUndefined();
+    expect(views.filter((v) => v.id === "b_moss").at(-1)!.waiting).toBeUndefined();
+    // Its next message starts a turn: waited for again, and idle again when that ends.
+    await host.deliver("agent_1", { from: "bot", bot: "moss", session: "b_moss", text: "Also the docs." });
+    await flush();
+    expect(host.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 });
+    agent.end({ text: "Docs too." });
+    await flush();
+    expect(host.get("b_moss")!.waiting).toBeUndefined();
+    // An idle agent that is stopped is ended, not counted, and its bot is not left waiting.
+    await host.stop("agent_1");
+    expect(host.get("b_moss")!.waiting).toBeUndefined();
+  });
+
   test("a restart has no task running, and counts the children that are still running", async () => {
     const { home, clock, host } = hostOn();
     host.open({ id: "b_moss", kind: "bot", bot: "moss", computer: "Studio" }, new FakeSessionDriver());

@@ -14,6 +14,7 @@ interface Node {
   bot?: string;
   by: SessionStarter;
   ended: boolean;
+  idle: boolean;
   tasks: Set<string>;
   subagents: SessionSubagent[];
 }
@@ -56,7 +57,7 @@ export class FakeSessionGraph implements SessionGraph {
 
   started(session: string, kind: SessionKind, by: SessionStarter, bot?: string): void {
     if (this.#nodes.has(session)) throw new ContractError("conflict", `${session} has started already`);
-    const node: Node = { kind, by, ended: false, tasks: new Set(), subagents: [], ...(bot !== undefined ? { bot } : {}) };
+    const node: Node = { kind, by, ended: false, idle: false, tasks: new Set(), subagents: [], ...(bot !== undefined ? { bot } : {}) };
     this.#nodes.set(session, node);
     this.#changed(session);
     const starter = this.#starterOf(node);
@@ -102,6 +103,22 @@ export class FakeSessionGraph implements SessionGraph {
     this.#changed(parent);
   }
 
+  idled(session: string): void {
+    const n = this.#node(session);
+    if (n.ended || n.idle) return;
+    n.idle = true;
+    const starter = this.#starterOf(n);
+    if (starter !== undefined) this.#changed(starter);
+  }
+
+  busy(session: string): void {
+    const n = this.#node(session);
+    if (!n.idle) return;
+    n.idle = false;
+    const starter = this.#starterOf(n);
+    if (starter !== undefined) this.#changed(starter);
+  }
+
   link(from: string | undefined, to: string, kind: SessionLinkKind): SessionLinkEvent {
     if (from === to) throw new ContractError("invalid", "a link joins two sessions");
     const t = this.#node(to);
@@ -132,7 +149,7 @@ export class FakeSessionGraph implements SessionGraph {
 
   fields(session: string): SessionGraphFields {
     const n = this.#node(session);
-    const children = [...this.#nodes.values()].filter((c) => !c.ended && this.#starterOf(c) === session).length;
+    const children = [...this.#nodes.values()].filter((c) => !c.ended && !c.idle && this.#starterOf(c) === session).length;
     const tasks = n.tasks.size;
     return {
       startedBy: n.by,

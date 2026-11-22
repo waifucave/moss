@@ -5,7 +5,8 @@
 // * who started each session (`startedBy`), set once: the host persists it in the session's meta, so a restart registers
 //   the same starter again;
 // * what a session waits on (`waiting`): its background tasks that will wake it (a backend's task frames, never
-//   persisted: a restart has none running) and the sessions it started that have not ended. Children are indexed by their
+//   persisted: a restart has none running) and the sessions it started that have not ended and are not idle (an agent whose
+//   turn ended waits for its next message; its starter doesn't wait for it). Children are indexed by their
 //   starter, so a read never scans every session (a home holds tens of thousands of ended side threads);
 // * the subagents its agent reported (`subagents`), at most `SUBAGENTS_MAX`, the oldest ended ones dropped first; an
 //   ended row never runs again;
@@ -37,6 +38,9 @@ interface Node {
   subagents: SessionSubagent[];
   /** The first delivery from its starter has been heard (that one is the spawn). */
   spawned: boolean;
+  /** Its turn ended and nothing is queued for it: it sits idle, which its starter doesn't wait for (`waiting.children`),
+   *  until its next turn begins. A child that has not run its first turn is not idle. */
+  idle: boolean;
 }
 
 const LINK_SPEC = MOSS_EVENTS.get("session_link");
@@ -249,7 +253,7 @@ export class EngineSessionGraph implements SessionGraph {
     if (this.#nodes.has(session)) throw new ContractError("conflict", `${session} has started already`);
     const starter = starterSessionOf(by);
     const node: Node = {
-      kind, by: structuredClone(by), ended: opts.ended === true, tasks: new Set(), subagents: [], spawned: false,
+      kind, by: structuredClone(by), ended: opts.ended === true, tasks: new Set(), subagents: [], spawned: false, idle: false,
       ...(bot === undefined ? {} : { bot }), ...(starter === undefined || starter === session ? {} : { starter }),
     };
     this.#nodes.set(session, node);
@@ -281,6 +285,22 @@ export class EngineSessionGraph implements SessionGraph {
       if (set?.size === 0) this.#children.delete(n.starter);
     }
     this.#changed(session);
+    if (n.starter !== undefined) this.#changed(n.starter);
+  }
+
+  /** The session's turn ended with nothing queued: its starter no longer waits for it (until `busy`). */
+  idled(session: string): void {
+    const n = this.#nodes.get(session);
+    if (n === undefined || n.ended || n.idle) return;
+    n.idle = true;
+    if (n.starter !== undefined) this.#changed(n.starter);
+  }
+
+  /** The session began a turn (or a compaction): it is its starter's child to wait for again. */
+  busy(session: string): void {
+    const n = this.#nodes.get(session);
+    if (n === undefined || !n.idle) return;
+    n.idle = false;
     if (n.starter !== undefined) this.#changed(n.starter);
   }
 
@@ -397,7 +417,8 @@ export class EngineSessionGraph implements SessionGraph {
 
   fields(session: string): SessionGraphFields {
     const n = this.#node(session);
-    const children = this.#children.get(session)?.size ?? 0;
+    // Its children that have not ended and are not idle: an agent that reported and waits for its next message is not waited for.
+    const children = [...(this.#children.get(session) ?? [])].filter((c) => this.#nodes.get(c)?.idle !== true).length;
     const tasks = n.tasks.size;
     return {
       startedBy: structuredClone(n.by),
