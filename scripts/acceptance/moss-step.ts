@@ -42,10 +42,11 @@ export const MOSS_MEMORY_STEP = "MOSS's Settings, a bot's own page: its memory f
 export const MOSS_ROUTINE_FAIL_STEP = "MOSS's side panel: a routine whose run fails (Run now on MOSS's routine, its model's call refused) shows in her conversation that it failed and why, marked as a failure";
 export const MOSS_DROP_STEP = "MOSS's composer: a file dropped on it is said plainly (MOSS sends pictures only, with the paperclip) and nothing is sent";
 export const MOSS_STATUS_STEP = "MOSS: while MOSS's turn runs her conversation shows ONE plain status line (no tool name, no argument, not a control) and her list row says the same short phrase; when the turn ends the line is gone, and no tool row or \"Used …\" line was ever drawn";
+export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a vivid colour painted under the page shows through the list column and not the conversation, in light and dark; with nothing painted the list is see-through and the conversation opaque; a message scrolled half under the conversation's bar passes beneath it, frosted; the first message and the newest keep clear of the bar; where the window has none, the list is its solid colour";
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
 
 /** The unit's rows, in the order it runs them. */
-export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_BOTH_KEYS_STEP];
+export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
 
 /** The unit's daemon: the bots as engine data (lane MC1 makes it the default; until then the unit sets it). */
 export const MOSS_ENV: Readonly<Record<string, string>> = { MOSS_BOT_SOURCE: "records" };
@@ -96,6 +97,8 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
   let c: MossClient | undefined;
   const front = join(x.root, "moss-front");
   const keyFile = join(x.root, "moss-answer-key");
+  const glassFile = join(x.root, "moss-glass");
+  const appearanceFile = join(x.root, "moss-appearance");
   const done = new Set<string>();
   let shown: MossWindow | undefined;
   const row = async (name: string, run: () => Promise<string>): Promise<void> => {
@@ -123,6 +126,8 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
       MOSS_TEST_DEBUG: "1",
       MOSS_TEST_ANSWER_KEY: keyFile,
       MOSS_TEST_MAIN_FRONT_FILE: front,
+      MOSS_TEST_GLASS: glassFile,
+      MOSS_TEST_APPEARANCE_FILE: appearanceFile,
     };
     app = x.startChild("moss-app", built.exe, [...built.args, "--mute-audio", "--moss-headless", `--remote-debugging-port=${port}`], env);
     await x.until("MOSS's DevTools port", 120_000, async () => {
@@ -132,7 +137,7 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     const w = new MossWindow(x, cdp!, app.log);
     await w.main();
     shown = w;
-    const s: UnitState = { x, c, w, device, front, keyFile, appLog: app.log };
+    const s: UnitState = { x, c, w, device, front, keyFile, glassFile, appearanceFile, appLog: app.log };
     await row(MOSS_LIST_STEP, () => listRow(s));
     await row(MOSS_MESSAGE_STEP, () => messageRow(s));
     // Before any row that fails a session: the engine's feed keeps a bot "stuck" while any of its sessions has failed.
@@ -153,6 +158,7 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_MEMORY_STEP, () => memoryRow(s));
     await row(MOSS_ROUTINE_FAIL_STEP, () => routineFailRow(s));
     await row(MOSS_DROP_STEP, () => dropRow(s));
+    await row(MOSS_GLASS_STEP, () => glassRow(s));
     // Last: it registers MOSS Code's key, so the home is no longer one where only MOSS has run.
     await row(MOSS_BOTH_KEYS_STEP, () => bothKeysRow(s));
   } catch (err) {
@@ -234,6 +240,9 @@ interface UnitState {
   device: string;
   front: string;
   keyFile: string;
+  /** The test build's glass seam and appearance seam (main/index.ts): files the row writes. */
+  glassFile: string;
+  appearanceFile: string;
   appLog: string;
   /** The tag of the plugin the panel row added, for the tools row. */
   feedPlugin?: string;
@@ -1119,6 +1128,116 @@ async function statusRow(s: UnitState): Promise<string> {
   const after = await s.w.eval<{ text: string; tools: number }>("({ text: document.querySelector('.messages')?.innerText ?? '', tools: document.querySelectorAll('.messages [data-tool], .messages [data-tool-row]').length })");
   if (/Used |mcp__/.test(after.text) || after.tools !== 0) s.x.fail("a tool row is in her conversation after the turn");
   return `her running turn showed one plain line "${phrase}" (not a control, polite status) and her list row said "${moodWords}"; after the turn the line was gone and no tool row was drawn`;
+}
+
+/** The glass the owner asked for (2026-11-22): MOSS's list column is the window's material under MOSS Code's sidebar tint, and
+ *  its top bars float over their column in the same tint, frosted. The material itself is the window server's, and a headless
+ *  offscreen window has none: what this row proves is what MOSS's own page does with one. The test build's glass seam gives the
+ *  offscreen window the clear backing and the page's word that a material is behind it (what a real macOS window gets), a colour
+ *  painted under the page stands in for the desktop, and the capture's pixels say what shows through. Not shown here: the
+ *  system's own blur and saturation of the real desktop (the owner's screen judges that). */
+const GLASS_MIN = 95;
+const MAIN_MAX = 8;
+const GLASS_ALPHA_MAX = 150;
+async function glassRow(s: UnitState): Promise<string> {
+  const { readPng } = await import("./ui-steps");
+  const { x, w } = s;
+  const logs = x.logs;
+  await openBot(s, "alpha", "MOSS");
+  await w.waitFor("her conversation's messages", "document.querySelectorAll('.messages .bubble').length || null", 30_000);
+  // A conversation long enough to scroll: stand-in rows (copies of her own bubbles, in the page only) so a message can pass under the bar.
+  await w.eval(`(() => {
+    const m = document.querySelector('.messages'); const end = m.lastElementChild;
+    const rows = [...m.querySelectorAll('.bubble-row')];
+    for (let i = 0; i < 40; i++) { const c = rows[i % rows.length].cloneNode(true); c.setAttribute('data-glass-filler', ''); c.querySelector('.bubble').style.minHeight = '56px'; m.insertBefore(c, end); }
+    return true; })()`);
+  const geometry = () => w.eval<{ list: { x: number; y: number; w: number; h: number }; middle: { x: number; y: number; w: number; h: number }; bar: { top: number; bottom: number }; dpr: number }>(`(() => { const r = (q) => { const b = document.querySelector(q).getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; }; const bar = document.querySelector('.conversation__head').getBoundingClientRect(); return { list: r('.list'), middle: r('.middle'), bar: { top: bar.top, bottom: bar.bottom }, dpr: devicePixelRatio }; })()`);
+  const shoot = async (name: string) => {
+    const page = await w.main();
+    const png = Buffer.from((await w.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, page)).data, "base64");
+    writeFileSync(join(logs, `${name}.png`), png);
+    return readPng(png);
+  };
+  const scheme = async (which: "light" | "dark") => {
+    writeFileSync(s.appearanceFile, which);
+    await w.waitFor(`the window in ${which}`, `matchMedia('(prefers-color-scheme: dark)').matches === ${which === "dark"} ? true : null`, 15_000);
+    await sleep(500);
+  };
+  const notes: string[] = [];
+  try {
+    // Where the window has no material (every other row's window, and a real one off macOS): the list is its solid colour.
+    for (const which of ["light", "dark"] as const) {
+      await scheme(which);
+      const solid = await w.eval<{ translucent: boolean; list: string; body: string }>("({ translucent: document.documentElement.hasAttribute('data-translucent'), list: getComputedStyle(document.querySelector('.list')).backgroundColor, body: getComputedStyle(document.body).backgroundColor })");
+      if (solid.translucent) x.fail(`with no material the page is told it has one (data-translucent is set)`);
+      if (!/^rgb\(/.test(solid.list) || !/^rgb\(/.test(solid.body)) x.fail(`with no material, in ${which}, the list (${solid.list}) or the page (${solid.body}) isn't a solid colour`);
+      notes.push(`no material, ${which}: list ${solid.list}, page ${solid.body}`);
+    }
+    // The material: the seam gives the offscreen window a clear backing and tells the page.
+    writeFileSync(s.glassFile, "on");
+    await w.waitFor("the page told it has a material", "document.documentElement.hasAttribute('data-translucent') ? true : null", 15_000);
+    for (const which of ["light", "dark"] as const) {
+      await scheme(which);
+      const g = await geometry();
+      const img = await shoot(`moss-glass-unpainted-${which}`);
+      if (img.bpp !== 4) { notes.push(`${which} unpainted: the capture keeps no alpha here`); } else {
+        const alpha = (px: number, py: number) => img.rows[Math.round(py * g.dpr)]![Math.round(px * g.dpr) * 4 + 3]!;
+        const list = alpha(g.list.x + 3, g.list.y + g.list.h * 0.6);
+        const middle = alpha(g.middle.x + 8, g.middle.y + g.middle.h * 0.5);
+        if (list > GLASS_ALPHA_MAX) x.fail(`in ${which}, with nothing painted, the list is ${list === 255 ? "opaque" : "too nearly opaque"} (alpha ${list}, at most ${GLASS_ALPHA_MAX}): something under it hides the window's material (picture: logs/moss-glass-unpainted-${which}.png)`);
+        if (middle !== 255) x.fail(`in ${which}, the conversation column isn't opaque (alpha ${middle})`);
+        notes.push(`${which} unpainted: list alpha ${list}, conversation ${middle}`);
+      }
+    }
+    // A vivid colour painted under the page (the desktop's stand-in): it must show through the list, never the conversation.
+    await w.eval("(() => { document.body.style.setProperty('background', '#FF00FF', 'important'); return true; })()");
+    for (const which of ["light", "dark"] as const) {
+      await scheme(which);
+      const g = await geometry();
+      const img = await shoot(`moss-glass-${which}`);
+      const px = (x0: number, y0: number) => { const row = img.rows[Math.round(y0 * g.dpr)]!; const i = Math.round(x0 * g.dpr) * img.bpp; return [row[i]!, row[i + 1]!, row[i + 2]!]; };
+      const magenta = (p: readonly number[]) => ((p[0]! - p[1]!) + (p[2]! - p[1]!)) / 2;
+      const median = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)]!;
+      const list = median(Array.from({ length: 15 }, (_, i) => magenta(px(g.list.x + 3, g.list.y + g.list.h * (0.33 + i * 0.04)))));
+      const middle = median(Array.from({ length: 9 }, (_, i) => Math.abs(magenta(px(g.middle.x + 8, g.middle.y + g.middle.h * (0.3 + i * 0.05))))));
+      if (list < GLASS_MIN) x.fail(`in ${which}, the list lets too little of what is behind the window through (magenta ${list.toFixed(0)}, at least ${GLASS_MIN}; picture: logs/moss-glass-${which}.png)`);
+      if (middle > MAIN_MAX) x.fail(`in ${which}, what is behind the window shows through the conversation column (magenta ${middle.toFixed(0)}; picture: logs/moss-glass-${which}.png)`);
+      notes.push(`${which}: list ${list.toFixed(0)}, conversation ${middle.toFixed(0)}`);
+    }
+    await w.eval("(() => { document.body.style.removeProperty('background'); return true; })()");
+    // The bar: a message scrolled half under it passes beneath, frosted; the first message and the newest stay clear of it.
+    const tops = await w.eval<{ first: number; bar: number }>(`(() => { const m = document.querySelector('.messages'); m.scrollTop = 0; return { first: m.firstElementChild.getBoundingClientRect().top, bar: document.querySelector('.conversation__head').getBoundingClientRect().bottom }; })()`);
+    if (tops.first < tops.bar - 0.5) x.fail(`the conversation's first line (top ${tops.first}) is born under the bar (its bottom ${tops.bar})`);
+    await w.eval(`(() => { const m = document.querySelector('.messages'); const b = [...m.querySelectorAll('.bubble-row--user')].find((e) => e.hasAttribute('data-glass-filler')); const bar = document.querySelector('.conversation__head').getBoundingClientRect(); const r = b.getBoundingClientRect(); m.scrollTop += (r.top + r.height / 2) - bar.bottom; b.setAttribute('data-glass-under', ''); return true; })()`);
+    await sleep(400);
+    for (const which of ["light", "dark"] as const) {
+      await scheme(which);
+      const u = await w.eval<{ over: number; stack: string; frost: string; tint: string; box: { x: number; w: number; top: number; bottom: number }; bar: { top: number; bottom: number }; dpr: number }>(`(() => {
+        const bar = document.querySelector('.conversation__head'); const br = bar.getBoundingClientRect(); const b = document.querySelector('[data-glass-under]'); const r = b.getBoundingClientRect();
+        const at = document.elementsFromPoint(r.left + r.width / 2, br.bottom - 6);
+        const cs = getComputedStyle(bar);
+        return { over: Math.round((Math.min(r.bottom, br.bottom) - Math.max(r.top, br.top)) / r.height * 100), stack: at.map((e) => e.closest('.conversation__head') ? 'bar' : e.closest('[data-glass-under]') ? 'bubble' : '').filter(Boolean).join(','), frost: cs.backdropFilter, tint: cs.backgroundColor, box: { x: r.left, w: r.width, top: r.top, bottom: r.bottom }, bar: { top: br.top, bottom: br.bottom }, dpr: devicePixelRatio }; })()`);
+      if (u.over < 30 || u.over > 70) x.fail(`the message couldn't be scrolled half under the bar (${u.over}% of it is under)`);
+      if (!u.stack.startsWith("bar,") || !u.stack.includes("bubble")) x.fail(`the message isn't beneath the bar where they meet (what is there, top first: ${u.stack})`);
+      if (!/blur/.test(u.frost)) x.fail(`the bar over the message isn't frosted (backdrop-filter: ${u.frost})`);
+      if (!/rgba\(.*, 0?\.\d+\)/.test(u.tint)) x.fail(`the bar's tint is opaque (${u.tint}): nothing beneath could show`);
+      const img = await shoot(`moss-glass-bar-${which}`);
+      const lum = (x0: number, y0: number) => { const row = img.rows[Math.round(y0 * u.dpr)]!; const i = Math.round(x0 * u.dpr) * img.bpp; return (row[i]! + row[i + 1]! + row[i + 2]!) / 3; };
+      const y = u.bar.bottom - 6;
+      const over = lum(u.box.x + u.box.w / 2, y);
+      const empty = lum(u.box.x - 40 < 4 ? u.box.x + u.box.w + 40 : u.box.x - 40, y);
+      if (Math.abs(over - empty) < 20) x.fail(`in ${which}, what passes beneath the bar doesn't show through it (the bar over the message ${over.toFixed(0)}, over nothing ${empty.toFixed(0)}; picture: logs/moss-glass-bar-${which}.png)`);
+      notes.push(`${which}: the message ${u.over}% under the bar (${u.frost}, ${u.tint}), the bar ${over.toFixed(0)} over it and ${empty.toFixed(0)} beside it`);
+    }
+    // The newest: scrolled to the end it stands clear above the composer (the bar covers the top only).
+    const end = await w.eval<{ gap: number }>(`(() => { const m = document.querySelector('.messages'); m.scrollTop = m.scrollHeight; const l = m.lastElementChild.previousElementSibling ?? m.lastElementChild; return { gap: m.getBoundingClientRect().bottom - l.getBoundingClientRect().bottom }; })()`);
+    if (end.gap < -0.5) x.fail(`the newest message runs below the end of the scrolling area (${end.gap}px)`);
+  } finally {
+    await w.eval("(() => { document.body.style.removeProperty('background'); document.querySelectorAll('[data-glass-filler]').forEach((e) => e.remove()); return true; })()").catch(() => undefined);
+    writeFileSync(s.glassFile, "off");
+    writeFileSync(s.appearanceFile, "");
+  }
+  return `no material: the list was its solid colour (${notes.slice(0, 2).join("; ")}); with the material (the test seam), a magenta ground under the page showed through the list and not the conversation (${notes.slice(2).join("; ")}; at least ${GLASS_MIN} and at most ${MAIN_MAX}); the system's own blur of a real desktop isn't drawn here`;
 }
 
 /** The last row: MOSS Code's own answer key registered on the same computer (as MOSS Code's window registers it,
