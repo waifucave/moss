@@ -33,6 +33,10 @@ import { CHANNELS, CORE_TARGET, channelsServed, feedFile, installersOf, type Cha
 
 // The artifact table (scripts/release/artifacts.ts) is the one place that names what a release holds; the release scripts and
 // their tests read it through here.
+/** The engine's file name in an app (`.exe` on Windows); the other release scripts take it from here. */
+export const ENGINE_NAME = "moss-core";
+export const engineFile = (os: "mac" | "win" | "linux"): string => (os === "win" ? `${ENGINE_NAME}.exe` : ENGINE_NAME);
+
 export {
   CHANNELS, CORE_TARGET, RELEASE_OSES, appFeedFile, channelsServed, coreArtifacts, engineArtifacts, expectedArtifacts, feedFile, pluginBunArtifacts, pluginsArtifacts,
   type Channel, type ReleaseOs,
@@ -322,7 +326,7 @@ export function identityTeam(identity: string): string {
  * dyld already ignores DYLD_ variables for both under the hardened runtime with SIP on; `restrict` keeps that.
  */
 export const RESOURCE_BINARIES = [
-  { file: "moss-core", identifier: "com.waifucave.moss.core", entitlements: "scripts/moss-core.entitlements", restrict: true },
+  { file: ENGINE_NAME, identifier: "com.waifucave.moss.core", entitlements: "scripts/moss-core.entitlements", restrict: true },
   { file: "moss-link", identifier: "com.waifucave.moss.core.link", entitlements: undefined, restrict: false },
   // The binaries that run code not the core's own (scripts/bundled-binaries.ts), never under the core's identifier:
   // plain Bun for plugins (JIT, bun:ffi, native addons), and lane A's process holder (none).

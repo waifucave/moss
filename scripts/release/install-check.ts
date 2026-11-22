@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { engineFile } from "./lib";
 import { installersOf, type AppKey } from "./artifacts";
 import { HOST_HELPER, HOST_TREE_DIR, hostExecutableName } from "./two-apps";
 
@@ -58,8 +59,8 @@ export function checkMac(dist: string, version: string): void {
         const copy = join(installed, `${app.product}.app`);
         const id = run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", join(copy, "Contents", "Info.plist")]).out;
         must(`${app.product}.app is ${app.identifier}`, id === app.identifier, id);
-        must(`${app.product}.app carries the engine, the bundled tree and the host helper`, ["Contents/Resources/daemon/moss-core", "Contents/Resources/plugins/moss/moss.json", `Contents/Frameworks/${HOST_HELPER}/Contents/Info.plist`].every((f) => existsSync(join(copy, f))));
-        engineSays(join(copy, "Contents", "Resources", "daemon", "moss-core"), version);
+        must(`${app.product}.app carries the engine, the bundled tree and the host helper`, [`Contents/Resources/daemon/${engineFile("mac")}`, "Contents/Resources/plugins/moss/moss.json", `Contents/Frameworks/${HOST_HELPER}/Contents/Info.plist`].every((f) => existsSync(join(copy, f))));
+        engineSays(join(copy, "Contents", "Resources", "daemon", engineFile("mac")), version);
         rmSync(installed, { recursive: true, force: true });
         must(`${app.product}.app is removed`, !existsSync(copy));
       } finally {
@@ -86,8 +87,8 @@ export function checkWin(dist: string, version: string): void {
     const r = run([exe, "/S"]);
     must(`${app.product}'s installer runs silently`, r.status === 0, r.out);
     must(`${app.product} is installed in ${dirs[key]}`, existsSync(join(dirs[key], `${app.product}.exe`)));
-    must(`${app.product} carries the engine and the bundled tree`, existsSync(join(dirs[key], "resources", "daemon", "moss-core.exe")) && existsSync(join(dirs[key], "resources", "plugins", "moss", "moss.json")));
-    engineSays(join(dirs[key], "resources", "daemon", "moss-core.exe"), version);
+    must(`${app.product} carries the engine and the bundled tree`, existsSync(join(dirs[key], "resources", "daemon", engineFile("win"))) && existsSync(join(dirs[key], "resources", "plugins", "moss", "moss.json")));
+    engineSays(join(dirs[key], "resources", "daemon", engineFile("win")), version);
   }
   // MOSS carries the host: MOSS Code's app, as moss-host.exe in its own folder (a MOSS-only install has a host to start).
   const host = join(dirs.moss, "resources", HOST_TREE_DIR, hostExecutableName("win"));
@@ -101,8 +102,8 @@ export function checkWin(dist: string, version: string): void {
     must(`${app.product} has an uninstaller`, existsSync(uninstaller));
     const r = run([uninstaller, "/S", `_?=${dirs[key]}`]);
     must(`${app.product} uninstalls silently`, r.status === 0, r.out);
-    must(`${app.product}'s engine and app are removed`, !existsSync(join(dirs[key], "resources", "daemon", "moss-core.exe")) && !existsSync(join(dirs[key], `${app.product}.exe`)));
-    if (key === "moss") engineSays(join(dirs.code, "resources", "daemon", "moss-core.exe"), version);
+    must(`${app.product}'s engine and app are removed`, !existsSync(join(dirs[key], "resources", "daemon", engineFile("win"))) && !existsSync(join(dirs[key], `${app.product}.exe`)));
+    if (key === "moss") engineSays(join(dirs.code, "resources", "daemon", engineFile("win")), version);
   }
   must("both apps are gone", !existsSync(join(dirs.moss, "resources")) && !existsSync(join(dirs.code, "resources")));
 }
@@ -118,7 +119,8 @@ if (import.meta.main) {
     else if (argv[0] === "win") checkWin(dist, version);
     else { console.error("usage: bun scripts/release/install-check.ts mac|win [--dir <folder>]"); process.exit(2); }
   } catch (err) {
-    console.error(`install-check: ${(err as Error).message}`);
-    process.exit(1);
+    // stdout, and an exit code set rather than process.exit: Bun on Windows can drop stderr at an immediate exit.
+    console.log(`install-check: FAILED: ${(err as Error).message}`);
+    process.exitCode = 1;
   }
 }

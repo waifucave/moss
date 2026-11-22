@@ -4,7 +4,8 @@
 // files under MOSS's own names, `moss-latest-mac.yml`: scripts/release/two-apps.ts). There is no flag that builds one app
 // alone: both package.json versions must be VERSION's before anything is built, and after packaging the two apps' engine,
 // tree and host helper are checked byte for byte the same. Linux's release build is scripts/build-packages.ts with the same
-// --channel (MOSS Code only, so far).
+// --channel (both apps' deb, rpm and AppImage). The files a build must leave are the artifact table's (scripts/release/artifacts.ts),
+// checked at the end of every build. On Windows MOSS carries MOSS Code's unpacked app as the host (resources/host/moss-host.exe).
 //
 //   bun scripts/release/build.ts [--channel latest|beta] [--sign [--no-notarize] | --sign-dev | --test-build] [--dry-run]
 //

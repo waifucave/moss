@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error a plain .mjs, imported for its pure helper
 import { carryHostTree, CODE_EXECUTABLE, HOST_TREE_DIR as LAYOUT_DIR, HOST_TREE_FROM_ENV } from "../../apps/moss/scripts/host-helper.mjs";
+import { engineFile } from "./lib";
 import { HOST_TREE_DIR, hostExecutableName, hostTreeProblems } from "./two-apps";
 
 /** A stand-in for MOSS Code's unpacked app on `platform`: its executable, Electron's files, its app.asar and the engine and tree. */
@@ -22,7 +23,7 @@ function unpackedCode(root: string, platform: "linux" | "win32"): string {
   writeFileSync(join(dir, "locales", "en-US.pak"), "pak");
   writeFileSync(join(dir, "resources", "app.asar"), "MOSS Code's main process");
   writeFileSync(join(dir, "resources", "apparmor-profile"), "profile");
-  writeFileSync(join(dir, "resources", "daemon", "moss-core"), "engine");
+  writeFileSync(join(dir, "resources", "daemon", engineFile("linux")), "engine");
   writeFileSync(join(dir, "resources", "plugins", "moss", "moss.json"), "{}");
   return dir;
 }

@@ -137,6 +137,10 @@ deb:
     - gnome-keyring
 rpm:
   packageName: moss
+  # Both apps ship the same Electron and engine binaries, so their build-id links (/usr/lib/.build-id/..) would collide when
+  # both rpms are installed; no links, no conflict.
+  fpm:
+    - --rpm-rpmbuild-define=_build_id_links none
   artifactName: moss-${version}.${arch}.${ext}
   desktop:
     entry:

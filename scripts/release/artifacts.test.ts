@@ -12,6 +12,7 @@ import {
   installerName, installersOf, kindsOf, linuxPackageOf, RELEASE_OSES, type AppKey, type InstallerRow, type ReleaseOs,
 } from "./artifacts";
 import { writeReleaseFixture } from "./fixture";
+import { engineFile } from "./lib";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const config = (app: AppKey): Record<string, any> => Bun.YAML.parse(readFileSync(join(ROOT, APP_BUILD[app].config), "utf8")) as Record<string, any>;
@@ -72,7 +73,7 @@ describe("what a release holds", () => {
         for (const app of APP_KEYS) for (const n of appArtifacts(app, VERSION, os, channel)) expect(all).toContain(n);
         for (const n of engineArtifacts(VERSION, os, channel)) expect(all).toContain(n);
         // The engine is one per system, not one per app.
-        expect(all.filter((n) => n.startsWith("moss-core-")).length).toBe(1);
+        expect(all.filter((n) => n.startsWith(`${engineFile("linux")}-`)).length).toBe(1);
         expect(all.filter((n) => n.startsWith("moss-plugin-bun-")).length).toBe(1);
         expect(all.filter((n) => n.startsWith("moss-plugins-")).length).toBe(1);
         expect(all.length).toBe(appArtifacts("code", VERSION, os, channel).length + appArtifacts("moss", VERSION, os, channel).length + engineArtifacts(VERSION, os, channel).length);
@@ -107,7 +108,7 @@ describe("what a release holds", () => {
     expect(linuxPackageOf("moss-code-1.2.3.aarch64.rpm")).toEqual({ app: "code", kind: "rpm", os: "linux-arm64" });
     expect(linuxPackageOf("moss-1.2.3.x86_64.rpm")).toEqual({ app: "moss", kind: "rpm", os: "linux-x64" });
     // The engine's own files and a stranger are no package.
-    expect(linuxPackageOf("moss-core-1.2.3-linux-x64")).toBeUndefined();
+    expect(linuxPackageOf(`${engineFile("linux")}-1.2.3-linux-x64`)).toBeUndefined();
     expect(linuxPackageOf("moss-plugins-1.2.3-linux-x64.tar.gz")).toBeUndefined();
     expect(linuxPackageOf("moss_1.2.3_i386.deb")).toBeUndefined();
   });
