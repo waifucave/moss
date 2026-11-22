@@ -26,3 +26,21 @@ foreach ($m in Get-Pool) {
   $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sidOf"
   Write-Output "$($m.principal): profile $(if (Test-Path $k) { 'present' } else { 'reset' })"
 }
+
+# The same reset as SYSTEM with its output kept (the reset task's own run shows only a result code): what it says,
+# and if it is still running after two minutes, which processes it is waiting on (names and pids only).
+$ciDir = "C:\moss-ci"; New-Item -ItemType Directory -Force -Path $ciDir | Out-Null
+$sysLog = Join-Path $ciDir "reset-system.log"
+$act = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /s /c `"`"$Core`" sandbox reset > $sysLog 2>&1`""
+$pr = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "moss-ci-reset-system" -Action $act -Principal $pr -Force | Out-Null
+Start-ScheduledTask -TaskName "moss-ci-reset-system"
+$deadline = (Get-Date).AddSeconds(120)
+do { Start-Sleep -Seconds 3; $st = (Get-ScheduledTask -TaskName "moss-ci-reset-system").State } while ($st -eq "Running" -and (Get-Date) -lt $deadline)
+Write-Output "reset as SYSTEM: state $st, result $((Get-ScheduledTaskInfo -TaskName "moss-ci-reset-system").LastTaskResult)"
+if (Test-Path $sysLog) { Get-Content $sysLog | ForEach-Object { Write-Output "reset as SYSTEM: $_" } }
+if ($st -eq "Running") {
+  Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("moss-core.exe", "powershell.exe", "reg.exe", "net.exe", "cmd.exe", "icacls.exe") } | ForEach-Object { Write-Output "running: $($_.Name)#$($_.ProcessId) parent $($_.ParentProcessId)" }
+  Stop-ScheduledTask -TaskName "moss-ci-reset-system"
+}
+Unregister-ScheduledTask -TaskName "moss-ci-reset-system" -Confirm:$false

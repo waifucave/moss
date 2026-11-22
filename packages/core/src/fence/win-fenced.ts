@@ -403,7 +403,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
    *  isn't reset yet is let go and the reset task asked for; past the wait, the command is refused, never run on a
    *  profile another command wrote. */
   async function leaseFresh(leases: LeaseStore, marker: InstallMarker, ownerSid: string): Promise<{ ok: true; principal: string; release: () => void } | { ok: false; reason: string }> {
-    const deadline = Date.now() + (deps.leaseTimeoutMs ?? 60_000);
+    const deadline = Date.now() + (deps.leaseTimeoutMs ?? 30_000);
     // Asked again every few seconds while none is fresh: a reset that met a hive Windows hadn't unloaded yet left it.
     let asked = 0;
     let stale = 0;
