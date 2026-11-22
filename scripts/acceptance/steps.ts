@@ -2,6 +2,7 @@
 // Kept apart from run.ts (which starts a run when loaded) so the table can be unit-tested (steps.test.ts).
 import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
+import { MCP_APPS_STEPS } from "./mcp-apps-step";
 import { CANVAS_APP_STEPS } from "./canvas-app-step";
 import { UI_STEPS } from "./ui-steps";
 import { EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP } from "./example-steps";
@@ -146,6 +147,8 @@ export const FULL_STEPS = [
   ...SETUP_STEPS,
   // The session canvas's rows (spec revision 20, §9.5; the `canvas` unit, canvas-step.ts), before the two that stay last.
   ...CANVAS_STEPS,
+  // Lane MA's MCP Apps rows (mcp-apps-step.ts; the `canvas` unit's shared home).
+  ...MCP_APPS_STEPS,
   // Lane CA's rows: the start page, a start through the door, the corner control, "Open in MOSS" (the `canvas-app` unit, canvas-app-step.ts).
   ...CANVAS_APP_STEPS,
   COLD_START_STEP,

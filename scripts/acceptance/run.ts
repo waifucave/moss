@@ -106,6 +106,7 @@ import { callText, WORKSHOP_STEP, workshopStep } from "./workshop-step";
 import { BOT_RECORDS_ENV, BOT_RECORDS_STEP, botRecordsWrong } from "./bot-records-step";
 import { SECOND_PROVIDER, SETUP_STEPS, setupUnit } from "./setup-step";
 import { CANVAS_APP_STEPS, canvasAppUnit } from "./canvas-app-step";
+import { MCP_APPS_CALL_STEP, MCP_APPS_VIEW_STEP, mcpAppsCallStep, mcpAppsViewStep } from "./mcp-apps-step";
 import { MOSS_ENV, MOSS_STEPS, mossListsArchived, mossShowsOldConversation, mossUnit, seedLongConversation, type MossUnitCtx } from "./moss-step";
 import { botMoveUpgradeCheck } from "./bot-move-upgrade-step";
 import { ROUTINE_NAME, ROUTINE_SCHEDULE, routineTag, scheduledRunWrong, SCHEDULED_ROUTINE_STEP, type RunSeen } from "./routine-schedule-step";
@@ -4238,6 +4239,9 @@ function uiRowRunners(ctx: ExampleCtx, session: string, launch?: Awaited<ReturnT
     [CANVAS_SUBAGENT_STEP, () => canvasSubagentStep(ctx)],
     [CANVAS_WAITING_STEP, () => canvasWaitingStep(ctx)],
     [CANVAS_TITLE_STEP, () => canvasTitleStep(ctx)],
+    // MCP Apps (lane MA, §14.2 item 66): a tool's ui:// page drawn in an isolated view, and its own calls under the session's approvals.
+    [MCP_APPS_VIEW_STEP, () => mcpAppsViewStep(ctx, bot)],
+    [MCP_APPS_CALL_STEP, () => mcpAppsCallStep(ctx, bot)],
     // The plugin builder's 15 examples installed and drawn on the app (checklist 5.4), and a bot's plugin that takes a plugin (5.12).
     [BUILDER_EXAMPLES_STEP, () => builderExamplesStep(ctx, session)],
     [WORKSHOP_POINTS_STEP, () => workshopPointsStep(ctx, bot)],
