@@ -2411,7 +2411,7 @@
       }
     },
     "models.list": {
-      "doc": "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes. `default` is the user's default model.",
+      "doc": "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes: an ACP agent's session lists the models its agent reported (or, before its first turn, the agent's own list as MOSS knows it), under the agent's backend id. `default` is the user's default model.",
       "owner": "A",
       "direction": "to-daemon",
       "roles": [
