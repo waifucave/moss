@@ -390,7 +390,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
    *  profile another command wrote. */
   async function leaseFresh(leases: LeaseStore, marker: InstallMarker, ownerSid: string): Promise<{ ok: true; principal: string; release: () => void } | { ok: false; reason: string }> {
     const deadline = Date.now() + (deps.leaseTimeoutMs ?? 60_000);
-    let asked = false;
+    // Asked again every few seconds while none is fresh: a reset that met a hive Windows hadn't unloaded yet left it.
+    let asked = 0;
     let stale = 0;
     for (;;) {
       stale = 0;
@@ -405,7 +406,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         stale++;
         guard.release();
       }
-      if (!asked && stale > 0) { asked = true; await deps.exec(runResetTaskArgs(ownerSid), { timeoutMs: 30_000 }); }
+      if (stale > 0 && Date.now() - asked >= 3_000) { asked = Date.now(); await deps.exec(runResetTaskArgs(ownerSid), { timeoutMs: 30_000 }); }
       if (Date.now() >= deadline) {
         return { ok: false, reason: stale > 0
           ? "no sandbox account was reset since its last command (the reset task didn't run, or couldn't delete its profile); run `moss-core sandbox setup` again"
