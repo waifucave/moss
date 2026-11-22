@@ -233,6 +233,8 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   // Its second turn, started by Alpha's message later, is its reply to Alpha's conversation.
   cfg(reportC, [bridge("ListSessions", {}), bridge("SendMessage", { message: ANSWER, to: k.id }), bridge("SendMessage", { message: ANSWER, to: bot.mainSession }), { say: "C-DONE" }],
     [bridge("SendMessage", { message: REPLY, to: bot.mainSession }), { say: "C-REPLIED" }]);
+  // This row's own report: the file may hold an earlier row's C (the rows share the work folder).
+  writeFileSync(reportC, "");
   const c = await start("C");
   const results = await until("C's two SendMessage answers", 60_000, async () => {
     const r = reportOf(reportC).filter((x) => x.type === "mcp-result" && x.tool === "SendMessage");
@@ -247,7 +249,7 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   if (fromC.text !== ANSWER) fail(`K's session_message from C reads ${JSON.stringify(fromC).slice(0, 300)}, not C's words`);
   const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
   const cText = String(cList?.text ?? "");
-  if (!cText.includes(b) || !cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and K, and not Alpha's conversation (Alpha has not written to C)`);
+  if (!cText.includes(b) || !cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 1500)}": it must name B (${b}: ${cText.includes(b)}) and K (${k.id}: ${cText.includes(k.id)}), and not Alpha's conversation (${bot.mainSession}: ${cText.includes(bot.mainSession)}; Alpha has not written to C)`);
   await heard("C's first turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
   if (JSON.stringify(await history(bot.mainSession)).includes("CROSS-ANSWER")) fail("C's message reached Alpha's conversation before Alpha had written to C");
   done.push(`2 C (${c}), a session the person started, sent to K ("Sent": K's conversation holds a session_message from C) and was refused for Alpha's conversation ("${String(toBot!.text).slice(0, 60)}…"): nothing reached it, and C's ListSessions names B and K and no bot's conversation`);
