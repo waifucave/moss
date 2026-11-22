@@ -1,6 +1,38 @@
 {
   "notes": "The acceptance run's fake ACP agent (packages/core/src/agents/testing/fake-acp-agent.ts, the one the backend conformance suite runs), standing in for a vendor's CLI. The run writes its program's and config's absolute paths in before it installs the plugin.",
   "source": "the acceptance run's fake ACP agent",
+  "modelList": {
+    "command": {
+      "program": "__BUN__",
+      "args": [
+        "__FAKE__",
+        "__CONFIG__",
+        "models"
+      ],
+      "identity": {
+        "versionArgs": [
+          "__FAKE__",
+          "__CONFIG__",
+          "--version"
+        ],
+        "versionPattern": "^fake-agent (\\d+\\.\\d+\\.\\d+)$"
+      },
+      "timeoutMs": 15000
+    },
+    "reader": {
+      "list": "models",
+      "id": "slug",
+      "name": "display_name",
+      "hideUnless": {
+        "key": "visibility",
+        "value": "list"
+      },
+      "efforts": {
+        "list": "levels",
+        "id": "effort"
+      }
+    }
+  },
   "quirks": {
     "capabilities": {
       "snakeCaseDuplicates": false,
@@ -66,8 +98,8 @@
       "mcpNames": null
     },
     "config": {
-      "modelOption": null,
-      "effortOption": null,
+      "modelOption": "model",
+      "effortOption": "thought_level",
       "effortInModel": false,
       "choicePersists": false
     },
