@@ -99,7 +99,8 @@ describe("nothing is born hidden under a bar", () => {
     expect(css).toMatch(/\.conversation:has\(\.card\), \.page:has\(\.card\) \{ --under: 0px; \}/);
   });
   test("while a card waits the bar is docked in the column's flow: nothing may lie over a sealed card's frame", () => {
-    expect(css).toMatch(/\.conversation:has\(\.card\) > \.conversation__head, \.page:has\(\.card\) > \.page__head \{ position: relative; flex: none; -webkit-backdrop-filter: none; backdrop-filter: none; \}/);
+    expect(css).toMatch(/\.conversation:has\(\.card\) > \.conversation__head, \.page:has\(\.card\) > \.page__head \{ position: static; z-index: auto; flex: none; background: none; -webkit-backdrop-filter: none; backdrop-filter: none; \}/);
+    expect(css).toMatch(/\.conversation:has\(\.card\), \.page:has\(\.card\) \{ position: static; \}/);
     // The floating rule is the only one that puts a bar over its column.
     expect([...css.matchAll(/position: absolute; top: 0; left: 0; right: 0/g)].length).toBe(1);
   });
