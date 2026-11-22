@@ -340,14 +340,14 @@ const STOPPED = "This part stopped.";
 const stoppedAnywhere = async (cdp: Cdp): Promise<boolean> => (await Promise.all((await cdp.documents()).map((d) => cdp.evaluate(d.session, DRAWN_TEXT_JS).catch(() => "")))).some((t) => String(t).includes(STOPPED));
 
 /** The window's ground under the sidebar's material, per scheme: `sidebar.solid` (the base theme's). Offscreen there is
- *  no desktop behind the window's vibrancy, so `sidebar.tint` (70% alpha) would composite over white and read as
+ *  no desktop behind the window's vibrancy, so `sidebar.tint` (translucent) would composite over white and read as
  *  mid-grey; a render lays it over this opaque ground instead, as macOS shows it over the material. */
 const RENDER_GROUND = { dark: { r: 0x20, g: 0x20, b: 0x20 }, light: { r: 0xf5, g: 0xf5, b: 0xf5 } } as const;
 
 /** The ground under the app's root and the shell's own frame (the sidebar's material sits in it), for a render: a
  *  render-only colour on their <html>, through the CSSOM (the default-background override doesn't reach under a
  *  headless capture's material). Without it a part with no background of its own (the stock conversation, the
- *  sidebar's 70% tint) shows the offscreen window's white, in dark mode too. `unshootWindow` takes it away. */
+ *  sidebar's translucent tint) shows the offscreen window's white, in dark mode too. `unshootWindow` takes it away. */
 export async function layGround(cdp: Cdp, scheme: "dark" | "light"): Promise<void> {
   const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
   const shell = await shellDoc(cdp).catch(() => undefined);

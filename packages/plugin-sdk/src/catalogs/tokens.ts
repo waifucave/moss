@@ -75,7 +75,9 @@ export const TOKENS: readonly TokenInfo[] = [
   t("color.hover", "color", "#EFEFEF", "#2A2A2A", "A row's fill under the pointer."),
   t("color.selected", "color", "#DFDFDF", "#3D3D3D", "A selected row's fill. Navigation stays neutral: never the accent."),
   // The window's chrome over its material (macOS vibrancy, Windows 11 acrylic; lane E sets the material).
-  t("sidebar.tint", "color", "#F5F5F5B3", "#202020B3", "The sidebar over the window's material."),
+  // Light enough to read as glass (the owner, 2026-11-22: "somewhat translucent to what's behind"): the material itself
+  // keeps the text readable, as a native sidebar's does; the tint only evens it.
+  t("sidebar.tint", "color", "#F5F5F566", "#20202059", "The sidebar over the window's material."),
   t("sidebar.solid", "color", "#F5F5F5", "#202020", "The sidebar where the window has no material (Linux)."),
   t("titlebar.tint", "color", "#FFFFFFC7", "#191919C7", "The title bar over what scrolls under it."),
   t("titlebar.blur", "dimension", "16px", undefined, "The title bar's backdrop blur."),

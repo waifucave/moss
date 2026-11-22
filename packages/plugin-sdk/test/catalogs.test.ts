@@ -408,7 +408,8 @@ describe("tokens", () => {
 
   test("lane F's twelve plugin.moss tokens are catalog tokens now, at F's measured values", () => {
     const value = (name: string) => { const t = TOKENS.find((x) => x.name === name)!; return [t.type, t.default, t.dark]; };
-    expect(value("sidebar.tint")).toEqual(["color", "#F5F5F5B3", "#202020B3"]);
+    // The sidebar's tint lighter than F's measured 70% since the owner's try 21 (it read as solid): 40% and 35%.
+    expect(value("sidebar.tint")).toEqual(["color", "#F5F5F566", "#20202059"]);
     expect(value("sidebar.solid")).toEqual(["color", "#F5F5F5", "#202020"]);
     expect(value("titlebar.tint")).toEqual(["color", "#FFFFFFC7", "#191919C7"]);
     expect(value("titlebar.blur")).toEqual(["dimension", "16px", undefined]);

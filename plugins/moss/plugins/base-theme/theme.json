@@ -144,7 +144,7 @@
     "pill.plume.hot": "#CCEDFF",
 
 
-    "plugin.moss.sidebar.tint": "#F5F5F5B3",
+    "plugin.moss.sidebar.tint": "#F5F5F566",
     "plugin.moss.sidebar.solid": "#F5F5F5",
     "plugin.moss.bar.tint": "#FFFFFFC7",
     "plugin.moss.bar.blur": "16px",
@@ -204,7 +204,7 @@
       "shadow.float": "0 12px 36px #00000099, 0 2px 8px #00000066",
 
 
-      "plugin.moss.sidebar.tint": "#202020B3",
+      "plugin.moss.sidebar.tint": "#20202059",
       "plugin.moss.sidebar.solid": "#202020",
       "plugin.moss.bar.tint": "#191919C7",
       "plugin.moss.scrim": "#00000080",

@@ -2090,8 +2090,8 @@
     {
       "name": "sidebar.tint",
       "type": "color",
-      "default": "#F5F5F5B3",
-      "dark": "#202020B3",
+      "default": "#F5F5F566",
+      "dark": "#20202059",
       "doc": "The sidebar over the window's material."
     },
     {

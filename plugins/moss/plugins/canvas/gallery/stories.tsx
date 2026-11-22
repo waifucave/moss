@@ -6,7 +6,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer } from "@waifucave/moss-plugin-sdk/ui/testing";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
-import { CanvasCorner, CanvasStart, type CanvasStartProps } from "../client/entry";
+import { CanvasBar, CanvasCorner, CanvasStart, type CanvasStartProps } from "../client/entry";
 import { BACKENDS, FOLDERS, LAST_LINES, manySessions, OPTIONS, RECENT } from "./fixtures";
 
 export interface Story {
@@ -33,6 +33,9 @@ const backends = (more = false) => [...BACKENDS, ...(more ? EXTRA_BACKENDS : [])
   if (b.id === "kimi" && MARKS["kimi-dark"] !== undefined) return { ...b, ...(MARKS.kimi !== undefined ? { icon: { ...MARKS.kimi, at: 0 } } : {}), iconDark: { ...MARKS["kimi-dark"], at: 0 } };
   return MARKS[b.id] !== undefined ? { ...b, icon: { ...MARKS[b.id]!, at: 0 } } : b;
 });
+
+/** The window's bar's height (the base theme's, its rule included). */
+const BAR_HEIGHT = 45;
 
 function World({ scene, at = 0, live = true, initial, params, onRoute, botState = "idle", more = false }: { more?: boolean; scene: readonly SessionSceneStep[]; at?: number; live?: boolean; initial?: CanvasStartProps["initial"]; params?: { session?: string }; onRoute?: (r: string) => void; botState?: string | Record<string, string> }) {
   const runtime = useMemo(() => {
@@ -64,10 +67,17 @@ function World({ scene, at = 0, live = true, initial, params, onRoute, botState 
     };
     return runtimeWith({ core: () => core, api: () => api, userSend: () => async () => undefined });
   }, [scene, at, live, more, JSON.stringify(botState)]);
+  // As the window draws it: the window's frosted bar (the shell's, a stand-in here) holds the canvas's line and +
+  // (`page.bar`), and the canvas runs up under it.
   return (
-    <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
-      <CanvasStart props={{ route: "start", params: params ?? {}, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}) }} />
-    </TestLayer>
+    <div className="g-window">
+      <header className="g-window__bar">
+        <CanvasBar props={{ route: "start", barHeight: BAR_HEIGHT }} />
+      </header>
+      <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
+        <CanvasStart props={{ route: "start", params: params ?? {}, barHeight: BAR_HEIGHT, navigate: (r) => onRoute?.(`${r.route} ${JSON.stringify(r.params)}`), ...(initial !== undefined ? { initial } : {}) }} />
+      </TestLayer>
+    </div>
   );
 }
 

@@ -137,6 +137,12 @@ button.cl-window__title:hover {
   height: 100%;
 }
 
+/* With a page's own line in the title's place, the line takes the room (its controls at the bar's right end): the note
+   (empty unless a card holds a dialog back) keeps only what it says. */
+.cl-window__page-bar + .cl-window__note {
+  flex: 0 1 auto;
+}
+
 .cl-window__toggles {
   display: flex;
   flex: none;

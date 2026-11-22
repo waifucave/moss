@@ -236,3 +236,30 @@ body {
 .cv-face-real {
   display: block;
 }
+
+/* A stand-in for the window around the canvas: the shell's frosted bar over its top (its tint and blur, as the base
+   theme has them), the canvas running up under it. */
+.g-window {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.g-window__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  height: 45px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--moss-color-hairline-raised);
+  background: color-mix(in srgb, var(--moss-color-surface) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.6);
+}
