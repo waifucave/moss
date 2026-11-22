@@ -261,6 +261,7 @@ export function agentPluginTools(d: AgentPluginReachDeps): BridgeToolSource {
       }));
     },
     ...(d.settled === undefined ? {} : { settled: (ms: number) => d.settled!(ms) }),
+    judge: (s, ctx, call) => d.judge(s, ctx, call),
     async instructions(_sessionId, session) {
       if (session === undefined) return "";
       const seen = new Set<string>();
@@ -440,6 +441,10 @@ export function lateAgentPlugins(deps: () => AgentPluginReachDeps | undefined, w
       tools: async (id, s) => { const d = deps(); return d === undefined ? [] : agentPluginTools(d).tools(id, s); },
       instructions: async (id, s) => { const d = deps(); return d === undefined ? "" : agentPluginTools(d).instructions!(id, s); },
       settled: async (ms) => { await deps()?.settled?.(ms); },
+      judge: async (s, ctx, call) => {
+        const d = deps();
+        return d === undefined ? { allowed: false, message: `${call.served} was refused: this computer's approvals aren't running for agents yet; try again in a moment.` } : d.judge(s, ctx, call);
+      },
       call: async (id, c, ctx) => {
         const d = deps();
         return d === undefined ? text(`${c.tool} was refused: MOSS's plugins aren't running for agents yet; try again in a moment.`) : agentPluginTools(d).call(id, c, ctx);

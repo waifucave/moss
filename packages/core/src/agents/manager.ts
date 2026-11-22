@@ -32,7 +32,7 @@
 // The bridge's server name is `moss_` and a random suffix, new for each session (review 14), so no MCP server of
 // the user's own can share it. The bridge's methods land here too: `SendMessage` from an agent folds into its bot's
 // conversation (§9.3), and only into another session of the same bot.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { extname, isAbsolute, join, relative } from "node:path";
 import { BRIDGE_TOOLS_CHANGED_NOTIFICATION, type Level, type Os, type SealedValue, type SessionView, type TurnOrigin } from "@waifucave/moss-protocol";
@@ -50,7 +50,7 @@ import { BridgeTokens } from "./bridge/tokens";
 import type { BridgeHandlers } from "./bridge/handlers";
 import { BRIDGE_ENV } from "./bridge/server";
 import { exposureOf, listChangeModeOf } from "./exposure";
-import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessionFacts, type GlossaryAnswer, type BridgeToolDef, type BridgeToolSource } from "./bridge/tools";
+import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessionFacts, type BridgeCallContext, type GlossaryAnswer, type BridgeToolDef, type BridgeToolSource } from "./bridge/tools";
 import { AgentDriver } from "./driver";
 import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
@@ -1527,6 +1527,30 @@ export class AgentManager {
     return `MOSS's plugin tools changed${what ? ` (${what})` : ""}. This agent doesn't take a change of tools in a running session, so it keeps the list it started with until its next session. A tool that has gone is refused if it calls it.`;
   }
 
+  /** The approval a bot's agent's `SendMessage` waits for (spec §9.2: "messaging the bot's own sessions or a session whose level is no wider
+   *  than its own" runs without asking at ask for risky actions; read only is absolute, ask asks, a wider target's a card every time):
+   *  the same call as in its bot's own session, judged by the bots' approval check (`BridgeToolSource.judge`), at the target the rule
+   *  resolved (never the model's `to`, which may be a title). A session the person drives (no bot) is not asked here: the spec gives
+   *  nothing for it. Without a judge (no approvals here) nothing is asked, as before. */
+  #messageApproval(sessionId: string, text: string): ((target: SessionView) => Promise<string | undefined>) | undefined {
+    const judge = this.#o.pluginTools?.judge;
+    const e = this.#entries.get(sessionId);
+    const r = this.#remote.get(sessionId);
+    const facts: AgentSessionFacts | undefined = e !== undefined && e.peer === undefined ? this.#facts(e)
+      : r !== undefined ? { id: r.id, kind: r.bot === undefined ? "coding" : "agent", backend: r.backend, ...(r.bot === undefined ? {} : { bot: r.bot }), computer: r.computer, root: r.root }
+      : undefined;
+    if (judge === undefined || facts === undefined || facts.bot === undefined) return undefined;
+    const level = e === undefined ? r?.level : this.#routineLevelOf(e);
+    const signal = e?.driver.currentSignal();
+    const ctx: BridgeCallContext = {
+      computer: facts.computer, origin: e?.driver.currentOrigin() ?? "agent", bot: facts.bot, ...(level === undefined ? {} : { level }), ...(signal ? { signal } : {}), session: facts,
+    };
+    return async (target) => {
+      const v = await judge(facts, ctx, { served: "SendMessage", input: { to: target.id, message: text }, callId: randomUUID() });
+      return v.allowed ? undefined : v.message;
+    };
+  }
+
   /** An agent's `SendMessage` (§9.3, §9.5): a message to another session it may reach, under the protocol's one rule. */
   async agentMessage(sessionId: string, text: string, to?: string): Promise<void> {
     const e = this.#entries.get(sessionId);
@@ -1540,7 +1564,7 @@ export class AgentManager {
   }
 
   async #send(sessionId: string, text: string, to?: string): Promise<void> {
-    const r = await this.#messenger.send(sessionId, { message: text, ...(to === undefined ? {} : { to }) });
+    const r = await this.#messenger.send(sessionId, { message: text, ...(to === undefined ? {} : { to }) }, this.#messageApproval(sessionId, text));
     if ("refused" in r) throw new ContractError("refused", r.refused);
   }
 }
