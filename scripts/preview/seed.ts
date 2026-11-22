@@ -57,7 +57,27 @@ async function until<T>(what: string, ms: number, probe: () => Promise<T | undef
   }
 }
 
-export async function seed(i: SeedInput): Promise<Seeded> {
+
+export type SceneName = "idle" | "waiting" | "child" | "message" | "running" | "ended";
+export const SCENE_NAMES: readonly SceneName[] = ["idle", "waiting", "child", "message", "running", "ended"];
+
+/** What a scene is made with: the engine client and the small steps every scene shares. */
+interface Kit {
+  c: MossClient;
+  made: Seeded["sessions"];
+  sweep(): Promise<void>;
+  folder(name: string): string;
+  history(id: string): Promise<Ev[]>;
+  turnEnded(id: string, n?: number): Promise<true>;
+  titled(id: string): Promise<string>;
+  send(session: string, text: string): Promise<unknown>;
+  start(backend: string, root: string, prompt: string, extra?: Record<string, unknown>): Promise<string>;
+  agentConfig(backend: string, version: string, script: unknown[][]): void;
+  note(id: string, what: string): void;
+}
+
+/** Runs `run` with the shared steps and a poller that approves every card the scene raises (an agent that carries no sandbox of its own asks once; a background command asks). */
+async function withKit<T>(i: SeedInput, run: (k: Kit) => Promise<T>): Promise<T> {
   const { c } = i;
   const made: Seeded["sessions"] = [];
   // Every card the seeding raises (an agent that carries no sandbox of its own asks once; a background command asks) is approved here, so none waits when the window opens.
@@ -79,7 +99,6 @@ export async function seed(i: SeedInput): Promise<Seeded> {
   };
   const poller = setInterval(() => void sweep(), 600);
   try {
-    await signIn(i);
     const computer = (await c.request<{ computers: { name: string }[] }>("computer.list", {})).computers[0]?.name;
     if (computer === undefined) throw new Error("computer.list lists no computer");
     const folder = (name: string): string => { mkdirSync(join(i.layout.work, name), { recursive: true }); return `home/${computer}/work/${name}`; };
@@ -97,13 +116,24 @@ export async function seed(i: SeedInput): Promise<Seeded> {
       }));
     };
     const note = (id: string, what: string): void => { made.push({ id, what }); i.say(`seeded ${what}: ${id}`); };
+    return await run({ c, made, sweep, folder, history, turnEnded, titled, send, start, agentConfig, note });
+  } finally {
+    clearInterval(poller);
+  }
+}
 
-    // MOSS's agent: idle.
+/** The scenes: each makes sessions in one state through the engine's own doors. `seed` makes them all; `seedScene` one, on demand (ctl.ts `seed <scene>`). */
+const SCENES: Record<SceneName, (k: Kit, i: SeedInput) => Promise<void>> = {
+  idle: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     const idle = await start("moss-code", folder("web-app"), "Fix the login redirect loop ACCEPTANCE-TAG-PREVIEWA", { model: i.keyedModel });
     await turnEnded(idle); await titled(idle);
     note(idle, "idle (MOSS's agent)");
-
-    // MOSS's agent: waiting on a background command after its turn.
+  },
+  waiting: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     const waiting = await start("moss-code", folder("api-server"), 'ACCEPTANCE-CALL Bash {"command":"sleep 7200","run_in_background":true,"description":"Start the dev server"}', { model: i.keyedModel });
     await turnEnded(waiting); await titled(waiting);
     await until("the waiting session to count its command", 60_000, async () => {
@@ -111,8 +141,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
       return (v.waiting?.tasks ?? 0) >= 1 ? true : undefined;
     });
     note(waiting, "waiting on a background command (MOSS's agent)");
-
-    // MOSS's agent: a child of the default bot's conversation.
+  },
+  child: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     const bot = (await c.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots[0];
     if (bot === undefined) throw new Error("bot.list lists no bot");
     const before = new Set((await c.request<{ sessions: { id: string }[] }>("session.list", { kinds: ["agent"] })).sessions.map((s) => s.id));
@@ -120,8 +152,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
     const child = await until("the bot's child session", 150_000, async () => (await c.request<{ sessions: { id: string; parent?: string }[] }>("session.list", { kinds: ["agent"] })).sessions.find((s) => !before.has(s.id) && s.parent === bot.mainSession)?.id);
     await turnEnded(child); await titled(child);
     note(child, "started by the default bot (MOSS's agent)");
-
-    // Codex (a fake ACP agent): idle. Claude Code's SendMessage to it is the line.
+  },
+  message: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     agentConfig("codex", "2.6.0", [[{ say: "Ready. Which screen should I start with?" }]]);
     const codex = await start("codex", folder("mobile-app"), "Review the settings screen layout");
     await turnEnded(codex); await titled(codex);
@@ -136,8 +170,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
       throw err;
     });
     note(claude, "started a line to the Codex session (Claude Code)");
-
-    // Gemini (a fake ACP agent): a turn, then stopped: ended.
+  },
+  ended: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     agentConfig("gemini", "0.50.0", [[{ say: "Updated the provider versions in the Terraform module." }]]);
     const gemini = await start("gemini", folder("infra"), "Bump the terraform provider versions");
     await turnEnded(gemini); await titled(gemini);
@@ -147,8 +183,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
       return /ended|stopped|done/i.test(status) ? true : undefined;
     });
     note(gemini, "ended (Gemini)");
-
-    // MOSS's agent: running, a second turn held open on the fake provider. Last, so it has run the least when the window opens.
+  },
+  running: async (k, i) => {
+    const { c, start, folder, turnEnded, titled, note, send, history, agentConfig } = k;
+    void [send, history, agentConfig, i, c];
     const running = await start("moss-code", folder("web-app"), "Profile the checkout page load", { model: i.keyedModel });
     await turnEnded(running); await titled(running);
     await send(running, "Keep going, the profile is not done yet ACCEPTANCE-SLOW");
@@ -158,15 +196,30 @@ export async function seed(i: SeedInput): Promise<Seeded> {
       throw err;
     });
     note(running, "running (MOSS's agent, a turn held open)");
+  },
+};
 
+export async function seed(i: SeedInput): Promise<Seeded> {
+  return await withKit(i, async (k) => {
+    await signIn(i);
+    for (const name of ["idle", "waiting", "child", "message", "ended", "running"] as const) await SCENES[name](k, i);
     await sleep(1_200);
-    await sweep();
-    const left = (await c.request<{ cards: CardRow[] }>("card.list")).cards;
+    await k.sweep();
+    const left = (await k.c.request<{ cards: CardRow[] }>("card.list")).cards;
     if (left.length > 0) i.say(`seed: ${left.length} card(s) are still waiting (the preview's window can show them only while it is in front)`);
-    return { sessions: made, bot: bot.mainSession };
-  } finally {
-    clearInterval(poller);
-  }
+    const bot = (await k.c.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots[0];
+    return { sessions: k.made, bot: bot?.mainSession ?? "" };
+  });
+}
+
+/** One scene on a preview that is already up (its model is signed in): the sessions it made. */
+export async function seedScene(name: SceneName, i: SeedInput): Promise<Seeded["sessions"]> {
+  return await withKit(i, async (k) => {
+    await SCENES[name](k, i);
+    await sleep(1_200);
+    await k.sweep();
+    return k.made;
+  });
 }
 
 async function signIn(i: SeedInput): Promise<void> {
