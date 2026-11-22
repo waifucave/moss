@@ -293,7 +293,7 @@ export function PluginIndexEntry({ props }: { props: PluginIndexEntryProps }) {
   const [addStatus, setAddStatus] = useState<DetailStatus | undefined>(undefined);
   const [installed, setInstalled] = useState<InstalledPlugin[] | undefined>(undefined);
   const [icons, setIcons] = useState<Record<string, string>>({});
-  const [mine, setMine] = useState("");
+  const [mine, setMine] = useKept<string>(`plugins.mine:${place}`, "");
   const [keptOpen, setOpen] = useKept<string | null>(`plugins.open:${place}`, () => props.params?.id ?? null);
   const open: string | undefined = keptOpen ?? undefined;
   const [detail, setDetail] = useState<PluginDetailView | undefined>(undefined);
@@ -415,8 +415,8 @@ export function PluginIndexEntry({ props }: { props: PluginIndexEntryProps }) {
   }, [core]);
 
   const looking = props.params?.spot ? { spot: props.params.spot, ...(props.params.key ? { key: props.params.key } : {}) } : undefined;
-  const [query, setQuery] = useState(props.params?.key ?? "");
-  const [asked, setAsked] = useState(props.params?.key ?? "");
+  const [query, setQuery] = useKept<string>(`plugins.query:${place}`, props.params?.key ?? "");
+  const [asked, setAsked] = useKept<string>(`plugins.asked:${place}`, props.params?.key ?? "");
   const [searching, setSearching] = useState(true);
   const [indexes, setIndexes] = useState<IndexView[]>([]);
   const [results, setResults] = useState<IndexResult[]>([]);

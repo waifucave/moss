@@ -3,7 +3,7 @@
 // that asks for its OK again shows that card) and Hold back (a pin, this computer's only: no updates offered).
 // Indexes: the plain lists of plugins the user added, each with its health (last checked, a failed fetch); Add one by
 // its address (each plugin from it still asks for its OK), Remove one (a card when installed plugins came from it).
-import { useState } from "react";
+import { useKept } from "@waifucave/moss-plugin-sdk/ui";
 import { S } from "./strings";
 import type { IndexesProps, UpdatesProps } from "./types";
 
@@ -50,7 +50,7 @@ export function Updates(props: UpdatesProps) {
 }
 
 export function Indexes(props: IndexesProps) {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useKept<string>("plugins.indexes.url", "");
   return (
     <div className="cl-plugin-index__manage-indexes">
       {props.status && (

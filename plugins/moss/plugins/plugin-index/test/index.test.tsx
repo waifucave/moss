@@ -551,6 +551,21 @@ describe("the Plugins page: updates and indexes", () => {
     expect(screen.getByRole("tab", { selected: true }).textContent).toContain("Find");
   });
 
+  test("the search boxes outlive a reload of the window's document: the Installed filter and the Find query", async () => {
+    sessionStorage.clear();
+    await mount({ tab: "installed" }, "found");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search your plugins" }), { target: { value: "tar" } });
+    const atReload = Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i)!).map((k) => [k, sessionStorage.getItem(k)!]));
+    cleanup();
+    for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
+    await mount({ tab: "installed" }, "found");
+    expect((screen.getByRole("searchbox", { name: "Search your plugins" }) as HTMLInputElement).value).toBe("tar");
+    // Left and opened again (an unmount): empty, as before.
+    cleanup();
+    await mount({ tab: "installed" }, "found");
+    expect((screen.getByRole("searchbox", { name: "Search your plugins" }) as HTMLInputElement).value).toBe("");
+  });
+
   test("a folder the user chose outlives a reload of the window's document, and a registry change landing before the press leaves it: the press installs it", async () => {
     sessionStorage.clear();
     const first = await mount({ tab: "add" });

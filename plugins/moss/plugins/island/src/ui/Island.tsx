@@ -31,6 +31,7 @@ import { cardGeometry, ISLAND, islandRect, showsWings, stripAction, stripLineRec
 import { FLUID, fluidSeconds } from "../model/fluid";
 import { beginClosing, beginOpening, MORPH, morphSeconds, type MorphClock } from "../model/morph";
 import { IslandQueue } from "../model/queue";
+import { useKept } from "@waifucave/moss-plugin-sdk/ui";
 import { NEEDS_YOU, guestTabs, select, selectedTab, tabState, type GuestTab, type IslandTab } from "../model/tabs";
 import { t } from "../strings";
 import { QuestionCardContent, SealedCardContent } from "./CardContent";
@@ -125,7 +126,16 @@ export function Island(props: IslandProps): ReactElement {
   const [drafts, setDrafts] = useState<Record<string, QuestionDraft>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [sending, setSending] = useState<Set<string>>(new Set());
-  const [morph, setMorph] = useState<MorphClock>({ openedAt: null, closing: null });
+  // The open island and its chosen tab are the user's place: kept across a reload of this document (a plugin with its own
+  // layer installed, turned on or updated loads it again), so an open island stays open on the same tab (`useKept`). A
+  // reload that finds it open opens it again at once, with no animation, and tells the host (the window is sized by it).
+  const [keptOpen, setKeptOpen] = useKept<boolean>("island.open", false);
+  const [keptTab, setKeptTab] = useKept<string | null>("island.tab", null);
+  const restoredOpen = useRef(keptOpen && !alwaysOpen);
+  const [morph, setMorph] = useState<MorphClock>(() => (restoredOpen.current ? beginOpening({ openedAt: null, closing: null }, timers.now(), true) : { openedAt: null, closing: null }));
+  useEffect(() => {
+    if (restoredOpen.current) onOpenChange?.(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // A kit whose frames arrive after the card (the app's real one) holds a sealed card back until every frame is in place:
   // an empty or half-drawn card is never shown, and the window is not sized for one.
   const gated = useSealedKit().holdsUntilWhole === true;
@@ -140,8 +150,28 @@ export function Island(props: IslandProps): ReactElement {
   // Keyed by what the tabs are, not by the array: a parent passing a fresh array each render changes nothing.
   const tabKey = extraTabs.map(({ id, title }) => `${id}\u0000${title}`).join("\u0001");
   const tabList = useMemo(() => [NEEDS_YOU, ...extraTabs.map(({ id, title }) => ({ id, title }))], [tabKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [tabs, setTabs] = useState(() => tabState(tabList));
-  useEffect(() => setTabs((s) => (s.tabs === tabList ? s : tabState(tabList, Math.min(s.selected, tabList.length - 1)))), [tabList]);
+  // The tab the user chose is kept by its id (the list's order changes as tabs come and go): a reload starts on it, and a
+  // tab that arrives after the first render (a guest's, announced later) takes the choice when it shows up.
+  const wanted = useRef(keptTab);
+  const indexOf = (list: readonly IslandTab[], id: string | null) => (id === null ? -1 : list.findIndex((t) => t.id === id));
+  const [tabs, setTabs] = useState(() => tabState(tabList, Math.max(0, indexOf(tabList, wanted.current))));
+  useEffect(
+    () =>
+      setTabs((s) => {
+        if (s.tabs === tabList) return s;
+        const at = indexOf(tabList, wanted.current);
+        return tabState(tabList, at >= 0 ? at : Math.min(s.selected, tabList.length - 1));
+      }),
+    [tabList],
+  );
+  const choose = useCallback(
+    (id: string) => {
+      wanted.current = id;
+      setKeptTab(id);
+      setTabs((s) => select(s, id));
+    },
+    [setKeptTab],
+  );
 
   const nowS = () => timers.now() / 1000;
   const byId = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
@@ -205,6 +235,10 @@ export function Island(props: IslandProps): ReactElement {
   }, [queue, timers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isOpen = alwaysOpen || morph.openedAt !== null;
+  const openNow = isOpen && !morph.closing;
+  useEffect(() => {
+    if (!alwaysOpen && openNow !== keptOpen) setKeptOpen(openNow);
+  }, [alwaysOpen, openNow, keptOpen, setKeptOpen]);
   // The plugins' lines are asked for only while they can be seen: the island open, on Needs you, and not on its way out.
   // Also on the closed strip (the owner's ruling: "when MOSS isn't in front"): the first line shows under it while nothing
   // waits and MOSS's window is not the one in front. While the window is in front nothing is asked at all.
@@ -247,11 +281,11 @@ export function Island(props: IslandProps): ReactElement {
   const open = useCallback(
     (tab: string | null) => {
       setMorph((m) => beginOpening(m, timers.now(), reducedMotion));
-      if (tab) setTabs((s) => select(s, tab));
+      if (tab) choose(tab);
       setOpenHovered(true); // opened by a press on the strip: the pointer is on it
       onOpenChange?.(true);
     },
-    [onOpenChange, reducedMotion, timers],
+    [onOpenChange, reducedMotion, timers, choose],
   );
 
   const close = useCallback(() => {
@@ -289,7 +323,7 @@ export function Island(props: IslandProps): ReactElement {
     const tab = tabForPart(part, partTabs) || null;
     const action = stripAction(tab, isOpen && !morph.closing, selectedTab(tabs)?.id ?? null);
     if (action.kind === "open") open(action.tab);
-    else if (action.kind === "select") setTabs((s) => select(s, action.tab));
+    else if (action.kind === "select") choose(action.tab);
     else close();
   };
 
@@ -464,7 +498,7 @@ export function Island(props: IslandProps): ReactElement {
           reducedMotion={reducedMotion}
           tabs={tabs}
           count={selectedTab(tabs)?.id === NEEDS_YOU.id ? cards.length : undefined}
-          onSelectTab={(id) => setTabs((s) => select(s, id))}
+          onSelectTab={choose}
           onTopBand={(x) => onStripPart(x < -(shape.housing?.width ?? 0) / 2 ? "waitingWing" : x > (shape.housing?.width ?? 0) / 2 ? "workingWing" : "housing")}
         >
           {tabBody}

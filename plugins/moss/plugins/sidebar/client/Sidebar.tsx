@@ -4,7 +4,8 @@
 // account with the settings gear at the bottom. Collapsed, it is a rail of icons, each with its
 // accessible name. It paints no background of its own: the window frame puts the sidebar's material
 // (or its solid colour) behind it.
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useKept } from "@waifucave/moss-plugin-sdk/ui";
 import {
   MossMark,
   IconArchive,
@@ -183,14 +184,32 @@ function banners(props: SidebarProps): Banner[] {
 
 export function Sidebar(props: SidebarProps) {
   const { collapsed = false } = props;
-  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set(props.initialFoldedProjects ?? []));
-  const fold = (id: string) =>
-    setFolded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // The folded projects and the list's scroll are the user's place: kept across a reload of the window's document (installing
+  // a plugin with its own layer loads it again), so the list comes back where it was (`useKept`).
+  const [foldedKept, setFoldedKept] = useKept<string[]>("sidebar.folded", () => [...(props.initialFoldedProjects ?? [])]);
+  const folded = new Set(foldedKept);
+  const fold = (id: string) => setFoldedKept((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const [scrolled, setScrolled] = useKept<number>("sidebar.scroll", 0);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  // The rows may arrive after the first render (the list is read from the engine): the place is put back once the list
+  // is tall enough to hold it, and never after the user has scrolled themselves.
+  const placed = useRef(scrolled <= 0);
+  const writing = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el === null || placed.current) return;
+    if (el.scrollHeight - el.clientHeight >= scrolled) {
+      el.scrollTop = scrolled;
+      placed.current = true;
+    }
+  });
+  useEffect(() => () => clearTimeout(writing.current), []);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (el === null || !placed.current) return;
+    clearTimeout(writing.current);
+    writing.current = setTimeout(() => setScrolled(Math.round(el.scrollTop)), 120);
+  };
   const list = banners(props);
 
   const action = (key: string, icon: ReactNode, label: string, onClick: (() => void) | undefined) =>
@@ -238,7 +257,7 @@ export function Sidebar(props: SidebarProps) {
         {action("more", <IconMore />, S.more, props.onMore)}
       </ul>
 
-      <div className="cl-sidebar__scroll">
+      <div className="cl-sidebar__scroll" ref={scroller} onScroll={onScroll}>
         {(
           <section className="cl-sidebar__section" aria-label={S.projects}>
             {collapsed ? (

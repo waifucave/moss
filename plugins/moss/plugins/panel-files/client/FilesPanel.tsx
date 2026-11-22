@@ -8,9 +8,9 @@
 // Right opens a folder (or steps into it), Left closes it (or steps out to its folder), Home and End
 // go to the ends. A listing that loops back on itself (a link to a folder above) draws each folder
 // once. Names and the file's lines show hidden characters (bidi controls, zero-width ones) as marks.
-import { Spot, useSpotEntries } from "@waifucave/moss-plugin-sdk/ui";
+import { Spot, useKept, useSpotEntries } from "@waifucave/moss-plugin-sdk/ui";
 import { ChevronDown, ChevronRight, File, Folder, Search } from "lucide-react";
-import { useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
 import { visiblePaths } from "./filter";
 import { hasHidden, ShowHidden } from "./hidden";
 import { S } from "./strings";
@@ -69,8 +69,19 @@ function Preview({ path, mediaType }: { path: string; mediaType: string }): Reac
 }
 
 export function FilesPanel({ root, listing, onList, initialOpen, onOpen, open, onSearch, matches }: FilesPanelProps) {
-  const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(initialOpen ?? []));
+  // The filter and the open folders are the user's place: kept across a reload of the window's document (a plugin with its own
+  // layer installed loads it again), per root. An unmount (the panel closed) drops them, as plain state would.
+  const [filter, setFilter] = useKept<string>(`files.filter:${root}`, "");
+  const [openKept, setOpenKept] = useKept<string[]>(`files.open:${root}`, () => [...(initialOpen ?? [])]);
+  const expanded = useMemo<ReadonlySet<string>>(() => new Set(openKept), [openKept]);
+  const setExpanded = (change: (prev: ReadonlySet<string>) => Set<string>) => setOpenKept((prev) => [...change(new Set(prev))]);
+  // A folder kept open has no listing in a document just loaded: it is listed again, once.
+  const relisted = useRef(false);
+  useEffect(() => {
+    if (relisted.current) return;
+    relisted.current = true;
+    for (const path of openKept) if (listing[path] === undefined && path !== root) onList?.(path);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [current, setCurrent] = useState<string | undefined>(undefined);
   const tree = useRef<HTMLUListElement>(null);
   const visible = visiblePaths(root, listing, filter);

@@ -3,6 +3,7 @@
 // install lands waiting for the plugin's OK, a sealed card the core raises; the page says so. A zip isn't opened here:
 // the page says to unzip it first and choose the folder.
 import { useState } from "react";
+import { useKept } from "@waifucave/moss-plugin-sdk/ui";
 import { S } from "./strings";
 import type { AddProps, AddSource, PickKind } from "./types";
 
@@ -19,10 +20,10 @@ const PICKS: { kind: PickKind; file: boolean }[] = [
 
 export function Add(props: AddProps) {
   const [pickKind, setPickKind] = useState<PickKind>("folder");
-  const [npm, setNpm] = useState("");
-  const [npmVersion, setNpmVersion] = useState("");
-  const [config, setConfig] = useState("");
-  const [url, setUrl] = useState("");
+  const [npm, setNpm] = useKept<string>("plugins.add.npm", "");
+  const [npmVersion, setNpmVersion] = useKept<string>("plugins.add.npmVersion", "");
+  const [config, setConfig] = useKept<string>("plugins.add.config", "");
+  const [url, setUrl] = useKept<string>("plugins.add.url", "");
   const picked = props.picked;
   const busy = props.busy === true;
   const install = (s: AddSource) => props.onInstall(s);
