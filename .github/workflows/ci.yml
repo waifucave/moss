@@ -586,10 +586,12 @@ jobs:
             test -x /opt/moss-code/moss-code && test -x /opt/moss/moss-app && test -x /opt/moss/resources/host/moss-host
             MOSS_HOME="$(mktemp -d)" moss --version
             rpm -e moss
-            test ! -e /opt/moss
+            # rpm leaves a directory it did not list; what matters is that no file or link of the app is left.
+            test -z "$(find /opt/moss ! -type d 2>/dev/null)" || { find /opt/moss ! -type d | head; exit 1; }
             MOSS_HOME="$(mktemp -d)" moss --version
             rpm -e moss-code
-            test ! -e /opt/moss-code
+            # rpm leaves a directory it did not list; what matters is that no file or link of the app is left.
+            test -z "$(find /opt/moss-code ! -type d 2>/dev/null)" || { find /opt/moss-code ! -type d | head; exit 1; }
             test ! -e /usr/bin/moss'
 
   # The macOS and Windows installers (plan §4 M-M2): the release build itself, unsigned (scripts/release/build.ts), so

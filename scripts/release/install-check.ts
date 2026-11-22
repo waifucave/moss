@@ -5,7 +5,7 @@
 // or registered: a disposable runner is its only target, and a Mac or a Windows PC of a person is never one.
 //
 //   bun scripts/release/install-check.ts mac|win [--dir <the build's folder>]
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +77,12 @@ export function windowsInstallDir(localAppData: string, product: string): string
   return join(localAppData, "Programs", product);
 }
 
+/** For a failed install: what is in the per-user Programs folder and the usual machine-wide ones. */
+function whereIs(local: string, product: string): string {
+  const roots = [join(local, "Programs"), process.env.ProgramFiles ?? "", process.env["ProgramFiles(x86)"] ?? "", local].filter((r) => r !== "");
+  return roots.map((r) => `${r}: ${existsSync(r) ? readdirSync(r).filter((n) => /moss/i.test(n) || r === join(local, "Programs")).join(", ") || "(none)" : "(missing)"}`).join("; ") + ` [${product}]`;
+}
+
 export function checkWin(dist: string, version: string): void {
   const local = process.env.LOCALAPPDATA;
   if (local === undefined || local === "") throw new Error("no LOCALAPPDATA: a per-user install needs a user profile");
@@ -86,7 +92,10 @@ export function checkWin(dist: string, version: string): void {
     // /S: silent (and a silent install doesn't start the app); it returns when the install is done.
     const r = run([exe, "/S"]);
     must(`${app.product}'s installer runs silently`, r.status === 0, r.out);
-    must(`${app.product} is installed in ${dirs[key]}`, existsSync(join(dirs[key], `${app.product}.exe`)));
+    // The installer may hand off to a second process: wait for the app, and say where things are if it never shows up.
+    const exePath = join(dirs[key], `${app.product}.exe`);
+    for (let i = 0; i < 60 && !existsSync(exePath); i++) Bun.sleepSync(1000);
+    must(`${app.product} is installed in ${dirs[key]}`, existsSync(exePath), whereIs(local, app.product));
     must(`${app.product} carries the engine and the bundled tree`, existsSync(join(dirs[key], "resources", "daemon", engineFile("win"))) && existsSync(join(dirs[key], "resources", "plugins", "moss", "moss.json")));
     engineSays(join(dirs[key], "resources", "daemon", engineFile("win")), version);
   }
