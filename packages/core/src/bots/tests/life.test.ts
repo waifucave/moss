@@ -400,6 +400,51 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     await b.shutdown();
   });
 
+  test("the exchange brake: a bot's send to a session the user started carries the bot's own turn depth + 1, never a fresh 1", async () => {
+    const b = await boot({ home: tempDir(), plugins: await withLuna(), clock: new FakeClock() });
+    b.host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code" }, new FakeSessionDriver());
+    b.host.open({ id: "s_mine", kind: "agent", bot: "alpha", parent: "b_alpha", computer: "Studio", backend: "codex" }, new FakeSessionDriver({ canFold: false }));
+    const [send] = botToolDefs({ host: b.host, bots: b.bots }, "b_alpha");
+    const alpha = b.drivers.for("b_alpha");
+    const inputsOf = () => b.host.history("s_code").flatMap((r) => (r.type === "input" ? [r.input] : []));
+    const turnAt = async (depth: number | undefined) => {
+      // The bot's turn is started by its agent's message, which carries the depth the engine recorded; a turn that was running ends first.
+      if (alpha.turns.length > 0) alpha.end();
+      await flush();
+      const before = alpha.turns.length;
+      await b.host.deliver("b_alpha", { from: "agent", agent: "s_mine", text: "report", ...(depth === undefined ? {} : { depth }) });
+      await flush();
+      expect(alpha.turns.length).toBe(before + 1);
+      expect(b.host.depths.depthOf("b_alpha")).toBe(depth ?? 0);
+    };
+    // A bot at depth 0 (or its first turn): delivered at 1, as before.
+    await turnAt(undefined);
+    expect((await send!.run({ to: "s_code", message: "m0" })).isError).toBe(false);
+    expect(inputsOf().at(-1)).toMatchObject({ from: "session", session: "b_alpha", text: "m0", depth: 1 });
+    // At depth 7: delivered at 8, the last one the brake lets through.
+    await turnAt(7);
+    const sent = await send!.run({ to: "s_code", message: "m7" });
+    expect(sent.isError).toBe(false);
+    expect(inputsOf().at(-1)).toMatchObject({ text: "m7", depth: 8 });
+    // At depth 8: refused by the brake, in the bridge's words, and nothing is delivered.
+    await turnAt(8);
+    const before = inputsOf().length;
+    const refused = await send!.run({ to: "s_code", message: "m8" });
+    expect(refused).toEqual({ text: "This exchange has gone 8 messages between sessions without the person; stop here and wait for them to write to you.", isError: true });
+    expect(inputsOf().length).toBe(before);
+    // The person writing to the bot lifts it.
+    alpha.end();
+    await flush();
+    await b.host.sendUser("b_alpha", { text: "carry on", device: "studio", sentAt: b.clock.now(), clientMessageId: "u1" });
+    await flush();
+    expect(b.host.depths.depthOf("b_alpha")).toBe(0);
+    expect((await send!.run({ to: "s_code", message: "again" })).isError).toBe(false);
+    expect(inputsOf().at(-1)).toMatchObject({ text: "again", depth: 1 });
+    // The bot's own bot-to-bot sends are untouched (they carry no depth; see the report).
+    expect((await send!.run({ to: "luna", message: "hi" })).isError).toBe(false);
+    await b.shutdown();
+  });
+
   test("refused: no target, itself, an ended session, an unknown name, an empty or huge message", async () => {
     const b = await boot({ home: tempDir(), plugins: await withLuna() });
     b.host.open({ id: "s_done", kind: "agent", bot: "alpha", parent: "b_alpha", computer: "Studio", backend: "codex" }, new FakeSessionDriver({ canFold: false }));

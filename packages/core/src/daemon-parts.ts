@@ -448,6 +448,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
             ...(a.backends ? { backends: a.backends } : {}),
             ...(a.botWriteRoots ? { botWriteRoots: a.botWriteRoots } : {}),
             ...(a.turnStarted ? { turnStarted: a.turnStarted } : {}),
+            depths: d.host.depths,
             ...(a.plugins?.pluginTools ? { pluginTools: a.plugins.pluginTools } : {}),
             ...(a.plugins?.pluginParts ? { pluginParts: a.plugins.pluginParts } : {}),
             ...(a.plugins?.glossary ? { glossary: a.plugins.glossary } : {}),

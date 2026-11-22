@@ -57,6 +57,7 @@ import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
 import { EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
+import type { ExchangeDepths } from "../sessions/exchange-depth";
 import { formatSessionMessage } from "../runtime-sdk/turn-loop/input";
 import { agentPaths, namesUnlistedPaths } from "./paths";
 import { agentPolicyOf, homeReach, withHomeDenied, withSecretsDenied } from "./memory";
@@ -131,6 +132,8 @@ export interface AgentManagerOptions {
   /** A turn of an agent or coding session starts from `input` (what the conversation saw, as a bot's turn reports it:
    *  the addresses the user's own message gave, a turn of the user's resetting the fetch budget). */
   turnStarted?: (sessionId: string, input: TurnInput, origin: TurnOrigin | undefined) => void;
+  /** The host's exchange depths (`DurableSessionHost.depths`), shared with the bots' `SendMessage`; else the manager keeps its own. */
+  depths?: ExchangeDepths;
   /** Counts each session's `SendMessage`s (spec §9.5: at most 20 a minute per sending session, refused sends counting); the
    *  manager's own when absent. A session sends through the bridge alone, over the socket or in process, so one counter
    *  here covers both; the bots' own tools have theirs. */
@@ -313,7 +316,7 @@ export class AgentManager {
       deliver: (to, input) => opts.host.deliver(to, input),
       // The session graph hears a delivery through the host (lane CG's `session_link`); nothing to tell it here.
       now: () => opts.clock.now(),
-    }, opts.sendSlots ?? sendSlots(() => opts.clock.now()));
+    }, opts.sendSlots ?? sendSlots(() => opts.clock.now()), opts.depths);
     // The person's answer to a session's card puts that session back to depth 0 (the loop brake): only an answer they gave counts,
     // never a card that expired or was cancelled.
     this.#unwatchCards = opts.approvals.watch?.((e) => {
@@ -791,7 +794,8 @@ export class AgentManager {
         entry.session = undefined;
       },
       turnStarted: (input, origin) => {
-        // The loop brake's depth of this turn (agents/bridge/messenger.ts): set before the agent can send anything.
+        // The loop brake's depth of this turn (agents/bridge/messenger.ts): the host sets it too as the turn starts (the same store
+        // when `depths` is the host's), so this only matters to a manager given no host store.
         this.#messenger.turnStarted(id, input);
         this.#o.turnStarted?.(id, input, origin);
       },

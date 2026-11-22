@@ -135,6 +135,8 @@ export interface AgentsOptions {
   userHome?: string;
   /** Each agent or coding session's turn as it starts (the manager's `turnStarted`). */
   turnStarted?: AgentManagerOptions["turnStarted"];
+  /** The host's exchange depths, shared with the bots' `SendMessage` (`DurableSessionHost.depths`). */
+  depths?: AgentManagerOptions["depths"];
   log?: (line: string) => void;
 }
 
@@ -204,6 +206,7 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
     ...(o.botWriteRoots ? { childCommandsHeld: (c: { bot: string; parent?: string; rootPath: string; level: Level | undefined }) => grantsCover(o.botWriteRoots!(c.parent, c.bot, c.level), c.rootPath, botChildHomes.os) } : {}),
     childRunsLater: (c, path) => botChildRunsLater(c.fence, { ...botChildHomes, root: c.rootPath, level: c.level }, path),
     ...(o.turnStarted ? { turnStarted: o.turnStarted } : {}),
+    ...(o.depths ? { depths: o.depths } : {}),
     ...(o.log ? { log: o.log } : {}),
   });
   const wire = (id: string) => manager.wire(id);
