@@ -414,7 +414,7 @@ const router: LayerBridge = new Proxy({} as LayerBridge, {
 });
 
 /** The bridge's calls that answer (a promise). */
-const ASKS = new Set(["describe", "resolve", "entries", "reload", "wake", "menu", "surfaceEnvironment", "open", "composer", "shell", "api", "terminalInput", "userSend", "dragOffer", "dragClaim", "sealedFrame", "cardPage"]);
+const ASKS = new Set(["describe", "resolve", "entries", "reload", "wake", "menu", "surfaceEnvironment", "open", "composer", "shell", "api", "terminalInput", "userSend", "dragOffer", "dragClaim", "sealedFrame", "cardPage", "appView"]);
 
 function attach(layer: Layer): void {
   if (layers.length === 0) {
@@ -566,6 +566,10 @@ export function setUpTestLayer(runtime: TestRuntime, root: { pluginId: string; e
     },
     dragOffer: async () => ({ error: "no drags in a test layer" }),
     dragClaim: async () => ({ error: "no drags in a test layer" }),
+    appView: async (mount, call, rect) => {
+      note("appView", mount, [call.session, call.callId, rect]);
+      return { state: "hidden" };
+    },
     sealedFrame: async (mount, cardId, element, look) => {
       note("sealedFrame", mount, [cardId, element, look]);
       const text = runtime.sealedText?.(cardId, element);

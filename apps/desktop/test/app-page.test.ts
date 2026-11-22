@@ -1,0 +1,60 @@
+// MCP Apps view documents (`ui/app-page.ts`): the host page, its relay, and what a view may navigate to or fetch.
+import { describe, expect, test } from "bun:test";
+import { HOST_CSP, HOST_SCRIPT, appNavigationAllowed, appNetworkWanted, appRequestAllowed, hostDocument, pageHeaders } from "../src/main/ui/app-page";
+
+describe("the host page", () => {
+  test("holds the page in a sandboxed frame with no same-origin right, and nothing else", () => {
+    const doc = hostDocument("abc", "tok");
+    expect(doc).toContain('sandbox="allow-scripts"');
+    expect(doc).not.toContain("allow-same-origin");
+    expect(doc).toContain('src="moss-app://abc/view"');
+    expect(doc.match(/<iframe/g)).toHaveLength(1);
+  });
+  test("its policy allows only its own script, one frame and its own fetch", () => {
+    expect(HOST_CSP).toContain("default-src 'none'");
+    expect(HOST_CSP).toContain("script-src 'self'");
+    expect(HOST_CSP).toContain("connect-src 'self'");
+    expect(HOST_CSP).toContain("frame-ancestors 'none'");
+    expect(HOST_CSP).not.toContain("*");
+  });
+  test("the relay ignores a message that is not from its own frame or not JSON-RPC, and bounds a body", () => {
+    expect(HOST_SCRIPT).toContain("e.source !== frame.contentWindow");
+    expect(HOST_SCRIPT).toContain('d.jsonrpc !== "2.0"');
+    expect(HOST_SCRIPT).toContain("body.length >");
+  });
+  test("the page is served under the engine's policy and the permissions policy of every web page", () => {
+    const h = pageHeaders("default-src 'none'");
+    expect(h["Content-Security-Policy"]).toBe("default-src 'none'");
+    expect(h["Content-Type"]).toContain("text/html");
+  });
+});
+
+describe("what a view may navigate to", () => {
+  test("only its own two documents", () => {
+    expect(appNavigationAllowed("abc", "moss-app://abc/")).toBe(true);
+    expect(appNavigationAllowed("abc", "moss-app://abc/view")).toBe(true);
+    expect(appNavigationAllowed("abc", "about:blank")).toBe(true);
+  });
+  test("not another origin, path, a web address, a file or a script", () => {
+    for (const u of ["moss-app://other/view", "moss-app://abc/host.js", "moss-app://abc/view?x=1", "moss-app://abc/view#x", "https://example.com/", "file:///etc/passwd", "javascript:alert(1)", "data:text/html,hi", "moss-core://app/", "nonsense"]) {
+      expect(appNavigationAllowed("abc", u)).toBe(false);
+    }
+  });
+});
+
+describe("what a view's session may fetch", () => {
+  test("a page that declared no host reaches no network", () => {
+    const csp = "default-src 'none'; connect-src 'none'; frame-src 'none'";
+    expect(appNetworkWanted(csp)).toBe(false);
+    expect(appRequestAllowed("https://example.com/x", false)).toBe(false);
+    expect(appRequestAllowed("http://example.com/x", false)).toBe(false);
+    expect(appRequestAllowed("file:///etc/passwd", false)).toBe(false);
+    expect(appRequestAllowed("moss-app://abc/view", false)).toBe(true);
+    expect(appRequestAllowed("data:text/plain,hi", false)).toBe(true);
+  });
+  test("a page that declared a host may reach https only (the policy narrows it to that host)", () => {
+    expect(appNetworkWanted("connect-src https://api.example.com")).toBe(true);
+    expect(appRequestAllowed("https://api.example.com/x", true)).toBe(true);
+    expect(appRequestAllowed("http://api.example.com/x", true)).toBe(false);
+  });
+});

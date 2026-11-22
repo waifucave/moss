@@ -1988,8 +1988,52 @@ export function CardDeny(props: CardButtonProps) {
 
 export const Cards = { Root: Card, Field: CardField, Approve: CardApprove, Deny: CardDeny };
 
-/** MCP Apps views (E-M3): until then the tool's result shows as text, as for a page no component places. */
-export const AppView = (_props: AppViewProps) => null;
+/** Whether any scrolling or clipping ancestor (or the window) cuts `b` off: the core's view is a native one over the window and
+ *  cannot be clipped to a scrolled list, so a page shows only while all of its place is in sight. */
+function clippedAway(el: HTMLElement, b: DOMRect): boolean {
+  for (let p = el.parentElement; p !== null; p = p.parentElement) {
+    const o = getComputedStyle(p);
+    if (/(auto|scroll|hidden|clip)/.test(`${o.overflowX} ${o.overflowY}`)) {
+      const r = p.getBoundingClientRect();
+      if (b.top < r.top - 1 || b.bottom > r.bottom + 1 || b.left < r.left - 1 || b.right > r.right + 1) return true;
+    }
+  }
+  return b.top < -1 || b.left < -1 || b.bottom > document.documentElement.clientHeight + 1 || b.right > document.documentElement.clientWidth + 1;
+}
+
+/** MCP Apps views (§5.5): the page of a tool call, drawn by the core in an isolated view of its own over this element. The
+ *  element takes the height the page says it needs (capped by the core); while the core reads the page it holds a short
+ *  placeholder, and when no page can be shown (another computer's tool, a refusal, a host with no views) it draws nothing,
+ *  so the tool's text result is what shows. */
+export function AppView({ call, className }: AppViewProps) {
+  const part = usePart();
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [view, setView] = useState<{ gone: boolean; height: number }>({ gone: false, height: 160 });
+  useEffect(() => {
+    const bridge = rt().bridge;
+    if (el === null) return;
+    if (bridge.appView === undefined) { setView((v) => (v.gone ? v : { ...v, gone: true })); return; }
+    let last = "";
+    const measure = () => {
+      const b = el.getBoundingClientRect();
+      const shown = b.width > 0 && b.height > 0 && document.visibilityState !== "hidden" && el.isConnected && !clippedAway(el, b);
+      const rect = shown ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+      const key = JSON.stringify(rect);
+      if (key === last) return;
+      last = key;
+      void bridge.appView!(part.mount, call, rect).then((r) => { if (r === undefined) setView((v) => (v.gone ? v : { ...v, gone: true })); }).catch(() => undefined);
+    };
+    const off = onLayerMessage((m) => {
+      if (m.type !== "app-view" || m.session !== call.session || m.callId !== call.callId) return;
+      if (m.unavailable === true) setView((v) => ({ ...v, gone: true }));
+      else if (typeof m.height === "number") { const h = Math.max(24, Math.ceil(m.height)); setView((v) => (v.height === h && !v.gone ? v : { gone: false, height: h })); }
+    });
+    const stop = trackRect(el, measure, () => { void bridge.appView!(part.mount, call, null).catch(() => undefined); });
+    return () => { off(); stop(); };
+  }, [el, part.mount, call.session, call.callId]);
+  if (view.gone) return null;
+  return <div ref={setEl} className={className} data-moss-app-view={call.callId} style={{ display: "block", width: "100%", height: view.height }} />;
+}
 
 /** The UI API as lane B declared it. */
 export const CardKit: CardComponents = Object.assign(Card, { Field: CardField, Approve: CardApprove, Deny: CardDeny });
