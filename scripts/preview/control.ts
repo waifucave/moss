@@ -17,7 +17,8 @@ import { Cdp, MAIN_PAGE_URL, type WsLike } from "../acceptance/cdp";
 import { folderProblem } from "../../apps/desktop/src/main/preview-control-rules";
 import { LineReader, MAX_LINE, encodeLine, sameToken, type CtlRequest, type Target } from "./control-lib";
 import { CENTER_JS, CLEAR_TARGET_JS, DUMP_JS, FOCUS_JS, findJs } from "./page-js";
-import { readSpent, renderSpent } from "./real-lib";
+import { chooseCard, chooseOption, cardTitle, placeWords, type CardRow, type Placed } from "./cards-lib";
+import { noteApproval, readSpent, renderSpent } from "./real-lib";
 import { seedScene, type SceneName, type SeedInput } from "./seed";
 
 export interface ControlDeps {
@@ -281,6 +282,35 @@ class Control {
           return { sessions: r.sessions };
         } finally { c.close(); }
       }
+      case "cards": {
+        const c = await this.engine();
+        try {
+          const cards = (await c.request<{ cards: CardRow[] }>("card.list", {}, 30_000)).cards;
+          const placed = new Map((await c.request<{ placements: { card: string; place: Placed }[] }>("card.placement", {}, 30_000).catch(() => ({ placements: [] }))).placements.map((p) => [p.card, p.place]));
+          const rows = cards.map((x) => ({ id: x.id, session: x.session ?? null, title: cardTitle(x), place: placeWords(placed.get(x.id)), options: x.options.map((o) => `${o.id}:${o.kind}`) }));
+          return { cards: rows, text: rows.length === 0 ? "no pending cards" : rows.map((r) => `${r.id}  session ${r.session ?? "-"}  "${r.title}"  drawn in ${r.place}  [${r.options.join(", ")}]`).join("\n") };
+        } finally { c.close(); }
+      }
+      case "approve": {
+        const c = await this.engine();
+        try {
+          const cards = (await c.request<{ cards: CardRow[] }>("card.list", {}, 30_000)).cards;
+          const chosen = chooseCard(cards, { ...(a.id !== undefined ? { id: String(a.id) } : {}), ...(a.session !== undefined ? { session: String(a.session) } : {}) });
+          if ("error" in chosen) throw new Error(chosen.error);
+          const card = chosen.card;
+          const option = chooseOption(card, a.deny === true);
+          if (option === undefined) throw new Error(`card ${card.id} has no ${a.deny === true ? "deny" : "approve"} option without a saved rule`);
+          let agent: string | undefined;
+          if (card.session !== undefined) agent = (await c.request<{ session: { backend?: string } }>("session.get", { id: card.session }, 30_000).catch(() => undefined))?.session.backend;
+          // The answer goes through the app's own connection (the one that reports the window), because the engine takes a card placed in a window only from the connection that draws it.
+          const r = (await this.door.app("card.answer", { id: card.id, hash: card.hash, option: option.id })) as { accepted?: boolean; reason?: string };
+          if (r.accepted !== true) throw new Error(`the engine did not take the answer to ${card.id}: ${r.reason ?? "no reason given"}`);
+          const counted = agent !== undefined && this.d.budgetDir !== undefined ? noteApproval(this.d.budgetDir, agent) : undefined;
+          const said = `${a.deny === true ? "denied" : "approved"} card ${card.id} "${cardTitle(card)}" (option ${option.id}${card.session !== undefined ? `, session ${card.session}` : ""}${agent !== undefined ? `, agent ${agent}` : ""})${counted !== undefined ? "; counted in spent" : ""}`;
+          return { message: said, card: card.id, option: option.id, agent: agent ?? null, accepted: true };
+        } finally { c.close(); }
+      }
+      case "front": await this.door.app("front"); return { message: "the preview's own window is in front" };
       case "seed": {
         const c = await this.engine();
         try {

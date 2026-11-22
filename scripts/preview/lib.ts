@@ -163,6 +163,8 @@ export function appEnv(i: EnvInput & { headless: boolean; appearance: Appearance
     ...(i.appearance === "system" ? {} : { MOSS_PREVIEW_APPEARANCE: i.appearance }),
     // The DevTools port (loopback, no token) only for the one-picture run; a controlled preview uses its own door and opens no port.
     ...(i.headless && i.control === undefined ? { MOSS_DEV_DEBUG: "1" } : {}),
+    // A controlled headless preview shows its window at opacity 0, deaf to the mouse (the app's own measuring mode, unpackaged builds only): the sealed card buttons read themselves visible only in a composited window, and nothing is drawn on the screen.
+    ...(i.headless && i.control !== undefined ? { MOSS_TEST_INVISIBLE: "1" } : {}),
     ...(i.control !== undefined ? { MOSS_PREVIEW_CONTROL_SOCKET: l.appDoor, MOSS_PREVIEW_CONTROL_TOKEN: i.control.token } : {}),
   };
 }
@@ -176,7 +178,8 @@ export function appArgs(o: { desktopDir: string; headless: boolean; port?: numbe
 }
 
 /** Everything that reads or writes outside the preview's root, found in an environment: each entry of the list a person asked to keep apart. Empty is the isolation holding. */
-export function isolationProblems(env: Readonly<Record<string, string>>, layout: Layout, realHome: string): string[] {
+/** `allowed`: names of the forbidden set that this env may carry (only the controlled headless APP's MOSS_TEST_INVISIBLE; never the engine's). */
+export function isolationProblems(env: Readonly<Record<string, string>>, layout: Layout, realHome: string, allowed: readonly string[] = []): string[] {
   const out: string[] = [];
   const inside = (p: string | undefined): boolean => p !== undefined && (resolve(p) === layout.root || resolve(p).startsWith(`${layout.root}${sep}`));
   for (const k of ["HOME", "TMPDIR", "MOSS_HOME", "MOSS_TEST_KEYCHAIN", "MOSS_DAEMON_BIN", "MOSS_ACCEPTANCE_PLUGIN_WORLD", "MOSS_ACCEPTANCE_USER_HOME", "MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_CONTROL_SOCKET"]) {
@@ -187,7 +190,7 @@ export function isolationProblems(env: Readonly<Record<string, string>>, layout:
   if (realHome !== "" && env.MOSS_HOME !== undefined && (resolve(env.MOSS_HOME) === join(realHome, ".moss"))) out.push("MOSS_HOME is the person's own home");
   if (env.PATH !== undefined) for (const d of env.PATH.split(":")) if (d.startsWith(realHome) && realHome !== "" && !inside(d) && !d.includes("moss-bun")) out.push(`PATH names ${d}, a folder of the person's`);
   for (const k of Object.keys(env)) {
-    if (/^(MOSS_APP_HEADLESS|MOSS_HOST_COMMAND|MOSS_OLD_HOME|MOSS_TEST_INVISIBLE|MOSS_USER_DATA)$/.test(k)) out.push(`${k} must not be set`);
+    if (/^(MOSS_APP_HEADLESS|MOSS_HOST_COMMAND|MOSS_OLD_HOME|MOSS_TEST_INVISIBLE|MOSS_USER_DATA)$/.test(k) && !allowed.includes(k)) out.push(`${k} must not be set`);
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { APP_EVENT_AREAS, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
+import { APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
 import { SealedFrames } from "../src/main/sealed";
 
 /** The app's bookkeeping for where a pending card is drawn, as index.ts keeps it, over a fake front state: the three
@@ -387,5 +387,21 @@ describe("lane RT: the last placement wins (the CI lane's plugin-app step 65)", 
     book.follow("conn-2");
     expect(book.get("card_bbbbbb")).toBeUndefined();
     expect(book.snapshot([{ card: "card_bbbbbb", place: strip }])).toEqual(["card_bbbbbb"]);
+  });
+});
+
+describe("the preview keeps every card in its own window", () => {
+  test("the window counts as in front whenever it exists, so no card is placed on an island the preview does not have", () => {
+    const win = { isDestroyed: () => false, isFocused: () => false, isVisible: () => false, isMinimized: () => false };
+    // the ordinary rule: an unfocused window is not in front
+    expect(mossFront(win, []).focused).toBe(false);
+    // the preview's: in front, and the report it sends says focused and visible
+    const st = previewMainState(win);
+    expect(st).toEqual({ exists: true, visible: true, minimized: false, focused: true });
+    expect(presenceOf({ exists: st.exists, visible: st.visible, minimized: st.minimized, front: st.focused }, { kind: "session", id: "s1" }).windows[0]).toMatchObject({ focused: true, visible: true });
+    expect(placeCard({ front: st.focused, drawnInWindow: true })).toBe("conversation");
+    expect(placeCard({ front: st.focused, drawnInWindow: false })).toBe("window");
+    expect(previewMainState(undefined).exists).toBe(false);
+    expect(previewMainState({ isDestroyed: () => true }).focused).toBe(false);
   });
 });

@@ -145,12 +145,21 @@ export function noteLaunch(dir: string, agent: string, max: number = BUDGET.laun
   return n + 1;
 }
 
+/** A card of a real agent's session answered through `ctl approve`: counted apart from turns (an answer spends no turn). */
+export function noteApproval(dir: string, backend: string): string | undefined {
+  const a = REAL_AGENTS.find((x) => x.backend === backend);
+  if (a === undefined) return undefined;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  appendFileSync(join(dir, `${a.command}.approved`), "x", { mode: 0o600 });
+  return a.command;
+}
+
 /** One turn started: a byte appended (an append of one byte is atomic). */
 export function noteTurn(dir: string, agent: string): void { appendFileSync(join(dir, `${agent}.turns`), "x", { mode: 0o600 }); }
 /** One refusal (a prompt, a session or a turn): a line appended. */
 export function noteRefusal(dir: string, agent: string, why: string): void { appendFileSync(join(dir, `${agent}.refused`), `${new Date().toISOString()} ${why}\n`, { mode: 0o600 }); }
 
-export interface Spent { agent: string; launches: number; sessions: number; turns: number; refusals: number }
+export interface Spent { agent: string; approvals: number; launches: number; sessions: number; turns: number; refusals: number }
 
 export function readSpent(dir: string): Spent[] {
   return REAL_AGENTS.map((a) => {
@@ -159,12 +168,12 @@ export function readSpent(dir: string): Spent[] {
     for (let n = 1; n <= BUDGET.sessionsPerAgent; n++) if (existsSync(join(dir, `${a.command}.session.${n}`))) sessions++;
     let refusals = 0;
     try { refusals = readFileSync(join(dir, `${a.command}.refused`), "utf8").split("\n").filter((l) => l !== "").length; } catch { /* none */ }
-    return { agent: a.backend, launches: count(`${a.command}.launches`), sessions, turns: count(`${a.command}.turns`), refusals };
+    return { agent: a.backend, approvals: count(`${a.command}.approved`), launches: count(`${a.command}.launches`), sessions, turns: count(`${a.command}.turns`), refusals };
   });
 }
 
 export const renderSpent = (s: readonly Spent[]): string =>
-  `real-agent spend: ${s.map((x) => `${x.agent} ${x.launches} launch(es) ${x.sessions} session(s) ${x.turns} turn(s)${x.refusals > 0 ? ` (${x.refusals} refused)` : ""}`).join("; ")} (limits: ${BUDGET.launchesPerAgent} launches and ${BUDGET.sessionsPerAgent} sessions per agent, ${BUDGET.turnsPerSession} turns per session)`;
+  `real-agent spend: ${s.map((x) => `${x.agent} ${x.launches} launch(es) ${x.approvals} approval(s) ${x.sessions} session(s) ${x.turns} turn(s)${x.refusals > 0 ? ` (${x.refusals} refused)` : ""}`).join("; ")} (limits: ${BUDGET.launchesPerAgent} launches and ${BUDGET.sessionsPerAgent} sessions per agent, ${BUDGET.turnsPerSession} turns per session)`;
 
 
 // ── proof that the engine writes nothing under the person's home ─────────────────────────────────────────────────────────
