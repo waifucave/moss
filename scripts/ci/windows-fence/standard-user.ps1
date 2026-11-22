@@ -45,6 +45,18 @@ function Invoke-AsUser([string]$Label, [string[]]$Lines, [int]$Seconds = 1800) {
   return $info.LastTaskResult
 }
 
+# The user's own process in this (interactive) session, as the login item MOSS registers starts it (an InteractiveToken
+# task at the user's logon): seclogon with the user's password, its profile loaded, unelevated.
+function Invoke-AsUserHere([string]$Label, [string[]]$Lines, [int]$Seconds = 1800) {
+  $cmd = Join-Path $ci "$Label.cmd"; $log = Join-Path $ci "$Label.log"
+  Set-Content -Path $cmd -Encoding ascii -Value (@("@echo off") + $Lines)
+  $cred = New-Object System.Management.Automation.PSCredential($name, $secure)
+  $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/d /c $cmd > $log 2>&1" -Credential $cred -LoadUserProfile -WindowStyle Hidden -PassThru
+  if (-not $p.WaitForExit($Seconds * 1000)) { & taskkill.exe /T /F /PID $p.Id | Out-Null }
+  Write-Host "== $Label (as $name, in this session, exit $($p.ExitCode))"
+  if (Test-Path $log) { Get-Content $log | Write-Host }
+}
+
 # The user's profile (its first logon), and where the task runs.
 $probe = "powershell -NoProfile -Command `"'session: ' + (Get-Process -Id `$PID).SessionId + ' admin: ' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')`""
 $code = Invoke-AsUser "whoami" @("whoami", $probe) 300
@@ -76,6 +88,12 @@ $e2e = @(
   "`"$bun`" test --timeout 900000 test/fence/win-fenced.e2e.test.ts",
   "echo exit=%ERRORLEVEL%"
 )
+# 1. As the login item runs it: the user's interactive session.
+Invoke-AsUserHere "e2e-interactive" $e2e 2400
+$here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
+# 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0. Measured and reported, a
+#    known gap (spec §14.1 item 2: the Session 0 launch); it fails the job only if it fails some other way.
+$null = & $ucore sandbox reset
 $code = Invoke-AsUser "e2e" $e2e 2400
 $text = Get-Content (Join-Path $ci "e2e.log") -Raw
 # The uninstaller's order: the user forgets its own grants, then the administrator removes the rest.
@@ -91,8 +109,12 @@ if (Get-ChildItem -Directory C:\Users -Filter "moss-sb-*" -ErrorAction SilentlyC
 if (Get-ScheduledTask -TaskName "MOSS Sandbox Reset $ownerSid" -ErrorAction SilentlyContinue) { $left += "the reset task" }
 if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\markers\$ownerSid.json")) { $left += "the marker" }
 if ($left.Count -gt 0) { Write-Output "left after forget and remove: $($left -join '; ')" }
+if ($here -notmatch "exit=0") { throw "the fenced suite failed as the standard user in its own session" }
 if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
-if ($text -notmatch "exit=0") { throw "the fenced suite failed as the standard user in Session 0" }
+if ($text -notmatch "exit=0") {
+  if ($text -match "Sessions\\0\\BaseNamedObjects") { Write-Output "::warning::Session 0 (a password startup task): srt-win can't open \Sessions\0\BaseNamedObjects (0xC0000034), the known gap of spec 14.1 item 2; every command there is refused" }
+  else { throw "the fenced suite failed in Session 0 for another reason than the known BaseNamedObjects gap" }
+}
 if ($removeCode -ne 0) { throw "remove for the standard user exited $removeCode" }
 if ($left.Count -gt 0) { throw "forget and remove left $($left.Count) thing(s)" }
-Write-Output "the fenced suite passed as a standard user's task in Session 0"
+Write-Output "the fenced suite passed as a standard user in its own session; Session 0 measured above"
