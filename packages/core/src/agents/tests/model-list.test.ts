@@ -118,30 +118,31 @@ describe("a. the list command", () => {
   const script = (name: string, body: string): string => { const p = join(dir, name); writeFileSync(p, body); return p; };
   const env = { PATH: process.env["PATH"] ?? "" };
   const cmd = (args: string[], over: Partial<NonNullable<ModelListDecl["command"]>> = {}): NonNullable<ModelListDecl["command"]> => ({
-    program: process.execPath, args, identity: { versionArgs: ["--version"], versionPattern: "^\\d+\\.\\d+\\.\\d+" }, timeoutMs: 3_000, maxBytes: 4096, ...over,
+    program: process.execPath, args, timeoutMs: 3_000, maxBytes: 4096, ...over,
   });
+  const ID = { versionArgs: ["--version"], versionPattern: "^\\d+\\.\\d+\\.\\d+" };
 
   test("runs after the identity check and gives its stdout", async () => {
     const s = script("good.js", `console.log(${JSON.stringify(GOOD)});`);
-    expect(await runListCommand(cmd([s]), env)).toContain('"slug":"m1"');
+    expect(await runListCommand(cmd([s]), env, ID)).toContain('"slug":"m1"');
   });
   test("a program that doesn't answer as the declared identity never runs its list command", async () => {
     const marker = join(dir, "ran.txt");
     const s = script("marker.js", `require("fs").writeFileSync(${JSON.stringify(marker)}, "x"); console.log("{}");`);
-    expect(await runListCommand(cmd([s], { identity: { versionArgs: ["--version"], versionPattern: "^definitely-not-this$" } }), env)).toBeUndefined();
-    expect(await runListCommand(cmd([s], { program: "no-such-program-moss" }), env)).toBeUndefined();
+    expect(await runListCommand(cmd([s]), env, { versionArgs: ["--version"], versionPattern: "^definitely-not-this$" })).toBeUndefined();
+    expect(await runListCommand(cmd([s], { program: "no-such-program-moss" }), env, ID)).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
   });
   test("junk, a failing exit, and more than the byte cap give nothing", async () => {
-    expect(parseModelList((await runListCommand(cmd([script("junk.js", `process.stdout.write("\\u0000\\u0001 not json <<<");`)]), env)) ?? "", READER)).toBeUndefined();
-    expect(await runListCommand(cmd([script("fail.js", `console.log("{}"); process.exit(3);`)]), env)).toBeUndefined();
-    expect(await runListCommand(cmd([script("big.js", `process.stdout.write("x".repeat(100000));`)]), env)).toBeUndefined();
+    expect(parseModelList((await runListCommand(cmd([script("junk.js", `process.stdout.write("\\u0000\\u0001 not json <<<");`)]), env, ID)) ?? "", READER)).toBeUndefined();
+    expect(await runListCommand(cmd([script("fail.js", `console.log("{}"); process.exit(3);`)]), env, ID)).toBeUndefined();
+    expect(await runListCommand(cmd([script("big.js", `process.stdout.write("x".repeat(100000));`)]), env, ID)).toBeUndefined();
   });
   test("a command that hangs is ended by its pid at the time limit", async () => {
     const pidFile = join(dir, "hang.pid");
     const s = script("hang.js", `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
     const t = Date.now();
-    expect(await runListCommand(cmd([s], { timeoutMs: 600 }), env)).toBeUndefined();
+    expect(await runListCommand(cmd([s], { timeoutMs: 600 }), env, ID)).toBeUndefined();
     expect(Date.now() - t).toBeLessThan(5_000);
     if (process.platform !== "win32") {
       const pid = Number(readFileSync(pidFile, "utf8"));
@@ -149,11 +150,33 @@ describe("a. the list command", () => {
       expect(() => process.kill(pid, 0)).toThrow();
     }
   });
+  test("a command that forks a child holding the pipe doesn't hold the read: it settles at the command's exit and the whole group is ended", async () => {
+    const childPid = join(dir, "fork.pid");
+    const s = script("fork.js", `const c = require("child_process").spawn(process.execPath, ["-e", "require('fs').writeFileSync(" + JSON.stringify(${JSON.stringify(childPid)}) + ", String(process.pid)); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
+      setTimeout(() => { console.log(${JSON.stringify(GOOD)}); process.exit(0); }, 400);`);
+    const t = Date.now();
+    const out = await runListCommand(cmd([s], { timeoutMs: 20_000 }), env, ID);
+    expect(Date.now() - t).toBeLessThan(8_000);
+    expect(parseModelList(out ?? "", READER)?.map((m) => m.id)).toEqual(["m1", "m2"]);
+    if (process.platform !== "win32") {
+      const pid = Number(readFileSync(childPid, "utf8"));
+      await Bun.sleep(300);
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  });
+  test("the version check and the run share the one declared time limit", async () => {
+    const s = script("slowver.js", `console.log("{}");`);
+    const t = Date.now();
+    // A version command that takes longer than the whole limit: the read ends at the limit, never 10 s.
+    const slow = script("slowid.js", `setTimeout(() => console.log("1.0.0"), 5000);`);
+    expect(await runListCommand(cmd([s], { timeoutMs: 700 }), env, { versionArgs: [slow], versionPattern: "^1" })).toBeUndefined();
+    expect(Date.now() - t).toBeLessThan(3_000);
+  });
   test("it runs with the given environment only, in an empty folder with its input closed", async () => {
     const s = script("env.js", `console.log(JSON.stringify({ models: [{ slug: "e", visibility: "list", display_name: String(process.env.PROBE_SECRET === undefined) + ":" + require("fs").readdirSync(process.cwd()).length }] }));`);
     process.env["PROBE_SECRET"] = "dummy123";
     try {
-      const out = parseModelList((await runListCommand(cmd([s]), env)) ?? "", READER)!;
+      const out = parseModelList((await runListCommand(cmd([s]), env, ID)) ?? "", READER)!;
       expect(out[0]!.name).toBe("true:0");
     } finally {
       delete process.env["PROBE_SECRET"];
@@ -163,7 +186,7 @@ describe("a. the list command", () => {
 
 describe("the service: declared list cached with its age, else what a session reported", () => {
   const decl: ModelListDecl = ModelListDeclSchema.parse({ command: { program: "x", args: [], identity: { versionArgs: [], versionPattern: "." } }, reader: READER });
-  const backend: ListableBackend = { id: "demo", modelList: decl };
+  const backend: ListableBackend = { id: "demo", bundled: true, modelList: decl };
   test("a read is cached; an old one is answered again while it is read afresh; a failure keeps the old and logs once", async () => {
     const home = fresh("svc-1");
     let clock = 1_000;
@@ -192,6 +215,46 @@ describe("the service: declared list cached with its age, else what a session re
     expect((await lists.get(backend))!.models.map((m) => m.id)).toEqual(["m3"]);
     expect(logs.length).toBe(1);
     expect(logs[0]).not.toContain("m3");
+  });
+  test("a backend that isn't MOSS's own bundled one never has its declaration run or read, whatever reached the service", async () => {
+    const home = fresh("svc-nb");
+    let ran = 0;
+    const lists = new BackendModelLists({ home, userHome: home, runCommand: async () => { ran++; return GOOD; } });
+    expect(await lists.get({ id: "other", modelList: decl })).toBeUndefined();
+    expect(await lists.get({ id: "other", bundled: false, modelList: decl })).toBeUndefined();
+    expect(ran).toBe(0);
+  });
+  test("for the backend's own program the backend's identity is checked, not one written beside the command; a different program needs its own", async () => {
+    const home = fresh("svc-id");
+    const seen: unknown[] = [];
+    const lists = new BackendModelLists({ home, userHome: home, runCommand: async (_c, _e, identity) => { seen.push(identity); return GOOD; } });
+    const own = ModelListDeclSchema.parse({ command: { program: "agent", args: ["models"] }, reader: READER });
+    await lists.get({ id: "a", bundled: true, modelList: own, ownProgram: { program: "agent", identity: { versionArgs: ["-v"], versionPattern: "^agent" } } });
+    expect(seen).toEqual([{ versionArgs: ["-v"], versionPattern: "^agent" }]);
+    // No identity anywhere: the command never runs.
+    expect(await lists.get({ id: "b", bundled: true, modelList: ModelListDeclSchema.parse({ command: { program: "other", args: [] }, reader: READER }) })).toBeUndefined();
+    expect(seen.length).toBe(1);
+  });
+  test("a failed read rests before it is tried again; reads are bounded to two at once", async () => {
+    const home = fresh("svc-rest");
+    let clock = 1_000;
+    let calls = 0;
+    const lists = new BackendModelLists({ home, userHome: home, now: () => clock, retryMs: 1_000, runCommand: async () => { calls++; return undefined; } });
+    for (let i = 0; i < 5; i++) await lists.get(backend);
+    expect(calls).toBe(1);
+    clock += 1_500;
+    await lists.get(backend);
+    expect(calls).toBe(2);
+    let active = 0;
+    let peak = 0;
+    const gate = new BackendModelLists({ home, userHome: home, runCommand: async () => { active++; peak = Math.max(peak, active); await Bun.sleep(30); active--; return GOOD; } });
+    await Promise.all(Array.from({ length: 6 }, (_, i) => gate.get({ ...backend, id: `many-${i}` })));
+    expect(peak).toBe(2);
+  });
+  test("the run folder is made private", async () => {
+    const home = fresh("svc-mode");
+    new BackendModelLists({ home, userHome: home }).noteSession("demo", [{ id: "m", name: "m", efforts: [] }]);
+    if (process.platform !== "win32") expect(statSync(join(home, "run", "agents")).mode & 0o077).toBe(0);
   });
   test("with no list, or a list that can't be read, what a session reported is offered; and kept for the next daemon", async () => {
     const home = fresh("svc-2");
@@ -299,7 +362,7 @@ describe("with a real fake ACP agent process: its declared list command, and a s
       reader: READER,
     });
     const lists = new BackendModelLists({ home: dir, userHome: dir });
-    const got = await lists.get({ id: "demo", modelList: decl, listEnv: () => ({ PATH: process.env["PATH"] ?? "" }) });
+    const got = await lists.get({ id: "demo", bundled: true, modelList: decl, listEnv: () => ({ PATH: process.env["PATH"] ?? "" }) });
     expect(got).toMatchObject({ source: "command", models: [{ id: "m-one", name: "One", efforts: ["low", "high"] }] });
     expect(readReport(run.report).some((r) => r.type === "prompt")).toBe(false);
     // The same agent as a backend: a session started on the model at an effort has both set before the first prompt.

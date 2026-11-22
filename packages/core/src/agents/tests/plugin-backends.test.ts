@@ -81,7 +81,7 @@ describe("agent backends from plugins", () => {
     expect(mine).toMatchObject({ pluginId: "my-agent", bundled: false, command: { program: "my-agent", acpArgs: ["acp"] }, file: { source: "its own" } });
   });
 
-  test("a model list declared by another plugin runs only its own program's list command, never a file or another program; the bundled codex declares its own", async () => {
+  test("a model list declared by another plugin is dropped whole with one log line, whatever it names; only the bundled codex declares its own", async () => {
     const w = world();
     const reader = { list: "models", id: "slug" };
     const command = (program: string) => ({ program, args: ["models"], identity: { versionArgs: ["--version"], versionPattern: "." } });
@@ -99,10 +99,10 @@ describe("agent backends from plugins", () => {
     make("file-only", { file: { home: ".x", path: "m.json" }, reader });
     await w.folders.scan();
     for (const id of ["same-program", "other-program", "file-only"]) await w.core.approve(id, w.core.get(id)!.treeHash!);
-    const got = contributedBackends(w.core);
-    expect(got.find((c) => c.id === "same-program")!.modelList).toEqual({ command: { ...command("own-program"), timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024 }, reader });
-    expect(got.find((c) => c.id === "other-program")!.modelList).toBeUndefined();
-    expect(got.find((c) => c.id === "file-only")!.modelList).toBeUndefined();
+    const lines: string[] = [];
+    const got = contributedBackends(w.core, (l) => lines.push(l));
+    for (const id of ["same-program", "other-program", "file-only"]) expect(got.find((c) => c.id === id)!.modelList).toBeUndefined();
+    expect(lines.filter((l) => /declares a model list/.test(l)).length).toBe(3);
     expect(got.find((c) => c.id === "codex")!.modelList?.command?.program).toBe("codex");
   });
 

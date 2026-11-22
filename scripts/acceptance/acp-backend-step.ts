@@ -15,7 +15,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, until, type ExampleCtx } from "./example-steps";
 
-export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the agent's own model list (its plugin's declared list command) is what agent.options offers before any session, a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, and agent.recent keeps that agent's own last choice";
+export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, and agent.recent keeps that agent's own last choice";
 
 export const ACP_ID = "acceptance-acp";
 export const ACP_NAME = "Acceptance ACP";
@@ -165,16 +165,15 @@ async function run(ctx: ExampleCtx): Promise<string> {
 
 type Models = { models: { id: string; name: string; provider?: string; efforts: string[] }[] };
 
-/** 3. The agent's own models (lane MS). Declared by its plugin as a list command (`modelList` in its quirks file: the fake's
- *  `models` mode), read before any session exists; a session started on one of them has it set before its first prompt; the
+/** 3. The agent's own models (lane MS). This plugin is a third party's, so no list command of its own is run: what the
+ *  session of step 2 reported is what `agent.options` offers (source `session`); a session started on one of them has it set before its first prompt; the
  *  session's own `models.list` names the agent's models; a pick reaches the agent; the person's choice is kept for this agent. */
 async function modelsRow(ctx: ExampleCtx, o: { computer: string; report: string }): Promise<string> {
   const { rpc } = ctx;
   const ids = ACP_MODELS.filter((m) => m.visibility === "list").map((m) => m.slug);
   const options = await rpc.request<{ known: boolean; source: string; models: { id: string; name: string; efforts: string[] }[] }>("agent.options", { backend: ACP_ID });
-  if (!options.known || options.source !== "command") fail(`agent.options for ${ACP_ID} isn't its declared list command's answer: ${JSON.stringify(options).slice(0, 300)}`);
-  if (JSON.stringify(options.models.map((m) => m.id)) !== JSON.stringify(ids)) fail(`agent.options lists ${options.models.map((m) => m.id).join(", ")}, not the agent's ${ids.join(", ")} (a hidden model is left out)`);
-  if (JSON.stringify(options.models[1]!.efforts) !== JSON.stringify(["low", "high"])) fail(`its efforts are ${options.models[1]!.efforts.join(", ")}`);
+  if (!options.known || options.source !== "session") fail(`agent.options for ${ACP_ID} isn't what its first session reported: ${JSON.stringify(options).slice(0, 300)}`);
+  if (JSON.stringify(options.models.map((m) => m.id)) !== JSON.stringify(ids)) fail(`agent.options lists ${options.models.map((m) => m.id).join(", ")}, not the models the agent reported (${ids.join(", ")})`);
   // A session on the second model at its highest effort, with the prompt: the model and effort are set before the prompt reaches the agent.
   const seen = reportOf(o.report).length;
   const started = await rpc.request<{ session: string }>("agent.start", { backend: ACP_ID, computer: o.computer, root: `home/${o.computer}/acp-work`, prompt: ACP_PROMPT, model: ids[1]!, effort: "high" }, 60_000);
@@ -211,5 +210,5 @@ async function modelsRow(ctx: ExampleCtx, o: { computer: string; report: string 
   const recent = await rpc.request<{ byBackend?: { backend: string; model?: string; effort?: string }[] }>("agent.recent", {});
   const row = recent.byBackend?.find((b) => b.backend === ACP_ID);
   if (row === undefined || row.model !== ids[1] || row.effort !== "high") fail(`agent.recent keeps ${JSON.stringify(row)} for ${ACP_ID}, not the model and effort the person started on`);
-  return `3 agent.options lists the agent's own models from its declared list command (${ids.join(", ")}, the hidden one left out); a session started on ${ids[1]} at high had both set before its first prompt; models.list for it names the agent's models under ${ACP_ID}; session.setModel to ${ids[0]} reached the agent and the session; agent.recent keeps the agent's own last choice`;
+  return `3 agent.options lists the models the agent's first session reported (${ids.join(", ")}); a session started on ${ids[1]} at high had both set before its first prompt; models.list for it names the agent's models under ${ACP_ID}; session.setModel to ${ids[0]} reached the agent and the session; agent.recent keeps the agent's own last choice`;
 }

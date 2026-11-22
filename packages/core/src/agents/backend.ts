@@ -154,6 +154,12 @@ export class AcpAgentBackend implements AgentBackend {
     return this.#opts.modelList;
   }
 
+  /** The backend's own program and identity: a list command of the same program is checked against these. */
+  get ownProgram(): { program: string; identity: { versionArgs: readonly string[]; versionPattern: string } } | undefined {
+    const c = this.command();
+    return c === undefined ? undefined : { program: c.program, identity: this.quirks.launch.identity };
+  }
+
   /** The environment this agent's launch gives a program: the list command runs under the same allow-list. */
   listEnv(): Record<string, string> {
     return this.#env();

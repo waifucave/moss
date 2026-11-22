@@ -77,7 +77,10 @@ export function NewSessionPanel(p: NewSessionPanelProps) {
 
   const opts = agent === undefined ? undefined : options[agent];
   useEffect(() => {
-    if (agent === undefined || opts === null) return;
+    if (agent === undefined) return;
+    // While this agent's options are on their way the pick is none: the last agent's model is never sent to this one,
+    // and Create waits for the answer.
+    if (opts === null) { setPick(undefined); return; }
     setPick(pickModel(agent, opts, recent ?? undefined));
   }, [agent, opts, recent]);
 

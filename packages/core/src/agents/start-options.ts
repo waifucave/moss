@@ -55,7 +55,7 @@ export class FileRecentStore implements RecentStore {
   }
 
   write(recent: RecentStart): void {
-    mkdirSync(dirname(this.path), { recursive: true });
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(recent), { mode: 0o600 });
     renameSync(tmp, this.path);

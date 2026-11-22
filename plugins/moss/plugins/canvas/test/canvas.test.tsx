@@ -47,7 +47,7 @@ interface Harness {
   botState(bot: string, state: string): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; pairs?: unknown[]; seen?: number; barHeight?: number } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; pairs?: unknown[]; seen?: number; barHeight?: number; handlers?: Record<string, (p: any) => unknown> } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
     "agent.backends": () => ({ backends: o.backends ?? BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
@@ -58,6 +58,7 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
     "app.openIn": () => ({ opened: true, started: false }),
     "session.links": () => ({ pairs: o.pairs ?? [], links: [] }),
   };
+  Object.assign(handlers, o.handlers ?? {});
   for (const m of o.unserved ?? []) delete handlers[m];
   const core = fakeCore(handlers);
   const c = clock();
@@ -460,6 +461,29 @@ describe("+ New session", () => {
     await waitFor(() => expect(within(panel).getByRole("radio", { name: "elsewhere" }).getAttribute("aria-checked")).toBe("true"));
     press(within(panel).getByRole("button", { name: "Create session" }));
     expect(h.core.calls.filter((c) => c.method === "agent.start").map((c) => c.params)).toEqual([{ backend: "gemini", root: "pick-9" }]);
+  });
+});
+
+describe("+ New session, switching agent while the new agent's options are on their way", () => {
+  test("Create waits for them: the last agent's model is never sent to the new one", async () => {
+    let release: (() => void) | undefined;
+    const h = mount({
+      playedTo: 1_000,
+      handlers: { "agent.options": (p: { backend: string }) => (p.backend === "codex" ? new Promise((r) => { release = () => r(OPTIONS["codex"]); }) : OPTIONS[p.backend]) },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+    const panel = await screen.findByRole("dialog", { name: "New session" });
+    await waitFor(() => expect(within(panel).getByText("Opus 5.5 · high")).toBeDefined());
+    fireEvent.click(within(panel).getByRole("radio", { name: /Codex/ }));
+    await waitFor(() => expect(release).toBeDefined());
+    const create = within(panel).getByRole("button", { name: "Create session" }) as HTMLButtonElement;
+    await waitFor(() => expect(create.disabled).toBe(true));
+    press(create);
+    expect(h.core.calls.filter((c) => c.method === "agent.start")).toEqual([]);
+    release!();
+    await waitFor(() => expect(create.disabled).toBe(false));
+    press(create);
+    expect(h.core.calls.filter((c) => c.method === "agent.start").map((c) => c.params)).toEqual([{ backend: "codex", root: "pick-1", model: "openai/gpt-6", effort: "medium" }]);
   });
 });
 
