@@ -24,6 +24,8 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import type { AgentBackend, AgentQuirks } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
+import { RESERVED_ENV } from "@waifucave/moss-plugin-sdk";
+import { AdapterDeclSchema, LockFileSchema, type AdapterDecl, type AdapterDeclFile } from "./adapter/types";
 import { ModelListDeclSchema, type ModelListDecl } from "./model-list";
 
 /** The bundled plugin that holds a backend's row: `moss/agent-<id>`. */
@@ -39,6 +41,9 @@ export const AgentQuirksSchema = z.strictObject({
     envAllow: Strings,
     envSet: z.record(z.string().max(256), z.string().max(4096)),
     versions: z.string().max(256),
+    /** The program is an adapter MOSS provides (agents/adapter, spec §9.3): read out of the launch block by
+     *  `readQuirksFile` into `QuirksFile.adapter`, so the descriptor the client reads keeps the spine's shape. */
+    adapter: AdapterDeclSchema.optional(),
   }),
   capabilities: z.strictObject({ snakeCaseDuplicates: z.boolean(), httpMcpUnadvertised: z.boolean() }),
   mcp: z.strictObject({
@@ -106,6 +111,8 @@ export interface QuirksFile {
   source: string;
   readOnlyMode?: { option: string; values: readonly string[] };
   modelList?: ModelListDecl;
+  /** `launch.adapter`: the program is an adapter MOSS provides (the lock not read yet: `readAdapter`). */
+  adapter?: AdapterDeclFile;
   quirks: FileQuirks;
 }
 
@@ -115,17 +122,35 @@ export function quirksWithCommand(q: FileQuirks, command: { program: string; acp
   return { ...q, launch: { ...q.launch, command: { macos: argv, linux: argv, windows: argv } } };
 }
 
-/** Reads and checks a quirks file inside a plugin's folder; throws with the reason. */
-export function readQuirksFile(folder: string, path: string): QuirksFile {
-  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`the quirks file ${JSON.stringify(path)} isn't a path inside the plugin`);
+/** A file's text, read from inside a plugin's folder only (no `..`, no absolute path, no link out of it). */
+function readInside(folder: string, path: string, what: string): string {
+  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`the ${what} ${JSON.stringify(path)} isn't a path inside the plugin`);
   const root = realpathSync(folder);
   const real = realpathSync(join(root, path));
   const rel = relative(root, real);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) throw new Error(`the quirks file ${JSON.stringify(path)} leads out of the plugin`);
-  const raw: unknown = JSON.parse(readFileSync(real, "utf8"));
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) throw new Error(`the ${what} ${JSON.stringify(path)} leads out of the plugin`);
+  return readFileSync(real, "utf8");
+}
+
+/** Reads and checks a quirks file inside a plugin's folder; throws with the reason. */
+export function readQuirksFile(folder: string, path: string): QuirksFile {
+  const raw: unknown = JSON.parse(readInside(folder, path, "quirks file"));
   const parsed = QuirksFileSchema.safeParse(raw);
   if (!parsed.success) throw new Error(`the quirks file doesn't hold a backend's quirks: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "file"}: ${i.message}`).join("; ")}`);
-  return parsed.data as QuirksFile;
+  const file = parsed.data as QuirksFile & { quirks: { launch: { adapter?: AdapterDeclFile } } };
+  // The adapter leaves the launch block: the client's descriptor keeps the spine's shape.
+  const { adapter, ...launch } = file.quirks.launch;
+  return { ...file, quirks: { ...file.quirks, launch } as FileQuirks, ...(adapter === undefined ? {} : { adapter }) };
+}
+
+/** An adapter declaration with its lock read from inside the plugin's folder; throws with the reason. A lock that names
+ *  the adapter's own path, or that doesn't parse, refuses the declaration (the backend is left out). */
+export function readAdapter(folder: string, decl: AdapterDeclFile): AdapterDecl {
+  if (decl.lock === undefined) return { ...decl, packages: [] };
+  const parsed = LockFileSchema.safeParse(JSON.parse(readInside(folder, decl.lock, "adapter lock")));
+  if (!parsed.success) throw new Error(`the adapter lock ${JSON.stringify(decl.lock)} isn't a lock file: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "file"}: ${i.message}`).join("; ")}`);
+  if (parsed.data.packages.some((p) => p.path === `node_modules/${decl.package}`)) throw new Error(`the adapter lock ${JSON.stringify(decl.lock)} locks the adapter itself, whose integrity the declaration names`);
+  return { ...decl, packages: parsed.data.packages };
 }
 
 /** The core's own backends' ids: MOSS's coding agent and lane A's in-process subagents. No plugin contributes them. */
@@ -178,6 +203,8 @@ export interface ContributedBackend {
   command: { program: string; acpArgs: readonly string[] };
   /** The file's quirks with that command. */
   quirks: AgentQuirks;
+  /** The program is an adapter MOSS provides, with its lock read (`launch.adapter`). */
+  adapter?: AdapterDecl;
   /** Where the agent's own model list is read from (`agents/model-list.ts`): MOSS's bundled plugin's declaration only. */
   modelList?: ModelListDecl;
   /** Its look as the entry gives it (spec revision 20, §9.5): an icon file in the plugin's folder and its colours. Read
@@ -222,6 +249,17 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
         continue;
       }
     }
+    let adapter: AdapterDecl | undefined;
+    if (file.adapter !== undefined) {
+      try {
+        const reserved = (file.adapter.uses ?? []).find((u) => RESERVED_ENV.test(u.env));
+        if (reserved !== undefined) throw new Error(`it hands a program's path in ${reserved.env}, a name only MOSS sets`);
+        adapter = readAdapter(record.folder, file.adapter);
+      } catch (err) {
+        log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: its adapter declaration is refused: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    }
     const command = { program: v.command, acpArgs: v.args ?? [] };
     // Another plugin's backend counts as acting without asking, whatever its file says.
     const fileQuirks: FileQuirks = bundled || file.quirks.marks.includes("unasked-actions") ? file.quirks : { ...file.quirks, marks: [...file.quirks.marks, "unasked-actions"] };
@@ -233,7 +271,7 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
     // come from its sessions.
     if (!bundled && declared !== undefined) log?.(`agents: ${c.pluginId}'s backend ${id} declares a model list, which only MOSS's own plugins may; its models come from its sessions`);
     const modelList = bundled ? declared : undefined;
-    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look, ...(modelList === undefined ? {} : { modelList }) });
+    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look, ...(modelList === undefined ? {} : { modelList }), ...(adapter === undefined ? {} : { adapter }) });
   }
   // One entry per id: MOSS's bundled one while it is on, else the first claim.
   const out: ContributedBackend[] = [];
@@ -266,7 +304,7 @@ export class ContributedBackendCache<B extends AgentBackend> {
     for (const c of contributedBackends(registry, log)) {
       // Keyed by plugin and id: one object per entry while its plugin's tree and row hold, so a session keeps its backend.
       const slot = `${c.pluginId}\u0000${c.id}`;
-      const key = `${registry.get(c.pluginId)?.treeHash ?? ""}\u0000${JSON.stringify(c.file)}\u0000${JSON.stringify(c.command)}\u0000${c.bundled}`;
+      const key = `${registry.get(c.pluginId)?.treeHash ?? ""}\u0000${JSON.stringify(c.file)}\u0000${JSON.stringify(c.command)}\u0000${c.bundled}\u0000${JSON.stringify(c.adapter ?? null)}`;
       seen.add(slot);
       const had = this.#built.get(slot);
       if (had && had.key === key) {

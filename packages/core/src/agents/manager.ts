@@ -971,7 +971,7 @@ export class AgentManager {
     e.sandboxHeld = why.length === 0;
     if (why.length === 0) return admitted;
     // The OK is for this program: its real path and its file's hash (K-M2 review 5).
-    const sha256 = (await programHash(admitted.path)) ?? "";
+    const sha256 = d.sha256 ?? (await programHash(admitted.path)) ?? "";
     await this.#requireOk(e, { version: d.version ?? "unknown", path: admitted.path, sha256 }, why.join("; "), d.sandboxed);
     return { ...admitted, ...(sha256 ? { sha256 } : {}) };
   }

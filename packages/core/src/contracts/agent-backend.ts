@@ -138,6 +138,9 @@ export interface AgentDetection {
   /** The resolved real path. */
   path?: string;
   version?: string;
+  /** The digest MOSS recorded when it placed the program itself (an adapter it provides): the user's OK names this in
+   *  place of the hash of `path`'s file alone, so a change to any file of the copy asks again. */
+  sha256?: string;
   /** The binary is the vendor's (version output, signer). */
   identityOk: boolean;
   /** The version is in the tested range. */
