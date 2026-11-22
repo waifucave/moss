@@ -4,7 +4,8 @@
 //   macOS    Seatbelt (`sandbox-exec -p`, `macos-profile.ts`)
 //   Linux    bubblewrap (`linux-bwrap.ts`), from its standard place only; where unprivileged user namespaces are shut
 //            (AppArmor's restriction on Ubuntu without bwrap's profile) the door says so and refuses
-//   Windows  not yet: the door says so and refuses
+//   Windows  a pool principal through the pinned srt-win launcher (`win-fenced.ts`); without `moss-core sandbox setup`
+//            the door says so and refuses
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -24,6 +25,8 @@ import { macFenceProfile } from "./macos-profile";
 import { makeHolderFolders } from "./holder-folders";
 import { callerPlaces } from "./per-caller";
 import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner } from "./spawn";
+import { winFencedSpawner, windowsDeps, type WinFencedDeps } from "./win-fenced";
+import { currentUserSid } from "../platform/win-pipe";
 
 export interface FencedProcessOptions {
   readonly fence: MossFence;
@@ -36,6 +39,8 @@ export interface FencedProcessOptions {
   readonly perUserTemp?: () => string | null;
   /** Linux: bubblewrap's path (default `/usr/bin/bwrap`, never a PATH search). */
   readonly bwrap?: string;
+  /** Windows: the launcher, the owner's install and the shells (`windowsDeps`, the machine's own, by default). */
+  readonly windows?: WinFencedDeps;
 }
 
 let tempCache: string | null | undefined;
@@ -301,7 +306,7 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
       },
     };
   }
-  return closed("the Windows sandbox isn't built yet");
+  return winFencedSpawner({ fence: o.fence, deps: o.windows ?? windowsDeps(o.fence.mossHome, { ownerSid: currentUserSid(), programData: process.env.ProgramData ?? null }) });
 }
 
 const BWRAP = "/usr/bin/bwrap";
