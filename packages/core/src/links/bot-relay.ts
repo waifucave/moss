@@ -25,6 +25,7 @@ import type { DeliveredInput, Disposition } from "../contracts/session-host";
 import type { FileDeviceRegistry } from "../devices/registry";
 import { type CallFence, fenceOf } from "./peer-call";
 import { relayUserMessage, type RelayParams } from "./relay";
+import { fromPeer } from "../sessions/exchange-depth";
 
 /** The link's own request for another session's message to a session on the receiving computer. */
 export const SESSION_DELIVER = "link.session.deliver";
@@ -149,7 +150,7 @@ export function mountSessionDelivery(
     // An old main's message is refused, not taken late (H-M2's review).
     const fence = fenceOf(raw);
     if (fence && opts.isStale?.(fence.epoch, fence.scope)) throw new ContractError("not_main", "the message comes from a main computer that has since lost the lease", { fence });
-    const input = p.data.input as DeliveredInput;
+    const input = fromPeer(p.data.input as DeliveredInput);
     opts.check?.(p.data.id, input, { device: from, computer: d.computer });
     return deliver(p.data.id, input, from);
   });

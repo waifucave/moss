@@ -12,7 +12,7 @@ import { FakeClock, flush } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import type { DeliveredInput, SessionDriver, TurnEnd, TurnInput } from "../../contracts/session-host";
 import { DurableSessionHost } from "../../sessions/durable-host";
-import { EXCHANGE_DEPTH_LIMIT, EngineSessionMessenger, sendSlots, type SendSlots } from "../bridge/messenger";
+import { EXCHANGE_DEPTH_LIMIT, EngineSessionMessenger, sendSlots, type EngineMessengerWorld, type SendSlots } from "../bridge/messenger";
 import { waitFor, World, type WorldOptions } from "./world";
 
 setDefaultTimeout(120_000);
@@ -286,7 +286,7 @@ describe("the invariant, over generated sequences", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// A bot in the loop (the owner's ruling of 2026-11-22: a session the person started takes any session's message).
+// A bot in the loop (the owner's rule of 2026-11-22: a session may message any session, and a bot only once it has messaged it).
 // ---------------------------------------------------------------------------------------------------------------------
 
 describe("the brake and the rate, with a bot's sessions among the sender and the receivers", () => {
@@ -298,12 +298,31 @@ describe("the brake and the rate, with a bot's sessions among the sender and the
     view("bm", { kind: "bot", bot: "moss", title: "MOSS" }),
   ];
   const PERSONS = ["p1", "p2", "p3", "p4"];
-  /** Who each sender may message, written out (not read from the rule): a person's session the person's sessions and children, a
-   *  bot's session every bot's conversation, its own bot's sessions and the sessions the person started themselves. */
-  const REACH: Record<string, readonly string[]> = {
-    p1: ["p2", "p3", "p4"], p2: ["p1", "p3", "p4"], p3: ["p1", "p2", "p4"], p4: ["p1", "p2", "p3"],
-    bl: ["kl", "bm", "p1", "p2", "p3"], kl: ["bl", "bm", "p1", "p2", "p3"],
+  const BOT_OF: Record<string, string> = { bl: "luna", kl: "luna", bm: "moss" };
+  const CONVERSATIONS = ["bl", "bm"];
+  /** Who each sender may message, written out as the owner's rule (not read from the code): a bot's own conversation reaches its bot's
+   *  sessions, every bot's conversation and the sessions the person started; any other session (a bot's agent, a session the person
+   *  started, a child of one) reaches any other session, and a bot's conversation only its own, or once that bot has written to it. */
+  const mayReach = (from: string, to: string, wrote: ReadonlyMap<string, ReadonlySet<string>>): boolean => {
+    if (from === to) return false;
+    if (CONVERSATIONS.includes(from)) return CONVERSATIONS.includes(to) || (to === "kl" && BOT_OF[from] === "luna") || ["p1", "p2", "p3"].includes(to);
+    if (CONVERSATIONS.includes(to)) return BOT_OF[to] === BOT_OF[from] || wrote.get(from)?.has(BOT_OF[to]!) === true;
+    return true;
   };
+  /** The form a delivery takes: a bot's conversation to anything of a bot's is `bot`, an agent to its own bot's conversation `agent`, the rest a session's own. */
+  const formOf = (from: string, to: string): string =>
+    CONVERSATIONS.includes(from) && BOT_OF[to] !== undefined ? "bot" : from === "kl" && to === "bl" ? "agent" : "session";
+  /** The world, with the engine's record of which bots' conversations have written to which session (the host's, as a delivery is accepted). */
+  const world = (pending: { to: string; input: DeliveredInput }[], now: () => number, wrote: Map<string, Set<string>>): EngineMessengerWorld => ({
+    sessions: () => SESSIONS,
+    deliver: (to, input) => {
+      pending.push({ to, input });
+      const sender = input.from === "session" || input.from === "bot" ? input.session : undefined;
+      if (sender !== undefined && CONVERSATIONS.includes(sender)) wrote.set(to, (wrote.get(to) ?? new Set()).add(BOT_OF[sender]!));
+    },
+    now,
+    botsThatWrote: (id) => [...(wrote.get(id) ?? [])],
+  });
 
   test("generated operations: every delivery is within the limit and one deeper than its sender's turn, a bot's message to a session the person started is that session's, and no sender goes past 20 in a minute", async () => {
     for (let seed = 1; seed <= 60; seed++) {
@@ -311,15 +330,12 @@ describe("the brake and the rate, with a bot's sessions among the sender and the
       let t = 0;
       const pending: { to: string; input: DeliveredInput }[] = [];
       const all: { to: string; from: string; input: DeliveredInput }[] = [];
-      const m = new EngineSessionMessenger({
-        sessions: () => SESSIONS,
-        deliver: (to, input) => { pending.push({ to, input }); },
-        now: () => t,
-      }, sendSlots(() => t));
+      const wrote = new Map<string, Set<string>>();
+      const m = new EngineSessionMessenger(world(pending, () => t, wrote), sendSlots(() => t));
       const model = new Map<string, number>();
       const at = (s: string) => model.get(s) ?? 0;
       const taken = new Map<string, number[]>();
-      const senders = Object.keys(REACH);
+      const senders = ["p1", "p2", "p3", "p4", "bl", "kl", "bm"];
       for (let step = 0; step < 300; step++) {
         t += r.int(1_500);
         const op = r.int(10);
@@ -332,10 +348,11 @@ describe("the brake and the rate, with a bot's sessions among the sender and the
           if (slot) recent.push(t);
           taken.set(s, recent);
           const before = pending.length;
+          const allowed = mayReach(s, to, wrote);
           const out = await m.send(s, { message: `m${step}`, to });
           if (!slot) {
             expect(out).toEqual({ refused: expect.stringContaining("Too many messages") });
-          } else if (to === s || !REACH[s]!.includes(to)) {
+          } else if (!allowed) {
             expect("refused" in out).toBe(true);
           } else if (at(s) + 1 > EXCHANGE_DEPTH_LIMIT) {
             expect(out).toEqual({ refused: expect.stringContaining("without the person") });
@@ -344,9 +361,8 @@ describe("the brake and the rate, with a bot's sessions among the sender and the
             const d = pending.at(-1)!;
             all.push({ to, from: s, input: d.input });
             expect((d.input as { depth?: number }).depth).toBe(at(s) + 1);
-            // A message to a session the person started is that session's, from a bot's session too; between bot sessions, the bots' own.
-            if (PERSONS.includes(to)) expect(d.input).toMatchObject({ from: "session", session: s });
-            else expect(["agent", "bot"]).toContain(d.input.from);
+            // The delivered form is the sender's: a session's own message to a session, the bot's or its agent's to a bot's conversation.
+            expect([s, to, d.input.from]).toEqual([s, to, formOf(s, to)]);
             continue;
           }
           expect(pending.length).toBe(before);
@@ -362,21 +378,56 @@ describe("the brake and the rate, with a bot's sessions among the sender and the
           m.personSpoke(s);
           model.set(s, 0);
         }
-        for (const x of Object.keys(REACH)) expect(m.depthOf(x)).toBe(at(x));
+        for (const x of senders) expect(m.depthOf(x)).toBe(at(x));
       }
       for (const d of all) expect((d.input as { depth: number }).depth).toBeLessThanOrEqual(EXCHANGE_DEPTH_LIMIT);
-      // Nothing a person's session sent went to a bot's session.
-      expect(all.filter((d) => PERSONS.includes(d.from) && !PERSONS.includes(d.to))).toEqual([]);
+      // Nothing a person's session sent reached a bot's conversation unless that bot had written to it by then (the model says so at each send).
+      expect(all.filter((d) => PERSONS.includes(d.from) && CONVERSATIONS.includes(d.to) && wrote.get(d.from)?.has(BOT_OF[d.to]!) !== true)).toEqual([]);
     }
   });
 
-  test("a bot's session messages a session the person started; that session cannot answer it, and what it sends on is counted from the bot's message", async () => {
+  test("a bot writes to a session the person started; it may then answer that bot, and they stop at the limit; a session never written to is refused by every bot", async () => {
     const delivered: { to: string; input: DeliveredInput }[] = [];
-    const m = new EngineSessionMessenger({ sessions: () => SESSIONS, deliver: (to, input) => { delivered.push({ to, input }); }, now: () => 0 }, { take: () => true });
-    expect(await m.send("kl", { message: "please look at this", to: "p1" })).toEqual({ delivered: "p1" });
-    expect(delivered[0]).toEqual({ to: "p1", input: { from: "session", session: "kl", text: "please look at this", depth: 1 } });
+    const wrote = new Map<string, Set<string>>();
+    const m = new EngineSessionMessenger(world(delivered, () => 0, wrote), { take: () => true });
+    // Before the bot has written: refused, every bot's conversation and the bot's agent alike for the bot's conversation; the agent is a session, open to all.
+    for (const to of ["bl", "bm"]) expect([to, "refused" in (await m.send("p1", { message: "first", to }))]).toEqual([to, true]);
+    expect(await m.send("p1", { message: "to the agent", to: "kl" })).toEqual({ delivered: "kl" });
+    expect(delivered.map((d) => d.to)).toEqual(["kl"]);
+    delivered.length = 0;
+    // The bot writes (its own conversation, as that bot): p1 may answer it, and not another bot.
+    expect(await m.send("bl", { message: "please look at this", to: "p1" })).toEqual({ delivered: "p1" });
+    expect(delivered[0]).toEqual({ to: "p1", input: { from: "session", session: "bl", text: "please look at this", depth: 1 } });
     m.turnStarted("p1", delivered[0]!.input);
-    for (const to of ["kl", "bl", "bm"]) expect([to, "refused" in (await m.send("p1", { message: "reply", to }))]).toEqual([to, true]);
+    expect("refused" in (await m.send("p1", { message: "reply", to: "bm" }))).toBe(true);
+    // p3 was never written to: refused by every bot's conversation.
+    for (const to of ["bl", "bm"]) expect([to, "refused" in (await m.send("p3", { message: "reply", to }))]).toEqual([to, true]);
+    // The reply and the answers to it go back and forth, each one deeper, until the limit; then neither side may send.
+    let sender = "p1";
+    let receiver = "bl";
+    let depth = 1;
+    for (;;) {
+      const out = await m.send(sender, { message: `round ${depth}`, to: receiver });
+      if (depth + 1 > EXCHANGE_DEPTH_LIMIT) { expect(out).toEqual({ refused: expect.stringContaining("without the person") }); break; }
+      expect(out).toEqual({ delivered: receiver });
+      const d = delivered.at(-1)!;
+      expect(d.to).toBe(receiver);
+      expect((d.input as { depth: number }).depth).toBe(depth + 1);
+      m.turnStarted(receiver, d.input);
+      depth++;
+      [sender, receiver] = [receiver, sender];
+    }
+    expect(Math.max(...delivered.map((d) => (d.input as { depth?: number }).depth ?? 0))).toBe(EXCHANGE_DEPTH_LIMIT);
+    // The person's word starts it over for the one it is sent to, and the exchange is open again from there.
+    m.personSpoke("p1");
+    expect(await m.send("p1", { message: "after the person spoke", to: "bl" })).toEqual({ delivered: "bl" });
+  });
+
+  test("a message from another session counts from its depth for the receiver's own answer: p1 to p2 after a bot's message is one deeper", async () => {
+    const delivered: { to: string; input: DeliveredInput }[] = [];
+    const m = new EngineSessionMessenger(world(delivered, () => 0, new Map()), { take: () => true });
+    expect(await m.send("kl", { message: "please look at this", to: "p1" })).toEqual({ delivered: "p1" });
+    m.turnStarted("p1", delivered[0]!.input);
     expect(await m.send("p1", { message: "to p2", to: "p2" })).toEqual({ delivered: "p2" });
     expect((delivered[1]!.input as { depth?: number }).depth).toBe(2);
   });

@@ -57,9 +57,9 @@ export function crossFixtureWith(files: Record<string, string>, paths: { bun: st
 }
 
 /** One session's config: the quirks file's quirks, where it reports, and its one turn. */
-export function crossConfig(quirksFile: string, o: { report: string; selection: string; mcpEnv: Record<string, string>; turn: unknown[] }): string {
+export function crossConfig(quirksFile: string, o: { report: string; selection: string; mcpEnv: Record<string, string>; turn: unknown[]; then?: unknown[] }): string {
   const file = JSON.parse(quirksFile) as { quirks: unknown };
-  return JSON.stringify({ quirks: file.quirks, version: "fake-agent 1.0.0", report: o.report, selection: o.selection, mcpEnv: o.mcpEnv, script: [o.turn] });
+  return JSON.stringify({ quirks: file.quirks, version: "fake-agent 1.0.0", report: o.report, selection: o.selection, mcpEnv: o.mcpEnv, script: [o.turn, ...(o.then === undefined ? [] : [o.then])] });
 }
 
 const bridge = (tool: string, input: unknown) => ({ mcp: { server: "$bridge", tool, input, ask: false } });
@@ -86,7 +86,7 @@ async function crossWorld(ctx: ExampleCtx) {
   const written = crossFixtureWith({ "moss.json": readFileSync(join(folder, "moss.json"), "utf8"), "quirks.json": readFileSync(join(folder, "quirks.json"), "utf8") }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config });
   for (const [name, body] of Object.entries(written)) writeFileSync(join(folder, name), body);
   // The MOSS server the agent starts is this core's own binary: a test-marked one refuses to start without the run's keychain file's variable.
-  const cfg = (report: string, turn: unknown[]) => writeFileSync(config, crossConfig(written["quirks.json"]!, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile }, turn }));
+  const cfg = (report: string, turn: unknown[], then?: unknown[]) => writeFileSync(config, crossConfig(written["quirks.json"]!, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile }, turn, ...(then === undefined ? {} : { then }) }));
 
   // The plugin, behind its OK card pressed in the window, and its backend listed.
   cfg(reportB, [{ say: READY }]);
@@ -175,12 +175,14 @@ async function run(ctx: ExampleCtx): Promise<string> {
   return done.join("; ");
 }
 
-/** Row (lane CM, the owner's ruling of 2026-11-22: any session may message a session the person started): Alpha's `Agent` starts a
- *  session on the fixture's fake agent, scripted to list its sessions and message B, a session the person started. B holds the
- *  message as a `session_message` from that session, with its words, never a `user_message`; B's agent reads it as another session's
- *  and a `session_link` from the bot's session to B is heard. Then C, a session the person started, is scripted to message the
- *  session that wrote to B and Alpha's conversation: both refused in the one sentence, nothing delivered (a session the person
- *  drives reaches no bot's session). */
+/** Row (lane CM, the owner's rule of 2026-11-22: "a session created by a bot may message that bot and any other session. that session
+ *  cannot message other bots unless they message it first. a session created by the user may message any other session, it still
+ *  cannot message bots unless these bots message it first"): Alpha's `Agent` starts a session K on the fixture's fake agent, scripted
+ *  to list its sessions and message B, a session the person started. B holds the message as a `session_message` from that session,
+ *  with its words, never a `user_message`; B's agent reads it as another session's and a `session_link` from K to B is heard. Then C,
+ *  a session the person started, is scripted to message K (a session a bot created: delivered) and Alpha's conversation (refused in
+ *  the one sentence while Alpha has never written to C, nothing delivered). Alpha's conversation then writes to C; C's agent, woken
+ *  by it, answers Alpha's conversation, and that reply now lands there as a `session_message` from C, never the person's. */
 export async function canvasBotReachStep(ctx: ExampleCtx): Promise<string> {
   try {
     return await botReach(ctx);
@@ -191,6 +193,8 @@ export async function canvasBotReachStep(ctx: ExampleCtx): Promise<string> {
 
 const FROM_BOT = "CROSS-FROM-BOT-SESSION: the nightly report is ready for you.";
 const ANSWER = "CROSS-ANSWER: thanks, noted.";
+const FROM_ALPHA = "CROSS-FROM-ALPHA: please confirm you have the report.";
+const REPLY = "CROSS-REPLY: confirmed, I have the report.";
 
 async function botReach(ctx: ExampleCtx): Promise<string> {
   const { rpc, work, reportB, reportC, cfg, computer, start, heard, history, mcpResult, links, bot } = await crossWorld(ctx);
@@ -225,22 +229,41 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   if (link.link !== "message" || Object.keys(link).sort().join(",") !== "from,link,to,ts,type") fail(`the link reads ${JSON.stringify(link).slice(0, 300)}, not a message from ${k.id} with no words`);
   done.push(`1 K (${k.id}, a session Alpha started) listed sessions (B among them) and sent to B (${b}): B's conversation holds a session_message from ${k.id} with the words and no user_message; B's agent read it as another session's; a session_link of kind message from K to B was heard`);
 
-  // C, a session the person started, tries to answer K and to reach Alpha's conversation: neither is a session it may message.
-  cfg(reportC, [bridge("ListSessions", {}), bridge("SendMessage", { message: ANSWER, to: k.id }), bridge("SendMessage", { message: ANSWER, to: bot.mainSession }), { say: "C-DONE" }]);
+  // C, a session the person started: it may message K (a session a bot created), and not Alpha's conversation, which has never written to it.
+  // Its second turn, started by Alpha's message later, is its reply to Alpha's conversation.
+  cfg(reportC, [bridge("ListSessions", {}), bridge("SendMessage", { message: ANSWER, to: k.id }), bridge("SendMessage", { message: ANSWER, to: bot.mainSession }), { say: "C-DONE" }],
+    [bridge("SendMessage", { message: REPLY, to: bot.mainSession }), { say: "C-REPLIED" }]);
   const c = await start("C");
   const results = await until("C's two SendMessage answers", 60_000, async () => {
     const r = reportOf(reportC).filter((x) => x.type === "mcp-result" && x.tool === "SendMessage");
     return r.length >= 2 ? r : undefined;
   }, async () => `C's report: ${reportOf(reportC).map((x) => x.type).join(", ") || "none"}`);
-  for (const r of results) if (r.isError !== true || !String(r.text).includes("No session you may message")) fail(`C's SendMessage answered ${JSON.stringify(r).slice(0, 300)}, not a refusal`);
-  const sameWords = (t: unknown) => String(t).replace(/"[^"]*"/, "X");
-  if (sameWords(results[0]!.text) !== sameWords(results[1]!.text) || ![k.id, bot.mainSession].every((id) => results.some((r) => String(r.text).includes(`"${id}"`)))) fail(`the two refusals differ beyond the name asked for: "${String(results[0]!.text)}" and "${String(results[1]!.text)}"`);
+  if (results[0]!.isError === true || !String(results[0]!.text).includes("Sent")) fail(`C's SendMessage to K answered ${JSON.stringify(results[0]).slice(0, 300)}: a session the person started may message a session a bot created`);
+  if (results[1]!.isError !== true || !String(results[1]!.text).includes("No session you may message")) fail(`C's SendMessage to Alpha's conversation answered ${JSON.stringify(results[1]).slice(0, 300)}, not a refusal (Alpha has not written to C)`);
+  const fromC = await heard("K's conversation to hold C's message", k.id, (evs) => evs.find((e) => e.type === "session_message" && e.fromSession === c));
+  if (fromC.text !== ANSWER) fail(`K's session_message from C reads ${JSON.stringify(fromC).slice(0, 300)}, not C's words`);
   const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
   const cText = String(cList?.text ?? "");
-  if (!cText.includes(b) || cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and neither K nor Alpha's conversation`);
-  await heard("C's turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
-  for (const s of [k.id, bot.mainSession]) if (JSON.stringify(await history(s)).includes("CROSS-ANSWER")) fail(`C's message reached ${s}`);
-  done.push(`2 C (${c}), a session the person started, sent to K and to Alpha's conversation: both refused in the same words, nothing delivered, and its ListSessions names B and no bot's session`);
+  if (!cText.includes(b) || !cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and K, and not Alpha's conversation (Alpha has not written to C)`);
+  await heard("C's first turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
+  if (JSON.stringify(await history(bot.mainSession)).includes("CROSS-ANSWER")) fail("C's message reached Alpha's conversation before Alpha had written to C");
+  done.push(`2 C (${c}), a session the person started, sent to K ("Sent": K's conversation holds a session_message from C) and was refused for Alpha's conversation ("${String(results[1]!.text).slice(0, 60)}…"): nothing reached it, and C's ListSessions names B and K and no bot's conversation`);
+
+  // Alpha's conversation writes to C (a bot's own message to a session the person started); C's agent answers, and the answer now reaches it.
+  await ctx.turn(bot.mainSession, `ACCEPTANCE-CALL SendMessage ${JSON.stringify({ to: c, message: FROM_ALPHA })}`, 150_000);
+  const wrote = await heard("C's conversation to hold Alpha's message", c, (evs) => evs.find((e) => e.type === "session_message" || e.type === "bot_message"));
+  if (!JSON.stringify(wrote).includes("CROSS-FROM-ALPHA")) fail(`C's conversation holds ${JSON.stringify(wrote).slice(0, 300)}, not Alpha's words`);
+  const reply = await until("C's reply to Alpha's conversation", 60_000, async () => {
+    const r = reportOf(reportC).filter((x) => x.type === "mcp-result" && x.tool === "SendMessage");
+    return r.length >= 3 ? r[2] : undefined;
+  }, async () => `C's report: ${reportOf(reportC).map((x) => x.type).join(", ") || "none"}`);
+  if (reply!.isError === true || !String(reply!.text).includes("Sent")) fail(`C's reply to Alpha's conversation answered ${JSON.stringify(reply).slice(0, 300)}: Alpha had written to C, so C may answer it`);
+  const landed = await heard("Alpha's conversation to hold C's reply", bot.mainSession, (evs) => evs.find((e) => e.type === "session_message" && e.fromSession === c));
+  if (landed.text !== REPLY) fail(`Alpha's conversation holds ${JSON.stringify(landed).slice(0, 300)}, not C's reply`);
+  if ((await history(bot.mainSession)).some((e) => e.type === "user_message" && JSON.stringify(e).includes("CROSS-REPLY"))) fail("C's reply reached Alpha's conversation as the user's own");
+  const back = await until("the session_link from C to Alpha's conversation", 30_000, async () => links.find((l) => (l.from as { session?: string } | undefined)?.session === c && (l.to as { session?: string } | undefined)?.session === bot.mainSession));
+  if (back.link !== "message") fail(`the link reads ${JSON.stringify(back).slice(0, 300)}, not a message from ${c}`);
+  done.push(`3 Alpha's conversation wrote to C; C answered it and the reply landed in Alpha's conversation as a session_message from ${c} with its words, never the user's, and a session_link from C to it was heard`);
   return done.join("; ");
 }
 
@@ -258,7 +281,7 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
 //   4. A title: a coding session on the default model is titled after its first turn; the fake provider's request for the
 //      title names the default's family's light model, its turn's the default.
 
-export const CANVAS_BOT_REACH_STEP = "the canvas · a session a bot started messages a session the person started: it lands as a session_message from that session (heard as a session_link, never the person's), ListSessions names the person's session, and the person's sessions cannot message a bot's conversation or that session back";
+export const CANVAS_BOT_REACH_STEP = "the canvas · a session a bot started messages a session the person started (a session_message from that session, heard as a session_link, never the person's); a session the person started may message a session a bot created but is refused for a bot's conversation until that bot has written to it, and once it has, its reply lands there as a session_message from that session";
 export const CANVAS_CHILD_STEP = "the canvas · a child session joins its parent: Alpha's Agent starts a session whose view names her conversation as its parent and her as its starter, her view waits on it, and the app hears the spawn's and the report's session_link (no words)";
 export const CANVAS_SUBAGENT_STEP = "the canvas · a subagent row: an agent declaring Claude Code's subagents quirk plays a Task call as Claude Code's adapter sends it, and the session's view lists the row under it, running, then ended";
 export const CANVAS_WAITING_STEP = "the canvas · waiting: a coding session's command in the background is counted on its view; while its turn runs the session reads running (running wins), after it waiting, and once the command ends neither";

@@ -108,7 +108,7 @@ describe("Agent", () => {
     const r = await w.delegate();
     const n = await waitFor(() => notification(w), "the task notification");
     expect(n.text).toBe("Done.");
-    expect(w.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed.", depth: 1 }]);
+    expect(w.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed.", depth: 2 }]);
     expect(w.report("mcp-result").map((x) => x["text"])).toEqual(["Sent.", JSON.stringify({ results: [], loaded: [] }, null, 2)]);
     expect(w.approvals.cards()).toEqual([]);
     const calls = readFileSync(join(w.mossHome, "bots", "alpha", "agents", r.sessionId, "calls.ndjson"), "utf8");

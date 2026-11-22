@@ -1,11 +1,18 @@
 // MOSS protocol: who may message whom (spec revision 20, §9.5 "Who may reach whom"). Owner: lane CM (the cross-session
 // tools). Pinned by lane CS (the canvas's spine).
 //
-// ONE rule for every session that messages another: a bot's (its conversation, side threads and background agents, the
-// bots' `SendMessage` in `packages/core/src/bots/tools.ts`, which delegates here) and every agent session the person drives (an ACP agent's or MOSS's own coding agent's, through the bridge's
-// `SendMessage` and `ListSessions`). Each line says who ruled it: the owner, the controller, or the spine (a proposal).
+// ONE rule for every session that messages another: a bot's own conversation and side threads (the bots' `SendMessage` in
+// `packages/core/src/bots/tools.ts`, which delegates here) and every agent session, a bot's background agent or one the person
+// drives (an ACP agent's or MOSS's own coding agent's, through the bridge's `SendMessage` and `ListSessions`). Each line says who
+// ruled it: the owner, the controller, or the spine (a proposal).
 //
-// The owner's ruling of 2026-11-22: ANY session may message a session the person started themselves, a bot's too.
+// The owner's rule of 2026-11-22 (his words): "a session created by a bot may message that bot and any other session. that
+// session cannot message other bots unless they message it first. a session created by the user may message any other session,
+// it still cannot message bots unless these bots message it first". Read as: a "bot" is the bot itself (its conversation and
+// its side threads), a "session" is a coding or agent session whoever started it; "messaged it first" is the engine's own
+// durable record that the bot's conversation or a side thread of it (its `SendMessage`) delivered a message to THAT session
+// (`DurableSessionHost.botsThatWrote`), never anything a model says. What a bot's own conversation or side thread may reach
+// is as merged before (any bot's conversation, its own sessions, the sessions the person started).
 //
 // What it never changes: each session's own approvals stay its own (the owner's words of 2026-11-21). A message from
 // another session is never the person's: the turn it starts has origin `agent`, so a card it raises expires
@@ -68,23 +75,28 @@ export function startedByPerson(t: Pick<ReachEnd, "startedBy" | "parent">): bool
 /** Each line of the rule, in the order it is read, with who ruled it. */
 export const REACH_RULE_LINES = [
   { line: "Never itself.", ruled: "controller" },
-  { line: "A bot's session (its conversation, a side thread, a background agent) reaches any bot's conversation.", ruled: "controller" },
-  { line: "A bot's session reaches every session of its own bot.", ruled: "controller" },
-  { line: "A bot's session reaches the sessions the person started themselves (a code session of the person's), and the message reaches it as that session's, never as the person's: the receiver's approvals stay its own.", ruled: "owner" },
-  { line: "A bot's session never reaches a session another session started (a child of the person's code session), nor another bot's side threads or agents.", ruled: "controller" },
-  { line: "A session the person drives (no bot) reaches the person's other code sessions and its own children.", ruled: "owner" },
-  { line: "A session the person drives reaches the children of the person's other code sessions too: they are the person's.", ruled: "spine" },
-  { line: "A session the person drives never reaches a bot's conversation (a session a bot started carries that bot, and is a bot's session above).", ruled: "spine" },
-  { line: "A session the person drives never reaches a bot's side threads or agents.", ruled: "spine" },
+  { line: "A bot's own conversation or side thread reaches any bot's conversation, every session of its own bot, and the sessions the person started themselves (not what another session started, nor another bot's side threads or agents).", ruled: "owner" },
+  { line: "A session a bot created (a background agent, and what it starts) reaches that bot's conversation and side threads, and any other session: the person's, its siblings, another bot's agents, children of any of them.", ruled: "owner" },
+  { line: "A session the person created (a code session, and what it starts) reaches any other session, a session a bot created included.", ruled: "owner" },
+  { line: "A session reaches another bot's conversation or side threads only after that bot has messaged it first (the engine's record of a bot's message to that very session).", ruled: "owner" },
   { line: "An ended session takes nothing.", ruled: "controller" },
 ] as const;
 
-/** Why `from` may not message `target` (the lines above, ended aside), or undefined when it may. */
-export function reachRefusal(from: Pick<ReachEnd, "id" | "bot">, target: Pick<ReachEnd, "id" | "kind" | "bot" | "startedBy" | "parent">): string | undefined {
-  if (from.bot !== undefined) {
+/** Whether a bot has messaged the sending session before (the engine's durable record): the third thing the rule reads. */
+export type WroteFirst = (bot: string) => boolean;
+
+/** Why `from` may not message `target` (the lines above, ended aside), or undefined when it may. `wroteFirst` answers
+ *  whether a bot's conversation or side thread has messaged `from` before; absent, none has. */
+export function reachRefusal(
+  from: Pick<ReachEnd, "id" | "kind" | "bot">,
+  target: Pick<ReachEnd, "id" | "kind" | "bot" | "startedBy" | "parent">,
+  wroteFirst?: WroteFirst,
+): string | undefined {
+  const botItself = target.kind === "bot" || target.kind === "side-thread";
+  if (from.kind === "bot" || from.kind === "side-thread") {
     if (target.id === from.id) return "That is this conversation; SendMessage reaches another one.";
     if (target.kind === "bot") return undefined;
-    if (target.bot === from.bot) return undefined;
+    if (target.bot !== undefined && target.bot === from.bot) return undefined;
     if (target.bot === undefined) {
       const code = target.kind === "coding" || target.kind === "agent";
       if (code && startedByPerson(target)) return undefined;
@@ -93,15 +105,16 @@ export function reachRefusal(from: Pick<ReachEnd, "id" | "bot">, target: Pick<Re
     }
     return `${target.id} belongs to the bot ${target.bot}; message that bot's conversation instead (SendMessage with to: "${target.bot}").`;
   }
+  // A session (a coding or agent session): the one the person created, or one a bot created (it carries its bot).
   if (target.id === from.id) return "That is this session; SendMessage reaches another one.";
-  if (target.bot === undefined && (target.kind === "coding" || target.kind === "agent")) return undefined;
-  if (target.kind === "bot") return `${target.id} is a bot's conversation; a session you drive reaches only your other code sessions.`;
-  return `${target.id} belongs to the bot ${target.bot ?? "?"}; a session you drive reaches only your other code sessions.`;
+  if (!botItself) return undefined;
+  if (target.bot !== undefined && (target.bot === from.bot || wroteFirst?.(target.bot) === true)) return undefined;
+  return `${target.id} is ${target.kind === "bot" ? "a bot's conversation" : "a bot's side thread"}; a session reaches a bot only after that bot has messaged it first${from.bot === undefined ? "" : " (your own bot always)"}.`;
 }
 
 /** Whether `from` may deliver to `target` now: the rule, and the target not ended. */
-export function mayReach(from: Pick<ReachEnd, "id" | "bot">, target: ReachEnd): boolean {
-  return target.status !== "stopped" && target.status !== "failed" && reachRefusal(from, target) === undefined;
+export function mayReach(from: Pick<ReachEnd, "id" | "kind" | "bot">, target: ReachEnd, wroteFirst?: WroteFirst): boolean {
+  return target.status !== "stopped" && target.status !== "failed" && reachRefusal(from, target, wroteFirst) === undefined;
 }
 
 /** Where a `to` lands among the sessions `from` may reach (`reachable`, already filtered by `mayReach`): an exact id, else

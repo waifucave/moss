@@ -171,6 +171,11 @@ export interface SessionMeta {
   /** Who started it (§9.5), set at the start and never changed; a meta from before revision 20 has none, and reads as
    *  its kind, bot, parent and routine say (`derivedStarter`). */
   startedBy?: SessionStarter;
+  /** The bots whose own conversation or side thread has delivered a message to this session, in the order they first did (§9.5
+   *  "Who may reach whom": a session reaches a bot only after that bot has messaged it first). Set by the host as such a delivery
+   *  is accepted, for the session's life: it outlasts the bot's side thread that wrote and a restart, and goes with the session (an
+   *  ended session takes nothing). At most `WROTE_BOTS_MAX`; a bot past it is not remembered (the reply stays closed). */
+  wroteBy?: string[];
   /** Who gave its title: the person, a spawn, or the engine's titler. A title with none (from before revision 20) is
    *  never replaced by the engine. */
   titleBy?: TitleSource;
@@ -185,6 +190,9 @@ export interface SessionMeta {
 export type SessionSpecPatch = { computer?: string } & {
   [K in "title" | "backend" | "model" | "effort" | "root" | "routine" | "definition"]?: string | null;
 };
+
+/** The most bots a session remembers having written to it (`SessionMeta.wroteBy`). */
+export const WROTE_BOTS_MAX = 64;
 
 export interface DurableSessionHostOptions {
   /** The MOSS home: `~/.moss`, `~/.moss-dev`, or a test's temp home. */
@@ -559,7 +567,14 @@ function readMeta(path: string): SessionMeta | undefined {
     throw new ContractError("conflict", `${path} was written by a newer MOSS (meta ${v.meta}); start that version, since this one would lose what it can't read`);
   }
   if (v === undefined || v.meta !== SESSION_META_VERSION || typeof v.id !== "string" || typeof v.kind !== "string" || typeof v.computer !== "string" || typeof v.startedAt !== "number") return undefined;
-  return v as SessionMeta;
+  const meta = v as SessionMeta;
+  // A damaged or edited record never widens who may reach a bot: only plain bot ids are kept, at most `WROTE_BOTS_MAX`.
+  if (meta.wroteBy !== undefined) {
+    const ids = Array.isArray(meta.wroteBy) ? [...new Set(meta.wroteBy.filter((b): b is string => typeof b === "string" && b !== "" && b.length <= 200))].slice(0, WROTE_BOTS_MAX) : [];
+    if (ids.length === 0) delete meta.wroteBy;
+    else meta.wroteBy = ids;
+  }
+  return meta;
 }
 
 function errorText(err: unknown): string {
@@ -809,6 +824,9 @@ export class DurableSessionHost implements SessionHost {
     const copy = structuredClone(input);
     if (copy.from === "note" || (copy.from === "routine" && s.meta.kind === "bot")) return this.#post(s, copy);
     const accepted = this.#accept(s, copy);
+    // A bot's own conversation or side thread has written to this session: remembered, from the sender's own record here (never
+    // from the input's words), so the session may answer that bot.
+    if (copy.from === "session" || copy.from === "bot") this.#noteBotWrote(s, copy.session);
     // A message from one session to another crossed (§9.5): the link, with no words, once it is recorded here.
     switch (copy.from) {
       case "bot":
@@ -825,6 +843,27 @@ export class DurableSessionHost implements SessionHost {
         break;
     }
     return accepted;
+  }
+
+  /** Remembers, in `s`'s meta, the bot whose own conversation or side thread `sender` is (a session this host holds), once. */
+  #noteBotWrote(s: Hosted, sender: string): void {
+    const from = this.#sessions.get(sender)?.meta;
+    if (from?.bot === undefined || (from.kind !== "bot" && from.kind !== "side-thread")) return;
+    const have = s.meta.wroteBy ?? [];
+    if (have.includes(from.bot) || have.length >= WROTE_BOTS_MAX) return;
+    const next: SessionMeta = { ...s.meta, wroteBy: [...have, from.bot] };
+    try {
+      writeJsonAtomic(sessionMetaPath(this.#home, next.bot, next.id), next);
+      s.meta = next;
+    } catch (err) {
+      // Not kept: the reply stays closed until the bot writes again; never the delivery's failure.
+      this.#warn(`session ${s.meta.id}: the record of a bot's message to it wasn't written: ${errorText(err)}`);
+    }
+  }
+
+  /** The bots whose conversation or side thread has delivered a message to the session (see `SessionMeta.wroteBy`). */
+  botsThatWrote(id: string): readonly string[] {
+    return [...(this.#sessions.get(id)?.meta.wroteBy ?? [])];
   }
 
   /** The link of a delivery that was recorded here; one this host can't name (an end it doesn't know, a session to
@@ -980,6 +1019,7 @@ export class DurableSessionHost implements SessionHost {
     if (s.driver !== undefined) throw new ContractError("conflict", `session ${id} is still open; release it first`);
     this.#sessions.delete(id);
     this.graph.forget(id);
+    this.depths.ended(id);
   }
 
   /** Lane BT's restore: picks up the sessions whose files came back into `transcripts/` (a bot brought back from the
@@ -1954,6 +1994,7 @@ export class DurableSessionHost implements SessionHost {
     if (isEnded(status)) {
       this.#markEnded(s);
       if (this.graph.has(s.meta.id)) this.graph.ended(s.meta.id);
+      this.depths.ended(s.meta.id);
     }
     // A turn (or a compaction) began: its starter waits for it again (`waiting.children`, §9.5).
     if (status === "prompting" && this.graph.has(s.meta.id)) this.graph.busy(s.meta.id);

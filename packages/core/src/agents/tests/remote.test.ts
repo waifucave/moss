@@ -65,15 +65,23 @@ describe("an agent on another computer", () => {
     const r = await delegate(p);
     expect((await waitFor(() => notification(p.a), "the task notification")).text).toBe("Done.");
     expect(p.a.parentInputs("agent").map((x) => x.input)).toEqual([{ from: "agent", agent: r.sessionId, text: "Halfway: 6 of 12 fixed.", depth: 1 }]);
-    // Another bot's agent, a session another session started, and a name nobody has: refused through Studio's own check (the
-    // protocol's `reachRefusal`; another bot's CONVERSATION is reachable by its line 2, as for a bot's own tools).
+    // A session a bot created reaches any other session (the owner's rule of 2026-11-22): another bot's agent, a session another
+    // session started; another bot's CONVERSATION only once that bot has messaged it; a name nobody has: refused through Studio's own
+    // check (the protocol's `reachRefusal`).
     p.a.host.open({ id: "s_beta", kind: "bot", bot: "beta", computer: "Studio" }, p.a.parentDriver);
     p.a.host.open({ id: "s_beta_agent", kind: "agent", bot: "beta", parent: "s_beta", computer: "Studio" }, p.a.parentDriver);
     p.a.host.open({ id: "s_mine", kind: "coding", computer: "Studio" }, p.a.parentDriver);
     p.a.host.open({ id: "s_kid", kind: "coding", parent: "s_mine", startedBy: { kind: "session", session: "s_mine" }, computer: "Studio" }, p.a.parentDriver);
-    for (const to of ["s_beta_agent", "s_kid", "s_nobody"]) {
+    for (const to of ["s_beta", "s_nobody"]) {
       expect([to, isContractError(await p.a.manager.remoteMessage(r.sessionId, "hi", to).catch((e: unknown) => e), "refused")]).toEqual([to, true]);
     }
+    for (const to of ["s_beta_agent", "s_kid"]) {
+      expect([to, await p.a.manager.remoteMessage(r.sessionId, "hi", to).then(() => "sent")]).toEqual([to, "sent"]);
+      expect(p.a.host.history(to).find((x) => x.type === "input" && x.input.from === "session")).toMatchObject({ input: { from: "session", session: r.sessionId, text: "hi" } });
+    }
+    // Beta's conversation writes to the agent first: the agent may then answer it (Studio's host keeps the record).
+    await p.a.host.deliver(r.sessionId, { from: "bot", bot: "beta", session: "s_beta", text: "a question" });
+    expect(await p.a.manager.remoteMessage(r.sessionId, "the answer", "s_beta").then(() => "sent")).toBe("sent");
     // The person's own code session (the owner's ruling of 2026-11-22) takes it, as that session's message and never the person's.
     await p.a.manager.remoteMessage(r.sessionId, "hi from the agent", "s_mine");
     expect(p.a.host.history("s_mine").find((x) => x.type === "input" && x.input.from === "session")).toMatchObject({ input: { from: "session", session: r.sessionId, text: "hi from the agent", depth: 1 } });

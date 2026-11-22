@@ -56,7 +56,7 @@ import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
-import { EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
+import { EXCHANGE_DEPTH_LIMIT, EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
 import type { ExchangeDepths } from "../sessions/exchange-depth";
 import { formatSessionMessage, PAGE_MESSAGE_FRAME } from "../runtime-sdk/turn-loop/input";
 import { agentPaths, namesUnlistedPaths } from "./paths";
@@ -317,6 +317,7 @@ export class AgentManager {
     this.#messenger = new EngineSessionMessenger({
       sessions: () => opts.host.list(),
       deliver: (to, input) => opts.host.deliver(to, input),
+      botsThatWrote: (session) => opts.host.botsThatWrote(session),
       // The session graph hears a delivery through the host (lane CG's `session_link`); nothing to tell it here.
       now: () => opts.clock.now(),
     }, opts.sendSlots ?? sendSlots(() => opts.clock.now()), opts.depths);
@@ -519,7 +520,7 @@ export class AgentManager {
     }, entry.driver);
     try {
       // A coding session the user opens with no prompt waits for their first message; the agent starts with it.
-      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt });
+      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt, depth: this.#spawnDepth(req.caller.session) });
       else if (req.prompt.length > 0) await this.#o.host.sendUser(id, { text: req.prompt, device: req.caller.device, clientMessageId: req.caller.clientMessageId, sentAt: req.caller.sentAt ?? this.#o.clock.now() });
     } catch (err) {
       await this.#o.host.stop(id, "failed to start").catch(() => {});
@@ -566,7 +567,7 @@ export class AgentManager {
       ...(req.model === undefined ? {} : { model: req.model }), ...(req.effort === undefined ? {} : { effort: req.effort }), ...definition,
     }, r.driver);
     try {
-      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt });
+      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt, depth: this.#spawnDepth(req.caller.session) });
       else if (req.prompt.length > 0) await this.#o.host.sendUser(id, { text: req.prompt, device: req.caller.device, clientMessageId: req.caller.clientMessageId, sentAt: req.caller.sentAt ?? this.#o.clock.now() });
     } catch (err) {
       await this.#o.host.stop(id, "failed to start").catch(() => {});
@@ -1528,11 +1529,18 @@ export class AgentManager {
     return `MOSS's plugin tools changed${what ? ` (${what})` : ""}. This agent doesn't take a change of tools in a running session, so it keeps the list it started with until its next session. A tool that has gone is refused if it calls it.`;
   }
 
+  /** The depth an agent a bot starts begins at: the starting session's own depth + 1 (its first prompt is that session's message),
+   *  never beyond the limit. So a spawn does not buy the exchange a fresh 8: a chain of spawns is braked as a chain of messages. */
+  #spawnDepth(session: string): number {
+    return Math.min(this.#messenger.depthOf(session) + 1, EXCHANGE_DEPTH_LIMIT);
+  }
+
   /** The approval a bot's agent's `SendMessage` waits for (spec §9.2: "messaging the bot's own sessions or a session whose level is no wider
    *  than its own" runs without asking at ask for risky actions; read only is absolute, ask asks, a wider target's a card every time):
    *  the same call as in its bot's own session, judged by the bots' approval check (`BridgeToolSource.judge`), at the target the rule
    *  resolved (never the model's `to`, which may be a title). A session the person drives (no bot) is not asked here: the spec gives
-   *  nothing for it. Without a judge (no approvals here) nothing is asked, as before. */
+   *  nothing for it. A bot's agent with no judge wired (no approvals here) is refused, as the late-bound source refuses: never sent
+   *  without the ask. */
   #messageApproval(sessionId: string, text: string): ((target: SessionView) => Promise<string | undefined>) | undefined {
     const judge = this.#o.pluginTools?.judge;
     const e = this.#entries.get(sessionId);
@@ -1540,7 +1548,8 @@ export class AgentManager {
     const facts: AgentSessionFacts | undefined = e !== undefined && e.peer === undefined ? this.#facts(e)
       : r !== undefined ? { id: r.id, kind: r.bot === undefined ? "coding" : "agent", backend: r.backend, ...(r.bot === undefined ? {} : { bot: r.bot }), computer: r.computer, root: r.root }
       : undefined;
-    if (judge === undefined || facts === undefined || facts.bot === undefined) return undefined;
+    if (facts === undefined || facts.bot === undefined) return undefined;
+    if (judge === undefined) return async () => "SendMessage was refused: this computer's approvals aren't running for agents here, so a bot's agent's message isn't sent.";
     const level = e === undefined ? r?.level : this.#routineLevelOf(e);
     const signal = e?.driver.currentSignal();
     const ctx: BridgeCallContext = {

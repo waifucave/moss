@@ -14,6 +14,8 @@ import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import { LeaseMainComputer, type MainComputer } from "../main-computer";
 import { botPaths } from "../paths";
 import { MEMORY_INDEX_MAX_LINES, memoryBlock, readMemoryIndex } from "../prompt";
+import { EXCHANGE_DEPTH_LIMIT } from "../../sessions/exchange-depth";
+import { EngineSessionMessenger } from "../../agents/bridge/messenger";
 import { MethodError, PEER_SESSION_DELIVER, peerSessionMethods, sessionsMethods, type MethodContext } from "../rpc";
 import { pausedFile, readPaused } from "../gate";
 import type { BotRelay } from "../service";
@@ -389,14 +391,45 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     expect((await send!.run({ to: "s_codekid", message: "hi" })).text).toContain("another of the user's sessions started");
     // Another bot's conversation, by its session id too.
     expect((await send!.run({ to: "b_luna", message: "hi" })).isError).toBe(false);
-    // An agent, through the same door: never itself, its own bot yes, as the agent's own message; another bot's agent no.
+    // An agent, through the same door: never itself, its own bot yes, as the agent's own message. By the owner's rule of 2026-11-22
+    // (a session a bot created may message any other session): another bot's agent yes, as a session's message; another bot's
+    // conversation or side thread not, until that bot has written to this agent.
     const [agentSend] = botToolDefs({ host: b.host, bots: b.bots }, "s_mine");
-    expect((await agentSend!.run({ to: "s_mine", message: "hi" })).text).toContain("this conversation");
-    expect((await agentSend!.run({ to: "s_lunas", message: "hi" })).isError).toBe(true);
+    expect((await agentSend!.run({ to: "s_mine", message: "hi" })).text).toContain("this session");
+    expect((await agentSend!.run({ to: "s_lunas", message: "hi" })).isError).toBe(false);
+    expect(b.host.history("s_lunas").find((r) => r.type === "input" && r.input.from === "session")).toMatchObject({ input: { from: "session", session: "s_mine", text: "hi" } });
+    expect((await agentSend!.run({ to: "b_luna", message: "hi" })).text).toContain("only after that bot has messaged it first");
+    expect((await agentSend!.run({ to: "s_lunaside", message: "hi" })).isError).toBe(true);
     expect((await agentSend!.run({ to: "alpha", message: "Halfway there." })).isError).toBe(false);
     await flush();
     expect(b.drivers.for("b_alpha").turns[0]!.input).toEqual({ from: "agent", agent: "s_mine", text: "Halfway there.", depth: 1 });
     expect(sendMessageRefusal({ sessionId: "s_x", bot: "alpha" }, { id: "s_y", kind: "agent", bot: "alpha" })).toBeUndefined();
+    await b.shutdown();
+  });
+
+  test("a reply to a bot: refused until the bot has written to that session, then it lands in the bot's conversation as that session's message, never the user's, and the exchange stops at the limit", async () => {
+    const b = await boot({ home: tempDir(), plugins: await withLuna(), clock: new FakeClock() });
+    b.host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", startedBy: { kind: "user" } }, new FakeSessionDriver({ canFold: false }));
+    const messenger = new EngineSessionMessenger({
+      sessions: () => b.host.list(), deliver: (to, input) => b.host.deliver(to, input), botsThatWrote: (s) => b.host.botsThatWrote(s), now: () => 0,
+    }, { take: () => true }, b.host.depths);
+    // Before: the session cannot message the bot (its conversation is not listed for it either), nor the other bot.
+    expect("refused" in (await messenger.send("s_code", { message: "hello?", to: "b_alpha" }))).toBe(true);
+    expect(messenger.reachable("s_code").map((v) => v.id)).not.toContain("b_alpha");
+    // The bot writes to it first (the bot's own SendMessage), and the engine's record keeps that across a restart of the host's meta.
+    const [send] = botToolDefs({ host: b.host, bots: b.bots }, "b_alpha");
+    expect((await send!.run({ to: "s_code", message: "the report is ready" })).isError).toBe(false);
+    expect(b.host.botsThatWrote("s_code")).toEqual(["alpha"]);
+    expect(messenger.reachable("s_code").map((v) => v.id)).toContain("b_alpha");
+    expect(messenger.reachable("s_code").map((v) => v.id)).not.toContain("b_luna");
+    expect("refused" in (await messenger.send("s_code", { message: "hello?", to: "b_luna" }))).toBe(true);
+    // The reply lands as that session's message: its words, its id, a `session` input at the next depth.
+    await flush();
+    b.host.depths.turnStarted("s_code", b.host.history("s_code").flatMap((r) => (r.type === "input" ? [r.input] : [])).at(-1) as never);
+    expect(await messenger.send("s_code", { message: "thanks, noted", to: "b_alpha" })).toEqual({ delivered: "b_alpha" });
+    const reply = b.host.history("b_alpha").flatMap((r) => (r.type === "input" ? [r.input] : [])).at(-1);
+    expect(reply).toMatchObject({ from: "session", session: "s_code", text: "thanks, noted", depth: 2 });
+    expect(b.host.history("b_alpha").some((r) => r.type === "input" && r.input.from === "user" && JSON.stringify(r.input).includes("thanks, noted"))).toBe(false);
     await b.shutdown();
   });
 
@@ -731,6 +764,12 @@ describe("the new sessions methods", () => {
     // computers are braked too; one the schema doesn't take is refused.
     expect(await deliver({ id: "b_alpha", computer: "Laptop", input: { ...fromBot, session: "t_luna1", depth: 5 } }, fromLaptop)).toMatchObject({ seq: expect.any(Number) });
     expect(b.host.history("b_alpha").some((r) => r.type === "input" && r.input.from === "bot" && r.input.depth === 5)).toBe(true);
+    // A bot's or an agent's message from a peer with no depth is never a fresh exchange: it counts as the limit (a peer that does not
+    // mark its messages cannot open an exchange at 0), and the engine's own store reads it so.
+    const before = b.host.history("b_alpha").filter((r) => r.type === "input").length;
+    expect(await deliver({ id: "b_alpha", computer: "Laptop", input: { ...fromBot, session: "t_luna1", text: "unmarked" } }, fromLaptop)).toMatchObject({ seq: expect.any(Number) });
+    const unmarked = b.host.history("b_alpha").filter((r) => r.type === "input").slice(before).map((r) => (r.type === "input" ? r.input : undefined));
+    expect(unmarked).toMatchObject([{ from: "bot", text: "unmarked", depth: EXCHANGE_DEPTH_LIMIT }]);
     // The same on the link's own wire (`link.session.deliver`, strict): a whole depth passes for a bot's and an agent's message.
     const wire = (input: unknown) => DEVICES_METHODS.linkSessionDeliver.params.safeParse({ id: "b_alpha", computer: "Laptop", input }).success;
     expect([wire({ ...fromBot, depth: 3 }), wire({ from: "agent", agent: "s_x", text: "hi", depth: 3 }), wire({ ...fromBot, depth: 1.5 }), wire({ ...fromBot, depth: -1 })]).toEqual([true, true, false, false]);
