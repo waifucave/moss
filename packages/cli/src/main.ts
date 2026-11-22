@@ -2019,7 +2019,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       // The owner's default MOSS home holds the leases (`<profile>\.moss\sandbox\leases`, as the daemon's).
       const leasesDir = sandboxLeasesDir(join(ownerProfile, ".moss"));
       let store: ReturnType<typeof createWindowsLockStore>;
-      try { store = createWindowsLockStore(leasesDir); } catch (e) {
+      try { store = createWindowsLockStore(leasesDir, { trustedOwner: targetSid }); } catch (e) {
         console.error(`sandbox reset: ${(e as Error).message}`);
         process.exitCode = 1;
         return;
