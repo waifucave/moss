@@ -632,7 +632,7 @@ export class UiRuntime {
     const parent = this.mounts.get(m.parent);
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
-    this.log(`layers: ${m.id} (${m.plugin?.id ?? "core"}) loads again (${why})`);
+    this.log(`layers: ${m.id} loads again (${why})`);
     this.post(parentDoc.id, { type: "child-reload", child: m.id, url: this.frameUrl(m), ...this.frameFlags(m) });
   }
 
@@ -649,7 +649,7 @@ export class UiRuntime {
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
     const url = this.reissue(doc);
-    this.log(`layers: ${doc.id} (${doc.plugin?.id ?? "core"}) loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
+    this.log(`layers: ${doc.id} loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
     // The frame's flags go with it: a parent that builds the frame again (the core root) gives the new one the same `allow`.
     this.post(parentDoc.id, { type: "child-reload", child: doc.id, url, ...this.frameFlags(doc) });
   }
