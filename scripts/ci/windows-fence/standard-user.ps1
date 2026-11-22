@@ -119,12 +119,21 @@ if (Get-ChildItem -Directory C:\Users -Filter "moss-sb-*" -ErrorAction SilentlyC
 if (Get-ScheduledTask -TaskName "MOSS Sandbox Reset $ownerSid" -ErrorAction SilentlyContinue) { $left += "the reset task" }
 if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\markers\$ownerSid.json")) { $left += "the marker" }
 if ($left.Count -gt 0) { Write-Output "left after forget and remove: $($left -join '; ')" }
-if ($here -notmatch "exit=0") { throw "the fenced suite failed as the standard user in its own session" }
-if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
-if ($text -notmatch "exit=0") {
-  if ($text -match "Sessions\\0\\BaseNamedObjects") { Write-Output "::warning::Session 0 (a password startup task): srt-win can't open \Sessions\0\BaseNamedObjects (0xC0000034), the known gap of spec 14.1 item 2; every command there is refused" }
-  else { throw "the fenced suite failed in Session 0 for another reason than the known BaseNamedObjects gap" }
+# Neither launch can be proven green on a runner, and each must fail CLOSED: no command may run at all (a command that
+# ran would print "-> ok"; one refused by the fence it ran under would print the fence's own error, not srt-win's).
+#  - In its own session: the runner has one interactive session, the administrator's; srt-win's broker must own the
+#    session's BaseNamedObjects (0xC0000022 in another user's), so a standard user's own logon is an owner live check.
+#  - In Session 0 (a password startup task): \Sessions\0\BaseNamedObjects isn't there (0xC0000034), spec 14.1 item 2.
+function Assert-FailedClosed([string]$Text, [string]$Where, [string]$Known) {
+  if ($Text -match "exit=0") { Write-Output "the fenced suite passed as the standard user $Where"; return }
+  $ran = [regex]::Matches($Text, "\[e2e\] (Bash|PowerShell) .* -> ok in") | Where-Object { $_ }
+  if ($ran.Count -gt 0) { throw "as the standard user $Where, $($ran.Count) command(s) ran although the suite failed" }
+  if ($Text -notmatch [regex]::Escape($Known)) { throw "the fenced suite failed as the standard user $Where for another reason than the known one ($Known)" }
+  Write-Output "::warning::as the standard user ${Where}: every launch refused, none ran ($Known); a live check"
 }
+Assert-FailedClosed $here "in the administrator's interactive session" "BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000022"
+if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
+Assert-FailedClosed $text "in Session 0" "Sessions\0\BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000034"
 if ($removeCode -ne 0) { throw "remove for the standard user exited $removeCode" }
 if ($left.Count -gt 0) { throw "forget and remove left $($left.Count) thing(s)" }
-Write-Output "the fenced suite passed as a standard user in its own session; Session 0 measured above"
+Write-Output "a standard user: setup refused unelevated, set up by the administrator, every launch failed closed where the runner can't host it, forget and remove left nothing"
