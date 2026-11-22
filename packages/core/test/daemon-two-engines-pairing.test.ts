@@ -114,6 +114,8 @@ test("two engines on two temp homes pair without an account, list each other, an
   // An app caller is not the user's own terminal: the add is a sealed card, and nothing is added until it is approved.
   expect(onA.applied).toBe(false);
   expect((await ok<Devices>(a, "device.list", {})).devices).toHaveLength(1);
+  // The card is the engine's own drawing of the four words, whatever the caller drew.
+  expect(JSON.stringify(a.daemon.mossParts.broker()!.cards().find((c) => c.id === onA.card)!)).toContain(joined.words.join(" "));
   await approve(a, onA.card!);
   await until("both lists holding both computers", async () => (await ok<Devices>(a, "device.list", {})).devices.length === 2 && (await ok<Devices>(b, "device.list", {})).devices.length === 2);
   const listA = (await ok<Devices>(a, "device.list", {})).devices;

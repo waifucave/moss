@@ -42,13 +42,16 @@ computers. "Live check" means only a person with two machines can show it.
 
 ## For the reviewer: who holds `devices.manage`, and what `pairing_changed` carries
 - Held by one bundled plugin: `plugins/moss/plugins/settings/moss.json` (the Settings part). No other bundled plugin asks for it.
-- A third-party plugin may ask for it (catalog entry in `packages/plugin-sdk/src/catalogs/capabilities.ts`, `warns: true`). Its OK card
-  then says it "pairs and removes your devices when you press its controls (each still asks on MOSS's own card)". Holding it lets a
-  part (a) call `device.pair.begin/join/confirm/cancel` and `device.revoke` through the door, only on the user's own press, and
-  (b) hear `pairing_changed` (code, the four words, steps). It never adds or removes a device by itself: the engine raises the sealed
-  card for the add and the removal, and only the user's answer in the card's frame applies it. A plugin holding it can read the four
-  words of a pairing the user began in its frame; that is the exposure the OK card names.
+- A third-party plugin may ask for it (`packages/plugin-sdk/src/catalogs/capabilities.ts`, `warns: true`). Its OK card says it pairs and
+  removes your devices when you press its controls, and sees the pairing code and the four words.
+- What a holder can do: call `device.pair.begin/join/confirm/cancel` and `device.revoke` through the door, only on the user's own press,
+  and hear `pairing_changed` (the code and the four words). What it cannot do: add or remove a device. The engine raises the sealed
+  card for each; the ADD card shows the four words itself (the engine's, in the sealed frame) and the computer it joins, so words a
+  part draws prove nothing. `device.pair.confirm` with words that aren't the pairing's fails the pairing at once, with no card.
+- Scope, as it is: a holder hears `pairing_changed` for ANY pairing on this computer while it lasts, not only one begun in its own
+  frame. The engine cannot tell which part began one: the door calls it as the user over the app's connection. Scoping it would need the
+  app's main process to relay the steps to the part that pressed (a different design); the OK text and this note say what is true.
 - Where in the diff: `packages/protocol/src/devices.ts` (`pairing_changed` roles and `capability`), `apps/desktop/src/main/ui/tree-calls.ts`
-  (`DEVICES_MANAGE`), `packages/plugin-sdk/src/catalogs/capabilities.ts`.
-- The two-engine proof is `packages/core/test/daemon-two-engines-pairing.test.ts`; `packages/core/test/*.ts` runs in the core jobs
-  (macOS shards and `core-linux`), the file has no platform marker.
+  (`DEVICES_MANAGE`), `packages/plugin-sdk/src/catalogs/capabilities.ts`, `packages/core/src/devices/rpc.ts` (`device.pair.confirm`).
+- Proofs: `packages/core/test/daemon-two-engines-pairing.test.ts` (two engines) and `packages/core/src/devices/tests/rpc.test.ts`
+  (wrong words, the card's words, expiry, two at once, a refused card, non-person callers) and `relay.test.ts`.

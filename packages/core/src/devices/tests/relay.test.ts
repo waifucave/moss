@@ -37,6 +37,14 @@ describe("device.relay.get and device.relay.set", () => {
     expect(applied).toEqual([]);
   });
 
+  test("a plugin's part, a session or a peer can't choose the relay", async () => {
+    const { m, applied } = service();
+    for (const caller of [{ kind: "plugin", pluginId: "acme/pairer" }, { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" }, { kind: "peer", device: "dev_x" }] as unknown as Caller[]) {
+      await expect(m[set]!({ mode: "off" }, { caller })).rejects.toThrow();
+    }
+    expect(applied).toEqual([]);
+  });
+
   test("the method is the user's own press, for the app and the CLI, not a remote client's", () => {
     expect(DEVICES_METHODS.deviceRelaySet.userOnly).toBe(true);
     expect([...DEVICES_METHODS.deviceRelaySet.roles].sort()).toEqual(["app", "cli"]);

@@ -52,8 +52,8 @@
     },
     {
       "name": "devices.manage",
-      "lets": "On the user's own press in its frame: show a pairing code or enter one, hear the pairing's steps (the four words), and ask to add or remove a device; adding or removing one is still a sealed card the user answers",
-      "ok": "pairs and removes your devices when you press its controls (each still asks on MOSS's own card)",
+      "lets": "On the user's own press in its frame: show a pairing code or enter one, see the pairing code and the four words of any pairing on this computer, and ask to add or remove a device; adding or removing one is still a sealed card the user answers",
+      "ok": "pairs and removes your devices when you press its controls, and sees the pairing code and the four words (each add or removal still asks on MOSS's own card, which shows the four words itself)",
       "warns": true
     },
     {
