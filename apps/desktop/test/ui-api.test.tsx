@@ -105,8 +105,12 @@ const tick = () => act(async () => {
   await new Promise((r) => setTimeout(r, 10));
 });
 
-// IntersectionObserver as the frames see it: the test says whether each observed element is near the screen.
+// IntersectionObserver as the frames see it: the test says whether each observed element is near the screen. As the real one
+// does, it answers once for each element it is given to observe (what the element is now: near, until the test says it is not;
+// `firstAnswer` off holds that answer back, for a page that paints no frames).
 const observers = new Set<{ cb: (e: { isIntersecting: boolean }[]) => void; els: Set<Element> }>();
+let nearNow = true;
+let firstAnswer = true;
 (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
   private o: { cb: (e: { isIntersecting: boolean }[]) => void; els: Set<Element> };
   constructor(cb: (e: { isIntersecting: boolean }[]) => void) {
@@ -115,12 +119,14 @@ const observers = new Set<{ cb: (e: { isIntersecting: boolean }[]) => void; els:
   }
   observe(el: Element) {
     this.o.els.add(el);
+    if (firstAnswer) queueMicrotask(() => { if (this.o.els.has(el)) this.o.cb([{ isIntersecting: nearNow }]); });
   }
   disconnect() {
     observers.delete(this.o);
   }
 };
 function setNear(near: boolean) {
+  nearNow = near;
   for (const o of observers) if (o.els.size > 0) o.cb([{ isIntersecting: near }]);
 }
 /** The cards `card.pending` answers with (what was pending before a part mounted). */

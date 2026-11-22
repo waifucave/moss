@@ -315,8 +315,10 @@ export interface LayerBridge {
   /** Binds this document to its mount, once. */
   describe(): Promise<MountInfo>;
   /** Resolves a spot that the part `mount` (this document's, or an inline part in it) declares. `hints.session` (the
-   *  kind of session the part shows, for `when.session`) is heard from the `moss` layer only. */
-  resolve(mount: string, spot: string, key?: string, hints?: { session?: string; entry?: string; bot?: string }): Promise<SpotView>;
+   *  kind of session the part shows, for `when.session`) is heard from the `moss` layer only. `hints.instance` names the `<Spot>`
+   *  asking (1 to 64 of `A-Z a-z 0-9 _ -`, kept for the `<Spot>`'s life): each instance's entries get mounts of their own, so a
+   *  spot drawn once for each message has one frame for each. A caller that sends none shares one place per entry, as before. */
+  resolve(mount: string, spot: string, key?: string, hints?: { session?: string; entry?: string; bot?: string; instance?: string }): Promise<SpotView>;
   /** A spot the part declares, as its entries, in the spot's order. */
   entries(mount: string, spot: string, key?: string, bot?: string, session?: string): Promise<readonly SpotEntryView[]>;
   /** New props for a child frame. */
