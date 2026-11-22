@@ -1113,7 +1113,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
    * the rest of the daemon derives it), because `refreshMcpOAuthToken`'s single-flight is keyed on the
    * store object. A test injects a memory store.
    */
-  const mcpOAuthStore = (): McpOAuthStore => opts.mcpOAuth?.store ?? daemonMcpOAuthStore(keychainService(resolveMossProfile(), opts.mossHome));
+  const mcpOAuthStore = (): McpOAuthStore => opts.mcpOAuth?.store ?? daemonMcpOAuthStore(keychainService(resolveMossProfile(), opts.mossHome), opts.mossHome);
 
   /**
    * WS-25: a sign-in finished or a sign-out ran for `serverUrl`. The daemon's status probe forgets its

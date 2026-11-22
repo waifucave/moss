@@ -1,0 +1,63 @@
+# The secrets file on Windows and Linux (spec §9.1, §8.5; spike S8)
+
+On macOS MOSS keeps its secrets in the Keychain, items that trust the daemon's binary alone. Windows' Credential Manager and the Linux Secret Service have no such per-program check, so there MOSS keeps its secrets in **one encrypted file in its home, `secrets.enc`, and the file's key in the OS store**. What a tool or plugin that is not the daemon can reach is then decided by the fence (spec §9.1), not by the OS store.
+
+## How it is built
+
+| Part | File | What it does |
+|---|---|---|
+| Names | `packages/core/src/secrets/secret-files.ts` | The ONE spelling of `secrets.enc`, `secrets.key`, `secrets.key.cred` and the lock. The fence's layout, the bots' read-deny list (`BOT_READ_DENIED`), the home's named denials, the old-home copy and the other-installs check read it. A file added to the list is hidden everywhere at once. |
+| The file | `packages/core/src/secrets/moss-secret-store.ts` (`EncryptedFileValues`) | AES-256-GCM, a fresh 96-bit nonce per write, the format byte and the key's source as authenticated data, one 32-byte random key. A write reads the file whole, changes it and writes it whole, under the lock. |
+| Where the key is | same file, `chooseFileStore` | A file already made keeps its key's source and answers `locked` while it can't be reached; a new one takes Credential Manager (Windows), an unlocked Secret Service (Linux), a locked one that someone can unlock (waited for), `systemd-creds --user`, and last a key file only the user can read, labelled `plaintext` (`secretStoreWarning`). A key is made only while there is no file: a missing key never becomes a new, empty store. |
+| The disk | `packages/core/src/secrets/private-file.ts` | `writePrivateFile`: empty under a temporary name, locked down (0600; on Windows `icacls /inheritance:r /grant:r *<user SID>:F`), written, renamed over the old file (retried on the sharing errors Windows gives). `withSecretsLock`: one writer at a time in a process and across this user's processes (`<home>/run/secrets-file.lock`, pid and time, taken over when the pid is gone or the lock is far older than any write). |
+| The flat-name store | `packages/core/src/secrets/file-backend.ts`, `auth/secret-store.ts` | `defaultSecretsBackend()` on Windows and Linux is the file (`kc/<service>/<name>` items); on macOS it is the Keychain as before. `KeychainSecretStore`, the CLI's token reads and the MCP sign-in store (`runtime-sdk/mcp-oauth-store.ts`) all go through it. The raw OS store (`osSecretsBackend`) holds only the file's key and is what the one-time move reads. |
+| The one-time move | `moveOsStoreItems` | On the first open, each known item name is copied from the OS store into the file, read back, deleted from the OS store, and a note is written last. With the OS store unreachable nothing is written and the next start tries again. `Bun.secrets` cannot list on Windows or Linux, so the names are the known ones (`MIGRATION_B_SECRET_NAMES` and the catalog's provider slots); sign-ins whose names are made from an id at run time (`mcp-oauth:<id>`) are not moved and are made again. |
+| The contract store | `MossSecretStore` | The device key, link keys, plugin secrets, routine webhook keys and the registry's keys: the same file, items `core/…`, `plugin:<id>/…`, `device/…`, plus an index in `credentials/index.json` (names and times, never a value). |
+
+The one-reader rule is a test: `packages/core/test/secrets/one-reader.test.ts` lists the only files that name `Bun.secrets` as a value and the only file that builds an SDK keychain store.
+
+## What each secret is, where it lives, and who may read it
+
+"The daemon" is `moss-core` (and the CLI, the same binary, run by the user). "Fenced" means a command a model runs (Bash or PowerShell, a coding agent's command, a plugin's hook): the fence hides the file and its key files from it (Linux: not mounted in a tmpfs view of the home; macOS: Seatbelt deny; Windows: DACL deny for the sandbox principal, lane WS). Plugin code and the user's own programs run as the user and can read what the user can read (spec §5: plugin code is trusted once the user says OK).
+
+| Secret | macOS | Windows | Linux | Who may read |
+|---|---|---|---|---|
+| Provider API keys (`<provider>:default`), Codex and Console sign-ins (`codex-oauth:default`, `anthropic:console`), tool keys (`exa-api-key`) | Keychain item (daemon's ACL) | `secrets.enc` | `secrets.enc` | The daemon; children get a value only by `credential_resolve` for a ref their options named. Not fenced commands. |
+| Pairing tokens (`harness-token`, `admin-token`, `remote-token`) | Keychain item (daemon and the app) | `secrets.enc` | `secrets.enc` | The daemon and the CLI. The desktop apps do not read them. Not fenced commands. |
+| MCP sign-ins and client records (`mcp-oauth:<id>`, `mcp-oauth-client*`) | Keychain item | `secrets.enc` | `secrets.enc` | The daemon. |
+| Device key, link keys, registry keys, routine webhook keys, plugins' own secrets | Keychain items (`<service>.items`) | `secrets.enc` (contract store) | `secrets.enc` (contract store) | The daemon; a plugin only its own, through the core (`secrets.get`). |
+| The file's key | not used | Credential Manager, target `<service>.key` / `secrets-file-key` | Secret Service item `<service>.key` / `secrets-file-key`; else `secrets.key.cred` sealed by `systemd-creds --user` (TPM where there is one); else `secrets.key` (plaintext label) | Any process of the user (the OS store has no per-program check). Fenced commands cannot reach it: on Windows the sandbox principal is another user (its own DPAPI and Credential Manager), on Linux the session bus and every Unix socket are closed to the sandbox. |
+| Per-run app token | `run/app.token`, 0600 | `run/app.token`, ACL for the user alone | `run/app.token`, 0600 | The daemon and the app. `run/` is read-denied to fenced commands. |
+| The apps' answer key (card-answer signing) | Keychain through Electron `safeStorage` | `safeStorage` (DPAPI) | `safeStorage` (libsecret; a plain-text backend is refused as a vault) | The app's own process. Not in the file (apps/*/src/main/answer-key.ts). |
+| Browser cookies and saved sign-ins | `<userData>/Partitions` | same | same | The browser's process; read-denied to fenced commands (fence kind `browser-profiles`). |
+
+## What the fence does about it
+
+* **Hidden from Bash and the agents.** `fence/layout.ts` puts `secrets.enc` in the `secrets-file` kind and `secrets.key`, `secrets.key.cred` in `key-file`, both read-denied and write-denied, with the run folder (`run-folder`) and `credentials/`. On Linux (`fence/linux-bwrap.ts`) the MOSS home is a tmpfs view that holds only the runner's own folders, so a name denied here is absent, not refused: a file made after the command started does not appear either. `test/fence/secrets-file-fence.test.ts` runs real bubblewrap on the CI runner and tries `cat`, `cp`, a planted soft link and hard link, `/proc/self/root`, `find`, a write, an `mv` of the home, and a file made mid-run, for a coding agent's command and a bot's.
+* **The agents' own sandboxes.** The deny list `BOT_READ_DENIED` (which carries the three names) is what the agent settings writers (`fence/sandbox-settings.ts`) and the runtime's home deny (`runtime-sdk/turn-loop/home-deny.ts`) are built from. Each agent is admitted only per exact backend, version and configuration (spec §9.3, §14.1 item 8); none is admitted yet, and an agent with no sandbox on Windows or Linux starts only after the user's OK.
+* **`systemd-run --user` and the Secret Service are closed on Linux by hiding, not filtering.** The sandbox has no network namespace access, `socket(AF_UNIX)` fails (`fence/seccomp.ts`), `/run/user/<uid>` is an empty tmpfs and the system bus socket is nulled, so a command cannot reach the session bus, systemd's sockets, the Secret Service or portals at all.
+
+## For lane WS (the Windows sandbox)
+
+* The names to deny are `SECRET_FILE_NAMES` (`secrets/secret-files.ts`), already in the fenced set's `secrets-file` and `key-file` kinds and in `BOT_READ_DENIED`. `fence/win-sandbox.ts` builds its `--deny-read` list from `policy.denyRead` and `BOT_READ_DENIED`, so it picks them up with no change; **read-deny on Windows means a DACL deny ACE for the sandbox principal on `secrets.enc`, `secrets.key`, `secrets.key.cred`, `run\` and `credentials\`** (a deny wins over any grant the principal gets on the home).
+* The file is already locked to the user's SID alone with inheritance off (`lockToOwner`), so the principal has no access to it even where its grants cover the home; the deny ACE is the second line.
+* The key is in the user's Credential Manager (DPAPI, per user): the sandbox principal is another account and cannot read it.
+
+## Linux: the Secret Service broker (specified, not built)
+
+The spec (§4, §9.1; S8) wants `gh`, Docker and git to keep the OS store from inside a fenced Bash while MOSS's own items stay out of reach. The closure above (nothing reaches the bus) is the safe half; the broker is what would give those tools their own logins back. It is a lane of its own: it needs a Secret Service (D-Bus) server in the daemon, a socket the sandbox is allowed to open, and a policy; none of that exists, and the sandbox's seccomp filter forbids the `socket(AF_UNIX)` it would need. Specification:
+
+1. **Where it runs.** In the daemon, as a D-Bus peer on a private bus it owns (not the user's session bus), speaking `org.freedesktop.secrets` to a fenced command only through one Unix socket bound into the sandbox (`--bind <home>/run/broker/<session>.sock`). The sandbox's seccomp filter then allows `connect` to that one path only: either by a second filter that allows `AF_UNIX` and a bind-mount that leaves only that socket in the sandbox's tree (the tmpfs view already hides every other socket path), or by passing the connected socket as an inherited file descriptor with `AF_UNIX` still closed.
+2. **What it serves.** Items of its own, never the user's keyring wholesale: a table of the logins the user allowed for that session, destination and identity (git hosts, `gh`'s `github.com`, Docker registries), each a collection item with attributes. `SearchItems`, `GetSecret(s)`, `Unlock`, `OpenSession` and `ReadAlias` are answered from the table; every method that creates, writes, deletes or changes a collection is refused.
+3. **Authorization by what a request and its answer carry**, not by bus name, interface or object path. S8's finding: an xdg-dbus-proxy path allow list forwarded a protected item's path in `GetSecrets`'s arguments. The broker validates every item path in every request body (`GetSecrets`, `SearchItems` results, `Unlock`'s list) against the table and every returned item against the session's grant, binds each D-Bus session to its caller, and denies unknown methods.
+4. **Never served:** the contents of `secrets.enc`, the file's key item, approval tokens, device keys, or any item not in the table. The broker holds only what the core hands it for that session.
+5. **Acceptance:** the spike's `spikes/s8-secrets/secret-broker.py` harness (`proxy-probe.py --bwrap`, 13 of 13 assertions: hidden search and listing, direct and mixed bulk denial, three host-broker destinations denied, `gh`, Docker and git lookups served, a real `git credential fill`, a fenced lookup of MOSS's own item denied) rewritten against the daemon's broker on the Linux runner, plus S8's three open points: write, login and unlock flows, reconnect and concurrency, and the sandbox's hidden execution endpoints (host bus, systemd sockets, portals, the Docker daemon socket).
+
+On macOS the same need is met by the git credential helper that gets logins from the core (C1); on Windows by the credential broker running in the user's logon context (lane WS).
+
+## What a runner cannot prove
+
+* A real desktop keyring: GNOME Keyring or KWallet unlocked by the user's login, locked at the login screen, and a daemon that starts at login before the keyring is unlocked (today a locked keyring on an interactive Linux session makes the daemon's first token read throw `locked`, and the daemon does not start until it is unlocked).
+* A reboot: the file and its key surviving one, on Windows (Credential Manager under the real logon), on Linux with the keyring, with `systemd-creds` (and a TPM), and with only the key file.
+* `systemd-creds --user` with a real TPM, and on a computer with none (S8's own open gate).
+* Windows 11 as against the runner's Server image: the DPAPI and Credential Manager context a logon task or a sandbox principal gets (S8.1: a scheduled task as a password principal did not start in the spike).

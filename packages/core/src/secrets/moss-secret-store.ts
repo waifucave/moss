@@ -15,7 +15,9 @@ import { dirname, join } from "node:path";
 import type { SecretKeySource } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners } from "../contracts/common";
-import { defaultSecretsBackend } from "../auth/secret-store";
+import { osSecretsBackend } from "../auth/secret-store";
+import { readFileRetrying, withSecretsLock, writePrivateFile } from "./private-file";
+import { SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME } from "./secret-files";
 import {
   SECRET_NAME_RE, Secret, secretOwnerKey, secretRefKey,
   type SecretChange, type SecretMeta, type SecretOwner, type SecretRef, type SecretStore, type SecretStoreStatus, type SecretValue,
@@ -28,12 +30,13 @@ export interface Vault {
   delete(name: string): Promise<boolean>;
 }
 
-/** The OS store under one service, through the one production backend (`defaultSecretsBackend`): on macOS the login
- *  keychain by path, elsewhere `Bun.secrets`; under a test, only an isolated store (the test keychain file, the
- *  private Secret Service, a throwaway service, or this process's memory: auth/test-isolation.ts). Never `Bun.secrets`
- *  directly, which on macOS searches the user's keychain list and creates in the login keychain. */
+/** The OS store under one service, through the one raw OS backend (`osSecretsBackend`): on macOS the login keychain by
+ *  path, elsewhere `Bun.secrets`; under a test, only an isolated store (the test keychain file, the private Secret
+ *  Service, a throwaway service, or this process's memory: auth/test-isolation.ts). Never `Bun.secrets` directly, which
+ *  on macOS searches the user's keychain list and creates in the login keychain. On Windows and Linux this is where the
+ *  secrets file's KEY lives, so it must stay the raw OS store: `defaultSecretsBackend` there is the file itself. */
 export function bunVault(service: string): Vault {
-  const backend = () => defaultSecretsBackend();
+  const backend = () => osSecretsBackend();
   return {
     get: async (name) => (await backend().get({ service, name })) ?? null,
     set: async (name, value) => { await backend().set({ service, name, value }); },
@@ -82,13 +85,18 @@ export function recordedKeySource(path: string): SecretKeySource | null | "unrea
 }
 
 /** Windows and Linux: every value in one AES-256-GCM file, its 32-byte key from `key()`. The header is the format
- *  (2), the key's source, then the nonce and the tag; the key's source is authenticated with the body. */
+ *  (2), the key's source, then the nonce and the tag; the key's source is authenticated with the body. A write reads the
+ *  file whole, changes it and writes it whole, under the lock (`withSecretsLock`: one writer at a time across this
+ *  user's processes), so no write loses another's; a read needs no lock, the file being replaced atomically. */
 export class EncryptedFileValues implements ValueBackend {
-  constructor(private readonly path: string, private readonly key: () => Promise<Buffer>, private readonly source: SecretKeySource) {}
+  readonly #lockPath: string;
+  constructor(private readonly path: string, private readonly key: () => Promise<Buffer>, private readonly source: SecretKeySource, lockPath?: string) {
+    this.#lockPath = lockPath ?? join(dirname(path), ...SECRETS_LOCK_SEGMENTS);
+  }
 
   async #read(): Promise<Record<string, string>> {
     if (!existsSync(this.path)) return {};
-    const blob = readFileSync(this.path);
+    const blob = await readFileRetrying(this.path);
     if (blob.length < 2 + 12 + 16 || blob[0] !== 2) throw new ContractError("invalid", "the secrets file is not one this store wrote");
     if (blob[1] !== SOURCE_CODES[this.source]) throw new ContractError("locked", "the secrets file's key is kept elsewhere than this store looks");
     const iv = blob.subarray(2, 14), tag = blob.subarray(14, 30), body = blob.subarray(30);
@@ -105,12 +113,16 @@ export class EncryptedFileValues implements ValueBackend {
     const c = createCipheriv("aes-256-gcm", await this.key(), iv);
     c.setAAD(head);
     const body = Buffer.concat([c.update(JSON.stringify(all), "utf8"), c.final()]);
-    writeOwnerOnly(this.path, Buffer.concat([head, iv, c.getAuthTag(), body]));
+    await writePrivateFile(this.path, Buffer.concat([head, iv, c.getAuthTag(), body]));
   }
 
   async get(key: string) { return (await this.#read())[key] ?? null; }
-  async set(key: string, value: string) { const all = await this.#read(); all[key] = value; await this.#write(all); }
-  async delete(key: string) { const all = await this.#read(); if (key in all) { delete all[key]; await this.#write(all); } }
+  set(key: string, value: string) {
+    return withSecretsLock(this.#lockPath, async () => { const all = await this.#read(); all[key] = value; await this.#write(all); });
+  }
+  delete(key: string) {
+    return withSecretsLock(this.#lockPath, async () => { const all = await this.#read(); if (key in all) { delete all[key]; await this.#write(all); } });
+  }
 }
 
 /** A key may be made only while there's no secrets file: one that exists was sealed with a key that must be found,
@@ -196,7 +208,7 @@ export function keyFileKey(path: string, secretsFile: string): () => Promise<Buf
   return async () => {
     if (!existsSync(path)) {
       if (existsSync(secretsFile)) throw missingKey("its key file (secrets.key)");
-      writeOwnerOnly(path, randomBytes(32));
+      await writePrivateFile(path, randomBytes(32));
     }
     const k = readFileSync(path);
     if (k.length !== 32) throw new ContractError("invalid", "the key file is damaged");
@@ -331,6 +343,100 @@ export class MossSecretStore implements SecretStore {
   dropIndex(): void { rmSync(this.#indexPath, { force: true }); }
 }
 
+/** What `chooseFileStore` settled on for the secrets file on this computer. */
+export interface FileStoreChoice {
+  /** Where the file's key is kept (and what the file's header records). */
+  readonly source: SecretKeySource;
+  /** Reads the key (making it on first use, only while there is no secrets file). */
+  readonly key: () => Promise<Buffer>;
+  /** `systemd-creds` sealed it with the TPM's help. */
+  readonly tpm?: boolean;
+  /** Set when the key can't be reached now (a locked keyring, a keyring that isn't running, a file that may have been
+   *  replaced): the store answers `locked` with this reason, and never opens or writes the file. */
+  readonly locked?: string;
+}
+
+export interface FileStoreOptions {
+  /** The MOSS home: the file is `secrets.enc` there. */
+  home: string;
+  /** The daemon's Keychain service (`keychainService(profile, home)`): the file's key is `<service>.key`. */
+  service: string;
+  os: "windows" | "linux";
+  vault?: (service: string) => Vault;
+  interactive?: boolean;
+  /** Linux: what `systemd-creds` offers (`probeSystemdCreds`); probed when not given. */
+  systemdCreds?: SystemdCreds | null;
+  credsRunner?: CredsRunner;
+}
+
+/** Where the key of this computer's secrets file is kept, decided as spec §8.5 says: a file already made keeps its
+ *  key's source and waits while that source can't be reached (#205's S3); a new one takes Credential Manager on
+ *  Windows, an unlocked Secret Service on Linux, a locked one that someone can unlock (waited for), `systemd-creds`
+ *  where the computer has it, and last a key file only the user can read (labelled `plaintext`). The one decision both
+ *  the contract store (`openMossSecretStore`) and the flat-name store's backend (`fileSecretsBackend`) take their file
+ *  from, so the two can never disagree about where the key is. */
+export async function chooseFileStore(o: FileStoreOptions): Promise<FileStoreChoice> {
+  const { os } = o;
+  const vault = o.vault ?? bunVault;
+  const file = join(o.home, SECRETS_FILE_NAME);
+  const keyFile = join(o.home, SECRETS_KEY_FILE_NAME);
+  const sealedFile = join(o.home, SECRETS_SEALED_KEY_FILE_NAME);
+  const keys = vault(`${o.service}.key`);
+  const recorded = recordedKeySource(file);
+  if (recorded === "unreadable") {
+    return { source: os === "windows" ? "credential-manager" : "key-file", key: async () => { throw new ContractError("invalid", "the secrets file is not one this store wrote"); }, locked: "the secrets file isn't one this store wrote" };
+  }
+
+  if (os === "windows") {
+    if (recorded !== null && recorded !== "credential-manager") return { source: recorded, key: keyFileKey(keyFile, file), locked: `the secrets file's key is kept in ${recorded}, which Windows doesn't have` };
+    const answers = await vaultAnswers(keys);
+    return { source: "credential-manager", key: vaultKey(keys, file, undefined, "Credential Manager"), ...(answers === "yes" ? {} : { locked: "Credential Manager didn't answer" }) };
+  }
+
+  // Linux. A file already made keeps its key's source, and is locked while that source can't be reached (#205's S3).
+  const service = await probeSecretService(keys);
+  // A file that claims a weaker key than this computer keeps (a planted secrets.enc saying `key-file`, with a planted
+  // secrets.key) is taken as replaced: locked, never opened or written under the weaker key (#205's check 2).
+  // A keyring that is there but locked (or unreadable) may hold the real key, so a file claiming the unsealed key
+  // file waits until the keyring answers (#205's check 3).
+  if (recorded === "key-file" && service === "locked") {
+    return { source: "key-file", key: async () => { throw new ContractError("locked", "the keyring is locked"); }, locked: "the keyring is locked, and the secrets file claims an unsealed key: saved logins stay locked until the keyring answers" };
+  }
+  if (recorded !== null) {
+    const rank: Record<SecretKeySource, number> = { "key-file": 0, "systemd-creds": 1, "secret-service": 2, "credential-manager": 2 };
+    let vaultHasKey = false;
+    try { vaultHasKey = (await keys.get("secrets-file-key")) !== null; } catch { /* unreachable: no evidence either way */ }
+    const strongest = vaultHasKey ? 2 : existsSync(sealedFile) ? 1 : 0;
+    if (rank[recorded] < strongest) {
+      return { source: recorded, key: async () => { throw new ContractError("locked", "the secrets file may have been replaced"); }, locked: "the secrets file claims a weaker key than this computer keeps: it may have been replaced, so saved logins stay locked" };
+    }
+  }
+  const interactive = o.interactive ?? Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  const credsOf = async () => (o.systemdCreds !== undefined ? o.systemdCreds : await probeSystemdCreds(o.credsRunner));
+  const sealed = (creds: SystemdCreds): FileStoreChoice => ({ source: "systemd-creds", key: systemdCredsKey(sealedFile, creds, file, o.credsRunner), tpm: creds.tpm });
+  if (recorded === "secret-service") return { source: "secret-service", key: vaultKey(keys, file), ...(service === "unlocked" ? {} : { locked: service === "absent" ? "the keyring that holds the key isn't running" : "the keyring is locked: unlock it to use saved logins" }) };
+  if (recorded === "systemd-creds") {
+    const creds = await credsOf();
+    return creds ? sealed(creds) : { source: "systemd-creds", key: async () => { throw missingKey("systemd-creds"); }, locked: "systemd-creds, which holds the key, isn't available here" };
+  }
+  if (recorded === "key-file") return { source: "key-file", key: keyFileKey(keyFile, file) };
+  if (recorded === "credential-manager") return { source: "credential-manager", key: vaultKey(keys, file), locked: "the secrets file's key is kept in Credential Manager, which Linux doesn't have" };
+
+  // A new store: the Secret Service when it answers; a keyring that is there but locked (or that answered strangely)
+  // is never passed over for the unsealed key file (#205's S3): it's waited for, or systemd-creds seals the key.
+  if (service === "unlocked") return { source: "secret-service", key: vaultKey(keys, file) };
+  if (service !== "absent" && interactive) return { source: "secret-service", key: vaultKey(keys, file), locked: "the keyring is locked: unlock it to use saved logins" };
+  const creds = await credsOf();
+  if (creds) return sealed(creds);
+  if (service !== "absent") return { source: "secret-service", key: vaultKey(keys, file), locked: "the keyring is locked, and there's no systemd-creds to seal the key with instead" };
+  return { source: "key-file", key: keyFileKey(keyFile, file) };
+}
+
+/** What a store's status says about a choice: its backend, where the key is, the `plaintext` label. */
+export function fileStoreStatus(c: FileStoreChoice): SecretStoreStatus {
+  return { backend: "encrypted-file", keySource: c.source, ...(c.source === "systemd-creds" ? { tpm: c.tpm ?? false } : {}), plaintext: c.source === "key-file", state: "unlocked" };
+}
+
 /** This computer's store (spec §8.5): the Keychain on macOS; on Windows and Linux the encrypted file, its key in
  *  Credential Manager or the Secret Service, or on a headless Linux computer a key file labelled `plaintext`
  *  sealed by `systemd-creds` where it is here, and only as a last resort a key file labelled `plaintext`, which
@@ -352,59 +458,11 @@ export async function openMossSecretStore(o: {
   const vault = o.vault ?? bunVault;
   const clock = o.clock ? { clock: o.clock } : {};
   if (os === "macos") return new MossSecretStore({ home: o.home, values: new KeychainValues(vault(`${o.service}.items`)), status: { backend: "keychain", plaintext: false, state: "unlocked" }, ...clock });
-  const file = join(o.home, "secrets.enc");
-  const keys = vault(`${o.service}.key`);
-  const store = (source: SecretKeySource, key: () => Promise<Buffer>, extra: { tpm?: boolean; locked?: string } = {}) => new MossSecretStore({
-    home: o.home, values: new EncryptedFileValues(file, key, source),
-    status: { backend: "encrypted-file", keySource: source, ...(source === "systemd-creds" ? { tpm: extra.tpm ?? false } : {}), plaintext: source === "key-file", state: "unlocked" },
-    ...(extra.locked !== undefined ? { locked: extra.locked } : {}), ...clock,
+  const c = await chooseFileStore({ ...o, os, vault });
+  return new MossSecretStore({
+    home: o.home, values: new EncryptedFileValues(join(o.home, SECRETS_FILE_NAME), c.key, c.source), status: fileStoreStatus(c),
+    ...(c.locked !== undefined ? { locked: c.locked } : {}), ...clock,
   });
-  const recorded = recordedKeySource(file);
-  if (recorded === "unreadable") return store(os === "windows" ? "credential-manager" : "key-file", async () => { throw new ContractError("invalid", "the secrets file is not one this store wrote"); }, { locked: "the secrets file isn't one this store wrote" });
-
-  if (os === "windows") {
-    if (recorded !== null && recorded !== "credential-manager") return store(recorded, keyFileKey(join(o.home, "secrets.key"), file), { locked: `the secrets file's key is kept in ${recorded}, which Windows doesn't have` });
-    const answers = await vaultAnswers(keys);
-    return store("credential-manager", vaultKey(keys, file, undefined, "Credential Manager"), answers === "yes" ? {} : { locked: "Credential Manager didn't answer" });
-  }
-
-  // Linux. A file already made keeps its key's source, and is locked while that source can't be reached (#205's S3).
-  const service = await probeSecretService(keys);
-  // A file that claims a weaker key than this computer keeps (a planted secrets.enc saying `key-file`, with a planted
-  // secrets.key) is taken as replaced: locked, never opened or written under the weaker key (#205's check 2).
-  // A keyring that is there but locked (or unreadable) may hold the real key, so a file claiming the unsealed key
-  // file waits until the keyring answers (#205's check 3).
-  if (recorded === "key-file" && service === "locked") {
-    return store("key-file", async () => { throw new ContractError("locked", "the keyring is locked"); }, { locked: "the keyring is locked, and the secrets file claims an unsealed key: saved logins stay locked until the keyring answers" });
-  }
-  if (recorded !== null) {
-    const rank: Record<SecretKeySource, number> = { "key-file": 0, "systemd-creds": 1, "secret-service": 2, "credential-manager": 2 };
-    let vaultHasKey = false;
-    try { vaultHasKey = (await keys.get("secrets-file-key")) !== null; } catch { /* unreachable: no evidence either way */ }
-    const strongest = vaultHasKey ? 2 : existsSync(join(o.home, "secrets.key.cred")) ? 1 : 0;
-    if (rank[recorded] < strongest) {
-      return store(recorded, async () => { throw new ContractError("locked", "the secrets file may have been replaced"); }, { locked: "the secrets file claims a weaker key than this computer keeps: it may have been replaced, so saved logins stay locked" });
-    }
-  }
-  const interactive = o.interactive ?? Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
-  const credsOf = async () => (o.systemdCreds !== undefined ? o.systemdCreds : await probeSystemdCreds(o.credsRunner));
-  const sealed = (creds: SystemdCreds) => store("systemd-creds", systemdCredsKey(join(o.home, "secrets.key.cred"), creds, file, o.credsRunner), { tpm: creds.tpm });
-  if (recorded === "secret-service") return store("secret-service", vaultKey(keys, file), service === "unlocked" ? {} : { locked: service === "absent" ? "the keyring that holds the key isn't running" : "the keyring is locked: unlock it to use saved logins" });
-  if (recorded === "systemd-creds") {
-    const creds = await credsOf();
-    return creds ? sealed(creds) : store("systemd-creds", async () => { throw missingKey("systemd-creds"); }, { locked: "systemd-creds, which holds the key, isn't available here" });
-  }
-  if (recorded === "key-file") return store("key-file", keyFileKey(join(o.home, "secrets.key"), file));
-  if (recorded === "credential-manager") return store("credential-manager", vaultKey(keys, file), { locked: "the secrets file's key is kept in Credential Manager, which Linux doesn't have" });
-
-  // A new store: the Secret Service when it answers; a keyring that is there but locked (or that answered strangely)
-  // is never passed over for the unsealed key file (#205's S3): it's waited for, or systemd-creds seals the key.
-  if (service === "unlocked") return store("secret-service", vaultKey(keys, file));
-  if (service !== "absent" && interactive) return store("secret-service", vaultKey(keys, file), { locked: "the keyring is locked: unlock it to use saved logins" });
-  const creds = await credsOf();
-  if (creds) return sealed(creds);
-  if (service !== "absent") return store("secret-service", vaultKey(keys, file), { locked: "the keyring is locked, and there's no systemd-creds to seal the key with instead" });
-  return store("key-file", keyFileKey(join(o.home, "secrets.key"), file));
 }
 
 /** Whether an OS vault answers at all (a read). */

@@ -818,7 +818,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
 
   // The service is THIS daemon's home's (`keychainService(profile, home)`): on a custom home a
   // `MOSS_KEYCHAIN_SERVICE` is honoured, so an experiment or e2e daemon never reads the profile's real items.
-  const secrets = opts.secrets ?? new KeychainSecretStore(defaultSecretsBackend(), keychainService(profile, home));
+  // On Windows and Linux the backend is this home's encrypted secrets file (`defaultSecretsBackend`; spec §9.1): `home` is
+  // named, so a daemon on a home of its own never reads the file of the profile's default one.
+  const secretsService = keychainService(profile, home);
+  const secrets = opts.secrets ?? new KeychainSecretStore(defaultSecretsBackend({ home, service: secretsService }), secretsService);
 
   // WS-27: the credential items' access lists (`auth/credential-acl.ts`) — same guards as the app-token
   // slot below: real production boot, the profile's own default home, macOS, never fatal, skipped when the
@@ -2480,7 +2483,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // service `MOSS_KEYCHAIN_SERVICE` names (a fixture that forgets that variable would otherwise land on the
   // real `com.waifucave.moss.core`).
   const oauthStoreForThisDaemon: McpOAuthStore = opts.mcpOAuthStore
-    ?? (opts.secrets !== undefined ? createMemoryMcpOAuthStore() : daemonMcpOAuthStore(keychainService(profile, mossHome)));
+    ?? (opts.secrets !== undefined ? createMemoryMcpOAuthStore() : daemonMcpOAuthStore(keychainService(profile, mossHome), mossHome));
   const daemonOAuthStore = (): McpOAuthStore => oauthStoreForThisDaemon;
   const sessionMcpOAuthStore: McpOAuthStore = oauthStoreForThisDaemon;
   // Per provider account, its renewal: the sessions' credential broker and the model plugins' keys share them.

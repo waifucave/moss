@@ -7,6 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, type FenceOp, type FenceVerdict } from "../../contracts/fence";
 import { homeReach, realPathOf } from "../../agents/memory";
+import { SECRET_FILE_SEGMENTS } from "../../secrets/secret-files";
 import { CONFIG_COPY_FILES } from "./home-deny";
 import { RESUME_STAGING_PREFIX } from "../host/vendor-paths";
 import { placesOf, secretPlaceOf, secretPlacesUnder, secretReadRefusal, SKIPPED_NOTE, type SecretReadOptions } from "../../fence/secret-reads";
@@ -40,7 +41,7 @@ export const BOT_KEY_PATHS: readonly (readonly string[])[] = BOT_READ_DENIED;
 
 /** The fence's read-denied kinds in the home (the run folder, the secret store's files): refused here too, so a link to
  *  them is refused whatever the fence says of the link. */
-const READ_DENIED_KIND_PATHS: readonly (readonly string[])[] = [["run"], ["secrets.enc"], ["secrets.key"], ["secrets.key.cred"]];
+const READ_DENIED_KIND_PATHS: readonly (readonly string[])[] = [["run"], ...SECRET_FILE_SEGMENTS];
 
 /** The runtime stores whose provider state files (`*.provider-state.jsonl`, at any depth) carry a provider's session. */
 const PROVIDER_STATE_STORES: readonly (readonly string[])[] = [["projects"], ["sdk", "projects"]];
