@@ -344,3 +344,32 @@ describe("the result's display", () => {
     expect(phoneViewOf(result as SessionEvent)).toEqual({ ...base, type: "tool_result", output: "Mood: joy", isError: false });
   });
 });
+
+describe("MCP Apps: the page of a plugin tool's call (routedMcpServer)", () => {
+  const server: BotMcpServer = { server: "acme-charts", plugin: "acme", tools: [{ name: "plot", inputSchema: { type: "object" }, ui: { resourceUri: "ui://charts/p", visibility: ["model", "app"] } }, { name: "plain", inputSchema: { type: "object" } }] };
+  const build = (out: { isError?: boolean; throws?: boolean }, calls: string[]) => {
+    const ids = ["toolu_1", "toolu_2", "toolu_3"];
+    const routed = routedMcpServer({
+      server, session: "s1", as: BOT, callIds: { take: () => ids.shift() },
+      runner: { run: async () => { if (out.throws) throw new Error("boom"); return { result: { content: [{ type: "text", text: "ok" }], isError: out.isError === true }, computer: "Studio" }; } },
+      apps: { put: (id, c) => calls.push(`put ${id} ${c.tool} ${JSON.stringify(c.input)}`), drop: (id) => calls.push(`drop ${id}`) },
+    });
+    return (routed as unknown as { instance: { callTool(n: string, a: unknown, e?: unknown): Promise<unknown> } }).instance;
+  };
+  test("a success is offered to the page hook with its tool and input; an error, a throw and a cancelled call drop it", async () => {
+    const calls: string[] = [];
+    await build({}, calls).callTool("plot", { q: 1 });
+    expect(calls).toEqual(['put toolu_1 plot {"q":1}']);
+    const failed: string[] = [];
+    await build({ isError: true }, failed).callTool("plot", {});
+    expect(failed).toEqual(["drop toolu_1"]);
+    const threw: string[] = [];
+    await build({ throws: true }, threw).callTool("plot", {});
+    expect(threw).toEqual(["drop toolu_1"]);
+    const cancelled: string[] = [];
+    const ac = new AbortController();
+    ac.abort();
+    await build({}, cancelled).callTool("plot", {}, { signal: ac.signal });
+    expect(cancelled).toEqual(["drop toolu_1"]);
+  });
+});

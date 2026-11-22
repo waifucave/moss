@@ -149,7 +149,7 @@ import { hostOs } from "./tree/names";
 import { homedir, hostname } from "node:os";
 import { SystemClock } from "./clock/system-clock";
 import { DispatchChildren } from "./agent/dispatch-children";
-import { SessionMessaging, deliverInto, MESSAGING_CLIENT_NAME } from "./agent/session-messaging";
+import { SessionMessaging } from "./agent/session-messaging";
 import { McpAppsService } from "./mcp-apps/service";
 import { mcpAppMethods } from "./mcp-apps/methods";
 import { readProviders, SetupService, setupMethods } from "./setup-state";
@@ -2516,17 +2516,14 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // `ui/message` reaches its session as outside content, through the same door another session's message does.
   const mcpApps = new McpAppsService({
     version: CORE_VERSION,
-    cwdOf: (sid) => { try { return store.meta(sid).cwd ?? undefined; } catch { return undefined; } },
-    deliver: async (sid, text) => {
-      const driver = await mossDrivers.ensure(sid);
-      if (driver === undefined) throw new Error("the session can't take a message");
-      await deliverInto(driver, text, MESSAGING_CLIENT_NAME);
+    deliver: async (sid, m) => {
+      const host = daemonParts?.bots?.host;
+      if (host === undefined) throw new Error("the sessions aren't running yet");
+      await host.deliver(sid, { from: "plugin", pluginId: m.pluginId, text: m.text, app: { callId: m.callId } });
     },
-    oauthStore: daemonOAuthStore,
     log: (line) => console.error(`mcp-apps: ${line}`),
   });
   const mossDrivers: MossSessionDrivers = createMossSessionDrivers({
-    mcpApps,
     // M-M2: no new turn while the update gate closes for a restart (`updateGate` is set further down, before any turn).
     updateClosing: () => updateGate.closed,
     home: mossHome,
@@ -4818,6 +4815,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           hooks: agentHookSource({ hooks: () => agentTurnHooks, plugins: () => opts.plugins !== false, registryGaveUp: () => pluginsGaveUp, ownBots: () => opts.parts?.bots === undefined }),
           registry,
           judge: agentToolJudge(check),
+          // MCP Apps: a plugin tool's page, bound where the agent's call is served (the plugin MCP's own listing and reads).
+          mcpApps: { service: mcpApps, ui: { tools: (server, tool) => mcp.uiTools(server, tool), read: (server, tool, uri, as, o) => mcp.readUi(server, tool, uri, as, o) } },
           // What a code session's (or a bot's agent's) plugin call saw, kept as a bot's call's is.
           observeResult: (ctx, tool, response, toolInput) => observeToolResult(ctx, tool, response, toolInput),
           log: (line) => console.error(`[agents] ${line}`),
@@ -4864,7 +4863,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           // (an unusable run folder) they're skipped and reported, and a hook that can deny denies: never unfenced.
           ...(pluginRun !== undefined ? { commandSpawner: pluginHookSpawner({ guard: pluginRun, pluginRoot: (id) => registry.get(id)?.folder, settings: host.settings }) } : {}),
         })),
-        mcp: { servers: (ctx) => mcp.servers(ctx.kind, undefined, ctx.botId), runner: node?.mcp ?? localMcpRunner(mcp, thisComputer), settled: () => mcp.settled(MCP_FIRST_LISTING_WAIT_MS) },
+        mcp: { servers: (ctx) => mcp.servers(ctx.kind, undefined, ctx.botId), runner: node?.mcp ?? localMcpRunner(mcp, thisComputer), settled: () => mcp.settled(MCP_FIRST_LISTING_WAIT_MS),
+          ui: { tools: (server, tool) => mcp.uiTools(server, tool), read: (server, tool, uri, as, o) => mcp.readUi(server, tool, uri, as, o) } },
+        mcpApps,
         // A's file fence over this computer's ONE MossFence (the parts', with the parts' user home), never a second one.
         // The user's secret places (`SECRET_READ_PLACES`) too: never read, and skipped by a search from above.
         fileFence: botFileFence(fence, mossHome, hostOs(), opts.parts?.userHome ?? homedir()),

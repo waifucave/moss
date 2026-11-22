@@ -25,7 +25,7 @@
 // and never leave the daemon. For any reader but the user's own app and devices (a plugin's `conversation.read`, a
 // session, the CLI a bot can run), the sealed parts of approval and elicitation events are left out (§5.4: "sealed card
 // fields never reach it"), and of the streaming events only the reply's text is sent.
-import { MossSessionEvent, SessionEvent, type Caller, type SessionKind } from "@waifucave/moss-protocol";
+import { MossSessionEvent, SessionEvent, ToolApp, type Caller, type SessionKind } from "@waifucave/moss-protocol";
 import type { SessionRecord, TurnEnd } from "../contracts/session-host";
 import { toolDisplay, toolDisplayTitle } from "../runtime-sdk/tool-display";
 import { contextTokensOf } from "./compaction";
@@ -90,7 +90,10 @@ export function acpRecordEvent(event: { type: string; [key: string]: unknown }):
       const output = told ?? (status === "completed" ? "" : event["refused"] === true ? "Refused." : "Failed.");
       // What a plugin tool's successful result showed (`ToolDisplay`, already plain and bounded), as a bot's carries it.
       const display = status === "completed" ? toolDisplay(event["display"]) : undefined;
-      return { type: "tool_result", callId: id, output, isError: status === "failed", ...(display === undefined ? {} : { display }) };
+      // MCP Apps: the page a plugin tool's successful result named (the driver stamped it; a log may come from elsewhere, so
+      // it is parsed again here).
+      const app = status === "completed" ? ToolApp.safeParse(event["app"]) : undefined;
+      return { type: "tool_result", callId: id, output, isError: status === "failed", ...(display === undefined ? {} : { display }), ...(app?.success ? { app: app.data } : {}) };
     }
     default:
       return undefined;

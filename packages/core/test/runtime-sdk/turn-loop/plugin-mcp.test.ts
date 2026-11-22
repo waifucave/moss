@@ -18,7 +18,7 @@ afterAll(() => { for (const d of temps.splice(0)) rmSync(d, { recursive: true, f
 const BOT: Caller = { kind: "session", sessionId: "b_alpha", botId: "alpha" } as unknown as Caller;
 
 /** A plugin's MCP server behind a channel, as the plugin host gives it: records what it was sent and with whom. */
-function fakeHost(toolsOf?: (server: string) => string[]) {
+function fakeHost(toolsOf?: (server: string) => string[], apps?: { meta: Record<string, unknown>; read: (uri: string) => unknown }) {
   const opened: { plugin: string; server: string; channel: McpChannel & { kill(): void } }[] = [];
   const calls: { tool: string; args: unknown; as?: Caller }[] = [];
   let hang = false;
@@ -34,11 +34,16 @@ function fakeHost(toolsOf?: (server: string) => string[]) {
         send(m: Record<string, unknown>, as?: Caller) {
           if (closed) throw new Error("closed");
           if (m.method === "initialize") reply({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: server, version: "1" } } });
-          else if (m.method === "tools/list") reply({ jsonrpc: "2.0", id: m.id, result: { tools: toolsOf !== undefined ? toolsOf(server).map((name) => ({ name, inputSchema: { type: "object" } })) : [
+          else if (m.method === "tools/list") reply({ jsonrpc: "2.0", id: m.id, result: { tools: toolsOf !== undefined ? toolsOf(server).map((name) => ({ name, inputSchema: { type: "object" }, ...(apps?.meta[name] === undefined ? {} : { _meta: apps.meta[name] }) })) : [
             { name: "WebSearch", description: "Search the web.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
             { name: "WebFetch", description: "Fetch a page.", inputSchema: { type: "object", properties: { url: { type: "string" } } } },
             { name: "Later", inputSchema: { type: "object" } },
           ] } });
+          else if (m.method === "resources/read" && apps !== undefined) {
+            const uri = (m.params as { uri: string }).uri;
+            calls.push({ tool: `resources/read:${uri}`, args: undefined, ...(as === undefined ? {} : { as }) });
+            reply({ jsonrpc: "2.0", id: m.id, result: apps.read(uri) });
+          }
           else if (m.method === "tools/call") {
             const p = m.params as { name: string; arguments: unknown };
             calls.push({ tool: p.name, args: p.arguments, ...(as === undefined ? {} : { as }) });
@@ -1087,3 +1092,40 @@ test("a turn that begins after the key was saved but before the gathered relist 
     mcp.close();
   }
 }, 15_000);
+
+test("MCP Apps: a tool's `_meta.ui` is kept, an app-only tool is never offered to a model, and its page is read on the server's own channel as the caller", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "moss-ma-pmcp-"));
+  temps.push(folder);
+  const registry = fakeRegistry([entry("acme", "charts", { type: "host", tools: { "*": "preload" } })], { acme: folder });
+  const { host, calls } = fakeHost(() => ["Chart", "Refresh", "Evil", "Plain"], {
+    meta: {
+      Chart: { ui: { resourceUri: "ui://charts/p" } },
+      Refresh: { ui: { visibility: ["app"] } },
+      Evil: { ui: { resourceUri: "https://evil.example/x", visibility: "everyone" } },
+    },
+    read: (uri) => ({ contents: [{ uri, mimeType: "text/html;profile=mcp-app", text: "<p>hi</p>", _meta: { ui: { csp: { connectDomains: ["https://api.example.com"] } } } }, "junk", { uri: "ui://x", blob: "aGk=" }] }),
+  });
+  const mcp = new PluginMcp({ registry, host, self: () => "Studio", computers: () => ["Studio"] });
+  try {
+    await mcp.refresh();
+    const tools = mcp.servers("bot")[0]!.tools;
+    // The model is offered the tools it may call; the page's own (app-only) tool is not among them.
+    expect(tools.map((t) => t.name)).toEqual(["Chart", "Evil", "Plain"]);
+    expect(tools.find((t) => t.name === "Chart")!.ui).toEqual({ resourceUri: "ui://charts/p", visibility: ["model", "app"] });
+    // A non-ui:// address is never kept as a page; a malformed visibility is the default.
+    expect(tools.find((t) => t.name === "Evil")!.ui).toBeUndefined();
+    expect(tools.find((t) => t.name === "Plain")!.ui).toBeUndefined();
+    // Every tool, the app-only one too, for the page's own checks.
+    expect(mcp.uiTools("acme-charts", "Chart").map((t) => [t.name, t.ui?.visibility])).toEqual([["Chart", ["model", "app"]], ["Refresh", ["app"]], ["Evil", undefined], ["Plain", undefined]]);
+    expect(mcp.uiTools("nope", "Chart")).toEqual([]);
+    const contents = await mcp.readUi("acme-charts", "Chart", "ui://charts/p", BOT);
+    expect(contents).toHaveLength(2);
+    expect(contents[0]).toMatchObject({ uri: "ui://charts/p", text: "<p>hi</p>", _meta: { ui: { csp: { connectDomains: ["https://api.example.com"] } } } });
+    expect(contents[1]).toMatchObject({ blobBase64: "aGk=" });
+    expect(calls.find((c) => c.tool === "resources/read:ui://charts/p")?.as).toEqual(BOT);
+    // A server this computer doesn't serve is refused.
+    await expect(mcp.readUi("nope", "Chart", "ui://charts/p", BOT)).rejects.toThrow();
+  } finally {
+    mcp.close();
+  }
+});

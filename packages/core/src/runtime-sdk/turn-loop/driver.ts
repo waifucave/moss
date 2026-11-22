@@ -38,13 +38,15 @@ import { join } from "node:path";
 import { reservedMcpServerNames } from "../../capabilities/names";
 import { query as sdkQuery, requireBrand, type CanUseTool, type HookCallbackMatcher, type McpServerConfig, type Options, type Query, type SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
-import type { Os, TurnOrigin } from "@waifucave/moss-protocol";
+import type { Caller, Os, TurnOrigin } from "@waifucave/moss-protocol";
 import type { Unsubscribe } from "../../contracts/common";
 import type { SessionDriver, TurnControl, TurnEnd, TurnInput } from "../../contracts/session-host";
 import type { BotSessionContext } from "../../bots/service";
 import { writeJsonAtomic } from "../../sessions/atomic-file";
 import { createProjector, type Projector } from "../../projector";
 import { ToolDisplays } from "../tool-display";
+import { ToolApps, type AppSite, type McpAppsService } from "../../mcp-apps/service";
+import type { UiResourceContent } from "../../mcp-apps/resource";
 import { hostInputFoldedCount } from "../fold";
 import { createHostPromptQueue, type HostPromptQueue } from "../prompt-queue";
 import { testProviderNameFor } from "../provider-selection";
@@ -209,7 +211,12 @@ export interface BotDriverDeps {
    *  (`ComputerNode.mcp`), which runs each call where its server is. */
   /** `settled`: waits (briefly) for the first listing of a server just installed or enabled, so the turn that starts
    *  right after sees its tools (`PluginMcp.settled`). */
-  mcp?: { servers(ctx: BotSessionContext): readonly BotMcpServer[]; runner: McpRunner; settled?(): Promise<void> };
+  mcp?: { servers(ctx: BotSessionContext): readonly BotMcpServer[]; runner: McpRunner; settled?(): Promise<void>;
+    /** MCP Apps: every tool of a server with the page it names (even an app-only one), and `resources/read` of a page on the
+     *  connection that serves the tool (`PluginMcp.uiTools`, `readUi`). */
+    ui?: { tools(server: string, tool: string): { name: string; ui?: { resourceUri?: string; visibility: readonly ("model" | "app")[] } }[]; read(server: string, tool: string, uri: string, as: Caller, o?: { signal?: AbortSignal }): Promise<UiResourceContent[]> } };
+  /** MCP Apps (`mcp-apps/`): a plugin tool that names a page gets it bound here, under the session and the call. */
+  mcpApps?: McpAppsService;
   /** What the model plugins give a session on `provider` now (`modelProviderKey`: its catalog rows and how its adapter
    *  is served, or `absent`). The runtime takes them only when it opens, so a change for the bot's own provider reopens
    *  it at the next turn; another provider's change never does. Default: `modelProviderKey`. */
@@ -276,6 +283,8 @@ interface Incarnation {
   query: Query;
   /** What this incarnation's plugin tool results showed, waiting for their `tool_result` (`ToolDisplays`). */
   displays: ToolDisplays;
+  /** The pages their calls named, waiting for the same (`ToolApps`). */
+  apps: ToolApps;
   queue: HostPromptQueue;
   abort: AbortController;
   projector: Projector;
@@ -855,12 +864,14 @@ export class BotSessionDriver implements SessionDriver {
     // the reviewer read the served name, never these.
     const titles = new Map<string, string>();
     const displays = new ToolDisplays();
+    const apps = new ToolApps();
     if (this.#d.mcp !== undefined) {
       for (const server of merged) {
         if (server.server === "moss_core" || mcpServers[server.server] !== undefined) continue;
         for (const t of server.tools) if (t.title !== undefined) titles.set(`mcp__${server.server}__${t.name}`, t.title);
         mcpServers[server.server] = routedMcpServer({
           server, runner: this.#d.mcp.runner, session: ctx.sessionId, as: ctx.caller, callIds: this.#callIdSource, displays,
+          apps: this.#appsFor(ctx, origin, server, apps),
           ...(this.#d.epoch === undefined ? {} : { epoch: () => this.#d.epoch!() }),
         });
       }
@@ -928,11 +939,55 @@ export class BotSessionDriver implements SessionDriver {
       log: { warn: (message, fields) => this.#log(`bot driver ${ctx.sessionId}: ${message} ${fields === undefined ? "" : JSON.stringify(fields)}`.trim()) },
       toolDisplayTitle: (name) => titles.get(name),
       takeToolDisplay: (callId) => displays.take(callId),
+      takeToolApp: (callId) => apps.take(callId),
     });
-    const inc: Incarnation = { query: q, queue, abort, projector, displays, pump: Promise.resolve(), closed: false, tasks: new Set(), stopping: new Set(), ended: [], wakes: [] };
+    const inc: Incarnation = { query: q, queue, abort, projector, displays, apps, pump: Promise.resolve(), closed: false, tasks: new Set(), stopping: new Set(), ended: [], wakes: [] };
     inc.pump = this.#pump(inc);
     this.#rebuild = false;
     return inc;
+  }
+
+  /** MCP Apps: for one plugin server of this session, what happens when a call of its succeeds: a tool that names a page is
+   *  bound (the site: this server's doors only, a page's call asking this session's own gate, hooks and approval). */
+  #appsFor(ctx: BotSessionContext, origin: () => TurnOrigin | undefined, server: BotMcpServer, apps: ToolApps): { put: (callId: string, call: { tool: string; input: Record<string, unknown>; result: { content: unknown[]; isError?: boolean } }) => void; drop: (callId: string) => void } | undefined {
+    const svc = this.#d.mcpApps;
+    const ui = this.#d.mcp?.ui;
+    const runner = this.#d.mcp?.runner;
+    if (svc === undefined || ui === undefined || runner === undefined) return undefined;
+    return {
+      drop: (callId) => apps.drop(callId),
+      put: (callId, call) => {
+        const resourceUri = server.tools.find((t) => t.name === call.tool)?.ui?.resourceUri;
+        if (resourceUri === undefined) return;
+        const site: AppSite = {
+          pluginId: server.plugin, server: server.server, tool: call.tool, resourceUri, input: call.input, result: call.result,
+          listTools: async () => ui.tools(server.server, call.tool).map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { _meta: { ui: t.ui } }) })),
+          readResource: (uri) => ui.read(server.server, call.tool, uri, ctx.caller),
+          callTool: async (name, args, signal) => {
+            const r = await runner.run(server.server, name, args, { session: ctx.sessionId, as: ctx.caller, callId: `mcp-app-${crypto.randomUUID()}`, signal });
+            return { content: Array.isArray(r.result.content) ? r.result.content : [], ...(r.result.isError === true ? { isError: true } : {}) };
+          },
+          // The door a model's call to this tool meets, in the same order: the pause and the lease, the plugins' `tool.before`
+          // hooks, then the approval check (level, the tool setting, saved answers, the card).
+          approve: async (name, args, signal, cardId) => {
+            const served = `mcp__${server.server}__${name}`;
+            try {
+              const stop = await this.#gate(signal);
+              if (stop !== undefined) return { allowed: false, message: stop };
+              const before = await this.#hooks.toolBefore(this.#hookSession, { name: served, callId: cardId }, args, signal);
+              if (before.deny !== undefined) return { allowed: false, message: `${served} was refused by a plugin's hook: ${before.deny}` };
+              const verdict = await this.#gatedCanUseTool(this.#d.canUseTool(ctx, origin))(served, args, { signal, toolUseID: cardId, suggestions: [], mcpServer: { name: server.server, configName: server.server } } as unknown as Parameters<CanUseTool>[2]);
+              // No decision at all is no leave: only an allow runs the call.
+              if (verdict?.behavior === "allow") return { allowed: true };
+              return { allowed: false, message: (verdict !== null && verdict.behavior === "deny" && verdict.message) || `${served} was not run.` };
+            } catch {
+              return { allowed: false, message: `${served} was not run: the approval couldn't be asked.` };
+            }
+          },
+        };
+        apps.put(callId, svc.bind(ctx.sessionId, callId, site));
+      },
+    };
   }
 
   async #pump(inc: Incarnation): Promise<void> {
@@ -1047,6 +1102,7 @@ export class BotSessionDriver implements SessionDriver {
       // The runtime's turn is over: every result it reported has been projected, so a display still waiting belongs to
       // a call that was cancelled, timed out or never reported; it goes now, never onto a later call.
       inc.displays.clear();
+      inc.apps.clear();
       const usage = msg.usage as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
       t.usage.inputTokens += (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
       t.usage.outputTokens += usage?.output_tokens ?? 0;

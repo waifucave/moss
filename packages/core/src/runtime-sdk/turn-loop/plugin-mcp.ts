@@ -38,9 +38,10 @@ import { ContractError, Listeners, type Unsubscribe } from "../../contracts/comm
 import type { McpChannel, PluginHost } from "../../contracts/plugin-host";
 import type { Contribution, PluginRecord, PluginRegistry } from "../../contracts/plugin-registry";
 import { NAMESPACE_RE, parseInterpolation } from "@waifucave/moss-plugin-sdk";
-import { mcpToolName, parseMcpToolName, placementFields, type McpCaller, type McpFields, type McpResult, type McpServerPlacement, type McpToolDef } from "../../computers/mcp";
+import { mcpToolName, parseMcpToolName, placementFields, type McpCaller, type McpFields, type McpResult, type McpServerPlacement, type McpToolDef, type ToolUi } from "../../computers/mcp";
 import { isBundledMoss } from "../model-plugins/load";
 import { toolDisplayTitle } from "../tool-display";
+import { toolVisibilityOf, uiResourceUriOf } from "../../mcp-apps/resource";
 import type { BotMcpServer, BotMcpTool, McpRunner } from "./servers";
 import type { ToolAvailability } from "@waifucave/moss-protocol";
 import { toolOffMessage } from "../../approvals/tool-settings";
@@ -533,11 +534,16 @@ export class PluginMcp {
       }).map((t) => {
         // The tool's `title`, for display only (plain, one line, 60 at most); its MCP `annotations` are never read.
         const title = toolDisplayTitle(t.title);
+        // MCP Apps: the page the tool names and who may call it (`_meta.ui`), read once here, checked, and kept small.
+        const resourceUri = uiResourceUriOf(t);
+        const visibility = toolVisibilityOf(t);
+        const ui = resourceUri === undefined && visibility.length === 2 ? undefined : { ...(resourceUri === undefined ? {} : { resourceUri }), visibility };
         return {
           name: t.name as string,
           ...(typeof t.description === "string" ? { description: t.description } : {}),
           inputSchema: (isObject(t.inputSchema) ? { ...t.inputSchema, type: "object" } : { type: "object" }) as McpToolDef["inputSchema"],
           ...(title === undefined ? {} : { title }),
+          ...(ui === undefined ? {} : { ui }),
         };
       });
       const instructions = this.#instructions(c);
@@ -864,7 +870,9 @@ export class PluginMcp {
       const p = this.#placementOf(key, server)!;
       const loads = l.entry.tools ?? {};
       const shared = l.bundled && this.#o.bundledServer !== undefined;
-      const offered = shared ? l.tools.filter((t) => !clashes.has(t.name)) : l.tools;
+      // A tool only an MCP App's page may call (`_meta.ui.visibility` without `model`) is never offered to a model.
+      const modelTools = l.tools.filter((t) => t.ui === undefined || t.ui.visibility.includes("model"));
+      const offered = shared ? modelTools.filter((t) => !clashes.has(t.name)) : modelTools;
       if (shared && offered.length === 0) continue;
       const tools: BotMcpTool[] = this.#withSetting(server, placementFields(p, offered).tools.map((t) => ({
         name: t.name,
@@ -872,6 +880,7 @@ export class PluginMcp {
         inputSchema: t.inputSchema,
         load: loads[t.name] ?? loads["*"] ?? "on-demand",
         ...(t.title === undefined ? {} : { title: t.title }),
+        ...(t.ui === undefined ? {} : { ui: t.ui }),
       })), opts?.keepOff === true);
       // Every tool of it turned off: the server is not offered at all (no empty block, no instructions about nothing).
       if (tools.length === 0 && offered.length > 0) continue;
@@ -917,6 +926,32 @@ export class PluginMcp {
       else out.push({ ...t, load: a === "always" ? "preload" : "on-demand" });
     }
     return out;
+  }
+
+  /** MCP Apps: every tool of the server as the session names it, with the page it names and who may call it, whether a
+   *  model is offered it or not (an app-only tool is not). Empty for a server this computer doesn't serve. */
+  uiTools(server: string, tool?: string): { name: string; ui?: ToolUi }[] {
+    const key = this.#resolve(server, tool);
+    const l = key === undefined ? undefined : this.#listed.get(key);
+    return l === undefined ? [] : l.tools.map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { ui: t.ui }) }));
+  }
+
+  /** MCP Apps: `resources/read` of a page, on the connection that already serves the tool (the plugin's own channel or the
+   *  core's client to its url), as the session's caller. Only a server this computer runs: another computer's is refused. */
+  async readUi(server: string, tool: string, uri: string, as: Caller, o: { signal?: AbortSignal } = {}): Promise<{ uri: string; mimeType?: string; text?: string; blobBase64?: string; _meta?: unknown }[]> {
+    const key = this.#resolve(server, tool);
+    const l = key === undefined ? undefined : this.#listed.get(key);
+    if (key === undefined || l === undefined) throw new ContractError("not_found", "this computer doesn't serve that plugin's server");
+    if (!this.#runsHere(key, { pluginId: l.plugin, value: l.entry } as Contribution)) throw new ContractError("not_found", "that plugin's server runs on another computer");
+    const r = await this.#client(key, l.plugin, l.name, l.entry.type).request("resources/read", { uri }, { as, ...(o.signal === undefined ? {} : { signal: o.signal }), timeoutMs: 15_000 });
+    const contents = isObject(r) && Array.isArray(r.contents) ? r.contents : [];
+    return contents.filter(isObject).slice(0, 8).map((c) => ({
+      uri: typeof c.uri === "string" ? c.uri : "",
+      ...(typeof c.mimeType === "string" ? { mimeType: c.mimeType } : {}),
+      ...(typeof c.text === "string" ? { text: c.text } : {}),
+      ...(typeof c.blob === "string" ? { blobBase64: c.blob } : {}),
+      ...(c._meta !== undefined ? { _meta: c._meta } : {}),
+    }));
   }
 
   /** What this computer's own registry says of `plugin`'s server `name`, for lane J's node to check a remote listing
