@@ -817,6 +817,9 @@ export const Settings = z.object({
   /** The setup guide (2026-11-20): `dismissed` once the person skipped it, so it no longer opens by itself in either
    *  app. Read only through `setupDismissedFrom`. */
   setup: z.object({ dismissed: z.boolean().optional() }).optional(),
+  /** The relay this computer's device links use (spec §8.3): `n0` (n0's public relays, the default), `off`, or `custom` with the
+   *  person's own relay server's address. Read only through `relayChoiceFrom`; chosen on the setup guide's relay page. */
+  links: z.object({ relay: z.object({ mode: z.enum(["n0", "off", "custom"]), url: z.string().max(2048).optional() }).optional() }).optional(),
   pins: z.object({
     dispatch: ModelTagSchemaCore,
     dream: ModelTagSchemaCore,
@@ -953,6 +956,31 @@ export function pinsFor(settings: Settings | null | undefined): {
 /** The ONE reader of `settings.setup.dismissed`: whether the person skipped the setup guide. */
 export function setupDismissedFrom(settings: Settings | null | undefined): boolean {
   return settings?.setup?.dismissed === true;
+}
+
+/** What a relay choice is worth to the link sidecar: `default` (n0's relays), `disabled`, or a relay's URL. A custom relay with no
+ *  usable address (not `https:`, a login in it, no host) is the default: never a relay the person didn't mean. */
+export function relayChoiceFrom(settings: Settings | null | undefined): { mode: "n0" | "off" | "custom"; url?: string } {
+  const r = settings?.links?.relay;
+  if (r?.mode === "off") return { mode: "off" };
+  if (r?.mode === "custom" && r.url !== undefined && validRelayUrl(r.url) !== undefined) return { mode: "custom", url: r.url };
+  return { mode: "n0" };
+}
+
+/** A relay server's address as the link sidecar takes it: `https:` only, no login or query, a host; undefined otherwise. */
+export function validRelayUrl(text: string): string | undefined {
+  try {
+    const u = new URL(text.trim());
+    if (u.protocol !== "https:" || u.username !== "" || u.password !== "" || u.hostname === "" || u.search !== "" || u.hash !== "") return undefined;
+    return u.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/** The sidecar's `relay` option for a choice. */
+export function sidecarRelayOf(choice: { mode: "n0" | "off" | "custom"; url?: string }): string {
+  return choice.mode === "off" ? "disabled" : choice.mode === "custom" && choice.url !== undefined ? choice.url : "default";
 }
 
 /** The ONE reader of `settings.usage`: which of the user's other apps MOSS may read usage from (default both). */

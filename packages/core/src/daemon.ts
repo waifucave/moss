@@ -152,7 +152,7 @@ import { DispatchChildren } from "./agent/dispatch-children";
 import { SessionMessaging } from "./agent/session-messaging";
 import { readProviders, SetupService, setupMethods } from "./setup-state";
 import { defaultEffortFor, recommended } from "./default-model";
-import { clearProviderModel, loadSettings, saveSettings, describeInternalJobModels, setupDismissedFrom, providerBaseUrlFor, loadPermissionDirs, effortRefusalFor, hooksEnabledFrom, lspAutoDiagnosticsEnabledFrom, cleanerEnabledFrom, retiredRuntimeSettingKeys, winterLegDisabledKeys, mossOptionsFromSettings, ownProviderFor, pinsFor, stdioMcpServersFor, computerUseEnabledFrom, computerUseLegacyComputerFrom, lspEnabledFrom, sdkAllowRules, sdkAutoMemory, sdkLocalMcpServers, sdkOutputStyle, sdkUserMcpServers, liveSettingsView, type Settings } from "./settings";
+import { clearProviderModel, relayChoiceFrom, sidecarRelayOf, loadSettings, saveSettings, describeInternalJobModels, setupDismissedFrom, providerBaseUrlFor, loadPermissionDirs, effortRefusalFor, hooksEnabledFrom, lspAutoDiagnosticsEnabledFrom, cleanerEnabledFrom, retiredRuntimeSettingKeys, winterLegDisabledKeys, mossOptionsFromSettings, ownProviderFor, pinsFor, stdioMcpServersFor, computerUseEnabledFrom, computerUseLegacyComputerFrom, lspEnabledFrom, sdkAllowRules, sdkAutoMemory, sdkLocalMcpServers, sdkOutputStyle, sdkUserMcpServers, liveSettingsView, type Settings } from "./settings";
 import { ProjectSettingsResolver } from "./project-settings";
 import { memoryDirFor, globalMemoryDirFor, assistantMemoryDirFor, memoryProjectKeyFor } from "./agent/memory-dir";
 import { migrateMemoryStore } from "./agent/memory-migrate";
@@ -189,6 +189,7 @@ import { UPDATE_RESTART_EXIT_CODE } from "./platform/login/supervise";
 import { appPeerRequirement } from "./platform/peer-signature";
 import { DEVELOPER_ID_CLAUSES } from "./bundled-identities";
 import { SemverVersion } from "@waifucave/moss-protocol";
+import { deviceRelayMethods } from "./devices/relay";
 import { ElicitationBroker } from "./runtime-sdk/url-elicitation";
 import { QuestionBroker } from "./agent/questions";
 import { createPersistedChildren, type AgentRegistry } from "./agent/bg-agent-registry";
@@ -3595,6 +3596,17 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   })));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
   if (settings) Object.assign(mossLaneHandlers, laneMethodHandlers(setupMethods(setup)));
+  // The relay the device links use (§8.3, the setup guide's relay page): n0's by default; the choice is kept in the settings and put to
+  // the link sidecar at once, and the links start on it (`startDaemonLinks`'s `sidecar.relay`).
+  if (settings) {
+    Object.assign(mossLaneHandlers, laneMethodHandlers(deviceRelayMethods({
+      get: () => relayChoiceFrom(settings),
+      set: (choice) => {
+        writeSettings((s) => ({ ...s, links: { ...s.links, relay: choice } }));
+        daemonLinks?.links?.setRelay(sidecarRelayOf(relayChoiceFrom(settings)));
+      },
+    })));
+  }
   // Read once now: the boot's presence was taken before the legacy credential move, which may have added one.
   if (settings) await setup.refresh();
   // B: the plugin methods answer from the daemon's start (K's audit; E's interop): before the registry opens the lists
@@ -4974,6 +4986,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A sensitive device change asks on the daemon's one broker once the parts are up (C-M3); before, it's refused.
       openCard: (req) => (daemonParts?.broker ? brokerCardOpener(daemonParts.broker)(req) : refuseUntilBroker(req)),
       onRegistry: (r) => { ownDevices = r; },
+      sidecar: { relay: sidecarRelayOf(relayChoiceFrom(settings)) },
       emit: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),
       answerKeyServed: true,
       log: (line) => console.error(line),

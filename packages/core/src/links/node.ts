@@ -109,6 +109,9 @@ export interface DeviceLinks {
   localAddresses(): { relay?: string; direct: string[] };
   /** The link sidecar's pid, while it runs (none on another wire). */
   sidecarPid(): number | undefined;
+  /** Changes the relay the link sidecar uses (`default`: n0's, `disabled`, or a relay's URL), as a person's choice in the setup
+   *  guide or Settings. A wire that isn't the sidecar (tests' in-memory network) has none, and this does nothing. */
+  setRelay(relay: string): void;
   close(): Promise<void>;
 }
 
@@ -389,6 +392,7 @@ export async function startDeviceLinks(o: DeviceLinksOptions): Promise<DeviceLin
     networkChanged,
     localAddresses: () => ({ ...local, direct: [...local.direct] }),
     sidecarPid: () => sidecar?.pid,
+    setRelay: (relay) => sidecar?.setRelay(relay),
     async close() {
       driver?.close();
       groups?.close();

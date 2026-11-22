@@ -174,6 +174,8 @@ export class SidecarWire implements WireEndpoint {
   #up = false;
   #upSince = 0;
   #relay: string | undefined;
+  /** The relay the next start asks for (`default`, `disabled` or a URL): the option's, until `setRelay` changes it. */
+  #relayChoice: string;
   #n0Lookup: boolean;
   #allow: { keys: string[]; revoked: string[] } = { keys: [], revoked: [] };
   #attempt = 0;
@@ -186,6 +188,7 @@ export class SidecarWire implements WireEndpoint {
     this.#o = o;
     this.publicKey = own(Uint8Array.from(o.key.publicKey));
     this.#n0Lookup = o.n0Lookup;
+    this.#relayChoice = o.relay ?? "default";
     if (o.allow) this.#allow = { keys: o.allow.keys.map(toHex), revoked: o.allow.revoked.map(toHex) };
   }
 
@@ -256,6 +259,19 @@ export class SidecarWire implements WireEndpoint {
 
   get n0Lookup(): boolean {
     return this.#n0Lookup;
+  }
+
+  /** Changes the relay (§8.3): `default` (n0's), `disabled`, or a relay's URL. The sidecar takes its relay when it starts, so a
+   *  change ends the running one and the wire's own restart brings it back on the new relay, which the links then dial again
+   *  (`onRestart`); the keys and the pairs are untouched. */
+  setRelay(relay: string): void {
+    if (this.#relayChoice === relay) return;
+    this.#relayChoice = relay;
+    this.#proc?.kill();
+  }
+
+  get relayChoice(): string {
+    return this.#relayChoice;
   }
 
   networkChanged(): void {
@@ -421,7 +437,7 @@ export class SidecarWire implements WireEndpoint {
     }
     const sent = { allow: this.#allow, n0Lookup: this.#n0Lookup };
     send(proc, {
-      op: "init", seed: toHex(seed), alpns: [...(o.alpns ?? [ALPN_LINK, ALPN_PAIR])], relay: o.relay ?? "default",
+      op: "init", seed: toHex(seed), alpns: [...(o.alpns ?? [ALPN_LINK, ALPN_PAIR])], relay: this.#relayChoice,
       n0Lookup: sent.n0Lookup, window: STREAM_WINDOW, incomingWindow: INCOMING_STREAM_WINDOW, ...(o.congestion ? { congestion: o.congestion } : {}),
       ...(o.bind ? { bind: o.bind } : {}), allow: sent.allow.keys, revoked: sent.allow.revoked,
     });
