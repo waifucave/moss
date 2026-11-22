@@ -1,5 +1,5 @@
 // What `agent.backends` serves of each backend's look (spec revision 20, §9.5 "A backend's look"): its colours and its
-// icon. A plugin's backend gets them from its `agentBackends` entry (`icon`, `color`, `color2`; the icon read inside its
+// icon. A plugin's backend gets them from its `agentBackends` entry (`icon`, `iconDark`, `color`, `color2`; the icon read inside its
 // own folder by `EngineBackendIcons`, cached until its plugin's tree changes); a core backend (MOSS's coding agent, which no
 // plugin gives) from the table the daemon passes. A refused or missing icon is no icon, with the reason logged once: the
 // backend is still offered, and a reader draws the SDK's fallback mark.
@@ -41,26 +41,29 @@ export class BackendLooks {
       if (color.success) look.color = color.data;
       const color2 = LookColor.safeParse(c.look.color2);
       if (color2.success) look.color2 = color2.data;
-      const icon = c.look.icon === undefined ? undefined : await this.#icon(c.pluginId, c.id, c.look.icon);
+      const icon = c.look.icon === undefined ? undefined : await this.#icon(c.pluginId, c.id, c.look.icon, "icon");
       if (icon !== undefined) look.icon = icon;
+      const dark = c.look.iconDark === undefined ? undefined : await this.#icon(c.pluginId, c.id, c.look.iconDark, "iconDark");
+      if (dark !== undefined) look.iconDark = dark;
       out.set(id, look);
     }
     return out;
   }
 
-  #icon(pluginId: string, id: string, path: string): Promise<BackendIcon | undefined> {
+  #icon(pluginId: string, id: string, path: string, which: "icon" | "iconDark"): Promise<BackendIcon | undefined> {
     const record = this.o.registry.get(pluginId);
     if (record === undefined) return Promise.resolve(undefined);
     const key = `${record.folder}\0${record.treeHash}\0${path}`;
-    const had = this.#held.get(id);
+    const held = `${id}\0${which}`;
+    const had = this.#held.get(held);
     if (had?.key === key) return had.read;
     const read = this.o.icons.read(record.folder, path).then((r) => {
       if ("icon" in r) return r.icon;
-      const line = `agents: ${pluginId}'s backend ${id} has no icon: ${r.why}`;
+      const line = `agents: ${pluginId}'s backend ${id} has no ${which}: ${r.why}`;
       if (!this.#said.has(line)) { this.#said.add(line); this.o.log?.(line); }
       return undefined;
     });
-    this.#held.set(id, { key, read });
+    this.#held.set(held, { key, read });
     return read;
   }
 }

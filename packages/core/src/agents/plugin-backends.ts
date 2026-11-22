@@ -174,7 +174,7 @@ export interface ContributedBackend {
   quirks: AgentQuirks;
   /** Its look as the entry gives it (spec revision 20, §9.5): an icon file in the plugin's folder and its colours. Read
    *  by `BackendLooks`, never here: a bad icon never keeps a backend out. */
-  look: { icon?: string; color?: string; color2?: string };
+  look: { icon?: string; iconDark?: string; color?: string; color2?: string };
 }
 
 /** The `agentBackends` entries that are on, read into backends' rows; an entry whose file fails is left out. */
@@ -182,7 +182,7 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
   const candidates: ContributedBackend[] = [];
   for (const c of registry.entries("agentBackends")) {
     if (c.state !== "active") continue;
-    const v = c.value as { id?: string; name?: string; protocol?: string; command?: string; args?: string[]; quirks?: string; icon?: string; color?: string; color2?: string };
+    const v = c.value as { id?: string; name?: string; protocol?: string; command?: string; args?: string[]; quirks?: string; icon?: string; iconDark?: string; color?: string; color2?: string };
     const id = v.id ?? c.entryId;
     if (!id || v.protocol !== "acp" || !v.command) continue;
     const record = registry.get(c.pluginId);
@@ -219,7 +219,7 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
     const fileQuirks: FileQuirks = bundled || file.quirks.marks.includes("unasked-actions") ? file.quirks : { ...file.quirks, marks: [...file.quirks.marks, "unasked-actions"] };
     // Another plugin's backend is listed with its plugin's id beside its name.
     const name = bundled ? (v.name ?? id) : `${v.name ?? id} (${c.pluginId})`;
-    const look = { ...(typeof v.icon === "string" ? { icon: v.icon } : {}), ...(typeof v.color === "string" ? { color: v.color } : {}), ...(typeof v.color2 === "string" ? { color2: v.color2 } : {}) };
+    const look = { ...(typeof v.icon === "string" ? { icon: v.icon } : {}), ...(typeof v.iconDark === "string" ? { iconDark: v.iconDark } : {}), ...(typeof v.color === "string" ? { color: v.color } : {}), ...(typeof v.color2 === "string" ? { color2: v.color2 } : {}) };
     candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look });
   }
   // One entry per id: MOSS's bundled one while it is on, else the first claim.

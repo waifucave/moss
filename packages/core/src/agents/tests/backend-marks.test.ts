@@ -78,7 +78,7 @@ describe("the OpenCode, Copilot, Qwen and Kimi plugins (lane AP)", () => {
     opencode: { command: "opencode", args: ["acp"], version: "v2.2.5\n", got: "2.2.5" },
     copilot: { color: "#218BFF", command: "copilot", args: ["--acp"], version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.\n", got: "1.0.109" },
     qwen: { color: "#082DFF", command: "qwen", args: ["--acp"], version: "0.26.5\n", got: "0.26.5" },
-    kimi: { command: "kimi", args: ["acp"], version: "2.4.1\n", got: "2.4.1" },
+    kimi: { color: "#1783FF", command: "kimi", args: ["acp"], version: "2.4.1\n", got: "2.4.1" },
   };
 
   test("each one's entry, mark and colour are as the owner's ruling says, and its mark passes the engine's icon screen", async () => {
@@ -87,18 +87,51 @@ describe("the OpenCode, Copilot, Qwen and Kimi plugins (lane AP)", () => {
       const entry = manifestOf(dir).contributes.agentBackends[0]! as { id: string; command: string; args: string[]; protocol: string; icon: string; color?: string; iconDark?: string };
       expect(entry, id).toMatchObject({ id, protocol: "acp", command: want.command, args: want.args, icon: `${id}.svg` });
       expect(entry.color, id).toBe(want.color);
-      expect(entry.iconDark, id).toBeUndefined();
+      expect(entry.iconDark, id).toBe(id === "kimi" ? "kimi-dark.svg" : undefined);
+      if (entry.iconDark !== undefined) expect("icon" in (await new EngineBackendIcons().read(dir, entry.iconDark)), id).toBe(true);
       const r = await new EngineBackendIcons().read(dir, entry.icon);
       expect("icon" in r, `${id}: ${JSON.stringify(r)}`).toBe(true);
     }
   });
 
-  test("Kimi's mark is bare: no tile, the K takes the text's colour and the dot is the vendor's blue", () => {
-    const svg = readFileSync(join(BUNDLED_PLUGINS_DIR, "agent-kimi", "kimi.svg"), "utf8");
-    expect(svg).not.toContain("<rect");
-    expect(svg).toContain('fill="currentColor"');
-    expect(svg).toContain('fill="#1783FF"');
-    expect(svg).not.toMatch(/fill="(white|black|#fff|#000)/i);
+  test("Kimi's two marks are bare, the K black on light and white on dark, the dot the vendor's blue, no currentColor (drawn as pictures)", () => {
+    const read = (f: string) => readFileSync(join(BUNDLED_PLUGINS_DIR, "agent-kimi", f), "utf8");
+    for (const [file, k] of [["kimi.svg", "#000000"], ["kimi-dark.svg", "#FFFFFF"]] as const) {
+      const svg = read(file);
+      expect(svg, file).not.toContain("<rect");
+      expect(svg, file).not.toMatch(/currentColor/i);
+      expect(svg, file).toContain(`fill="${k}"`);
+      expect(svg, file).toContain('fill="#1783FF"');
+    }
+    // Only the K's fill differs between the two files.
+    expect(read("kimi.svg").replace('fill="#000000"', 'fill="#FFFFFF"')).toBe(read("kimi-dark.svg"));
+  });
+
+  test("any plugin's iconDark is served beside its icon; a bad or missing one is no iconDark, the icon stays, one line is logged; the other plugins' looks are as before", async () => {
+    const root = mkdtempSync(join(tmpdir(), "moss-icondark-"));
+    temps.push(root);
+    const dir = join(root, "agent-kimi");
+    cpSync(join(BUNDLED_PLUGINS_DIR, "agent-kimi"), dir, { recursive: true });
+    const looks = async (d: string, log: (l: string) => void) => (await new BackendLooks({ registry: registryOf(d), icons: new EngineBackendIcons(), log }).ofAll(["kimi"])).get("kimi")!;
+    const lines: string[] = [];
+    const ok = await looks(dir, (l) => lines.push(l));
+    expect(ok.icon?.mediaType).toBe("image/svg+xml");
+    expect(ok.iconDark?.mediaType).toBe("image/svg+xml");
+    expect(Buffer.from(ok.iconDark!.data, "base64").toString()).toContain('fill="#FFFFFF"');
+    expect(ok.color).toBe("#1783FF");
+    expect(lines).toEqual([]);
+    for (const how of ["missing", "script"] as const) {
+      if (how === "missing") rmSync(join(dir, "kimi-dark.svg"));
+      else writeFileSync(join(dir, "kimi-dark.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><script>1</script></svg>');
+      const l2: string[] = [];
+      const got = await looks(dir, (l) => l2.push(l));
+      expect(got.icon, how).toBeDefined();
+      expect(got.iconDark, how).toBeUndefined();
+      expect(l2.length, how).toBe(1);
+      expect(l2[0], how).toContain("iconDark");
+    }
+    // The other twelve plugins name no iconDark, so none is served for them.
+    for (const d of AGENT_PLUGINS.filter((n) => n !== "agent-kimi")) expect(manifestOf(join(BUNDLED_PLUGINS_DIR, d)).contributes.agentBackends[0], d).not.toHaveProperty("iconDark");
   });
 
   test("each one's version pattern reads the real `--version` line, and nothing from an unrelated tool", () => {

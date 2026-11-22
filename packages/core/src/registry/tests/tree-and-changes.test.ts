@@ -123,6 +123,8 @@ describe("what runs, whatever its extension (#197's review)", () => {
     expect(await again({ "moss.json": quirks, "quirks/cursor.json": "{}" }, {
       "moss.json": manifest({ contributes: { agentBackends: [{ id: "cursor", name: "Cursor CLI", protocol: "acp", command: "cursor-agent", quirks: "quirks/cursor.json" }] } }),
     })).toBe("applies");
+    // Its mark files (`icon`, `iconDark`) and colours are data: naming or changing them applies at once.
+    expect(await again({ "moss.json": quirks, "quirks/cursor.json": "{}" }, { "moss.json": backend({ quirks: "quirks/cursor.json", icon: "a.svg", iconDark: "b.svg", color: "#112233" }) })).toBe("applies");
     // A plugin with an agent backend has every file counted as code (lane K, #233): a quirks env can point anywhere in it.
     expect(await again({ "moss.json": quirks, "quirks/cursor.json": "{}", "README.md": "a" }, { "README.md": "b" })).toBe("asks-again");
   });

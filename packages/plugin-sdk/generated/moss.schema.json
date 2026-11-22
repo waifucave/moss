@@ -1576,6 +1576,9 @@
         "icon": {
           "$ref": "#/$defs/__schema1"
         },
+        "iconDark": {
+          "$ref": "#/$defs/__schema1"
+        },
         "declares": {
           "$ref": "#/$defs/__schema32"
         }

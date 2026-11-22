@@ -22,13 +22,15 @@ declare const __CANVAS_MARKS__: Record<string, { mediaType: "image/png" | "image
 const MARKS: Record<string, { mediaType: "image/png" | "image/svg+xml"; data: string }> = typeof __CANVAS_MARKS__ === "object" && __CANVAS_MARKS__ !== null ? __CANVAS_MARKS__ : {};
 /** MOSS's own agent's mark is MOSS Code's Shards mark, on light and on dark (`icon`, `iconDark`, as `agent.backends` serves it). */
 /** Copilot and Kimi are on the gallery's "every agent" page only (the fixtures the tests share list neither): the colours
- *  their plugins declare (Kimi declares none, so its mark and light wear the text's colour). */
+ *  their plugins declare (Kimi's is blue, with a light and a dark mark). */
 const EXTRA_BACKENDS = [
   { id: "copilot", name: "Copilot", color: "#218BFF", computers: [{ computer: "Studio", installed: true }] },
-  { id: "kimi", name: "Kimi", computers: [{ computer: "Studio", installed: true }] },
+  { id: "kimi", name: "Kimi", color: "#1783FF", computers: [{ computer: "Studio", installed: true }] },
 ];
 const backends = (more = false) => [...BACKENDS, ...(more ? EXTRA_BACKENDS : [])].map((b) => {
   if (b.id === "moss-code") return { ...b, ...(MARKS["moss-code-light"] !== undefined ? { icon: { ...MARKS["moss-code-light"], at: 0 } } : {}), ...(MARKS["moss-code-dark"] !== undefined ? { iconDark: { ...MARKS["moss-code-dark"], at: 0 } } : {}) };
+  // Kimi's plugin names `iconDark` too: its K white on dark.
+  if (b.id === "kimi" && MARKS["kimi-dark"] !== undefined) return { ...b, ...(MARKS.kimi !== undefined ? { icon: { ...MARKS.kimi, at: 0 } } : {}), iconDark: { ...MARKS["kimi-dark"], at: 0 } };
   return MARKS[b.id] !== undefined ? { ...b, icon: { ...MARKS[b.id]!, at: 0 } } : b;
 });
 
@@ -198,7 +200,7 @@ export const STORIES: Story[] = [
   ...CASES.map((c) => ({ id: `trip-${c.kind}`, title: c.title, notes: `${c.notes} (pinned at a moment for the pictures with #t=<seconds>)`, render: () => <World scene={tripScene(c.kind, 60)} /> })),
   { id: "bots", title: "Bots, idle", notes: "Three bots with their records' faces, drawn by MOSS's own faces kit (the gallery's build feeds it in where the plugin will take the SDK's BotFace).", render: () => <World scene={botsScene()} live={false} botState="idle" /> },
   { id: "bots-busy", title: "Bots at work", notes: "The same bots, working and thinking: their expressions from the activity feed.", render: () => <World scene={botsScene()} live={false} botState={{ moss: "working", pip: "thinking", juno: "asking" }} /> },
-  { id: "new-agents", title: "OpenCode, Copilot, Qwen and Kimi", notes: "The four newest agent plugins beside Claude Code and Codex: each block shows its plugin's mark and colour (OpenCode and Kimi wear the text's colour).", render: () => <World scene={newAgentsScene()} more live={false} /> },
+  { id: "new-agents", title: "OpenCode, Copilot, Qwen and Kimi", notes: "The four newest agent plugins beside Claude Code and Codex: each block shows its plugin's mark and colour (OpenCode wears the text's colour; Kimi has a black K on light, a white one on dark, and its blue).", render: () => <World scene={newAgentsScene()} more live={false} /> },
   { id: "wave", title: "Every agent's colour", notes: "Each agent in its icon's own colour: Claude Code, Codex (blue-violet), MOSS's own agent (gold), Gemini (two colours), OpenCode and Cursor (the text colour). At 9 s Codex answers Claude Code: the dotted line lights from Codex's point to Claude Code's.", render: () => <World scene={PALETTE} at={8_600} /> },
   { id: "still", title: "Everything still", notes: "The scene's end, every session idle or ended: nothing moves.", render: () => <World scene={SAMPLE_SESSION_SCENE} at={20_000} live={false} initial={{ showEnded: true }} /> },
   { id: "open", title: "A block open", notes: "It grows a little: the session's last line, a composer that sends as you, Open tab.", render: () => <World scene={PALETTE} at={9_500} live={false} initial={{ open: "s_a" }} /> },

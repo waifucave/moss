@@ -237,6 +237,9 @@ export const AgentBackendSchema = z.strictObject({
    *  symlink out, at most `ICON_FILE_MAX_BYTES`, its bytes' type, an SVG only when inert; a refused or missing icon is no
    *  icon (the SDK's fallback mark), never a failed plugin. */
   icon: Path.optional(),
+  /** Its mark for the dark theme: a second file read exactly as `icon` is (the same checks; a bad one is no `iconDark`, the
+   *  entry keeps its `icon`). Without it `icon` is drawn on both themes. */
+  iconDark: Path.optional(),
   ...declares,
 });
 

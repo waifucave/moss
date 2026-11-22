@@ -29,6 +29,7 @@ const MARK_FILES: Record<string, readonly string[]> = {
   qwen: ["qwen.svg", "qwen-code.svg"],
   copilot: ["copilot.svg"],
   kimi: ["kimi.svg"],
+  "kimi-dark": ["kimi-dark.svg"],
 };
 
 function readMarks(dir: string | undefined): Record<string, { mediaType: string; data: string }> | undefined {

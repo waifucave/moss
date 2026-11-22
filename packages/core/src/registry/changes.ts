@@ -157,7 +157,7 @@ function runsOf(m: Manifest | undefined, codeFieldsOf: CodeFieldsOf): string {
   // An agent backend runs what its whole entry says (lane K's ask): its command and args, its handler, its protocol
   // and its quirks file, which names the command and the env it gets. Only its display name and its look (the mark file's
   // name and its colours; the file is read as an image only) are data.
-  const backends = (c.agentBackends ?? []).map(({ name: _name, icon: _icon, color: _color, color2: _color2, ...run }) => run);
+  const backends = (c.agentBackends ?? []).map(({ name: _name, icon: _icon, iconDark: _iconDark, color: _color, color2: _color2, ...run }) => run);
   const dotted: Record<string, unknown> = {};
   for (const [point, raw] of Object.entries(c as Record<string, unknown>)) {
     if (!point.includes(".")) continue;

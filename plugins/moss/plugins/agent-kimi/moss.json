@@ -16,7 +16,9 @@
           "acp"
         ],
         "quirks": "quirks.json",
-        "icon": "kimi.svg"
+        "icon": "kimi.svg",
+        "iconDark": "kimi-dark.svg",
+        "color": "#1783FF"
       }
     ]
   }
