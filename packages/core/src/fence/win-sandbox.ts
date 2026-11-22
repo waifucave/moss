@@ -983,10 +983,10 @@ export function parseSrtStatus(
   if (wfp.allowLoopback) return no("the network filters open loopback; set it up again", SANDBOX_EXIT.FAILED);
   if (user.sid !== undefined && wfp.userSid !== undefined && wfp.userSid !== user.sid)
     return no("the network filters belong to another principal; set it up again", SANDBOX_EXIT.FAILED);
-  if (o.profileChecked === true) {
-    if (profile === null) return no("the principal's profile isn't resolved by its SID", SANDBOX_EXIT.FAILED);
-    if (profile.temporary) return no("the principal is running on a temporary profile; set it up again", SANDBOX_EXIT.FAILED);
-  }
+  // No profile is the ready state: each command logs on to a principal whose profile the reset deleted (a fresh one
+  // is made at that logon). Only a temporary one is wrong.
+  if (o.profileChecked === true && profile !== null && profile.temporary)
+    return no("the principal is running on a temporary profile; set it up again", SANDBOX_EXIT.FAILED);
   return { ...base, ready: true, reason: null, exit: SANDBOX_EXIT.OK };
 }
 
