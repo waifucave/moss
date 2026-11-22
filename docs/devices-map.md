@@ -39,3 +39,16 @@ computers. "Live check" means only a person with two machines can show it.
 4. Supply the sign-in project's URL and key (`<home>/account.json`), then deploy `services/accounts`. Working: sign-in on two machines shows one account.
 5. Deploy `services/relay`, `services/push`, `services/forwarder`, `services/web` as each plugin above is wanted.
 6. Live check: with the relay page set to n0's relays, a pair across two networks connects; set to none, it connects only directly.
+
+## For the reviewer: who holds `devices.manage`, and what `pairing_changed` carries
+- Held by one bundled plugin: `plugins/moss/plugins/settings/moss.json` (the Settings part). No other bundled plugin asks for it.
+- A third-party plugin may ask for it (catalog entry in `packages/plugin-sdk/src/catalogs/capabilities.ts`, `warns: true`). Its OK card
+  then says it "pairs and removes your devices when you press its controls (each still asks on MOSS's own card)". Holding it lets a
+  part (a) call `device.pair.begin/join/confirm/cancel` and `device.revoke` through the door, only on the user's own press, and
+  (b) hear `pairing_changed` (code, the four words, steps). It never adds or removes a device by itself: the engine raises the sealed
+  card for the add and the removal, and only the user's answer in the card's frame applies it. A plugin holding it can read the four
+  words of a pairing the user began in its frame; that is the exposure the OK card names.
+- Where in the diff: `packages/protocol/src/devices.ts` (`pairing_changed` roles and `capability`), `apps/desktop/src/main/ui/tree-calls.ts`
+  (`DEVICES_MANAGE`), `packages/plugin-sdk/src/catalogs/capabilities.ts`.
+- The two-engine proof is `packages/core/test/daemon-two-engines-pairing.test.ts`; `packages/core/test/*.ts` runs in the core jobs
+  (macOS shards and `core-linux`), the file has no platform marker.
