@@ -111,9 +111,11 @@ const GLOB = /[*?[\]{}]/;
 
 /** The paths a deny list names that exist now: literal paths as they are, a glob expanded over what exists (its `*`
  *  one whole name, `**` any depth, bounded). A path that doesn't exist isn't stamped (srt-win fails an exec on one). */
-export function existingDenies(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; budget?: number } = {}): string[] {
+export function existingDenies(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; isDir?: (p: string) => boolean; budget?: number } = {}): string[] {
   const exists = o.exists ?? ((p: string) => { try { lstatSync(p); return true; } catch { return false; } });
   const list = o.list ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } });
+  // A folder the walk enters: never through a link.
+  const isDir = o.isDir ?? ((p: string) => { try { return lstatSync(p).isDirectory(); } catch { return false; } });
   let budget = o.budget ?? 20_000;
   const out: string[] = [];
   const expand = (base: string, segs: readonly string[]): void => {
@@ -122,7 +124,7 @@ export function existingDenies(paths: readonly string[], o: { exists?: (p: strin
     const [seg, ...rest] = segs as [string, ...string[]];
     if (seg === "**") {
       expand(base, rest);
-      for (const n of list(base)) { const c = win32.join(base, n); try { if (statSync(c).isDirectory() && !lstatSync(c).isSymbolicLink()) expand(c, segs); } catch { /* gone */ } }
+      for (const n of list(base)) { const c = win32.join(base, n); if (isDir(c)) expand(c, segs); }
       return;
     }
     if (!GLOB.test(seg)) { expand(win32.join(base, seg), rest); return; }
@@ -183,6 +185,8 @@ export function winChildEnv(o: { profileRoot: string; temp: string; systemRoot: 
 /** What the Windows leg needs from the machine; `windowsDeps` gives the real ones (tests pass fakes). */
 export interface WinFencedDeps {
   readonly launcher: string;
+  /** Why the launcher can't be used, or null when it is the pinned build (`launcherProblem`: the digest check). */
+  launcherProblem(): string | null;
   readonly ownerSid: string | null;
   /** `%ProgramData%`, where `sandbox setup` writes the install marker. */
   readonly programData: string | null;
@@ -204,6 +208,7 @@ export function windowsDeps(mossHome: string, o: { ownerSid: string | null; prog
   let store: LeaseStore | undefined;
   return {
     launcher: srtWinPath(),
+    launcherProblem() { return launcherProblem(this.launcher, srtWinArch()); },
     ownerSid: o.ownerSid,
     programData: o.programData,
     systemRoot: process.env.SystemRoot ?? "C:\\Windows",
@@ -260,7 +265,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   const refuse = (reason: string): FencedRunResult => ({ kind: "refused", reason: `a fenced process can't be started here: ${reason}` });
   /** Rule 1's first half: the pinned launcher and this owner's install. */
   const install = (): { marker: InstallMarker } | { why: string } => {
-    const problem = launcherProblem(deps.launcher, srtWinArch());
+    const problem = deps.launcherProblem();
     if (problem !== null) return { why: setupBashRefusal(problem) };
     if (deps.ownerSid === null) return { why: "the user's SID can't be read" };
     if (deps.programData === null) return { why: "ProgramData can't be resolved" };
