@@ -5,6 +5,8 @@
 import { scaled } from "./time-scale";
 
 
+/** The address of the app's main window page. */
+export const MAIN_PAGE_URL = "moss-core://app/";
 export interface ConsoleEntry { session: string; url: string; level: string; text: string }
 export interface FrameInfo { session: string; url: string; type: string; targetId?: string }
 
@@ -249,7 +251,7 @@ export class Cdp {
 
   /** The main window's pixels (a top-level target only: a frame's session can't capture). */
   async screenshot(): Promise<Buffer> {
-    const main = [...this.frames.values()].find((f) => f.type === "page" && f.url === "moss-core://app/");
+    const main = [...this.frames.values()].find((f) => f.type === "page" && f.url === MAIN_PAGE_URL);
     if (main === undefined) throw new Error("no main window target");
     const r = await this.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, main.session);
     return Buffer.from(r.data, "base64");

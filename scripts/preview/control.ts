@@ -13,7 +13,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { dirname } from "node:path";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
 import { hello, MossClient, RpcError } from "../acceptance/client";
-import { Cdp, type WsLike } from "../acceptance/cdp";
+import { Cdp, MAIN_PAGE_URL, type WsLike } from "../acceptance/cdp";
 import { folderProblem } from "../../apps/desktop/src/main/preview-control-rules";
 import { LineReader, MAX_LINE, encodeLine, sameToken, type CtlRequest, type Target } from "./control-lib";
 import { CLEAR_TARGET_JS, DUMP_JS, FOCUS_JS, findJs } from "./page-js";
@@ -113,7 +113,7 @@ class AppDoor implements WsLike {
 
   /** Announces the page to the client, as the browser-level DevTools would: its session is "main". */
   announcePage(): void {
-    this.emit({ method: "Target.attachedToTarget", params: { sessionId: "main", targetInfo: { url: "moss-core://app/", type: "page" } } });
+    this.emit({ method: "Target.attachedToTarget", params: { sessionId: "main", targetInfo: { url: MAIN_PAGE_URL, type: "page" } } });
   }
 
   close(): void { try { this.socket.destroy(); } catch { /* gone */ } }
