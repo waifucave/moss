@@ -53,7 +53,7 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
       sandbox: () => ({ enabled: false }),
       stopGraceMs: 5_000,
       coreTools: () => core,
-      log: (l) => { if (process.env.WS_DEBUG) console.error(l); },
+      log: (l) => console.error(`[driver log] ${l}`),
     };
     const driver = new BotSessionDriver(ctx, deps);
     try {
