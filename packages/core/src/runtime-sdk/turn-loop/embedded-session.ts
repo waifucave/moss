@@ -4,6 +4,7 @@
 // and, for a real model, the daemon's provider fill (the provider, the credential broker, the model plugins' adapters).
 // Owner: lane A; lane K builds on it.
 import type { Options, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
+import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { storeHomeFor } from "../../agent/paths";
@@ -62,6 +63,9 @@ export function embeddedSessionOptions(deps: Pick<EmbeddedSessionDeps, "home" | 
     if (typeof v === "string" && v !== "") env[key] = v;
   }
   Object.assign(env, deps.env);
+  // Windows: the runtime's temp base is `<PREFIX>TMPDIR` or else "/tmp", which Windows resolves on the current drive
+  // (`D:\tmp`, missing: the runtime dies before init). The OS temp folder unless the caller named one.
+  if (process.platform === "win32" && env.MOSS_TMPDIR === undefined) env.MOSS_TMPDIR = tmpdir();
   // Pinned last, so nothing a caller passes moves the home or the profile. The runtime's home is the session store's
   // (`storeHomeFor`: `<home>/sdk` in Migration C's layout), never the MOSS home itself: the runtime writes its
   // transcripts (`projects/`), backups and the rest under its home, which is where the core reads them back
