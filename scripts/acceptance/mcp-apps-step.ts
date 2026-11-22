@@ -89,6 +89,10 @@ export async function mcpAppsCallStep(ctx: ExampleCtx, session: string): Promise
   if (r === undefined) return fail("the first MCP Apps row didn't leave its page up");
   const done: string[] = [];
   try {
+    // The page waits at a gate: no card of its own exists until now, so the run's turn helper (which answers any card of the session
+    // that shows while it waits for a turn to end) can't have answered one before this row looks for it.
+    if (r.app.refreshes() !== 0) fail(`Refresh ran before the page was let ask (${r.app.refreshes()} time(s))`);
+    r.app.openGate();
     // Another server's tool: refused with no card, and the other server never saw it.
     const other = await until("the page's report of the other server's tool", 60_000, async () => /ACC-APP-REPORT other=[^\n]*/.exec(said(ctx))?.[0], async () => said(ctx).slice(0, 300));
     if (!/other=error:/.test(other)) fail(`the page reached another server's tool: ${other}`);
@@ -97,11 +101,17 @@ export async function mcpAppsCallStep(ctx: ExampleCtx, session: string): Promise
     // Its own app-only tool: a card first, and nothing runs while it waits.
     const first = await pendingCard(ctx, session, "Refresh");
     await sleep(500);
-    if (r.app.refreshes() !== 0) fail("Refresh ran before the card was answered");
+    if (r.app.refreshes() !== 0) fail(`Refresh ran with its card unanswered (${r.app.refreshes()} run(s) at ${r.app.refreshTimes().join(", ")})`);
+    // The answer is sent at answeredFrom and accepted by the engine when approveCard returns; the tool's run, which the server
+    // times itself, can only begin after the engine recorded the answer, so it must not precede answeredFrom.
+    const answeredFrom = Date.now();
     await ctx.approveCard(first);
+    const answeredTo = Date.now();
     const ok = await until("the page's report of Refresh #1", 60_000, async () => /ACC-APP-REPORT refresh1=[^\n]*/.exec(said(ctx))?.[0], async () => said(ctx).slice(0, 300));
     if (!ok.includes("acc-refresh-done") || r.app.refreshes() !== 1) fail(`Refresh after OK: "${ok}", ran ${r.app.refreshes()} time(s)`);
-    done.push("its call raised a card, waited, and ran once after OK");
+    const ranAt = r.app.refreshTimes()[0]!;
+    if (ranAt < answeredFrom) fail(`Refresh began at ${ranAt}, before its card's answer was sent at ${answeredFrom}`);
+    done.push(`its call raised a card, waited, and ran once after OK (answer sent ${answeredFrom}, accepted ${answeredTo}, the tool began ${ranAt}: ${ranAt - answeredFrom} ms after the answer was sent)`);
     // The second is refused: the page is told, and it never runs.
     const second = await pendingCard(ctx, session, "Refresh");
     await ctx.denyCard(second);
