@@ -52,7 +52,7 @@ const extra = {
 } as UiPlugin;
 
 /** The runtime with the conversation part placed, and a bridge that is the real runtime's door for that document. */
-function world(delay?: { resolve?: () => Promise<void> }) {
+function world(delay?: { resolve?: () => Promise<void>; /** Runs right after the Spot has taken an answer (its `setView` is made) and before React commits it. */ afterAnswer?: () => void }) {
   const listeners = new Set<(m: LayerMessage) => void>();
   let shellProcess = -1;
   let n = 0;
@@ -80,6 +80,8 @@ function world(delay?: { resolve?: () => Promise<void> }) {
       calls.push({ op: "resolve", args: [mount, spot, key, hints] });
       const view = rt.resolve(shell, mount, spot, key, hints);
       if (delay?.resolve !== undefined) await delay.resolve();
+      // Two hops: the Spot's own `.then` on this answer runs first, then this.
+      if (delay?.afterAnswer !== undefined) queueMicrotask(() => queueMicrotask(delay.afterAnswer!));
       return view as SpotView;
     },
     setProps: (child: string, props: unknown) => { calls.push({ op: "setProps", args: [child] }); rt.setProps(shell, child, props); },
@@ -169,6 +171,20 @@ describe("<Spot> instances against the real runtime", () => {
     open();
     await until(() => w.mine().length === 0);
     expect(w.mine()).toHaveLength(0);
+  });
+
+  test("an answer that lands while the instance still shows, and the instance unmounts before React commits it, is let go too", async () => {
+    let unmount = () => {};
+    const w = world({ afterAnswer: () => unmount() });
+    store.ids = ["m1", "m2", "m3"];
+    ui.configureLayer({ bridge: w.bridge, modules: { "moss/conversation": { Transcript } }, sleepAfterMs: 10_000 });
+    const view = render(h(ui.SpotHints.Provider, { value: { session: "coding" } }, h(ui.LayerRoot, { info: w.info })));
+    unmount = () => view.unmount();
+    await wait(50);
+    // Each answer was taken (the mounts exist) and the page went before the effect that records what it shows could run.
+    await until(() => w.mine().length === 0);
+    expect(w.mine()).toHaveLength(0);
+    expect(w.calls.filter((c) => c.op === "release").flatMap((c) => c.args[0] as string[]).length).toBeGreaterThanOrEqual(3);
   });
 
   test("a frame placed away from the screen loads as ever and sleeps after a while, its address let go, and wakes with a fresh one when it comes near", async () => {

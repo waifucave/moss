@@ -445,6 +445,9 @@ export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, fo
   const [instance] = useState(newInstanceId);
   /** False once this instance unmounted: an answer that lands after it holds mounts nobody shows, and nobody else would release. */
   const mounted = useRef(true);
+  /** The mounts of the latest answer taken while mounted: the unmount lets them go too, as the effect that records what is shown
+   *  (`shown`, below) may not have run for it yet (the page went in the batch that took the answer). */
+  const answered = useRef<string[]>([]);
   // A panel's `when.session` (and what a conversation's spots need to read: a code session is read with `sessions.read`) is the kind of session the shell shows it for: the `moss` layer says so in the props it gives the spot (the main process heeds it from that layer only).
   const propKind = name === "panel" || name === "conversation" || name === "session.corner" ? (props as { sessionKind?: unknown } | undefined)?.sessionKind : undefined;
   const session = hints.session ?? (typeof propKind === "string" ? propKind : undefined);
@@ -457,6 +460,7 @@ export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, fo
           if (v.items.length > 0) r.bridge.release(v.items.map((i) => i.mount));
           return;
         }
+        answered.current = v.items.map((i) => i.mount);
         setView((old) => (sameView(old, v) ? old : v));
       }, () => { if (mounted.current) setView(undefined); });
   }, [r, part.mount, name, spotKey, session, entry, forBot, instance]);
@@ -478,7 +482,9 @@ export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, fo
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (shown.current.length > 0) r.bridge.release(shown.current);
+      // What it showed and what it was last answered with (each mount once).
+      const all = [...new Set([...shown.current, ...answered.current])];
+      if (all.length > 0) r.bridge.release(all);
     };
   }, [r]);
   if (view === undefined || view.hidden || view.items.length === 0) {
