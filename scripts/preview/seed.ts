@@ -10,6 +10,7 @@
 //   idle                 Codex (a fake ACP agent behind a `codex-acp` shim): a first turn ended
 //   started by another   Claude Code (behind `claude-agent-acp`): its SendMessage reaches the Codex session, a line between them
 //   ended                Gemini (behind `gemini`): a turn, then stopped
+import { REAL_AGENTS } from "./real-lib";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -18,7 +19,22 @@ import { RpcError } from "../acceptance/client";
 import type { Layout } from "./lib";
 
 type Ev = Record<string, unknown> & { type?: string };
-interface CardRow { id: string; hash: string; options: { id: string; kind: string }[] }
+interface CardRow { id: string; hash: string; session?: string; options: { id: string; kind: string }[] }
+
+/** Whether the seeding poller may approve this card: any pending card with an approve option in a stand-in preview; in a real-agents preview only one of a session the seeding itself started. */
+export function approvable(card: CardRow, real: boolean, mine: ReadonlySet<string>): { id: string } | undefined {
+  if (real && (card.session === undefined || !mine.has(card.session))) return undefined;
+  return card.options.find((o) => o.kind === "approve");
+}
+
+/** Why `ctl seed` is refused in a real-agents preview, or undefined: any real session already exists. */
+export function seedRefusal(sessions: readonly { id: string; backend?: string }[]): string | undefined {
+  const real = sessions.filter((x) => x.backend !== undefined && REAL_BACKENDS.includes(x.backend));
+  return real.length === 0 ? undefined : `seed is refused: this real-agents preview already has ${real.length} real session(s) (${real.map((x) => x.id).join(", ")}); a seeding poller would otherwise be near their permission cards. Seed before starting real sessions, or not at all`;
+}
+
+/** The backends that are the owner's real programs in a `--real-agents` preview (real-lib.ts REAL_AGENTS). */
+const REAL_BACKENDS: readonly string[] = REAL_AGENTS.map((a) => a.backend);
 
 /** The titles the fake model gives a session's title request, by a phrase of its first message (the preview's `titleFor`). */
 export const TITLES: readonly [phrase: string, title: string][] = [
@@ -84,11 +100,13 @@ async function withKit<T>(i: SeedInput, run: (k: Kit) => Promise<T>): Promise<T>
   const made: Seeded["sessions"] = [];
   // Every card the seeding raises (an agent that carries no sandbox of its own asks once; a background command asks) is approved here, so none waits when the window opens.
   const answered = new Set<string>();
+  // In a real-agents preview only a card of a session THIS seeding started is approved: a real Claude Code or Codex session's permission card is the owner's to answer.
+  const mine = new Set<string>();
   const sweep = async (): Promise<void> => {
     const listed = await c.request<{ cards: CardRow[] }>("card.list").catch(() => ({ cards: [] as CardRow[] }));
     for (const card of listed.cards) {
       if (answered.has(card.id)) continue;
-      const approve = card.options.find((o) => o.kind === "approve");
+      const approve = approvable(card, i.real === true, mine);
       if (approve === undefined) continue;
       answered.add(card.id);
       try {
@@ -109,8 +127,12 @@ async function withKit<T>(i: SeedInput, run: (k: Kit) => Promise<T>): Promise<T>
     const turnEnded = (id: string, n = 1): Promise<true> => until(`a turn of ${id} to end`, 120_000, async () => ((await turnsDone(id)) >= n ? true : undefined));
     const titled = (id: string): Promise<string> => until(`${id}'s title`, 90_000, async () => ((await c.request<{ session: { title?: string } }>("session.get", { id })).session.title ?? undefined));
     const send = (session: string, text: string): Promise<unknown> => c.request("session.send", { id: session, message: { text, clientMessageId: randomUUID() } }, 30_000);
-    const start = async (backend: string, root: string, prompt: string, extra: Record<string, unknown> = {}): Promise<string> =>
-      (await c.request<{ session: string }>("agent.start", { backend, computer, root, prompt, ...extra }, 60_000)).session;
+    const start = async (backend: string, root: string, prompt: string, extra: Record<string, unknown> = {}): Promise<string> => {
+      if (i.real === true && REAL_BACKENDS.includes(backend)) throw new Error(`seed: ${backend} is a real program in this preview; a scene never starts it`);
+      const id = (await c.request<{ session: string }>("agent.start", { backend, computer, root, prompt, ...extra }, 60_000)).session;
+      mine.add(id);
+      return id;
+    };
     const agentConfig = (backend: string, version: string, script: unknown[][]): void => {
       writeFileSync(join(i.layout.agents, `${backend}.json`), JSON.stringify({
         quirks: i.quirks[backend], version, report: join(i.layout.agents, `${backend}-report.ndjson`), selection: join(i.layout.agents, "selection.json"),
@@ -216,6 +238,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
 
 /** One scene on a preview that is already up (its model is signed in): the sessions it made. */
 export async function seedScene(name: SceneName, i: SeedInput): Promise<Seeded["sessions"]> {
+  if (i.real === true) {
+    const refusal = seedRefusal((await i.c.request<{ sessions: { id: string; backend?: string }[] }>("session.list", {}, 30_000)).sessions);
+    if (refusal !== undefined) throw new Error(refusal);
+  }
   if (name === "message" && i.real === true) throw new Error("the message scene uses Claude Code and Codex, which are the real programs in this preview (it would spend the owner's plans): start those sessions yourself, within the budget");
   return await withKit(i, async (k) => {
     await SCENES[name](k, i);
