@@ -238,8 +238,11 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
     const r = reportOf(reportC).filter((x) => x.type === "mcp-result" && x.tool === "SendMessage");
     return r.length >= 2 ? r : undefined;
   }, async () => `C's report: ${reportOf(reportC).map((x) => x.type).join(", ") || "none"}`);
-  if (results[0]!.isError === true || !String(results[0]!.text).includes("Sent")) fail(`C's SendMessage to K answered ${JSON.stringify(results[0]).slice(0, 300)}: a session the person started may message a session a bot created`);
-  if (results[1]!.isError !== true || !String(results[1]!.text).includes("No session you may message")) fail(`C's SendMessage to Alpha's conversation answered ${JSON.stringify(results[1]).slice(0, 300)}, not a refusal (Alpha has not written to C)`);
+  // The two answers are told apart by what they say (the report is written as each call finishes, not in the order they were made).
+  const toBot = results.find((r) => String(r.text).includes(`"${bot.mainSession}"`));
+  const toK = results.find((r) => r !== toBot);
+  if (toK === undefined || toK.isError === true || !String(toK.text).includes("Sent")) fail(`C's SendMessage to K answered ${JSON.stringify(toK).slice(0, 300)}: a session the person started may message a session a bot created`);
+  if (toBot === undefined || toBot.isError !== true || !String(toBot.text).includes("No session you may message")) fail(`C's SendMessage to Alpha's conversation answered ${JSON.stringify(toBot ?? results).slice(0, 300)}, not a refusal (Alpha has not written to C)`);
   const fromC = await heard("K's conversation to hold C's message", k.id, (evs) => evs.find((e) => e.type === "session_message" && e.fromSession === c));
   if (fromC.text !== ANSWER) fail(`K's session_message from C reads ${JSON.stringify(fromC).slice(0, 300)}, not C's words`);
   const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
@@ -247,7 +250,7 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   if (!cText.includes(b) || !cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and K, and not Alpha's conversation (Alpha has not written to C)`);
   await heard("C's first turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
   if (JSON.stringify(await history(bot.mainSession)).includes("CROSS-ANSWER")) fail("C's message reached Alpha's conversation before Alpha had written to C");
-  done.push(`2 C (${c}), a session the person started, sent to K ("Sent": K's conversation holds a session_message from C) and was refused for Alpha's conversation ("${String(results[1]!.text).slice(0, 60)}…"): nothing reached it, and C's ListSessions names B and K and no bot's conversation`);
+  done.push(`2 C (${c}), a session the person started, sent to K ("Sent": K's conversation holds a session_message from C) and was refused for Alpha's conversation ("${String(toBot!.text).slice(0, 60)}…"): nothing reached it, and C's ListSessions names B and K and no bot's conversation`);
 
   // Alpha's conversation writes to C (a bot's own message to a session the person started); C's agent answers, and the answer now reaches it.
   await ctx.turn(bot.mainSession, `ACCEPTANCE-CALL SendMessage ${JSON.stringify({ to: c, message: FROM_ALPHA })}`, 150_000);
