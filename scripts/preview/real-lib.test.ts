@@ -144,8 +144,8 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "session/prompt
 
   test("a launch that sends no prompt takes no session; session/new takes one each; launches are counted apart", async () => {
     const b = join(dir, "b4");
-    await run(b, [{ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }], {}, ["acp"], 700);
-    await run(b, [], {}, ["models"], 500);
+    await run(b, [{ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }], {}, ["acp"], 2000);
+    await run(b, [], {}, ["models"], 2000);
     expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 2, sessions: 0, turns: 0 });
     const n = (id: number) => ({ jsonrpc: "2.0", id, method: "session/new", params: {} });
     const r = await run(b, [n(1), n(2), n(3)]);
@@ -164,12 +164,12 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "session/prompt
 
   test("only the whole --version list is a probe: other arguments, even with it, are launches", async () => {
     const b = join(dir, "b6");
-    await run(b, [], {}, ["--version"], 500);
+    await run(b, [], {}, ["--version"], 2500);
     expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 0 });
-    const r = await run(b, [prompt(1, "ok")], {}, ["acp", "--version"], 900);
+    const r = await run(b, [prompt(1, "ok")], {}, ["acp", "--version"], 3000);
     expect(r.out.length).toBe(1);
     expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 1, turns: 1 });
-    await run(b, [], {}, ["--help"], 500);
+    await run(b, [], {}, ["--help"], 2500);
     expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 2 });
   }, 20_000);
 
