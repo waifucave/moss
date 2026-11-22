@@ -1821,7 +1821,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // (first logon creates the profile), resolve by SID, lock down Startup.
         const stamp = await run([...setDescriptionArgs(principal, ownerSid)]);
         if (stamp.code !== 0) { fail(`stamping the owner SID failed (exit ${stamp.code})${stamp.out.trim() ? `\n${stamp.out.trim().slice(0, 2000)}` : ""}`); break; }
-        const warm = await run([...warmUpArgs({ launcher, systemRoot })]);
+        const warm = await run([...warmUpArgs({ launcher, systemRoot, user: principal })]);
         if (warm.code !== 0) { fail(`the first logon failed (exit ${warm.code})${warm.out.trim() ? `\n${warm.out.trim().slice(0, 2000)}` : ""}`); break; }
         const { sid: principalSid } = await memberSid(launcher, principal);
         if (principalSid === null) { fail("the principal's SID isn't reported; set up again"); break; }

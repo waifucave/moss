@@ -251,8 +251,10 @@ export function sessionRestoreArgs(launcher: string): readonly string[] {
 }
 
 /** A warm-up launch: the principal's first logon creates its profile. Nothing is written. */
-export function warmUpArgs(o: { launcher: string; systemRoot: string }): readonly string[] {
-  return [o.launcher, "exec", "--quiet", "--", win32.join(o.systemRoot, "System32", "cmd.exe"), "/d", "/c", "exit 0"];
+export function warmUpArgs(o: { launcher: string; systemRoot: string; user?: string }): readonly string[] {
+  // `--user`: the principal just installed. Without it the machine-wide record's user logs on, which is the last
+  // install's, so a setup run again (each install then changes nothing) would warm only the last pool member up.
+  return [o.launcher, "exec", "--quiet", ...(o.user === undefined ? [] : ["--user", o.user]), "--", win32.join(o.systemRoot, "System32", "cmd.exe"), "/d", "/c", "exit 0"];
 }
 
 /** `reg query HKLM\…\ProfileList\<sid> /v ProfileImagePath`: the principal's profile, resolved by SID. */
