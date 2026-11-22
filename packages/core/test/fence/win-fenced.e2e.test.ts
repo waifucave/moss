@@ -8,7 +8,8 @@
 // protected copy's launcher). It writes a throwaway MOSS home in the runner's own profile (`.moss-e2e`) and a few
 // files beside it, and prints only dummy values (`PROBE_SECRET=dummy123`).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
@@ -17,6 +18,8 @@ import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
 import { windowsShellTools } from "../../src/fence/win-shell-tools";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
+import { resolveEndpoint } from "../../src/platform/transport";
+import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
 import type { CoreToolDef } from "../../src/runtime-sdk/turn-loop/servers";
 
 const run = process.platform === "win32" && process.env.MOSS_WIN_FENCE_E2E === "1";
@@ -135,6 +138,21 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const range = await call(tools.Bash!, { command: probe("127.0.0.1", 60081) });
     console.log(`[e2e] loopback proxy range 60081 from the fenced command: ${range.text.includes("CONNECTED") ? "CONNECTED (open by srt-win's design)" : "REFUSED"}`);
     listener.stop(true); proxyRange.stop(true);
+  }, 300_000);
+
+  test("pipes: MOSS's own (an owner-only DACL), and Docker's and ssh-agent's where present, are unreachable", async () => {
+    const path = resolveEndpoint(mkdtempSync(join(tmpdir(), "moss-e2e-pipe-"))).path;
+    const server = Bun.listen({ unix: path, socket: { data() {} } });
+    expect(lockPipeDacl(path, currentUserSid()!)).toBeGreaterThan(0);
+    const control = await Bun.connect({ unix: path, socket: { data() {} } }); // the user connects
+    control.end();
+    const pipes = [path.replace(/^\\\\\.\\pipe\\/, ""), ...["docker_engine", "openssh-ssh-agent"].filter((n) => existsSync(`\\\\.\\pipe\\${n}`))];
+    for (const name of pipes) {
+      const r = await call(tools.PowerShell!, { command: `try { $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '${name}', [System.IO.Pipes.PipeDirection]::InOut); $c.Connect(3000); 'PIPE-OPEN' } catch { 'PIPE-REFUSED ' + $_.Exception.GetType().Name }` });
+      console.log(`[e2e] pipe ${name}: ${r.text.trim()}`);
+      expect(r.text).toContain("PIPE-REFUSED");
+    }
+    server.stop(true);
   }, 300_000);
 
   test("a timeout ends everything the command started: a delayed grandchild never writes its marker", async () => {
