@@ -13,3 +13,14 @@ foreach ($round in 1, 2) {
 $code = Invoke-Limited "status after setup" $Core @("sandbox", "status", "--json") 120
 if ($code -ne 0) { throw "status after setup exited $code" }
 Write-Output "marker: $(Get-Content -Raw $Marker)"
+# The reset task (SYSTEM) once by hand, as the daemon starts it, and what it reported: every fresh principal is free.
+& schtasks.exe /run /tn "MOSS Sandbox Reset $Sid" | Out-Null
+Start-Sleep -Seconds 10
+$info = Get-ScheduledTaskInfo -TaskName "MOSS Sandbox Reset $Sid"
+Write-Output "reset task: last result $($info.LastTaskResult) at $($info.LastRunTime)"
+$code = Invoke-Limited "reset, by hand (elevated)" $Core @("sandbox", "reset") 300
+foreach ($m in Get-Pool) {
+  $sidOf = (Get-LocalUser -Name $m.principal).SID.Value
+  $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sidOf"
+  Write-Output "$($m.principal): profile $(if (Test-Path $k) { 'present' } else { 'reset' })"
+}
