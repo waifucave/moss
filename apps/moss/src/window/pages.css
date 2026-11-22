@@ -49,6 +49,9 @@
 .ma2-settings .page__body { overflow-y: auto; }
 .ma2-settings .settings-section select { margin-bottom: 0; max-width: 100%; }
 .ma2-account { display: flex; align-items: center; gap: 12px; }
+.ma2-pair { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ma2-pair__row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ma2-pair__code code, .ma2-pair__words { overflow-wrap: anywhere; user-select: text; }
 .ma2-account .account__dot { width: 34px; height: 34px; font-size: 14px; }
 .ma2-account__who { display: grid; flex: 1; min-width: 0; }
 .ma2-key { flex-wrap: wrap; }

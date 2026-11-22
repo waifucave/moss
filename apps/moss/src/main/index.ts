@@ -727,6 +727,23 @@ function wireBridge(): void {
     return engine.setLevel(computer, level);
   });
 
+  // Pairing a device and removing one (spec §8.1): each the person's own press; the engine raises the sealed card for adding
+  // (the confirm) and for removing, and the router places it in this window. Nothing here applies either.
+  const pairingPress = (w: BrowserWindow): { ok: false; why: string } | undefined =>
+    personPressed(w) ? undefined : { ok: false, why: "Pairing starts only right after your own key press or click." };
+  handle("moss:pair-begin", (w) => pairingPress(w) ?? engine.pairBegin());
+  handle("moss:pair-join", (w, a) => {
+    const code = str(a.code, 4_096);
+    return pairingPress(w) ?? (code === undefined ? { ok: false as const, why: "No code." } : engine.pairJoin(code));
+  });
+  handle("moss:pair-confirm", (w) => pairingPress(w) ?? engine.pairConfirm());
+  handle("moss:pair-cancel", (w) => (personPressed(w) ? engine.pairCancel() : false));
+  handle("moss:remove-device", (w, a) => {
+    const id = str(a.id, 128);
+    if (id === undefined || !personPressed(w)) return false;
+    return engine.removeDevice(id);
+  });
+
   handle("moss:set-permission", (w, a) => {
     const server = str(a.server, 256);
     const tool = str(a.tool, 256);

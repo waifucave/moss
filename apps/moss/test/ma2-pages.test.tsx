@@ -74,7 +74,9 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
     addPlugin: (from) => engine.addPlugin("link" in from ? from : { folder: "/nowhere" }),
     settings: () => engine.settings(), botSettings: (b) => engine.botSettings(b), setBotSetting: (b, p, k, v) => engine.setBotSetting(b, p, k, v),
     botInstructions: (id) => engine.botInstructions(id),
-    setLevel: (c, l) => engine.setLevel(c, l), setPermission: (s, t, p) => engine.setPermission(s, t, p),
+    setLevel: (c, l) => engine.setLevel(c, l),
+    pairBegin: () => engine.pairBegin(), pairJoin: (c) => engine.pairJoin(c), pairConfirm: () => engine.pairConfirm(), pairCancel: () => engine.pairCancel(), removeDevice: (id) => engine.removeDevice(id),
+    setPermission: (s, t, p) => engine.setPermission(s, t, p),
     signIn: (p, i, k) => engine.signIn(p, i, k), signOut: (p, i) => engine.signOut(p, i),
     botRecord: (id) => engine.botRecord(id), editBot: (id, patch) => engine.editBot(id, patch), models: () => engine.models(),
     setup: () => engine.setup(), setupProviders: () => engine.setupProviders(), openTerms: async () => false, setDefaultModel: (m) => engine.setDefaultModel(m), skipSetup: () => engine.skipSetup(),
@@ -255,6 +257,67 @@ describe("Settings", () => {
     await act(async () => { fireEvent.click([...r.container.querySelectorAll("[data-computer=Laptop] button")].find((b) => b.textContent === "Change")!); });
     await until(() => callsOf(e, "computer.setLevel").length === 1);
     expect(callsOf(e, "computer.setLevel")[0]).toEqual({ name: "Laptop", level: "automatic" });
+    r.unmount();
+  });
+
+  test("pairing a device in Settings: a code shown here, the engine's four words, the confirm (the engine's card), the end; removing a device is the engine's card too", async () => {
+    const { e, engine } = await setup();
+    // The page as App draws it: the view's pairing and devices revision follow the engine's steps.
+    const draw = () => h(SettingsPage, { bots: [], pairing: engine.view().pairing, devicesRev: engine.view().devicesRev ?? 0 });
+    const r = render(draw());
+    const redraw = async (): Promise<void> => { await act(async () => { r.rerender(draw()); }); };
+    await until(() => r.container.querySelector("[data-device]") !== null);
+    // This computer has no Remove button; the phone does.
+    expect(r.container.querySelector("[data-device=devphone000000000001] button")?.textContent).toBe("Remove");
+    expect(r.container.querySelector("[data-device]:not([data-device=devphone000000000001]) button")).toBeNull();
+    expect(callsOf(e, "device.pair.begin").length).toBe(0);
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-begin]")!); });
+    await until(() => engine.view().pairing?.code !== undefined);
+    expect(callsOf(e, "device.pair.begin").length).toBe(1);
+    await redraw();
+    expect(r.container.querySelector("[data-pair-shown]")?.textContent).toBe("KQ7-M2P");
+    // Another pairing's step is not ours; ours brings the four words.
+    e.devicesEvent({ type: "pairing_changed", pairingId: "someone_else", step: "words", words: ["a", "b", "c", "d"] });
+    await settle();
+    await redraw();
+    expect(r.container.querySelector("[data-pair-words]")).toBeNull();
+    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "words", words: ["amber", "river", "lantern", "moss"] });
+    await until(() => engine.view().pairing?.words !== undefined);
+    await redraw();
+    expect(r.container.querySelector("[data-pair-words]")?.textContent).toBe("amber · river · lantern · moss");
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-confirm]")!); });
+    await until(() => engine.view().pairing?.confirming === true);
+    expect(callsOf(e, "device.pair.confirm").length).toBe(1);
+    expect(callsOf(e, "device.pair.confirm")[0]).toEqual({ pairingId: "pair_host", words: ["amber", "river", "lantern", "moss"] });
+    await redraw();
+    expect((r.container.querySelector("[data-pair-confirm]") as HTMLButtonElement).textContent).toBe("Waiting for your OK");
+    // Done: the engine says so, the page says so, and the devices are read again.
+    const listed = e.calls().filter((c) => c.method === "device.list").length;
+    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "done" });
+    await until(() => engine.view().pairing?.ended !== undefined);
+    await redraw();
+    expect(r.container.querySelector("[data-pairing]")?.textContent).toContain("The device was added.");
+    await until(() => e.calls().filter((c) => c.method === "device.list").length > listed);
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-cancel]")!); });
+    await redraw();
+    expect(engine.view().pairing).toBeUndefined();
+    expect(callsOf(e, "device.pair.cancel").length).toBe(0);
+    // Joining with the other device's code: its words come at once; a refused pairing says why.
+    await act(async () => { fireEvent.change(r.container.querySelector("[data-pair-code]")!, { target: { value: " KQ7-M2P " } }); });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-join]")!); });
+    await until(() => engine.view().pairing?.words !== undefined);
+    expect(callsOf(e, "device.pair.join").length).toBe(1);
+    expect(callsOf(e, "device.pair.join")[0]).toEqual({ code: "KQ7-M2P" });
+    await redraw();
+    expect(r.container.querySelector("[data-pair-words]")?.textContent).toBe("amber · river · lantern · moss");
+    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_join", step: "failed", reason: "the words didn't match" });
+    await until(() => engine.view().pairing?.ended !== undefined);
+    await redraw();
+    expect(r.container.querySelector("[data-pairing]")?.textContent).toContain("The pairing didn't finish: the words didn't match");
+    // Removing a device asks the engine to revoke, which is a sealed card: nothing is applied here.
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-device=devphone000000000001] button")!); });
+    await until(() => callsOf(e, "device.revoke").length === 1);
+    expect(callsOf(e, "device.revoke")[0]).toEqual({ id: "devphone000000000001" });
     r.unmount();
   });
 

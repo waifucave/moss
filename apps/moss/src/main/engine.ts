@@ -19,7 +19,7 @@ import { oneLine, safeDetail } from "../shared/status-line";
 import type { SealedFrames } from "./sealed";
 import { talkCommandOf, type TalkCommand } from "./voice";
 import type {
-  BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
+  BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, PairingRow, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
 } from "../shared/view";
 
 export interface EngineClient {
@@ -27,7 +27,7 @@ export interface EngineClient {
 }
 
 /** The areas whose events MOSS follows. */
-export const MOSS_EVENT_AREAS = ["bots", "activity", "approvals", "surfaces", "plugins", "host", "release"] as const;
+export const MOSS_EVENT_AREAS = ["bots", "activity", "approvals", "surfaces", "plugins", "host", "release", "devices"] as const;
 
 /** Whether an error is the engine's "not served yet" (a method with no handler). */
 export function notServed(err: unknown): boolean {
@@ -157,6 +157,9 @@ export class MossEngine {
   private emitTimer: ReturnType<typeof setTimeout> | undefined;
   /** The bot session the window follows live now. */
   private attached: string | undefined;
+  /** The pairing the person started in Settings (the engine's steps fill it in), and how often the devices changed. */
+  private pairingNow: { id: string; row: PairingRow; words?: string[] } | undefined;
+  private devicesRev = 0;
   /** The voice plugin's talk command, from the plugins' declarations (voice.ts `talkCommandOf`). */
   private talk: TalkCommand = { why: "Talking waits for the engine's voice plugin list." };
 
@@ -191,7 +194,7 @@ export class MossEngine {
     const talk = "command" in this.talk ? { ready: true as const } : { ready: false as const, why: this.talk.why };
     // The engine's offer to copy an old install's home comes first: the setup guide waits while it is pending.
     const copyOffered = [...this.cards.values()].some((c) => c.change === "home-copy" && this.sealed.isPending(c.id));
-    return { connection: this.connection, pieces: { ...this.pieces }, bots, cards, talk, ...(this.setupNow !== undefined && !copyOffered ? { setup: this.setupNow } : {}), ...(copyOffered ? { setupWaits: true as const } : {}), ...(this.engineRelease !== undefined ? { engine: this.engineRelease } : {}), ...(this.releaseNotice !== undefined ? { notice: this.releaseNotice } : this.hostGaveUp ? { notice: HOST_DOWN_NOTICE } : {}) };
+    return { connection: this.connection, pieces: { ...this.pieces }, bots, cards, talk, ...(this.setupNow !== undefined && !copyOffered ? { setup: this.setupNow } : {}), ...(this.pairingNow !== undefined ? { pairing: this.pairingNow.row } : {}), ...(this.devicesRev > 0 ? { devicesRev: this.devicesRev } : {}), ...(copyOffered ? { setupWaits: true as const } : {}), ...(this.engineRelease !== undefined ? { engine: this.engineRelease } : {}), ...(this.releaseNotice !== undefined ? { notice: this.releaseNotice } : this.hostGaveUp ? { notice: HOST_DOWN_NOTICE } : {}) };
   }
 
   /** How many pending cards MOSS knows that the router hasn't placed yet (anywhere): the smoke run waits for none. */
@@ -440,6 +443,13 @@ export class MossEngine {
           MossEngine.remember(this.resolvedCards, e.id);
         }
         break;
+      case "pairing_changed":
+        this.pairingStep(e);
+        break;
+      case "device_changed":
+      case "device_removed":
+        this.devicesRev++;
+        break;
       case "host_changed":
         this.hostHeard(e);
         return;
@@ -680,7 +690,7 @@ export class MossEngine {
   async settings(): Promise<SettingsView> {
     const [account, devices, computers, plugins] = await Promise.all([
       this.read<{ signedIn: boolean; user?: { name?: string; email?: string } }>("account", "account.status"),
-      this.read<{ devices: { id: string; name: string; kind: string }[] }>("devices", "device.list"),
+      this.read<{ devices: { id: string; name: string; kind: string; isThis?: boolean }[] }>("devices", "device.list"),
       this.read<{ computers: { name: string; level: string; self?: boolean }[] }>("devices", "computer.list"),
       this.read<{ plugins: { id: string; name: string | { en: string }; enabled: boolean; parent?: string }[] }>("plugins", "plugin.list"),
     ]);
@@ -697,7 +707,7 @@ export class MossEngine {
       account: account === undefined ? "waiting" : { signedIn: account.signedIn, ...(account.user?.name !== undefined ? { name: account.user.name } : {}), ...(account.user?.email !== undefined ? { email: account.user.email } : {}) },
       signIns,
       computers: computers === undefined ? "waiting" : computers.computers.map((c) => ({ name: c.name, level: String(c.level) })),
-      devices: devices === undefined ? "waiting" : devices.devices.map((d) => ({ id: d.id, name: d.name, kind: d.kind })),
+      devices: devices === undefined ? "waiting" : devices.devices.map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.isThis === true ? { here: true } : {}) })),
     };
   }
 
@@ -723,6 +733,70 @@ export class MossEngine {
 
   async setBotSetting(bot: string, pluginId: string, key: string, value: unknown): Promise<boolean> {
     return (await this.read("plugins", "plugin.settings.set", { id: pluginId, key, value, bot, noSecret: true })) !== undefined;
+  }
+
+  // Pairing (spec §8.1). The engine owns the pairing; this keeps the steps it sends for the page. Adding the device (the
+  // confirm) and removing one are the engine's sealed cards: a call here asks, and answers `applied: false` with the card's id.
+  async pairBegin(): Promise<{ ok: true } | { ok: false; why: string }> {
+    const r = await this.act<{ pairingId: string; code?: string; qr?: string }>("device.pair.begin", {}, "Pairing", 15_000);
+    if (!r.ok) return r;
+    this.pairingNow = { id: r.value.pairingId, row: { code: r.value.code ?? r.value.qr ?? "" } };
+    this.changed();
+    return { ok: true };
+  }
+
+  async pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }> {
+    const r = await this.act<{ pairingId: string; words?: string[] }>("device.pair.join", { code: code.trim() }, "Pairing", 45_000);
+    if (!r.ok) return r;
+    this.pairingNow = { id: r.value.pairingId, row: r.value.words ? { words: r.value.words } : {}, ...(r.value.words ? { words: r.value.words } : {}) };
+    this.changed();
+    return { ok: true };
+  }
+
+  async pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }> {
+    const now = this.pairingNow;
+    if (now?.words === undefined) return { ok: false, why: "There are no words to confirm yet." };
+    const r = await this.act("device.pair.confirm", { pairingId: now.id, words: now.words }, "Adding the device", 15_000);
+    if (!r.ok) return r;
+    if (this.pairingNow === now) { now.row = { ...now.row, confirming: true }; this.changed(); }
+    return { ok: true };
+  }
+
+  async pairCancel(): Promise<boolean> {
+    const now = this.pairingNow;
+    this.pairingNow = undefined;
+    this.changed();
+    if (now !== undefined && now.row.ended === undefined) void this.client?.request("device.pair.cancel", { pairingId: now.id }, 5_000).catch(() => undefined);
+    return true;
+  }
+
+  async removeDevice(id: string): Promise<boolean> {
+    return (await this.read("devices", "device.revoke", { id })) !== undefined;
+  }
+
+  /** The engine's step of the pairing this window started (`pairing_changed`); another pairing's step is not ours. */
+  private pairingStep(e: Record<string, unknown>): void {
+    const now = this.pairingNow;
+    if (now === undefined || e.pairingId !== now.id) return;
+    const words = Array.isArray(e.words) ? (e.words as unknown[]).filter((w): w is string => typeof w === "string") : undefined;
+    switch (e.step) {
+      case "words":
+        if (words !== undefined) { now.words = words; now.row = { ...now.row, words }; }
+        break;
+      case "card":
+        now.row = { ...now.row, confirming: true };
+        break;
+      case "done":
+        this.pairingNow = { id: now.id, row: { ended: "The device was added." } };
+        this.devicesRev++;
+        break;
+      case "expired":
+        this.pairingNow = { id: now.id, row: { ended: "The code expired. Show a new one to try again." } };
+        break;
+      case "failed":
+        this.pairingNow = { id: now.id, row: { ended: typeof e.reason === "string" && e.reason !== "" ? `The pairing didn't finish: ${e.reason.slice(0, 200)}` : "The pairing didn't finish." } };
+        break;
+    }
   }
 
   async setLevel(computer: string, level: string): Promise<boolean> {
