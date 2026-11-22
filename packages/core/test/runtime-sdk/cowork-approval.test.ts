@@ -574,8 +574,11 @@ test("a reviewer that cannot reach a verdict asks (a card, never an allow); no r
     h.approvals.resolve(SESSION, "tu1", true, "mac");
     expect(await pending).toMatchObject({ behavior: "allow", decisionClassification: "user_temporary" });
   }
-  const noModel = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("none", "x"); }).review });
+  const noModel = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("no-internal-credential", "x"); }).review });
   expect((await outcome(noModel, "Bash", { ...RISKY })).kind).toBe("allow");
+  // 2026-11-22: a home that HAS a credentialed provider the default's own can't reach is not structural: it asks (was: allowed).
+  const someProvider = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("no-default-model", "x"); }).review });
+  expect((await outcome(someProvider, "Bash", { ...RISKY })).kind).toBe("card");
   // And a refusal of that card is a refusal.
   const h = build(state("auto"), { review: fakeReviewer(async () => { throw new Error("down"); }).review, turnOrigin: () => "mac" });
   const pending = h.canUse("Bash", { ...RISKY }, ctx()); await tick(); h.approvals.resolve(SESSION, "tu1", false, "mac");
