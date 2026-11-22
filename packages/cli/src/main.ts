@@ -1848,6 +1848,14 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       // Record this install for the next setup/remove (ruling 3): owner plus every pool member.
       await mkdir(dirname(markerFile), { recursive: true });
       await writeFile(markerFile, formatInstallMarker({ version: 2, ownerSid, members }), "utf8");
+      // The markers folder is administrators' alone (claimed above); the owner's daemon reads its own marker, never
+      // writes it: read for the owner on this one file (lane WS: a standard user's daemon was refused for want of it).
+      const readable = await run(["icacls", markerFile, "/grant", `*${ownerSid}:R`]);
+      if (readable.code !== 0) {
+        console.error(`sandbox setup: the install marker can't be made readable to its owner (exit ${readable.code})`);
+        process.exitCode = 1;
+        return;
+      }
       // The per-session reset (spec §9.1): a SYSTEM task the owner may start, which deletes each free principal's
       // profile and hive after its command (`sandbox reset`, below). The daemon starts it unelevated.
       const task = await run([...registerResetTaskArgs({ exe: process.execPath, ownerSid })]);
