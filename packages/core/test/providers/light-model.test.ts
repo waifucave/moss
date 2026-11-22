@@ -287,6 +287,6 @@ describe("the start-up line", () => {
     expect(line).toContain("the bash safety reviewer and the plugin Review on anthropic/claude-haiku-5-5 (the light model of the default's claude family)");
     const pinned = describeInternalJobModels(setModelRole(settingsWith("anthropic/claude-opus-5-5"), "titles.model", "anthropic/claude-sonnet-5-5"), snap("anthropic"));
     expect(pinned).toContain("titles on anthropic/claude-sonnet-5-5 (set in settings)");
-    expect(describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap())).toContain("titles on nothing (not running: no light model of the default model's family can be had on its provider; pin a model in Settings › Roles)");
+    expect(describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap())).toContain("titles on nothing (not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles)");
   });
 });

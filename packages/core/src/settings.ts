@@ -2451,7 +2451,7 @@ export function describeInternalJobModels(settings: Settings | null | undefined,
     const tag = internalRoleEffectiveTag(settings, role, snapshot);
     let why: string;
     if (explicitInternalRolePin(settings, role) !== undefined) why = "set in settings";
-    else if (tag === null) why = "not running: no light model of the default model's family can be had on its provider; pin a model in Settings › Roles";
+    else if (tag === null) why = "not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles";
     else why = `the light model of the default's ${internalRoleLight(settings, role, snapshot)?.choice.family ?? "own"} family`;
     parts.push(`${label[role]} on ${tag ?? "nothing"} (${why})`);
   }
