@@ -1144,13 +1144,6 @@ async function glassRow(s: UnitState): Promise<string> {
   const { x, w } = s;
   const logs = x.logs;
   await openBot(s, "alpha", "MOSS");
-  await w.waitFor("her conversation's messages", "document.querySelectorAll('.messages .bubble').length || null", 30_000);
-  // A conversation long enough to scroll: stand-in rows (copies of her own bubbles, in the page only) so a message can pass under the bar.
-  await w.eval(`(() => {
-    const m = document.querySelector('.messages'); const end = m.lastElementChild;
-    const rows = [...m.querySelectorAll('.bubble-row')];
-    for (let i = 0; i < 40; i++) { const c = rows[i % rows.length].cloneNode(true); c.setAttribute('data-glass-filler', ''); c.querySelector('.bubble').style.minHeight = '56px'; m.insertBefore(c, end); }
-    return true; })()`);
   const geometry = () => w.eval<{ list: { x: number; y: number; w: number; h: number }; middle: { x: number; y: number; w: number; h: number }; bar: { top: number; bottom: number }; dpr: number }>(`(() => { const r = (q) => { const b = document.querySelector(q).getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; }; const bar = document.querySelector('.conversation__head').getBoundingClientRect(); return { list: r('.list'), middle: r('.middle'), bar: { top: bar.top, bottom: bar.bottom }, dpr: devicePixelRatio }; })()`);
   const shoot = async (name: string) => {
     const page = await w.main();
@@ -1176,6 +1169,17 @@ async function glassRow(s: UnitState): Promise<string> {
     // The material: the seam gives the offscreen window a clear backing and tells the page.
     writeFileSync(s.glassFile, "on");
     await w.waitFor("the page told it has a material", "document.documentElement.hasAttribute('data-translucent') ? true : null", 15_000);
+    // A page that starts with a material (a real macOS window's start): the root says so at its first paint, from main's word read at the preload's start.
+    await w.cdp.send("Page.reload", {}, await w.main());
+    await w.waitFor("the page reloaded, told it has a material from its start", "document.documentElement.hasAttribute('data-translucent') && document.querySelectorAll('.list [data-bot-row]').length > 0 ? true : null", 30_000);
+    await openBot(s, "alpha", "MOSS");
+    await w.waitFor("her conversation's messages", "document.querySelectorAll('.messages .bubble').length || null", 30_000);
+    // A conversation long enough to scroll: stand-in rows (copies of her own bubbles, in the page only) so a message can pass under the bar.
+    await w.eval(`(() => {
+      const m = document.querySelector('.messages'); const end = m.lastElementChild;
+      const rows = [...m.querySelectorAll('.bubble-row')];
+      for (let i = 0; i < 40; i++) { const c = rows[i % rows.length].cloneNode(true); c.setAttribute('data-glass-filler', ''); c.querySelector('.bubble').style.minHeight = '56px'; m.insertBefore(c, end); }
+      return true; })()`);
     for (const which of ["light", "dark"] as const) {
       await scheme(which);
       const g = await geometry();
