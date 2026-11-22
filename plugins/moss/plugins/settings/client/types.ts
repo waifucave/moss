@@ -111,6 +111,8 @@ export interface SettingsModalProps {
   /** One door for every plain change: a dotted path into `values` (`appearance.theme`) and the new value. */
   onChange: (path: string, value: unknown) => void;
   onOpenLanguage: () => void;
+  /** Opens the setup guide again (Account's "Setup guide" row); none: no row. */
+  onOpenSetup?: () => void;
   onOpenPluginManager?: () => void;
   /** A plugin's logs (spec §5.8). */
   onOpenPluginLogs?: (id: string) => void;

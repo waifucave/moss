@@ -15,7 +15,7 @@ const GROUP_ENDS: ReadonlySet<SettingsSection> = new Set(["devices", "notificati
 
 /** The settings each page holds, for the search box. */
 const INDEX: Record<SettingsSection, string[]> = {
-  account: [S.name, S.main],
+  account: [S.name, S.main, S.setupGuide],
   devices: [S.devices],
   appearance: [S.theme, S.themePlugin, S.textSize, S.language],
   notifications: [S.notifyNeedsYou, S.notifyAgentDone, S.notifyRoutineFailed, S.notifySounds],
@@ -303,6 +303,13 @@ function Page({ props }: { props: SettingsModalProps }) {
           <Row label={S.main} detail={S.mainDetail}>
             <span className="cl-settings__value">{values.account.main}</span>
           </Row>
+          {props.onOpenSetup ? (
+            <Row label={S.setupGuide} detail={S.setupGuideDetail}>
+              <button type="button" className="cl-settings__button" onClick={props.onOpenSetup}>
+                {S.setupGuideOpen}
+              </button>
+            </Row>
+          ) : null}
         </>
       );
     case "appearance":
