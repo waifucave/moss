@@ -420,7 +420,9 @@ export const DEVICES_EVENTS = {
     doc: "A link came up, went down or changed path.",
   }),
   pairingChanged: defineEvent({
-    type: "pairing_changed", owner: "H", roles: ["app", "cli"], schema: PairingChangedEvent,
+    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairing the user
+    // started in its frame, its four words included; no other plugin does (`capability`).
+    type: "pairing_changed", owner: "H", roles: ["app", "cli", "layer"], capability: "devices.manage", schema: PairingChangedEvent,
     fixture: { type: "pairing_changed", ts: 1781270000000, pairingId: "pair_1", step: "words", words: ["maple", "orbit", "velvet", "canyon"] },
     doc: "A pairing moved on.",
   }),

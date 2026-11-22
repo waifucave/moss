@@ -48,6 +48,7 @@ export const S = {
   pairExpired: "The code expired. Show a new one to try again.",
   choiceFailed: (what: string) => `${what} wasn't changed. Try again.`,
   pairFailed: (reason: string) => (reason ? `The pairing didn't finish: ${reason}` : "The pairing didn't finish."),
+  pairDone: "The device was added.",
   pairClose: "OK",
   removeLabel: "Remove",
   // Appearance.

@@ -347,6 +347,7 @@
       "device_removed",
       "holds_changed",
       "note",
+      "pairing_changed",
       "picture_changed",
       "picture_ended",
       "plugin_api_event",
