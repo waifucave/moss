@@ -8,7 +8,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolLockPath, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -39,6 +39,15 @@ describe("the plan", () => {
     expect(plan.denyWrite).toEqual(["C:\\h\\.moss"]);
     expect(plan.denyRead).toEqual(["C:\\h\\.moss\\run"]);
     expect(plan.denyReadExcept).toEqual(plan.writeRoots);
+  });
+
+  test("roots srt-win can hold: the temp folder becomes the session's own folder in it, the home its ordinary folders", () => {
+    const o = { home: "C:\\Users\\me", temp: "C:\\Users\\me\\AppData\\Local\\Temp", sessionTemp: "C:\\Users\\me\\AppData\\Local\\Temp\\moss-s1", homeFolders: () => ["C:\\Users\\me\\Documents", "C:\\Users\\me\\src"] };
+    expect(windowsRoots(["C:\\Users\\me\\.moss\\scratch\\luna", "C:\\Users\\me\\AppData\\Local\\TEMP"], o)).toEqual(["C:\\Users\\me\\.moss\\scratch\\luna", o.sessionTemp]);
+    expect(windowsRoots(["C:\\Users\\me"], o)).toEqual(["C:\\Users\\me\\Documents", "C:\\Users\\me\\src", o.sessionTemp]);
+    // Above the temp folder but not the home (AppData, AppData\Local): never a root.
+    expect(windowsRoots(["C:\\Users\\me\\AppData", "C:\\Users\\me\\AppData\\Local"], o)).toEqual([]);
+    expect(windowsRoots(["C:\\Users\\me\\AppData\\Local\\Temp\\mine"], o)).toEqual(["C:\\Users\\me\\AppData\\Local\\Temp\\mine"]);
   });
 
   test("a deny is stamped only where something exists; a glob is expanded over what exists, case-insensitively", () => {
