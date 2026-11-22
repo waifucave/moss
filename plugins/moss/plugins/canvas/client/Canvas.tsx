@@ -338,8 +338,6 @@ export function Canvas(p: CanvasProps) {
   }
 
   const mains = model.blocks.filter((b) => b.type === "main" && b.motion !== "ended");
-  const running = mains.filter((b) => b.motion === "running").length;
-  const waiting = mains.filter((b) => b.motion === "waiting").length;
   const world = bounds([...rects.values()]);
   const worldW = Math.max(world.x + world.w + 200, 400);
   const worldH = Math.max(world.y + world.h + 200, 300);
@@ -351,7 +349,7 @@ export function Canvas(p: CanvasProps) {
   act.current = { plus, toggleEnded: () => setShowEnded((x) => !x) };
   useEffect(() => link.attach({ plus: () => act.current.plus(), toggleEnded: () => act.current.toggleEnded() }), [link]);
   useEffect(() => {
-    link.publish({ ready: p.loaded !== false, sessions: mains.length, running, waiting, folded: folded.length, showEnded, panel: panel !== undefined });
+    link.publish({ ready: p.loaded !== false, sessions: mains.length, folded: folded.length, showEnded, panel: panel !== undefined });
   });
 
   return (

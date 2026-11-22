@@ -46,7 +46,7 @@ export const CANVAS_START_STEP = "the start page: on a fresh home it is the bund
 export const CANVAS_START_SESSION_STEP = "a start through the app's door from the start page's button: a model, an effort, a recent folder (a token, never a path) and a first message; the window opens the new session's tab, the engine says it runs on that model and effort, the first message is the user's own, and agent.recent then offers that agent, model, effort and folder";
 export const CANVAS_CORNER_STEP = "a session tab's top corner holds a plugin's control (the `session.corner` spot, given the session and its kind): pressing it returns the window to the start page";
 export const CANVAS_OPEN_IN_STEP = "\"Open in MOSS\" from a part of MOSS Code with MOSS not running: the engine is asked to start MOSS (it starts nothing itself in the run: a marker, answered by the run starting its own MOSS from source), and MOSS opens the bot's conversation";
-export const CANVAS_PLUS_STEP = "the canvas is MOSS Code's start page under one frosted bar (the window's: the canvas's live line in the title's place, a plain + named New session at its right end, no zoom buttons or Fit), and its + creates a session with what it preselects (the last start's agent, model, effort and folder): the engine says the session runs on them, and the window opens its tab";
+export const CANVAS_PLUS_STEP = "the canvas is MOSS Code's start page under one frosted bar (the window's: the canvas's count of sessions in the title's place, a plain + named New session at its right end, no zoom buttons or Fit), and its + creates a session with what it preselects (the last start's agent, model, effort and folder): the engine says the session runs on them, and the window opens its tab";
 export const CANVAS_BACK_STEP = "a session tab's corner control (the canvas's) returns the window to the canvas with that session's block in view";
 export const CANVAS_LINE_STEP = "a message between two code sessions shows on the line joining their blocks: the message's light on that line and both blocks' rings reacting, drawn when its session_link is heard; the line is still there after the canvas is closed and opened again (from the engine's session.links)";
 export const CANVAS_BLOCK_STEP = "after a real drag of one block, one press on another opens it, and Enter on a focused block opens it; a block's composer sends as the user (a user_message in that session), and a bot's block opens \"Open in MOSS\" (MOSS shows that bot's conversation)";
@@ -366,7 +366,7 @@ async function plusRow(s: Ctx, cp: CpState): Promise<string> {
   if (recent.backend === undefined || recent.roots[0] === undefined) x.fail(`agent.recent offers no last start to preselect: ${JSON.stringify(recent)}`);
   // The bar's line and + come once the canvas has loaded its sessions (the page tells its line; until then nothing to press).
   await canvas.waitFor("the canvas's line and + on the window's bar", "!!document.querySelector('.cl-window__bar .cv-plus')", 60_000);
-  // One bar: the window's own, its title the canvas's live line, a plain + at its right end named New session; the canvas has no
+  // One bar: the window's own, its title the canvas's count of sessions, a plain + at its right end named New session; the canvas has no
   // bar of its own, no zoom buttons and no Fit, and runs up under the window's bar (frosted).
   const bar = await canvas.eval<{ bars: number; title: boolean; plus: { name: string | null; tip: string | null; text: string; right: number; barRight: number } | null; line: string | null; zoom: number; under: number | null; frost: string }>(`(() => {
     const bar = document.querySelector('.cl-window__bar'); const plus = bar?.querySelector('.cv-plus'); const line = bar?.querySelector('.cv-barline [role=status]');
@@ -380,7 +380,7 @@ async function plusRow(s: Ctx, cp: CpState): Promise<string> {
   if (bar.plus === null) x.fail("no + on the window's bar");
   if (bar.plus!.name !== "New session" || bar.plus!.tip !== "New session" || bar.plus!.text !== "") x.fail(`the bar's + isn't a plain + named New session: ${JSON.stringify(bar.plus)}`);
   if (bar.plus!.barRight - bar.plus!.right > 24) x.fail(`the bar's + isn't at its right end (${Math.round(bar.plus!.barRight - bar.plus!.right)} px from it)`);
-  if (bar.line === null || !/^(No sessions|\d+ sessions?( · \d+ (running|waiting))*)$/.test(bar.line)) x.fail(`the bar's line isn't the canvas's count: ${JSON.stringify(bar.line)}`);
+  if (bar.line === null || !/^(No sessions|\d+ sessions?)$/.test(bar.line)) x.fail(`the bar's line isn't the canvas's count: ${JSON.stringify(bar.line)}`);
   if (bar.zoom !== 0) x.fail(`${bar.zoom} zoom or Fit buttons still show`);
   if (bar.under !== 0) x.fail(`the canvas starts ${bar.under} px below the main column's top, not under the bar`);
   if (!/blur/.test(bar.frost)) x.fail(`the window's bar isn't frosted (backdrop-filter: ${bar.frost})`);

@@ -7,8 +7,6 @@ export interface BarState {
   /** False until a page is there to read: the bar shows no counts and + does nothing until then. */
   ready: boolean;
   sessions: number;
-  running: number;
-  waiting: number;
   /** Ended sessions folded out of view, and whether they are shown. */
   folded: number;
   showEnded: boolean;
@@ -21,7 +19,7 @@ export interface BarActions {
   toggleEnded(): void;
 }
 
-export const IDLE_BAR: BarState = { ready: false, sessions: 0, running: 0, waiting: 0, folded: 0, showEnded: false, panel: false };
+export const IDLE_BAR: BarState = { ready: false, sessions: 0, folded: 0, showEnded: false, panel: false };
 
 export interface BarLink {
   state(): BarState;

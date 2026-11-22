@@ -5,9 +5,9 @@ export const S = {
   canvas: "Sessions canvas",
   blocks: "Sessions",
   newSession: "New session",
-  /** The bar's line: the sessions, and how many run and wait; a plain line when there are none. */
-  summary: (sessions: number, running: number, waiting: number) =>
-    sessions === 0 ? "No sessions" : [plural(sessions, "session", "sessions"), running > 0 ? `${running} running` : undefined, waiting > 0 ? `${waiting} waiting` : undefined].filter(Boolean).join(" · "),
+  /** The bar's line: the number of sessions and nothing else (the owner, 2026-11-22: "no busy line, maybe just the number
+   *  of sessions"); a plain line when there are none. What runs and what waits is on the blocks themselves. */
+  summary: (sessions: number) => (sessions === 0 ? "No sessions" : plural(sessions, "session", "sessions")),
   ended: "Ended",
   failed: "Failed",
   endedCount: (n: number) => `${n} ended`,

@@ -155,7 +155,7 @@ export interface CanvasBarProps {
   link?: BarLink;
 }
 
-/** The canvas's line on the window's bar (`page.bar` keyed `start`): the sessions, how many run and wait, the ended ones
+/** The canvas's line on the window's bar (`page.bar` keyed `start`): the number of sessions, the ended ones
  *  folded away, and + at the right end, which opens the + panel under it (the page acts, inside this press). */
 export function CanvasBar({ props }: { props: CanvasBarProps }) {
   const link = props.link ?? barLink;
@@ -164,7 +164,7 @@ export function CanvasBar({ props }: { props: CanvasBarProps }) {
   if (!bar.ready) return <div className="cv-barline" />;
   return (
     <div className="cv-barline">
-      <span className="cv-summary" role="status">{S.summary(bar.sessions, bar.running, bar.waiting)}</span>
+      <span className="cv-summary" role="status">{S.summary(bar.sessions)}</span>
       {bar.folded > 0 && (
         <button type="button" className="cv-folded" aria-pressed={bar.showEnded} onClick={() => link.toggleEnded()}>
           {bar.showEnded ? S.hideEnded : S.endedCount(bar.folded)}

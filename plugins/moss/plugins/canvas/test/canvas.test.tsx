@@ -501,7 +501,7 @@ describe("the line on the window's bar", () => {
     mount({ playedTo: 8_000 });
     await waitFor(() => expect(block("s_a")).not.toBeNull());
     const bar = document.querySelector(".test-bar")!;
-    expect(bar.querySelector("[role=status]")?.textContent).toMatch(/^\d+ sessions? · \d+ running/);
+    expect(bar.querySelector("[role=status]")?.textContent).toMatch(/^\d+ sessions?$/);
     const plus = within(bar as HTMLElement).getByRole("button", { name: "New session" });
     expect(plus.getAttribute("title")).toBe("New session");
     expect(plus.textContent).toBe("");
