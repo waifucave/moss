@@ -64,6 +64,8 @@ if ($text -notmatch "needs elevation" -or $text -notmatch "exit=2") { throw "an 
 
 $code = Invoke-Limited "setup for $name, by the administrator" $ucore @("sandbox", "setup") 900
 if ($code -ne 0) { throw "setup for the standard user exited $code" }
+# setup's own first logons leave each principal a profile: reset them once, elevated, before the user's first command.
+$code = Invoke-Limited "reset for $name, by the administrator" $ucore @("sandbox", "reset") 300
 
 # The fenced suite in the user's own task: an unelevated daemon in Session 0.
 $e2e = @(
