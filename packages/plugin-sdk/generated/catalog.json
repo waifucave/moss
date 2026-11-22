@@ -908,6 +908,80 @@
       }
     },
     {
+      "name": "page.bar",
+      "shape": "keyed",
+      "declaredBy": "shell",
+      "botsOffer": false,
+      "keys": [
+        "agent",
+        "settings",
+        "plugins",
+        "app",
+        "start"
+      ],
+      "doc": "A page's own line and controls on the window's top bar (spec revision 20, §9.5), keyed by route as `main` is: shown only when the entry comes from the plugin whose `main` entry the window shows for that route, in place of the shell's title (the shell's own controls stay). `title` is the bar's and the page's accessible name. Each gets the route's params, `navigate` (as a `main` entry does) and `barHeight`, the bar's height in CSS pixels; a page whose plugin fills this runs up under the bar, and its `main` entry gets `barHeight` too, so it keeps what it places on its own clear of the bar.",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "path",
+            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
+          }
+        }
+      },
+      "props": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "barHeight": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "route",
+          "params",
+          "barHeight"
+        ]
+      }
+    },
+    {
       "name": "panel",
       "shape": "keyed",
       "declaredBy": "shell",

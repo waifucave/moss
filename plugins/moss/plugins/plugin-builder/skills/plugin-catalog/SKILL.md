@@ -56,6 +56,7 @@ How to read it:
 | `sidebar` | single | shell | — | The sidebar: the app's own, the same on every tab. A plugin may fill it for the whole app (its own component, in its own frame, reading and acting through `shell.*`); an entry tied to a bot's tab (`when.bot`, or inside… |
 | `sidebar.app` | list | shell | — | App buttons in the sidebar; `opens` names the `main` and `panel` key it shows. |
 | `main` | keyed | shell | — | The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: "start" })` shows. A plugin's entry keyed `… |
+| `page.bar` | keyed | shell | — | A page's own line and controls on the window's top bar (spec revision 20, §9.5), keyed by route as `main` is: shown only when the entry comes from the plugin whose `main` entry the window shows for that route, in place… |
 | `panel` | keyed | shell | — | The panel host, keyed by panel: each stock panel (session, terminal, diff, files, browser, agent) is a plugin of its own, and replaceable. An entry whose key is not a stock one ADDS a panel of the plugin's own, with a b… |
 | `panel.view` | keyed | shell | — | A spot inside each panel view, keyed by the view's id. |
 | `settings.section` | list | settings | — | A section of the settings screen, which the settings part (`main` key `settings`) declares. |

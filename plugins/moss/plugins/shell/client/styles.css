@@ -127,6 +127,16 @@ button.cl-window__title:hover {
   white-space: nowrap;
 }
 
+/* A page's own line and controls (the `page.bar` spot) in the title's place: the whole room up to the window's own
+   controls; what it holds lays itself out (a page puts its controls at the right end with its own margin). */
+.cl-window__page-bar {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+}
+
 .cl-window__toggles {
   display: flex;
   flex: none;
@@ -153,6 +163,12 @@ button.cl-window__title:hover {
 }
 
 .cl-window__content:has(> .cl-bot-tab) {
+  padding-top: 0;
+}
+
+/* A page whose plugin fills the bar (`page.bar`) runs up under it: what passes beneath shows through the bar's frost.
+   The page keeps what it places clear of the bar with the `barHeight` it is given. */
+.cl-window[data-under-bar] .cl-window__content {
   padding-top: 0;
 }
 

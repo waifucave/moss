@@ -124,6 +124,11 @@ export interface WindowProps {
   /** Told the sidebar's drawn width (its rule included, whole CSS pixels) when the window first lays it out and whenever it
    *  changes (a fold, a sidebar plugin's own width): the shell says it in `shell.state`, where a tab learns where it starts. */
   onSidebarWidth?: (px: number) => void;
+  /** A page's own line and controls on the bar (the `page.bar` spot, filled by the plugin whose page `main` shows), in
+   *  place of the title; the window's own controls (the toggles) stay. The page then runs up under the bar. */
+  pageBar?: ReactNode;
+  /** Told the bar's drawn height (whole CSS pixels) when the window first lays it out and whenever it changes. */
+  onBarHeight?: (px: number) => void;
   /** How far the window's own controls reach (window coordinates, `shell.state`'s `safeArea`): a layout's CSS reads it as
    *  `--cl-safe-left` / `--cl-safe-top`. The macOS traffic lights by default. */
   safeArea?: { left: number; top: number };
@@ -207,7 +212,7 @@ function DialogLayer({ children, onClose }: { children: ReactNode; onClose?: () 
 
 const STANDARD_SHAPE: ChromeShape = { bar: "standard", panel: "column", vars: {} };
 
-export function Window({ sidebar, title, onTitleMenu, toggles, children, side, panel, dialog, cardPending = false, onCloseDialog, translucent = false, status, skin, shape = STANDARD_SHAPE, chrome, barFill, provides, onSidebarWidth, safeArea }: WindowProps) {
+export function Window({ sidebar, title, onTitleMenu, toggles, children, side, panel, dialog, cardPending = false, onCloseDialog, translucent = false, status, skin, shape = STANDARD_SHAPE, chrome, barFill, provides, onSidebarWidth, safeArea, pageBar, onBarHeight }: WindowProps) {
   // The colours stay as the last skin left them while the paint fades out, so text never jumps ahead of its ground.
   const [shown, setShown] = useState(skin);
   useEffect(() => { if (skin) setShown(skin); }, [skin]);
@@ -257,6 +262,23 @@ export function Window({ sidebar, title, onTitleMenu, toggles, children, side, p
 
   // The sidebar's drawn width, measured: said once laid out and again only when it changes (no width animates, so a fold is one report).
   const sidebarBox = useRef<HTMLDivElement>(null);
+  const barBox = useRef<HTMLElement>(null);
+  const toldBar = useRef<((px: number) => void) | undefined>(onBarHeight);
+  toldBar.current = onBarHeight;
+  useLayoutEffect(() => {
+    const el = barBox.current;
+    if (el === null) return;
+    let last = -1;
+    const measure = () => {
+      const px = Math.round(el.getBoundingClientRect().height);
+      if (px !== last) { last = px; toldBar.current?.(px); }
+    };
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [noBar]);
   const toldWidth = useRef<((px: number) => void) | undefined>(onSidebarWidth);
   toldWidth.current = onSidebarWidth;
   useLayoutEffect(() => {
@@ -277,7 +299,9 @@ export function Window({ sidebar, title, onTitleMenu, toggles, children, side, p
 
   const stockBar = (
     <>
-          {placed.has("title") ? null : onTitleMenu ? (
+          {pageBar !== undefined ? (
+            <div className="cl-window__page-bar">{pageBar}</div>
+          ) : placed.has("title") ? null : onTitleMenu ? (
             <button type="button" className="cl-window__title" aria-haspopup="menu" aria-label={S.sessionMenu(title)} onClick={onTitleMenu}>
               <span className="cl-window__title-text">{title}</span>
               <IconChevronDown />
@@ -302,7 +326,7 @@ export function Window({ sidebar, title, onTitleMenu, toggles, children, side, p
 
   return (
     <ChromeContext.Provider value={api}>
-    <div className="cl-window" data-panel={panel ? "open" : undefined} data-side={side ? "open" : undefined} data-translucent={translucent || undefined} data-skin={groupsOf(skin)}
+    <div className="cl-window" data-panel={panel ? "open" : undefined} data-side={side ? "open" : undefined} data-translucent={translucent || undefined} data-under-bar={pageBar !== undefined || undefined} data-skin={groupsOf(skin)}
       data-bar-mode={shape.bar} data-collapsed={chrome?.sidebarCollapsed || undefined} data-panel-mode={shape.panel} data-panel-over={shape.panel !== "column" || undefined}
       style={{ ...vars, ...chromeVars } as CSSProperties}>
       <div className="cl-window__sidebar" ref={sidebarBox}>
@@ -310,7 +334,7 @@ export function Window({ sidebar, title, onTitleMenu, toggles, children, side, p
       </div>
       <section className="cl-window__main" aria-label={title}>
         {!noBar && (
-        <header className="cl-window__bar">
+        <header className="cl-window__bar" ref={barBox}>
           <SkinPaint id="bar" paint={skin?.["bar"]} />
           {barFill ? barFill(stockBar) : stockBar}
         </header>

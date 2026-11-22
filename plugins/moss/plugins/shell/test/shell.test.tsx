@@ -61,6 +61,7 @@ const COMPONENTS: Record<string, EntryComponent> = {
   Sheets: stub("panel:sheets"),
   Notes: stub("panel:notes"),
   StartPage: stub("main:start"),
+  PageBar: stub("page.bar:start"),
   // A start page that throws as it is first drawn, and one that throws later (on a press).
   StartThrows: () => { throw new Error("the start page broke"); },
   StartThrowsLater: () => {
@@ -301,6 +302,34 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     } finally {
       console.error = quiet;
     }
+  });
+
+  test("a page's own line and controls on the bar (`page.bar`): from the plugin whose start page shows, in the title's place; that page runs under the bar, told its height", async () => {
+    const bar = () => document.querySelector(".cl-window__bar")!;
+    const title = () => document.querySelector(".cl-window__bar .cl-window__title")?.textContent ?? null;
+    // No plugin's start page: the bar reads as it always did.
+    await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
+    expect(title()).toBe("New session");
+    expect(document.querySelector("[data-under-bar]")).toBeNull();
+    cleanup();
+    // The canvas fills both: its line takes the title's place, the page and the line get the bar's height.
+    await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed", fields: { title: "Sessions" } })], SESSIONS, undefined, {}, { "agent.backends": backends });
+    expect(title()).toBeNull();
+    expect(bar().querySelector('.cl-window__page-bar [data-stub="page.bar:start"]')).not.toBeNull();
+    expect(stubText("page.bar:start")).toContain('"route":"start"');
+    expect(stubText("page.bar:start")).toContain("fn:navigate");
+    expect(stubText("page.bar:start")).toMatch(/"barHeight":\d+/);
+    expect(stubText("main:start")).toMatch(/"barHeight":\d+/);
+    expect(document.querySelector(".cl-window[data-under-bar]")).not.toBeNull();
+    // Its title names the main column.
+    expect(document.querySelector(".cl-window__main")!.getAttribute("aria-label")).toBe("Sessions");
+    cleanup();
+    // Another plugin's line for the start page, while the canvas's page shows: not taken.
+    await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("weather", "page.bar", "PageBar", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends });
+    expect(stubText("page.bar:start")).toBeNull();
+    expect(title()).toBe("New session");
+    expect(stubText("main:start")).not.toContain("barHeight");
+    expect(document.querySelector("[data-under-bar]")).toBeNull();
   });
 
   test("a window that kept the route `new` (before the canvas) opens the start page", async () => {

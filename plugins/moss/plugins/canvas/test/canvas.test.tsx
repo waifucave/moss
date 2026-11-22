@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SAMPLE_SESSION_SCENE, type SessionSceneStep } from "@waifucave/moss-plugin-sdk/ui/testing";
 import { fakeCore, playSessionScene, runtimeWith, TestLayer, type FakeCore } from "@waifucave/moss-plugin-sdk/ui/testing";
-import { CanvasCorner, CanvasStart, type ShellRoute } from "../client/entry";
+import { CanvasBar, CanvasCorner, CanvasStart, type ShellRoute } from "../client/entry";
 import { BACKENDS, FOLDERS, LAST_LINES, OPTIONS, RECENT } from "../gallery/fixtures";
 
 afterEach(() => cleanup());
@@ -47,7 +47,7 @@ interface Harness {
   botState(bot: string, state: string): void;
 }
 
-function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; pairs?: unknown[]; seen?: number } = {}): Harness {
+function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; params?: { session?: string }; send?: () => Promise<void>; places?: string; unserved?: readonly string[]; backends?: unknown[]; pairs?: unknown[]; seen?: number; barHeight?: number } = {}): Harness {
   const handlers: Record<string, (p: any) => unknown> = {
     "agent.backends": () => ({ backends: o.backends ?? BACKENDS }),
     "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
@@ -84,9 +84,16 @@ function mount(o: { scene?: readonly SessionSceneStep[]; playedTo?: number; para
     },
   });
   render(
-    <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
-      <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r) }} />
-    </TestLayer>,
+    // The page and its line on the window's bar, as the shell draws them (`main` and `page.bar`, both keyed `start`).
+    <>
+      {/* The bar's entry reads only the page's word (bar.ts): no layer of its own (a second test layer would share the scene's feed). */}
+      <header className="test-bar">
+        <CanvasBar props={{ route: "start", barHeight: o.barHeight ?? 45 }} />
+      </header>
+      <TestLayer runtime={runtime} pluginId="moss/canvas" entry="start" spot="main" spotKey="start">
+        <CanvasStart props={{ route: "start", params: o.params ?? {}, navigate: (r) => routes.push(r), ...(o.barHeight !== undefined ? { barHeight: o.barHeight } : {}) }} />
+      </TestLayer>
+    </>,
   );
   return { core, sends, routes, settings, histories, to: (t) => act(() => c.to(t)), botState: (bot, state) => act(() => { for (const l of feed) l({ subject: { kind: "bots", id: bot }, state, since: 0 }); }) };
 }
@@ -416,7 +423,7 @@ describe("+ New session", () => {
     const h = mount({ playedTo: 1_000 });
     await waitFor(() => expect(block("s_a")).not.toBeNull());
     const before = h.core.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: "＋ New session" }));
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
     // Asked inside the press: the last start at once, the recent folders as soon as it answers (the dialog's door
     // answers a press only, within its second).
     expect(h.core.calls.slice(before).map((c) => c.method)).toEqual(["agent.recent"]);
@@ -440,7 +447,7 @@ describe("+ New session", () => {
 
   test("another agent: its own default model; one unknown until started sends no model; another folder comes from the dialog", async () => {
     const h = mount({ playedTo: 1_000 });
-    fireEvent.click(await screen.findByRole("button", { name: "＋ New session" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New session" }));
     const panel = await screen.findByRole("dialog", { name: "New session" });
     await waitFor(() => expect(within(panel).getByRole("radio", { name: /Claude Code/ }).getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(within(panel).getByRole("radio", { name: /MOSS's coding agent/ }));
@@ -458,7 +465,7 @@ describe("+ New session", () => {
 
 test("+ before the engine serves agent.recent: no folder dialog opens; the folder step asks for one", async () => {
   const h = mount({ playedTo: 1_000, unserved: ["agent.recent"] });
-  fireEvent.click(await screen.findByRole("button", { name: "＋ New session" }));
+  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
   const panel = await screen.findByRole("dialog", { name: "New session" });
   await waitFor(() => expect(within(panel).getByRole("radio", { name: /MOSS's coding agent/ }).getAttribute("aria-checked")).toBe("true"));
   expect(h.core.calls.filter((c) => c.method === "ui.pick")).toEqual([]);
@@ -489,11 +496,52 @@ describe("the tab's corner", () => {
   });
 });
 
+describe("the line on the window's bar", () => {
+  test("the bar holds the line and a plain + (named New session); no zoom buttons and no Fit anywhere", async () => {
+    mount({ playedTo: 8_000 });
+    await waitFor(() => expect(block("s_a")).not.toBeNull());
+    const bar = document.querySelector(".test-bar")!;
+    expect(bar.querySelector("[role=status]")?.textContent).toMatch(/^\d+ sessions? · \d+ running/);
+    const plus = within(bar as HTMLElement).getByRole("button", { name: "New session" });
+    expect(plus.getAttribute("title")).toBe("New session");
+    expect(plus.textContent).toBe("");
+    expect(screen.queryByRole("button", { name: /zoom/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^fit/i })).toBeNull();
+    expect(document.querySelector(".cv-bar, .cv-zoom")).toBeNull();
+    // The page has no bar of its own: its section starts with the stage.
+    expect(document.querySelector(".cv")!.firstElementChild?.className).toBe("cv-stage");
+  });
+
+  test("with the window's bar over its top, a session brought into view is centred in the room below the bar", async () => {
+    mount({ playedTo: 8_000, params: { session: "s_d" }, barHeight: 45 });
+    await waitFor(() => expect(block("s_d")).not.toBeNull());
+    const r = block("s_d")!;
+    const cx = Number.parseInt(r.style.left) + 126;
+    const cy = Number.parseInt(r.style.top) + 43;
+    const world = document.querySelector(".cv-world") as HTMLElement;
+    await waitFor(() => expect(world.style.transform).toBe(`translate(${600 - cx}px, ${Math.round(45 + (760 - 45) / 2 - cy)}px) scale(1)`));
+  });
+
+  test("the first view starts below the bar: no block is born under it", async () => {
+    mount({ playedTo: 8_000, barHeight: 45 });
+    await waitFor(() => expect(block("s_a")).not.toBeNull());
+    const world = document.querySelector(".cv-world") as HTMLElement;
+    await waitFor(() => expect(world.style.transform).toMatch(/translate/));
+    const m = /translate\((-?\d+)px, (-?\d+)px\) scale\(([\d.]+)\)/.exec(world.style.transform)!;
+    const y = Number(m[2]);
+    const k = Number(m[3]);
+    const tops = [...document.querySelectorAll<HTMLElement>(".cv-node")].map((n) => y + Number.parseInt(n.style.top) * k);
+    expect(Math.min(...tops)).toBeGreaterThanOrEqual(45);
+  });
+});
+
 describe("none and many", () => {
   test("an empty canvas says what to do", async () => {
     mount({ scene: [] });
     await waitFor(() => expect(screen.getByText("No sessions yet")).toBeDefined());
-    expect(screen.getByText(/Press ＋ New session to start one/)).toBeDefined();
+    expect(screen.getByText(/Press \+ on the bar to start one/)).toBeDefined();
+    // The bar's line: a plain short line when there are none.
+    expect(document.querySelector(".test-bar [role=status]")?.textContent).toBe("No sessions");
   });
 
   test("a long title is cut with the whole title on hover", async () => {

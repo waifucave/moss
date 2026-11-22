@@ -1,7 +1,7 @@
 {
   "manifest": 1,
   "name": "Canvas",
-  "description": "MOSS Code's start page: every session as a block on a canvas, the lines between them, and a new session from the + button.",
+  "description": "MOSS Code's start page: every session as a block on a canvas, the lines between them, and on the window's bar how many run and wait and a + for a new session.",
   "engines": {
     "moss": "^1.0.0"
   },
@@ -45,6 +45,12 @@
         "spot": "main",
         "key": "start",
         "component": "CanvasStart"
+      },
+      {
+        "spot": "page.bar",
+        "key": "start",
+        "component": "CanvasBar",
+        "title": "Sessions"
       },
       {
         "spot": "session.corner",

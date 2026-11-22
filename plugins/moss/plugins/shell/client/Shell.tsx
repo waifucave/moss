@@ -154,8 +154,18 @@ export function Shell({ props }: EntryProps<ShellProps>) {
   const cardPending = cards.some((c) => c.session === undefined || showing.has(c.session));
 
   const appButtons = useSpotEntries("sidebar.app").entries;
+  // A page's own line and controls on the bar (`page.bar`, keyed by route as `main` is): only from the plugin whose `main`
+  // entry the window shows for this route. That page runs up under the bar, told the bar's height.
+  const pageRoute = shown?.route ?? "start";
+  const pageOwner = useSpotEntries("main", pageRoute).entries[0];
+  const barOwn = useSpotEntries("page.bar", pageRoute).entries.find((e) => pageOwner !== undefined && e.pluginId === pageOwner.pluginId);
+  const [barMeasured, setBarMeasured] = useState<number | undefined>();
+  const barHeight = barMeasured ?? 45;
+  const underBar = barOwn !== undefined ? { barHeight } : {};
   const title = (() => {
     if (!shown) return "";
+    const own = barOwn !== undefined ? fieldText(barOwn.fields?.title) : undefined;
+    if (own !== undefined) return own;
     if (shown.route === "agent") return session?.title ?? S.views.agent!;
     if (shown.route === "start") return S.newSession;
     if (shown.route === "plugins") return S.plugins;
@@ -247,7 +257,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
       key="start"
       name="main"
       spotKey="start"
-      props={{ route: "start", params: shown.params, navigate }}
+      props={{ route: "start", params: shown.params, navigate, ...underBar }}
       fallback={<NewSession key="new" onStarted={(id) => navigate({ route: "agent", params: { session: id } })} />}
       stopped={(
         <div className="cl-start-stopped" data-start-stopped="">
@@ -257,7 +267,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
       )}
     />
   ) : (
-    <Spot key="page" name="main" spotKey={shown.route} props={{ route: shown.route, params: shown.params, navigate }} fallback={<NothingHere title={S.nothingHere} />} />
+    <Spot key="page" name="main" spotKey={shown.route} props={{ route: shown.route, params: shown.params, navigate, ...underBar }} fallback={<NothingHere title={S.nothingHere} />} />
   );
 
   const tokens = useTokens();
@@ -340,6 +350,8 @@ export function Shell({ props }: EntryProps<ShellProps>) {
       safeArea={safeArea}
       sidebar={<Spot name="sidebar" props={{ route: shown ?? { route: "start", params: {} }, navigate, collapsed: sidebarCollapsed, onCollapsedChange: setCollapsed }} />}
       title={title}
+      {...(barOwn !== undefined && shown ? { pageBar: <Spot key={`bar:${pageRoute}`} name="page.bar" spotKey={pageRoute} entry={entryRef(barOwn)} props={{ route: pageRoute, params: shown.params, navigate, barHeight }} /> } : {})}
+      onBarHeight={setBarMeasured}
       toggles={toggles}
       side={side}
       panel={views.length > 0 && kind ? <PanelHost kind={kind} views={views} onClose={(id) => setOpen(open.filter((v) => v !== id))} onExpand={() => undefined} /> : undefined}

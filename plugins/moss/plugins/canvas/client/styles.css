@@ -39,76 +39,93 @@
   outline-offset: 2px;
 }
 
-/* ---- The bar: +, the count, ended sessions, zoom ---- */
+/* ---- Its line on the window's bar (`page.bar`): the count, ended sessions, and + at the right end ---- */
 
-.cv-bar {
+.cv-barline {
   display: flex;
-  flex: none;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
   align-items: center;
-  gap: var(--moss-space-s) var(--moss-space-m);
-  padding: var(--moss-space-s) var(--moss-space-l);
-  background: var(--moss-color-surface);
-  border-bottom: 1px solid var(--moss-color-hairline);
+  gap: var(--moss-space-s);
+  min-width: 0;
+  height: 100%;
+  padding-left: 7px;
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-control);
+  line-height: var(--moss-font-line-tight);
 }
 
-.cv-plus {
-  padding: 6px 12px;
-  border: 0;
-  border-radius: var(--moss-radius-medium);
-  background: var(--moss-color-text);
-  color: var(--moss-color-surface);
-  font-weight: var(--moss-font-weight-semibold);
-  cursor: pointer;
+.cv-barline button {
+  font: inherit;
+  color: inherit;
+  -webkit-app-region: no-drag;
 }
 
-.cv .cv-plus {
-  color: var(--moss-color-surface);
+.cv-barline :focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 1px;
 }
 
 .cv-summary {
-  color: var(--moss-color-text-muted);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--moss-color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cv-folded {
+  flex: none;
   padding: 2px 10px;
   border: 1px solid var(--moss-color-hairline-raised);
   border-radius: var(--moss-radius-round);
-  background: var(--moss-color-control);
+  background: transparent;
   font-size: var(--moss-font-size-caption);
   cursor: pointer;
 }
 
-.cv-zoom {
-  display: flex;
-  margin-left: auto;
-  overflow: hidden;
-  border: 1px solid var(--moss-color-hairline-raised);
-  border-radius: var(--moss-radius-medium);
+.cv-folded:hover {
+  background: var(--moss-color-hover);
 }
 
-.cv-icon,
-.cv-fit {
-  padding: 3px 10px;
+/* + : a plain icon button, the size of the window's own toggles. */
+.cv-plus {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
   border: 0;
+  border-radius: 7px;
   background: none;
   color: var(--moss-color-text-secondary);
   cursor: pointer;
 }
 
-.cv-fit {
-  border-right: 1px solid var(--moss-color-hairline-raised);
-  border-left: 1px solid var(--moss-color-hairline-raised);
-  font-size: var(--moss-font-size-caption);
+.cv-plus:hover,
+.cv-plus[aria-expanded="true"] {
+  background: var(--moss-color-hover);
+  color: var(--moss-color-text);
 }
 
-.cv-icon:hover,
-.cv-fit:hover,
-.cv-folded:hover {
+/* The + panel's close button. */
+.cv-icon {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--moss-radius-medium);
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-icon:hover {
   background: var(--moss-color-hover);
 }
 
-/* ---- The stage: the panel over the viewport; the viewport clips everything drawn in the world ---- */
+/* ---- The stage: the whole page, up under the window's bar (its frost shows what passes beneath); the panel over the
+   viewport, which clips everything drawn in the world ---- */
 
 .cv-stage {
   position: relative;
@@ -786,14 +803,15 @@
 
 /* ---- The + panel ---- */
 
+/* Under the bar's + (its right end), clear of the bar. */
 .cv-panel {
   position: absolute;
-  top: var(--moss-space-s);
-  left: var(--moss-space-l);
+  top: calc(var(--cv-bar-inset, 0px) + var(--moss-space-s));
+  right: var(--moss-space-s);
   z-index: 10;
   box-sizing: border-box;
   width: min(440px, calc(100% - 2 * var(--moss-space-l)));
-  max-height: calc(100% - 2 * var(--moss-space-s));
+  max-height: calc(100% - var(--cv-bar-inset, 0px) - 2 * var(--moss-space-s));
   padding: 14px;
   overflow: auto;
   border: 1px solid var(--moss-color-hairline-raised);
@@ -976,7 +994,7 @@
   z-index: 1;
   display: grid;
   place-content: center;
-  padding: var(--moss-space-xl);
+  padding: calc(var(--cv-bar-inset, 0px) + var(--moss-space-xl)) var(--moss-space-xl) var(--moss-space-xl);
   text-align: center;
   pointer-events: none;
 }
@@ -1019,17 +1037,7 @@
 /* ---- A narrow window ---- */
 
 @media (max-width: 640px) {
-  .cv-bar {
-    padding: var(--moss-space-s) var(--moss-space-m);
-  }
-
-  .cv-summary {
-    flex-basis: 100%;
-    order: 3;
-  }
-
   .cv-panel {
-    left: var(--moss-space-s);
     width: calc(100% - 2 * var(--moss-space-s));
   }
 }

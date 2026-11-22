@@ -1,6 +1,7 @@
 // The canvas (spec revision 20, §9.5): every session as a block, the lines between them, the waves of messages, and the
-// + button. It pans (drag the background, two-finger scroll) and zooms (pinch, or the control key with the wheel), with
-// a fit control. Nothing in it ticks: what moves is CSS, only on a block that runs or waits and on a line a message is
+// + panel. Its line and its + are on the window's bar (`page.bar`, bar.ts); it runs up under the bar, and what it places
+// on its own (the first view, a block brought into view, the + panel) keeps clear of it. It pans (drag the background,
+// two-finger scroll) and zooms (pinch, or the control key with the wheel). Nothing in it ticks: what moves is CSS, only on a block that runs or waits and on a line a message is
 // crossing, and it all pauses while the window is hidden.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BlockView, type BlockReaction, type Port } from "./Block";
@@ -10,6 +11,7 @@ import { livePeers, type LinkState, type Wave } from "./links";
 import type { BackendLook, BotState } from "./look";
 import { buildModel, type Block, type BotFacePins, type CanvasModel, type Edge } from "./model";
 import { NewSessionPanel, type PanelStep, type Starter } from "./NewSessionPanel";
+import { barLink, type BarLink } from "./bar";
 import type { BackendRow, FolderToken, RecentStart } from "./preselect";
 import type { SessionView } from "@waifucave/moss-plugin-sdk";
 import { S } from "./strings";
@@ -49,6 +51,10 @@ export interface CanvasProps {
   /** The view kept across a reload of the window's document. */
   view?: View;
   onView?(view: View): void;
+  /** How far the window's bar reaches over the canvas's top (CSS pixels): nothing is placed under it on its own. */
+  barHeight?: number;
+  /** Where the line on the bar and its + meet the page (bar.ts); the document's own by default. */
+  bar?: BarLink;
   /** The gallery's pictures: a block or the + panel open at first, ended sessions shown. */
   initial?: { open?: string; panel?: boolean; step?: PanelStep; showEnded?: boolean };
 }
@@ -145,24 +151,23 @@ export function Canvas(p: CanvasProps) {
   };
   /** Every shown block in view (the Fit control: down to `ZOOM_MIN`, the whole picture). `floor`: no smaller than that,
    *  from the top left when it doesn't all fit (the first view of many sessions: readable, the rest a pan away). */
+  const inset = Math.max(0, p.barHeight ?? 0);
   const fit = useCallback((floor = ZOOM_MIN) => {
     const box = bounds([...rects.values()]);
-    const { w, h } = size();
-    if (box.w === 0) return setView({ x: 0, y: 0, k: 1 });
+    const { w, h: whole0 } = size();
+    // The room below the bar: the bar's frost shows what passes under it, but nothing starts there.
+    const h = Math.max(1, whole0 - inset);
+    if (box.w === 0) return setView({ x: 0, y: inset, k: 1 });
     const m = 40;
     const whole = Math.min(1, (w - 2 * m) / box.w, (h - 2 * m) / box.h);
     const k = clampK(Math.max(floor, whole));
     const x = box.w * k <= w - 2 * m ? (w - box.w * k) / 2 : m;
-    const y = box.h * k <= h - 2 * m ? Math.min(m, (h - box.h * k) / 2) : m;
+    const y = inset + (box.h * k <= h - 2 * m ? Math.min(m, (h - box.h * k) / 2) : m);
     setView({ x: Math.round(x - box.x * k), y: Math.round(y - box.y * k), k });
-  }, [rects, setView]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rects, setView, inset]); // eslint-disable-line react-hooks/exhaustive-deps
   // The first time there is something to show and no view was kept: fit it, readably. Never again on its own (no jumps).
   useLayoutEffect(() => { if (view === undefined && shown.length > 0) fit(FIRST_FIT_FLOOR); }, [view === undefined, shown.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
-  const v = view ?? { x: 0, y: 0, k: 1 };
-  const zoomAt = (k: number, cx: number, cy: number) => {
-    const nk = clampK(k);
-    setView({ x: Math.round(cx - ((cx - v.x) * nk) / v.k), y: Math.round(cy - ((cy - v.y) * nk) / v.k), k: nk });
-  };
+  const v = view ?? { x: 0, y: inset, k: 1 };
   // A session asked for (the corner's switch): its block centred, at the zoom as it is.
   const focused = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
@@ -173,7 +178,7 @@ export function Canvas(p: CanvasProps) {
     const r = rect(b);
     const { w, h } = size();
     const k = view?.k ?? 1;
-    setView({ x: Math.round(w / 2 - (r.x + r.w / 2) * k), y: Math.round(h / 2 - (r.y + r.h / 2) * k), k });
+    setView({ x: Math.round(w / 2 - (r.x + r.w / 2) * k), y: Math.round(inset + (h - inset) / 2 - (r.y + r.h / 2) * k), k });
   });
 
   // The wheel: pinch (the browser's ctrl+wheel) and ctrl+wheel zoom about the pointer; plain scroll pans.
@@ -219,7 +224,7 @@ export function Canvas(p: CanvasProps) {
   const suppressClick = useRef(false);
   const onViewportDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     suppressClick.current = false;
-    if (e.button !== 0 || (e.target as Element).closest?.(".cv-card, .cv-panel, .cv-bar")) return;
+    if (e.button !== 0 || (e.target as Element).closest?.(".cv-card, .cv-panel")) return;
     setOpen(undefined);
     gesture.current = { kind: "pan", x: e.clientX, y: e.clientY, from: { x: v.x, y: v.y }, moved: false, pointer: e.pointerId };
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -340,22 +345,17 @@ export function Canvas(p: CanvasProps) {
   const worldH = Math.max(world.y + world.h + 200, 300);
   const empty = p.loaded !== false && shown.length === 0;
 
+  // ---- The line on the window's bar (bar.ts): what it reads, and its + and "N ended" acting here, in their press ----
+  const link = p.bar ?? barLink;
+  const act = useRef({ plus, toggleEnded: () => setShowEnded((x) => !x) });
+  act.current = { plus, toggleEnded: () => setShowEnded((x) => !x) };
+  useEffect(() => link.attach({ plus: () => act.current.plus(), toggleEnded: () => act.current.toggleEnded() }), [link]);
+  useEffect(() => {
+    link.publish({ ready: p.loaded !== false, sessions: mains.length, running, waiting, folded: folded.length, showEnded, panel: panel !== undefined });
+  });
+
   return (
-    <section className="cv" aria-label={S.canvas} data-hidden={hidden || undefined} onKeyDown={(e) => { if (e.key === "Escape") { setOpen(undefined); setPanel(undefined); } }}>
-      <header className="cv-bar">
-        <button type="button" className="cv-plus" aria-expanded={panel !== undefined} aria-haspopup="dialog" onClick={plus}>{S.plus}</button>
-        <span className="cv-summary" role="status">{S.summary(mains.length, running, waiting)}</span>
-        {folded.length > 0 && (
-          <button type="button" className="cv-folded" aria-pressed={showEnded} onClick={() => setShowEnded((s) => !s)}>
-            {showEnded ? S.hideEnded : S.endedCount(folded.length)}
-          </button>
-        )}
-        <span className="cv-zoom" role="group" aria-label={S.fitLong}>
-          <button type="button" className="cv-icon" aria-label={S.zoomOut} onClick={() => { const { w, h } = size(); zoomAt(v.k / 1.2, w / 2, h / 2); }}>−</button>
-          <button type="button" className="cv-fit" aria-label={S.fitLong} onClick={() => fit()}>{S.fit}</button>
-          <button type="button" className="cv-icon" aria-label={S.zoomIn} onClick={() => { const { w, h } = size(); zoomAt(v.k * 1.2, w / 2, h / 2); }}>+</button>
-        </span>
-      </header>
+    <section className="cv" aria-label={S.canvas} data-hidden={hidden || undefined} style={{ "--cv-bar-inset": `${inset}px` } as CSSProperties} onKeyDown={(e) => { if (e.key === "Escape") { setOpen(undefined); setPanel(undefined); } }}>
       <div className="cv-stage">
       {panel !== undefined && (
         <NewSessionPanel

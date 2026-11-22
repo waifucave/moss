@@ -6,11 +6,9 @@
 /** Tokens from the catalog. */
 export const CATALOG_TOKENS = [
   "color.canvas",
-  "color.control",
   "color.danger",
   "color.float",
   "color.focus",
-  "color.hairline",
   "color.hairline.raised",
   "color.hover",
   "color.raised",
@@ -38,7 +36,6 @@ export const CATALOG_TOKENS = [
   "radius.round",
   "shadow.float",
   "space.l",
-  "space.m",
   "space.s",
   "space.xl",
 ] as const;

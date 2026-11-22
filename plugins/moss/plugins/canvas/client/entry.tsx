@@ -9,6 +9,7 @@
 //   efforts (`agent.options`), the folder dialog (`ui.pick`) and starts the session (`agent.start`), then opens its tab.
 // Until lanes CA and CG serve them, the calls that aren't served yet fail soft: the agent's own default, the dialog.
 import { useKept, usePluginApi, useCore, useUserSend } from "@waifucave/moss-plugin-sdk/ui";
+import { barLink, useBar, type BarLink } from "./bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, type CanvasProps, type View } from "./Canvas";
 import type { Point } from "./layout";
@@ -31,6 +32,8 @@ export interface CanvasStartProps {
   /** `session`: the block to bring into view (the corner's switch). */
   params?: { session?: string };
   navigate?: (route: ShellRoute) => void;
+  /** The window's bar's height (the shell's, since this plugin fills `page.bar`): the page runs up under it. */
+  barHeight?: number;
   /** The gallery's pictures only. */
   initial?: CanvasProps["initial"];
 }
@@ -139,8 +142,38 @@ export function CanvasStart({ props }: { props: CanvasStartProps }) {
       {...(props.params?.session !== undefined ? { focus: props.params.session } : {})}
       {...(kept !== undefined ? { view: kept } : {})}
       onView={setKept}
+      {...(props.barHeight !== undefined ? { barHeight: props.barHeight } : {})}
       {...(props.initial !== undefined ? { initial: props.initial } : {})}
     />
+  );
+}
+
+export interface CanvasBarProps {
+  route?: string;
+  barHeight?: number;
+  /** The gallery's and the tests' own link; the document's by default. */
+  link?: BarLink;
+}
+
+/** The canvas's line on the window's bar (`page.bar` keyed `start`): the sessions, how many run and wait, the ended ones
+ *  folded away, and + at the right end, which opens the + panel under it (the page acts, inside this press). */
+export function CanvasBar({ props }: { props: CanvasBarProps }) {
+  const link = props.link ?? barLink;
+  const bar = useBar(link);
+  return (
+    <div className="cv-barline">
+      <span className="cv-summary" role="status">{bar.ready ? S.summary(bar.sessions, bar.running, bar.waiting) : ""}</span>
+      {bar.folded > 0 && (
+        <button type="button" className="cv-folded" aria-pressed={bar.showEnded} onClick={() => link.toggleEnded()}>
+          {bar.showEnded ? S.hideEnded : S.endedCount(bar.folded)}
+        </button>
+      )}
+      <button type="button" className="cv-plus" title={S.newSession} aria-label={S.newSession} aria-expanded={bar.panel} aria-haspopup="dialog" onClick={() => link.plus()}>
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+          <path d="M8 3v10M3 8h10" />
+        </svg>
+      </button>
+    </div>
   );
 }
 

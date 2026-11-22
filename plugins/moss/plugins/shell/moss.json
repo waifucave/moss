@@ -66,6 +66,27 @@
             },
             "doc": "The main area, keyed by route: agent (a session's live tab), settings, plugins, the keys app buttons open, and start (MOSS Code's start page: a plugin's entry keyed start fills it; with none the shell draws its own new-session page)."
           },
+          "page.bar": {
+            "shape": "keyed",
+            "props": {
+              "type": "object",
+              "properties": {
+                "route": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "barHeight": {
+                  "type": "number"
+                }
+              }
+            },
+            "doc": "A page's own line and controls on the top bar, keyed by route as main is: shown only from the plugin whose main entry the window shows, in place of the shell's title. That page runs up under the bar; both get barHeight."
+          },
           "panel": {
             "shape": "keyed",
             "props": {
