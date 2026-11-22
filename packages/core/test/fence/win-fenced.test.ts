@@ -111,12 +111,12 @@ function machine(o: { pinned?: boolean; marker?: string | null; profile?: (sid: 
     leasesDir: join(root, "leases"),
     async exec(argv) {
       execs.push(argv);
+      if (argv[0] === "reg" && argv[2] === "HKLM\\SOFTWARE\\sandbox-runtime") return { code: 0, stdout: "    SandboxUserSid    REG_SZ    S-1-5-21-1002\r\n", stderr: "" };
       if (argv[0] === "reg") {
         const sid = /ProfileList\\(S-[0-9-]+)/.exec(argv[2]!)?.[1] ?? "";
         const p = (o.profile ?? (() => null))(sid);
         return p === null ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: `    ProfileImagePath    REG_EXPAND_SZ    ${p}\r\n`, stderr: "" };
       }
-      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ marker_user_sid: "S-1-5-21-1002" }), stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
     readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : null),
