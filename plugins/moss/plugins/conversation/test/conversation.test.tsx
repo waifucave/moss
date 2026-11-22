@@ -448,6 +448,15 @@ describe("tool runs", () => {
     expect(onOpenLink).toHaveBeenCalledWith("https://github.com/electron/electron/issues/41300");
   });
 
+  test("another plugin's tool is named as the plugin serves it with its plugin after, never as the bare `mcp__plugin__Tool` (backlog 360, checked at the tip)", () => {
+    const { container } = renderView({ items: [tool(at(0, 1, 0), { name: "mcp__reel-reel__Export", detail: "scene 3" }), tool(at(0, 1, 1), { name: "mcp__reel-reel__Export", detail: "scene 4" })] });
+    const rows = [...container.querySelectorAll(".cl-conv-tools")].map((t) => t.textContent ?? "").join("\n");
+    expect(rows).toContain("Export (reel-reel)");
+    expect(rows).not.toContain("mcp__");
+    // Collapsed or open: the words, never the id.
+    expect(container.textContent).not.toContain("mcp__reel-reel__Export");
+  });
+
   test("a failed run shows its first error line folded; running and reviewing calls say so", () => {
     const { container } = renderView({ items: TOOLS, turn: { running: true, phase: "working" } });
     expect(screen.getByText("client/Composer.tsx(41,7): error TS2322: Type 'string' is not assignable to type 'number'.")).toBeTruthy();
