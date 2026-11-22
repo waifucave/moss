@@ -76,7 +76,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const p = await call(tools.PowerShell!, { command: "[Environment]::UserName" });
     expect(p.isError).toBe(false);
     expect(p.text).toContain("moss-sb-");
-  }, 300_000);
+  }, 1_800_000); // the first command writes the profile read grant, which walks the whole profile once
 
   test("a write inside the bot's own scratch folder lands; one outside its folders is refused (the user can)", async () => {
     const ok = await call(tools.Bash!, { command: "echo inside > inside.txt && cat inside.txt" });
