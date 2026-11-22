@@ -229,10 +229,15 @@ describe("the file on the disk", () => {
       const out = Bun.spawnSync([join(sys32, "icacls.exe"), q]).stdout.toString();
       const entries = out.split(/\r?\n/).map((l) => l.replace(q, "").trim()).filter((l) => /:\(/.test(l));
       const user = Bun.spawnSync([join(sys32, "whoami.exe")]).stdout.toString().trim().toLowerCase().split("\\").pop()!;
-      // One entry, the user's, full control: nothing inherited from the folder, no Everyone, Users, Administrators or SYSTEM.
-      expect(entries, `icacls said: ${out}`).toHaveLength(1);
-      expect(entries[0]!.toLowerCase()).toContain(user);
-      expect(out).not.toMatch(/Everyone|BUILTIN|NT AUTHORITY/i);
+      // The user has full control, nothing is inherited from the folder, and no broad group (Everyone, Users, Authenticated
+      // Users) is named. SYSTEM and Administrators may stay: Windows puts them on a file an elevated process makes (the CI
+      // runner's user is an administrator), and both already hold the user's own authority over the files.
+      expect(entries.some((l) => l.toLowerCase().includes(user) && /:\(F\)/.test(l)), `icacls said: ${out}`).toBe(true);
+      expect(out).not.toMatch(/Everyone|BUILTIN\\Users|Authenticated Users/i);
+      expect(entries.some((l) => /\(I\)/.test(l)), `an inherited entry: ${out}`).toBe(false);
+      for (const l of entries.map((e) => e.toLowerCase())) {
+        expect(l.includes(user) || l.includes("nt authority\\system:") || l.includes("builtin\\administrators:"), `unexpected entry ${l}`).toBe(true);
+      }
       await lockToOwner(q); // again: idempotent
     }
   });
