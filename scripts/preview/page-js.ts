@@ -6,7 +6,7 @@ export const DUMP_JS = `(() => {
   const lines = [];
   let cur = [];
   const flush = () => { const t = cur.join(' ').replace(/\\s+/g, ' ').trim(); cur = []; if (t && lines[lines.length - 1] !== t) lines.push(t); };
-  const shown = (e) => { try { return e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch { return true; } };
+  const shown = (e) => { try { return getComputedStyle(e).display === 'contents' ? true : e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch { return true; } };
   const clip = (t) => { t = (t || '').replace(/\\s+/g, ' ').trim(); return t.length > 70 ? t.slice(0, 67) + '...' : t; };
   const BLOCK = /^(block|flex|grid|list-item|table|table-row|table-cell|flow-root)$/;
   const CONTROL = 'button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=switch],[role=option],[role=radio],[contenteditable=true]';
@@ -35,6 +35,7 @@ export const DUMP_JS = `(() => {
       if (block) flush();
       return;
     }
+    if (tag === 'iframe') { try { const d = e.contentDocument; if (d && d.body) { flush(); walk(d.body); flush(); } } catch { /* a document of another origin is its own target */ } return; }
     if (tag === 'img' || tag === 'svg') { const al = e.getAttribute('aria-label') || e.getAttribute('alt'); if (al) cur.push('[image ' + JSON.stringify(clip(al)) + ']'); return; }
     for (const c of e.childNodes) walk(c);
     if (block) flush();
@@ -47,15 +48,19 @@ export const DUMP_JS = `(() => {
 /** Marks the element a target names with `data-moss-ctl-target` and answers how many matched; the press then goes through the harness's own centre-finder (scroll into view, covered and clipped checks). */
 export function findJs(target: { kind: "css"; selector: string } | { kind: "text"; text: string; exact: boolean }): string {
   return `(() => {
-    for (const old of document.querySelectorAll('[data-moss-ctl-target]')) old.removeAttribute('data-moss-ctl-target');
+    const roots = [];
+    const collect = (d) => { roots.push(d); for (const f of d.querySelectorAll('iframe')) { try { if (f.contentDocument) collect(f.contentDocument); } catch { /* another origin */ } } };
+    collect(document);
+    for (const d of roots) for (const old of d.querySelectorAll('[data-moss-ctl-target]')) old.removeAttribute('data-moss-ctl-target');
+    const all$ = (sel) => roots.flatMap((d) => [...d.querySelectorAll(sel)]);
     const shown = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && (typeof e.checkVisibility !== 'function' || e.checkVisibility()); };
     let el = null, n = 0;
     ${target.kind === "css"
-      ? `const all = [...document.querySelectorAll(${JSON.stringify(target.selector)})].filter(shown); n = all.length; el = all[0] || null;`
+      ? `const all = all$(${JSON.stringify(target.selector)}).filter(shown); n = all.length; el = all[0] || null;`
       : `const want = ${JSON.stringify(target.text)}.toLowerCase(), exact = ${target.exact};
     const labels = (e) => [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('placeholder'), e.getAttribute('alt'), e.value && e.tagName !== 'BUTTON' ? '' : '', ...((e.innerText || '').split('\\n'))].filter((x) => typeof x === 'string').map((x) => x.trim().toLowerCase()).filter(Boolean);
     const CONTROL = 'button,a,input,textarea,select,summary,label,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=switch],[role=option],[tabindex]';
-    const pool = (sel) => [...document.querySelectorAll(sel)].filter(shown);
+    const pool = (sel) => all$(sel).filter(shown);
     const hit = (e) => { const ls = labels(e); return exact ? ls.some((l) => l === want) : ls.some((l) => l === want) || ls.some((l) => l.includes(want)); };
     // a control first (an exact name before a partial one), then anything that shows the text itself.
     let found = pool(CONTROL).filter((e) => labels(e).some((l) => l === want));
@@ -67,6 +72,18 @@ export function findJs(target: { kind: "css"; selector: string } | { kind: "text
   })()`;
 }
 
-export const CLEAR_TARGET_JS = `(() => { for (const e of document.querySelectorAll('[data-moss-ctl-target]')) e.removeAttribute('data-moss-ctl-target'); return true; })()`;
-/** Whether a document has the keyboard's focus on something that takes typing or keys (its active element is not the page itself). */
-export const FOCUS_JS = `(() => { const a = document.activeElement; return a !== null && a !== document.body && a !== document.documentElement ? (a.tagName || 'x').toLowerCase() : ''; })()`;
+export const CLEAR_TARGET_JS = `(() => { const roots = []; const collect = (d) => { roots.push(d); for (const f of d.querySelectorAll('iframe')) { try { if (f.contentDocument) collect(f.contentDocument); } catch {} } }; collect(document); for (const d of roots) for (const e of d.querySelectorAll('[data-moss-ctl-target]')) e.removeAttribute('data-moss-ctl-target'); return true; })()`;
+/** Whether a document has the keyboard's focus on something that takes typing or keys (its active element, inside same-origin frames too, is not the page itself). */
+export const FOCUS_JS = `(() => { let d = document, a = d.activeElement; while (a && a.tagName === 'IFRAME') { try { const n = a.contentDocument; if (!n) break; d = n; a = d.activeElement; } catch { break; } } return a !== null && a !== d.body && a !== d.documentElement ? (a.tagName || 'x').toLowerCase() : ''; })()`;
+/** The centre of the marked element in this document's own viewport (the offsets of the frames it sits in added), scrolled into view first; null when it lies outside the viewport. */
+export const CENTER_JS = `(() => {
+  const roots = []; const collect = (d) => { roots.push(d); for (const f of d.querySelectorAll('iframe')) { try { if (f.contentDocument) collect(f.contentDocument); } catch {} } }; collect(document);
+  let el = null; for (const d of roots) { el = d.querySelector('[data-moss-ctl-target]'); if (el) break; }
+  if (!el) return null;
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const r = el.getBoundingClientRect();
+  let x = r.left + r.width / 2, y = r.top + r.height / 2;
+  for (let w = el.ownerDocument.defaultView; w && w.frameElement; w = w.parent) { const f = w.frameElement.getBoundingClientRect(); x += f.left; y += f.top; }
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
+  return { x, y };
+})()`;
