@@ -106,7 +106,7 @@ describe("the flat-name backend over the secrets file", () => {
   test("the contract store and the flat-name store keep their items in one file, one key, and never meet", async () => {
     const h = home(), keys = memoryVault();
     const flat = backendOn(h, keys);
-    const contract = await openMossSecretStore({ home: h, service: SVC, os, vault: () => keys, ...(os === "linux" ? { interactive: false, systemdCreds: null } : {}) });
+    const contract = await openMossSecretStore({ home: h, service: SVC, os: "linux", vault: () => keys, interactive: false, systemdCreds: null }); // the same key source as `backendOn`, on every OS
     await flat.set({ service: SVC, name: "anthropic:default", value: "flat-value" });
     await contract.set({ owner: { kind: "core" }, name: "anthropic:default" }, "contract-value");
     await contract.set({ owner: { kind: "device" }, name: "ed25519" }, "device-key");
@@ -230,7 +230,7 @@ describe("the file on the disk", () => {
       const entries = out.split(/\r?\n/).map((l) => l.replace(q, "").trim()).filter((l) => /:\(/.test(l));
       const user = Bun.spawnSync([join(sys32, "whoami.exe")]).stdout.toString().trim().toLowerCase().split("\\").pop()!;
       // One entry, the user's, full control: nothing inherited from the folder, no Everyone, Users, Administrators or SYSTEM.
-      expect(entries.length).toBe(1);
+      expect(entries, `icacls said: ${out}`).toHaveLength(1);
       expect(entries[0]!.toLowerCase()).toContain(user);
       expect(out).not.toMatch(/Everyone|BUILTIN|NT AUTHORITY/i);
       await lockToOwner(q); // again: idempotent
