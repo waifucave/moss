@@ -249,7 +249,9 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   if (fromC.text !== ANSWER) fail(`K's session_message from C reads ${JSON.stringify(fromC).slice(0, 300)}, not C's words`);
   const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
   const cText = String(cList?.text ?? "");
-  if (!cText.includes(b) || !cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 1500)}": it must name B (${b}: ${cText.includes(b)}) and K (${k.id}: ${cText.includes(k.id)}), and not Alpha's conversation (${bot.mainSession}: ${cText.includes(bot.mainSession)}; Alpha has not written to C)`);
+  // A listing line is "- <id> · …"; K's own line says "for <the bot's conversation>", so only a line of its own counts.
+  const listsBot = cText.split("\n").some((l) => l.startsWith(`- ${bot.mainSession} `));
+  if (!cText.includes(b) || !cText.includes(k.id) || listsBot) fail(`C's ListSessions reads "${cText.slice(0, 1500)}": it must name B (${b}: ${cText.includes(b)}) and K (${k.id}: ${cText.includes(k.id)}), and not Alpha's conversation (${bot.mainSession}: ${listsBot}; Alpha has not written to C)`);
   await heard("C's first turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
   if (JSON.stringify(await history(bot.mainSession)).includes("CROSS-ANSWER")) fail("C's message reached Alpha's conversation before Alpha had written to C");
   done.push(`2 C (${c}), a session the person started, sent to K ("Sent": K's conversation holds a session_message from C) and was refused for Alpha's conversation ("${String(toBot!.text).slice(0, 60)}…"): nothing reached it, and C's ListSessions names B and K and no bot's conversation`);
