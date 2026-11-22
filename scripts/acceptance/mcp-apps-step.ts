@@ -16,16 +16,10 @@ interface Card { id: string; kind: string; session?: string; pluginId?: string }
 interface Run { app: McpAppFixture; other: McpAppFixture; appPlugin: string; otherPlugin: string; callId: string }
 let run: Run | undefined;
 
-async function installUrl(ctx: ExampleCtx, url: string): Promise<string> {
-  const r = await ctx.rpc.request<{ id: string; card?: string }>("plugin.install", { source: { from: "wrap", kind: "mcp-url", value: url } }, 60_000);
-  const card = await until(`${r.id}'s OK card`, 30_000, async () =>
-    (await ctx.rpc.request<{ cards: Card[] }>("card.list", {})).cards.find((k) => k.kind === "plugin-ok" && ((r.card !== undefined && k.id === r.card) || k.pluginId === r.id)));
-  await ctx.approveCard(card.id);
-  await until(`${r.id} on after its OK`, 60_000, async () => {
-    const st = (await ctx.rpc.request<{ plugin?: { state?: string } }>("plugin.get", { id: r.id }).catch(() => undefined))?.plugin?.state;
-    return st === "running" || st === "enabled" ? true : undefined;
-  });
-  return r.id;
+/** A bare added MCP server (`mcp.add`, the user's scope): the session's own child connects to it under `mcp__<name>__<tool>`. */
+async function addServer(ctx: ExampleCtx, name: string, url: string): Promise<string> {
+  await ctx.rpc.request("mcp.add", { name, entry: { type: "http", url }, scope: "user" }, 60_000);
+  return name;
 }
 
 /** Everything the page said so far (its `ui/message`s reach the model as the session's next input). */
@@ -48,8 +42,8 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, bot: string): Promise<str
   const other = mcpAppFixture({ name: "acc-other", tools: "other" });
   run = undefined;
   try {
-    const appPlugin = await installUrl(ctx, app.url);
-    const otherPlugin = await installUrl(ctx, other.url);
+    const appPlugin = await addServer(ctx, "accapp", app.url);
+    const otherPlugin = await addServer(ctx, "accother", other.url);
     const turn = await callTurn(ctx, bot, "Chart", {});
     if (!turn.result.text.includes(MCP_APP_MARK)) fail(`the model's call of Chart answered "${turn.result.text.slice(0, 120)}"`);
     const stamped = (await ctx.history(bot)).filter((e: Ev) => e.type === "tool_result" && (e.app as { resourceUri?: string } | undefined)?.resourceUri === "ui://acc/chart");
@@ -65,6 +59,7 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, bot: string): Promise<str
     return done.join("; ");
   } catch (err) {
     run = undefined;
+    for (const name of ["accapp", "accother"]) await ctx.rpc.request("mcp.remove", { name, scope: "user" }).catch(() => undefined);
     app.stop();
     other.stop();
     throw err;
@@ -114,10 +109,7 @@ export async function mcpAppsCallStep(ctx: ExampleCtx, bot: string): Promise<str
     done.push(`a forged call id and a 2 MB page refused ("${refused.slice(0, 60)}")`);
     return done.join("; ");
   } finally {
-    for (const id of [r.appPlugin, r.otherPlugin]) {
-      const rm = await ctx.rpc.request<{ card?: string }>("plugin.remove", { id }).catch(() => undefined);
-      if (rm?.card !== undefined) await ctx.approveCard(rm.card).catch(() => undefined);
-    }
+    for (const name of [r.appPlugin, r.otherPlugin]) await ctx.rpc.request("mcp.remove", { name, scope: "user" }).catch(() => undefined);
     r.app.stop();
     r.other.stop();
     run = undefined;
