@@ -100,7 +100,7 @@ describe("the guard around a program (a stand-in agent that echoes prompts)", ()
   // The "real" program: prints its HOME and PATH and the names starting MOSS_ it was given, answers each session/prompt after an optional delay.
   const prog = join(dir, "prog.js");
   writeFileSync(prog, `#!${process.execPath}
-if (process.argv.includes("--version")) { console.log("1.2.3 " + process.env.HOME + " " + process.env.PATH + " " + Object.keys(process.env).filter((k) => k.startsWith("MOSS_")).join(",")); process.exit(0); }
+if (process.argv.length === 3 && process.argv[2] === "--version") { console.log("1.2.3 " + process.env.HOME + " " + process.env.PATH + " " + Object.keys(process.env).filter((k) => k.startsWith("MOSS_")).join(",")); process.exit(0); }
 const rl = require("node:readline").createInterface({ input: process.stdin });
 rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "session/prompt") { const d = Number(process.env.DELAY || 0); setTimeout(() => console.log(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn", saw: [process.env.HOME] } })), d); } if (m.method === "session/cancel") console.log(JSON.stringify({ jsonrpc: "2.0", method: "cancelled" })); });
 `);
