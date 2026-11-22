@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUDGET, REAL_AGENTS, claimSession, diffSnapshots, snapshot, guardShim, minimalPath, noteTurn, promptProblem, readSpent, realAgentEnv, renderSpent, resolveReal } from "./real-lib";
+import { BUDGET, REAL_AGENTS, claimSession, classifyLine, diffSnapshots, isProbe, noteLaunch, snapshot, guardShim, minimalPath, noteTurn, promptProblem, readSpent, realAgentEnv, renderSpent, resolveReal } from "./real-lib";
+import { approvable, seedRefusal } from "./seed";
 import { baseEnv, daemonEnv, isolationProblems, layoutFor, parseOptions, UsageError } from "./lib";
 
 describe("which agents are real and what a real agent gets", () => {
@@ -63,6 +64,10 @@ describe("the prompt rule", () => {
     expect(promptProblem("OK")).toContain("no content");
     expect(promptProblem([{ type: "image", data: "x" }])).toContain("text prompts only");
     expect(promptProblem([...t("OK"), { type: "resource_link", uri: "file:///x" }])).toContain("text prompts only");
+    // the frame line is not a second line, but its characters count
+    const frame = "Message from agent agent_abc123:";
+    expect(promptProblem(t(`${frame}\n\n${"x".repeat(BUDGET.promptChars - frame.length)}`))).toBeUndefined();
+    expect(promptProblem(t(`${frame}\n\n${"x".repeat(BUDGET.promptChars - frame.length + 1)}`))).toContain("included");
     expect(promptProblem(t("preamble\n\n---\n\nthe prompt"))).toContain("one line");
     expect(promptProblem(t(""))).toContain("0");
   });
@@ -78,10 +83,14 @@ describe("the budget's counters", () => {
       expect(claimSession(dir, "agy")).toBe(1);
       noteTurn(dir, "codex-acp"); noteTurn(dir, "codex-acp");
       const s = readSpent(dir);
-      expect(s.find((x) => x.agent === "codex")).toEqual({ agent: "codex", sessions: 2, turns: 2, refusals: 0 });
+      expect(s.find((x) => x.agent === "codex")).toEqual({ agent: "codex", launches: 0, sessions: 2, turns: 2, refusals: 0 });
       expect(s.find((x) => x.agent === "antigravity")).toMatchObject({ sessions: 1, turns: 0 });
-      expect(renderSpent(s)).toContain("codex 2 session(s) 2 turn(s)");
-      expect(renderSpent(s)).toContain("limits: 2 sessions per agent, 3 turns per session");
+      expect(renderSpent(s)).toContain("codex 0 launch(es) 2 session(s) 2 turn(s)");
+      expect(renderSpent(s)).toContain("limits: 12 launches and 2 sessions per agent, 3 turns per session");
+      expect(noteLaunch(dir, "agy", 2)).toBe(1);
+      expect(noteLaunch(dir, "agy", 2)).toBe(2);
+      expect(noteLaunch(dir, "agy", 2)).toBeUndefined();
+      expect(readSpent(dir).find((x) => x.agent === "antigravity")).toMatchObject({ launches: 2, sessions: 1 });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -124,15 +133,45 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "session/prompt
     expect(answers.find((a) => a.id === 3).result).toBeDefined();
     expect(answers.find((a) => a.id === 4).result).toBeDefined();
     expect(answers.find((a) => a.id === 5).error.message).toContain("3 turns");
-    expect(readSpent(b).find((x) => x.agent === "codex")).toEqual({ agent: "codex", sessions: 1, turns: 3, refusals: 2 });
-    // two more sessions: the second is allowed, the third is refused with a plain line and no program
+    expect(readSpent(b).find((x) => x.agent === "codex")).toEqual({ agent: "codex", launches: 1, sessions: 1, turns: 3, refusals: 2 });
+    // a second launch's first prompt takes the second slot; the third launch's is refused, with an answer
     const second = await run(b, [prompt(1, "ok")]);
     expect(second.out.map((l) => JSON.parse(l))[0].result).toBeDefined();
     const third = await run(b, [prompt(1, "ok")]);
-    expect(third.out).toEqual([]);
-    expect(third.code).toBe(1);
-    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ sessions: 2, turns: 4 });
+    expect(JSON.parse(third.out[0]!).error.message).toContain("session beyond the budget");
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 3, sessions: 2, turns: 4 });
   }, 30_000);
+
+  test("a launch that sends no prompt takes no session; session/new takes one each; launches are counted apart", async () => {
+    const b = join(dir, "b4");
+    await run(b, [{ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }], {}, ["acp"], 700);
+    await run(b, [], {}, ["models"], 500);
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 2, sessions: 0, turns: 0 });
+    const n = (id: number) => ({ jsonrpc: "2.0", id, method: "session/new", params: {} });
+    const r = await run(b, [n(1), n(2), n(3)]);
+    expect(r.out.map((l) => JSON.parse(l)).find((a) => a.id === 3).error.message).toContain("session beyond the budget");
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ sessions: 2 });
+  }, 30_000);
+
+  test("a batch and anything that is not one JSON-RPC object never reach the program", async () => {
+    const b = join(dir, "b5");
+    const r = await run(b, [[prompt(1, "ok"), prompt(2, "ok")], 7, "text", prompt(3, "ok")]);
+    const answers = r.out.map((l) => JSON.parse(l));
+    expect(answers.filter((a) => a.error).length).toBe(3);
+    expect(answers.find((a) => a.id === 3).result).toBeDefined();
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ turns: 1, refusals: 3 });
+  }, 15_000);
+
+  test("only the whole --version list is a probe: other arguments, even with it, are launches", async () => {
+    const b = join(dir, "b6");
+    await run(b, [], {}, ["--version"], 500);
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 0 });
+    const r = await run(b, [prompt(1, "ok")], {}, ["acp", "--version"], 900);
+    expect(r.out.length).toBe(1);
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 1, turns: 1 });
+    await run(b, [], {}, ["--help"], 500);
+    expect(readSpent(b).find((x) => x.agent === "codex")).toMatchObject({ launches: 2 });
+  }, 20_000);
 
   test("a turn over the limit is cancelled", async () => {
     const b = join(dir, "b3");
@@ -162,5 +201,31 @@ describe("the listing that shows the engine wrote nothing under a home", () => {
       expect(snapshot(join(dir, "missing")).size).toBe(0);
       expect(snapshot(dir, 2).size).toBeLessThanOrEqual(3);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("probe and line rules, pure", () => {
+  test("a probe is exactly --version", () => {
+    expect(isProbe(["--version"])).toBe(true);
+    for (const a of [[], ["-V"], ["--help"], ["-h"], ["acp", "--version"], ["--version", "x"], ["--version", "--help"]]) expect(isProbe(a)).toBe(false);
+  });
+  test("one JSON object passes; arrays and bare values do not", () => {
+    expect(classifyLine('{"jsonrpc":"2.0","id":1,"method":"x"}').kind).toBe("object");
+    for (const l of ["[]", '[{"method":"session/prompt"}]', "7", "null", '"s"', "nope", ""]) expect(classifyLine(l).kind).toBe("refused");
+  });
+});
+
+describe("the seeding poller in a real-agents preview", () => {
+  const card = (session?: string) => ({ id: "c1", hash: "h", ...(session !== undefined ? { session } : {}), options: [{ id: "no", kind: "deny" }, { id: "yes", kind: "approve" }] });
+  test("approves only a card of a session the seeding started", () => {
+    expect(approvable(card("s_mine"), true, new Set(["s_mine"]))?.id).toBe("yes");
+    expect(approvable(card("s_real"), true, new Set(["s_mine"]))).toBeUndefined();
+    expect(approvable(card(), true, new Set(["s_mine"]))).toBeUndefined();
+    expect(approvable(card("s_real"), false, new Set())?.id).toBe("yes");
+  });
+  test("seed is refused once a real session exists, and says so", () => {
+    expect(seedRefusal([{ id: "a", backend: "moss-code" }, { id: "b", backend: "gemini" }])).toBeUndefined();
+    expect(seedRefusal([{ id: "a", backend: "moss-code" }, { id: "b", backend: "codex" }])).toContain("seed is refused");
+    expect(seedRefusal([{ id: "x" }])).toBeUndefined();
   });
 });

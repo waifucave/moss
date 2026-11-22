@@ -29,6 +29,8 @@ export const REAL_AGENTS: readonly RealAgent[] = [
 /** A hard budget for a real-agents run, kept by the guard around each real program (the command itself, not a habit). */
 export const BUDGET = {
   sessionsPerAgent: 2,
+  /** Launches of one agent's program that are not a version probe (a capability, model-list or usage launch starts one and never a session): bounded so a loop cannot spin. */
+  launchesPerAgent: 12,
   turnsPerSession: 3,
   /** A turn that has not ended after this long is cancelled, then its process ended. */
   turnMs: 180_000,
@@ -37,6 +39,22 @@ export const BUDGET = {
   /** A prompt's text is one line of at most this many characters. */
   promptChars: 300,
 } as const;
+
+/** The one argument list the engine uses to identify an agent's program (every bundled quirks.json: identity.versionArgs is ["--version"], and `detect()` adds nothing else). Only a launch whose WHOLE argument list is this is a probe. */
+export const PROBE_ARGS: readonly string[] = ["--version"];
+export const isProbe = (args: readonly string[]): boolean => args.length === PROBE_ARGS.length && args.every((a, i) => a === PROBE_ARGS[i]);
+
+/** The ACP methods that start (or resume) a session: the first one in a launch takes a session slot. */
+export const SESSION_METHODS: readonly string[] = ["session/new", "session/load", "session/resume", "session/fork"];
+
+/** What one line the engine sends the agent is: a single JSON-RPC object (passed on, judged by its method) or something else (refused, never passed on). */
+export function classifyLine(line: string): { kind: "object"; msg: { id?: unknown; method?: unknown; params?: { sessionId?: unknown; prompt?: unknown } } } | { kind: "refused"; why: string } {
+  let v: unknown;
+  try { v = JSON.parse(line); } catch { return { kind: "refused", why: "a line that is not JSON" }; }
+  if (Array.isArray(v)) return { kind: "refused", why: "a JSON-RPC batch" };
+  if (v === null || typeof v !== "object") return { kind: "refused", why: "a line that is not one JSON-RPC object" };
+  return { kind: "object", msg: v as never };
+}
 
 const SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] as const;
 
@@ -89,7 +107,7 @@ export function guardShim(o: { bun: string; guard: string; agent: string; budget
 const FRAME = /^Message from (agent|the plugin) [^\n:]{1,200}:$/;
 
 /** Why a `session/prompt`'s blocks are refused, or undefined: text blocks only, and one line of at most `promptChars` characters
- *  (the line MOSS puts above a message another session sent, "Message from agent X:", is not counted). */
+ *  (the line MOSS puts above a message another session sent, "Message from agent X:", is not a second line, but its characters count). */
 export function promptProblem(blocks: unknown): string | undefined {
   if (!Array.isArray(blocks) || blocks.length === 0) return "the prompt has no content";
   const texts: string[] = [];
@@ -99,9 +117,10 @@ export function promptProblem(blocks: unknown): string | undefined {
     texts.push((b as { text: string }).text);
   }
   const lines = texts.join("\n").split("\n").map((l) => l.trim()).filter((l) => l !== "");
-  if (lines.length > 0 && FRAME.test(lines[0]!)) lines.shift();
+  const frame = lines.length > 0 && FRAME.test(lines[0]!) ? lines.shift()! : "";
   if (lines.length !== 1) return `a real-agents preview takes a prompt of one line (this has ${lines.length})`;
-  if (lines[0]!.length > BUDGET.promptChars) return `a real-agents preview takes a prompt of at most ${BUDGET.promptChars} characters (this has ${lines[0]!.length})`;
+  const total = frame.length + lines[0]!.length;
+  if (total > BUDGET.promptChars) return `a real-agents preview takes a prompt of at most ${BUDGET.promptChars} characters, the "Message from ..." line included (this has ${total})`;
   return undefined;
 }
 
@@ -115,12 +134,23 @@ export function claimSession(dir: string, agent: string, max: number = BUDGET.se
   return undefined;
 }
 
+/** One non-probe launch: a byte appended; returns the count so far, or undefined (and counts a refusal) when `max` launches are already spent. */
+export function noteLaunch(dir: string, agent: string, max: number = BUDGET.launchesPerAgent): number | undefined {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${agent}.launches`);
+  let n = 0;
+  try { n = statSync(file).size; } catch { /* none yet */ }
+  if (n >= max) return undefined;
+  appendFileSync(file, "x", { mode: 0o600 });
+  return n + 1;
+}
+
 /** One turn started: a byte appended (an append of one byte is atomic). */
 export function noteTurn(dir: string, agent: string): void { appendFileSync(join(dir, `${agent}.turns`), "x", { mode: 0o600 }); }
 /** One refusal (a prompt, a session or a turn): a line appended. */
 export function noteRefusal(dir: string, agent: string, why: string): void { appendFileSync(join(dir, `${agent}.refused`), `${new Date().toISOString()} ${why}\n`, { mode: 0o600 }); }
 
-export interface Spent { agent: string; sessions: number; turns: number; refusals: number }
+export interface Spent { agent: string; launches: number; sessions: number; turns: number; refusals: number }
 
 export function readSpent(dir: string): Spent[] {
   return REAL_AGENTS.map((a) => {
@@ -129,12 +159,12 @@ export function readSpent(dir: string): Spent[] {
     for (let n = 1; n <= BUDGET.sessionsPerAgent; n++) if (existsSync(join(dir, `${a.command}.session.${n}`))) sessions++;
     let refusals = 0;
     try { refusals = readFileSync(join(dir, `${a.command}.refused`), "utf8").split("\n").filter((l) => l !== "").length; } catch { /* none */ }
-    return { agent: a.backend, sessions, turns: count(`${a.command}.turns`), refusals };
+    return { agent: a.backend, launches: count(`${a.command}.launches`), sessions, turns: count(`${a.command}.turns`), refusals };
   });
 }
 
 export const renderSpent = (s: readonly Spent[]): string =>
-  `real-agent spend: ${s.map((x) => `${x.agent} ${x.sessions} session(s) ${x.turns} turn(s)${x.refusals > 0 ? ` (${x.refusals} refused)` : ""}`).join("; ")} (limits: ${BUDGET.sessionsPerAgent} sessions per agent, ${BUDGET.turnsPerSession} turns per session)`;
+  `real-agent spend: ${s.map((x) => `${x.agent} ${x.launches} launch(es) ${x.sessions} session(s) ${x.turns} turn(s)${x.refusals > 0 ? ` (${x.refusals} refused)` : ""}`).join("; ")} (limits: ${BUDGET.launchesPerAgent} launches and ${BUDGET.sessionsPerAgent} sessions per agent, ${BUDGET.turnsPerSession} turns per session)`;
 
 
 // ── proof that the engine writes nothing under the person's home ─────────────────────────────────────────────────────────
