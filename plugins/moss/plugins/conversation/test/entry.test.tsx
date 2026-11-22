@@ -14,6 +14,16 @@ let seq = 0;
 const ev = (type: string, extra: Record<string, unknown> = {}): CoreEvent => ({ type, seq: ++seq, ts: 1_000 + seq, ...extra });
 
 describe("project", () => {
+  test("a failed turn shows one line: the engine's reason when it gave one (before or after the turn's end), the plain line when not", () => {
+    const lines = (events: CoreEvent[]) => project(events).items.filter((i) => i.kind === "note").map((i) => (i as { text: string }).text);
+    expect(lines([ev("user_message", { text: "go" }), ev("turn_started"), ev("hook_notice", { text: "The provider said: credit balance too low", level: "notice" }), ev("turn_completed", { stopReason: "error" })])).toEqual(["The provider said: credit balance too low"]);
+    expect(lines([ev("turn_started"), ev("turn_completed", { stopReason: "error" }), ev("hook_notice", { text: "The provider said: rate limited", level: "notice" })])).toEqual(["The provider said: rate limited"]);
+    expect(lines([ev("turn_started"), ev("turn_completed", { stopReason: "error" })])).toEqual(["The turn ended with an error."]);
+    // A notice of a turn that went well, or another level, makes no line and no reason for the next failure.
+    expect(lines([ev("turn_started"), ev("hook_notice", { text: "x", level: "notice" }), ev("turn_completed", { stopReason: "end_turn" }), ev("turn_started"), ev("turn_completed", { stopReason: "error" })])).toEqual(["The turn ended with an error."]);
+    expect(lines([ev("turn_started"), ev("hook_notice", { text: "careful", level: "warning" }), ev("turn_completed", { stopReason: "error" })])).toEqual(["The turn ended with an error."]);
+  });
+
   test("a call the core cut off (a stop, a restart) reads as interrupted, not failed, and nothing runs after the turn's end", () => {
     const p = project([
       ev("user_message", { text: "Use the tool", device: "dev_studio" }),
