@@ -269,14 +269,17 @@ describe("CI on a merge-queue group", () => {
 // The lane gate: lanes work on `lane-int/*` branches with no pull request, so CI runs on a push to them and by hand on a
 // lane's own branch, and `lane-gate` is the one result a lane reads: `gate` without the Windows jobs, plus the acceptance run.
 describe("CI for the lanes", () => {
-  type Job = { if?: string; needs?: string | string[]; "runs-on"?: string; strategy?: { matrix?: { unit?: string[]; include?: Array<{ runner: string }>; runner?: string[] } } };
+  type Job = { if?: string; needs?: string | string[]; "runs-on"?: string; uses?: string; strategy?: { matrix?: { unit?: string[]; include?: Array<{ runner: string }>; runner?: string[] } } };
   const ci = Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8")) as {
     on: { push?: { branches?: string[] }; workflow_dispatch?: { inputs?: Record<string, unknown> } };
     concurrency: { group: string; "cancel-in-progress": string };
     jobs: Record<string, Job>;
   };
   const needsOf = (id: string): string[] => { const n = ci.jobs[id]!.needs; return Array.isArray(n) ? n : n === undefined ? [] : [n]; };
-  const runnersOf = (j: Job): string[] => [...(j["runs-on"] !== undefined && !j["runs-on"].includes("${{") ? [j["runs-on"]] : []), ...(j.strategy?.matrix?.include ?? []).map((r) => r.runner), ...(j.strategy?.matrix?.runner ?? [])].filter((r): r is string => typeof r === "string");
+  // A job that calls one of this repo's workflows (`uses: ./.github/workflows/<file>`) runs on that workflow's jobs' runners.
+  const runnersOf = (j: Job): string[] => j.uses?.startsWith("./.github/workflows/")
+    ? Object.values((Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", j.uses.slice(2)), "utf8")) as { jobs: Record<string, Job> }).jobs).flatMap((c) => runnersOf(c))
+    : [...(j["runs-on"] !== undefined && !j["runs-on"].includes("${{") ? [j["runs-on"]] : []), ...(j.strategy?.matrix?.include ?? []).map((r) => r.runner), ...(j.strategy?.matrix?.runner ?? [])].filter((r): r is string => typeof r === "string");
 
   test("a push to an integration branch runs CI, a newer push or manual run on a ref cancels the one it supersedes, a merge group never does", () => {
     expect(ci.on.push?.branches).toEqual(["lane-int/**"]);
@@ -290,7 +293,7 @@ describe("CI for the lanes", () => {
 
   test("the lane gate is the gate without the Windows jobs, plus the acceptance run", () => {
     const windows = Object.keys(ci.jobs).filter((id) => runnersOf(ci.jobs[id]!).some((r) => r.startsWith("windows")));
-    expect(windows.sort()).toEqual(["installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows"]);
+    expect(windows.sort()).toEqual(["installers-windows", "link-windows", "machine-windows", "sealed-core-windows", "tree-windows", "windows-fence"]);
     const gate = needsOf("gate");
     const lane = needsOf("lane-gate");
     expect(lane.sort()).toEqual([...gate.filter((id) => !windows.includes(id)), "acceptance"].sort());
