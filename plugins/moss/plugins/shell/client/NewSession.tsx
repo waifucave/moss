@@ -72,7 +72,9 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
   const [recent, setRecent] = useState<{ token: string; name: string }[]>([]);
   const [last, setLast] = useState<RecentChoices | undefined>();
   const [options, setOptions] = useState<Record<string, StartOptions | undefined>>({});
-  const [choice, setChoice] = useState<{ model?: string; effort?: string }>({});
+  // The pick belongs to the agent it was made for (`agent`): a pick of agent A is never sent to agent B.
+  const [made, setMade] = useState<{ agent: string; model?: string; effort?: string } | undefined>();
+  const choice: { model?: string; effort?: string } = made !== undefined && made.agent === agent ? made : {};
 
   useEffect(() => {
     let live = true;
@@ -109,7 +111,7 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
   }, [core, agent]); // eslint-disable-line react-hooks/exhaustive-deps
   // The pick follows the agent (and what is known of it), preselected as `startChoice` says.
   useEffect(() => {
-    if (agent !== undefined && Object.hasOwn(options, agent)) setChoice(startChoice(agent, options[agent], last));
+    if (agent !== undefined && Object.hasOwn(options, agent)) setMade({ agent, ...startChoice(agent, options[agent], last) });
   }, [agent, options, last]);
 
   const pickFolder = async () => {
@@ -136,14 +138,15 @@ export function NewSession({ onStarted, layout = "page" }: { onStarted: (session
     }
   };
 
-  const ready = agent !== undefined && folder !== undefined && !starting;
+  // Start waits until this agent's options have answered and its pick is made.
+  const ready = agent !== undefined && folder !== undefined && !starting && made?.agent === agent;
   return (
     <section className="cl-new-session" data-layout={layout} aria-label={S.newSession}>
       <div className="cl-new-session__page">
         <h1 className="cl-new-session__title">{S.newSession}</h1>
         <p className="cl-new-session__detail">{S.newSessionDetail}</p>
         <AgentList agents={agents} value={agent} onChange={setAgent} />
-        {agent !== undefined && <ModelRow agent={agents?.find((a) => a.id === agent)?.name ?? agent} options={options[agent]} value={choice} onChange={setChoice} />}
+        {agent !== undefined && <ModelRow agent={agents?.find((a) => a.id === agent)?.name ?? agent} options={options[agent]} value={choice} onChange={(v) => setMade({ agent, ...v })} />}
         <FolderRow folder={folder} onPick={() => void pickFolder()} recent={recent} onRecent={setFolder} />
         <div className="cl-new-session__actions">
           <StartButton disabled={!ready} onStart={() => void start()} />

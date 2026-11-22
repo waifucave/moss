@@ -207,6 +207,8 @@ describe("the page that starts a session (spec §9.4)", () => {
     await act(() => settle(20));
     expect(document.querySelector(".cl-new-session__folder-name")?.textContent).toBe("projects");
     fireEvent.click(radios[1]!);
+    // Start waits for the new agent's options to answer.
+    await act(() => settle(20));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await act(() => settle(20));
     expect(core.calls.find((c) => c.method === "ui.pick")?.params).toEqual({ kind: "folder", use: "agent.start" });
@@ -271,6 +273,37 @@ describe("the page that starts a session (spec §9.4)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await act(() => settle(20));
     expect(core.calls.find((c) => c.method === "agent.start")?.params).toEqual({ backend: "codex", root: "pick-1", model: "c2" });
+  });
+
+  test("switching agent and pressing Start before the new agent's options answer sends nothing; the old agent's model never goes to the new one", async () => {
+    const backends = [
+      { id: "codex", name: "Codex", computers: [{ computer: "Studio", installed: true }] },
+      { id: "moss-code", name: "MOSS", computers: [{ computer: "Studio", installed: true }] },
+    ];
+    let release: (() => void) | undefined;
+    const own = { known: true, source: "catalog", models: [{ id: "moss/model-1", name: "Model 1", efforts: [] }], default: { model: "moss/model-1" } };
+    const { core } = await mount({ route: { route: "start", params: {} } }, [], SESSIONS, undefined, {}, {
+      "agent.backends": () => ({ backends }),
+      "computer.list": () => ({ computers: [{ name: "Studio", link: "self" }] }),
+      "agent.options": (p) => (p.backend === "codex" ? new Promise((r) => { release = () => r({ known: true, source: "command", models: [{ id: "c1", name: "C1", efforts: [] }] }); }) : own),
+      "ui.pick": () => ({ token: "pick-1", name: "projects" }),
+      "agent.start": () => ({ session: "code-9" }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose a folder…" }));
+    await act(() => settle(20));
+    expect((document.querySelector(".cl-new-session__select") as HTMLSelectElement).value).toBe("moss/model-1");
+    fireEvent.click([...document.querySelectorAll<HTMLInputElement>(".cl-new-session__agent input")].find((r) => r.value === "codex")!);
+    await act(() => settle(20));
+    const start = screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(core.calls.some((c) => c.method === "agent.start")).toBe(false);
+    release!();
+    await act(() => settle(20));
+    expect(start.disabled).toBe(false);
+    fireEvent.click(start);
+    await act(() => settle(20));
+    expect(core.calls.find((c) => c.method === "agent.start")?.params).toEqual({ backend: "codex", root: "pick-1" });
   });
 
   test("a session's tab names its agent by the backend's display name, not its id, and falls back to the id for a backend with no name", async () => {

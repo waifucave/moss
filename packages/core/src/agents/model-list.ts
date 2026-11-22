@@ -10,6 +10,10 @@
 //      ids, names and efforts are kept; contents are never logged.
 //   c. `session`: what a real session of the agent reported (its ACP `configOptions`), remembered per agent in one
 //      small file under the run folder, `<home>/run/agents/session-models.json` (0600, atomic, bounded).
+// Only MOSS's own bundled plugin's declaration is honoured (`modelList` is dropped whole from any other plugin where the
+// backend is built, and `BackendModelLists` checks `bundled` again before it runs or reads anything): a list command skips
+// what a session start checks (the program's hash, its signer, the OK card), and it runs as soon as the person picks the
+// agent, so a plugin that could name its own program and arguments could run anything there.
 // A declared list is cached with its age; one past `ttlMs` is still answered while it is read again in the background.
 // A read that fails falls to the next source and leaves one plain log line, never an error in a panel.
 import { chmodSync, closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -46,7 +50,10 @@ export const ModelListDeclSchema = z.strictObject({
   command: z.strictObject({
     program: z.string().min(1).max(256),
     args: z.array(z.string().max(256)).max(16),
-    identity: z.strictObject({ versionArgs: z.array(z.string().max(256)).max(8), versionPattern: z.string().min(1).max(512) }),
+    /** Needed only when the program isn't the backend's own (codex's list is `codex`, its agent `codex-acp`); for the
+     *  backend's own program its `quirks.launch.identity` is used, never a second one beside the command. */
+    identity: z.strictObject({ versionArgs: z.array(z.string().max(256)).max(8), versionPattern: z.string().min(1).max(512) }).optional(),
+    /** One limit for the whole read: the version check and the list run share it. */
     timeoutMs: z.number().int().min(500).max(30_000).default(10_000),
     maxBytes: z.number().int().min(1024).max(HARD_MAX_BYTES).default(4 * 1024 * 1024),
   }).optional(),
@@ -154,7 +161,10 @@ export function readListFile(f: NonNullable<ModelListDecl["file"]>, ctx: { userH
 }
 
 /** Runs the list command: no shell, an empty temp folder as its cwd, stdin closed, stderr dropped, stdout read up to
- *  `maxBytes` (more ends it), a hard time limit; it is ended by its pid at either limit. Undefined unless it exits 0. */
+ *  `maxBytes` (more ends it), a hard time limit. On POSIX it runs as the leader of a group of its own, and the whole group
+ *  (found by the pid started here, never by a pattern) is ended when the command exits, at either limit: a child it forked
+ *  that keeps the pipe open can't hold the read. It settles on the command's exit (a moment is allowed for the last of its
+ *  output) or the timer, never on the pipe closing. Undefined unless it exits 0. */
 export function runBounded(program: string, args: readonly string[], env: Record<string, string>, timeoutMs: number, maxBytes: number): Promise<string | undefined> {
   return new Promise((resolve) => {
     let dir: string;
@@ -166,50 +176,70 @@ export function runBounded(program: string, args: readonly string[], env: Record
       resolve(undefined);
       return;
     }
-    const done = (v: string | undefined): void => {
-      clearTimeout(timer);
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
-      resolve(v);
-    };
-    const child = spawn(plan.file, plan.args, { cwd: dir, env, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, windowsVerbatimArguments: plan.verbatim });
+    const posix = process.platform !== "win32";
+    const child = spawn(plan.file, plan.args, { cwd: dir, env, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, windowsVerbatimArguments: plan.verbatim, detached: posix });
     noteSpawned(child.pid, child); // a list read is never the user
+    const endGroup = (): void => {
+      try {
+        if (posix && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch { /* already gone */ }
+    };
     const chunks: Buffer[] = [];
     let size = 0;
-    let over = false;
+    let failed = false;
+    let settled = false;
+    let exitCode: number | null = null;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      endGroup();
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      resolve(!failed && exitCode === 0 ? Buffer.concat(chunks).toString("utf8") : undefined);
+    };
     child.stdout.on("data", (c: Buffer) => {
       size += c.length;
       if (size > maxBytes) {
-        over = true;
-        child.kill("SIGKILL");
+        failed = true;
+        settle();
         return;
       }
       chunks.push(c);
     });
-    const timer = setTimeout(() => { over = true; child.kill("SIGKILL"); }, timeoutMs);
-    child.on("error", () => done(undefined));
-    child.on("close", (code) => done(!over && code === 0 ? Buffer.concat(chunks).toString("utf8") : undefined));
+    const timer = setTimeout(() => { failed = true; settle(); }, timeoutMs);
+    child.on("error", () => { failed = true; settle(); });
+    child.on("exit", (code) => { exitCode = code; setTimeout(settle, 100); });
+    child.on("close", settle);
   });
 }
 
 /** a. The list command, after the launch checks: the program found on the backend's own PATH, and its version command
- *  answering as the declared identity says. Undefined when any check or the run fails. */
-export async function runListCommand(c: NonNullable<ModelListDecl["command"]>, env: Record<string, string>): Promise<string | undefined> {
+ *  answering as `identity` says (the backend's own `quirks.launch.identity` when the program is its own). One time limit
+ *  covers the whole read, the version check and the run together. Undefined when any check or the run fails. */
+export async function runListCommand(c: NonNullable<ModelListDecl["command"]>, env: Record<string, string>, identity: NonNullable<NonNullable<ModelListDecl["command"]>["identity"]>): Promise<string | undefined> {
+  const started = Date.now();
+  const left = (): number => c.timeoutMs - (Date.now() - started);
   const path = resolveProgram(c.program, env["PATH"] ?? env["Path"]);
   if (path === undefined) return undefined;
-  const said = await runCapture(path, [...c.identity.versionArgs], env, 10_000).catch(() => undefined);
+  const said = await runCapture(path, [...identity.versionArgs], env, Math.max(1, left())).catch(() => undefined);
   let ok = false;
   try {
-    ok = said !== undefined && new RegExp(c.identity.versionPattern, "m").test(said.trim());
+    ok = said !== undefined && new RegExp(identity.versionPattern, "m").test(said.trim());
   } catch {
     ok = false;
   }
-  if (!ok) return undefined;
-  return runBounded(path, c.args, env, c.timeoutMs, c.maxBytes);
+  if (!ok || left() <= 0) return undefined;
+  return runBounded(path, c.args, env, left(), c.maxBytes);
 }
 
 /** What a backend gives the service: its declaration and the environment its launch would give a program. */
 export interface ListableBackend {
   readonly id: string;
+  /** MOSS's own bundled plugin's backend: the only kind whose declaration is run or read. */
+  readonly bundled?: boolean;
+  /** The backend's own program and identity: what a list command of the same program is checked against. */
+  readonly ownProgram?: { program: string; identity: { versionArgs: readonly string[]; versionPattern: string } };
   readonly modelList?: ModelListDecl;
   listEnv?(): Record<string, string>;
 }
@@ -239,6 +269,8 @@ const SessionMemory = z.object({
   byBackend: z.record(z.string().max(128), z.object({ at: z.number(), models: z.array(BackendModelOption).max(MODELS_MAX) })),
 });
 const BACKENDS_KEPT = 32;
+/** How many backends' lists are read at once. */
+const READS_AT_ONCE = 2;
 const MEMORY_MAX_BYTES = 4 * 1024 * 1024;
 
 export interface BackendModelListsOptions {
@@ -246,6 +278,8 @@ export interface BackendModelListsOptions {
   userHome: string;
   now?: () => number;
   ttlMs?: number;
+  /** How long a failed read rests before it is tried again (a minute). */
+  retryMs?: number;
   log?: (line: string) => void;
   /** Test seams. */
   runCommand?: typeof runListCommand;
@@ -256,7 +290,10 @@ export class BackendModelLists {
   readonly #o: BackendModelListsOptions;
   readonly #declared = new Map<string, ListedModels>();
   readonly #reading = new Map<string, Promise<void>>();
-  readonly #failed = new Set<string>();
+  readonly #failedAt = new Map<string, number>();
+  readonly #logged = new Set<string>();
+  readonly #waiting: (() => void)[] = [];
+  #active = 0;
   #memory: z.infer<typeof SessionMemory> | undefined;
 
   constructor(o: BackendModelListsOptions) {
@@ -270,25 +307,42 @@ export class BackendModelLists {
   /** The backend's list: its declared one (cached, read again in the background when old), else what a session of it
    *  reported; undefined when neither is known. */
   async get(b: ListableBackend): Promise<ListedModels | undefined> {
-    if (b.modelList !== undefined) {
+    // The second check of "bundled only" (the first is where the declaration becomes a backend).
+    if (b.modelList !== undefined && b.bundled === true) {
       const now = this.#o.now?.() ?? Date.now();
       const had = this.#declared.get(b.id);
-      if (had === undefined) await this.#read(b);
-      else if (now - had.at > (this.#o.ttlMs ?? 10 * 60_000)) void this.#read(b);
+      const failedAt = this.#failedAt.get(b.id);
+      // A read that failed isn't tried again for a while: every ask would otherwise start the program again.
+      const resting = failedAt !== undefined && now - failedAt < (this.#o.retryMs ?? 60_000);
+      if (had === undefined && !resting) await this.#read(b);
+      else if (had !== undefined && !resting && now - had.at > (this.#o.ttlMs ?? 10 * 60_000)) void this.#read(b);
       const got = this.#declared.get(b.id);
       if (got !== undefined) return got;
     }
     return this.#remembered(b.id);
   }
 
+  /** At most `READS_AT_ONCE` backends read together: the rest wait their turn. */
+  async #turn<T>(run: () => Promise<T>): Promise<T> {
+    while (this.#active >= READS_AT_ONCE) await new Promise<void>((r) => this.#waiting.push(r));
+    this.#active++;
+    try {
+      return await run();
+    } finally {
+      this.#active--;
+      this.#waiting.shift()?.();
+    }
+  }
+
   #read(b: ListableBackend): Promise<void> {
     const decl = b.modelList!;
     const going = this.#reading.get(b.id);
     if (going !== undefined) return going;
-    const job = (async () => {
+    const job = this.#turn(async () => {
       let found: ListedModels | undefined;
       if (decl.command !== undefined) {
-        const text = await (this.#o.runCommand ?? runListCommand)(decl.command, b.listEnv?.() ?? {}).catch(() => undefined);
+        const identity = b.ownProgram !== undefined && decl.command.program === b.ownProgram.program ? b.ownProgram.identity : decl.command.identity;
+        const text = identity === undefined ? undefined : await (this.#o.runCommand ?? runListCommand)(decl.command, b.listEnv?.() ?? {}, { versionArgs: [...identity.versionArgs], versionPattern: identity.versionPattern }).catch(() => undefined);
         const models = text === undefined ? undefined : parseModelList(text, decl.reader);
         if (models !== undefined) found = { source: "command", models, at: this.#o.now?.() ?? Date.now() };
       }
@@ -299,13 +353,17 @@ export class BackendModelLists {
       }
       if (found !== undefined) {
         this.#declared.set(b.id, found);
-        this.#failed.delete(b.id);
-      } else if (!this.#failed.has(b.id)) {
+        this.#failedAt.delete(b.id);
+        this.#logged.delete(b.id);
+      } else {
+        this.#failedAt.set(b.id, this.#o.now?.() ?? Date.now());
         // One plain line per agent until a read works again; the panel just doesn't get this source.
-        this.#failed.add(b.id);
-        this.#o.log?.(`agents: ${b.id}'s own model list couldn't be read, so the models it reported in a session (if any) are offered`);
+        if (!this.#logged.has(b.id)) {
+          this.#logged.add(b.id);
+          this.#o.log?.(`agents: ${b.id}'s own model list couldn't be read, so the models it reported in a session (if any) are offered`);
+        }
       }
-    })().finally(() => this.#reading.delete(b.id));
+    }).finally(() => this.#reading.delete(b.id));
     this.#reading.set(b.id, job);
     return job;
   }
@@ -343,7 +401,7 @@ export class BackendModelLists {
     const next = { v: 1 as const, byBackend: Object.fromEntries([[backend, { at: this.#o.now?.() ?? Date.now(), models: [...models] }], ...rest].slice(0, BACKENDS_KEPT)) };
     this.#memory = next;
     try {
-      mkdirSync(dirname(this.#path), { recursive: true });
+      mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
       const tmp = `${this.#path}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 });
       renameSync(tmp, this.#path);
