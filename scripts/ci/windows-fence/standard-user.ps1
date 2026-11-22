@@ -76,8 +76,21 @@ $e2e = @(
 )
 $code = Invoke-AsUser "e2e" $e2e 2400
 $text = Get-Content (Join-Path $ci "e2e.log") -Raw
+# The uninstaller's order: the user forgets its own grants, then the administrator removes the rest.
+$null = Invoke-AsUser "forget" @("`"$ucore`" sandbox forget", "echo exit=%ERRORLEVEL%", "`"$prot\srt-win.exe`" user status") 300
+$forgot = Get-Content (Join-Path $ci "forget.log") -Raw
 $removeCode = Invoke-Limited "remove for $name, by the administrator" $ucore @("sandbox", "remove") 900
+$left = @()
+if ($forgot -notmatch "exit=0") { $left += "the user's forget failed" }
+if ($forgot -notmatch '"persistent_grants":\{[^}]*"state":"none"') { $left += "the user's persistent grants" }
+if ($forgot -notmatch '"profile_grant":\{"state":"none"') { $left += "the user's profile read grant" }
+if (Get-LocalUser | Where-Object Name -like "moss-sb-*") { $left += "pool accounts" }
+if (Get-ChildItem -Directory C:\Users -Filter "moss-sb-*" -ErrorAction SilentlyContinue) { $left += "pool profile folders" }
+if (Get-ScheduledTask -TaskName "MOSS Sandbox Reset $ownerSid" -ErrorAction SilentlyContinue) { $left += "the reset task" }
+if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\markers\$ownerSid.json")) { $left += "the marker" }
+if ($left.Count -gt 0) { Write-Output "left after forget and remove: $($left -join '; ')" }
 if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
 if ($text -notmatch "exit=0") { throw "the fenced suite failed as the standard user in Session 0" }
 if ($removeCode -ne 0) { throw "remove for the standard user exited $removeCode" }
+if ($left.Count -gt 0) { throw "forget and remove left $($left.Count) thing(s)" }
 Write-Output "the fenced suite passed as a standard user's task in Session 0"

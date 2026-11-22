@@ -38,10 +38,16 @@ export async function protectedCopyPath(): Promise<string> {
   return String(out).trim();
 }
 
-/** Whether the current process is running from the protected copy location. */
+/** Whether the current process is running from a protected copy: `%ProgramFiles%\MOSS Sandbox\<SID>\moss-core.exe`
+ *  for the SID its own path names (`installerTargetSid`). Not the running token's SID: an installer elevates a standard
+ *  user's setup as another account (an administrator's), and the copy is the user's all the same (lane WS: a standard
+ *  user's setup run elevated by an administrator was refused). */
 export async function isProtectedCopy(execPath: string = process.execPath): Promise<boolean> {
-  const protectedPath = await protectedCopyPath();
-  return win32.normalize(execPath).toUpperCase() === win32.normalize(protectedPath).toUpperCase();
+  const sid = installerTargetSid(execPath);
+  if (sid === null) return false;
+  const { execFileSync } = await import("node:child_process");
+  const pf = String(execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "[Environment]::GetFolderPath('ProgramFiles')"], { encoding: "utf8", windowsHide: true })).trim();
+  return win32.normalize(execPath).toUpperCase() === win32.join(pf, "MOSS Sandbox", sid, "moss-core.exe").toUpperCase();
 }
 
 export { SRT_WIN_PINS, launcherPinned, authenticodeDigest, srtWinArch, srtWinPath, launcherProblem, launcherDigest, type SrtWinArch } from "./windows-launcher";
