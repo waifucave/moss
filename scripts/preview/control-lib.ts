@@ -72,7 +72,7 @@ export function parseChord(spec: string): Chord {
 }
 
 // ── the command line ─────────────────────────────────────────────────────────────────────────────────────────────────
-export const COMMANDS = ["shot", "text", "click", "type", "key", "scroll", "hover", "drag", "go", "wait", "theme", "size", "reload", "end", "call", "events", "sessions", "seed", "logs"] as const;
+export const COMMANDS = ["shot", "text", "click", "type", "key", "scroll", "hover", "drag", "go", "wait", "theme", "size", "reload", "end", "call", "events", "sessions", "seed", "logs", "spent"] as const;
 export type CommandName = (typeof COMMANDS)[number];
 export const SCENES = ["message", "child", "waiting", "running", "idle", "ended"] as const;
 
@@ -105,6 +105,7 @@ export const CTL_USAGE = [
   "  events [--area <a>]... [--for <s>] [--count <n>]   follow the engine's events (areas: " + MOSS_AREAS.join(", ") + "); default 10 s",
   "  sessions                     the sessions (id, backend, status, title)",
   "  seed <scene>                 more sample sessions: " + SCENES.join(", "),
+  "  spent                        a real-agents preview: the real turns and sessions spent per agent against the budget (2 sessions per agent, 3 turns per session)",
   "  logs [--app|--engine] [--since <Ns|Nm>] [--tail <n>]   the preview's logs (default both, last 60 lines)",
 ].join("\n");
 
@@ -161,7 +162,7 @@ export function parseCtl(argv: readonly string[]): Parsed {
     case "wait": need(1, "one target"); only("--timeout"); args.target = classifyTarget(a[0]!); args.timeoutS = has("--timeout") ? num("--timeout", one("--timeout"), 1, 600) : 30; break;
     case "theme": need(1, "light, dark or system"); only(); if (!["light", "dark", "system"].includes(a[0]!)) throw new UsageError("theme is light, dark or system"); args.value = a[0]; break;
     case "size": { need(1, "<w>x<h>"); only(); const m = /^(\d{3,4})x(\d{3,4})$/.exec(a[0]!); if (m === null) throw new UsageError("size is <w>x<h> in pixels, for example 1180x760"); args.w = Number(m[1]); args.h = Number(m[2]); if (args.w as number < 320 || args.h as number < 240 || args.w as number > 8000 || args.h as number > 8000) throw new UsageError("a size is 320x240 to 8000x8000"); break; }
-    case "reload": case "end": case "sessions": need(0, "no argument"); only(); break;
+    case "reload": case "end": case "sessions": case "spent": need(0, "no argument"); only(); break;
     case "call": {
       only();
       if (a.length < 1 || a.length > 2) throw new UsageError("call <method> [<json>]");
@@ -218,6 +219,7 @@ export function render(cmd: string, result: unknown): string {
     }
     case "call": return JSON.stringify(r.result, null, 2);
     case "logs": return String(r.text ?? "");
+    case "spent": return String(r.text ?? "");
     case "shot": return `${r.path} (${r.width}x${r.height}${r.full === true ? ", the whole page" : ""})`;
     default: return typeof r.message === "string" ? r.message : JSON.stringify(result);
   }

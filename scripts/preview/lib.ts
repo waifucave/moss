@@ -21,6 +21,8 @@ export interface Options {
   shot?: string;
   /** Open the control door (scripts/preview/ctl.ts drives it): a private socket in the run's own folder, a token in the run's record. Without it the preview opens none. */
   control: boolean;
+  /** Start the owner's REAL Claude Code, Codex, OpenCode and Antigravity (real-lib.ts): their real home and a minimal PATH only for those agents, under a hard budget. */
+  realAgents: boolean;
   appearance: Appearance;
   /** Where to copy the run's logs (the engine's, the app's, the builds', the fake agents' reports) before its folder is removed. */
   logs?: string;
@@ -32,7 +34,7 @@ export class UsageError extends Error {}
 
 /** The command line: `--once`, `--stop`, `--headless --shot <png>`, `--appearance light|dark|system`. Anything else is refused. */
 export function parseOptions(argv: readonly string[]): Options {
-  const o: Options = { mode: "start", once: false, headless: false, control: false, appearance: "system", help: false };
+  const o: Options = { mode: "start", once: false, headless: false, control: false, realAgents: false, appearance: "system", help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     const value = (): string => {
@@ -46,6 +48,7 @@ export function parseOptions(argv: readonly string[]): Options {
     else if (a === "--shot") o.shot = value();
     else if (a === "--logs") o.logs = value();
     else if (a === "--control") o.control = true;
+    else if (a === "--real-agents") o.realAgents = true;
     else if (a === "--appearance") {
       const v = value();
       if (v !== "light" && v !== "dark" && v !== "system") throw new UsageError(`--appearance is light, dark or system, not ${v}`);
@@ -53,8 +56,9 @@ export function parseOptions(argv: readonly string[]): Options {
     } else if (a === "--help" || a === "-h") o.help = true;
     else throw new UsageError(`unknown argument ${a}`);
   }
-  if (o.mode === "stop" && (o.once || o.headless || o.shot !== undefined || o.control)) throw new UsageError("--stop stands alone");
+  if (o.mode === "stop" && (o.once || o.headless || o.shot !== undefined || o.control || o.realAgents)) throw new UsageError("--stop stands alone");
   if (o.headless && o.shot === undefined && !o.control) throw new UsageError("--headless needs --shot <png> (one picture, then it ends) or --control (it runs until ctl ends it)");
+  if (o.realAgents && !o.control) throw new UsageError("--real-agents needs --control: real sessions are started and watched through ctl.ts, which keeps the budget visible");
   if (o.shot !== undefined && o.control) throw new UsageError("--shot and --control do not go together: a controlled preview takes its pictures with ctl.ts shot <png>");
   if (o.shot !== undefined && !o.headless) throw new UsageError("--shot is for --headless: the visible preview is looked at, not photographed");
   if (o.shot !== undefined && !o.shot.endsWith(".png")) throw new UsageError("--shot names a .png file");
@@ -68,6 +72,7 @@ export const USAGE = [
   "scripts/pinned-bun scripts/preview/run.ts --headless --shot <png> [--appearance light|dark]   offscreen: one picture of the window, then end",
   "                              --logs <dir> (with any start) copies the run's logs there before its folder is removed",
   "scripts/pinned-bun scripts/preview/run.ts --control [--headless]   start with the control door open: scripts/preview/ctl.ts then drives the window and the engine (ctl.ts --help)",
+  "scripts/pinned-bun scripts/preview/run.ts --control --real-agents [--headless]   the same with the owner's REAL Claude Code, Codex, OpenCode and Antigravity (their own logins; at most 2 sessions per agent, 3 turns per session, one-line prompts)",
 ].join("\n");
 
 /** Why a preview must not start here, or undefined. The first thing the command checks, before any folder or process. */

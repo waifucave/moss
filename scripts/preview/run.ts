@@ -23,7 +23,7 @@ import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_pr
 import { randomBytes } from "node:crypto";
 import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, watch, writeFileSync, chmodSync, type FSWatcher } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
@@ -36,6 +36,7 @@ import { listProcesses, nameLeftovers, reap, runProcesses } from "../acceptance/
 import { AGENT_SHIMS, PREVIEW_PREFIX, USAGE, UsageError, WATCHED, appArgs, appEnv, baseEnv, daemonEnv, isolationProblems, layoutFor, ownRoot, parseOptions, parseRecord, reloads, sameProcess, shimScript, type Options, type Record_, type Started } from "./lib";
 import { quirksOf, seed, titleFor } from "./seed";
 import { startControl, type RunningControl } from "./control";
+import { diffSnapshots, guardShim, readSpent, realAgentEnv, renderSpent, resolveReal, snapshot } from "./real-lib";
 import { newToken } from "./control-lib";
 
 const REPO = resolve(import.meta.dir, "..", "..");
@@ -141,6 +142,9 @@ let root = "";
 let ending = false;
 let logsTo: string | undefined;
 let control: RunningControl | undefined;
+/** A real-agents run: the budget folder, and the listings of what the engine must never write under the person's home, taken before anything starts. */
+let budgetDir: string | undefined;
+const homeWatch: { dir: string; before: Map<string, number> }[] = [];
 
 function note(name: string, proc: ChildProcess): void {
   if (proc.pid === undefined) return;
@@ -190,6 +194,12 @@ async function cleanup(code: number): Promise<never> {
       mkdirSync(logsTo, { recursive: true });
       for (const [from, name] of [[join(root, "logs"), "run"], [join(root, "user", ".moss", "logs"), "home"], [join(root, "agents"), "agents"]] as const) if (existsSync(from)) cpSync(from, join(logsTo, name), { recursive: true });
     } catch (err) { say(`the logs were not copied: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+  if (budgetDir !== undefined) say(renderSpent(readSpent(budgetDir)));
+  for (const w of homeWatch) {
+    const d = diffSnapshots(w.before, snapshot(w.dir));
+    const n = d.added.length + d.removed.length + d.changed.length;
+    say(n === 0 ? `${w.dir}: untouched (${w.before.size} entries, names and times compared)` : `${w.dir}: CHANGED during the run (not necessarily by it: another program may use it): ${d.added.length} added, ${d.removed.length} removed, ${d.changed.length} changed: ${[...d.added, ...d.removed, ...d.changed].slice(0, 20).join(", ")}`);
   }
   removeRoot(root);
   if (readRecord()?.pid === process.pid) rmSync(RECORD, { force: true });
@@ -258,8 +268,27 @@ async function main(o: Options): Promise<void> {
   // The run's own plug for anything that would start the engine through the OS: a program that only says it cannot (the app's `MOSS_DAEMON_BIN`).
   writeFileSync(layout.stubBin, "#!/bin/sh\necho 'preview: the app tried to start an engine through the OS' >&2\nexit 1\n", { mode: 0o700 });
   // The three agents' programs, as shims in the preview's own bin folder, first on its PATH (and nothing of the person's on it).
-  for (const s of AGENT_SHIMS) writeFileSync(join(layout.bin, s.command), shimScript({ bun: process.execPath, fake: FAKE_ACP_AGENT, config: join(layout.agents, `${s.backend}.json`) }), { mode: 0o755 });
-  for (const s of AGENT_SHIMS) chmodSync(join(layout.bin, s.command), 0o755);
+  // In a real-agents preview Claude Code and Codex are the real programs (behind their guard), so only Gemini stays a stand-in.
+  const standIns = o.realAgents ? AGENT_SHIMS.filter((s) => s.backend === "gemini") : AGENT_SHIMS;
+  for (const s of standIns) writeFileSync(join(layout.bin, s.command), shimScript({ bun: process.execPath, fake: FAKE_ACP_AGENT, config: join(layout.agents, `${s.backend}.json`) }), { mode: 0o755 });
+  for (const s of standIns) chmodSync(join(layout.bin, s.command), 0o755);
+  if (o.realAgents) {
+    // The listings that prove the engine writes nothing under the person's home are taken BEFORE anything of the preview starts (names and times only).
+    for (const dir of [join(homedir(), ".moss"), join(homedir(), "Library", "LaunchAgents")]) homeWatch.push({ dir, before: snapshot(dir) });
+    mkdirSync(join(layout.work, "real-test"), { recursive: true });
+    budgetDir = join(root, "budget");
+    mkdirSync(budgetDir, { recursive: true, mode: 0o700 });
+    const searchPath = [...new Set([...(process.env.PATH ?? "").split(":"), "/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local", "bin")])].filter((d) => d.startsWith("/")).join(":");
+    const resolved = resolveReal((program) => Bun.which(program, { PATH: searchPath }) ?? undefined);
+    const env = realAgentEnv(homedir(), resolved.folders);
+    for (const f of resolved.found) {
+      writeFileSync(join(layout.bin, f.command), guardShim({ bun: process.execPath, guard: join(REPO, "scripts", "preview", "real-guard.ts"), agent: f.command, budget: budgetDir, real: f.path, env }), { mode: 0o755 });
+      chmodSync(join(layout.bin, f.command), 0o755);
+    }
+    say(`real agents: ${resolved.found.map((f) => `${f.backend} (${f.path})`).join(", ") || "none found"}`);
+    for (const m of resolved.missing) say(`real agents: ${m.backend} is not offered: ${m.why}`);
+    say(`real agents: each real program gets only HOME=${env.HOME} and PATH=${env.PATH}; the engine keeps its own throwaway HOME and PATH. Budget: ${"2 sessions per agent, 3 turns per session, one-line prompts"}`);
+  }
   makeKeychain(layout.keychain);
   say(`folder ${root}`);
 
@@ -310,7 +339,7 @@ async function main(o: Options): Promise<void> {
   say("seeding the sample sessions through the engine's own doors");
   const client = (await hello(sock, "app", readFileSync(token, "utf8").trim(), "moss-preview", MOSS_PROTOCOL_VERSION)).client;
   const seeded = await seed({
-    c: client, layout, keyedModel, dummyKey, fakeAcpAgent: FAKE_ACP_AGENT, say,
+    c: client, layout, keyedModel, dummyKey, fakeAcpAgent: FAKE_ACP_AGENT, say, real: o.realAgents,
     quirks: Object.fromEntries(AGENT_SHIMS.map((s) => [s.backend, quirksOf(REPO, s.backend)])),
   });
   say(`seeded: ${seeded.sessions.map((s) => s.what).join("; ")}`);
@@ -331,7 +360,8 @@ async function main(o: Options): Promise<void> {
   if (o.control) {
     control = await startControl({
       socketPath: layout.ctlSock, token: ctlToken!, appSocketPath: layout.appDoor, appToken: appToken!, engineSock: sock, engineTokenFile: token,
-      seed: { layout, keyedModel, dummyKey, fakeAcpAgent: FAKE_ACP_AGENT, say, quirks: Object.fromEntries(AGENT_SHIMS.map((s) => [s.backend, quirksOf(REPO, s.backend)])) },
+      ...(budgetDir !== undefined ? { budgetDir } : {}),
+      seed: { layout, keyedModel, dummyKey, fakeAcpAgent: FAKE_ACP_AGENT, say, real: o.realAgents, quirks: Object.fromEntries(AGENT_SHIMS.map((s) => [s.backend, quirksOf(REPO, s.backend)])) },
       logs: { app: join(layout.home, "logs", "app.log"), engine: join(layout.logs, "engine.log"), appOut: join(layout.logs, "app.out.log") },
       say,
     });
