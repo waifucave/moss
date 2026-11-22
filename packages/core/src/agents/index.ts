@@ -45,6 +45,7 @@ import { placeInClaudeCode } from "./claude-code/placement";
 import type { HookSource } from "../runtime-sdk/turn-loop/hooks";
 import type { PluginPartsSource } from "./placement";
 import { ContributedBackendCache, type ContributedBackend } from "./plugin-backends";
+import { BackendModelLists, reportedModels } from "./model-list";
 import { ADMISSIONS } from "./sandbox/admission";
 import type { PluginRegistry } from "../contracts/plugin-registry";
 import { MossCodeBackend, type MossCodeDeps } from "./moss-code/backend";
@@ -178,7 +179,7 @@ export function inProcessBackend(deps: Omit<InProcessBackendDeps, "pauseGateFor"
  *  them to `createMossServer` as its `bridge`, and its `handlers` among the server's), the watchdog,
  *  the backends and the manager. `close` ends every agent's process (the sessions stay to be reattached), revokes
  *  every token. */
-export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: BridgeMossParts; tokens: BridgeTokens; backends: () => AgentBackend[]; codeAgent: CodeAgentDoor; computer: string; close(): Promise<void> } {
+export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: BridgeMossParts; tokens: BridgeTokens; backends: () => AgentBackend[]; lists: BackendModelLists; codeAgent: CodeAgentDoor; computer: string; close(): Promise<void> } {
   const tokens = new BridgeTokens();
   // A bot's children are drawn by the bot's own builder (agents/bot-child.ts), by construction: both of MOSS's own
   // backends get it here, and refuse a bot's child without it.
@@ -186,6 +187,8 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
   const botChild: BotChildSandbox = botChildFor(botChildHomes);
   // The bridge connects to the daemon's own endpoint, where lane C serves the `bridge` role.
   const socketPath = o.socketPath;
+  // Each agent's models: its plugin's declared list, and what a session of it reported (lane MS).
+  const lists = new BackendModelLists({ home: o.home, userHome: o.userHome ?? homedir(), ...(o.log ? { log: o.log } : {}) });
   let backends: () => AgentBackend[] = () => [];
   const manager: AgentManager = new AgentManager({
     home: o.home, computer: o.computer, host: o.host, approvals: o.approvals, tree: o.tree, fence: o.fence, clock: o.clock, tokens,
@@ -205,6 +208,9 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
     childRunsLater: (c, path) => botChildRunsLater(c.fence, { ...botChildHomes, root: c.rootPath, level: c.level }, path),
     ...(o.turnStarted ? { turnStarted: o.turnStarted } : {}),
     ...(o.log ? { log: o.log } : {}),
+    modelsReported: (b, s) => {
+      if (b instanceof AcpAgentBackend) lists.noteSession(b.id, reportedModels(s.configOptions?.(), b.quirks.config));
+    },
   });
   const wire = (id: string) => manager.wire(id);
   // Claude Code reads its own skills, agents and hooks folders: the plugins' parts are placed there (§9.3).
@@ -225,6 +231,8 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
     admissions: c.bundled ? ADMISSIONS : {},
     ...(c.bundled && c.id in place ? { place: place[c.id as keyof typeof place] } : {}),
     ...(c.file.readOnlyMode ? { readOnlyMode: c.file.readOnlyMode } : {}),
+    // Only MOSS's own plugin's declaration runs a program or reads a file (see `QuirksFileSchema.modelList`).
+    ...(c.bundled && c.file.modelList ? { modelList: c.file.modelList } : {}),
   });
   const cache = new ContributedBackendCache(build);
   // Core backends: MOSS's own coding agent and lane A's in-process subagents.
@@ -254,7 +262,7 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
   });
   const codeAgent: CodeAgentDoor = codeAgentDoor(codeAgents);
   return {
-    manager, moss, tokens, backends: () => backends(), codeAgent, computer: o.computer,
+    manager, moss, tokens, backends: () => backends(), lists, codeAgent, computer: o.computer,
     close: async () => {
       peers?.close();
       // The user's coding sessions end with the agents: their relays first, then every agent's process.

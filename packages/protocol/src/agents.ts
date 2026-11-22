@@ -103,19 +103,24 @@ export const BackendModelOption = z.object({
 export type BackendModelOption = z.infer<typeof BackendModelOption>;
 
 /** What a backend offers to start with (spec revision 20, §9.5), before a session exists: MOSS's coding agent answers
- *  from the model catalog (`source: "catalog"`, its default the person's default model); an ACP agent from its quirks
- *  or a probe where they give them (`quirks`, `probe`); otherwise `known: false`, a valid answer meaning "unknown until
+ *  from the model catalog (`source: "catalog"`, its default the person's default model); an ACP agent from the list its
+ *  plugin declares: its own list command (`command`) or one file of its own config folder (`file`); else from what a
+ *  real session of it reported (`session`, kept per backend in the home's run folder); or from its quirks or a probe
+ *  where they give them (`quirks`, `probe`); otherwise `known: false`, a valid answer meaning "unknown until
  *  started" (the session's own picker lists them once it runs). An effort list with no model is the backend's own
  *  efforts where it has them apart from models. */
 export const AgentBackendOptions = z.object({
   backend: utf16(128, 1),
   known: z.boolean(),
-  source: z.enum(["catalog", "quirks", "probe", "unknown"]),
+  source: z.enum(["catalog", "quirks", "probe", "command", "file", "session", "unknown"]),
   models: z.array(BackendModelOption).max(1_000),
   efforts: z.array(utf16(32, 1)).max(16).optional(),
   default: z.object({ model: utf16(200, 1).optional(), effort: utf16(32, 1).optional() }).optional(),
 });
 export type AgentBackendOptions = z.infer<typeof AgentBackendOptions>;
+
+/** How many agents' last choices `RecentStart.byBackend` keeps. */
+export const RECENT_BACKENDS_MAX = 32;
 
 /** How many folders `RecentStart` keeps. */
 export const RECENT_FOLDERS_MAX = 8;
@@ -131,6 +136,9 @@ export const RecentStart = z.object({
   computer: ComputerName.optional(),
   /** The folders started in last, newest first, at most `RECENT_FOLDERS_MAX`. */
   roots: z.array(z.object({ root: TreePath, at: Timestamp })).max(RECENT_FOLDERS_MAX),
+  /** Each agent's own last model and effort (the person's starts only), so the panel preselects the last used FOR THAT
+   *  agent, not only for the agent started last. At most `RECENT_BACKENDS_MAX` agents, newest first. */
+  byBackend: z.array(z.object({ backend: utf16(128, 1), model: utf16(200, 1).optional(), effort: utf16(32, 1).optional() })).max(32).optional(),
 });
 export type RecentStart = z.infer<typeof RecentStart>;
 

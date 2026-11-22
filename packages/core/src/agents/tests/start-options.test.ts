@@ -17,7 +17,7 @@ describe("the person's last start, kept in a file", () => {
   test("nothing yet with no file; a start is kept for the next engine; the file is private", () => {
     expect(make().recent()).toEqual({ roots: [] });
     make().remember({ backend: "codex", computer: "Studio", root: "home/Studio/app", model: "gpt-6", effort: "high" }, 5);
-    expect(make().recent()).toEqual({ backend: "codex", computer: "Studio", model: "gpt-6", effort: "high", roots: [{ root: "home/Studio/app", at: 5 }] });
+    expect(make().recent()).toEqual({ backend: "codex", computer: "Studio", model: "gpt-6", effort: "high", roots: [{ root: "home/Studio/app", at: 5 }], byBackend: [{ backend: "codex", model: "gpt-6", effort: "high" }] });
     const file = join(home, "run", "agents", "recent-start.json");
     expect(statSync(file).mode & 0o077).toBe(0);
     expect(JSON.parse(readFileSync(file, "utf8")).roots).toHaveLength(1);

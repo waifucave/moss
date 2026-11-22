@@ -128,6 +128,8 @@ export interface AgentManagerOptions {
   /** Whether a bot's agent's file change to `path` is a run-later place (agents/bot-child.ts `botChildRunsLater`):
    *  refused before any card, as the bot's own. Without it the run-later names alone are refused. */
   childRunsLater?: (child: { bot: string; rootPath: string; level: Level | undefined; fence: SandboxPolicy }, path: string) => boolean;
+  /** An agent session started: what it reported of its models (lane MS's per-agent memory, `agents/model-list.ts`). */
+  modelsReported?: (backend: AgentBackend, session: AgentSession) => void;
   /** A turn of an agent or coding session starts from `input` (what the conversation saw, as a bot's turn reports it:
    *  the addresses the user's own message gave, a turn of the user's resetting the fetch budget). */
   turnStarted?: (sessionId: string, input: TurnInput, origin: TurnOrigin | undefined) => void;
@@ -796,6 +798,7 @@ export class AgentManager {
         this.#o.turnStarted?.(id, input, origin);
       },
       toolShows: entry.shows,
+      started: (s) => this.#o.modelsReported?.(backend, s),
       // A turn another computer sent carries the prompt it built there (its images read there).
       promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
       redact: (v) => transcript.redacted(v),
@@ -1304,6 +1307,13 @@ export class AgentManager {
       setAgentModel: (id, model, effort) => this.setModel(id, model, effort),
       reattach: (views) => this.reattachAll(views),
     };
+  }
+
+  /** The backend of an agent or coding session on this computer and the config options its running agent reported (none
+   *  before its first turn starts it), for `models.list {session}`; undefined: not such a session here. */
+  sessionOptions(sessionId: string): { backend: AgentBackend; options: ReturnType<NonNullable<AgentSession["configOptions"]>> | undefined } | undefined {
+    const e = this.#entries.get(sessionId);
+    return e === undefined ? undefined : { backend: e.backend, options: e.driver.session?.configOptions?.() };
   }
 
   /** `session.setModel` on an agent or coding session (item 90's model picker). */

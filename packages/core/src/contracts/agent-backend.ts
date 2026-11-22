@@ -224,6 +224,8 @@ export interface AgentSession {
   /** ACP's `session/cancel`: waits up to 5 seconds for the turn to end `cancelled`. */
   cancel(): Promise<void>;
   setConfig(option: "model" | "effort", value: string): Promise<void>;
+  /** The config options the agent reported (ACP `configOptions`): its models and efforts, for a picker. Not every session has them. */
+  configOptions?(): readonly { id: string; category?: string; currentValue?: string; values: readonly string[] }[];
   /** Cancel, then end the process group (§9.3 "Stopping"). */
   stop(): Promise<void>;
   /** The host's permission handler; until one is set, requests are answered `cancelled`. */

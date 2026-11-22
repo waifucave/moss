@@ -24,6 +24,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import type { AgentBackend, AgentQuirks } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
+import { ModelListDeclSchema, type ModelListDecl } from "./model-list";
 
 /** The bundled plugin that holds a backend's row: `moss/agent-<id>`. */
 export const bundledAgentPluginId = (id: string): string => `moss/agent-${id}`;
@@ -90,6 +91,10 @@ export const QuirksFileSchema = z.strictObject({
   notes: z.string().max(8192).optional(),
   source: z.string().max(256),
   readOnlyMode: z.strictObject({ option: z.string().max(128), values: z.array(z.string().max(128)).min(1).max(8) }).optional(),
+  /** Where the agent keeps its own model list (its list command, or one file of its own folder), read before any session
+   *  exists (`agents/model-list.ts`). Only MOSS's own bundled plugin's declaration is acted on: another plugin's would
+   *  run its program, or read a file of the user's home, with no OK. */
+  modelList: ModelListDeclSchema.optional(),
   quirks: AgentQuirksSchema,
 });
 
@@ -100,6 +105,7 @@ export interface QuirksFile {
   notes?: string;
   source: string;
   readOnlyMode?: { option: string; values: readonly string[] };
+  modelList?: ModelListDecl;
   quirks: FileQuirks;
 }
 

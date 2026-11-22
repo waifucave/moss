@@ -34,6 +34,7 @@ import { AgentJob } from "../platform/win-job";
 import { programHash } from "./sandbox/oks";
 import { buildAgentEnv, launchContained, spawnPlan, type AgentJobLike } from "./process/launch";
 import { versionSatisfies } from "./version";
+import type { ModelListDecl } from "./model-list";
 
 export { versionSatisfies } from "./version";
 import type { ProcessTableReader } from "./process/table";
@@ -82,6 +83,8 @@ export interface AcpBackendOptions {
   makeJob?: () => AgentJobLike | null;
   /** The agent's read-only mode, for an agent that acts without asking (its quirks file's `readOnlyMode`). */
   readOnlyMode?: { option: string; values: readonly string[] };
+  /** Where the agent keeps its own model list (its quirks file's `modelList`, a bundled plugin's only). */
+  modelList?: ModelListDecl;
 }
 
 /** `AgentStartSpec`, plus what lane K's own backends read. */
@@ -144,6 +147,16 @@ export class AcpAgentBackend implements AgentBackend {
     const argv = this.quirks.launch.command[this.#opts.os ?? currentOs()];
     if (!argv || argv.length === 0) return undefined;
     return { program: argv[0]!, acpArgs: argv.slice(1) };
+  }
+
+  /** Where this agent's own model list is declared (`agents/model-list.ts`). */
+  get modelList(): ModelListDecl | undefined {
+    return this.#opts.modelList;
+  }
+
+  /** The environment this agent's launch gives a program: the list command runs under the same allow-list. */
+  listEnv(): Record<string, string> {
+    return this.#env();
   }
 
   #env(): Record<string, string> {
