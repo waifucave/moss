@@ -171,6 +171,29 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(a.text.trim()).not.toBe(b.text.trim());
   }, 300_000);
 
+  test("nothing carries over: what one command leaves in its account's profile and hive is gone before the next", async () => {
+    // A command plants in its own account's real profile (by absolute path, past its per-command HOME) and in its
+    // hive (HKCU\\Environment, which a later logon would load into a command's environment).
+    const plant = await call(tools.PowerShell!, { command: [
+      "$p = [Environment]::GetFolderPath('UserProfile')",
+      "Set-Content -LiteralPath (Join-Path $p 'carry.txt') -Value planted",
+      "[Environment]::SetEnvironmentVariable('MOSS_CARRY', 'planted', 'User')",
+      "'planted in ' + $p + ' as ' + [Environment]::UserName",
+    ].join("; ") });
+    expect(plant.text).toContain("planted in");
+    const who = /as (moss-sb-\S+)/.exec(plant.text)?.[1];
+    // Every later command, whichever account it gets, sees neither (the reset deleted the profile and its hive).
+    for (let i = 0; i < 3; i++) {
+      const look = await call(tools.PowerShell!, { command: [
+        "$p = [Environment]::GetFolderPath('UserProfile')",
+        "'user=' + [Environment]::UserName + ' file=' + (Test-Path -LiteralPath (Join-Path $p 'carry.txt')) + ' env=' + [Environment]::GetEnvironmentVariable('MOSS_CARRY', 'User') + ' process=' + $env:MOSS_CARRY",
+      ].join("; ") });
+      console.log(`[e2e] after the plant by ${who}: ${look.text.trim()}`);
+      expect(look.text).toContain("file=False");
+      expect(look.text).not.toContain("planted");
+    }
+  }, 600_000);
+
   test("nothing runs later: a risky git key is reverted and a planted hook is moved aside", async () => {
     const r = await call(tools.Bash!, { command: "rm -rf repo && git init -q repo && git -C repo config core.hooksPath /c/elsewhere && printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout && echo done" });
     expect(r.text).toContain("done");
