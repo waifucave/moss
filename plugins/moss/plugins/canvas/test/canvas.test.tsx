@@ -608,7 +608,7 @@ describe("none and many", () => {
     await waitFor(() => expect(screen.getByText("No sessions yet")).toBeDefined());
     expect(screen.getByText(/Press \+ on the bar to start one/)).toBeDefined();
     // The bar's line: a plain short line when there are none.
-    expect(document.querySelector(".test-bar [role=status]")?.textContent).toBe("No sessions");
+    await waitFor(() => expect(document.querySelector(".test-bar [role=status]")?.textContent).toBe("No sessions"));
   });
 
   test("a long title is cut with the whole title on hover", async () => {
