@@ -2354,6 +2354,24 @@
               ]
             }
           },
+          "files": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          },
           "clientMessageId": {
             "type": "string",
             "minLength": 1,

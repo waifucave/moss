@@ -25,6 +25,10 @@ export const PairStatus = z.object({
 });
 export type PairStatus = z.infer<typeof PairStatus>;
 
+/** Files one message to a bot may carry (`user.send`'s `files`), and the most one of them may weigh: past either, a plain refusal. */
+export const BOT_FILES_MAX = 10;
+export const BOT_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
 /** A reference to one UI entry: `<plugin-id>` or `<plugin-id>#<entry-id>` (§5.5 `prefer`). */
 export const EntryRef = utf16(300, 2).regex(/^[a-z][a-z0-9/-]*(#[A-Za-z0-9._-]+)?$/);
 /** A theme, `<plugin-id>#<theme-id>` (§5.1 "Entry ids"). */
@@ -355,6 +359,14 @@ export const APP_METHODS = {
       text: utf16(1_000_000),
       /** Pictures the user made or chose (an annotated screenshot from the browser view's strip), base64. */
       images: z.array(z.object({ mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]), data: utf16(10_000_000, 1) })).max(4).optional(),
+      /** Files the user chose or dropped, for a BOT's conversation only (§6, §8.5 "other attachments are passed as folder-tree
+       *  paths"): each is an absolute path on the computer the app runs on, picked by the app's own dialog or drop, never
+       *  by a script. The file stays where it is and the bot is given its folder-tree path; one outside the user's home
+       *  folder, which the tree doesn't name, is copied into the bot's scratch folder first. A refusal (typed
+       *  `file_reference_invalid`, `INVALID_PARAMS`) carries a plain sentence in `message` for the window to show as it is:
+       *  more than `BOT_FILES_MAX`, a file over `BOT_FILE_MAX_BYTES`, a folder, a file that can't be read, a file inside
+       *  MOSS's own folder, or a target that isn't a bot. */
+      files: z.array(z.strictObject({ path: utf16(4096, 1) })).max(100).optional(),
       /** The client's id for this message, so a resend is not a second message. */
       clientMessageId: utf16(128, 1),
     }),

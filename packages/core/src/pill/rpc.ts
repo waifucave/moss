@@ -8,11 +8,12 @@
 // on another computer refuse the same way. Its pictures are staged first, each named in the text as `[Image #n]`.
 // To a `pill.target` entry, the words go to the entry's handler (`PillTargetHandler.send`) through the plugin host,
 // as the plugin's own: the call is the plugin's, never the user's, so nothing it does with them counts as the user.
-import { APP_METHODS, MOSS_ERR, ERR } from "@waifucave/moss-protocol";
+import { APP_METHODS, MOSS_ERR, ERR, FILE_REFERENCE_INVALID } from "@waifucave/moss-protocol";
 import type { PluginHost } from "../contracts/plugin-host";
 import type { PluginRegistry } from "../contracts/plugin-registry";
 import { ContractError } from "../contracts/common";
 import { MethodError, handler, requireUser, type MethodHandler } from "../rpc/handler";
+import { attachFilesForBot, withFileMarks, type AttachFilesDeps } from "./attach-files";
 
 const M = APP_METHODS;
 
@@ -27,6 +28,8 @@ export interface UserSendMethodsDeps {
   /** The `pill.target` entries (`ui` entries on that spot) and the host that runs their plugins' handlers. Absent, a
    *  send to an entry is refused as not installed. */
   targets?: { registry: Pick<PluginRegistry, "entries">; host: Pick<PluginHost, "invoke"> };
+  /** Where a bot's files are looked at and kept (`attach-files.ts`). Absent, a send with files is refused. */
+  files?: AttachFilesDeps;
 }
 
 /** An active `pill.target` entry by its ref (`<plugin-id>#<entry-id>`), with its handler's name. */
@@ -53,14 +56,14 @@ export function userSendMethods(deps: UserSendMethodsDeps): Record<string, Metho
     return h;
   };
   return {
-    [M.userSend.name]: handler(M.userSend, async ({ to, text, images, clientMessageId }, ctx) => {
+    [M.userSend.name]: handler(M.userSend, async ({ to, text, images, files, clientMessageId }, ctx) => {
       const caller = requireUser(ctx, "send the user's words from the pill");
       if ("target" in to) {
         const entry = deps.targets === undefined ? undefined : targetEntry(deps.targets.registry, to.target);
         if (deps.targets === undefined || entry === undefined) {
           throw new MethodError(MOSS_ERR.NOT_INSTALLED, `no pill.target entry ${to.target} is installed and active`);
         }
-        if (images !== undefined && images.length > 0) throw new MethodError(ERR.INVALID_PARAMS, "a pill.target entry takes words only");
+        if ((images !== undefined && images.length > 0) || (files !== undefined && files.length > 0)) throw new MethodError(ERR.INVALID_PARAMS, "a pill.target entry takes words only");
         await deps.targets.host.invoke({
           pluginId: entry.pluginId,
           handler: entry.handler,
@@ -78,19 +81,25 @@ export function userSendMethods(deps: UserSendMethodsDeps): Record<string, Metho
       } else {
         id = to.session;
       }
+      const hasFiles = files !== undefined && files.length > 0;
+      if (hasFiles && !("bot" in to)) throw new MethodError(ERR.INVALID_PARAMS, "files can only be sent to a bot's conversation", { code: FILE_REFERENCE_INVALID });
+      if (hasFiles && deps.files === undefined) throw new MethodError(ERR.INVALID_PARAMS, "this engine can't take files for a bot here", { code: FILE_REFERENCE_INVALID });
       // A resend of a message the host already has (the pill retried after a dropped answer) is the first one: its
-      // pictures were staged then, so staging them again would only leave files behind. Words alone go on to
+      // pictures were staged (and its files kept) then, so doing it again would only leave files behind. Words alone go on to
       // session.send, whose own dedup answers the same way.
-      if (images !== undefined && images.length > 0) {
+      if ((images !== undefined && images.length > 0) || hasFiles) {
         const seen = deps.sentAs?.(id, clientMessageId);
         if (seen !== undefined) return { seq: seen.seq };
       }
+      // The files are looked at (and the ones the tree can't name copied) first, before a picture is staged or anything is
+      // sent, so a refusal leaves nothing behind.
+      const kept = hasFiles && "bot" in to && deps.files !== undefined ? await attachFilesForBot(deps.files, { bot: to.bot, clientMessageId, files: files! }) : [];
       const refs: { n: number; path: string }[] = [];
       for (const [i, image] of (images ?? []).entries()) {
         const staged = (await call("session.stageImage")({ id, mediaType: image.mediaType, dataBase64: image.data }, ctx)) as { path: string };
         refs.push({ n: i + 1, path: staged.path });
       }
-      const message = { text: withImageMarks(text, refs.length), clientMessageId, ...(refs.length > 0 ? { images: refs } : {}) };
+      const message = { text: withFileMarks(withImageMarks(text, refs.length), kept.length), clientMessageId, ...(refs.length > 0 ? { images: refs } : {}), ...(kept.length > 0 ? { files: kept } : {}) };
       const sent = (await call("session.send")({ id, message }, ctx)) as { seq: number };
       return { seq: sent.seq };
     }),

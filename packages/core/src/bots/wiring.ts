@@ -7,6 +7,7 @@
 // agent that acts without asking starts read-only when its computer's level is unknown). Their hooks (K's
 // `AgentManager.sessionHooks()`) feed `ListAgents`' agent rows, `session.setModel` for agents and coding sessions,
 // and the reattaching of a restart's dormant sessions; `close` ends their processes when the daemon shuts down.
+import { homedir } from "node:os";
 import { BUNDLED_ROOT_PLUGIN, topPluginIdOf, type Level, type SessionView } from "@waifucave/moss-protocol";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -366,7 +367,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
       ...sessions,
       // Lane G's `user.send`: the Dispatch pill's words go through the same session.send as the composer's, and to a
       // `pill.target` entry's handler through the plugin host, when there is one.
-      ...userSendMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
+      ...userSendMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), files: { home: o.home, userHome: o.userHome ?? homedir(), computer: o.computer }, ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
       ...(routines === undefined ? {} : routineMethods({ routines })),
       // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
       ...botRecordMethods({ bots, host, ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
