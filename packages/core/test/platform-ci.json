@@ -25,7 +25,7 @@
     "test/cowork/provider-broker.integration.test.ts": "an opt-in integration run (its env), skipped on every OS by default",
     "test/fence/fence.test.ts": "one test needs Win32 path semantics (a `..` after a real NTFS junction); it runs on the Windows tree job",
     "test/fence/spawn.test.ts": "two tests need Windows hook shells (cmd and Git Bash); they run on the Windows tree job",
-    "test/fence/win-driver.e2e.test.ts": "the Windows shell tools through the real bot driver and embedded runtime: Windows only (the core serves Bash there; the windows-fence workflow's unit job runs it)",
+    "test/fence/win-driver.e2e.test.ts": "the Windows shell tools through the real bot driver and embedded runtime: Windows only, with MOSS_WIN_RUNTIME_E2E=1 (the agent runtime doesn't start on Windows yet)",
     "test/fence/win-fenced.e2e.test.ts": "the Windows fence end to end (real pool principals through srt-win): Windows only, with MOSS_WIN_FENCE_E2E=1, which the windows-fence workflow's jobs set after sandbox setup",
     "test/ipc/session-set-model-review.test.ts": "one live model-convergence case runs only with its env, on every OS",
     "test/platform/win-job.test.ts": "Windows' job objects: Windows only",
