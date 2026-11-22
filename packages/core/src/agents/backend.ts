@@ -35,6 +35,8 @@ import { programHash } from "./sandbox/oks";
 import { buildAgentEnv, launchContained, spawnPlan, type AgentJobLike } from "./process/launch";
 import { versionSatisfies } from "./version";
 import type { ModelListDecl } from "./model-list";
+import type { AdapterStore } from "./adapter/store";
+import type { AdapterBackend, AdapterDecl, AdapterOffer, AdapterUse } from "./adapter/types";
 
 export { versionSatisfies } from "./version";
 import type { ProcessTableReader } from "./process/table";
@@ -85,7 +87,15 @@ export interface AcpBackendOptions {
   readOnlyMode?: { option: string; values: readonly string[] };
   /** Where the agent keeps its own model list (its quirks file's `modelList`, a bundled plugin's only). */
   modelList?: ModelListDecl;
+  /** The program is an adapter MOSS provides (the quirks file's `launch.adapter`, with its lock read): `adapters` is the
+   *  place MOSS keeps them and `runtime` the Bun that runs one (MOSS's own, never the person's `node`). */
+  adapter?: AdapterDecl;
+  adapters?: AdapterStore;
+  runtime?: () => string;
 }
+
+/** What checking the person's programs an adapter drives found: their paths for the adapter's variables, or why not. */
+type UsesResult = { ok: true; env: Record<string, string> } | { ok: false; found: boolean; reason: string };
 
 /** `AgentStartSpec`, plus what lane K's own backends read. */
 export interface AcpStartSpec extends AgentStartSpec {
@@ -122,7 +132,12 @@ export function currentOs(): Os {
   return process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
 }
 
-export class AcpAgentBackend implements AgentBackend {
+/** The flags MOSS's Bun runs an adapter with: nothing is fetched at run time (a module the adapter's closure lacks fails
+ *  instead of being downloaded), no `.env` of the folder it works in is read, and the run folder's own config is the only
+ *  one (a `bunfig.toml` in the person's project configures nothing). */
+export const ADAPTER_BUN_FLAGS = (bunfig: string): string[] => ["--no-install", "--no-env-file", `--config=${bunfig}`];
+
+export class AcpAgentBackend implements AgentBackend, AdapterBackend {
   readonly id: string;
   readonly pluginId: string;
   readonly bundled: boolean;
@@ -130,6 +145,10 @@ export class AcpAgentBackend implements AgentBackend {
   readonly quirks: AgentQuirks;
   readonly #opts: AcpBackendOptions;
   readonly #selections: UserSelections;
+  /** What happened at the last offer of the adapter's download (`noteAdapter`), for `detect`'s reason. */
+  #adapterNote: { declined: true } | { failed: string } | undefined;
+  /** The person's programs the adapter drives, as last checked (a check runs a process, and `detect` is called often). */
+  #usesSeen = new Map<string, { at: number; result: UsesResult }>();
 
   constructor(opts: AcpBackendOptions) {
     this.id = opts.id;
@@ -175,6 +194,119 @@ export class AcpAgentBackend implements AgentBackend {
   }
 
   async detect(): Promise<AgentDetection> {
+    const a = this.#opts.adapter;
+    if (a === undefined || this.#opts.adapters === undefined) return this.#detectOwn();
+    return this.#detectWithAdapter(a, this.#opts.adapters);
+  }
+
+  /** An agent whose adapter MOSS provides. Never fetches and never asks: it says what is there.
+   *  1. The person's own program the adapter drives (`claude`, `codex`) must be on this computer, and be that agent's.
+   *  2. MOSS's own copy of the adapter, where it was placed, is what runs (the tested one).
+   *  3. Else the person's own installed adapter, as before, when the plugin's rules accept it.
+   *  4. Else the agent is startable once the adapter is downloaded (installed, not yet usable), and the reason says so. */
+  async #detectWithAdapter(a: AdapterDecl, store: AdapterStore): Promise<AgentDetection> {
+    const env = this.#env();
+    const uses = await this.#usesOf(a, env);
+    const st = store.status(a);
+    if (uses.ok && st.state === "ready") {
+      let runtime: string | undefined;
+      let why: string | undefined;
+      try {
+        runtime = (this.#opts.runtime ?? (() => { throw new Error("MOSS has no runtime for it here"); }))();
+      } catch (err) {
+        why = `MOSS's own runtime can't start it: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      if (runtime !== undefined) {
+        const sandbox = this.admission(a.version);
+        const versionOk = versionSatisfies(a.version, this.quirks.launch.versions);
+        return {
+          installed: true, path: st.entry, version: a.version, sha256: st.digest,
+          // The identity is the integrity MOSS verified when it placed the files itself, not a `--version` line.
+          identityOk: true, versionOk,
+          sandboxed: sandbox.status === "protected",
+          reason: !versionOk ? `version ${a.version} is outside the tested range ${this.quirks.launch.versions}` : sandbox.status === "protected" ? sandbox.evidence : `no sandbox: ${sandbox.reason}`,
+        };
+      }
+      return { installed: true, identityOk: false, versionOk: false, sandboxed: false, reason: why! };
+    }
+    const own = await this.#detectOwn();
+    if (own.installed && own.identityOk) return own;
+    if (!uses.ok) return { installed: uses.found, identityOk: false, versionOk: false, sandboxed: false, reason: uses.reason };
+    const label = this.name ?? this.id;
+    const note = this.#adapterNote;
+    return {
+      installed: true, identityOk: false, versionOk: false, sandboxed: false,
+      reason: note === undefined
+        ? `${label}'s adapter (${a.package} ${a.version}) isn't on this computer yet: MOSS downloads it the first time you start ${label}, after you say yes`
+        : "declined" in note
+          ? `${label}'s adapter wasn't downloaded, because you said no; MOSS asks again the next time you start ${label}`
+          : `${label}'s adapter couldn't be downloaded: ${note.failed}`,
+    };
+  }
+
+  /** The person's programs the adapter drives, found on the agent's PATH and identity-checked; each one's path goes to
+   *  the adapter in its environment variable (unless the person set that variable themselves, and the plugin lets it
+   *  through). A short memory, since a check runs the program. */
+  async #usesOf(a: AdapterDecl, env: Record<string, string>): Promise<UsesResult> {
+    const key = `${env["PATH"] ?? env["Path"] ?? ""}\u0000${JSON.stringify(a.uses ?? [])}`;
+    const now = this.#opts.clock.now();
+    const seen = this.#usesSeen.get(key);
+    if (seen !== undefined && now - seen.at < 10_000) return seen.result;
+    const result = await this.#checkUses(a.uses ?? [], env);
+    this.#usesSeen.set(key, { at: now, result });
+    return result;
+  }
+
+  async #checkUses(uses: readonly AdapterUse[], env: Record<string, string>): Promise<UsesResult> {
+    const set: Record<string, string> = {};
+    const label = this.name ?? this.id;
+    for (const u of uses) {
+      const given = env[u.env];
+      if (given !== undefined && given !== "") continue; // the person's own choice, passed through
+      const path = resolveProgram(u.program, env["PATH"] ?? env["Path"]);
+      if (!path) return { ok: false, found: false, reason: `${u.program} isn't installed on this computer, and ${label}'s adapter drives it` };
+      if (u.identity !== undefined) {
+        const out = await runCapture(path, [...u.identity.versionArgs], env, this.#opts.versionTimeoutMs ?? 10_000).catch(() => undefined);
+        if (out === undefined || !new RegExp(u.identity.versionPattern, "m").test(out.trim())) {
+          return { ok: false, found: true, reason: `${path} doesn't answer ${u.identity.versionArgs.join(" ")} as ${u.program} does` };
+        }
+      }
+      set[u.env] = path;
+    }
+    return { ok: true, env: set };
+  }
+
+  async adapterOffer(): Promise<AdapterOffer | undefined> {
+    const a = this.#opts.adapter;
+    const store = this.#opts.adapters;
+    if (a === undefined || store === undefined) return undefined;
+    // A copy that is there and whole needs nothing; one that was changed is fetched afresh (behind the card again).
+    const there = store.verify(a);
+    if (there.ok) return undefined;
+    const uses = await this.#usesOf(a, this.#env());
+    // An agent whose own program isn't here gets no download: `detect` says what is missing.
+    if (!uses.ok) return undefined;
+    // The person said no and their own adapter works: they are not asked again until MOSS restarts.
+    if (this.#adapterNote !== undefined && "declined" in this.#adapterNote) {
+      const own = await this.#detectOwn();
+      if (own.installed && own.identityOk) return undefined;
+    }
+    const st = store.status(a);
+    return store.offerOf(a, st.state === "changed" ? `the copy MOSS kept ${st.why}` : undefined);
+  }
+
+  async provideAdapter(): Promise<void> {
+    const a = this.#opts.adapter;
+    if (a === undefined || this.#opts.adapters === undefined) return;
+    await this.#opts.adapters.ensure(a);
+    this.#usesSeen.clear();
+  }
+
+  noteAdapter(outcome: { declined: true } | { failed: string } | { ok: true }): void {
+    this.#adapterNote = "ok" in outcome ? undefined : outcome;
+  }
+
+  async #detectOwn(): Promise<AgentDetection> {
     const cmd = this.command();
     const none = { installed: false, identityOk: false, versionOk: false, sandboxed: false };
     if (!cmd) return { ...none, reason: `${this.id} has no command for this OS` };
@@ -220,10 +352,19 @@ export class AcpAgentBackend implements AgentBackend {
     const d = await this.detect();
     if (!d.installed || !d.path) throw new ContractError("not_installed", d.reason ?? `${this.id} isn't installed on this computer`);
     if (!d.identityOk) throw new ContractError("refused", d.reason ?? `${d.path} isn't ${this.id}'s program`);
+    // An adapter MOSS provides: the whole copy is checked against what MOSS placed, now, before it runs.
+    const adapter = this.#opts.adapter;
+    const provided = adapter !== undefined && this.#opts.adapters !== undefined && d.path === this.#opts.adapters.entryOf(adapter);
+    let digest = d.sha256;
+    if (provided) {
+      const v = this.#opts.adapters!.verify(adapter!);
+      if (!v.ok) throw new ContractError("refused", `${this.id} wasn't started: its adapter changed after MOSS placed it (${v.why}), so it won't be run`);
+      digest = v.digest;
+    }
     // The program MOSS admitted, not another one that took its place since (K-M2 review 5).
     if (spec.admitted) {
       const a = spec.admitted;
-      if (d.path !== a.path || d.version !== a.version || (a.sha256 !== undefined && (await programHash(d.path)) !== a.sha256)) {
+      if (d.path !== a.path || d.version !== a.version || (a.sha256 !== undefined && (digest ?? await programHash(d.path)) !== a.sha256)) {
         throw new ContractError("refused", `${this.id} wasn't started: its program changed after it was checked`);
       }
     }
@@ -259,11 +400,26 @@ export class AcpAgentBackend implements AgentBackend {
       job = (this.#opts.makeJob ?? (() => AgentJob.create()))() ?? undefined;
       if (!job) throw new ContractError("refused", `${this.id} wasn't started: Windows wouldn't make a job object to hold it`);
     }
+    // MOSS's own Bun runs the adapter's run file, with the person's own program handed in its variable.
+    let command = d.path;
+    let prefix: readonly string[] = cmd.prefixArgs ?? [];
+    let usesEnv: Record<string, string> = {};
+    if (provided) {
+      try {
+        command = (this.#opts.runtime ?? (() => { throw new Error("MOSS has no runtime for it here"); }))();
+      } catch (err) {
+        throw new ContractError("refused", `${this.id} wasn't started: MOSS's own runtime can't start its adapter (${err instanceof Error ? err.message : String(err)})`);
+      }
+      prefix = [...ADAPTER_BUN_FLAGS(this.#opts.adapters!.bunfig()), d.path];
+      const uses = await this.#usesOf(adapter!, this.#env());
+      if (!uses.ok) throw new ContractError("not_installed", `${this.id} wasn't started: ${uses.reason}`);
+      usesEnv = uses.env;
+    }
     const proc = launchContained({
-      command: d.path,
-      args: [...(cmd.prefixArgs ?? []), ...cmd.acpArgs, ...(setup.args ?? [])],
+      command,
+      args: [...prefix, ...cmd.acpArgs, ...(setup.args ?? [])],
       cwd: spec.root,
-      env: { ...this.#env(), ...(setup.env ?? {}) },
+      env: { ...this.#env(), ...usesEnv, ...(setup.env ?? {}) },
       ...(wire.stderr ? { onStderr: wire.stderr } : {}),
     }, { ...(this.#opts.table ? { table: this.#opts.table } : {}), ...(job ? { job } : {}) });
     if (!proc.contained) throw new ContractError("refused", `${this.id} wasn't started: it couldn't be put in its job object`);

@@ -98,10 +98,13 @@ function paxPath(data: Uint8Array): string | undefined {
 export interface UnpackLimits {
   maxFiles?: number;
   maxBytes?: number;
+  /** What marks the archive's root: the plugin manifest (default), or `package.json`, for an npm package that isn't a
+   *  plugin (an agent adapter MOSS provides, `agents/adapter/store.ts`). */
+  root?: "plugin" | "package";
 }
 
-/** Unpacks a `.tar.gz` into `dest` (a fresh, empty folder) and gives back the folder that holds `moss.json`. Throws
- *  `ContractError` (`invalid`) with why. */
+/** Unpacks a `.tar.gz` into `dest` (a fresh, empty folder) and gives back the folder that holds `moss.json` (or
+ *  `package.json`, `limits.root: "package"`). Throws `ContractError` (`invalid`) with why. */
 export function unpackTarGz(gz: Uint8Array, dest: string, limits: UnpackLimits = {}): string {
   const maxBytes = limits.maxBytes ?? INSTALL_MAX_BYTES;
   const maxFiles = limits.maxFiles ?? INSTALL_MAX_FILES;
@@ -170,10 +173,11 @@ export function unpackTarGz(gz: Uint8Array, dest: string, limits: UnpackLimits =
   }
   // Its root: the archive's top, or the one folder everything sits in.
   let root = "";
-  if (!files.has(MANIFEST_FILE)) {
+  const marker = limits.root === "package" ? "package.json" : MANIFEST_FILE;
+  if (!files.has(marker)) {
     const tops = new Set([...files.keys()].map((p) => p.split("/")[0]!));
     const only = tops.size === 1 ? [...tops][0]! : undefined;
-    if (only === undefined || !files.has(`${only}/${MANIFEST_FILE}`)) bad(`it has no ${MANIFEST_FILE} at its top or in its one folder`);
+    if (only === undefined || !files.has(`${only}/${marker}`)) bad(`it has no ${marker} at its top or in its one folder`);
     root = only!;
   }
   const strip = (p: string) => (root === "" ? p : p.slice(root.length + 1));
