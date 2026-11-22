@@ -748,6 +748,15 @@ jobs:
     defaults: *tree-defaults
     steps: *tree-steps
 
+  # Windows Bash and PowerShell under MOSS's fence (lane WS; spec §4, §14.1 item 2), on windows-latest: the Windows
+  # fence's unit tests, and setup, a bot's Bash and PowerShell and the node's Bash fenced for real, and remove
+  # (.github/workflows/windows-fence.yml). Like the other Windows jobs: not on a pull request, and not in the lane gate.
+  windows-fence:
+    name: windows fence
+    needs: changes
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true')
+    uses: ./.github/workflows/windows-fence.yml
+
   # The link sidecar (native/link, lane H's moss-link, iroh) on Windows and Linux, x64 and arm64: it is built, and
   # the core's link tests run over it on loopback (src/links/tests/sidecar.test.ts: pairing, a request, a 3 MiB
   # stream, a revoke, a key the core didn't allow). Nothing leaves the runner: the relay is off and the endpoints bind
@@ -1407,15 +1416,6 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         working-directory: apple/Cowork/WinterCoworkLibkrun
         run: python3 -I -B tests/test_queue_guards.py
-
-  # Windows Bash and PowerShell under MOSS's fence (lane WS; spec §4, §14.1 item 2), on windows-latest: the Windows
-  # fence's unit tests, and setup, a bot's Bash and PowerShell and the node's Bash fenced for real, and remove
-  # (.github/workflows/windows-fence.yml). Like the other Windows jobs: not on a pull request, and not in the lane gate.
-  windows-fence:
-    name: windows fence
-    needs: changes
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true')
-    uses: ./.github/workflows/windows-fence.yml
 
   # The one check branch protection needs: it passes when every job above passed or was skipped because this change
   # does not touch its inputs, and fails when any failed or was cancelled.
