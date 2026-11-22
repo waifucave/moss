@@ -1686,9 +1686,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     deleteProfileArgs,
     registerResetTaskArgs,
     unregisterResetTaskArgs,
-    createWindowsLockStore,
-    poolLockPath,
-    sandboxLeasesDir,
+    PROFILE_IN_USE_EXIT,
   } = await import("@waifucave/moss-core");
   const usage = "usage: moss-core sandbox setup [--force]|remove|forget|reset|status [--json]";
   if (process.platform !== "win32") {
@@ -2033,24 +2031,17 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         say("nothing to reset: Bash isn't set up for this user");
         await keepLog(); return;
       }
-      // The owner's default MOSS home holds the leases (`<profile>\.moss\sandbox\leases`, as the daemon's).
-      const leasesDir = sandboxLeasesDir(join(ownerProfile, ".moss"));
-      let store: ReturnType<typeof createWindowsLockStore>;
-      try { store = createWindowsLockStore(leasesDir, { trustedOwner: targetSid }); } catch (e) {
-        say(`sandbox reset: ${(e as Error).message}`);
-        process.exitCode = 1;
-        await keepLog(); return;
-      }
+      // Which principals a command runs as now is read from Windows itself, never from a file in the user's folders
+      // (SYSTEM opens nothing a user could plant a link in): a profile that is loaded belongs to a running command and
+      // is left for the next reset; an unloaded one is deleted. The daemon runs a command only as a principal with no
+      // profile, so a profile deleted here was never one a command was about to use.
       let failed = 0;
       for (const m of marker.members) {
         if (m.principalSid === null) continue;
-        const guard = store.tryLock(poolLockPath(leasesDir, m.principal));
-        if (guard === null) { say(`${m.principal}: in use, left for the next reset`); continue; }
-        try {
-          const gone = await run([...deleteProfileArgs(m.principalSid)]);
-          if (gone.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
-          else say(`${m.principal}: reset`);
-        } finally { guard.release(); }
+        const gone = await run([...deleteProfileArgs(m.principalSid)]);
+        if (gone.code === PROFILE_IN_USE_EXIT) say(`${m.principal}: in use, left for the next reset`);
+        else if (gone.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
+        else say(`${m.principal}: reset`);
       }
       process.exitCode = failed === 0 ? SANDBOX_EXIT.OK : SANDBOX_EXIT.FAILED;
       await keepLog(); return;
