@@ -9,7 +9,7 @@
 //
 // It starts what the acceptance run starts from source (scripts/acceptance/daemon.ts as the engine, the fake model, apps/desktop built
 // with `--preview`), on a temp home and the throwaway test keychain, and ends all of it, by the pids it started, when the window closes.
-// docs/claude/testing.md has the isolation list; scripts/preview/lib.ts holds each rule and scripts/preview/lib.test.ts checks it.
+// scripts/preview/lib.ts holds each isolation rule (the environments, the PATH, the folders, what --stop may end) and scripts/preview/lib.test.ts checks it.
 import { refusal } from "./lib";
 // The first statement of the command: no folder, no process and no state exists before it (the imports below are modules that only define things).
 {
@@ -21,7 +21,7 @@ import { refusal } from "./lib";
 }
 import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, watch, writeFileSync, chmodSync, type FSWatcher } from "node:fs";
+import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, watch, writeFileSync, chmodSync, type FSWatcher } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -137,6 +137,7 @@ let record: Record_;
 let fake: FakeProvider | undefined;
 let root = "";
 let ending = false;
+let logsTo: string | undefined;
 
 function note(name: string, proc: ChildProcess): void {
   if (proc.pid === undefined) return;
@@ -179,6 +180,12 @@ async function cleanup(code: number): Promise<never> {
     if (left.leftovers.length > 0) say(`ended ${left.leftovers.length} process(es) left behind: ${nameLeftovers(left.leftovers)}`);
     if (left.survivors.length > 0) say(`STILL RUNNING after SIGKILL: ${nameLeftovers(left.survivors)}`);
   } catch { /* ps unreadable */ }
+  if (logsTo !== undefined && root !== "") {
+    try {
+      mkdirSync(logsTo, { recursive: true });
+      for (const [from, name] of [[join(root, "logs"), "run"], [join(root, "user", ".moss", "logs"), "home"], [join(root, "agents"), "agents"]] as const) if (existsSync(from)) cpSync(from, join(logsTo, name), { recursive: true });
+    } catch (err) { say(`the logs were not copied: ${err instanceof Error ? err.message : String(err)}`); }
+  }
   removeRoot(root);
   if (readRecord()?.pid === process.pid) rmSync(RECORD, { force: true });
   process.exit(code);
@@ -216,6 +223,7 @@ function electronExe(): string {
 }
 
 async function main(o: Options): Promise<void> {
+  logsTo = o.logs === undefined ? undefined : resolve(o.logs);
   record = await claim();
   const t0 = Date.now();
   root = mkdtempSync(join(tmpdir(), PREVIEW_PREFIX));
@@ -335,9 +343,19 @@ async function shot(port: number, png: string, app: ChildProcess, home: string):
   // The canvas drawn with its sessions' blocks: any document with a block in it (the canvas is a plugin's frame in the window).
   const drawn = async (): Promise<number> => {
     let n = 0;
-    for (const d of await cdp!.documents()) n = Math.max(n, Number(await cdp!.evaluate(d.session, "document.querySelectorAll('section.cv [data-session], section.cv .cv-block, .cv-block').length").catch(() => 0)) || 0);
+    for (const d of await cdp!.documents()) n = Math.max(n, Number(await cdp!.evaluate(d.session, "document.querySelectorAll('.cv-node[data-block]').length").catch(() => 0)) || 0);
     return n;
   };
+  // The window starts on the newest code session (Shell.tsx startRoute); the canvas is the start page, one click on "New session" away.
+  for (let waited = 0; waited < 30_000; waited += 1_000) {
+    let clicked = false;
+    for (const d of await cdp.documents()) {
+      const r = await cdp.evaluate(d.session, "(() => { const b = [...document.querySelectorAll('button, a, [role=button], [role=link]')].find((e) => (e.textContent || '').trim() === 'New session'); if (!b) return false; b.click(); return true; })()").catch(() => false);
+      if (r === true) clicked = true;
+    }
+    if (clicked) break;
+    await sleep(1_000);
+  }
   let blocks = 0;
   for (let waited = 0; blocks < 7; waited += 1_000) { blocks = await drawn(); if (blocks >= 7) break; if (waited > 90_000) break; await sleep(1_000); }
   say(`the canvas drew ${blocks} block(s)`);

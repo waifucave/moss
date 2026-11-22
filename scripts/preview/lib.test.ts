@@ -65,6 +65,7 @@ describe("the isolation list", () => {
     expect(daemon.MOSS_TEST_KEYCHAIN).toBe("/tmp/mprev-abc123/kc/preview.keychain-db");
     expect(daemon.MOSS_KEYCHAIN_SERVICE).toMatch(/\.test\.preview-[0-9a-f]+$/);
     expect(daemon.MOSS_PROFILE).toBe("dev");
+    expect(daemon.MOSS_LOGIN_SHELL_PATH).toBe("off");
   });
 
   test("the environment is a whitelist: nothing of the person's comes along, and the PATH is the preview's own", () => {
