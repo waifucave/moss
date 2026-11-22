@@ -576,13 +576,12 @@ const SYSTEM_SID = "S-1-5-18";
  *  Administrators or SYSTEM, with allow entries for nobody else — and the store refuses to open
  *  it otherwise, so a squatted or over-shared directory fails closed instead of handing out
  *  principals nobody owns. */
-export function createWindowsLockStore(leasesDir: string, o: { trustedOwner?: string } = {}): LeaseStore {
+export function createWindowsLockStore(leasesDir: string): LeaseStore {
   if (process.platform !== "win32") throw new Error("the Windows lock store runs on Windows only");
   mkdirSync(leasesDir, { recursive: true });
   const problem = leasesDirAccessProblem(leasesDir, {
     profileRoot: process.env.USERPROFILE ?? null,
     security: readLeasesDirSecurity(leasesDir),
-    ...(o.trustedOwner === undefined ? {} : { trustedOwner: o.trustedOwner }),
   });
   if (problem !== null) throw new Error(`refusing untrusted leases dir ${leasesDir}: ${problem}`);
   return {
@@ -677,13 +676,12 @@ function isPathUnderDir(child: string, dir: string): boolean {
  *  unreadable ACL refuses too, fail closed. Pure: tests inject every input. */
 export function leasesDirAccessProblem(
   leasesDir: string,
-  o: { profileRoot?: string | null; security?: LeasesDirSecurity | null; trustedOwner?: string },
+  o: { profileRoot?: string | null; security?: LeasesDirSecurity | null },
 ): string | null {
   if (o.profileRoot !== undefined && o.profileRoot !== null && isPathUnderDir(leasesDir, o.profileRoot)) return null;
   const s = o.security ?? null;
   if (s === null) return "its access control could not be read";
-  // `trustedOwner`: the reset task (SYSTEM) locks the owner's leases, which the owner made and owns.
-  if (s.ownerSid !== s.userSid && s.ownerSid !== o.trustedOwner && s.ownerSid !== ADMINISTRATORS_SID && s.ownerSid !== SYSTEM_SID) {
+  if (s.ownerSid !== s.userSid && s.ownerSid !== ADMINISTRATORS_SID && s.ownerSid !== SYSTEM_SID) {
     return `it is owned by ${s.ownerSid}, not the user, Administrators or SYSTEM`;
   }
   const trusted = new Set([s.ownerSid, ADMINISTRATORS_SID, SYSTEM_SID]);
@@ -746,11 +744,12 @@ export const SID_RE = /^S-1-\d+(?:-\d+)+$/;
 
 /** Delete a principal's whole profile the way Windows does (`Win32_UserProfile`, userenv's DeleteProfile): its hive,
  *  its ProfileList key and its folder, junctions included, never followed (PowerShell 5.1's `Remove-Item -Recurse`
- *  follows the profile's legacy junctions). Exits 0 when there is no profile; non-zero when it is loaded or can't be
- *  deleted. Elevated only. */
+ *  follows the profile's legacy junctions). Exits 0 when there is no profile (or it is deleted), 3 when it is loaded
+ *  (a command runs as the principal now: it is left alone), anything else when it can't be deleted. Elevated only. */
+export const PROFILE_IN_USE_EXIT = 3;
 export function deleteProfileArgs(sid: string): readonly string[] {
   if (!SID_RE.test(sid)) throw new Error(`not a SID: ${sid}`);
-  return psEncodedArgs(`$ErrorActionPreference='Stop'; $p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"; if ($p) { $p | Remove-CimInstance }`);
+  return psEncodedArgs(`$ErrorActionPreference='Stop'; $p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"; if (-not $p) { exit 0 }; if ($p.Loaded) { exit ${PROFILE_IN_USE_EXIT} }; $p | Remove-CimInstance; exit 0`);
 }
 
 /** The scheduled task `sandbox setup` registers for the per-session reset (spec §9.1: the principal's profile and
