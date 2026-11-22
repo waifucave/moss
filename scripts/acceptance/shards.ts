@@ -63,6 +63,7 @@ import { RELEASE_AHEAD_STEP, RELEASE_BEHIND_STEP, RELEASE_INSTALL_STEP } from ".
 import { MOSS_STEPS } from "./moss-step";
 import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
+import { MCP_APPS_STEPS } from "./mcp-apps-step";
 import { CANVAS_APP_STEPS } from "./canvas-app-step";
 import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 import { ROWS_ELSEWHERE } from "./elsewhere";
@@ -133,7 +134,7 @@ const OTHERS: readonly Unit[] = [
   // Lane SG: the setup guide in MOSS Code and MOSS on a home no other unit has used (no provider, no default model).
   { id: "setup", rows: SETUP_STEPS, phase: "parallel", estimate: 150, ownHome: true },
   // The session canvas (spec revision 20, §9.5; canvas-step.ts): the rows that run in the shared home (lane CM's), left out of `units()` while empty.
-  { id: "canvas", rows: CANVAS_STEPS, phase: "parallel", estimate: 120 },
+  { id: "canvas", rows: [...CANVAS_STEPS, ...MCP_APPS_STEPS], phase: "parallel", estimate: 120 },
   // Lane CA's canvas rows (canvas-app-step.ts): MOSS Code from source with a plugin's start page, and a MOSS it starts when a part asks "Open in MOSS"; a home of its own.
   { id: "canvas-app", rows: CANVAS_APP_STEPS, phase: "parallel", estimate: 180, ownHome: true },
   { id: "cold", rows: [COLD_START_STEP], phase: "serial", estimate: 16 },
