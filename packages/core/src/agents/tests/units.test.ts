@@ -608,6 +608,23 @@ describe("the backends' rows", () => {
       // No backend's sandbox is admitted yet: each asks for the user's OK until its gates pass.
       expect(admissionFor(ADMISSIONS, id, "macos", (m![1] ?? m![0]).trim()).status).not.toBe("protected");
     }
+    // The lines REAL installs print, measured on the owner's Mac on 2026-11-22 (each was refused before: the pattern knew only the
+    // bare number). The adapters name their npm package; OpenCode names itself. A line of another tool, or one with words around it, still isn't read.
+    const measured: [string, string, string][] = [
+      ["codex", "@agentclientprotocol/codex-acp 2.6.0", "2.6.0"],
+      ["codex", "codex-acp 2.5.0", "2.5.0"],
+      ["claude-code", "@agentclientprotocol/claude-agent-acp 0.109.1", "0.109.1"],
+      ["claude-code", "claude-agent-acp 0.100.0", "0.100.0"],
+      ["opencode", "opencode v2.2.5", "2.2.5"],
+      ["opencode", "v2.2.5", "2.2.5"],
+      ["antigravity", "1.5.14", "1.5.14"],
+    ];
+    for (const [id, line, want] of measured) expect([id, line, new RegExp(QUIRKS[id]!.launch.identity.versionPattern, "m").exec(line.trim())?.[1]]).toEqual([id, line, want]);
+    for (const id of ["codex", "claude-code", "opencode"]) {
+      for (const wrong of ["grok 1.0.70 (abc123)", "evil @agentclientprotocol/codex-acp 2.6.0 x", "@someone-else/codex-acp 2.6.0", "opencode-fork v2.2.5"]) {
+        expect([id, wrong, new RegExp(QUIRKS[id]!.launch.identity.versionPattern, "m").test(wrong)]).toEqual([id, wrong, false]);
+      }
+    }
     // `agent` is Cursor's and Grok's: neither row resolves that name.
     for (const q of Object.values(QUIRKS)) expect(q.launch.command.macos![0]).not.toBe("agent");
   });

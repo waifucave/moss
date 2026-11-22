@@ -75,7 +75,7 @@ describe("MOSS's own coding agent's mark", () => {
 
 describe("the OpenCode, Copilot, Qwen and Kimi plugins (lane AP)", () => {
   const LOOKS: Record<string, { color?: string; command: string; args: string[]; version: string; got: string }> = {
-    opencode: { command: "opencode", args: ["acp"], version: "v2.2.5\n", got: "2.2.5" },
+    opencode: { command: "opencode", args: ["acp"], version: "opencode v2.2.5\n", got: "2.2.5" },
     copilot: { color: "#218BFF", command: "copilot", args: ["--acp"], version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.\n", got: "1.0.109" },
     qwen: { color: "#082DFF", command: "qwen", args: ["--acp"], version: "0.26.5\n", got: "0.26.5" },
     kimi: { color: "#1783FF", command: "kimi", args: ["acp"], version: "2.4.1\n", got: "2.4.1" },
