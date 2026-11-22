@@ -72,6 +72,8 @@ const fixtures: Record<string, unknown> = {
   // fixture each, so Swift round-trips both.
   "tool_call_with_display_title": { ...base, threadId: "main", type: "tool_call", callId: "call_62", name: "mcp__alpha-stage__pin_note", argsJson: "{\"text\":\"Tea\"}", displayTitle: "Pin a note" },
   "tool_result_with_display": { ...base, threadId: "main", type: "tool_result", callId: "call_63", output: "Mood: joy", isError: false, display: { kind: "mood", label: "Mood", value: "joy", swatch: "#FFC45A" } },
+  // An MCP Apps page's address (`app`): additive/optional on the EXISTING tool_result shape.
+  "tool_result_with_app": { ...base, threadId: "main", type: "tool_result", callId: "call_64", output: "Rendered a chart.", isError: false, app: { resourceUri: "ui://charts/build-times" } },
   // SP3 T4b review fix (Phase-A CRITICAL): this BASE fixture deliberately carries NO issuedAt/
   // expiresAt — it is the pre-T4b persisted shape, and Swift round-tripping it proves an OLD
   // session-JSONL approval_requested still decodes with the fields ABSENT (they are optional).

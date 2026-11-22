@@ -282,6 +282,9 @@ export interface MossSessionDeps {
   records?: MossSessionRecords;
   /** Does the backend transcript exist? Decides `resume` vs a fresh start under the same uuid. */
   hasTranscript: () => boolean | Promise<boolean>;
+  /** Awaited before each frame is projected (never throws): MCP Apps waits here, bounded, for the listing a tool result's
+   *  page address is read from, so the address rides the very `tool_result` event. Absent: nothing waits. */
+  beforeProject?: (msg: unknown) => Promise<void>;
   /** P8b-39: the LOG's unconsumed user texts — `unconsumedUserMessages(store.read(sessionId))` —
    *  re-pushed in order by every `open()`. Absent, the driver falls back to what it held in memory
    *  (a unit harness with no log). */
@@ -1243,6 +1246,7 @@ class MossSessionImpl implements MossSession {
           if (this.inFlight === 0) this.armIdleTimer();
         }
         this.noteTaskFrame(msg as unknown as Record<string, unknown>);
+        if (this.deps.beforeProject !== undefined) { try { await this.deps.beforeProject(msg); } catch { /* waiting is a courtesy */ } }
         let batch: ProjectedBatch;
         try {
           batch = inc.projector.accept(msg);

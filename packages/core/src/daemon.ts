@@ -149,7 +149,9 @@ import { hostOs } from "./tree/names";
 import { homedir, hostname } from "node:os";
 import { SystemClock } from "./clock/system-clock";
 import { DispatchChildren } from "./agent/dispatch-children";
-import { SessionMessaging } from "./agent/session-messaging";
+import { SessionMessaging, deliverInto, MESSAGING_CLIENT_NAME } from "./agent/session-messaging";
+import { McpAppsService } from "./mcp-apps/service";
+import { mcpAppMethods } from "./mcp-apps/methods";
 import { readProviders, SetupService, setupMethods } from "./setup-state";
 import { defaultEffortFor, recommended } from "./default-model";
 import { clearProviderModel, relayChoiceFrom, sidecarRelayOf, loadSettings, saveSettings, describeInternalJobModels, setupDismissedFrom, providerBaseUrlFor, loadPermissionDirs, effortRefusalFor, hooksEnabledFrom, lspAutoDiagnosticsEnabledFrom, cleanerEnabledFrom, retiredRuntimeSettingKeys, winterLegDisabledKeys, mossOptionsFromSettings, ownProviderFor, pinsFor, stdioMcpServersFor, computerUseEnabledFrom, computerUseLegacyComputerFrom, lspEnabledFrom, sdkAllowRules, sdkAutoMemory, sdkLocalMcpServers, sdkOutputStyle, sdkUserMcpServers, liveSettingsView, type Settings } from "./settings";
@@ -2510,7 +2512,21 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     refreshers: credentialRefreshers,
     log: (line) => console.error(`moss-leg: ${line}`),
   });
+  // MCP Apps (spec §5.5, `mcp-apps/`): the pages of tool results and the bridge their frames talk through. A page's
+  // `ui/message` reaches its session as outside content, through the same door another session's message does.
+  const mcpApps = new McpAppsService({
+    version: CORE_VERSION,
+    cwdOf: (sid) => { try { return store.meta(sid).cwd ?? undefined; } catch { return undefined; } },
+    deliver: async (sid, text) => {
+      const driver = await mossDrivers.ensure(sid);
+      if (driver === undefined) throw new Error("the session can't take a message");
+      await deliverInto(driver, text, MESSAGING_CLIENT_NAME);
+    },
+    oauthStore: daemonOAuthStore,
+    log: (line) => console.error(`mcp-apps: ${line}`),
+  });
   const mossDrivers: MossSessionDrivers = createMossSessionDrivers({
+    mcpApps,
     // M-M2: no new turn while the update gate closes for a restart (`updateGate` is set further down, before any turn).
     updateClosing: () => updateGate.closed,
     home: mossHome,
@@ -2680,6 +2696,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
    *  could exist, so it keeps the bare records hook. */
   const onSessionDeleted = (sessionId: string): void => {
     void mossDrivers.evict(sessionId);
+    mcpApps.detach(sessionId);
     onStoredSessionDeleted(sessionId);
     // ComputerV2: the session's automation worker ends with it, and the helper releases its targets.
     computerUseRuntime.service.endSession(sessionId);
@@ -3771,6 +3788,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     core: { [MOSS_CODE_ID]: { color: MOSS_CODE_COLOR, icon: MOSS_CODE_ICON, iconDark: MOSS_CODE_ICON_DARK } },
     log: (line) => console.error(`[agents] ${line}`),
   });
+  Object.assign(mossLaneHandlers, mcpAppMethods(() => mcpApps));
   Object.assign(mossLaneHandlers, cardMethods(() => daemonParts?.broker, (pluginId) => grantsInForce(partsRegistry?.registry.get(pluginId)), {
     press: (conn, id) => (mossServer === undefined ? "MOSS isn't taking answers yet" : cardPressGate(mossServer.surfaces, conn.connId, id)),
     acting: () => computerUse?.anyActing() ?? false,
