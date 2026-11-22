@@ -63,6 +63,12 @@ export interface MossView {
   devicesRev?: number;
 }
 
+/** The relay this computer's device links use (`device.relay.get`): n0's public relays by default, none, or the person's own server. */
+export interface RelayRow {
+  mode: "n0" | "off" | "custom";
+  url?: string;
+}
+
 /** A pairing of this computer with another device (spec §8.1): the code this computer shows, or the four words both show. */
 export interface PairingRow {
   /** The code to enter on the other device (the short code when the engine has one, else the longer pairing code). */
@@ -333,6 +339,10 @@ export interface MossBridge {
   openTerms(pluginId: string): Promise<boolean>;
   setDefaultModel(model: string): Promise<{ ok: true; setup: SetupRow } | { ok: false; why: string }>;
   skipSetup(): Promise<boolean>;
+  /** The guide's relay page (spec §8.3): which relay this computer's links use, and the person's choice of another (their own
+   *  press); the engine's why on a refusal. */
+  relay(): Promise<RelayRow | { waiting: true }>;
+  setRelay(choice: RelayRow): Promise<{ ok: true; relay: RelayRow } | { ok: false; why: string }>;
 }
 
 /** A mood in words, said beside every face (the kit's README: "a mood is shown by motion alone"). */

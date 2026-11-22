@@ -4,13 +4,13 @@
 // and done, which lands in the default bot's conversation ready to type. Skippable at every step. The engine holds what is
 // set up and whether the guide was skipped (`setup.state`), so finishing or skipping it here holds for MOSS Code too.
 // MOSS's plain look: neutral greys, the primary action black (light) or near-white (dark), no tint.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { orderProviders, SEARCH_FROM } from "@waifucave/moss-protocol/provider-order";
 import { bridge } from "../bridge";
 import { SignInRow } from "../settings/SettingsPage";
-import type { ModelRow, ProviderRow, SetupRow } from "../../shared/view";
+import type { ModelRow, ProviderRow, RelayRow, SetupRow } from "../../shared/view";
 
-export type SetupStep = "providers" | "model" | "done";
+export type SetupStep = "providers" | "model" | "done" | "relay";
 
 /** A model as the guide names it: "Claude Opus 5.5 · medium" when it has an effort. */
 function withEffort(name: string, effort: string | undefined): string {
@@ -58,6 +58,24 @@ const WORDS = {
   failed: "That didn't work. Try again.",
   signedOut: (model: string, provider: string) => `Your default model, ${model}, needs you signed in to ${provider}.`,
   signIn: "Sign in",
+  devices: "Connect your other devices",
+  relayTitle: "Connecting your devices",
+  relayIntro: "Your computers and phone connect to each other directly. When two of them can't (behind strict routers, on a mobile network), a relay carries their traffic between them.",
+  relayPrivacy: "Everything stays end-to-end encrypted, so a relay never sees what your devices say. It does see which of your devices are online and how much they send.",
+  relayN0: "n0's public relays",
+  relayN0Detail: "On by default. Run by n0, free to use.",
+  relayCustom: "A server of your own",
+  relayCustomDetail: "Your own relay server's address.",
+  relayCustomLabel: "Relay server's address",
+  relayCloud: "Your cloud computer",
+  relayCloudDetail: "Available once you have a cloud computer.",
+  relayCloudflare: "Your own Cloudflare account",
+  relayCloudflareDetail: "Not available in this build yet.",
+  relayOff: "No relay",
+  relayOffDetail: "Devices that can't reach each other directly won't connect at all. A small share of pairs are like that.",
+  relaySave: "Save",
+  relaySaved: "Saved.",
+  relayLabel: "How your devices connect",
 };
 
 /** One plain line when the default model's provider is signed out (a key removed, a sign-in that lapsed), in the model's and
@@ -92,13 +110,15 @@ export function SetupGuide(props: { setup: SetupRow | undefined; botName: string
     else setNote(WORDS.failed);
   };
   const n = step === "providers" ? 1 : step === "model" ? 2 : 3;
+  // The relay page is the guide's optional page after the last step (Connect your other devices): no step number of its own.
   return (
     <div className="setup" role="dialog" aria-modal="true" aria-labelledby="setup-title" data-setup-step={step}>
       <section className="setup__card">
-        <p className="setup__step muted small">{WORDS.step(n)}</p>
-        {step === "providers" ? <Providers setup={props.setup} onNext={() => { setNote(undefined); setStep("model"); }} onSkip={() => void skip()} />
+        {step === "relay" ? null : <p className="setup__step muted small">{WORDS.step(n)}</p>}
+        {step === "relay" ? <Relay onBack={() => setStep("done")} />
+          : step === "providers" ? <Providers setup={props.setup} onNext={() => { setNote(undefined); setStep("model"); }} onSkip={() => void skip()} />
           : step === "model" ? <Model setup={props.setup} onBack={() => setStep("providers")} onSkip={() => void skip()} onNext={(m, effort) => { setModel({ row: m, ...(effort !== undefined ? { effort } : {}) }); setNote(undefined); setStep("done"); }} />
-          : <Done model={named(model?.row.title ?? props.setup?.default?.model ?? "", model !== undefined ? model.effort : props.setup?.default?.effort, model?.row.provider ?? providerOf(props.setup?.default?.model))} bot={props.botName} onBack={() => setStep("model")} onDone={props.onDone} />}
+          : <Done onRelay={() => setStep("relay")} model={named(model?.row.title ?? props.setup?.default?.model ?? "", model !== undefined ? model.effort : props.setup?.default?.effort, model?.row.provider ?? providerOf(props.setup?.default?.model))} bot={props.botName} onBack={() => setStep("model")} onDone={props.onDone} />}
         {note !== undefined ? <p className="add__note" role="status">{note}</p> : null}
       </section>
     </div>
@@ -260,12 +280,55 @@ function Model(props: { setup: SetupRow | undefined; onBack: () => void; onSkip:
 }
 
 /** Step 3: done: the default bot's conversation, ready to type. */
-function Done(props: { model: string; bot: string; onBack: () => void; onDone: () => void }) {
+function Done(props: { model: string; bot: string; onBack: () => void; onDone: () => void; onRelay: () => void }) {
   return (
     <>
       <h1 id="setup-title">{WORDS.doneTitle}</h1>
       <p data-setup-done-model={props.model}>{WORDS.doneIntro(props.model, props.bot)}</p>
+      <p><button type="button" className="setup__link" onClick={props.onRelay} data-setup="relay">{WORDS.devices}</button></p>
       <Actions onBack={props.onBack} next={{ label: WORDS.talk(props.bot), run: props.onDone, data: "start" }} />
+    </>
+  );
+}
+
+/** The relay page (spec §8.3): what a relay is for, n0's public relays on by default, and the person's own choices. The cloud
+ *  computer's relay and a Cloudflare relay are relay plugins the links don't take yet: shown, and not offered. */
+function Relay(props: { onBack: () => void }) {
+  const [saved, setSaved] = useState<RelayRow | undefined>(undefined);
+  const [mode, setMode] = useState<RelayRow["mode"]>("n0");
+  const [url, setUrl] = useState("");
+  const [note, setNote] = useState<string | undefined>(undefined);
+  const touched = useRef(false);
+  useEffect(() => {
+    // What the engine has kept, unless the person has already started choosing.
+    void bridge().relay().then((r) => { if ("waiting" in r) { setNote(WORDS.failed); return; } setSaved(r); if (!touched.current) { setMode(r.mode); setUrl(r.url ?? ""); } });
+  }, []);
+  const save = async (): Promise<void> => {
+    const r = await bridge().setRelay({ mode, ...(mode === "custom" ? { url: url.trim() } : {}) });
+    if (r.ok) { setSaved(r.relay); setUrl(r.relay.url ?? ""); setNote(WORDS.relaySaved); } else setNote(r.why);
+  };
+  const changed = saved !== undefined && (saved.mode !== mode || (mode === "custom" && (saved.url ?? "") !== url.trim()));
+  const choice = (value: RelayRow["mode"] | "cloud" | "cloudflare", title: string, detail: string, off = false) => (
+    <label className="setup__check" data-setup-relay={value} aria-disabled={off || undefined}>
+      <input type="radio" name="relay" value={value} disabled={off} checked={!off && mode === value} onChange={() => undefined} onClick={() => { touched.current = true; setNote(undefined); setMode(value as RelayRow["mode"]); }} />
+      <span><strong>{title}</strong> <span className="muted small">{detail}</span></span>
+    </label>
+  );
+  return (
+    <>
+      <h1 id="setup-title">{WORDS.relayTitle}</h1>
+      <p>{WORDS.relayIntro}</p>
+      <p className="muted small">{WORDS.relayPrivacy}</p>
+      <fieldset className="setup__ways" aria-label={WORDS.relayLabel}>
+        {choice("n0", WORDS.relayN0, WORDS.relayN0Detail)}
+        {choice("custom", WORDS.relayCustom, WORDS.relayCustomDetail)}
+        {mode === "custom" ? <input className="ma2-field" type="url" placeholder="https://relay.example.com" aria-label={WORDS.relayCustomLabel} value={url} onChange={(e) => { touched.current = true; setNote(undefined); setUrl(e.target.value); }} data-setup-relay-url /> : null}
+        {choice("cloud", WORDS.relayCloud, WORDS.relayCloudDetail, true)}
+        {choice("cloudflare", WORDS.relayCloudflare, WORDS.relayCloudflareDetail, true)}
+        {choice("off", WORDS.relayOff, WORDS.relayOffDetail)}
+      </fieldset>
+      {note !== undefined ? <p className="muted small" role="status" data-setup-relay-note>{note}</p> : null}
+      <Actions onBack={props.onBack} next={{ label: WORDS.relaySave, disabled: !changed || (mode === "custom" && url.trim() === ""), run: () => void save(), data: "relay-save" }} />
     </>
   );
 }
