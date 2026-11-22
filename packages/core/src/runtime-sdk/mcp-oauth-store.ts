@@ -7,10 +7,10 @@ import { underTest } from "../auth/test-isolation";
 // status probe, the login/logout RPCs) must share this instance -- never construct a second one.
 const stores = new Map<string, McpOAuthStore>();
 
-export function daemonMcpOAuthStore(keychainService: string, home?: string): McpOAuthStore {
+export function daemonMcpOAuthStore(keychainService: string, home?: string, o: { file?: boolean } = {}): McpOAuthStore {
   let store = stores.get(keychainService);
   if (store === undefined) {
-    store = withShadowRemoval(process.platform === "darwin" || underTest() ? createKeychainMcpOAuthStore(keychainService) : backendStore(keychainService, home));
+    store = withShadowRemoval(process.platform === "darwin" || (underTest() && o.file !== true) ? createKeychainMcpOAuthStore(keychainService) : backendStore(keychainService, home, o.file === true));
     stores.set(keychainService, store);
   }
   return store;
@@ -35,8 +35,8 @@ export function withShadowRemoval(base: McpOAuthStore): McpOAuthStore {
 /** The sign-ins on Windows and Linux (spec §9.1): the SDK's own keychain store reads `Bun.secrets` itself, which there is
  *  the OS store; these go through the secrets file like every other item (`defaultSecretsBackend`). A process under a test
  *  keeps the SDK's store, which reads the isolated `Bun.secrets` (`auth/test-isolation.ts`). */
-function backendStore(service: string, home?: string): McpOAuthStore {
-  const backend = () => defaultSecretsBackend({ service, ...(home !== undefined ? { home } : {}) });
+function backendStore(service: string, home?: string, file = false): McpOAuthStore {
+  const backend = () => defaultSecretsBackend({ service, ...(home !== undefined ? { home } : {}), ...(file ? { file } : {}) });
   return {
     read: async (account) => (await backend().get({ service, name: account })) ?? null,
     write: async (account, value) => { await backend().set({ service, name: account, value }); },

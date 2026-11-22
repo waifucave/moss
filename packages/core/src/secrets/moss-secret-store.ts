@@ -11,13 +11,16 @@
 // A value leaves only through `get`, wrapped in a `Secret`; nothing written to the index, a log or an error holds one.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { SecretKeySource } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners } from "../contracts/common";
 import { osSecretsBackend } from "../auth/secret-store";
-import { readFileRetrying, withSecretsLock, writePrivateFile } from "./private-file";
-import { SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME } from "./secret-files";
+import { flushFile, readFileRetrying, renameDurably, withSecretsLock, writePrivateFile, type PrivateFileDeps } from "./private-file";
+import {
+  SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_MADE_SEGMENTS,
+  SECRETS_SEALED_KEY_FILE_NAME, SECRETS_TMP_DIR_SEGMENTS,
+} from "./secret-files";
 import {
   SECRET_NAME_RE, Secret, secretOwnerKey, secretRefKey,
   type SecretChange, type SecretMeta, type SecretOwner, type SecretRef, type SecretStore, type SecretStoreStatus, type SecretValue,
@@ -62,6 +65,21 @@ export interface ValueBackend {
   delete(key: string): Promise<void>;
 }
 
+/** Values that can be changed several at a time in ONE step: the file is read, `change` edits the copy it is handed
+ *  (true when it changed something) and the file is written whole, all under one hold of the lock. */
+export interface BatchValues extends ValueBackend {
+  mutate(change: (all: Record<string, string>) => boolean): Promise<void>;
+}
+
+/** The previous whole secrets file, the note that a secrets file was made here, and the folder half-made copies live in. */
+const backupPath = (file: string) => join(dirname(file), ...SECRETS_BACKUP_SEGMENTS);
+const madePath = (file: string) => join(dirname(file), ...SECRETS_MADE_SEGMENTS);
+/** What every write of a secret file passes: its half-made copy goes in the run folder, which every fence hides. */
+export const secretDisk = (file: string): PrivateFileDeps => ({ tmpDir: join(dirname(file), ...SECRETS_TMP_DIR_SEGMENTS) });
+/** A secrets file was made here: it is there, its previous copy is, or the note that one was is. A key missing now is then
+ *  lost, never to be made over (#205's S3). */
+export function secretsFileMade(file: string): boolean { return existsSync(file) || existsSync(backupPath(file)) || existsSync(madePath(file)); }
+
 /** macOS: one vault item per secret. */
 export class KeychainValues implements ValueBackend {
   constructor(private readonly vault: Vault) {}
@@ -88,15 +106,22 @@ export function recordedKeySource(path: string): SecretKeySource | null | "unrea
  *  (2), the key's source, then the nonce and the tag; the key's source is authenticated with the body. A write reads the
  *  file whole, changes it and writes it whole, under the lock (`withSecretsLock`: one writer at a time across this
  *  user's processes), so no write loses another's; a read needs no lock, the file being replaced atomically. */
-export class EncryptedFileValues implements ValueBackend {
+export class EncryptedFileValues implements BatchValues {
   readonly #lockPath: string;
-  constructor(private readonly path: string, private readonly key: () => Promise<Buffer>, private readonly source: SecretKeySource, lockPath?: string) {
+  readonly #disk: PrivateFileDeps;
+  readonly #log: (line: string) => void;
+  constructor(
+    private readonly path: string, private readonly key: () => Promise<Buffer>, private readonly source: SecretKeySource, lockPath?: string,
+    /** `step` is a test seam (`PrivateFileDeps.step`); `log` says when the previous file was used. */
+    seams: { step?: PrivateFileDeps["step"]; log?: (line: string) => void } = {},
+  ) {
     this.#lockPath = lockPath ?? join(dirname(path), ...SECRETS_LOCK_SEGMENTS);
+    this.#disk = { ...secretDisk(path), ...(seams.step ? { step: seams.step } : {}) };
+    this.#log = seams.log ?? ((line) => console.error(line));
   }
 
-  async #read(): Promise<Record<string, string>> {
-    if (!existsSync(this.path)) return {};
-    const blob = await readFileRetrying(this.path);
+  /** What `blob` holds, or `invalid` when it isn't a whole file this store wrote under this key. */
+  async #decrypt(blob: Buffer): Promise<Record<string, string>> {
     if (blob.length < 2 + 12 + 16 || blob[0] !== 2) throw new ContractError("invalid", "the secrets file is not one this store wrote");
     if (blob[1] !== SOURCE_CODES[this.source]) throw new ContractError("locked", "the secrets file's key is kept elsewhere than this store looks");
     const iv = blob.subarray(2, 14), tag = blob.subarray(14, 30), body = blob.subarray(30);
@@ -107,22 +132,59 @@ export class EncryptedFileValues implements ValueBackend {
     catch { throw new ContractError("invalid", "the secrets file can't be opened with this key"); }
   }
 
-  async #write(all: Record<string, string>): Promise<void> {
+  /** The values, and the bytes they came from. A file that is damaged (short, empty, a changed byte) or gone is not the end
+   *  of the road while the previous whole file is there (`credentials/secrets.enc.bak`, kept until each write is
+   *  durable): it is read from that, and said so. A file gone with no previous one, though a file was made here before,
+   *  is `locked` and never a quiet new empty store: the person restores it, or deletes the note
+   *  `credentials/secrets-file.made` to start empty. */
+  async #load(): Promise<{ all: Record<string, string>; blob: Buffer | null; recovered: boolean }> {
+    const bak = backupPath(this.path);
+    let damage: unknown;
+    if (existsSync(this.path)) {
+      const blob = await readFileRetrying(this.path);
+      try { return { all: await this.#decrypt(blob), blob, recovered: false }; }
+      catch (e) { if (!(e instanceof ContractError) || e.code !== "invalid") throw e; damage = e; }
+    } else if (!existsSync(bak)) {
+      if (existsSync(madePath(this.path))) {
+        throw new ContractError("locked", "the secrets file (secrets.enc) is missing though one was made here: saved logins stay locked until it is restored (or the note credentials/secrets-file.made is deleted to start empty)");
+      }
+      return { all: {}, blob: null, recovered: false };
+    }
+    if (existsSync(bak)) {
+      try {
+        const blob = await readFileRetrying(bak);
+        const all = await this.#decrypt(blob);
+        this.#log(`[secrets] secrets.enc was ${damage === undefined ? "missing" : "damaged"}: read from the previous whole file (credentials/secrets.enc.bak); the next write puts it back`);
+        return { all, blob, recovered: true };
+      } catch { /* no better: the first failure stands */ }
+    }
+    throw damage ?? new ContractError("locked", "the secrets file (secrets.enc) is missing and its previous copy can't be read");
+  }
+
+  /** Writes `all`: the file it replaces is first kept whole as the previous copy (durably), then the new file is written
+   *  (flushed, renamed, the rename flushed: `writePrivateFile`), then the note that a file was made. A crash anywhere
+   *  leaves the old whole file, the new whole file, or the previous copy beside whichever is there. */
+  async #write(all: Record<string, string>, from: { blob: Buffer | null; recovered: boolean }): Promise<void> {
     const iv = randomBytes(12);
     const head = Buffer.from([2, SOURCE_CODES[this.source]]);
     const c = createCipheriv("aes-256-gcm", await this.key(), iv);
     c.setAAD(head);
     const body = Buffer.concat([c.update(JSON.stringify(all), "utf8"), c.final()]);
-    await writePrivateFile(this.path, Buffer.concat([head, iv, c.getAuthTag(), body]));
+    if (from.blob !== null && !from.recovered) await writePrivateFile(backupPath(this.path), from.blob, this.#disk);
+    await writePrivateFile(this.path, Buffer.concat([head, iv, c.getAuthTag(), body]), this.#disk);
+    if (!existsSync(madePath(this.path))) await writePrivateFile(madePath(this.path), "a secrets file was made here\n", this.#disk);
   }
 
-  async get(key: string) { return (await this.#read())[key] ?? null; }
-  set(key: string, value: string) {
-    return withSecretsLock(this.#lockPath, async () => { const all = await this.#read(); all[key] = value; await this.#write(all); });
+  async get(key: string) { return (await this.#load()).all[key] ?? null; }
+  mutate(change: (all: Record<string, string>) => boolean): Promise<void> {
+    return withSecretsLock(this.#lockPath, async () => {
+      const from = await this.#load();
+      const all = { ...from.all };
+      if (change(all)) await this.#write(all, from);
+    });
   }
-  delete(key: string) {
-    return withSecretsLock(this.#lockPath, async () => { const all = await this.#read(); if (key in all) { delete all[key]; await this.#write(all); } });
-  }
+  set(key: string, value: string) { return this.mutate((all) => { all[key] = value; return true; }); }
+  delete(key: string) { return this.mutate((all) => { if (!(key in all)) return false; delete all[key]; return true; }); }
 }
 
 /** A key may be made only while there's no secrets file: one that exists was sealed with a key that must be found,
@@ -137,7 +199,7 @@ export function vaultKey(vault: Vault, secretsFile: string, name = "secrets-file
     let text: string | null;
     try { text = await vault.get(name); } catch { throw new ContractError("locked", `${where} didn't answer`); }
     if (text === null) {
-      if (existsSync(secretsFile)) throw missingKey(where);
+      if (secretsFileMade(secretsFile)) throw missingKey(where);
       text = randomBytes(32).toString("base64");
       await vault.set(name, text);
     }
@@ -179,14 +241,16 @@ export function systemdCredsKey(path: string, creds: SystemdCreds, secretsFile: 
   return async () => {
     if (cached) return cached;
     if (!existsSync(path)) {
-      if (existsSync(secretsFile)) throw missingKey("its sealed credential (secrets.key.cred)");
+      if (secretsFileMade(secretsFile)) throw missingKey("its sealed credential (secrets.key.cred)");
       const fresh = randomBytes(32).toString("base64");
-      const tmp = `${path}.${process.pid}.tmp`;
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      // The half-made credential goes in the run folder, which every fence hides, and is flushed before it is renamed in.
+      const tmp = join(dirname(path), ...SECRETS_TMP_DIR_SEGMENTS, `${basename(path)}.${process.pid}.tmp`);
+      mkdirSync(dirname(tmp), { recursive: true, mode: 0o700 });
       const r = await run(["systemd-creds", ...creds.args, "encrypt", name, "-", tmp], fresh);
       if (!r.ok) { rmSync(tmp, { force: true }); throw new ContractError("locked", "systemd-creds could not seal the secrets file's key"); }
       chmodSync(tmp, 0o600);
-      renameSync(tmp, path);
+      flushFile(tmp);
+      await renameDurably(tmp, path);
     }
     const r = await run(["systemd-creds", ...creds.args, "decrypt", name, path, "-"]);
     const k = Buffer.from(r.out.trim(), "base64");
@@ -207,8 +271,8 @@ export function secretStoreWarning(status: SecretStoreStatus): string | null {
 export function keyFileKey(path: string, secretsFile: string): () => Promise<Buffer> {
   return async () => {
     if (!existsSync(path)) {
-      if (existsSync(secretsFile)) throw missingKey("its key file (secrets.key)");
-      await writePrivateFile(path, randomBytes(32));
+      if (secretsFileMade(secretsFile)) throw missingKey("its key file (secrets.key)");
+      await writePrivateFile(path, randomBytes(32), secretDisk(secretsFile));
     }
     const k = readFileSync(path);
     if (k.length !== 32) throw new ContractError("invalid", "the key file is damaged");
@@ -351,6 +415,8 @@ export interface FileStoreChoice {
   readonly key: () => Promise<Buffer>;
   /** `systemd-creds` sealed it with the TPM's help. */
   readonly tpm?: boolean;
+  /** What the OS store that holds MOSS's older items said when asked (Linux: the Secret Service; Windows: always there). */
+  readonly osStore?: "absent" | "locked" | "unlocked";
   /** Set when the key can't be reached now (a locked keyring, a keyring that isn't running, a file that may have been
    *  replaced): the store answers `locked` with this reason, and never opens or writes the file. */
   readonly locked?: string;
@@ -376,13 +442,24 @@ export interface FileStoreOptions {
  *  the contract store (`openMossSecretStore`) and the flat-name store's backend (`fileSecretsBackend`) take their file
  *  from, so the two can never disagree about where the key is. */
 export async function chooseFileStore(o: FileStoreOptions): Promise<FileStoreChoice> {
+  const seen: { osStore?: "absent" | "locked" | "unlocked" } = {};
+  const c = await chooseFileStoreInner(o, seen);
+  return seen.osStore === undefined ? c : { ...c, osStore: seen.osStore };
+}
+
+async function chooseFileStoreInner(o: FileStoreOptions, seen: { osStore?: "absent" | "locked" | "unlocked" }): Promise<FileStoreChoice> {
   const { os } = o;
   const vault = o.vault ?? bunVault;
   const file = join(o.home, SECRETS_FILE_NAME);
   const keyFile = join(o.home, SECRETS_KEY_FILE_NAME);
   const sealedFile = join(o.home, SECRETS_SEALED_KEY_FILE_NAME);
   const keys = vault(`${o.service}.key`);
-  const recorded = recordedKeySource(file);
+  // The previous whole file speaks for a file that is damaged or gone (`EncryptedFileValues` reads from it).
+  let recorded = recordedKeySource(file);
+  if (recorded === null || recorded === "unreadable") {
+    const previous = recordedKeySource(join(o.home, ...SECRETS_BACKUP_SEGMENTS));
+    if (previous !== null && previous !== "unreadable") recorded = previous;
+  }
   if (recorded === "unreadable") {
     return { source: os === "windows" ? "credential-manager" : "key-file", key: async () => { throw new ContractError("invalid", "the secrets file is not one this store wrote"); }, locked: "the secrets file isn't one this store wrote" };
   }
@@ -390,11 +467,13 @@ export async function chooseFileStore(o: FileStoreOptions): Promise<FileStoreCho
   if (os === "windows") {
     if (recorded !== null && recorded !== "credential-manager") return { source: recorded, key: keyFileKey(keyFile, file), locked: `the secrets file's key is kept in ${recorded}, which Windows doesn't have` };
     const answers = await vaultAnswers(keys);
+    seen.osStore = answers === "yes" ? "unlocked" : "locked";
     return { source: "credential-manager", key: vaultKey(keys, file, undefined, "Credential Manager"), ...(answers === "yes" ? {} : { locked: "Credential Manager didn't answer" }) };
   }
 
   // Linux. A file already made keeps its key's source, and is locked while that source can't be reached (#205's S3).
   const service = await probeSecretService(keys);
+  seen.osStore = service;
   // A file that claims a weaker key than this computer keeps (a planted secrets.enc saying `key-file`, with a planted
   // secrets.key) is taken as replaced: locked, never opened or written under the weaker key (#205's check 2).
   // A keyring that is there but locked (or unreadable) may hold the real key, so a file claiming the unsealed key

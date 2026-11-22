@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createThrowawaySecretStore, throwawaySecretStoreAvailable } from "@waifucave/moss-test-harness";
-import { KeychainSecretStore } from "../../src/auth/secret-store";
+import { KeychainSecretStore, defaultSecretsBackend, osSecretsBackend } from "../../src/auth/secret-store";
+import { daemonMcpOAuthStore } from "../../src/runtime-sdk/mcp-oauth-store";
 import { TokenAuthority, TOKEN_NAMES } from "../../src/auth/tokens";
 import { ContractError } from "../../src/contracts/common";
 import { fileSecretsBackend, itemKey, movedMarkKey, moveOsStoreItems, type SecretsBackend } from "../../src/secrets/file-backend";
@@ -168,11 +169,12 @@ describe("the one-time move out of the OS store", () => {
     expect(await again.get({ service: SVC, name: "exa-api-key" })).toBeNull();
   });
 
-  test("an OS store that does not answer leaves no note, so the next start tries again", async () => {
+  test("an OS store that does not answer leaves no note, makes no new token, and the next start moves what it holds", async () => {
     const h = home(), keys = memoryVault();
-    const down: SecretsBackend = { get: (async () => { throw new Error("org.freedesktop.DBus.Error.ServiceUnknown"); }) as SecretsBackend["get"], set: (async () => {}) as SecretsBackend["set"], delete: (async () => false) as SecretsBackend["delete"] };
+    const down: SecretsBackend = { get: (async () => { throw new Error("the collection is locked"); }) as SecretsBackend["get"], set: (async () => {}) as SecretsBackend["set"], delete: (async () => false) as SecretsBackend["delete"] };
     const b = backendOn(h, keys, { moveFrom: down, names: () => ["harness-token"], log: () => {} });
-    expect(await b.get({ service: SVC, name: "harness-token" })).toBeNull();
+    // Review item 2: the old answer here was null, which makes the pairing tokens mint NEW ones and strand the old.
+    await expect(b.get({ service: SVC, name: "harness-token" })).rejects.toMatchObject({ code: "locked" });
     const values = new EncryptedFileValues(join(h, SECRETS_FILE_NAME), vaultKey(keys, join(h, SECRETS_FILE_NAME)), "secret-service");
     expect(await values.get(movedMarkKey(SVC))).toBeNull();
     // Back up: the next start moves it.
@@ -325,6 +327,44 @@ describe.skipIf(realStore === "skip")("the real OS store holds the key", () => {
       expect(await b.get({ service: store.service, name: "harness-token" })).toBe("old-token");
       expect(await store.get("harness-token")).toBeNull();
     } finally {
+      await store.dispose();
+      rmSync(h, { recursive: true, force: true });
+    }
+  }, 60_000);
+  test("the daemon's own wiring on this OS (defaultSecretsBackend and the MCP sign-in store, not the test shortcut): the file holds everything, the real OS store only the key, and no clear value is anywhere in the home", async () => {
+    if (realStore !== "run") return;
+    const store = createThrowawaySecretStore({ id: `sf-wire-${process.pid}` });
+    const service = store.service, h = home();
+    const osStore = osSecretsBackend(); // what the daemon's own raw store is: the real one, isolated to this run's bus or service
+    try {
+      // The very expressions the daemon makes (daemon.ts), with a throwaway home and service, `file: true` only so a test process takes them.
+      const secrets = new KeychainSecretStore(defaultSecretsBackend({ home: h, service, file: true }), service);
+      const minted = await new TokenAuthority(secrets).ensureTokens();
+      await secrets.set("anthropic:default", VALUE);
+      const oauth = daemonMcpOAuthStore(service, h, { file: true });
+      await oauth.write("mcp-oauth:srv", JSON.stringify({ access_token: VALUE }));
+      expect(JSON.parse((await oauth.read("mcp-oauth:srv"))!).access_token).toBe(VALUE);
+      expect(await new KeychainSecretStore(defaultSecretsBackend({ home: h, service, file: true }), service).get("anthropic:default")).toBe(VALUE);
+      expect(await new TokenAuthority(secrets).ensureTokens()).toEqual(minted); // the same tokens, not new ones
+
+      // The real OS store holds the file's key and nothing else of MOSS's.
+      expect(await osStore.get({ service: `${service}.key`, name: "secrets-file-key" })).not.toBeNull();
+      for (const name of [...Object.values(TOKEN_NAMES), "anthropic:default", "mcp-oauth:srv"]) expect([name, await osStore.get({ service, name })]).toEqual([name, null]);
+
+      // Every file in the home, whole: no clear value, no token, not the key.
+      const files: string[] = [];
+      const walk = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else files.push(p); } };
+      walk(h);
+      expect(files.some((f) => f.endsWith(SECRETS_FILE_NAME))).toBe(true);
+      expect(files.filter((f) => f.endsWith(".tmp"))).toEqual([]);
+      const key = Buffer.from((await osStore.get({ service: `${service}.key`, name: "secrets-file-key" }))!, "base64");
+      const needles = [VALUE, ...Object.values(minted), "access_token"].map((t) => Buffer.from(t));
+      for (const f of files) {
+        const bytes = readFileSync(f);
+        expect([f, needles.some((n) => bytes.includes(n)), bytes.includes(key)]).toEqual([f, false, false]);
+      }
+    } finally {
+      for (const name of ["secrets-file-key", "probe"]) await osStore.delete({ service: `${service}.key`, name }).catch(() => false);
       await store.dispose();
       rmSync(h, { recursive: true, force: true });
     }
