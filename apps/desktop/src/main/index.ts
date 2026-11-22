@@ -605,6 +605,8 @@ async function ready(): Promise<void> {
       await openPage("key");
       return true;
     },
+    // Settings' "Open the setup guide" (`app.openSetup`): the same page the app menu's item opens.
+    openGuide: async () => { await openPage("welcome"); },
     terminalInput: (windowId, frameId, pluginId, terminalId, input) => terminalInput(windowId, frameId, pluginId, terminalId, input),
     // The sealed path (E-M3): the frame's own channel; the click's are the frame's own gates (IOv2, the trusted press,
     // the hour it stood visible), and here the app signs with the answer key over the card's id and hash and takes the

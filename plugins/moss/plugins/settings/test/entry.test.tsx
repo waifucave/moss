@@ -26,6 +26,7 @@ const detail = (p: PluginSummary, capabilities: string[], networkHosts: string[]
 
 let uiSetFails = false;
 let setEnabledFails = false;
+let setupFails = false;
 let uiAppearance: "light" | "dark" | "system" | undefined;
 
 async function mount(params: { section?: string; item?: string } = {}, extra: { component?: EntryComponent } = {}) {
@@ -46,6 +47,7 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
     "device.pair.join": () => ({ pairingId: "p2", words: ["amber", "river", "lantern", "moss"], expiresAt: 0 }),
     "device.pair.confirm": () => ({ applied: false, card: "card-4" }),
     "device.pair.cancel": () => ({ ok: true }),
+    "app.openSetup": () => { if (setupFails) throw new Error("refused"); return { opened: true }; },
   });
   const api = fakeApi({
     computers: { list: async () => [computerView("Studio", { device: "d1", level: "ask-risky", link: "self", isMain: true }), computerView("Laptop", { device: "d2", level: "ask", link: "lan" })] },
@@ -262,6 +264,24 @@ describe("settings on the runtime", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tarot" }));
     await act(() => settle()); // the section's spot resolves through the layer, as in the app
     expect(screen.getByText("Tarot settings")).toBeTruthy();
+  });
+
+  test("Account has a way back to the setup guide (the app menu's item is macOS only): one press asks the app to open it, Settings steps aside; a refusal says so and stays", async () => {
+    setupFails = false;
+    const { core, closed } = await mount({ section: "account" });
+    expect(core.calls.some((c) => c.method === "app.openSetup")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open the setup guide" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "app.openSetup")).toHaveLength(1);
+    expect(closed()).toBe(1);
+    cleanup();
+    setupFails = true;
+    const again = await mount({ section: "account" });
+    fireEvent.click(screen.getByRole("button", { name: "Open the setup guide" }));
+    await act(() => settle());
+    expect(again.closed()).toBe(0);
+    expect(screen.getByText("The setup guide didn't open. Try again.")).toBeTruthy();
+    setupFails = false;
   });
 
   test("Close closes", async () => {

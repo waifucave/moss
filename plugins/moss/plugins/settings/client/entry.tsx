@@ -331,6 +331,12 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
       values={values}
       onChange={onChange}
       onOpenLanguage={() => setPicking(true)}
+      {...(core
+        ? {
+            // The setup guide is the app's own page over the window: Settings steps aside for it.
+            onOpenSetup: () => void (core.call as (m: string, p: unknown) => Promise<unknown>)("app.openSetup", {}).then(() => props.close?.(), () => setFailure(S.setupGuideFailed)),
+          }
+        : {})}
       {...(props.navigate ? { onOpenPlugin: (id: string) => props.navigate!({ route: "plugins", params: { id } }), onOpenPluginManager: () => props.navigate!({ route: "plugins", params: {} }) } : {})}
       {...(core
         ? {

@@ -148,6 +148,9 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   // other is MOSS: a bot's conversation or its window), started by the engine when it isn't running. `shell.control`, and the
   // read of what it names (a bot: `bots.read`, checked in `openIn`).
   "app.openIn": press("shell.control"),
+  // The setup guide again, from Settings (MOSS Code has no other door on Windows and Linux): the person's press, from a holder of
+  // `app.settings`. It opens the app's own core page; the part is told nothing.
+  "app.openSetup": press(APP_SETTINGS),
   "agent.options": read(SESSIONS_START),
   "agent.recent": read(SESSIONS_START),
   "plugin.logs": read("logs.read"),
@@ -433,6 +436,8 @@ export interface TreeRoute {
   /** Opens the app's own key dialog (the core page "key") for a plugin's secret setting or `api-key` sign-in, checked
    *  as one here. */
   openKey?(target: KeyTarget): Promise<boolean>;
+  /** Opens the setup guide (the core page "welcome") over the window: `app.openSetup`, the person's press in Settings. */
+  openGuide?(): Promise<void>;
   /** The active entries of a spot the calling part declares, as its own `useSpotEntries` resolves them (main's runtime):
    *  where a message action's handler is found. */
   entries?(spot: string): readonly { ref: string; pluginId: string; fields: Readonly<Record<string, unknown>> }[];
@@ -582,6 +587,11 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   if (r.method === "agent.start") return agentStart(r, part, c);
   if (r.method === "agent.recent") return agentRecent(r);
   if (r.method === "app.openIn") return openIn(r, part, has);
+  if (r.method === "app.openSetup") {
+    if (r.openGuide === undefined) throw r.refuse("this app has no setup guide to open");
+    await r.openGuide();
+    return { opened: true };
+  }
   if (r.method === "conversation.messageAction") return messageAction(r, part);
   if (r.method === "ui.secret") return secret(r, part, has(PLUGINS_MANAGE));
   if (PAGE_METHODS.has(r.method)) {

@@ -445,6 +445,7 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "agent.backends": { needs: ["sessions.read"], gesture: false },
   "agent.start": { needs: ["sessions.start"], gesture: true },
   "app.openIn": { needs: ["shell.control"], gesture: true },
+  "app.openSetup": { needs: ["app.settings"], gesture: true },
   "agent.options": { needs: ["sessions.start"], gesture: false },
   "agent.recent": { needs: ["sessions.start"], gesture: false },
   ...Object.fromEntries(["plugin.list", "plugin.get", "plugin.ui", "plugin.index.list", "plugin.index.search", "plugin.auth.list", "plugin.dev.list", "plugin.grant.list", "command.list", "notify.mutes"].map((m) => [m, { needs: ["plugins.read"], gesture: false }])),
@@ -514,6 +515,7 @@ const WORST: Record<string, Worst> = {
   "computer.list": "read", // the computers' names, to tick which a plugin's server runs on
   "agent.backends": "read", // the coding agents plugins bring and which computers have them
   "agent.start": "starts a model turn", // a coding session in a folder the person picked in main's dialog; a first message too with user.send
+  "app.openSetup": "main-owned dialog", // the app's own setup guide page; the part is told only that it opened
   "app.openIn": "harmless change", // opens a bot's conversation or the window in MOSS (the other program), starting it if needed; the place is data, the person's own press
   "agent.options": "read", // an agent's models and efforts, before any session
   "agent.recent": "read", // the last agent, model and effort; no folder (those are tokens from ui.pick)
@@ -617,7 +619,7 @@ describe("the door, table by table: what each entry needs, with what press", () 
         for (const gesture of [true, false]) {
           const tokens = new PickTokens();
           const calls: string[] = [];
-          const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps: [...(cap === "" ? [] : [cap]), ...(want.all ?? [])], method, params: paramsFor(method, THIRD, tokens, cap), gesture, tokens, pick: async () => "/picked/folder", openKey: async () => true, entries: () => PIN_ENTRY, request: async (m, p) => { calls.push(m); return appConnection(m, p); } });
+          const { r } = route({ tree: { windowId: 1, pluginId: THIRD }, caps: [...(cap === "" ? [] : [cap]), ...(want.all ?? [])], method, params: paramsFor(method, THIRD, tokens, cap), gesture, tokens, pick: async () => "/picked/folder", openKey: async () => true, openGuide: async () => undefined, entries: () => PIN_ENTRY, request: async (m, p) => { calls.push(m); return appConnection(m, p); } });
           const ok = gesture || !want.gesture;
           const got = await routeCall(r).then(() => "ok", (e: Error) => e.message);
           expect([method, cap, gesture, got]).toEqual([method, cap, gesture, ok ? "ok" : expect.stringContaining("only right after the user's own")]);
@@ -769,6 +771,17 @@ describe("the Plugins page's calls as main sends them", () => {
     } finally {
       rmSync(made, { recursive: true, force: true });
     }
+  });
+
+  test("app.openSetup: the setup guide again, from a holder of app.settings, on the user's press; no setup page in the app: refused", async () => {
+    let opened = 0;
+    const call = (gesture: boolean, caps: string[], hook = true) => route({ tree: { windowId: 1, pluginId: THIRD }, caps, method: "app.openSetup", params: {}, gesture, ...(hook ? { openGuide: async () => { opened++; } } : {}) }).r;
+    expect(await routeCall(call(true, ["app.settings"]))).toEqual({ opened: true });
+    expect(opened).toBe(1);
+    await expect(routeCall(call(false, ["app.settings"]))).rejects.toThrow("only right after the user's own");
+    await expect(routeCall(call(true, ["files"]))).rejects.toThrow("capability");
+    await expect(routeCall(call(true, ["app.settings"], false))).rejects.toThrow("no setup guide");
+    expect(opened).toBe(1);
   });
 
   test("app.openIn (Open in MOSS): the other program's window or a bot, from a holder of shell.control (a bot also bots.read), on the user's press; the page never names the program", async () => {

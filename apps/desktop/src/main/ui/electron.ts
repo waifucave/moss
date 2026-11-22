@@ -429,6 +429,8 @@ export interface IpcHooks {
   grants?: FileGrants;
   /** Opens the app's own key dialog for a plugin's key (the Plugins page's `ui.secret`, checked as one). */
   openKey?(target: KeyTarget): Promise<boolean>;
+  /** Opens the setup guide again (`app.openSetup`, the person's press in Settings). */
+  openGuide?(): Promise<void>;
   /** A key press or paste in a terminal part's element, to write what the main process derives from its own input;
    *  `frameId` names the focused frame (the review's S2: the record the main process keeps is per frame). */
   terminalInput(windowId: number, frameId: string, pluginId: string, terminalId: string, input: { kind: "key"; key: string } | { kind: "paste" }): Promise<void>;
@@ -719,6 +721,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       tokens: pickTokens,
       ...(hooks.pick ? { pick: (w: number, kind: "folder" | "file", filters: readonly { name: string; extensions: string[] }[] | undefined, use: PickUse) => hooks.pick!(w, kind, filters, use) } : {}),
       ...(hooks.openKey ? { openKey: (target: KeyTarget) => hooks.openKey!(target) } : {}),
+      ...(hooks.openGuide ? { openGuide: () => hooks.openGuide!() } : {}),
       // The key press or click must have come to THIS frame: its own transient activation (read in the preload) AND a press the
       // main process saw land in this frame (F2); a refused call spends nobody's gesture.
       takeGesture: press,

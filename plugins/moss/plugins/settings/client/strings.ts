@@ -23,6 +23,10 @@ export const S = {
   nameDetail: "What your bots call you.",
   main: "Main computer",
   mainDetail: "The computer that runs your bots when it's on.",
+  setupGuide: "Setup guide",
+  setupGuideDetail: "Add a model provider and pick your default model, step by step.",
+  setupGuideOpen: "Open the setup guide",
+  setupGuideFailed: "The setup guide didn't open. Try again.",
   // Devices.
   devices: "Paired devices",
   devicesDetail: "Every device sees every bot. The main computer runs them. Removing a device, adding one or choosing another main computer asks you on a card first.",
