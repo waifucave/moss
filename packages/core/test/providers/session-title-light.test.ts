@@ -42,12 +42,30 @@ describe("a session's title on its own family's light model", () => {
     expect(tagOf(r, s, "openai/gpt-6-luna")).toBe("openai/gpt-6-luna");
   });
 
-  test("a provider with no credential, a model in no family and an agent's own model name: the titles job's usual answer", async () => {
+  test("a model in no family, or an outside agent's own model name: the titles job's usual answer (the default's family on the default's provider)", async () => {
     const r = await routerWith(["anthropic"]);
     const s = settingsWith("anthropic/claude-opus-5-5");
-    expect(tagOf(r, s, "openai/gpt-6.1-terra")).toBe("anthropic/claude-haiku-5-5");
     expect(tagOf(r, s, "anthropic/not-a-model")).toBe("anthropic/claude-haiku-5-5");
     expect(tagOf(r, s, "opus")).toBe("anthropic/claude-haiku-5-5");
+    expect(tagOf(r, s, "gpt-5-codex")).toBe("anthropic/claude-haiku-5-5");
+  });
+
+  // 2026-11-22 (backlog 521; was: the titles job's usual answer, which could be any other provider): a session on a model the
+  // catalog knows is titled on ITS provider's light model or not at all.
+  test("a session whose own provider holds no key: no title job, never another provider", async () => {
+    const r = await routerWith(["anthropic"]);
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    const c = r.resolve("titles.model", s, { lightOf: "openai/gpt-6.1-terra" as ModelTag });
+    expect(isInternalRefusal(c)).toBe(true);
+    // The same with the default's provider the only other one signed in, and with a coding-plan key beside it.
+    const plan = await routerWith(["anthropic", "groq"]);
+    expect(isInternalRefusal(plan.resolve("titles.model", s, { lightOf: "openai/gpt-6.1-terra" as ModelTag }))).toBe(true);
+  });
+
+  test("a session on a provider that serves no light model of its family: not run on its main model", async () => {
+    const r = await routerWith(["groq", "anthropic"]);
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    expect(isInternalRefusal(r.resolve("titles.model", s, { lightOf: "groq/llama-3.3-70b-versatile" as ModelTag }))).toBe(true);
   });
 
   test("an explicit setting for titles wins over the session's family", async () => {
@@ -66,5 +84,7 @@ describe("a session's title on its own family's light model", () => {
     expect(() => t.lightModelFor(undefined)).toThrow("titles are turned off");
     const none = mossSessionTitles(await routerWith([]), () => settingsWith("anthropic/claude-opus-5-5"));
     expect(() => none.lightModelFor(undefined)).toThrow();
+    const gone = mossSessionTitles(r, () => settingsWith("anthropic/claude-opus-5-5"));
+    expect(() => gone.lightModelFor("deepseek/deepseek-v4-pro")).toThrow(); // deepseek holds no key here: no other provider is tried
   });
 });

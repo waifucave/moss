@@ -1,6 +1,6 @@
 /**
  * The light model per family (the owner, 2026-11-21: "a light model per family"): MOSS's own light jobs (titles, the
- * dreamer, the cleaner) run on it; the bash safety reviewer and the plugin Review (`reviewer.model`) do not.
+ * dreamer, the cleaner, the bash safety reviewer and the plugin Review) run on it, and on nothing costlier or elsewhere (2026-11-22).
  *
  * The table and the family rule are pure over the catalog; the order and the fallbacks run through the real router over a
  * throwaway secret store and a loopback fake, never a real credential or the network.
@@ -28,7 +28,7 @@ import { describeInternalJobModels, internalRoleEffectiveTag, internalRoleLight,
 const catalog = loadCatalog();
 const snap = (...ids: string[]) => ({ credentialed: new Set(ids) });
 const settingsWith = (model: string, extra: Record<string, unknown> = {}): Settings => Settings.parse({ schemaVersion: 3, provider: { model }, ...extra });
-const LIGHT_ROLES = ["titles.model", "pins.dream", "pins.cleaner"] as const;
+const LIGHT_ROLES = ["titles.model", "pins.dream", "pins.cleaner", "reviewer.model"] as const;
 
 describe("the table", () => {
   test("every family with a default declares a light model, and no family is declared twice or unknown", () => {
@@ -78,10 +78,9 @@ describe("the table", () => {
 });
 
 describe("the order, for the light jobs", () => {
-  test("Anthropic only: the title is on Haiku 5.5; the reviewer stays on the default", () => {
+  test("Anthropic only: every job is on Haiku 5.5, the reviewer too (2026-11-22; was: the reviewer stayed on the default)", () => {
     const s = settingsWith("anthropic/claude-opus-5-5");
     for (const role of LIGHT_ROLES) expect(String(internalRoleEffectiveTag(s, role, snap("anthropic")))).toBe("anthropic/claude-haiku-5-5");
-    expect(String(internalRoleEffectiveTag(s, "reviewer.model", snap("anthropic")))).toBe("anthropic/claude-opus-5-5");
   });
 
   test("OpenAI only (a key): luna; the Codex sign-in: luna on codex-oauth", () => {
@@ -95,14 +94,22 @@ describe("the order, for the light jobs", () => {
     expect(String(internalRoleEffectiveTag(settingsWith("openai/gpt-6.2-sol"), "titles.model", both))).toBe("openai/gpt-6-luna");
   });
 
-  test("the default's provider not signed in (or removed): another provider's light model, in the preference order", () => {
+  // 2026-11-22 (was: another provider's light model, in the preference order). The person chose the default's provider for
+  // this work and no other, so a job whose default's provider can't serve it does not run.
+  test("the default's provider not signed in (or removed): the job does not run, never on another provider", () => {
     const s = settingsWith("anthropic/claude-opus-5-5");
-    expect(String(internalRoleEffectiveTag(s, "titles.model", snap("openai", "deepseek")))).toBe("openai/gpt-6-luna");
-    expect(String(internalRoleEffectiveTag(s, "titles.model", snap("deepseek")))).toBe("deepseek/deepseek-flash");
-    expect(internalRoleLight(s, "titles.model", snap("deepseek"))?.source).toBe("other-provider");
-    expect(internalRoleLight(s, "titles.model", snap("anthropic"))?.source).toBe("default-family");
-    // Nothing credentialed: nothing to run on.
-    expect(internalRoleEffectiveTag(s, "titles.model", snap())).toBeNull();
+    for (const role of LIGHT_ROLES) {
+      expect(internalRoleEffectiveTag(s, role, snap("openai", "deepseek"))).toBeNull();
+      expect(internalRoleEffectiveTag(s, role, snap("deepseek"))).toBeNull();
+      expect(internalRoleEffectiveTag(s, role, snap())).toBeNull();
+    }
+    expect(internalRoleLight(s, "titles.model", snap("deepseek"))).toBeUndefined();
+    expect(internalRoleLight(s, "titles.model", snap("anthropic"))?.choice.family).toBe("claude");
+  });
+
+  test("a coding-plan or aggregator key never gets a job: only the default's own provider runs it", () => {
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    for (const id of ["groq", "kilocode", "agentrouter", "opencode-go"]) expect(internalRoleEffectiveTag(s, "titles.model", snap(id))).toBeNull();
   });
 
   test("an explicit setting for the job wins and is never replaced", () => {
@@ -112,11 +119,16 @@ describe("the order, for the light jobs", () => {
     expect(String(internalRoleEffectiveTag(pinned, "pins.dream", snap("anthropic")))).toBe("anthropic/claude-haiku-5-5");
   });
 
-  test("a provider that doesn't serve the light model (an aggregator row without it, a retired one): the default", () => {
+  test("a provider that doesn't serve the light model (an aggregator row without it, a retired one): no light model, and the job does not run on the default", () => {
     // `deepseek-anthropic` and friends vendor the family but a plan's catalog may carry no flash row.
     const noFlash = { families: catalog.families, models: catalog.models.filter((m) => !(m.providerId === "deepseek" && m.canonicalModelId === "deepseek-flash")) };
     expect(lightModelOn(noFlash, "deepseek", "deepseek")).toBeUndefined();
     expect(lightModelOn(catalog, "deepseek", "deepseek")?.tag).toBe("deepseek/deepseek-flash");
+  });
+
+  test("a default in no family, or no default at all: nothing to run on", () => {
+    expect(internalRoleEffectiveTag(settingsWith("deepseek/not-a-model"), "titles.model", snap("deepseek"))).toBeNull();
+    expect(internalRoleEffectiveTag(Settings.parse({ schemaVersion: 3 }), "titles.model", snap("deepseek", "anthropic"))).toBeNull();
   });
 
   test("no snapshot: unchanged (the default rule)", () => {
@@ -146,10 +158,11 @@ describe("the router: the effort, the fallback and what stays", () => {
     expect(get("titles.model").model).toBe("claude-haiku-5-5");
     expect(get("pins.dream").effort).toBe("medium");
     expect(get("pins.cleaner").effort).toBe("low");
-    expect(get("reviewer.model").model).toBe("claude-opus-5-5");
+    expect(get("reviewer.model").model).toBe("claude-haiku-5-5"); // 2026-11-22: was claude-opus-5-5
+    expect(get("reviewer.model").effort).toBeUndefined();
   });
 
-  test("a provider removed in this run: the next call is on another provider's light model", async () => {
+  test("a provider removed in this run: the next call does not run, and never moves to another provider (was: the other's light model)", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "anthropic:default", { kind: "api-key", key: "sk-ant" });
     await writeCredentialMaterial(secrets, "openai:default", { kind: "api-key", key: "sk-openai" });
@@ -158,10 +171,26 @@ describe("the router: the effort, the fallback and what stays", () => {
     expect(String((router.resolve("titles.model", s) as { tag: string }).tag)).toBe("anthropic/claude-haiku-5-5");
     await clearCredentialMaterial(secrets, "anthropic:default");
     await view.refresh();
-    expect(String((router.resolve("titles.model", s) as { tag: string }).tag)).toBe("openai/gpt-6-luna");
+    const after = router.resolve("titles.model", s);
+    expect(isInternalRefusal(after)).toBe(true);
   });
 
-  test("a custom endpoint (providers.<id>.baseUrl) that doesn't list the light model: the same request runs on the default, never an error", async () => {
+  test("a refusal is said once in the log, not at every call", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, "openai:default", { kind: "api-key", key: "sk-openai" });
+    const view = createInternalProviderView({ secrets, log: () => {} });
+    await view.refresh();
+    const lines: string[] = [];
+    const router = createInternalRouter({ view, secrets, log: (m) => lines.push(m) });
+    const s = settingsWith("anthropic/claude-opus-5-5"); // the default's provider holds no key
+    for (let i = 0; i < 5; i++) expect(isInternalRefusal(router.resolve("titles.model", s))).toBe(true);
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("titles.model is not running");
+    expect(lines[0]).not.toContain("sk-openai");
+  });
+
+  // 2026-11-22: was "the same request runs on the default, never an error": a fallback to the costlier default model.
+  test("a custom endpoint (providers.<id>.baseUrl) that doesn't list the light model: the job fails and says so once; the default model is never asked", async () => {
     const seen: string[] = [];
     const fake = await openaiChatFake.startOpenAiChatFake({
       scenarios: {
@@ -172,23 +201,29 @@ describe("the router: the effort, the fallback and what stays", () => {
     try {
       const secrets = secretsStore();
       await writeCredentialMaterial(secrets, "deepseek:default", { kind: "api-key", key: "sk-ds" });
-      const { router } = await routerFor(secrets);
-      const call = router.resolve("titles.model", settingsWith("deepseek/deepseek-v4-pro", { providers: { deepseek: { baseUrl: fake.url } } }));
-      if (isInternalRefusal(call)) throw new Error(call.reason);
-      expect(call.model).toBe("deepseek-flash");
-      const out: string[] = [];
-      for await (const ev of call.provider.streamTurn({ model: call.model, instructions: "t", input: [{ type: "message", role: "user", content: "hi" }], tools: [], ...(call.effort ? { reasoningEffort: call.effort } : {}) })) {
-        if (ev.type === "error") throw new Error(`provider error: ${ev.message}`);
-        if (ev.type === "text_delta") out.push(ev.delta);
+      const view = createInternalProviderView({ secrets, log: () => {} });
+      await view.refresh();
+      const lines: string[] = [];
+      const router = createInternalRouter({ view, secrets, log: (m) => lines.push(m) });
+      const settings = settingsWith("deepseek/deepseek-v4-pro", { providers: { deepseek: { baseUrl: fake.url } } });
+      for (let i = 0; i < 2; i++) {
+        const call = router.resolve("titles.model", settings);
+        if (isInternalRefusal(call)) throw new Error(call.reason);
+        expect(call.model).toBe("deepseek-flash");
+        const errors: string[] = [];
+        for await (const ev of call.provider.streamTurn({ model: call.model, instructions: "t", input: [{ type: "message", role: "user", content: "hi" }], tools: [], ...(call.effort ? { reasoningEffort: call.effort } : {}) })) {
+          if (ev.type === "error") errors.push(ev.message);
+        }
+        expect(errors.length).toBe(1);
       }
-      expect(out.join("")).toBe("Fix Login");
-      expect(seen).toEqual(["flash", "pro"]);
+      expect(seen).toEqual(["flash", "flash"]);
+      expect(lines.filter((l) => l.includes("deepseek/deepseek-flash is not one this endpoint serves")).length).toBe(1);
     } finally {
       await fake.close();
     }
   });
 
-  test("only a model-not-offered error falls back: an auth error or a rate limit is the light call's own", () => {
+  test("a model-not-offered error is told apart from an auth error or a rate limit", () => {
     expect(modelNotOffered({ type: "error", code: "bad_request", message: "HTTP 404 — The model `x` does not exist" })).toBe(true);
     expect(modelNotOffered({ type: "error", code: "bad_request", message: "HTTP 400", providerCode: "model_not_found" })).toBe(true);
     expect(modelNotOffered({ type: "error", code: "auth", message: "model not found" })).toBe(false);
@@ -198,7 +233,7 @@ describe("the router: the effort, the fallback and what stays", () => {
 });
 
 describe("an Anthropic-only home, end to end over the anthropic-messages fake", () => {
-  test("the title's request names Haiku 5.5 at low effort; the bash reviewer's names the default", async () => {
+  test("the title's request names Haiku 5.5 at low effort; the bash reviewer's names Haiku 5.5 too (2026-11-22; was the default)", async () => {
     const { startFake, anthropicFake } = await import("@waifucave/clover-provider-conformance/fakes");
     const fake = await startFake({
       routes: [{
@@ -237,7 +272,7 @@ describe("an Anthropic-only home, end to end over the anthropic-messages fake", 
       expect(fake.requests.length).toBe(2);
       expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-haiku-5-5");
       expect((anthropicFake.anthropicBody(fake.requests[0]!).output_config as { effort?: string } | undefined)?.effort).toBe("low");
-      expect(anthropicFake.anthropicModelOf(fake.requests[1]!)).toBe("claude-opus-5-5");
+      expect(anthropicFake.anthropicModelOf(fake.requests[1]!)).toBe("claude-haiku-5-5");
     } finally {
       await fake.close();
     }
@@ -248,9 +283,10 @@ describe("the start-up line", () => {
   test("names the model each job runs on and why, with no secret in it", () => {
     const line = describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap("anthropic"));
     expect(line).toContain("titles on anthropic/claude-haiku-5-5 (the light model of the default's claude family)");
-    expect(line).toContain("the bash safety reviewer and the plugin Review on anthropic/claude-opus-5-5 (a check that guards you keeps the stronger model)");
+    // 2026-11-22: was "... on anthropic/claude-opus-5-5 (a check that guards you keeps the stronger model)".
+    expect(line).toContain("the bash safety reviewer and the plugin Review on anthropic/claude-haiku-5-5 (the light model of the default's claude family)");
     const pinned = describeInternalJobModels(setModelRole(settingsWith("anthropic/claude-opus-5-5"), "titles.model", "anthropic/claude-sonnet-5-5"), snap("anthropic"));
     expect(pinned).toContain("titles on anthropic/claude-sonnet-5-5 (set in settings)");
-    expect(describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap())).toContain("titles on nothing (no model to run on yet)");
+    expect(describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap())).toContain("titles on nothing (not running: no light model of the default model's family can be had on its provider; pin a model in Settings › Roles)");
   });
 });

@@ -122,11 +122,16 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
-    for (const role of ["provider.model", "titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
+    const session = res.result.roles["provider.model"];
+    expect(session.model).toBe("deepseek/deepseek-reasoner");
+    expect(session.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
+    expect(session.problem.detail).toContain("not in this build's model catalog");
+    // 2026-11-22: the internal roles used to sit on the retired tag itself (the default rule); a default in no family has no
+    // light model, so they run nothing and say to pin one.
+    for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      expect(info.model).toBe("deepseek/deepseek-reasoner");
-      expect(info.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
-      expect(info.problem.detail).toContain("not in this build's model catalog");
+      expect(info.model).toBeNull();
+      expect(info.problem?.reason).toBe("no-default-model");
     }
     // …and the note clears the moment the user picks a live model (derived, never persisted).
     const fixed = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "deepseek/deepseek-v4-pro" });
@@ -345,16 +350,17 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   // 2026-09-19: the DERIVED role problems. These are recomputed from the live view on every read
   // (never written to role-health.json), so they clear themselves the moment the condition clears.
   // -------------------------------------------------------------------------------------------
-  test("a DeepSeek default with a Codex credential: the internal roles have a real model, a picker and NO problem", async () => {
+  // 2026-11-22: was "the internal roles have a real model, a picker and NO problem" (they sat on codex-oauth's rows): MOSS's
+  // jobs never run on a provider other than the default's, so with DeepSeek holding no key they do not run.
+  test("a DeepSeek default with a Codex credential: the internal roles run nothing on Codex, say to pin one, and keep their picker", async () => {
     const { socketPath, harnessToken } = await boot("deepseek/deepseek-flash", { internalCredentials: ["codex-oauth:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
     for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      expect(info.problem).toBeNull();
-      // Light-model ruling (2026-11-21): the three light jobs sit on the gpt family's light model (was terra for all four).
-      expect(info.model).toBe(role === "reviewer.model" ? "codex-oauth/gpt-6.1-terra" : "codex-oauth/gpt-6-luna");
+      expect(info.problem?.reason).toBe("no-default-model");
+      expect(info.model).toBeNull();
       expect(info.permitted.length).toBeGreaterThan(1);
       const ids = info.permitted.map((p: any) => p.providerId);
       expect(ids).toContain("codex-oauth");
@@ -387,8 +393,8 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const res = await c.request(METHODS.settingsModelRoles, {});
     for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      // Light-model ruling (2026-11-21): the three light jobs sit on Claude's light model; the reviewer on the user's own.
-      expect(info.model).toBe(role === "reviewer.model" ? "anthropic/claude-sonnet-5" : "anthropic/claude-haiku-5-5");
+      // 2026-11-22: all four sit on Claude's light model (the reviewer was on the user's own, claude-sonnet-5).
+      expect(info.model).toBe("anthropic/claude-haiku-5-5");
       expect(info.problem).toBeNull();
     }
     c.close();
@@ -476,30 +482,26 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     c.close();
   });
 
-  test("M-3: a credentialed third-party provider with no family slot reports no-default-model, not a guess", async () => {
-    // `groq` is eligible and credentialed, declares no terra slot, and is not the session default's
-    // provider — the exact shape the retired "first non-blocked llm row" rung used to answer with
-    // `groq/llama-3.3-70b-versatile`, a model the user never chose.
+  test("M-3: a credentialed third-party provider with no light model of the default's family reports no-default-model, not a guess", async () => {
+    // `groq` is eligible and credentialed. 2026-11-22: with groq AS the session default the family of its model
+    // (llama) has no light model there, so the roles do not sit on the user's main model any more (was: they did).
     const { socketPath, harnessToken } = await boot("groq/llama-3.3-70b-versatile", { internalCredentials: ["groq:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
-    // With groq AS the session default it IS the user's own choice, so the role sits on it.
-    expect((await c.request(METHODS.settingsModelRoles, {})).result.roles["titles.model"].model).toBe("groq/llama-3.3-70b-versatile");
-    // Move the session default to a Claude row: groq is still the only credential, but MOSS will no
-    // longer name a model on it, and codex-oauth/openai (which do have slots) have no key.
+    expect((await c.request(METHODS.settingsModelRoles, {})).result.roles["titles.model"].model).toBeNull();
+    // Move the session default to a Claude row: groq is still the only credential, but it is not the default's
+    // provider, so no job runs on it (was: a light job took groq's gpt-oss-20b).
     const moved = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "anthropic/claude-opus-5" });
     expect(moved.error).toBeUndefined();
-    // Light-model ruling (2026-11-21): a light job takes the light model of a provider the person added (groq's gpt-oss
-    // family); the reviewer, a safety check, still has no model MOSS will choose.
-    expect(moved.result.roles["titles.model"].model).toBe("groq/openai/gpt-oss-20b");
-    expect(moved.result.roles["titles.model"].problem).toBeNull();
-    const info = moved.result.roles["reviewer.model"];
-    expect(info.model).toBeNull();
-    // `no-default-model`, NOT `no-internal-credential`: a credential exists, so "add a key" would be
-    // both wrong and unactionable. The fix is a pin, and the detail names the provider.
-    expect(info.problem?.reason).toBe("no-default-model");
-    expect(info.problem?.detail).toBe("pick a model for this job in Settings › Roles — MOSS won't choose one on Groq for you");
-    expect(info.problem?.model).toBe("");
+    for (const role of ["titles.model", "reviewer.model"]) {
+      const info = moved.result.roles[role];
+      expect(info.model).toBeNull();
+      // `no-default-model`, NOT `no-internal-credential`: a credential exists, so "add a key" would be
+      // both wrong and unactionable. The fix is a pin, and the detail names the provider.
+      expect(info.problem?.reason).toBe("no-default-model");
+      expect(info.problem?.detail).toBe("no light model of your default model's family can be had (Groq is signed in): pick a model for this job in Settings › Roles");
+      expect(info.problem?.model).toBe("");
+    }
     // A pin on a provider that DOES have a slot clears it immediately.
     const pinned = await c.request(METHODS.settingsSetModelRole, { role: "titles.model", model: "groq/llama-3.3-70b-versatile" });
     expect(pinned.error).toBeUndefined();
@@ -508,17 +510,14 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     c.close();
   });
 
-  test("M-3: no-default-model when a slot-less provider IS the preferred one", async () => {
-    // Forced by pinning `provider.model` to a provider that is eligible+credentialed but declares no
-    // family slot AND is not itself nameable — reached through `pins.research`-style cross wiring is not
-    // possible here, so this exercises the reader directly alongside the RPC's own shape.
+  test("M-3: a slot-less provider that IS the default's still gets no job on the default model", async () => {
     const { socketPath, harnessToken } = await boot("groq/llama-3.3-70b-versatile", { internalCredentials: ["groq:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
-    // The zero-setup case still works — the point is only that nothing was GUESSED.
-    expect(res.result.roles["pins.dream"].model).toBe("groq/llama-3.3-70b-versatile");
-    expect(res.result.roles["pins.dream"].problem).toBeNull();
+    // 2026-11-22: was the user's own model, `groq/llama-3.3-70b-versatile`, with no problem.
+    expect(res.result.roles["pins.dream"].model).toBeNull();
+    expect(res.result.roles["pins.dream"].problem?.reason).toBe("no-default-model");
     c.close();
   });
 
@@ -546,7 +545,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     // The role's own model is the pin, reported verbatim so the user can see and change it.
     expect(info.model).toBe("deepseek/deepseek-flash");
     expect(info.problem?.reason).toBe("no-credential");
-    expect(info.problem?.detail).toBe("no credential is stored for DeepSeek — reviewing on codex-oauth/gpt-6.1-terra meanwhile");
+    expect(info.problem?.detail).toBe("no credential is stored for DeepSeek — reviewing on codex-oauth/gpt-6-luna meanwhile");
     expect(info.problem?.model).toBe("deepseek/deepseek-flash");
     c.close();
   });
@@ -559,7 +558,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     await c.hello(harnessToken, "cli");
     const info = (await c.request(METHODS.settingsModelRoles, {})).result.roles["reviewer.model"];
     expect(info.problem?.reason).toBe("provider-unsupported");
-    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for MOSS's own jobs yet — reviewing on codex-oauth/gpt-6.1-terra meanwhile");
+    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for MOSS's own jobs yet — reviewing on codex-oauth/gpt-6-luna meanwhile");
     c.close();
   });
 
