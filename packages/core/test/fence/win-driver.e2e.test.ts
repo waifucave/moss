@@ -62,6 +62,7 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
         'CALL PowerShell {"command":"Get-Date"}',
         'CALL Bash {"command":"echo out > ~/x","dangerouslyDisableSandbox":true}',
       ].join("\n")), control());
+      console.log(`[driver] end: ${JSON.stringify(end).slice(0, 2000)}`);
       const r = results(end);
       console.log(`[driver] results: ${JSON.stringify(r)}; asked: ${JSON.stringify(asked.map((a) => [a.name, a.input.dangerouslyDisableSandbox ?? false]))}`);
       expect(r.map((x) => [x.name, x.isError])).toEqual([["Bash", false], ["PowerShell", false], ["Bash", false]]);
