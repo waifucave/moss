@@ -212,7 +212,14 @@ export async function pageCall(name: string, params: unknown, deps: PageDeps): P
     deps.closePage();
     return { ok: true };
   }
-  if (name === "welcome.setup") return client.request<SetupState>("setup.state", {});
+  if (name === "welcome.setup") {
+    const state = await client.request<SetupState>("setup.state", {});
+    if (state.signedOut === undefined) return state;
+    // The default model's provider is signed out: the guide says so, in the provider's and the model's own names (any provider).
+    const row = await client.request<{ models: ModelListing[] }>("models.list", {}).then((r) => r.models.find((m) => m.id === state.signedOut), () => undefined);
+    const lang = deps.lang();
+    return { ...state, signedOutAs: { model: row === undefined ? state.signedOut : textIn(row.name, lang) || state.signedOut, provider: row === undefined ? (state.signedOut.split("/")[0] ?? state.signedOut) : textIn(row.providerName, lang) || row.provider } };
+  }
   if (name === "welcome.models") return { models: await signedInModels(client, deps.lang()) };
   if (name === "welcome.setDefault") {
     const model = typeof p.model === "string" && p.model.length > 0 && p.model.length <= 200 ? p.model : undefined;

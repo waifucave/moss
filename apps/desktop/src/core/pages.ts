@@ -74,6 +74,8 @@ interface SetupView {
   default?: { model: string; source: "chosen" | "computed"; effort?: string };
   recommended?: Record<string, { model: string; effort?: string }>;
   dismissed: boolean;
+  /** The default model whose provider is signed out, in names a person knows (`welcome.setup`). */
+  signedOutAs?: { model: string; provider: string };
 }
 
 interface PickView {
@@ -108,7 +110,15 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
     const search = el("input", { type: "search", class: "moss-page__search", autocomplete: "off", spellcheck: "false", "aria-label": t("welcome.search"), placeholder: t("welcome.search"), "data-moss-search": "" });
     search.hidden = true;
     const list = el("div", { class: "moss-page__list" }, el("p", {}, t("welcome.loading")));
-    page.body.append(search, list);
+    // The default model's provider signed out (a key removed, a sign-in that lapsed): said once, plainly, before the list.
+    const signedOut = el("p", { class: "moss-page__note", role: "status", "data-moss-signed-out": "" });
+    signedOut.hidden = true;
+    page.body.append(signedOut, search, list);
+    void (call("welcome.setup") as Promise<SetupView>).then((s) => {
+      if (s.signedOutAs === undefined) return;
+      signedOut.textContent = t("welcome.signed-out", { model: s.signedOutAs.model, provider: s.signedOutAs.provider });
+      signedOut.hidden = false;
+    }, () => undefined);
     let all: ProviderView[] = [];
     // Each provider is a closed row that opens to its terms and its ways in when clicked (the one shown alone is open).
     const opened = new Set<string>();

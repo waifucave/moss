@@ -135,6 +135,14 @@ describe("the setup guide's engine half", () => {
     expect(c.calls.filter((x) => x.method === "setup.dismiss").map((x) => x.params)).toEqual([{ dismissed: true }]);
     expect([d.done, d.closed]).toEqual([0, 1]);
   });
+
+  test("a default model whose provider is signed out comes with its names (any provider), the tag's own parts when the catalog has no row", async () => {
+    const out = { ...SETUP, missing: ["default-provider"], signedOut: "dark/x" };
+    const withRow = deps(client({ "setup.state": () => out, "models.list": () => ({ models: [{ id: "dark/x", name: "X", provider: "dark", providerName: { en: "Dark Labs" }, plugin: "dark-models", efforts: [], images: false, signedIn: false }] }) }));
+    expect(await pageCall("welcome.setup", {}, withRow)).toEqual({ ...out, signedOutAs: { model: "X", provider: "Dark Labs" } });
+    const noRow = deps(client({ "setup.state": () => out, "models.list": () => { throw new Error("down"); } }));
+    expect(await pageCall("welcome.setup", {}, noRow)).toEqual({ ...out, signedOutAs: { model: "dark/x", provider: "dark" } });
+  });
 });
 
 describe("safe mode's plugin manager", () => {

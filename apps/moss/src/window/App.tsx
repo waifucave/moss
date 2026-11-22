@@ -11,7 +11,7 @@ import { Strip } from "./cards/CardFrame";
 import { SidePanel } from "./panel/SidePanel";
 import { PluginsPage } from "./plugins/PluginsPage";
 import { SettingsPage } from "./settings/SettingsPage";
-import { SetupGuide, type SetupStep } from "./setup/SetupGuide";
+import { SetupGuide, SignedOutLine, type SetupStep } from "./setup/SetupGuide";
 import { faceMotion } from "./faces/Face";
 import type { MossView } from "../shared/view";
 
@@ -96,6 +96,8 @@ export function App() {
       <BotList view={view} page={shown ?? { page: "plugins" }} onPage={(p) => { setSettingsBot(undefined); setPage(p); }} />
       <div className="middle">
         {banner !== "" ? <p className="banner" role="status">{view.connection.reason ?? banner}</p> : null}
+        {/* The default model's provider is signed out and the guide isn't up (skipped before): one plain line, with the way in. */}
+        {view.setup?.signedOut !== undefined && guide !== "open" ? <div className="banner" data-signed-out-banner><SignedOutLine tag={view.setup.signedOut} onSignIn={() => { setGuideStep("providers"); setGuide("open"); }} /></div> : null}
         {view.notice !== undefined ? <p className="banner banner--notice" role="status" data-notice>{view.notice}</p> : null}
         {shown !== undefined && "page" in shown && shown.page === "plugins" ? <PluginsPage strip={strip} />
           : shown !== undefined && "page" in shown && shown.page === "settings" ? <SettingsPage bots={view.bots} strip={strip} onSetupGuide={() => { setGuideStep("providers"); setGuide("open"); }} {...(settingsBot !== undefined ? { bot: settingsBot } : {})} />

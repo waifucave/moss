@@ -238,6 +238,23 @@ describe("the setup guide (2026-11-20)", () => {
     r.unmount();
   });
 
+  test("the default model's provider signed out: one plain line in the guide's provider step, and where the guide was skipped, a banner with a way in; general for any provider", async () => {
+    const OUT = { ready: false, missing: ["default-provider"] as ("default-provider")[], providers: [], signedOut: "dark/x", dismissed: false };
+    const models = async () => [{ id: "dark/x", title: "Moon X", provider: "Dark Labs", ready: false }];
+    const r = await withGuide(view({ setup: OUT }), { models, setupProviders: async () => [{ pluginId: "moss/model-dark", name: "Dark Labs", auth: [{ index: 0, method: "api-key", state: "signed-out" }] }] });
+    expect(r.container.querySelector("[data-setup-signed-out]")?.textContent).toBe("Your default model, Moon X, needs you signed in to Dark Labs.");
+    expect(r.container.querySelector("[data-signed-out-banner]")).toBeNull();
+    r.unmount();
+    // The guide skipped before: no guide, the line is a banner whose Sign in opens the guide at its provider step.
+    const skipped = await withGuide(view({ setup: { ...OUT, dismissed: true } }), { models, setupProviders: async () => [{ pluginId: "moss/model-dark", name: "Dark Labs", auth: [{ index: 0, method: "api-key", state: "signed-out" }] }] });
+    expect(skipped.container.querySelector("[data-setup-step]")).toBeNull();
+    expect(skipped.container.querySelector("[data-signed-out-banner]")?.textContent).toContain("Your default model, Moon X, needs you signed in to Dark Labs.");
+    await act(async () => { (skipped.container.querySelector("[data-setup=sign-in]") as HTMLButtonElement).click(); await new Promise((res) => setTimeout(res, 10)); });
+    expect(skipped.container.querySelector("[data-setup-step=providers]")).not.toBeNull();
+    expect(skipped.container.querySelector("[data-signed-out-banner]")).toBeNull();
+    skipped.unmount();
+  });
+
   test("a home that works, or a guide skipped before, doesn't show it", async () => {
     for (const setup of [{ ...NOT_SET, ready: true, missing: [] }, { ...NOT_SET, dismissed: true }]) {
       const r = await withGuide(view({ setup }), {});

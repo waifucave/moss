@@ -70,3 +70,30 @@ describe("the guide page steps aside and comes back at its step", () => {
     host.remove();
   });
 });
+
+describe("the guide's provider step says when the default model's provider is signed out", () => {
+  const draw = async (setup: Record<string, unknown>) => {
+    const host = document.createElement("div");
+    host.id = "moss-page";
+    document.body.append(host);
+    const call = async (name: string): Promise<unknown> => {
+      if (name === "welcome.providers") return { providers: [{ id: "moss/model-anthropic", name: "Anthropic", auth: [{ index: 0, method: "api-key", state: "signed-out" }] }] };
+      if (name === "welcome.setup") return setup;
+      return {};
+    };
+    await showWelcome(host, ((key: string, vars?: Record<string, unknown>) => (vars === undefined ? key : `${key} ${JSON.stringify(vars)}`)) as never, call as never, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    return host;
+  };
+
+  test("one plain line, with the names; nothing when the default's provider is there", async () => {
+    const out = await draw({ ready: false, missing: ["default-provider"], providers: [], dismissed: false, signedOut: "anthropic/claude-opus-5-5", signedOutAs: { model: "Claude Opus 5.5", provider: "Anthropic" } });
+    const line = out.querySelector<HTMLElement>("[data-moss-signed-out]")!;
+    expect(line.hidden).toBe(false);
+    expect(line.textContent).toBe('welcome.signed-out {"model":"Claude Opus 5.5","provider":"Anthropic"}');
+    out.remove();
+    const fine = await draw({ ready: false, missing: ["provider"], providers: [], dismissed: false });
+    expect(fine.querySelector<HTMLElement>("[data-moss-signed-out]")!.hidden).toBe(true);
+    fine.remove();
+  });
+});

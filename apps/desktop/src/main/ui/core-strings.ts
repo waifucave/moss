@@ -73,6 +73,7 @@ export const CORE_STRINGS_EN: Readonly<Record<string, LocaleValue>> = {
   "moss.core.welcome.step": "Step {n} of {total}",
   "moss.core.welcome.next": "Next",
   "moss.core.welcome.back": "Back",
+  "moss.core.welcome.signed-out": "Your default model, {model}, needs you signed in to {provider}: sign in below, or pick another model after you add a provider.",
   "moss.core.welcome.need-provider": "Add a provider above to go on.",
   "moss.core.welcome.model-title": "Your default model",
   "moss.core.welcome.model-intro": "Bots and new sessions use this model unless you pick another for them.",
