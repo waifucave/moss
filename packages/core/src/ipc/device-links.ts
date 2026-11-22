@@ -31,7 +31,7 @@ import { SntpTimeSource } from "../clock/shared-clock";
 import { waifucaveAccount, type WaifucaveAccount } from "../identity/account-config";
 import { DIST_BUILD } from "../build-kind";
 import { ContractError } from "../contracts/common";
-import { devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
+import { devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
 import type { UpdateRestartGate } from "../lease/main";
 import { HandshakeClient } from "../links/handshake";
 import { MemoryNetwork } from "../links/memory-wire";
@@ -118,6 +118,10 @@ export interface DaemonLinksInput {
   /** The sidecar's network for tests: no relay, loopback only, nothing published (`n0Lookup: false`). */
   sidecar?: Pick<NonNullable<DeviceLinksOptions["sidecar"]>, "relay" | "bind" | "n0Lookup">;
   log?(line: string): void;
+  /** Where the devices area's events go (`device_changed`, `device_removed`, `link_changed`, `pairing_changed`, `lease_changed`):
+   *  the daemon passes the MOSS server's `coreEvent`, which sends each to the connections of the roles and capability its spec
+   *  names. Without it none is sent (a test that watches the registry and the pairing itself). */
+  emit?(event: Record<string, unknown> & { type: string; ts: number }): void;
 }
 
 export interface DaemonLinks {
@@ -179,6 +183,11 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
       ...(input.answerKeyRotation ? { answerKeyRotation: input.answerKeyRotation } : {}),
       ...(input.answerKeyServed ? { answerKey: false as const } : {}),
     })));
+    // The devices area's events: a page learns a device came or went, a link's path changed, and the pairing it started moved on
+    // (the four words arrived, its card was answered): it never has to poll.
+    if (input.emit) {
+      offs.push(devicesEvents({ registry: links.registry, transport: links.transport, pairing: links.pairing, clock: links.clock, ...(links.main ? { main: links.main } : {}) }, input.emit));
+    }
     if (links.main) offs.push(mountMainChoiceRequests({ transport: links.transport, registry: links.registry, main: links.main, openCard }));
     const self = links.key.id;
     offs.push(mountPeerCall(links.transport, {

@@ -4974,6 +4974,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A sensitive device change asks on the daemon's one broker once the parts are up (C-M3); before, it's refused.
       openCard: (req) => (daemonParts?.broker ? brokerCardOpener(daemonParts.broker)(req) : refuseUntilBroker(req)),
       onRegistry: (r) => { ownDevices = r; },
+      emit: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),
       answerKeyServed: true,
       log: (line) => console.error(line),
       ...(opts.links ?? {}),

@@ -26,6 +26,10 @@ export const CAPABILITIES: readonly CapabilityInfo[] = [
   { name: "computers.control", lets: "Take and release holds and the user-working mark, learn where MOSS's windows are, and say when an action is running", ok: "controls the screen and input of your computers", warns: true },
   /** Not in §5.4's table: added at M0 for the island's Devices tab (review S16). */
   { name: "devices.read", lets: "Read the user's devices: their names, kinds, links, which one is the main, and which are online", ok: "sees your devices", warns: false },
+  /** Pairing and removing the user's own devices from a plugin's frame (Settings' Devices page). It changes who may reach the engine, so
+   *  every change stays the user's own press in the frame, and adding or removing a device is still the engine's sealed card (spec §5.5,
+   *  §8.1); the capability only opens the calls and the pairing's steps (the code, the four words). Any plugin may ask; the OK card says so. */
+  { name: "devices.manage", lets: "On the user's own press in its frame: show a pairing code or enter one, hear the pairing's steps (the four words), and ask to add or remove a device; adding or removing one is still a sealed card the user answers", ok: "pairs and removes your devices when you press its controls (each still asks on MOSS's own card)", warns: true },
   /** The owner's ruling of 2026-11-17 (no plugin has a bot): a plugin's own cards are the ones its own tools' calls raised, in any
    *  session or bot's turn, and its moved bot's; the core names them on the card (`ownedBy`). */
   { name: "approvals", lets: "Hear which of the cards its own tools' calls raised are pending (in any session or bot's turn), never their text, and place their sealed frames", ok: "shows approval cards for its own tools", warns: true },

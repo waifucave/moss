@@ -26,6 +26,8 @@ function capsOf(pluginId: string): ReadonlySet<string> {
   return caps;
 }
 const verdict = (part: string, method: string, params?: unknown) => treeVerdict(capsOf(part), method, params);
+/** The devices page's calls (`devices.manage`). */
+const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.confirm", "device.pair.cancel", "device.revoke"] as const;
 
 describe("the door for parts: by capability, never by id (F2)", () => {
   test("a read passes for a part whose plugin holds its capability, whichever plugin; a method the table doesn't name isn't its business", () => {
@@ -66,9 +68,20 @@ describe("the door for parts: by capability, never by id (F2)", () => {
   test("a send is never a bare call, the cards are never answered, trust-changing calls need a card", () => {
     for (const m of SEND_ONLY) expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true });
     for (const m of NEVER) expect(verdict("moss/settings", m)).toMatchObject({ ok: false, owned: true });
-    for (const m of ["computer.setLevel", "device.revoke", "main.set"]) {
+    for (const m of ["computer.setLevel", "main.set"]) {
       expect(verdict("moss/settings", m)).toMatchObject({ ok: false, owned: true });
       expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true });
+    }
+  });
+
+  test("the devices page: pairing and removing a device are the user's press under devices.manage, and no part without it gets through", () => {
+    for (const m of DEVICE_CALLS) {
+      expect(TREE_CALLS[m]?.disposition).toBe("gesture");
+      // Settings holds it; the composer, the shell and a third party's plugin that doesn't ask for it do not.
+      expect(verdict("moss/settings", m)).toMatchObject({ ok: true, by: "devices.manage" });
+      expect(verdict("moss/composer", m)).toMatchObject({ ok: false, owned: true, why: `${m} needs the devices.manage capability` });
+      expect(treeVerdict(["devices.read"], m)).toMatchObject({ ok: false, owned: true });
+      expect(treeVerdict(["devices.manage"], m)).toMatchObject({ ok: true, by: "devices.manage" });
     }
   });
 
@@ -255,7 +268,7 @@ describe("routing a part's call", () => {
   });
 
   test("a bare session.send, a card answer and a trust-changing call never reach the core from the tree", async () => {
-    for (const method of ["session.send", "card.answer", "card.confirm", "computer.setLevel", "device.revoke", "main.set"]) {
+    for (const method of ["session.send", "card.answer", "card.confirm", "computer.setLevel", "main.set"]) {
       const { r, calls } = route({ method, gesture: true });
       await expect(routeCall(r)).rejects.toThrow();
       expect(calls).toEqual([]);
@@ -431,6 +444,7 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "conversation.messageAction": { needs: [], gesture: true },
   "ui.pick": { needs: ["plugins.manage"], gesture: true },
   "account.status": { needs: ["account.read"], gesture: false },
+  ...Object.fromEntries(DEVICE_CALLS.map((m) => [m, { needs: ["devices.manage"], gesture: true }])),
   "archive.history": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "archive.list": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "models.list": { needs: ["sessions.read", "bots.read"], gesture: false },
@@ -503,6 +517,11 @@ const WORST: Record<string, Worst> = {
   "plugin.setEnabled": "sealed card", // turning a found plugin on raises its OK card; turning an OK'd plugin back on (or off) is a gesture (accepted)
   "plugin.logs": "read", // its own file only, key-looking runs cut to "…"
   "tool.permissions": "read", // plugin tools by their own names, each with its value and the bots' saved card rules
+  "device.pair.begin": "harmless change", // shows a code for another device to enter; nothing is added by it
+  "device.pair.join": "harmless change", // dials the code's device; both then show four words, and nothing is added until the card
+  "device.pair.confirm": "sealed card", // adding the device: the engine raises the sealed card (or answers it, in the user's terminal only), never this call
+  "device.pair.cancel": "harmless change", // ends a pairing under way
+  "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
   "tool.setPermission": "user's permission press", // always allow, ask or always block: the user's own press in Settings, never another part
   "tool.setAvailability": "user's permission press", // off, on demand or always on: what a model is offered, the user's own press in Settings
   "tool.takeBackRule": "user's permission press", // takes back a card's Always allow for one bot

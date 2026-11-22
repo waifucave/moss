@@ -120,17 +120,17 @@ describe("settings on the runtime", () => {
     expect(routes).toEqual([{ route: "plugins", params: {} }]);
   });
 
-  test("trust-changing controls (a computer's level, removing a device, the main computer, pairing) are not offered, and no bare call is made", async () => {
+  test("a computer's level and making a computer main are not offered; no bare call is made for them", async () => {
     const lv = await mount({ section: "levels" });
     const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
     expect(select.value).toBe("ask-risky");
     expect(select.disabled).toBe(true);
     cleanup();
     const dv = await mount({ section: "devices" });
-    expect(screen.queryByRole("button", { name: "Remove iPhone" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Make Laptop the main computer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show a code" })).toBeNull();
-    for (const { core } of [lv, dv]) expect(core.calls.some((c) => /^(computer\.setLevel|device\.|main\.set)/.test(c.method))).toBe(false);
+    for (const { core } of [lv, dv]) expect(core.calls.some((c) => /^(computer\.setLevel|main\.set)/.test(c.method))).toBe(false);
+    // Opening the page starts nothing: no pairing, no removal, until the user presses a control.
+    expect(dv.core.calls.some((c) => /^device\.(pair|revoke)/.test(c.method))).toBe(false);
   });
 
   test("appearance: the theme plugin through `ui.set`; light or dark only as the core's `appearance` (the one main applies), the text size as this plugin's setting; the language", async () => {
@@ -235,16 +235,57 @@ describe("settings on the runtime", () => {
     uiSetFails = false;
   });
 
-  test("Devices offers no pairing and the page listens for no pairing_changed (a part never hears that event: the app and the CLI do)", async () => {
-    const { core } = await mount({ section: "devices" });
-    const heard: string[] = [];
-    const on = core.on.bind(core);
-    core.on = ((event: string, fn: never) => { heard.push(event); return on(event as never, fn); }) as typeof core.on;
-    fireEvent.click(screen.getByRole("button", { name: /Devices/ }));
+  test("Devices: Remove asks the engine to revoke, which comes back a sealed card (the page applies nothing); a device the engine drops leaves the list", async () => {
+    const { core, api } = await mount({ section: "devices" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove iPhone" }));
     await act(() => settle());
-    expect(screen.queryByRole("button", { name: /Show a code|Add a device|Join/ })).toBeNull();
-    expect(core.calls.some((c) => c.method.startsWith("device.pair"))).toBe(false);
-    expect(heard).not.toContain("pairing_changed");
+    expect(core.calls.filter((c) => c.method === "device.revoke").map((c) => c.params)).toEqual([{ id: "d3" }]);
+    // The card is the engine's: until it is answered the device is still there.
+    expect(screen.getByText("iPhone")).toBeTruthy();
+    void api;
+  });
+
+  test("Devices: pairing by a code shown here: the code, the four words the engine's step brings, the confirm (a card), the end", async () => {
+    const { core } = await mount({ section: "devices" });
+    fireEvent.click(screen.getByRole("button", { name: "Show a code" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.pair.begin").length).toBe(1);
+    expect(screen.getByText("KQ7-M2P")).toBeTruthy();
+    // Another pairing's step is not this one's.
+    await act(async () => { core.emit("pairing_changed", { pairingId: "other", step: "words", words: ["a", "b", "c", "d"] }); await settle(); });
+    expect(screen.queryByText(/a · b · c · d/)).toBeNull();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "words", words: ["amber", "river", "lantern", "moss"] }); await settle(); });
+    expect(screen.getByText("amber · river · lantern · moss")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "They match" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.pair.confirm").map((c) => c.params)).toEqual([{ pairingId: "p1", words: ["amber", "river", "lantern", "moss"] }]);
+    expect(screen.getByRole("button", { name: "Waiting for your OK" })).toBeTruthy();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "done" }); await settle(); });
+    expect(screen.getByText("The device was added.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(screen.getByRole("button", { name: "Show a code" })).toBeTruthy();
+  });
+
+  test("Devices: joining with the other device's code shows the four words at once; a pairing that fails or expires says so; Cancel tells the engine", async () => {
+    const { core } = await mount({ section: "devices" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Code from another device" }), { target: { value: " KQ7-M2P " } });
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.pair.join").map((c) => c.params)).toEqual([{ code: "KQ7-M2P" }]);
+    expect(screen.getByText("amber · river · lantern · moss")).toBeTruthy();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p2", step: "failed", reason: "the words didn't match" }); await settle(); });
+    expect(screen.getByText("The pairing didn't finish: the words didn't match")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show a code" }));
+    await act(() => settle());
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "expired" }); await settle(); });
+    expect(screen.getByText("The code expired. Show a new one to try again.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show a code" }));
+    await act(() => settle());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.pair.cancel").map((c) => c.params)).toEqual([{ pairingId: "p1" }]);
   });
 
   test("opened at an item (lane E's useOpen): the row is brought into view and marked, until the user moves on", async () => {

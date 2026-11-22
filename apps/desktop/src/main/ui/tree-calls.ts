@@ -40,6 +40,7 @@ export const PLUGINS_READ = "plugins.read";
 export const PLUGINS_MANAGE = "plugins.manage";
 export const TOOLS_PERMISSIONS = "tools.permissions";
 export const ACCOUNT_READ = "account.read";
+export const DEVICES_MANAGE = "devices.manage";
 export const COMMANDS_RUN = "commands.run";
 export const USER_SEND = "user.send";
 export const SESSIONS_START = "sessions.start";
@@ -172,7 +173,15 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   ...Object.fromEntries(PLUGINS_ACTS.map((m) => [m, press(PLUGINS_MANAGE)])),
   // Needs a card (spec §5.5: sensitive changes are a sealed card from every layer).
   "computer.setLevel": { disposition: "card" },
-  "device.revoke": { disposition: "card" },
+  // The devices page: showing or entering a pairing code, the words' check, cancelling, adding the device and removing one are the
+  // user's own press in the page's frame (`devices.manage`). Adding and removing are still a sealed card: the engine raises it
+  // itself for a caller that isn't the user's own terminal (`device.pair.confirm`, `device.revoke`), and answers `applied: false`
+  // with its id; nothing here applies one. The window closes Settings while the card waits (the shell's `cardPending`).
+  "device.pair.begin": press(DEVICES_MANAGE),
+  "device.pair.join": press(DEVICES_MANAGE),
+  "device.pair.confirm": press(DEVICES_MANAGE),
+  "device.pair.cancel": press(DEVICES_MANAGE),
+  "device.revoke": press(DEVICES_MANAGE),
   "main.set": { disposition: "card" },
   // Not served by the daemon.
   "models.catalog": { disposition: "unserved" },

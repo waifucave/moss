@@ -3,7 +3,7 @@
 // (the bundled parts' events test, packages/core/src/plugin-host/tests/bundled-part-events.test.ts, checks each part
 // listens only for events it can hear). Plain data, with no React, so a test can read it.
 export const EVENT_AREAS: Readonly<Record<string, string>> = {
-  ui_settings_changed: "app", card_pending: "approvals", card_resolved: "approvals", pairing_changed: "devices", device_changed: "devices",
+  ui_settings_changed: "app", card_pending: "approvals", card_resolved: "approvals", pairing_changed: "devices", device_changed: "devices", device_removed: "devices",
   session_changed: "sessions", bot_changed: "sessions", computer_changed: "computers", plugin_changed: "plugins", plugin_removed: "plugins", plugin_found: "plugins", plugin_card_note: "plugins",
   // The activity feed and the live pictures (spec revision 19, §3.6), heard by the kind the plugin reads.
   activity_changed: "activity", picture_changed: "activity", picture_ended: "activity",

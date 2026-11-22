@@ -16,7 +16,7 @@ import { APPEARANCE_KEYS, NOTIFICATION_KEYS, OWN_SETTING_KEYS, settingKey } from
 import { LanguageChooser } from "./LanguageChooser";
 import { SettingsModal } from "./SettingsModal";
 import { S } from "./strings";
-import type { ExtraSection, Language, OneAtATimeView, SettingsSection, SettingsValues, ToolAvailability, ToolPermission } from "./types";
+import type { ExtraSection, Language, OneAtATimeView, SettingsPairing, SettingsSection, SettingsValues, ToolAvailability, ToolPermission } from "./types";
 
 /** `tool.permissions`' answer. */
 /** A bot's id as a name when nothing better is known: `alpha` -> `Alpha`, `crew/luna` -> `Luna`. */
@@ -58,6 +58,7 @@ const OK_WORDS: Record<string, string> = {
   notify: "Sends you notifications",
   audio: "Can hear your microphone",
   "devices.read": "Sees your devices",
+  "devices.manage": "Pairs and removes your devices when you press its controls (each still asks on MOSS's own card)",
 };
 
 export function okWords(detail: Pick<PluginDetail, "capabilities" | "networkHosts">): string[] {
@@ -200,10 +201,52 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
   // The controls pressed since the last read of the settings began: that read was asked before the press, so its answer holds the
   // value as it was and must not put it back on the screen (the stored value is the press's already; window row 13).
   const pressedSince = useRef(new Set<string>());
-  // Pairing a device is not offered on this page: it adds a device to what the user's computers trust, which is a sealed
-  // card (or the user's own terminal), and the door has no `device.pair.*` call for a part. So the page starts no pairing
-  // and listens for no `pairing_changed` (that event goes to the app and the CLI only). If the page offers it later, the
-  // steps reach it as shaped notes from main, never the event.
+  // Pairing and removing a device (spec §8.1): the user's own press in this page's frame (`devices.manage`). Adding a device and
+  // removing one are the engine's sealed card, raised and placed by the engine (a call here answers `applied: false` and the
+  // card's id, and the window closes Settings while the card waits); nothing on this page adds or removes one. The pairing's
+  // steps (the four words, the card, the end) come as `pairing_changed`, which only a part holding `devices.manage` hears.
+  const [pairing, setPairing] = useState<SettingsPairing | undefined>(undefined);
+  const pairingRef = useRef<{ id: string; words?: string[] } | undefined>(undefined);
+  const refreshDevices = (): void => void api.devices?.list().then((d) => setDevices(d), () => undefined);
+  useEffect(() => {
+    if (core === undefined) return;
+    const offs = [
+      core.on("pairing_changed", (e) => {
+        const now = pairingRef.current;
+        if (now === undefined || e.pairingId !== now.id) return;
+        const words = Array.isArray(e.words) ? (e.words as string[]) : undefined;
+        switch (e.step) {
+          case "words":
+            if (words) { now.words = words; setPairing((p) => ({ ...p, words })); }
+            break;
+          case "card":
+            setPairing((p) => ({ ...p, confirming: true }));
+            break;
+          case "done":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairDone });
+            refreshDevices();
+            break;
+          case "expired":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairExpired });
+            break;
+          case "failed":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairFailed(typeof e.reason === "string" ? e.reason : "") });
+            break;
+        }
+      }),
+      core.on("device_changed", refreshDevices),
+      core.on("device_removed", refreshDevices),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [core, api]);
+  const pairCall = (m: string, p: unknown): Promise<any> => (core!.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
+  const pairingFailed = (err: unknown): void => {
+    pairingRef.current = undefined;
+    setPairing({ ended: S.pairFailed(err instanceof Error ? err.message : "") });
+  };
   // The core's choice, read again, is what the control shows from then on.
   useEffect(() => setThemePick(undefined), [loaded]);
 
@@ -347,10 +390,38 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
         ? {
             onOpenPluginLogs: (id: string) =>
               void core.call("plugin.logs", { id, lines: 200 }).then((r) => setLogs({ name: values.plugins.find((p) => p.id === id)?.name ?? id, lines: r.lines })),
-            // The level, the device list's revoke and make-main and pairing change what the user's computers trust: they
-            // need a sealed card the door doesn't raise from a part today, so they are not offered here (backlog).
+            // A computer's level and making one the main are not offered here yet (backlog); pairing and removing a device are
+            // (`devices.manage`), each ending in the engine's own sealed card.
+            onPairBegin: () => {
+              void pairCall("device.pair.begin", {}).then(
+                (r: { pairingId: string; code?: string; qr?: string }) => { pairingRef.current = { id: r.pairingId }; setPairing({ code: r.code ?? r.qr ?? "" }); },
+                pairingFailed,
+              );
+            },
+            onPairJoin: (code: string) => {
+              void pairCall("device.pair.join", { code }).then(
+                (r: { pairingId: string; words?: string[] }) => { pairingRef.current = { id: r.pairingId, ...(r.words ? { words: r.words } : {}) }; setPairing(r.words ? { words: r.words } : {}); },
+                pairingFailed,
+              );
+            },
+            onPairConfirm: () => {
+              const now = pairingRef.current;
+              if (now?.words === undefined) return;
+              setPairing((p) => ({ ...p, confirming: true }));
+              void pairCall("device.pair.confirm", { pairingId: now.id, words: now.words }).then(() => undefined, pairingFailed);
+            },
+            onPairCancel: () => {
+              const now = pairingRef.current;
+              pairingRef.current = undefined;
+              setPairing(undefined);
+              if (now) void pairCall("device.pair.cancel", { pairingId: now.id }).then(() => undefined, () => undefined);
+            },
+            onRemoveDevice: (id: string) => {
+              void pairCall("device.revoke", { id }).then(() => undefined, () => setFailure(S.choiceFailed(S.section.devices)));
+            },
           }
         : {})}
+      {...(pairing ? { pairing } : {})}
       {...(logs ? { logs: { ...logs, onBack: () => setLogs(undefined) } } : {})}
       extraSections={extra}
       {...(toolsRaw !== undefined ? { tools: { plugins: toolsRaw.plugins.map((p) => ({ ...p, tools: p.tools.map((t) => ({ ...t, cardRules: t.cardRules.map((r) => ({ ...r, botName: bots.find((b) => b.id === r.bot)?.name ?? botNameOf(r.bot) })) })) })) } } : {})}
