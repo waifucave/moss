@@ -1144,6 +1144,8 @@ async function glassRow(s: UnitState): Promise<string> {
   const { x, w } = s;
   const logs = x.logs;
   await openBot(s, "alpha", "MOSS");
+  // A waiting card docks the bar (nothing may lie over a sealed card's frame): the earlier rows answered theirs.
+  if (await w.eval<boolean>("!!document.querySelector('.card')")) x.fail("a card still waits in MOSS's window: the bar is docked beside it, and the floating bar can't be looked at");
   const geometry = () => w.eval<{ list: { x: number; y: number; w: number; h: number }; middle: { x: number; y: number; w: number; h: number }; bar: { top: number; bottom: number }; dpr: number }>(`(() => { const r = (q) => { const b = document.querySelector(q).getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; }; const bar = document.querySelector('.conversation__head').getBoundingClientRect(); return { list: r('.list'), middle: r('.middle'), bar: { top: bar.top, bottom: bar.bottom }, dpr: devicePixelRatio }; })()`);
   const shoot = async (name: string) => {
     const page = await w.main();

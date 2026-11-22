@@ -91,13 +91,17 @@ describe("the page goes see-through only where it has a material", () => {
 });
 
 describe("nothing is born hidden under a bar", () => {
-  test("the scrolling areas start below the bar (their top padding holds it), unless a card strip is there", () => {
+  test("the scrolling areas start below the bar (their top padding holds it), unless a card waits", () => {
     expect(css).toMatch(/\.messages \{[^}]*padding: calc\(var\(--under\) \+ 18px\) 22px 8px/);
     expect(css).toMatch(/\.page__body \{[^}]*padding: calc\(var\(--under\) \+ 18px\) 22px 28px/);
     expect(pages).toMatch(/\.ma2-settings__nav \{[^}]*padding: calc\(var\(--under\) \+ 14px\)/);
     expect(css).toMatch(/--under: var\(--bar-h\)/);
-    expect(css).toMatch(/\.conversation:has\(> \.strip\), \.page:has\(> \.strip\) \{ --under: 0px; \}/);
-    expect(css).toMatch(/\.conversation > \.strip, \.page > \.strip \{ margin-top: var\(--bar-h\); \}/);
+    expect(css).toMatch(/\.conversation:has\(\.card\), \.page:has\(\.card\) \{ --under: 0px; \}/);
+  });
+  test("while a card waits the bar is docked in the column's flow: nothing may lie over a sealed card's frame", () => {
+    expect(css).toMatch(/\.conversation:has\(\.card\) > \.conversation__head, \.page:has\(\.card\) > \.page__head \{ position: relative; flex: none; \}/);
+    // The floating rule is the only one that puts a bar over its column.
+    expect([...css.matchAll(/position: absolute; top: 0; left: 0; right: 0/g)].length).toBe(1);
   });
   test("the bars are as tall as the room the columns keep for them", () => {
     expect(css).toMatch(/\.conversation__head, \.page__head \{[^}]*height: var\(--bar-h\)/);
