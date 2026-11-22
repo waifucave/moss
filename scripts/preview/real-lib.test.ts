@@ -83,9 +83,9 @@ describe("the budget's counters", () => {
       expect(claimSession(dir, "agy")).toBe(1);
       noteTurn(dir, "codex-acp"); noteTurn(dir, "codex-acp");
       const s = readSpent(dir);
-      expect(s.find((x) => x.agent === "codex")).toEqual({ agent: "codex", launches: 0, sessions: 2, turns: 2, refusals: 0 });
+      expect(s.find((x) => x.agent === "codex")).toEqual({ agent: "codex", approvals: 0, launches: 0, sessions: 2, turns: 2, refusals: 0 });
       expect(s.find((x) => x.agent === "antigravity")).toMatchObject({ sessions: 1, turns: 0 });
-      expect(renderSpent(s)).toContain("codex 0 launch(es) 2 session(s) 2 turn(s)");
+      expect(renderSpent(s)).toContain("codex 0 launch(es) 0 approval(s) 2 session(s) 2 turn(s)");
       expect(renderSpent(s)).toContain("limits: 12 launches and 2 sessions per agent, 3 turns per session");
       expect(noteLaunch(dir, "agy", 2)).toBe(1);
       expect(noteLaunch(dir, "agy", 2)).toBe(2);
@@ -133,7 +133,7 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "session/prompt
     expect(answers.find((a) => a.id === 3).result).toBeDefined();
     expect(answers.find((a) => a.id === 4).result).toBeDefined();
     expect(answers.find((a) => a.id === 5).error.message).toContain("3 turns");
-    expect(readSpent(b).find((x) => x.agent === "codex")).toEqual({ agent: "codex", launches: 1, sessions: 1, turns: 3, refusals: 2 });
+    expect(readSpent(b).find((x) => x.agent === "codex")).toEqual({ agent: "codex", approvals: 0, launches: 1, sessions: 1, turns: 3, refusals: 2 });
     // a second launch's first prompt takes the second slot; the third launch's is refused, with an answer
     const second = await run(b, [prompt(1, "ok")]);
     expect(second.out.map((l) => JSON.parse(l))[0].result).toBeDefined();

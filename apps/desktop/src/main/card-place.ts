@@ -97,6 +97,12 @@ export function mossFront(main: WatchedWindow | undefined, cardWindows: Iterable
   return { exists: true, visible: main.isVisible(), minimized: main.isMinimized(), focused };
 }
 
+/** The preview's window state: it has no island and no host, so no other place could draw a card; its one window counts as in front (focused, visible) whenever it
+ *  exists, whatever the screen's focus is, and the router keeps every card in it. Used only by the preview build (index.ts `mainState`). */
+export function previewMainState(main: { isDestroyed(): boolean } | undefined): { exists: boolean; visible: boolean; minimized: boolean; focused: boolean } {
+  return main === undefined || main.isDestroyed() ? { exists: false, visible: false, minimized: false, focused: false } : { exists: true, visible: true, minimized: false, focused: true };
+}
+
 /** The front state as the placement sees it. Going to the front is acted on at once; going out of it only once it has held for a
  *  beat (`settleMs`), because moving between two of MOSS's own windows is seen for an instant with neither focused. */
 export class FrontWatcher {

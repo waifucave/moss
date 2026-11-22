@@ -85,7 +85,7 @@ import { LayerError, surfaceSettingHolds, UiRuntime, type SealedAskOutcome } fro
 import { PluginKeys, keysMayRun, type HoldStep } from "./plugin-keys";
 import { WebViews, isWebViewContents, webSpec } from "./ui/web-views";
 import type { Os } from "./ui/spots";
-import { APP_EVENT_AREAS, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, type CardPlace, type PressSource } from "./card-place";
+import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, type CardPlace, type PressSource } from "./card-place";
 import { afterTap, afterTray, appIsRegular, mainWindowFront, surfaceShown, type MainWindowState, type PutAway } from "./front-rules";
 import { linuxSession, mainWindowPlan, surfaceDrawsOffscreen, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
 
@@ -910,7 +910,7 @@ async function ready(): Promise<void> {
   if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewControlSocket !== undefined && previewControlToken !== undefined && isAbsolute(previewControlSocket)) {
     const socketPath = previewControlSocket;
     const token = previewControlToken;
-    void import("./preview-control").then((m) => m.startPreviewControl({ socketPath, token, window: () => mainWindow, log }));
+    void import("./preview-control").then((m) => m.startPreviewControl({ socketPath, token, window: () => mainWindow, engine: () => pair?.client, headless, log }));
   }
   startFrontSeam();
   startViewportPressSeam();
@@ -2361,6 +2361,8 @@ function startWindowSeam(): void {
 }
 
 function mainState(): MainWindowState {
+  // The preview has no island and no host: no other place draws a card, so its one window counts as in front whenever it exists, and the router keeps every card in it.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string") return previewMainState(mainWindow);
   if (frontSeam !== undefined) return { exists: true, visible: true, minimized: false, focused: frontSeam };
   // MOSS is in front while its main window or one of its own card windows has the focus (a click on a card blurs the main window).
   return mossFront(mainWindow, [...fallbacks.values()].map((f) => f.win));
@@ -2390,6 +2392,7 @@ const presence = new PresenceReporter({
   // Said once per change (ids and kinds only).
   log: (line) => { if (line !== lastSaid) { lastSaid = line; log(line); } },
 });
+if (typeof __MOSS_PREVIEW_BUILD__ === "string") presence.settled(true);
 function reportPresence(): Promise<void> {
   return presence.report();
 }

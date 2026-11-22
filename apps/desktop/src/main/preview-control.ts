@@ -19,7 +19,10 @@ import { MAX_REQUEST_BYTES, PREVIEW_CONTROL_NAME, folderProblem, sameToken } fro
 
 export interface PreviewControl { server: Server; close(): void }
 
-export function startPreviewControl(o: { socketPath: string; token: string; window: () => BrowserWindow | undefined; log: (line: string) => void }): PreviewControl | undefined {
+/** The app's own engine connection (the one that reports the window's presence), for the one answer below. */
+export interface PreviewEngine { request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T> }
+
+export function startPreviewControl(o: { socketPath: string; token: string; window: () => BrowserWindow | undefined; engine: () => PreviewEngine | undefined; headless: boolean; log: (line: string) => void }): PreviewControl | undefined {
   const problem = folderProblem(dirname(o.socketPath));
   if (problem !== undefined) { o.log(`${PREVIEW_CONTROL_NAME}: not serving: ${problem}`); return undefined; }
   if (o.token.length < 32) { o.log(`${PREVIEW_CONTROL_NAME}: not serving: the token is too short`); return undefined; }
@@ -60,6 +63,22 @@ export function startPreviewControl(o: { socketPath: string; token: string; wind
       } else if (req.app === "reload") {
         win.webContents.reloadIgnoringCache();
         send(s, { id, result: { reloaded: true } });
+      } else if (req.app === "card.answer") {
+        // ONE named card, answered the way the window's own sealed button answers (card.frame, then card.answer on the connection that draws it): the engine takes a card placed
+        // in a window only from that connection. The command names the card; nothing here lists or sweeps.
+        const v = req.value as { id?: unknown; hash?: unknown; option?: unknown } | undefined;
+        if (typeof v?.id !== "string" || typeof v.hash !== "string" || typeof v.option !== "string") throw new Error("an answer names the card, its hash and the option");
+        const engine = o.engine();
+        if (engine === undefined) throw new Error("the app is not connected to its engine");
+        const frame = await engine.request<{ channel: string }>("card.frame", { id: v.id }, 15_000);
+        const result = await engine.request<{ accepted: boolean; reason?: string }>("card.answer", { id: v.id, hash: v.hash, option: v.option, proof: { via: "sealed-frame", frame: frame.channel, input: "click", at: Date.now() } }, 30_000);
+        o.log(`${PREVIEW_CONTROL_NAME}: answered card ${v.id} with ${v.option}: ${result.accepted ? "taken" : "refused"}`);
+        send(s, { id, result });
+      } else if (req.app === "front") {
+        if (o.headless) throw new Error("this preview is headless: it has no window to bring forward");
+        win.show();
+        win.focus();
+        send(s, { id, result: { front: true } });
       } else if (req.app === "close") {
         // As a person closing the window: the app ends and the preview command ends everything it started.
         send(s, { id, result: { closing: true } });

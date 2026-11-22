@@ -72,7 +72,7 @@ export function parseChord(spec: string): Chord {
 }
 
 // ── the command line ─────────────────────────────────────────────────────────────────────────────────────────────────
-export const COMMANDS = ["shot", "text", "click", "type", "key", "scroll", "hover", "drag", "go", "wait", "theme", "size", "reload", "end", "call", "events", "sessions", "seed", "logs", "spent", "eval", "frames"] as const;
+export const COMMANDS = ["shot", "text", "click", "type", "key", "scroll", "hover", "drag", "go", "wait", "theme", "size", "reload", "end", "call", "events", "sessions", "seed", "logs", "spent", "eval", "frames", "cards", "approve", "front"] as const;
 export type CommandName = (typeof COMMANDS)[number];
 export const SCENES = ["message", "child", "waiting", "running", "idle", "ended"] as const;
 
@@ -107,6 +107,9 @@ export const CTL_USAGE = [
   "  seed <scene>                 more sample sessions: " + SCENES.join(", "),
   "  eval <js> [--frame <part of an address>]   run JavaScript in the window's page (or the frame whose address has that part) and print what it returns",
   "  frames                       the window's attached documents (type, session, address)",
+  "  cards                        the pending cards: id, session, title, where each is drawn",
+  "  approve <card-id> [--deny]   answer ONE named card, as the app's own window answers it (this is how a headless run passes a card); --session <id> names the card of that session when it has exactly one. Never a sweep",
+  "  front                        a visible preview: bring the preview's own window forward (nothing else; refused when headless)",
   "  spent                        a real-agents preview: the real turns and sessions spent per agent against the budget (2 sessions per agent, 3 turns per session)",
   "  logs [--app|--engine] [--since <Ns|Nm>] [--tail <n>]   the preview's logs (default both, last 60 lines)",
 ].join("\n");
@@ -121,7 +124,7 @@ const num = (name: string, v: string | undefined, lo: number, hi: number): numbe
 export function parseCtl(argv: readonly string[]): Parsed {
   const rest: string[] = [];
   const flags = new Map<string, string[]>();
-  const valueFlags = new Set(["--frame", "--timeout", "--into", "--dy", "--dx", "--area", "--for", "--count", "--since", "--tail"]);
+  const valueFlags = new Set(["--session", "--frame", "--timeout", "--into", "--dy", "--dx", "--area", "--for", "--count", "--since", "--tail"]);
   let json = false, help = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -131,7 +134,7 @@ export function parseCtl(argv: readonly string[]): Parsed {
       const v = argv[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       flags.set(a, [...(flags.get(a) ?? []), v]);
-    } else if (a.startsWith("--") && ["--full", "--frames", "--double", "--right", "--app", "--engine"].includes(a)) flags.set(a, [""]);
+    } else if (a.startsWith("--") && ["--full", "--frames", "--double", "--right", "--app", "--engine", "--deny"].includes(a)) flags.set(a, [""]);
     else if (a.startsWith("--") && a.length > 2) throw new UsageError(`unknown option ${a}`);
     else rest.push(a);
   }
@@ -165,6 +168,14 @@ export function parseCtl(argv: readonly string[]): Parsed {
     case "theme": need(1, "light, dark or system"); only(); if (!["light", "dark", "system"].includes(a[0]!)) throw new UsageError("theme is light, dark or system"); args.value = a[0]; break;
     case "size": { need(1, "<w>x<h>"); only(); const m = /^(\d{3,4})x(\d{3,4})$/.exec(a[0]!); if (m === null) throw new UsageError("size is <w>x<h> in pixels, for example 1180x760"); args.w = Number(m[1]); args.h = Number(m[2]); if (args.w as number < 320 || args.h as number < 240 || args.w as number > 8000 || args.h as number > 8000) throw new UsageError("a size is 320x240 to 8000x8000"); break; }
     case "eval": need(1, "the JavaScript as one argument: eval \"document.title\" [--frame <part of its address>]"); only("--frame"); args.js = a[0]; if (one("--frame") !== undefined) args.frame = one("--frame"); break;
+    case "cards": case "front": need(0, "no argument"); only(); break;
+    case "approve": {
+      only("--session", "--deny");
+      if (a.length + (has("--session") ? 1 : 0) !== 1) throw new UsageError("approve names ONE card: approve <card-id> [--deny] or approve --session <id> [--deny]");
+      if (has("--session")) { if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(one("--session")!)) throw new UsageError("--session is a session id"); args.session = one("--session"); }
+      else { if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(a[0]!)) throw new UsageError("approve takes a card id (ctl cards lists them)"); args.id = a[0]; }
+      args.deny = has("--deny"); break;
+    }
     case "reload": case "end": case "sessions": case "spent": case "frames": need(0, "no argument"); only(); break;
     case "call": {
       only();
@@ -222,6 +233,7 @@ export function render(cmd: string, result: unknown): string {
     }
     case "call": return JSON.stringify(r.result, null, 2);
     case "logs": return String(r.text ?? "");
+    case "cards": return String(r.text ?? "");
     case "spent": case "frames": return String(r.text ?? "");
     case "eval": return typeof r.value === "string" ? r.value : JSON.stringify(r.value);
     case "shot": return `${r.path} (${r.width}x${r.height}${r.full === true ? ", the whole page" : ""})`;
