@@ -28,7 +28,7 @@ export const movedMarkKey = (service: string) => `mark/os-store-moved/${service}
 
 /** The names of MOSS's own items in the OS store: `Bun.secrets` has no list on Windows or Linux, so these are the
  *  known names: the provider slots (every one the catalog gives an API key), the sign-in and pairing tokens, the
- *  tool keys (`MIGRATION_B_SECRET_NAMES`, the inventory the Winter migration walks too). The names made from an id at
+ *  tool keys (`MIGRATION_B_SECRET_NAMES`, the inventory the older-home migration walks too). The names made from an id at
  *  run time (`mcp-oauth:<id>` and its client records) cannot be listed and are not moved: those sign-ins are made again. */
 export function osStoreItemNames(): string[] {
   const names = new Set<string>(MIGRATION_B_SECRET_NAMES);
