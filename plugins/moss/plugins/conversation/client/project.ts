@@ -88,6 +88,8 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
   let streams = 0;
   /** The error note the latest `turn_completed` made, while it is still the last item. */
   let failedNote: NoteItem | undefined;
+  /** What the engine said about this turn's failure (the provider's reason, or MOSS's): the failed turn's one line. */
+  let failedWhy: string | undefined;
 
   for (const e of events) {
     const type = str(e.type);
@@ -109,6 +111,7 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
       }
       case "turn_started":
         failedNote = undefined;
+        failedWhy = undefined;
         turn = { running: true, phase: "thinking" };
         break;
       case "assistant_delta": {
@@ -246,8 +249,19 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
         }
         streaming = undefined;
         for (const it of items) if (it.kind === "tool" && (it.call.status === "running" || it.call.status === "waiting")) it.call.status = "interrupted";
-        if (e.stopReason === "error") failedNote = add<NoteItem>({ id: `n${key}`, kind: "note", at, text: "The turn ended with an error.", tone: "error" });
+        // One line: the reason the engine gave just before the turn's end, or the plain one when it gave none.
+        if (e.stopReason === "error") failedNote = add<NoteItem>({ id: `n${key}`, kind: "note", at, text: failedWhy ?? "The turn ended with an error.", tone: "error" });
+        failedWhy = undefined;
         turn = { running: false };
+        break;
+      }
+      case "hook_notice": {
+        // The engine's word on why a turn failed (`agent_notice` in a code session's agent log) says it in the failed turn's own
+        // line, never as a second one; it comes just before the turn's end, or just after it. Other notices aren't shown here.
+        const text = str(e.text)?.trim();
+        if (text === undefined || text === "" || e.level !== "notice") break;
+        if (failedNote !== undefined && items[items.length - 1] === failedNote) failedNote.text = text;
+        else failedWhy = text;
         break;
       }
       case "session_titled":

@@ -171,16 +171,16 @@ describe("MOSS's window", () => {
 });
 
 describe("the composer and dropped things", () => {
-  test("a file dropped on it is said plainly (pictures only, with the paperclip), and nothing is sent", async () => {
+  test("a file dropped on it is said plainly (pictures only, with the + button), and nothing is sent", async () => {
     const { fireEvent } = await import("@testing-library/react");
     const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });
     const composer = r.container.querySelector("[data-composer]")!;
     const sent: unknown[] = [];
     (window as unknown as { moss: MossBridge }).moss.send = async (...a: unknown[]) => { sent.push(a); return { ok: true }; };
     await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "report.pdf", { type: "application/pdf" })] } }); });
-    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the paperclip.");
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the + button.");
     await act(async () => { fireEvent.drop(composer, { dataTransfer: { files: [new File(["x"], "a.png", { type: "image/png" })] } }); });
-    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Dropping isn't supported yet: attach pictures with the paperclip.");
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("Dropping isn't supported yet: attach pictures with the + button.");
     expect(sent).toEqual([]);
     r.unmount();
   });

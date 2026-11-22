@@ -270,7 +270,7 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
     const items = [...e.dataTransfer.files];
     if (items.length === 0) return;
     const pictures = items.every((f) => /^image\/(png|jpeg|webp)$/.test(f.type));
-    setWhy(pictures ? "Dropping isn't supported yet: attach pictures with the paperclip." : "Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the paperclip.");
+    setWhy(pictures ? "Dropping isn't supported yet: attach pictures with the + button." : "Files aren't supported yet: MOSS sends pictures only (PNG, JPEG or WebP), attached with the + button.");
   };
   return (
     <div className="composer" data-composer onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
