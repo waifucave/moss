@@ -100,7 +100,7 @@ export function App() {
         {view.setup?.signedOut !== undefined && guide !== "open" ? <div className="banner" data-signed-out-banner><SignedOutLine tag={view.setup.signedOut} onSignIn={() => { setGuideStep("providers"); setGuide("open"); }} /></div> : null}
         {view.notice !== undefined ? <p className="banner banner--notice" role="status" data-notice>{view.notice}</p> : null}
         {shown !== undefined && "page" in shown && shown.page === "plugins" ? <PluginsPage strip={strip} />
-          : shown !== undefined && "page" in shown && shown.page === "settings" ? <SettingsPage bots={view.bots} strip={strip} onSetupGuide={() => { setGuideStep("providers"); setGuide("open"); }} {...(settingsBot !== undefined ? { bot: settingsBot } : {})} />
+          : shown !== undefined && "page" in shown && shown.page === "settings" ? <SettingsPage bots={view.bots} strip={strip} pairing={view.pairing} devicesRev={view.devicesRev ?? 0} onSetupGuide={() => { setGuideStep("providers"); setGuide("open"); }} {...(settingsBot !== undefined ? { bot: settingsBot } : {})} />
           : bot !== undefined ? <Conversation bot={bot} cards={inConversation} strip={strip} panelOpen={panel} onPanel={() => setPanel((p) => !p)} {...(view.talk !== undefined ? { talk: view.talk } : {})} />
           : <main className="conversation conversation--empty" data-col="conversation">{strip}<p className="muted">{view.pieces.bots === "waiting" ? "Waiting for the engine's bots." : "Make a bot with + to start."}</p></main>}
       </div>

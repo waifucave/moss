@@ -103,6 +103,8 @@ export interface FakeEngine {
   ask(method: string, params?: unknown): Promise<unknown[]>;
   /** A `release_changed` event to every connection that follows `release`. */
   releaseChanged(e: { state: "current" | "waiting" | "switching"; incoming?: string; waitingFor?: { turns: number; agents: number } }): void;
+  /** A core event of the `devices` area to every connection that follows it (`pairing_changed`, `device_changed`). */
+  devicesEvent(e: Record<string, unknown>): void;
   /** Ends every connection (the engine went away, as a release switch does). */
   dropAll(): void;
   close(): Promise<void>;
@@ -481,9 +483,21 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
       case "account.status":
         return { signedIn: true, provider: "email", user: { id: "u_1", name: "Sam", email: "sam@example.test" } };
       case "device.list":
-        return { devices: [{ id: FAKE_DEVICE, name: "Studio", kind: "desktop" }, { id: "devphone000000000001", name: "Phone", kind: "phone" }] };
+        return { devices: [{ id: FAKE_DEVICE, name: "Studio", kind: "desktop", isThis: true }, { id: "devphone000000000001", name: "Phone", kind: "phone" }] };
       case "computer.list":
         return { computers: [{ name: "Studio", level: "ask-risky" }, { name: "Laptop", level: "ask" }] };
+      // Pairing and removing a device, as the engine answers them for the app's own press: a code, the words, and a sealed card
+      // for the add and the removal (`applied: false`).
+      case "device.pair.begin":
+        return { pairingId: "pair_host", qr: "clover-pair:1:AAAA", code: "KQ7-M2P", expiresAt: now + 600_000 };
+      case "device.pair.join":
+        return { pairingId: "pair_join", words: ["amber", "river", "lantern", "moss"], expiresAt: now + 600_000 };
+      case "device.pair.confirm":
+        return { applied: false, card: "card_pair" };
+      case "device.pair.cancel":
+        return { ok: true };
+      case "device.revoke":
+        return { applied: false, card: "card_revoke" };
       case "plugin.auth.list":
         if (params.id === "moss/model-anthropic") return { auth: [{ index: 0, method: "api-key", state: "signed-in" }] };
         if (params.id === "fish-audio") return { auth: [{ index: 0, method: "api-key", state: "signed-out" }] };
@@ -558,6 +572,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
     },
     beforeCardList: (fn) => { beforeList = fn; },
     releaseChanged: (e) => event("release", { type: "release_changed", engine: o.release ?? "0.124.0", ...e }),
+    devicesEvent: (e) => event("devices", e),
     dropAll: () => { for (const c of conns.values()) c.socket.destroy(); },
     ask: async (method, params = {}) => Promise.all([...conns.values()].filter((c) => c.authed).map((c) => new Promise((resolve) => {
       const id = nextReq++;

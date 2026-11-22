@@ -57,6 +57,21 @@ export interface MossView {
   setup?: SetupRow;
   /** A card the setup guide waits behind is pending (the old home's copy), though not drawn in this window. */
   setupWaits?: true;
+  /** A pairing under way (Settings, Devices), as the engine's steps have it, and how many times the devices changed (the page reads
+   *  its list again when this moves). Absent until the person starts a pairing, and until a device changes. */
+  pairing?: PairingRow;
+  devicesRev?: number;
+}
+
+/** A pairing of this computer with another device (spec §8.1): the code this computer shows, or the four words both show. */
+export interface PairingRow {
+  /** The code to enter on the other device (the short code when the engine has one, else the longer pairing code). */
+  code?: string;
+  words?: string[];
+  /** The words were confirmed here: the engine's card waits for the person. */
+  confirming?: boolean;
+  /** It ended: said in words (a device added, a failure, an expired code). */
+  ended?: string;
 }
 
 /** The engine's answer to "is this home set up for a first reply" (`setup.state`). */
@@ -181,7 +196,7 @@ export interface SettingsView {
   signIns: { pluginId: string; name: string; index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string }[] | "waiting";
   /** The approval level of each computer (this one first). */
   computers: { name: string; level: string }[] | "waiting";
-  devices: { id: string; name: string; kind: string }[] | "waiting";
+  devices: { id: string; name: string; kind: string; here?: boolean }[] | "waiting";
 }
 
 /** One of a plugin's declared bot-scoped settings (a voice plugin's voice for this bot), drawn generically from its schema. */
@@ -280,6 +295,14 @@ export interface MossBridge {
   setBotSetting(bot: string, pluginId: string, key: string, value: unknown): Promise<boolean>;
   /** A computer's approval level: the engine raises a sealed card (a sensitive change), which the router places here. */
   setLevel(computer: string, level: string): Promise<boolean>;
+  /** Pairing another device (spec §8.1), each the person's own press: show a code here, or enter the other device's; the four
+   *  words come back in the view's `pairing`; confirming them and removing a device are each the engine's sealed card, which
+   *  the router places here. The engine's why on a refusal. */
+  pairBegin(): Promise<{ ok: true } | { ok: false; why: string }>;
+  pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }>;
+  pairCancel(): Promise<boolean>;
+  removeDevice(id: string): Promise<boolean>;
   /** A tool's permission (always allow / ask / always block), the person's own, after their press. */
   setPermission(server: string, tool: string, permission: "allow" | "ask" | "deny"): Promise<boolean>;
   /** Signs in with one of a plugin's `auth` entries: a key goes in once and never comes back; for a browser sign-in

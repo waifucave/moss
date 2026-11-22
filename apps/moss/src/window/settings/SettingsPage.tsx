@@ -10,7 +10,7 @@ import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge, shortTime } from "../bridge";
 import { Face } from "../faces/Face";
 import { EYES, makeBot, PALETTE, SHAPES, TEMPERS, type Eyes, type Shape, type Temper } from "@waifucave/moss-plugin-sdk/ui/faces";
-import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, SettingsView } from "../../shared/view";
+import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, PairingRow, SettingsView } from "../../shared/view";
 import type { Level } from "@waifucave/moss-protocol";
 
 export const LEVELS: readonly { value: Level; label: string }[] = [
@@ -23,7 +23,7 @@ export const LEVELS: readonly { value: Level; label: string }[] = [
 
 type Section = { kind: "general" } | { kind: "bot"; id: string };
 
-export function SettingsPage(props: { bots: BotRow[]; strip?: ReactNode; bot?: string; onSetupGuide?: () => void }) {
+export function SettingsPage(props: { bots: BotRow[]; strip?: ReactNode; bot?: string; onSetupGuide?: () => void; pairing?: PairingRow | undefined; devicesRev?: number }) {
   const [section, setSection] = useState<Section>(props.bot !== undefined ? { kind: "bot", id: props.bot } : { kind: "general" });
   // Opened again on a bot (the side panel's settings button) or on the account: follow it.
   useEffect(() => { setSection(props.bot !== undefined ? { kind: "bot", id: props.bot } : { kind: "general" }); }, [props.bot]);
@@ -47,7 +47,7 @@ export function SettingsPage(props: { bots: BotRow[]; strip?: ReactNode; bot?: s
           ))}
         </nav>
         <div className="page__body ma2-body">
-          {bot !== undefined ? <BotPage key={bot.id} bot={bot} /> : <General {...(props.onSetupGuide !== undefined ? { onSetupGuide: props.onSetupGuide } : {})} />}
+          {bot !== undefined ? <BotPage key={bot.id} bot={bot} /> : <General {...(props.onSetupGuide !== undefined ? { onSetupGuide: props.onSetupGuide } : {})} pairing={props.pairing} devicesRev={props.devicesRev ?? 0} />}
         </div>
       </div>
     </main>
@@ -80,11 +80,13 @@ const KIND_WORDS: Record<string, string> = { desktop: "Computer", laptop: "Compu
 // The account, keys and sign-ins, approval levels and devices
 // ---------------------------------------------------------------------------------------------
 
-function General(props: { onSetupGuide?: () => void }) {
+function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | undefined; devicesRev: number }) {
   const [s, setS] = useState<SettingsView | undefined>(undefined);
   const load = (): void => { void bridge().settings().then(setS); };
-  useEffect(load, []);
+  // Read again when a device came, went or was added by a pairing (the engine's `device_changed`).
+  useEffect(load, [props.devicesRev]);
   const [levelNote, setLevelNote] = useState<string | undefined>(undefined);
+  const [deviceNote, setDeviceNote] = useState<string | undefined>(undefined);
   const level = async (computer: string, value: string): Promise<void> => {
     setLevelNote((await bridge().setLevel(computer, value)) ? "Look for the card to confirm the change." : "The engine didn't take the change.");
     load();
@@ -136,10 +138,68 @@ function General(props: { onSetupGuide?: () => void }) {
       {s === undefined ? <Pending /> : <Archived />}
       <Card title="Devices" id="devices">
         {s === undefined ? <Pending /> : s.devices === "waiting" ? <Waiting what="devices" /> : s.devices.length === 0 ? <p className="muted">Only this computer.</p> : (
-          <ul className="kv">{s.devices.map((d) => <li key={d.id}><span>{d.name}</span><span className="muted">{KIND_WORDS[d.kind] ?? d.kind}</span></li>)}</ul>
+          <ul className="kv">
+            {s.devices.map((d) => (
+              <li key={d.id} data-device={d.id}>
+                <span>{d.name}{d.here === true ? " (this computer)" : ""}</span>
+                <span className="muted">{KIND_WORDS[d.kind] ?? d.kind}</span>
+                {d.here === true ? null : <button type="button" className="text-button" aria-label={`Remove ${d.name}`} onClick={() => void bridge().removeDevice(d.id).then(() => setDeviceNote("Look for the card to confirm removing it."))}>Remove</button>}
+              </li>
+            ))}
+          </ul>
         )}
+        {deviceNote !== undefined ? <p className="add__note" role="status">{deviceNote}</p> : null}
+        {s === undefined || s.devices === "waiting" ? null : <PairDevice pairing={props.pairing} />}
       </Card>
     </>
+  );
+}
+
+/** Pairing another device without an account (spec §8.1): show a code here and enter it on the other device, or enter the code
+ *  the other device shows; then check that both show the same four words. Adding the device is the engine's sealed card, which
+ *  the router places in this window; nothing here adds one. */
+export function PairDevice(props: { pairing: PairingRow | undefined }) {
+  const p = props.pairing;
+  const [code, setCode] = useState("");
+  const [why, setWhy] = useState<string | undefined>(undefined);
+  const run = (r: Promise<{ ok: true } | { ok: false; why: string }>): void => { void r.then((x) => setWhy(x.ok ? undefined : x.why)); };
+  return (
+    <div className="ma2-pair" data-pairing>
+      <h3 className="small">Pair a device</h3>
+      {p === undefined ? (
+        <>
+          <p className="muted small">Show a code here and enter it on the other device, or enter the code another device shows. No account needed.</p>
+          <div className="ma2-pair__row">
+            <button type="button" className="text-button" data-pair-begin onClick={() => run(bridge().pairBegin())}>Show a code</button>
+            <form className="ma2-pair__row" onSubmit={(e) => { e.preventDefault(); if (code.trim() !== "") run(bridge().pairJoin(code.trim())); }}>
+              <input className="field" aria-label="Code from another device" placeholder="Code from another device" value={code} onChange={(e) => setCode(e.target.value)} data-pair-code />
+              <button type="submit" className="text-button" data-pair-join disabled={code.trim() === ""}>Join</button>
+            </form>
+          </div>
+        </>
+      ) : (
+        <div role="status">
+          {p.ended !== undefined ? <p>{p.ended}</p> : p.words !== undefined ? (
+            <>
+              <p className="muted small">Check that both devices show these four words:</p>
+              <p className="ma2-pair__words" data-pair-words><strong>{p.words.join(" · ")}</strong></p>
+            </>
+          ) : (
+            <>
+              <p className="muted small">Enter this code on the other device:</p>
+              <p className="ma2-pair__code" data-pair-shown><code>{p.code}</code></p>
+            </>
+          )}
+          <div className="ma2-pair__row">
+            {p.ended === undefined && p.words !== undefined ? (
+              <button type="button" className="text-button" data-pair-confirm disabled={p.confirming === true} onClick={() => run(bridge().pairConfirm())}>{p.confirming === true ? "Waiting for your OK" : "They match"}</button>
+            ) : null}
+            <button type="button" className="text-button" data-pair-cancel onClick={() => { setWhy(undefined); void bridge().pairCancel(); }}>{p.ended !== undefined ? "OK" : "Cancel"}</button>
+          </div>
+        </div>
+      )}
+      {why !== undefined ? <p className="add__note" role="alert">{why}</p> : null}
+    </div>
   );
 }
 
