@@ -114,7 +114,9 @@ export class EngineSessionMessenger implements SessionMessenger {
     return out;
   }
 
-  async send(from: string, raw: SendMessageToolInput): Promise<{ delivered: string } | { refused: string }> {
+  /** `approve`: the approval a bot's agent's message waits for after the rule and the brake have judged it (the manager's, over the
+   *  bots' approval check): the plain refusal to give the agent, or undefined to go on. Never run for a target the sender may not reach. */
+  async send(from: string, raw: SendMessageToolInput, approve?: (target: SessionView) => Promise<string | undefined>): Promise<{ delivered: string } | { refused: string }> {
     // Every send counts, the refused ones too: first, before anything is read.
     if (!this.#slots.take(from)) return { refused: `Too many messages: at most ${SESSION_SEND_LIMIT} a minute. If you and another session are answering each other, stop.` };
     const text = (raw as { message?: unknown } | null | undefined)?.message;
@@ -150,6 +152,8 @@ export class EngineSessionMessenger implements SessionMessenger {
       return { refused: brakeRefusal(depth) };
     }
     const at = depth + 1;
+    const refusal = await approve?.(target);
+    if (refusal !== undefined) return { refused: refusal };
     // A message to a session the person started reaches it as that session's own (`session_message`, with the sender's title
     // and id), whoever sent it, a bot's session too: never the person's. Between bot sessions it stays the bots' own forms.
     const delivered: DeliveredInput = me.bot === undefined || target.bot === undefined

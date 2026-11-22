@@ -79,6 +79,9 @@ export interface BridgeToolSource {
   /** Waits, at most `timeoutMs`, for the plugins' servers installed or enabled a moment ago to have listed their tools, so a
    *  list read right after reads them. Absent: the list is read as it is. */
   settled?(timeoutMs: number): Promise<void>;
+  /** The bots' approval check applied to a call of a core tool this agent's bridge serves itself (a bot's agent's `SendMessage`, which
+   *  is judged as the same call in its bot's own session: the computer's level, the card). Absent: none is asked. */
+  judge?(session: AgentSessionFacts, ctx: BridgeCallContext, call: { served: string; input: Record<string, unknown>; callId: string }): Promise<{ allowed: true } | { allowed: false; message: string }>;
 }
 
 export const NO_PLUGIN_TOOLS: BridgeToolSource = {
