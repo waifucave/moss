@@ -48,7 +48,8 @@ export class FakeSessionMessenger implements SessionMessenger {
     recent.push(now);
     this.#sent.set(from, recent);
     const text = input.data.message;
-    if (me.bot === undefined) this.world.deliver(to, { from: "session", session: from, text });
+    // To a session the person started, whoever sends: that session's own message, never the person's.
+    if (me.bot === undefined || target.bot === undefined) this.world.deliver(to, { from: "session", session: from, text });
     else if (me.kind === "agent") this.world.deliver(to, { from: "agent", agent: from, text });
     else this.world.deliver(to, { from: "bot", bot: me.bot, session: from, text });
     this.world.link(from, to);

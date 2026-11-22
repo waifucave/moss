@@ -13,9 +13,9 @@
 //   Message text is never logged.
 // * **The limit counts every send,** refused ones too, per sending session (a guess at ids cannot go on forever), and it is
 //   taken before anything else is read.
-// * A delivery is `{ from: "session" }` between two sessions the person drives (the receiver's `session_message`; its turn's
-//   origin is `agent`, never the person's: `originOf`), `{ from: "agent" }` from a bot's agent and `{ from: "bot" }` from a
-//   bot's own session, as today.
+// * A delivery is `{ from: "session" }` to a session the person started, from any session (the receiver's `session_message`;
+//   its turn's origin is `agent`, never the person's: `originOf`), `{ from: "agent" }` from a bot's agent and `{ from: "bot" }`
+//   from a bot's own session to a bot's session, as today.
 import {
   LIST_SESSIONS_MAX, ReachableSession, SESSION_MESSAGE_MAX_CHARS, SESSION_SEND_LIMIT, SESSION_SEND_WINDOW_MS, SendMessageToolInput,
   mayReach, reachRefusal, resolveSessionTo, type SessionView,
@@ -188,7 +188,9 @@ export class EngineSessionMessenger implements SessionMessenger {
       return { refused: `This exchange has gone ${depth} messages between sessions without the person; stop here and wait for them to write to you.` };
     }
     const at = depth + 1;
-    const delivered: DeliveredInput = me.bot === undefined
+    // A message to a session the person started reaches it as that session's own (`session_message`, with the sender's title
+    // and id), whoever sent it, a bot's session too: never the person's. Between bot sessions it stays the bots' own forms.
+    const delivered: DeliveredInput = me.bot === undefined || target.bot === undefined
       ? { from: "session", session: from, text: input.data.message, depth: at }
       : me.kind === "agent"
         ? { from: "agent", agent: from, text: input.data.message, depth: at }

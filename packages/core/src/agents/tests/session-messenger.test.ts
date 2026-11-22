@@ -45,8 +45,15 @@ function generate(seed: number): SessionView[] {
       // A child: of a bot's session (carrying the bot, or only its parent's: the bot is read through the chain) or of a code session.
       const parent = out[r.int(out.length)]!;
       view.parent = parent.id;
+      view.startedBy = { kind: "session", session: parent.id };
       if (parent.bot !== undefined && r.next() < 0.5) view.bot = parent.bot;
     } else if (kind === "agent") view.bot = r.pick(bots);
+    else if (kind === "coding") {
+      // The person's own (started by them, or from before revision 20 with no record of it) or a child another session started.
+      const pick = r.next();
+      if (pick < 0.55) view.startedBy = { kind: "user" };
+      else if (pick > 0.8 && i > 0) { const parent = out[r.int(out.length)]!; view.parent = parent.id; view.startedBy = { kind: "session", session: parent.id }; }
+    }
     out.push(view);
   }
   return out;
@@ -67,7 +74,7 @@ describe("the property: ListSessions is the rule, and SendMessage delivers exact
       const m = new EngineSessionMessenger(world, { take: () => true });
       for (const s of all) {
         const me = { id: s.id, bot: botOf(all, s) };
-        const want = all.filter((t) => t.status !== "stopped" && t.status !== "failed" && reachRefusal(me, { id: t.id, kind: t.kind, bot: botOf(all, t) }) === undefined).map((t) => t.id);
+        const want = all.filter((t) => t.status !== "stopped" && t.status !== "failed" && reachRefusal(me, { id: t.id, kind: t.kind, bot: botOf(all, t), startedBy: t.startedBy, parent: t.parent }) === undefined).map((t) => t.id);
         expect([s.id, m.reachable(s.id).map((x) => x.id).sort()]).toEqual([s.id, [...want].sort()]);
         // By id: delivered exactly to the listed ones.
         for (const t of all) {
@@ -108,7 +115,8 @@ describe("what the real messenger does that the contract's fake does not", () =>
     expect(m.reachable("s_me")).toEqual([]);
     for (const to of ["s_kid", "Kid", "s_grand", "Grand"]) expect([to, "refused" in (await m.send("s_me", { message: "x", to }))]).toEqual([to, true]);
     // And from the bot's side the child is its own.
-    expect(m.reachable("s_grand").map((s) => s.id).sort()).toEqual(["s_kid", "s_moss"]);
+    // (and, by the owner's ruling of 2026-11-22, the person's own session: it started it itself.)
+    expect(m.reachable("s_grand").map((s) => s.id).sort()).toEqual(["s_kid", "s_me", "s_moss"]);
     expect(delivered).toEqual([]);
   });
 

@@ -72,9 +72,9 @@ export async function canvasCrossSessionStep(ctx: ExampleCtx): Promise<string> {
   }
 }
 
-async function run(ctx: ExampleCtx): Promise<string> {
+/** The fixture plugin installed (its OK card pressed in the window), its backend listed, and what the rows over it use. */
+async function crossWorld(ctx: ExampleCtx) {
   const { rpc, root } = ctx;
-  const done: string[] = [];
   const work = join(root, "canvas-cross");
   const folder = join(work, "plugin-src", CROSS_ID);
   const config = join(work, "agent", "agent.json");
@@ -123,6 +123,12 @@ async function run(ctx: ExampleCtx): Promise<string> {
 
   const bot = (await rpc.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots[0];
   if (bot === undefined) fail("bot.list lists no bot");
+  return { rpc, work, reportA, reportB, reportC, cfg, computer, start, heard, history, mcpResult, links, bot: bot! };
+}
+
+async function run(ctx: ExampleCtx): Promise<string> {
+  const { rpc, reportA, reportB, reportC, cfg, start, heard, history, mcpResult, links, bot } = await crossWorld(ctx);
+  const done: string[] = [];
 
   // 1. B is up; A lists its sessions and sends to B.
   const b = await start("B");
@@ -169,6 +175,75 @@ async function run(ctx: ExampleCtx): Promise<string> {
   return done.join("; ");
 }
 
+/** Row (lane CM, the owner's ruling of 2026-11-22: any session may message a session the person started): Alpha's `Agent` starts a
+ *  session on the fixture's fake agent, scripted to list its sessions and message B, a session the person started. B holds the
+ *  message as a `session_message` from that session, with its words, never a `user_message`; B's agent reads it as another session's
+ *  and a `session_link` from the bot's session to B is heard. Then C, a session the person started, is scripted to message the
+ *  session that wrote to B and Alpha's conversation: both refused in the one sentence, nothing delivered (a session the person
+ *  drives reaches no bot's session). */
+export async function canvasBotReachStep(ctx: ExampleCtx): Promise<string> {
+  try {
+    return await botReach(ctx);
+  } finally {
+    await leave(ctx, CROSS_ID);
+  }
+}
+
+const FROM_BOT = "CROSS-FROM-BOT-SESSION: the nightly report is ready for you.";
+const ANSWER = "CROSS-ANSWER: thanks, noted.";
+
+async function botReach(ctx: ExampleCtx): Promise<string> {
+  const { rpc, work, reportB, reportC, cfg, computer, start, heard, history, mcpResult, links, bot } = await crossWorld(ctx);
+  const reportK = join(work, "agent", "report-k.ndjson");
+  const done: string[] = [];
+
+  // B, the person's own session, is up.
+  const b = await start("B");
+  await heard("B's ready line", b, (evs) => (evs.some((e) => JSON.stringify(e).includes(READY)) && evs.some((e) => e.type === "turn_completed") ? true : undefined));
+
+  // K: a session Alpha starts on the fake agent, scripted to list its sessions and message B.
+  cfg(reportK, [bridge("ListSessions", {}), bridge("SendMessage", { message: FROM_BOT, to: b }), { say: "K-DONE" }]);
+  const before = new Set((await rpc.request<{ sessions: { id: string }[] }>("session.list", { kinds: ["agent"] })).sessions.map((x) => x.id));
+  const input = JSON.stringify({ agent: "alpha:study-buddy", backend: CROSS_ID, root: `home/${computer}/cross-work`, description: "Cross probe", prompt: "Tell the user's session B the report is ready." });
+  await ctx.turn(bot.mainSession, `ACCEPTANCE-CALL Agent ${input}`, 150_000);
+  const k = await until("the session Alpha started", 60_000, async () => (await rpc.request<{ sessions: { id: string; bot?: string; parent?: string; startedBy?: { kind: string } }[] }>("session.list", { kinds: ["agent"] })).sessions.find((x) => !before.has(x.id) && x.parent === bot.mainSession));
+  if (k.bot !== "alpha" || k.startedBy?.kind !== "bot") fail(`the session Alpha started reads ${JSON.stringify(k).slice(0, 300)}: a bot's session`);
+  const listed = await mcpResult(reportK, "ListSessions");
+  if (listed.isError === true) fail(`K's ListSessions answered an error: ${String(listed.text).slice(0, 300)}`);
+  const listText = String(listed.text);
+  if (!listText.includes(b)) fail(`K's ListSessions doesn't name B (${b}), a session the person started: "${listText.slice(0, 400)}"`);
+  if (listText.includes(k.id)) fail(`K's ListSessions names K itself: "${listText.slice(0, 400)}"`);
+  const sent = await mcpResult(reportK, "SendMessage");
+  if (sent.isError === true || !String(sent.text).includes("Sent")) fail(`K's SendMessage to B answered "${String(sent.text).slice(0, 300)}"`);
+  const message = await heard("B's conversation to hold K's message", b, (evs) => evs.find((e) => e.type === "session_message"));
+  if (message.fromSession !== k.id || message.text !== FROM_BOT) fail(`B's session_message reads ${JSON.stringify(message).slice(0, 300)}, not from ${k.id} with the words`);
+  if ((await history(b)).some((e) => e.type === "user_message" && JSON.stringify(e).includes("CROSS-FROM-BOT"))) fail("the bot's session's message reached B as the user's own");
+  const prompted = await until("B's agent to be prompted with the message", 60_000, async () => reportOf(reportB).find((x) => x.type === "prompt" && String(x.text).includes("CROSS-FROM-BOT")));
+  if (!String(prompted.text).includes(`from-session="${k.id}"`) || !String(prompted.text).includes("not the person's words")) fail(`B's agent read the message as "${String(prompted.text).slice(0, 300)}"`);
+  const link = await until("the session_link from K to B", 30_000, async () => links.find((l) => (l.to as { session?: string } | undefined)?.session === b && (l.from as { session?: string } | undefined)?.session === k.id),
+    async () => `links heard: ${links.map((l) => JSON.stringify(l).slice(0, 160)).join(" | ") || "none"} [packages/core/src/sessions/durable-host.ts deliver]`);
+  if (link.link !== "message" || Object.keys(link).sort().join(",") !== "from,link,to,ts,type") fail(`the link reads ${JSON.stringify(link).slice(0, 300)}, not a message from ${k.id} with no words`);
+  done.push(`1 K (${k.id}, a session Alpha started) listed sessions (B among them) and sent to B (${b}): B's conversation holds a session_message from ${k.id} with the words and no user_message; B's agent read it as another session's; a session_link of kind message from K to B was heard`);
+
+  // C, a session the person started, tries to answer K and to reach Alpha's conversation: neither is a session it may message.
+  cfg(reportC, [bridge("ListSessions", {}), bridge("SendMessage", { message: ANSWER, to: k.id }), bridge("SendMessage", { message: ANSWER, to: bot.mainSession }), { say: "C-DONE" }]);
+  const c = await start("C");
+  const results = await until("C's two SendMessage answers", 60_000, async () => {
+    const r = reportOf(reportC).filter((x) => x.type === "mcp-result" && x.tool === "SendMessage");
+    return r.length >= 2 ? r : undefined;
+  }, async () => `C's report: ${reportOf(reportC).map((x) => x.type).join(", ") || "none"}`);
+  for (const r of results) if (r.isError !== true || !String(r.text).includes("No session you may message")) fail(`C's SendMessage answered ${JSON.stringify(r).slice(0, 300)}, not a refusal`);
+  if (String(results[0]!.text).replace(k.id, "X") !== String(results[1]!.text).replace(bot.mainSession, "X")) fail(`the two refusals differ beyond the name asked for: "${String(results[0]!.text)}" and "${String(results[1]!.text)}"`);
+  const cList = reportOf(reportC).find((x) => x.type === "mcp-result" && x.tool === "ListSessions");
+  const cText = String(cList?.text ?? "");
+  if (!cText.includes(b) || cText.includes(k.id) || cText.includes(bot.mainSession)) fail(`C's ListSessions reads "${cText.slice(0, 400)}": it names B and neither K nor Alpha's conversation`);
+  await heard("C's turn to end", c, (evs) => (evs.some((e) => e.type === "turn_completed") ? true : undefined));
+  for (const s of [k.id, bot.mainSession]) if (JSON.stringify(await history(s)).includes("CROSS-ANSWER")) fail(`C's message reached ${s}`);
+  done.push(`2 C (${c}), a session the person started, sent to K and to Alpha's conversation: both refused in the same words, nothing delivered, and its ListSessions names B and no bot's session`);
+  return done.join("; ");
+}
+
+
 // ---------------------------------------------------------------------------------------------------------------
 // Lane CG's rows (the engine's session graph), each read as the app hears it: the core events `session_changed` and
 // `session_link` on the app's own connection (the `sessions` area), never the engine's insides.
@@ -182,13 +257,14 @@ async function run(ctx: ExampleCtx): Promise<string> {
 //   4. A title: a coding session on the default model is titled after its first turn; the fake provider's request for the
 //      title names the default's family's light model, its turn's the default.
 
+export const CANVAS_BOT_REACH_STEP = "the canvas · a session a bot started messages a session the person started: it lands as a session_message from that session (heard as a session_link, never the person's), ListSessions names the person's session, and the person's sessions cannot message a bot's conversation or that session back";
 export const CANVAS_CHILD_STEP = "the canvas · a child session joins its parent: Alpha's Agent starts a session whose view names her conversation as its parent and her as its starter, her view waits on it, and the app hears the spawn's and the report's session_link (no words)";
 export const CANVAS_SUBAGENT_STEP = "the canvas · a subagent row: an agent declaring Claude Code's subagents quirk plays a Task call as Claude Code's adapter sends it, and the session's view lists the row under it, running, then ended";
 export const CANVAS_WAITING_STEP = "the canvas · waiting: a coding session's command in the background is counted on its view; while its turn runs the session reads running (running wins), after it waiting, and once the command ends neither";
 export const CANVAS_TITLE_STEP = "the canvas · a code session is titled after its first turn: the title's request to the fake provider names the default's family's light model, the turn's the default";
 
 /** The rows of the canvas unit: lane CM's, then lane CG's. */
-export const CANVAS_STEPS: readonly string[] = [CANVAS_CROSS_SESSION_STEP, CANVAS_CHILD_STEP, CANVAS_SUBAGENT_STEP, CANVAS_WAITING_STEP, CANVAS_TITLE_STEP];
+export const CANVAS_STEPS: readonly string[] = [CANVAS_CROSS_SESSION_STEP, CANVAS_BOT_REACH_STEP, CANVAS_CHILD_STEP, CANVAS_SUBAGENT_STEP, CANVAS_WAITING_STEP, CANVAS_TITLE_STEP];
 
 
 type CgEv = Record<string, unknown> & { type?: string };

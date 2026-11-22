@@ -99,7 +99,7 @@ import { ARRIVALS_STEP, arrivalsStep } from "./arrivals-step";
 import { ADDONS_STEP, addonsStep } from "./addons-step";
 import { ARCHIVE_STEP, archiveStep, seedArchive } from "./archive-step";
 import { ACP_BACKEND_STEP, acpBackendStep } from "./acp-backend-step";
-import { CANVAS_CROSS_SESSION_STEP, canvasCrossSessionStep, CANVAS_CHILD_STEP, CANVAS_SUBAGENT_STEP, CANVAS_TITLE_STEP, CANVAS_WAITING_STEP, canvasChildStep, canvasSubagentStep, canvasTitleStep, canvasWaitingStep } from "./canvas-step";
+import { CANVAS_BOT_REACH_STEP, canvasBotReachStep, CANVAS_CROSS_SESSION_STEP, canvasCrossSessionStep, CANVAS_CHILD_STEP, CANVAS_SUBAGENT_STEP, CANVAS_TITLE_STEP, CANVAS_WAITING_STEP, canvasChildStep, canvasSubagentStep, canvasTitleStep, canvasWaitingStep } from "./canvas-step";
 import { BUILDER_EXAMPLES_STEP, builderExamplesStep } from "./builder-examples-step";
 import { WORKSHOP_POINTS_STEP, workshopPointsStep } from "./workshop-points-step";
 import { callText, WORKSHOP_STEP, workshopStep } from "./workshop-step";
@@ -4231,6 +4231,7 @@ function uiRowRunners(ctx: ExampleCtx, session: string, launch?: Awaited<ReturnT
     [ACP_BACKEND_STEP, () => acpBackendStep(ctx)],
     // Two coding sessions on a fake agent message each other through the bridge; one cannot reach a bot's conversation (lane CM, §9.5).
     [CANVAS_CROSS_SESSION_STEP, () => canvasCrossSessionStep(ctx)],
+    [CANVAS_BOT_REACH_STEP, () => canvasBotReachStep(ctx)],
     // The session canvas's engine rows (lane CG, spec revision 20 §9.5): a child joined to its parent, a subagent row,
     // waiting on a background task with running winning, a code session's title on the light model.
     [CANVAS_CHILD_STEP, () => canvasChildStep(ctx, bot)],

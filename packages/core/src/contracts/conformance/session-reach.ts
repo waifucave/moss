@@ -46,21 +46,33 @@ export function runSessionMessengerConformance(make: SessionMessengerFactory): v
       expect(links).toEqual(["s_a>s_b", "s_a>s_c", "s_c>s_b"]);
     });
 
-    test("a bot's sessions keep today's rule and records", async () => {
+    test("a bot's session reaches its own bot's sessions, every bot's conversation and the sessions the person started, never a session another session started", async () => {
       const { w, delivered } = world(SESSIONS);
       const m = make(w);
       expect(await m.send("s_d", { message: "progress" })).toEqual({ delivered: "s_moss" });
       expect(await m.send("s_moss", { message: "and?", to: "s_d" })).toEqual({ delivered: "s_d" });
       expect(await m.send("s_moss", { message: "hello", to: "s_luna" })).toEqual({ delivered: "s_luna" });
-      for (const to of ["s_a", "s_e"]) expect("refused" in (await m.send("s_moss", { message: "x", to }))).toBe(true);
-      expect(delivered.map((d) => d.input.from)).toEqual(["agent", "bot", "bot"]);
+      // The owner's ruling of 2026-11-22: a session the person started takes a bot's message, as that session's.
+      expect(await m.send("s_moss", { message: "for you", to: "s_b" })).toEqual({ delivered: "s_b" });
+      expect(await m.send("s_d", { message: "from my agent", to: "s_a" })).toEqual({ delivered: "s_a" });
+      // The person's child (started by a session), another bot's agent and an ended session: no.
+      for (const to of ["s_c", "s_e", "s_old"]) expect([to, "refused" in (await m.send("s_moss", { message: "x", to }))]).toEqual([to, true]);
+      expect(delivered.map((d) => d.input.from)).toEqual(["agent", "bot", "bot", "session", "session"]);
+      expect(delivered[3]).toMatchObject({ to: "s_b", input: { from: "session", session: "s_moss", text: "for you" } });
+    });
+
+    test("a session the person started cannot answer a bot's session: it reaches no bot", async () => {
+      const { w, delivered } = world(SESSIONS);
+      const m = make(w);
+      for (const to of ["s_moss", "s_side", "s_d", "s_luna", "s_e"]) expect([to, "refused" in (await m.send("s_b", { message: "x", to }))]).toEqual([to, true]);
+      expect(delivered).toEqual([]);
     });
 
     test("ListSessions lists exactly what SendMessage would deliver to", () => {
       const { w } = world(SESSIONS);
       const m = make(w);
       expect(m.reachable("s_a").map((s) => s.id).sort()).toEqual(["s_b", "s_c"]);
-      expect(m.reachable("s_d").map((s) => s.id).sort()).toEqual(["s_luna", "s_moss", "s_side"]);
+      expect(m.reachable("s_d").map((s) => s.id).sort()).toEqual(["s_a", "s_b", "s_luna", "s_moss", "s_side"]);
       expect(Object.keys(m.reachable("s_a")[0]!)).not.toContain("root");
     });
 

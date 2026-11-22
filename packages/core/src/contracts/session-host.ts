@@ -66,8 +66,8 @@ export type DeliveredInput =
    *  still queued across a restart starts its turn at the depth it was sent with. */
   | { from: "bot"; bot: string; session: string; text: string; depth?: number }
   | { from: "agent"; agent: string; text: string; depth?: number }
-  /** Another session's `SendMessage` where neither is a bot's (spec revision 20, §9.5, lane CM): the sending session is
-   *  recorded (`session_message`); its turn is never the person's. */
+  /** Another session's `SendMessage` to a session the person started (spec revision 20, §9.5, lane CM), from any session, a
+   *  bot's too: the sending session is recorded (`session_message`); its turn is never the person's. */
   | { from: "session"; session: string; text: string; depth?: number }
   | { from: "task-notification"; agent: string; backend: string; stopReason: AgentStopReason; text: string; transcript: string; usage?: { inputTokens: number; outputTokens: number } }
   /** `failed`, on a result posted to the bot's conversation: the run didn't finish well (an error, a timeout, a

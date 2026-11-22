@@ -377,7 +377,16 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     const [send] = botToolDefs({ host: b.host, bots: b.bots }, "b_alpha");
     expect((await send!.run({ to: "s_lunas", message: "hi" })).text).toContain('belongs to the bot luna; message that bot\'s conversation instead');
     expect((await send!.run({ to: "s_lunaside", message: "hi" })).isError).toBe(true);
-    expect((await send!.run({ to: "s_code", message: "hi" })).text).toContain("the user's own coding session");
+    // The owner's ruling of 2026-11-22: a coding session the user started takes a bot's message (as that session's, never the
+    // user's, at depth 1 of the exchange brake); a session another session started does not.
+    const sent = await send!.run({ to: "s_code", message: "hi" });
+    expect(sent.isError).toBe(false);
+    expect(b.host.history("s_code").find((r) => r.type === "input" && r.input.from === "session")).toMatchObject({ input: { from: "session", session: "b_alpha", text: "hi", depth: 1 } });
+    // Its turn is not the user's: the origin is `agent`, so a card it raises waits for the user and is never answered by the message.
+    await flush();
+    expect(b.host.history("s_code").filter((r) => r.type === "turn_started").at(-1)).toMatchObject({ origin: "agent" });
+    b.host.open({ id: "s_codekid", kind: "coding", parent: "s_code", startedBy: { kind: "session", session: "s_code" }, computer: "Studio", backend: "claude-code" }, new FakeSessionDriver({ canFold: false }));
+    expect((await send!.run({ to: "s_codekid", message: "hi" })).text).toContain("another of the user's sessions started");
     // Another bot's conversation, by its session id too.
     expect((await send!.run({ to: "b_luna", message: "hi" })).isError).toBe(false);
     // An agent, through the same door: never itself, its own bot yes, as the agent's own message; another bot's agent no.

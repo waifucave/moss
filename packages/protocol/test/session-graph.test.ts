@@ -73,12 +73,13 @@ describe("the link event (§9.5)", () => {
 describe("who may reach whom (§9.5)", () => {
   const s = (id: string, kind: "bot" | "side-thread" | "agent" | "coding", bot?: string) => ({ id, kind, ...(bot !== undefined ? { bot } : {}) });
 
-  test("a bot's session: today's one rule, word for word", () => {
+  test("a bot's session: its own bot's sessions and every bot's conversation, word for word, and (the owner's ruling of 2026-11-22) the sessions the person started", () => {
     const from = { id: "s_moss", bot: "moss" };
     expect(reachRefusal(from, s("s_moss", "bot", "moss"))).toBe("That is this conversation; SendMessage reaches another one.");
     expect(reachRefusal(from, s("s_luna", "bot", "luna"))).toBeUndefined();
     expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBeUndefined();
-    expect(reachRefusal(from, s("s_code", "coding"))).toBe("s_code is the user's own coding session; SendMessage reaches only your bot's sessions and other bots' conversations.");
+    expect(reachRefusal(from, s("s_code", "coding"))).toBeUndefined();
+    expect(reachRefusal(from, { ...s("s_kid", "coding"), parent: "s_code", startedBy: { kind: "session" as const, session: "s_code" } })).toBe("s_kid is a session another of the user's sessions started; SendMessage reaches your bot's sessions, other bots' conversations and the sessions the user started themselves.");
     expect(reachRefusal(from, s("s_e", "agent", "luna"))).toBe('s_e belongs to the bot luna; message that bot\'s conversation instead (SendMessage with to: "luna").');
   });
 
@@ -92,7 +93,8 @@ describe("who may reach whom (§9.5)", () => {
     expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBeDefined();
     expect(mayReach(from, { ...s("s_b", "coding"), status: "stopped" })).toBe(false);
     expect(mayReach(from, { ...s("s_b", "coding"), status: "idle" })).toBe(true);
-    expect(REACH_RULE_LINES.filter((l) => l.ruled === "owner").length).toBe(1);
+    // Two lines are the owner's: a person's session reaches the person's own, and a bot's session reaches the sessions the person started.
+    expect(REACH_RULE_LINES.filter((l) => l.ruled === "owner").length).toBe(2);
   });
 
   test("a `to` is an id, else the one title it matches; two titles name the ids", () => {
