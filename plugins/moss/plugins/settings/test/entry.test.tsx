@@ -28,7 +28,7 @@ let uiSetFails = false;
 let setEnabledFails = false;
 let uiAppearance: "light" | "dark" | "system" | undefined;
 
-async function mount(params: { section?: string; item?: string } = {}, extra: { component?: EntryComponent } = {}) {
+async function mount(params: { section?: string; item?: string } = {}, extra: { component?: EntryComponent; holdReads?: Promise<void>; seed?: Record<string, unknown> } = {}) {
   uiAppearance = undefined;
   const core = fakeCore({
     "plugin.list": () => ({ plugins: PLUGINS }),
@@ -48,10 +48,16 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
     "device.pair.cancel": () => ({ ok: true }),
   });
   const api = fakeApi({
+    ...(extra.seed ? { settings: extra.seed } : {}),
     computers: { list: async () => [computerView("Studio", { device: "d1", level: "ask-risky", link: "self", isMain: true }), computerView("Laptop", { device: "d2", level: "ask", link: "lan" })] },
     devices: { list: async () => [deviceView("d1", "Studio", { kind: "desktop", runsCore: true, isThis: true, isMain: true }), deviceView("d2", "Laptop", { kind: "desktop", runsCore: true }), deviceView("d3", "iPhone", { kind: "phone", runsCore: false })], watch: () => () => undefined },
     bots: { list: async () => [{ id: "alpha", name: "Alpha", model: "m", userLayer: [], state: "idle", mainSession: "s" }], get: async () => { throw new Error("x"); }, watch: () => () => undefined },
   });
+  // A read the page asked for before a press and that is answered after it (a slow runner's first read): the value as it was asked.
+  if (extra.holdReads) {
+    const get = api.settings.get;
+    api.settings.get = (async (...a: Parameters<typeof get>) => { const v = await get(...a); await extra.holdReads; return v; }) as typeof get;
+  }
   const routes: unknown[] = [];
   let closed = 0;
   const runtime = runtimeWith({
@@ -178,6 +184,20 @@ describe("settings on the runtime", () => {
     } finally {
       setEnabledFails = false;
     }
+  });
+
+  test("a press made while the page's first read of its settings is still on its way is kept when that read is answered (window row 13: the switch went back to true though the daemon held false)", async () => {
+    let answer!: () => void;
+    const { api } = await mount({ section: "notifications" }, { holdReads: new Promise<void>((r) => { answer = r; }), seed: { "notifications.needsYou": true } });
+    const sw = () => screen.getByRole("switch", { name: /needs you/i });
+    expect(sw().getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(sw());
+    await act(() => settle());
+    expect(sw().getAttribute("aria-checked")).toBe("false");
+    // The read, asked before the press, is answered now with the value it saw.
+    await act(async () => { answer(); await settle(); });
+    expect(api.stored.get("notifications.needsYou")).toBe(false);
+    expect(sw().getAttribute("aria-checked")).toBe("false");
   });
 
   test("while a change is being saved its control takes no second press", async () => {
