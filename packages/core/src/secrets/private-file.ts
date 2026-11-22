@@ -24,10 +24,20 @@ export interface PrivateFileDeps {
   userSid?: string;
 }
 
+/** Windows' own tools by full path: a bare `whoami` or `icacls` on PATH may be Git's (Git Bash's coreutils `whoami` takes no
+ *  `/user`), and a program a user's PATH names first is not to be trusted with an ACL. */
+function system32(run: Runner): Runner {
+  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  return (argv) => {
+    const [first, ...rest] = argv;
+    return run(first === "whoami" || first === "icacls" ? [`${root}\\System32\\${first}.exe`, ...rest] : argv);
+  };
+}
+
 let sidMemo: Promise<string | undefined> | undefined;
 async function userSidOf(deps: PrivateFileDeps): Promise<string | undefined> {
   if (deps.userSid !== undefined) return deps.userSid;
-  sidMemo ??= windowsUserSid(deps.run ?? bunRunner).then((s) => { if (s === undefined) sidMemo = undefined; return s; });
+  sidMemo ??= windowsUserSid(system32(deps.run ?? bunRunner)).then((s) => { if (s === undefined) sidMemo = undefined; return s; });
   return sidMemo;
 }
 
@@ -37,7 +47,7 @@ export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Pro
   if ((deps.platform ?? process.platform) !== "win32") { chmodSync(path, 0o600); return; }
   const sid = await userSidOf(deps);
   if (sid === undefined) throw new Error("no user SID for the file's ACL");
-  const r = await (deps.run ?? bunRunner)(["icacls", path, "/inheritance:r", "/grant:r", `*${sid}:F`]);
+  const r = await system32(deps.run ?? bunRunner)(["icacls", path, "/inheritance:r", "/grant:r", `*${sid}:F`]);
   if (!r.ok) throw new Error("icacls refused the ACL");
 }
 

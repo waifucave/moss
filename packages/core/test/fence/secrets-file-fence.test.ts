@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED } from "../../src/contracts/fence";
 import { fenceLayout } from "../../src/fence/layout";
@@ -32,7 +32,7 @@ describe("one list of names for the secrets file and its key", () => {
     for (const n of SECRET_FILE_NAMES) {
       expect(BOT_READ_DENIED.some((rel) => rel.length === 1 && rel[0] === n)).toBe(true);
       expect(LEFT_OUT_TOP).toContain(n);
-      expect(homeNamedDenials("/h/.moss", "linux")).toContain(`/h/.moss/${n}`);
+      expect(homeNamedDenials("/h/.moss", "linux")).toContain(join(resolve("/h/.moss"), n)); // as the host spells it
     }
   });
 
@@ -43,7 +43,7 @@ describe("one list of names for the secrets file and its key", () => {
       const moss = "/Users/me/.moss";
       const fence = new MossFence({ os, home: "/Users/me", mossHome: moss, temp: "/tmp" });
       for (const n of SECRET_FILE_NAMES) {
-        const path = `${moss}/${n}`;
+        const path = join(resolve(moss), n); // the host's own spelling of the path (a Windows runner makes it `D:\\Users\\me\\.moss\\…`)
         expect([os, n, fence.policy().denyRead.includes(path)]).toEqual([os, n, true]);
         expect([os, n, fence.check({ op: "read", path }).allowed, fence.check({ op: "write", path }).allowed]).toEqual([os, n, false, false]);
       }

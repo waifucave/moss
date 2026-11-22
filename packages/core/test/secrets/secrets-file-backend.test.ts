@@ -221,20 +221,20 @@ describe("the file on the disk", () => {
       expect(statSync(join(h, "x")).mode & 0o777).toBe(0o700);
     }
     expect(existsSync(`${p}.tmp`)).toBe(false);
-  });
-
-  test.skipIf(process.platform !== "win32")("Windows: the ACL is the user's alone, the inherited entries dropped (read back from icacls)", async () => {
-    const h = home();
-    const p = join(h, "secret.bin");
-    await writePrivateFile(p, Buffer.from("x"));
-    const out = Bun.spawnSync(["icacls", p]).stdout.toString();
-    const entries = out.split(/\r?\n/).map((l) => l.replace(p, "").trim()).filter((l) => /:\(/.test(l));
-    const user = Bun.spawnSync(["whoami"]).stdout.toString().trim().toLowerCase().split("\\").pop()!;
-    // One entry, the user's, full control: nothing inherited from the folder, no Everyone, Users, Administrators or SYSTEM.
-    expect(entries.length).toBe(1);
-    expect(entries[0]!.toLowerCase()).toContain(user);
-    expect(out).not.toMatch(/Everyone|BUILTIN|NT AUTHORITY/i);
-    await lockToOwner(p); // again: idempotent
+    // Windows: the ACL is the user's alone, the inherited entries dropped (read back from icacls).
+    if (process.platform === "win32") {
+      const q = join(h, "acl.bin");
+      await writePrivateFile(q, Buffer.from("x"));
+      const sys32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+      const out = Bun.spawnSync([join(sys32, "icacls.exe"), q]).stdout.toString();
+      const entries = out.split(/\r?\n/).map((l) => l.replace(q, "").trim()).filter((l) => /:\(/.test(l));
+      const user = Bun.spawnSync([join(sys32, "whoami.exe")]).stdout.toString().trim().toLowerCase().split("\\").pop()!;
+      // One entry, the user's, full control: nothing inherited from the folder, no Everyone, Users, Administrators or SYSTEM.
+      expect(entries.length).toBe(1);
+      expect(entries[0]!.toLowerCase()).toContain(user);
+      expect(out).not.toMatch(/Everyone|BUILTIN|NT AUTHORITY/i);
+      await lockToOwner(q); // again: idempotent
+    }
   });
 
   test("the lock: one holder at a time; a holder that is gone is taken over; a stuck one makes the writer say so", async () => {
@@ -271,9 +271,10 @@ describe("the file on the disk", () => {
 });
 
 // The REAL OS store: libsecret on a private session bus (Linux, under scripts/with-private-secret-service.sh) or Credential
-// Manager under a throwaway service (Windows). The test makes its own service, and removes what it set. Never on macOS (it
-// has the Keychain path, tested elsewhere); on a CI Linux runner a missing private bus is a failure, not a skip.
-const realStore = process.platform === "darwin" ? "skip" : throwawaySecretStoreAvailable() ? "run" : process.env.CI !== undefined && process.platform === "linux" ? "missing" : "skip";
+// Manager under a throwaway service (Windows). The test makes its own service, and removes what it set. Not on a Mac (its
+// Keychain path is tested elsewhere); on a CI Linux runner a missing private bus is a failure, not a skip.
+const hasOwnOsStore = process.platform === "win32" || process.platform === "linux";
+const realStore = !hasOwnOsStore ? "skip" : throwawaySecretStoreAvailable() ? "run" : process.env.CI !== undefined && process.platform === "linux" ? "missing" : "skip";
 describe.skipIf(realStore === "skip")("the real OS store holds the key", () => {
   test("a private Secret Service (Linux) or Credential Manager (Windows) is there for this run", () => {
     expect(realStore).toBe("run");
