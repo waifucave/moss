@@ -43,6 +43,13 @@
   --shadow: none;
   --panel-shadow: -8px 0 30px rgba(0, 0, 0, 0.14);
   --radius: 14px;
+  /* The glass (the owner, 2026-11-22): the list and the top bars look as MOSS Code's sidebar and bar do. The tint and the
+     blur are the same numbers as MOSS Code's (the SDK catalog's `sidebar.tint`, `titlebar.tint`, `titlebar.blur`; a test
+     holds them to each other). Neutral: no hue. */
+  --glass-tint: #F5F5F566;
+  --glass-blur: 16px;
+  --glass-ring: rgba(245, 245, 245, 0.9);
+  --bar-h: 64px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light;
 }
@@ -85,6 +92,8 @@
     --knob-shadow: none;
     --seg-shadow: none;
     --panel-shadow: -8px 0 30px rgba(0, 0, 0, 0.5);
+    --glass-tint: #20202059;
+    --glass-ring: rgba(32, 32, 32, 0.9);
     color-scheme: dark;
   }
 }
@@ -98,6 +107,11 @@ a { color: var(--link); }
 svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
+
+/* Where the window has a material behind its page (the preload sets data-translucent on the root only then), the page lets
+   it through: nothing paints under the list, which is the glass tint alone. Everywhere else the list is its solid colour. */
+:root[data-translucent] body { background: transparent; }
+:root[data-translucent] .list { background: var(--glass-tint); }
 
 .window { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100%; }
 .window.has-panel { grid-template-columns: 300px minmax(0, 1fr) 340px; }
@@ -156,14 +170,19 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 /* ---- The middle ---- */
 .middle { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .banner { margin: 0; padding: 8px 16px; background: var(--notice-bg); color: var(--text); font-size: 13px; text-align: center; }
-.conversation, .page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.conversation, .page { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; --under: var(--bar-h); }
+/* A card strip sits right under the bar (what it holds is read before anything), so what scrolls below it starts below it. */
+.conversation:has(> .strip), .page:has(> .strip) { --under: 0px; }
+.conversation > .strip, .page > .strip { margin-top: var(--bar-h); }
 .conversation--empty { display: grid; place-items: center; }
-.conversation__head, .page__head { display: flex; align-items: center; gap: 12px; height: 64px; padding: 14px 18px 10px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; flex: none; }
+/* The top bars float over the top of their column, frosted: the conversation (a page's content) scrolls up under them. */
+.conversation__head, .page__head, .panel__head { position: absolute; top: 0; left: 0; right: 0; z-index: 2; background: var(--glass-tint); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.6); backdrop-filter: blur(var(--glass-blur)) saturate(1.6); }
+.conversation__head, .page__head { display: flex; align-items: center; gap: 12px; height: var(--bar-h); padding: 14px 18px 10px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
 .conversation__head > *, .page__head > * { -webkit-app-region: no-drag; }
 .conversation__who { flex: 1; min-width: 0; display: grid; }
 .conversation__who h1, .page__head h1 { margin: 0; font-size: 15px; font-weight: 650; }
 .page__head h1 { font-size: 17px; }
-.messages { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 18px 22px 8px; display: flex; flex-direction: column; gap: 4px; }
+.messages { flex: 1; overflow-y: auto; overflow-anchor: none; padding: calc(var(--under) + 18px) 22px 8px; display: flex; flex-direction: column; gap: 4px; }
 .messages__note, .note { align-self: center; margin: 10px 0; color: var(--muted); font-size: 13px; }
 .note--failed { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .bubble-row { display: flex; flex-direction: column; gap: 4px; max-width: min(620px, 78%); margin-top: 6px; }
@@ -206,8 +225,8 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .send svg { width: 16px; height: 16px; stroke-width: 2; }
 
 /* ---- The side panel ---- */
-.panel { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel-bg); }
-.panel__head { display: flex; align-items: center; height: 64px; padding: 14px 12px 10px 18px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
+.panel { position: relative; display: flex; flex-direction: column; min-height: 0; padding-top: var(--bar-h); border-left: 1px solid var(--line); background: var(--panel-bg); }
+.panel__head { display: flex; align-items: center; height: var(--bar-h); padding: 14px 12px 10px 18px; border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
 .panel__head > * { -webkit-app-region: no-drag; }
 .panel__head h2 { flex: 1; margin: 0; font-size: 15px; font-weight: 650; }
 .screen { padding: 14px 16px 6px; }
@@ -235,7 +254,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .chip--paused { background: var(--chip-off); color: var(--muted); }
 
 /* ---- Pages: Plugins and Settings ---- */
-.page__body { flex: 1; overflow-y: auto; padding: 18px 22px 28px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; max-width: 760px; }
+.page__body { flex: 1; overflow-y: auto; padding: calc(var(--under) + 18px) 22px 28px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; max-width: 760px; }
 .page__body h2 { margin: 0 0 8px; font-size: 14px; font-weight: 650; display: flex; align-items: center; }
 .add, .plugin, .settings-section { padding: 14px 16px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .add p { margin: 0 0 10px; }
@@ -268,6 +287,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
   .row__line .mood::after { content: "" !important; }
   .row.is-unread::after { content: ""; position: absolute; top: 8px; right: 10px; width: 9px; height: 9px; border-radius: 50%; background: var(--unread); border: 2px solid var(--list-bg); }
   .new-bot { grid-template-columns: auto; justify-content: center; }
+  :root[data-translucent] .row.is-unread::after { border-color: var(--glass-ring); }
   .nav-item { justify-content: center; font-size: 0; }
   .panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(340px, 86vw); box-shadow: var(--panel-shadow); z-index: 5; }
   .bubble-row { max-width: 88%; }

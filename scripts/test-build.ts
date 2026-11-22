@@ -76,7 +76,7 @@ export const TEST_ONLY_APP_STRINGS = ["MOSS_TEST_MAIN_FRONT_FILE", "MOSS_TEST_WI
 /** The same for MOSS's own app (`apps/moss`): names only ITS test-only code reads. MOSS Code's test build reads none of
  *  them, so they are a list of their own (`apps/moss/test/main-markers.test.ts` holds it to MOSS's real and test builds);
  *  the release gate looks for both lists in either app. */
-export const TEST_ONLY_MOSS_APP_STRINGS = ["MOSS_TEST_BOT", "MOSS_TEST_CARDS", "MOSS_TEST_FRONT", "MOSS_TEST_PRESSES", "MOSS_RENDER_MEASURE", "MOSS_RENDER_SCENES"] as const;
+export const TEST_ONLY_MOSS_APP_STRINGS = ["MOSS_TEST_BOT", "MOSS_TEST_CARDS", "MOSS_TEST_FRONT", "MOSS_TEST_PRESSES", "MOSS_RENDER_MEASURE", "MOSS_RENDER_SCENES", "MOSS_TEST_GLASS"] as const;
 
 /** The `bun build --define` argument for a shell line: `false` in a real build (no quotes, so cmd.exe takes it), the
  *  label as a JSON string in a test build (macOS only, /bin/sh). */

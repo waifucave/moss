@@ -34,6 +34,15 @@ function listen<T extends unknown[]>(channel: string, fn: (...args: T) => void):
 }
 
 if (where === "moss-app:" && location.host === "app" && window.top === window) {
+  // What is behind the window's page (window-plan.ts): the system's material or nothing. The page goes see-through (its
+  // list and bars take the glass) only while `data-translucent` is on the root, so it is set before the first paint and
+  // follows main's word after.
+  const markMaterial = (material: unknown): void => {
+    const set = (): void => { document.documentElement.toggleAttribute("data-translucent", material === "vibrancy"); };
+    if (document.documentElement !== null) set(); else document.addEventListener("DOMContentLoaded", set, { once: true });
+  };
+  markMaterial(ipcRenderer.sendSync("moss:material"));
+  listen<[string]>("moss:material", markMaterial);
   const bridge: MossBridge = {
     view: () => ipcRenderer.invoke("moss:view"),
     onView: (fn) => listen<[MossView]>("moss:view", fn),

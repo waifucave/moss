@@ -42,7 +42,7 @@
 
 /* ---- Settings ---- */
 .ma2-settings { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); }
-.ma2-settings__nav { display: flex; flex-direction: column; gap: 2px; padding: 14px 10px; border-right: 1px solid var(--line); overflow-y: auto; }
+.ma2-settings__nav { display: flex; flex-direction: column; gap: 2px; padding: calc(var(--under) + 14px) 10px 14px; border-right: 1px solid var(--line); overflow-y: auto; }
 .ma2-settings__nav .nav-item { font-weight: 500; }
 .ma2-settings__nav .nav-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ma2-settings__group { margin: 12px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--faint); }
@@ -101,7 +101,8 @@
 @media (max-width: 900px) {
   .ma2-settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   /* The bots' names wrap onto more rows rather than scroll sideways: a sideways bar takes room under classic scroll bars. */
-  .ma2-settings__nav { flex-direction: row; flex-wrap: wrap; align-items: center; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
+  .ma2-settings__nav { flex-direction: row; flex-wrap: wrap; align-items: center; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); padding: calc(var(--under) + 8px) 10px 8px; }
+  .ma2-settings .page__body { padding-top: 18px; }
   .ma2-settings__nav .nav-item { width: auto; flex: none; font-size: 13px; padding: 6px 10px; justify-content: flex-start; }
   .ma2-settings__nav .nav-item span { display: inline; }
   .ma2-settings__group { display: none; }

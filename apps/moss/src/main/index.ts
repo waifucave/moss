@@ -5,7 +5,7 @@
 // MOSS's own key (answer-key.ts). Quitting MOSS stops nothing: the engine, the host and every bot keep working.
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, protocol, safeStorage, session, shell, webContents, webFrameMain, type IpcMainEvent, type IpcMainInvokeEvent, type Session, type WebFrameMain } from "electron";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watchFile } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BotFace as ProtocolBotFace, compareReleases, CORE_EVENT_NOTIFICATION, ReleaseChangedEvent, TOOL_AVAILABILITIES, type MossHelloResult, type ToolAvailability } from "@waifucave/moss-protocol";
@@ -31,6 +31,7 @@ import { OWN_ELEMENT, SealedFrames } from "./sealed";
 import { FRESH_LIMIT_MS, ownCardPage } from "./sealed-pages";
 import { alwaysSentence, summarize as summarizeCard } from "./card-summary";
 import { isTalkKey, Talk } from "./voice";
+import { CLEAR_BACKING, materialOf, materialOptions, type Material } from "./window-plan";
 import { runSmoke, runRender } from "./test-runs";
 
 declare const __MOSS_TEST_BUILD__: string | false;
@@ -382,6 +383,8 @@ async function hardenSession(ses: Session): Promise<void> {
 }
 
 let windowSession: Session | undefined;
+/** What is behind the window's page (window-plan.ts): the page reads it (sync, at its start) and is told when it changes. */
+let windowMaterial: Material = "none";
 
 async function openWindow(): Promise<BrowserWindow> {
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
@@ -392,9 +395,12 @@ async function openWindow(): Promise<BrowserWindow> {
   // A test-marked headless run draws offscreen (a never-shown window paints nothing, and a card's visibility reading would
   // never say it shows); a real headless run is never one a person presses in.
   const offscreen = args.render !== undefined || args.smoke !== undefined || ((typeof __MOSS_TEST_BUILD__ === "string") && headless);
+  // A real visible macOS window has the sidebar material behind its list and bars (the test build's glass seam stands one in, below).
+  const material = materialOf({ platform: process.platform, headless, offscreen });
+  windowMaterial = material;
   const win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 640, minHeight: 480, show: false, title: identity.productName,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#121212" : "#FFFFFF",
+    ...materialOptions(material, nativeTheme.shouldUseDarkColors ? "#121212" : "#FFFFFF"),
     ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
     ...(headless ? { skipTaskbar: true, focusable: false } : {}),
     webPreferences: {
@@ -451,6 +457,44 @@ async function openWindow(): Promise<BrowserWindow> {
 
 function frameKey(f: WebFrameMain | null | undefined): string | undefined {
   return f === null || f === undefined || f.detached ? undefined : `${f.processId}:${f.routingId}`;
+}
+
+/** The test build's glass seam (a test-marked headless run only; compiled out of a real build): the file `MOSS_TEST_GLASS`
+ *  names says `on` or anything else, read every 250 ms. While `on` the offscreen window has the clear backing a window with
+ *  a material has and its page is told it has one, so an acceptance row can paint a colour under the page and look at what
+ *  the list and the bars do with it. Off (no file, or anything else) it is the solid window every other row measures. */
+function startGlassSeam(): void {
+  if (typeof __MOSS_TEST_BUILD__ === "string" && headless && process.env.MOSS_TEST_GLASS) {
+    const file = process.env.MOSS_TEST_GLASS;
+    const follow = (): void => {
+      let word = "";
+      try { word = readFileSync(file, "utf8").trim(); } catch { /* not written yet */ }
+      const on = word === "on";
+      const w = mainWindow;
+      if (w === undefined || w.isDestroyed()) return;
+      const next: Material = on ? "vibrancy" : "none";
+      if (next === windowMaterial) return;
+      windowMaterial = next;
+      w.setBackgroundColor(on ? CLEAR_BACKING : nativeTheme.shouldUseDarkColors ? "#121212" : "#FFFFFF");
+      w.webContents.send("moss:material", next);
+    };
+    watchFile(file, { interval: 250 }, follow);
+  }
+}
+
+/** The test build's appearance seam (as MOSS Code's): the file `MOSS_TEST_APPEARANCE_FILE` names says `dark` or `light`, read
+ *  every 250 ms, and this process's theme follows it (never the OS's); anything else lets the system's choice back. */
+function startAppearanceSeam(): void {
+  if (typeof __MOSS_TEST_BUILD__ === "string" && headless && process.env.MOSS_TEST_APPEARANCE_FILE) {
+    const file = process.env.MOSS_TEST_APPEARANCE_FILE;
+    const follow = (): void => {
+      let word = "";
+      try { word = readFileSync(file, "utf8").trim(); } catch { /* not written yet */ }
+      nativeTheme.themeSource = word === "dark" || word === "light" ? word : "system";
+    };
+    follow();
+    watchFile(file, { interval: 250 }, follow);
+  }
 }
 
 /** The test build may say the window is in front while headless (the renders and the UI test place cards in it). */
@@ -547,6 +591,8 @@ const talk = new Talk(async (held) => {
 
 function wireBridge(): void {
   handle("moss:view", () => engine.view());
+  // The page's start: what is behind it (sync, so its first paint is the right one). Only MOSS's own page is told.
+  ipcMain.on("moss:material", (event) => { event.returnValue = fromPage(event) !== undefined ? windowMaterial : "none"; });
   handle("moss:show-pending", () => { const w = pendingShow; pendingShow = undefined; return w; });
   on("moss:showing", (_w, a) => {
     showing = typeof a.bot === "string" ? { bot: a.bot } : { page: typeof a.page === "string" ? a.page : "none" };
@@ -1009,6 +1055,8 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(async () => {
     if (headless) log("audio: muted (headless: every page muted)");
     startFrontSeam();
+    startGlassSeam();
+    startAppearanceSeam();
     windowSession = session.fromPartition(WINDOW_PARTITION);
     await hardenSession(windowSession);
     wireBridge();
