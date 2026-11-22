@@ -83,6 +83,29 @@ describe("opening the page", () => {
   });
 });
 
+describe("a page's messages", () => {
+  const msg = (text: string) => rpc(1, "ui/message", { role: "user", content: { type: "text", text } });
+  test("without a press in the view nothing is delivered", async () => {
+    const said: { pluginId: string; callId: string; text: string }[] = [];
+    const svc = make(said);
+    svc.bind("s_1", "c1", site());
+    await svc.open("s_1", "c1");
+    const r = await svc.request("s_1", "c1", msg("start a turn"));
+    expect((r.messages[0] as { error?: unknown }).error).toBeDefined();
+    expect(said).toEqual([]);
+  });
+  test("the allowance is the page's, not a bridge's: closing and opening it again earns no new one", async () => {
+    const said: { pluginId: string; callId: string; text: string }[] = [];
+    const svc = make(said);
+    svc.bind("s_1", "c1", site());
+    for (let reopen = 0; reopen < 4; reopen++) {
+      await svc.open("s_1", "c1");
+      for (let i = 0; i < 10; i++) await svc.request("s_1", "c1", msg(`m${reopen}.${i}`), true);
+    }
+    expect(said).toHaveLength(20);
+  });
+});
+
 describe("the bridge's calls are the session's own", () => {
   test("a page's tool call asks the site's approval under its own card id, then runs, only for the site's own server", async () => {
     const svc = make();
@@ -119,7 +142,7 @@ describe("the bridge's calls are the session's own", () => {
     const svc = make(said);
     svc.bind("s_1", "c1", site());
     await svc.open("s_1", "c1");
-    await svc.request("s_1", "c1", rpc(1, "ui/message", { role: "user", content: { type: "text", text: "pick the red one" } }));
+    await svc.request("s_1", "c1", rpc(1, "ui/message", { role: "user", content: { type: "text", text: "pick the red one" } }), true);
     expect(said).toEqual([{ pluginId: "acme/charts", callId: "c1", text: "pick the red one" }]);
   });
 });

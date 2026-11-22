@@ -58,7 +58,7 @@ import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement"
 import { inProcessBridgeServer } from "./bridge/in-process";
 import { EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
 import type { ExchangeDepths } from "../sessions/exchange-depth";
-import { formatSessionMessage } from "../runtime-sdk/turn-loop/input";
+import { formatSessionMessage, PAGE_MESSAGE_FRAME } from "../runtime-sdk/turn-loop/input";
 import { agentPaths, namesUnlistedPaths } from "./paths";
 import { agentPolicyOf, homeReach, withHomeDenied, withSecretsDenied } from "./memory";
 import { type DaemonAgentRecord, readAgentRecord, removeAgentRecord, writeAgentRecord } from "./records";
@@ -1668,7 +1668,7 @@ export async function promptOf(input: TurnInput, titleOf?: (session: string) => 
     case "routine":
       return { text: `From the routine "${input.name}":\n\n${input.text}` };
     case "plugin":
-      return { text: `Message from the plugin ${input.pluginId}:\n\n${input.text}` };
+      return { text: input.app === undefined ? `Message from the plugin ${input.pluginId}:\n\n${input.text}` : `Message from a page the plugin ${input.pluginId} drew:\n\n${PAGE_MESSAGE_FRAME}\n${input.text}` };
     case "note":
     case "notice":
       return { text: `[${input.label}] ${input.text}` };

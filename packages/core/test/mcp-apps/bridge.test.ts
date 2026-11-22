@@ -82,6 +82,15 @@ describe("a page's call to a tool", () => {
     expect(calls.approved).toEqual([]);
     expect(calls.called).toEqual([]);
   });
+  test("the input the session's hooks and approval left is what runs, not the page's own", async () => {
+    const ran: Record<string, unknown>[] = [];
+    const { host: h } = host({
+      approve: async () => ({ allowed: true, input: { n: 99 }, ticket: "t1" }),
+      callTool: async (_n, args, _s, ticket) => { ran.push({ args, ticket }); return { content: [] }; },
+    });
+    await new AppBridge(h).handle(req("tools/call", { name: "refresh", arguments: { n: 1 } }));
+    expect(ran).toEqual([{ args: { n: 99 }, ticket: "t1" }]);
+  });
   test("a refusal is the page's answer, and the tool never runs", async () => {
     const { host: h, calls } = host({ approve: async () => ({ allowed: false, message: "denied by the user" }) });
     const b = new AppBridge(h);
@@ -131,10 +140,10 @@ describe("a page's call to a tool", () => {
 describe("links, messages and resources", () => {
   test("only an http(s) address opens, and it is reported for the app to open", async () => {
     const b = new AppBridge(host().host);
-    const good = await b.handle(req("ui/open-link", { url: "https://example.com/a?b=1" }));
+    const good = await b.handle(req("ui/open-link", { url: "https://example.com/a?b=1" }), true);
     expect(good.openLink).toBe("https://example.com/a?b=1");
     for (const url of ["javascript:alert(1)", "file:///etc/passwd", "moss-core://app/", "data:text/html,x", "https://u:p@example.com/", "not a url", 5, "https://example.com/" + "a".repeat(3000)]) {
-      const r = await b.handle(req("ui/open-link", { url }));
+      const r = await b.handle(req("ui/open-link", { url }), true);
       expect(r.openLink).toBeUndefined();
       expect(errorOf(r)).toBeDefined();
     }
@@ -142,14 +151,38 @@ describe("links, messages and resources", () => {
   test("ui/message: user text only, bounded, at most so many; it reaches the host as data", async () => {
     const { host: h, calls } = host();
     const b = new AppBridge(h);
-    expect(resultOf(await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "hello" } })))).toEqual({});
+    expect(resultOf(await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "hello" } }), true))).toEqual({});
     expect(calls.said).toEqual(["hello"]);
     for (const params of [{ role: "assistant", content: { type: "text", text: "x" } }, { role: "user", content: { type: "image", data: "x" } }, { role: "user", content: { type: "text", text: "" } }, { role: "user", content: { type: "text", text: "x".repeat(10_001) } }, { role: "user" }, {}]) {
-      expect(errorOf(await b.handle(req("ui/message", params)))).toBeDefined();
+      expect(errorOf(await b.handle(req("ui/message", params), true))).toBeDefined();
     }
-    for (let i = 1; i < MESSAGES_PER_PAGE_MAX; i++) await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "again" } }));
-    expect(errorOf(await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "one too many" } })))).toBeDefined();
+    for (let i = 1; i < MESSAGES_PER_PAGE_MAX; i++) await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "again" } }), true);
+    expect(errorOf(await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "one too many" } }), true))).toBeDefined();
     expect(calls.said).toHaveLength(MESSAGES_PER_PAGE_MAX);
+  });
+  test("without the person's press in the view, a message and a link are refused and nothing is delivered", async () => {
+    const { host: h, calls } = host();
+    const b = new AppBridge(h);
+    const m = await b.handle(req("ui/message", { role: "user", content: { type: "text", text: "do it" } }));
+    expect(errorOf(m)!.code).toBe(RPC.refused);
+    const l = await b.handle(req("ui/open-link", { url: "https://example.com/" }));
+    expect(errorOf(l)!.code).toBe(RPC.refused);
+    expect(l.openLink).toBeUndefined();
+    expect(calls.said).toEqual([]);
+  });
+  test("the message allowance is the host's budget, so it holds across new bridges for the same page", async () => {
+    const budget = { sent: 0 };
+    const said: string[] = [];
+    const mk = () => new AppBridge({ ...host().host, budget, message: async (t: string) => { said.push(t); } });
+    for (let i = 0; i < MESSAGES_PER_PAGE_MAX; i++) await mk().handle(req("ui/message", { role: "user", content: { type: "text", text: `m${i}` } }), true);
+    expect(errorOf(await mk().handle(req("ui/message", { role: "user", content: { type: "text", text: "more" } }), true))).toBeDefined();
+    expect(said).toHaveLength(MESSAGES_PER_PAGE_MAX);
+  });
+  test("a page reads only ui:// resources: never another scheme", async () => {
+    const { host: h, calls } = host();
+    const b = new AppBridge(h);
+    for (const uri of ["file:///etc/passwd", "https://example.com/x", "mcp://other/secret", "data:text/plain,x", "ui:// spaced", "/etc/passwd"]) expect(errorOf(await b.handle(req("resources/read", { uri })))).toBeDefined();
+    expect(calls.read).toEqual([]);
   });
   test("resources/read goes to its own server and is bounded", async () => {
     const { host: h, calls } = host();

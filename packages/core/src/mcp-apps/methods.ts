@@ -25,8 +25,8 @@ export function mcpAppMethods(service: () => McpAppsService | undefined): Record
       try { return await up().open(p.session, p.callId); } catch (err) { throw refused(err); }
     },
     [APP_METHODS.mcpAppRequest.name]: async (_conn, params) => {
-      const p = params as { session: string; callId: string; message: unknown };
-      try { return await up().request(p.session, p.callId, p.message); } catch (err) { throw refused(err); }
+      const p = params as { session: string; callId: string; message: unknown; pressed?: boolean };
+      try { return await up().request(p.session, p.callId, p.message, p.pressed === true); } catch (err) { throw refused(err); }
     },
   };
 }

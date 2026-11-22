@@ -13,7 +13,7 @@ import { mediaType, pluginFile } from "./files";
 import type { UiPlugin } from "./model";
 import { APP_SCHEME, WEB_SCHEME, webHeaders } from "./documents";
 import { hardenSession } from "./electron";
-import { APP_RELAY_MAX, appNavigationAllowed, appNetworkWanted, appRequestAllowed, HOST_SCRIPT, hostDocument, hostHeaders, pageHeaders } from "./app-page";
+import { APP_RELAY_MAX, appNavigationAllowed, appAllowedOrigins, appRequestAllowed, HOST_SCRIPT, hostDocument, hostHeaders, pageHeaders } from "./app-page";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -72,7 +72,7 @@ interface View {
 /** What an MCP Apps view needs of the engine (`mcpApp.open`, `mcpApp.request`): the page, and the answer to one message. */
 export interface AppEngine {
   open(session: string, callId: string): Promise<{ csp: string; html: string; prefersBorder?: boolean; maxHeight: number }>;
-  request(session: string, callId: string, message: unknown): Promise<{ messages: Record<string, unknown>[]; size?: { width: number; height: number }; openLink?: string }>;
+  request(session: string, callId: string, message: unknown, pressed: boolean): Promise<{ messages: Record<string, unknown>[]; size?: { width: number; height: number }; openLink?: string }>;
 }
 
 /** What the window hears of one view: its content height, or that no page could be shown. */
@@ -91,7 +91,8 @@ interface AppViewRecord {
   wanted: Rect | undefined;
 }
 
-/** A link a page asks to open goes to the user's browser only within this long of their own press in the view. */
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+/** A page's message to the agent or link out counts only within this long of the person's own press in the view. */
 export const APP_LINK_WINDOW_MS = 1_500;
 
 export class WebViews {
@@ -228,8 +229,8 @@ export class WebViews {
     webSessions.add(ses);
     await hardenSession(ses, this.log);
     if (rec.closed) return;
-    const networkWanted = appNetworkWanted(page.csp);
-    ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !appRequestAllowed(details.url, networkWanted) }));
+    const origins = appAllowedOrigins(page.csp);
+    ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !appRequestAllowed(details.url, origins) }));
     ses.protocol.handle(APP_SCHEME, async (request) => {
       const url = new URL(request.url);
       const refuse = (status: number) => new Response(status === 404 ? "not found" : "forbidden", { status, headers: webHeaders() });
@@ -248,17 +249,21 @@ export class WebViews {
         let message: unknown;
         try { message = JSON.parse(await request.text()); } catch { return refuse(403); }
         try {
-          const reply = await engine.request(rec.session, rec.callId, message);
+          // THE PRESS RULE. A page's message to the agent and its link out are the person's act, so the engine takes them only
+          // when this process saw the person's own press (a mouse down or a key down, a real input event of THIS view's
+          // contents, never a page's synthetic one) within APP_LINK_WINDOW_MS, and one press pays for one such message. The
+          // page can't set `pressed`: it is made here, from what the page didn't send.
+          const wantsPress = isRecord(message) && (message["method"] === "ui/message" || message["method"] === "ui/open-link");
+          const pressed = wantsPress && Date.now() - rec.lastInput <= APP_LINK_WINDOW_MS;
+          if (wantsPress) rec.lastInput = 0;
+          const reply = await engine.request(rec.session, rec.callId, message, pressed);
           if (reply.size !== undefined && reply.size.height !== rec.height) {
             rec.height = reply.size.height;
             note({ state: "shown", height: Math.min(reply.size.height, page.maxHeight) });
           }
-          // A link counts only right after the person's own press in this view (one press, one link).
-          if (reply.openLink !== undefined && Date.now() - rec.lastInput <= APP_LINK_WINDOW_MS) {
-            rec.lastInput = 0;
-            this.appHooks?.openLink(reply.openLink);
-          } else if (reply.openLink !== undefined) {
-            this.log("mcp-apps: a page asked to open a link with no press just before; it didn't");
+          if (reply.openLink !== undefined) {
+            if (pressed) this.appHooks?.openLink(reply.openLink);
+            else this.log("mcp-apps: a page asked to open a link with no press just before; it didn't");
           }
           return new Response(JSON.stringify({ messages: reply.messages }), { headers: { ...webHeaders(), "Content-Type": "application/json" } });
         } catch (err) {

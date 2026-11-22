@@ -545,6 +545,18 @@ export function botApprovalCheck(
         { label: "Folder", value: said(asking.folder) },
       ] };
     }
+    // A call a tool's PAGE asked for (MCP Apps, `mcp-apps/`; the context carries `pageAsking`, set only by the core's own page
+    // doors): the card says a page asks, never the model, and it is a card EVERY time with no "always": a saved "always allow"
+    // for a model's call of the tool never covers a page's calls (no rule key to match), and a page's answer can never be saved
+    // to cover the model's. Read-only and the tool setting's block still refuse before any card, as for a model's call.
+    const page = (ctx as { pageAsking?: { plugin: string } }).pageAsking;
+    if (page !== undefined) {
+      const said = (x: string) => plainOf(x.toWellFormed()).slice(0, 300);
+      req.fields.reason = { type: "text", text: `A page shown by ${said(page.plugin)} asks to run ${said(tool.split("__").slice(2).join("__") || tool)}. The model didn't ask for this call; the page did.` };
+      req.cardAlways = true;
+      delete req.ruleKey;
+      req.options = [{ id: "approve", kind: "approve", label: "Approve" }, { id: "deny", kind: "deny", label: "Deny" }];
+    }
     // The user's secret places (`SECRET_READ_PLACES`: keys, cloud and tool credentials, the Keychain, browser profiles,
     // password managers, sign-ins, shell history), by the place each path really reaches: a read or a search of one is
     // refused with no card at every level, as `BOT_READ_DENIED` is (the runtime's sandbox denies them to Read, Grep, Glob

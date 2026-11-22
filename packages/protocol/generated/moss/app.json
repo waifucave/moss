@@ -88,7 +88,10 @@
             "minLength": 1,
             "maxLength": 128
           },
-          "message": {}
+          "message": {},
+          "pressed": {
+            "type": "boolean"
+          }
         },
         "required": [
           "session",

@@ -80,6 +80,15 @@ describe("the declared content rules", () => {
     expect(refusal(() => parseUiCsp({ ui: { csp: { connectDomains: Array.from({ length: 40 }, (_, i) => `https://h${i}.example.com`) } } }))).toBe("bad_csp");
     expect(cspSourceOf("https://A.Example.COM")).toBe("https://a.example.com");
   });
+  test("a declared domain can't reach an address, this machine, a private network, or a whole top-level name", () => {
+    for (const d of ["https://127.0.0.1", "https://10.0.0.5", "https://192.168.1.1:8443", "https://169.254.169.254", "https://8.8.8.8", "https://*.0.0.1", "https://localhost.localdomain", "https://x.localhost", "https://printer.local", "https://db.internal", "https://router.lan", "https://nas.home.arpa", "https://*.local", "https://*.com", "https://*.*.example.com", "https://0x7f.0.0.1"]) {
+      expect([d, cspSourceOf(d)]).toEqual([d, undefined]);
+      expect(refusal(() => parseUiCsp({ ui: { csp: { connectDomains: [d] } } }))).toBe("bad_csp");
+    }
+    // A wildcard is one name's subdomains, and a real public name still passes.
+    expect(cspSourceOf("https://*.cdn.example.com")).toBe("https://*.cdn.example.com");
+    expect(cspSourceOf("https://api.example.co.uk:8443")).toBe("https://api.example.co.uk:8443");
+  });
   test("a page's permissions are never read: nothing in the policy or the page object carries one", () => {
     const parsed = parseUiResource("ui://x/y", page({ _meta: { ui: { permissions: { camera: {}, microphone: {} }, prefersBorder: true } } }));
     expect(parsed.prefersBorder).toBe(true);

@@ -316,6 +316,9 @@ function isLocal(entry: HostServerEntry): boolean {
 export const MCP_FIRST_LISTING_WAIT_MS = 5_000;
 
 /** The plugins' `host` MCP servers for bots: listed, placed and called through the plugin host. */
+/** The most characters of resource body `readUi` passes on (twice the page and result bound, for a base64 blob). */
+const READ_UI_MAX = 2_000_000;
+
 export class PluginMcp {
   readonly #o: PluginMcpOptions;
   readonly #clients = new Map<string, { plugin: string; name: string; client: ChannelClient }>();
@@ -945,6 +948,11 @@ export class PluginMcp {
     if (!this.#runsHere(key, { pluginId: l.plugin, value: l.entry } as Contribution)) throw new ContractError("not_found", "that plugin's server runs on another computer");
     const r = await this.#client(key, l.plugin, l.name, l.entry.type).request("resources/read", { uri }, { as, ...(o.signal === undefined ? {} : { signal: o.signal }), timeoutMs: 15_000 });
     const contents = isObject(r) && Array.isArray(r.contents) ? r.contents : [];
+    // The client caps one message at 8 MiB as it reads (http: `HTTP_MCP_MESSAGE_MAX`, stdio: `STDIO_MCP_LINE_MAX`); a page the
+    // reader and the bridge take is far smaller, so a body over this is refused here before anything copies it.
+    let total = 0;
+    for (const c of contents) if (isObject(c)) total += (typeof c.text === "string" ? c.text.length : 0) + (typeof c.blob === "string" ? c.blob.length : 0);
+    if (total > READ_UI_MAX) throw new ContractError("invalid", "that resource is bigger than a page may be");
     return contents.filter(isObject).slice(0, 8).map((c) => ({
       uri: typeof c.uri === "string" ? c.uri : "",
       ...(typeof c.mimeType === "string" ? { mimeType: c.mimeType } : {}),

@@ -13,7 +13,7 @@ type Ev = Record<string, unknown> & { type?: string };
 interface Card { id: string; kind: string; session?: string; pluginId?: string }
 
 /** The two rows share one fixture and one conversation: the first row sets it up and leaves its state for the second. */
-interface Run { app: McpAppFixture; other: McpAppFixture; appPlugin: string; otherPlugin: string; callId: string; reported: () => string }
+interface Run { app: McpAppFixture; other: McpAppFixture; appPlugin: string; otherPlugin: string; callId: string }
 let run: Run | undefined;
 
 async function installUrl(ctx: ExampleCtx, url: string): Promise<string> {
@@ -28,8 +28,9 @@ async function installUrl(ctx: ExampleCtx, url: string): Promise<string> {
   return r.id;
 }
 
-/** Everything the page said so far (its `ui/message`s reach the model as the session's next input). */
-const said = (ctx: ExampleCtx): string => ctx.requests().map((r) => r.lastUserText).filter((t) => t.includes(REPORT)).join("\n");
+/** Everything the page said so far: what it read as `ui://acc/report/…` of its own server (a page's `ui/message` needs the person's press). */
+let reporter: McpAppFixture | undefined;
+const said = (_ctx: ExampleCtx): string => (reporter?.reports() ?? []).map((t) => `${REPORT} ${t}`).join("\n");
 
 async function pendingCard(ctx: ExampleCtx, session: string, word: string): Promise<string> {
   return await until(`a pending card for ${word}`, 60_000, async () => {
@@ -47,6 +48,7 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, session: string): Promise
   const app = mcpAppFixture({ name: "acc-app", tools: "app" });
   const other = mcpAppFixture({ name: "acc-other", tools: "other" });
   run = undefined;
+  reporter = app;
   try {
     const appPlugin = await installUrl(ctx, app.url);
     const otherPlugin = await installUrl(ctx, other.url);
@@ -57,7 +59,7 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, session: string): Promise
     if (stamped.length !== 1) fail(`the Chart result carries its page's address ${stamped.length} time(s), not once`);
     const callId = String(stamped[0]!.callId);
     done.push("the result carries app.resourceUri ui://acc/chart");
-    run = { app, other, appPlugin, otherPlugin, callId, reported: () => said(ctx) };
+    run = { app, other, appPlugin, otherPlugin, callId };
     // The window draws it: a document of its own on moss-app://, in no plugin layer's or the app's origin.
     const doc = await until("the page's view (moss-app://)", 60_000, async () => (await ctx.cdp.documents()).find((d) => d.url.startsWith("moss-app://")),
       async () => (await ctx.cdp.documents()).map((d) => d.url.slice(0, 50)).join(" || "));
@@ -66,6 +68,11 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, session: string): Promise
     // What the page could reach, in its own words (it ran its attempts, then said so).
     const report = await until("the page's isolation report", 60_000, async () => /ACC-APP-REPORT isolation[^\n]*/.exec(said(ctx))?.[0], async () => said(ctx).slice(0, 300));
     if (!/parent=blocked nav=blocked net=blocked file=blocked/.test(report)) fail(`the page reached something: ${report}`);
+    // A page's message and link need the person's press in the view: with none they are refused, no turn starts, and a file:// resource is refused.
+    const nopress = await until("the page's report of an unpressed message and link", 60_000, async () => /ACC-APP-REPORT nopress[^\n]*/.exec(said(ctx))?.[0], async () => said(ctx).slice(0, 300));
+    if (!/message=error:[^ ]*.* link=error:/.test(nopress) || /file=\{/.test(nopress)) fail(`the page's unpressed message or link wasn't refused: ${nopress}`);
+    if (ctx.requests().some((q) => q.lastUserText.includes("ACC-NOPRESS-TURN"))) fail("a page's message with no press reached the model");
+    done.push("a message and a link with no press in the view were refused (no turn started)");
     if (app.probes() !== 0) fail(`the page's network attempt reached its server ${app.probes()} time(s)`);
     done.push(`the page reports "${report.replace(REPORT + " ", "")}", and its server saw no probe`);
     return done.join("; ");
