@@ -34,10 +34,11 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   app: ["apps/", "plugins/moss/", "packages/plugin-sdk/"],
   // the Linux packages: the app, its builder config, packaging/, the scripts that build them, and the daemon and the
   // link sidecar they carry (the job installs the deb and runs its `moss`)
-  packages: ["apps/desktop/", "packaging/", "scripts/build-packages.ts", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/release/", ...CORE, "packages/cli/", "native/link/"],
+  // (MOSS's packages are built beside MOSS Code's: its builder config, its host layout script and its icons)
+  packages: ["apps/desktop/", "apps/moss/electron-builder.yml", "apps/moss/package.json", "apps/moss/scripts/host-helper.mjs", "apps/moss/build/", "packaging/", "scripts/build-packages.ts", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/release/", ...CORE, "packages/cli/", "native/link/"],
   // the macOS and Windows installers (the unsigned release build: dmg, zip, NSIS), on macOS and Windows machines: only
   // what makes them, so a code change alone doesn't spend a macOS job on them (the app and daemon jobs build those)
-  installers: ["apps/desktop/electron-builder.yml", "apps/desktop/package.json", "packaging/", "scripts/release/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts",
+  installers: ["apps/desktop/electron-builder.yml", "apps/desktop/package.json", "apps/moss/electron-builder.yml", "apps/moss/package.json", "apps/moss/scripts/host-helper.mjs", "apps/moss/build/", "packaging/", "scripts/release/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts",
     "scripts/build-packages.ts", "packages/update-feed/"],
   gallery: ["plugins/"],
   typecheck: ["packages/", "apps/", "plugins/", "services/", "examples/", "scripts/", "**/tsconfig*.json"],

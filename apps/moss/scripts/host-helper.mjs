@@ -8,8 +8,8 @@
 // made once, by MOSS Code's afterPack (apps/desktop/scripts/host-helper.mjs), and copied from the stash the release build
 // names (`MOSS_HOST_HELPER_STASH`), which also refuses a MOSS without it (scripts/release/build.ts). A plain `bun run dist`
 // names none: MOSS is packaged without a host, and says so.
-import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, cpSync, existsSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
 
 export const HOST_HELPER_STASH_ENV = "MOSS_HOST_HELPER_STASH";
 
@@ -29,8 +29,47 @@ export function carryHostHelper({ appPath, appId, stash }) {
   return to;
 }
 
+/** Windows and Linux (the release wave, lane RP): the host is MOSS Code's program, started as `<its executable> --moss-program=host`
+ *  (apps/desktop/src/main/host-program.ts), and MOSS's app.asar has no host in it. So MOSS carries MOSS Code's whole unpacked app in
+ *  `resources/host/`, its executable renamed `moss-host[.exe]`, from the folder the release build names (`MOSS_HOST_TREE_FROM`:
+ *  MOSS Code's `win-unpacked` or `linux-unpacked`). The engine and the bundled tree are MOSS's own beside it, never copied twice
+ *  (scripts/release/two-apps.ts's `hostTreeProblems` holds the result to MOSS Code's app.asar). */
+export const HOST_TREE_FROM_ENV = "MOSS_HOST_TREE_FROM";
+export const HOST_TREE_DIR = "host";
+/** MOSS Code's executable in its unpacked app, by platform. */
+export const CODE_EXECUTABLE = { linux: "moss-code", win32: "MOSS Code.exe" };
+const NOT_COPIED = new Set(["resources/daemon", "resources/plugins", "resources/apparmor-profile"]);
+
+/** Copies the unpacked MOSS Code in `from` to `<resourcesDir>/host`; returns the host's executable path, or undefined when `from` holds no MOSS Code. */
+export function carryHostTree({ resourcesDir, from, platform }) {
+  const code = CODE_EXECUTABLE[platform];
+  if (code === undefined || !existsSync(join(from, code))) return undefined;
+  const to = join(resourcesDir, HOST_TREE_DIR);
+  rmSync(to, { recursive: true, force: true });
+  cpSync(from, to, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (src) => !NOT_COPIED.has(relative(from, src).split("\\").join("/")),
+  });
+  const exe = join(to, platform === "win32" ? "moss-host.exe" : "moss-host");
+  renameSync(join(to, code), exe);
+  if (platform !== "win32") chmodSync(exe, 0o755);
+  return exe;
+}
+
 /** electron-builder's `afterPack`. */
 export default async function afterPack(context) {
+  if (context.electronPlatformName === "linux" || context.electronPlatformName === "win32") {
+    const from = process.env[HOST_TREE_FROM_ENV];
+    if (!from) {
+      console.log("  • no host for MOSS (a plain dist: the release build names MOSS Code's unpacked app)");
+      return;
+    }
+    const exe = carryHostTree({ resourcesDir: join(context.appOutDir, "resources"), from, platform: context.electronPlatformName });
+    if (exe === undefined) throw new Error(`MOSS's build was given ${HOST_TREE_FROM_ENV} (${from}) but it holds no MOSS Code to carry as the host`);
+    console.log(`  • host (MOSS Code's app)  ${exe}`);
+    return;
+  }
   if (context.electronPlatformName !== "darwin" && context.electronPlatformName !== "mas") return;
   const packager = context.packager;
   const appPath = join(context.appOutDir, `${packager.appInfo.productFilename}.app`);

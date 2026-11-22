@@ -11,7 +11,7 @@ import { releaseBuilderArgs } from "./build";
 import { RELEASE_OSES } from "./publish";
 import {
   asarHeaderHash, CODE_APP, helperIntegrityProblems, MOSS_APP, mossArtifacts, mossFeedFile, mossInstallers, mossServedCopies, mossTestBuildArtifacts,
-  moveMossOutputs, oneVersionProblems, plistAsarHash, RELEASE_APPS, samePayloadProblems,
+  isMossFile, moveMossOutputs, oneVersionProblems, plistAsarHash, RELEASE_APPS, samePayloadProblems,
 } from "./two-apps";
 // @ts-expect-error: plain .mjs hooks (electron-builder loads them with Node), with no types of their own
 import { makeHostHelper, stashHostHelper } from "../../apps/desktop/scripts/host-helper.mjs";
@@ -73,6 +73,25 @@ describe("MOSS's names in the one release", () => {
     // A latest release serves beta users MOSS's file under MOSS's beta name.
     expect(mossServedCopies(to, "latest", "mac", (f, t) => cpSync(f, t))).toEqual(["moss-beta-mac.yml"]);
     expect(existsSync(join(to, "beta-mac.yml"))).toBe(false);
+  });
+
+  test("on Linux MOSS's deb, rpm and AppImage move too (never MOSS Code's, never the engine's files), its update file renamed", () => {
+    const from = join(root, "moss-linux-out"), to = join(root, "code-linux-out");
+    mkdirSync(join(from, "linux-unpacked", "resources"), { recursive: true });
+    mkdirSync(to, { recursive: true });
+    const mossFiles = ["moss_1.2.3_amd64.deb", "moss-1.2.3.x86_64.rpm", "MOSS-1.2.3-x86_64.AppImage", "MOSS-1.2.3-x86_64.AppImage.blockmap"];
+    for (const n of [...mossFiles, "latest-linux.yml", "builder-debug.yml", "builder-effective-config.yaml"]) writeFileSync(join(from, n), n);
+    // What is beside them in MOSS Code's folder, and what the names of MOSS's rules must not take.
+    for (const n of ["moss-code_1.2.3_amd64.deb", "moss-code-1.2.3.x86_64.rpm", "MOSS-Code-1.2.3-x86_64.AppImage", "moss-core-1.2.3-linux-x64", "moss-plugin-bun-1.4.4-linux-x64", "moss-plugins-1.2.3-linux-x64.tar.gz"]) writeFileSync(join(from, n), "not MOSS's");
+    const moved = moveMossOutputs(from, to, "linux-x64");
+    expect(moved.sort()).toEqual([...mossFiles, "moss-latest-linux.yml"].sort());
+    expect(readFileSync(join(to, "moss-latest-linux.yml"), "utf8")).toBe("latest-linux.yml");
+    expect(readdirSync(to).sort()).toEqual([...mossFiles, "moss-latest-linux.yml"].sort());
+    expect(existsSync(join(from, "linux-unpacked", "resources"))).toBe(true);
+    expect(mossServedCopies(to, "latest", "linux-x64", (f, t) => cpSync(f, t))).toEqual(["moss-beta-linux.yml"]);
+    expect(isMossFile("moss-code_1.2.3_amd64.deb")).toBe(false);
+    expect(isMossFile("moss-code-1.2.3.x86_64.rpm")).toBe(false);
+    expect(isMossFile("moss-core-1.2.3-linux-x64")).toBe(false);
   });
 });
 

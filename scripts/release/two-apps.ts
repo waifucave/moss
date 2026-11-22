@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { MOSS_APP_FEED_PREFIX } from "../../packages/update-feed/src/index";
 import { asarFiles } from "../test-build";
 import { walkTree } from "./bundled-plugins";
-import { channelsServed, feedFile, type Channel, type ReleaseOs } from "./lib";
+import { appArtifacts, appFeedFile, channelsServed, installersOf, type Channel, type ReleaseOs } from "./artifacts";
 
 export interface ReleaseApp {
   program: "code" | "moss";
@@ -44,19 +44,19 @@ export function oneVersionProblems(release: string, versions: Readonly<Record<st
   return Object.entries(versions).filter(([, v]) => v !== release).map(([dir, v]) => `${dir}/package.json says ${v ?? "no version"}, not the release ${release} (VERSION): run the version sync first; both apps ship one release`);
 }
 
-/** The installers of MOSS a release holds for `os` (apps/moss/electron-builder.yml's artifact names). */
-export function mossInstallers(version: string, os: "mac" | "win"): string[] {
-  return os === "mac" ? [`MOSS-${version}.dmg`, `MOSS-${version}-mac.zip`] : [`MOSS-Setup-${version}.exe`];
+/** The installers of MOSS a release holds for `os` (the artifact table's rows, apps/moss/electron-builder.yml's artifact names). */
+export function mossInstallers(version: string, os: ReleaseOs): string[] {
+  return installersOf(version, os, "moss");
 }
 
 /** MOSS's update file for a channel and an OS: MOSS Code's name with MOSS's prefix (packages/update-feed's FEED_NAME). */
 export function mossFeedFile(channel: Channel, os: ReleaseOs): string {
-  return `${MOSS_APP_FEED_PREFIX}${feedFile(channel, os)}`;
+  return appFeedFile("moss", channel, os);
 }
 
 /** What a release build of MOSS adds to the release: its installers and its update files for each channel served. */
-export function mossArtifacts(version: string, os: "mac" | "win", channel: Channel): string[] {
-  return [...mossInstallers(version, os), ...channelsServed(channel).map((c) => mossFeedFile(c, os))];
+export function mossArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
+  return appArtifacts("moss", version, os, channel);
 }
 
 /** A test build's MOSS dmg and zip (TEST in their names, as MOSS Code's). */
@@ -67,16 +67,22 @@ export function mossTestBuildArtifacts(version: string): { dmg: string; zip: str
 /** electron-builder's names for a MOSS test build's artifacts. */
 export const MOSS_TEST_BUILD_ARTIFACT_ARGS = ["-c.dmg.artifactName=MOSS-${version}-TEST.${ext}", "-c.mac.artifactName=MOSS-${version}-TEST-mac.${ext}"] as const;
 
+/** A file of MOSS's own electron-builder run that belongs in the release: its dmg, zip, installer, AppImage, deb and rpm, and
+ *  their block maps (MOSS Code's carry `MOSS-Code-` or `moss-code`, the engine's `moss-core`, `moss-plugin-bun`, `moss-plugins`). */
+export function isMossFile(name: string): boolean {
+  return (/^MOSS-(?!Code-).*\.(dmg|zip|exe|AppImage|blockmap)$/.test(name)) || /^moss_.*\.deb$/.test(name) || /^moss-\d.*\.rpm$/.test(name);
+}
+
 /**
  * Moves what MOSS's electron-builder run left in its own output folder into the release's (MOSS Code's): its installers and
  * blockmaps, its update files under MOSS's names (electron-builder writes `latest-mac.yml`, which is MOSS Code's name), and on
  * macOS its `.app` beside MOSS Code's in `mac-arm64/`. MOSS's folder is removed after. Returns the names moved.
  */
-export function moveMossOutputs(from: string, to: string, os: "mac" | "win"): string[] {
+export function moveMossOutputs(from: string, to: string, os: ReleaseOs): string[] {
   const moved: string[] = [];
   for (const name of readdirSync(from)) {
     const src = join(from, name);
-    if (/^MOSS-.*\.(dmg|zip|exe|blockmap)$/.test(name) && !name.startsWith("MOSS-Code-")) {
+    if (isMossFile(name)) {
       renameSync(src, join(to, name));
       moved.push(name);
     } else if (/^(latest|beta)(-mac|-linux|-linux-arm64)?\.yml$/.test(name)) {
@@ -98,6 +104,34 @@ export function mossServedCopies(outDir: string, channel: Channel, os: ReleaseOs
   const from = join(outDir, mossFeedFile(channel, os));
   if (!existsSync(from)) return [];
   return channelsServed(channel).filter((c) => c !== channel).map((c) => { copy(from, join(outDir, mossFeedFile(c, os))); return mossFeedFile(c, os); });
+}
+
+/**
+ * The host on Windows and Linux (spec §3.1: each app carries the engine AND the host). MOSS Code is the host's program (its main
+ * process runs as the host when started with `--moss-program=host`, apps/desktop/src/main/host-program.ts), so MOSS Code carries
+ * the host by being itself: its own executable. MOSS's app.asar has no host in it, so MOSS carries MOSS Code's whole unpacked app
+ * (its executable, its Electron files and its app.asar, which the fuses and the integrity check tie to the executable beside it)
+ * in `resources/host/` as `moss-host[.exe]` (apps/moss/scripts/host-helper.mjs lays it out; macOS's helper bundle is the same
+ * thing in that system's form). Without it a MOSS-only install on those systems has no host to start.
+ */
+export const HOST_TREE_DIR = "host";
+export function hostExecutableName(os: ReleaseOs): string {
+  return os === "win" ? "moss-host.exe" : "moss-host";
+}
+
+/** What's wrong with the host tree MOSS carries (`mossResources/host`) against MOSS Code's own app: it holds the executable and
+ *  MOSS Code's app.asar byte for byte, and no second copy of the engine or the bundled tree (they are MOSS's own beside it). */
+export function hostTreeProblems(o: { os: "win" | "linux-x64" | "linux-arm64"; codeResources: string; mossResources: string }): string[] {
+  const host = join(o.mossResources, HOST_TREE_DIR);
+  const out: string[] = [];
+  const exe = join(host, hostExecutableName(o.os));
+  if (!existsSync(exe)) return [`MOSS carries no host: ${exe} is missing (a MOSS-only install would have no host to start)`];
+  const asar = join(host, "resources", "app.asar");
+  const own = join(o.codeResources, "app.asar");
+  if (!existsSync(asar)) out.push("MOSS's host tree holds no resources/app.asar");
+  else if (!existsSync(own) || sha(new Uint8Array(readFileSync(asar))) !== sha(new Uint8Array(readFileSync(own)))) out.push("MOSS's host runs different code from MOSS Code's own (their app.asar differ): the host must be the same whichever app's copy runs");
+  for (const dup of ["daemon", "plugins"]) if (existsSync(join(host, "resources", dup))) out.push(`MOSS's host tree holds its own resources/${dup}: the engine and the bundled tree are MOSS's own, never copied twice`);
+  return out;
 }
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");

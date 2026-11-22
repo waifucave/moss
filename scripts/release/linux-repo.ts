@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import * as openpgp from "openpgp";
 import type { Channel } from "./lib";
 import { parseChannel } from "./lib";
+import { linuxPackageOf } from "./artifacts";
 
 /** Where the repositories are served: the owner's choice, pending (the controller's ruling). */
 export const REPO_BASE_URL = "https://packages.waifucave.com";
@@ -175,13 +176,13 @@ const run = (cmd: string[], cwd: string): string => {
   return r.stdout ?? "";
 };
 
-/** The deb's and rpm's architecture, from their file names (electron-builder's names, lib.ts's installers). */
+/** The deb's and rpm's architecture, from their file names: the artifact table's packages of BOTH apps (MOSS's `moss`, MOSS Code's
+ *  `moss-code`; scripts/release/artifacts.ts), so the repositories carry both, and nothing the table doesn't name. */
 export function archOf(name: string): { kind: "deb" | "rpm"; arch: string } | undefined {
-  let m = /^moss_.+_(amd64|arm64)\.deb$/.exec(name);
-  if (m) return { kind: "deb", arch: m[1]! };
-  m = /^moss-.+\.(x86_64|arm64|aarch64)\.rpm$/.exec(name);
-  if (m) return { kind: "rpm", arch: m[1] === "x86_64" ? "x86_64" : "aarch64" };
-  return undefined;
+  const pkg = linuxPackageOf(name);
+  if (pkg === undefined) return undefined;
+  const arch = pkg.os === "linux-x64" ? { deb: "amd64", rpm: "x86_64" } : { deb: "arm64", rpm: "aarch64" };
+  return { kind: pkg.kind, arch: arch[pkg.kind] };
 }
 
 /** The unsigned layout and metadata (Linux: apt-ftparchive, createrepo_c); `now` dates the Release. */

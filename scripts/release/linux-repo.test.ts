@@ -104,8 +104,13 @@ describe("the Linux repositories", () => {
     expect(stampRelease(stamped, new Date(Date.UTC(2026, 10, 6)))).toBe(stamped);
     expect(() => stampRelease("Origin: MOSS\n")).toThrow(/0 Date fields/);
     expect(archOf("moss_1.2.3_amd64.deb")).toEqual({ kind: "deb", arch: "amd64" });
-    expect(archOf("moss-1.2.3.arm64.rpm")).toEqual({ kind: "rpm", arch: "aarch64" });
+    // electron-builder's rpm file for arm64 says aarch64 (builder-util getArtifactArchName); the artifact table names it so.
+    expect(archOf("moss-1.2.3.aarch64.rpm")).toEqual({ kind: "rpm", arch: "aarch64" });
+    expect(archOf("moss-1.2.3.arm64.rpm")).toBeUndefined();
     expect(archOf("moss-1.2.3.x86_64.rpm")).toEqual({ kind: "rpm", arch: "x86_64" });
+    // MOSS Code's packages are in the repositories too (`moss-code`), told from MOSS's by the table.
+    expect(archOf("moss-code_1.2.3_arm64.deb")).toEqual({ kind: "deb", arch: "arm64" });
+    expect(archOf("moss-code-1.2.3.x86_64.rpm")).toEqual({ kind: "rpm", arch: "x86_64" });
     expect(archOf("MOSS-Code-1.2.3-x86_64.AppImage")).toBeUndefined();
   });
 

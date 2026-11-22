@@ -29,39 +29,21 @@ import {
 } from "../../packages/update-feed/src/index";
 import { PLUGIN_BUN, RESTRICTED_SIGN_OPTIONS } from "../bundled-binaries";
 import { carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL } from "../test-build";
+import { CHANNELS, CORE_TARGET, channelsServed, feedFile, installersOf, type Channel, type ReleaseOs } from "./artifacts";
 
-export const CHANNELS = ["latest", "beta"] as const;
-export type Channel = (typeof CHANNELS)[number];
+// The artifact table (scripts/release/artifacts.ts) is the one place that names what a release holds; the release scripts and
+// their tests read it through here.
+export {
+  CHANNELS, CORE_TARGET, RELEASE_OSES, appFeedFile, channelsServed, coreArtifacts, engineArtifacts, expectedArtifacts, feedFile, pluginBunArtifacts, pluginsArtifacts,
+  type Channel, type ReleaseOs,
+} from "./artifacts";
 
 /** The feed, as electron-builder.yml's `publish` names it. */
 export const FEED = { provider: "github", owner: "waifucave", repo: "moss" } as const;
 
-export type ReleaseOs = "mac" | "win" | "linux-x64" | "linux-arm64";
-
-/** The update file electron-updater reads for `os` on `channel`. */
-export function feedFile(channel: Channel, os: ReleaseOs): string {
-  switch (os) {
-    case "mac": return `${channel}-mac.yml`;
-    case "win": return `${channel}.yml`;
-    case "linux-x64": return `${channel}-linux.yml`;
-    case "linux-arm64": return `${channel}-linux-arm64.yml`;
-  }
-}
-
-/** The channels a release on `channel` writes update files for: a full release serves beta users too. */
-export function channelsServed(channel: Channel): Channel[] {
-  return channel === "latest" ? ["latest", "beta"] : ["beta"];
-}
-
-/** The installers a release holds for `os` (electron-builder.yml's artifact names; the cask and winget use them). */
+/** The installers a release holds for `os`, both apps' (the table's rows: electron-builder.yml's artifact names; the casks and winget use them). */
 export function installers(version: string, os: ReleaseOs): string[] {
-  switch (os) {
-    case "mac": return [`MOSS-Code-${version}.dmg`, `MOSS-Code-${version}-mac.zip`];
-    case "win": return [`MOSS-Code-Setup-${version}.exe`];
-    case "linux-x64": return [`moss_${version}_amd64.deb`, `moss-${version}.x86_64.rpm`, `MOSS-Code-${version}-x86_64.AppImage`];
-    // electron-builder spells the architecture per format: the rpm's file says arm64 where the package says aarch64.
-    case "linux-arm64": return [`moss_${version}_arm64.deb`, `moss-${version}.arm64.rpm`, `MOSS-Code-${version}-arm64.AppImage`];
-  }
+  return installersOf(version, os);
 }
 
 /** The file a build leaves saying which commit it was built from (publish.ts tags the release at it). */
@@ -118,31 +100,6 @@ export function signOnlyCommitProblem(name: string, text: string): string | unde
   return text.includes(SIGN_ONLY_LABEL) || /sign[- ]only/i.test(text)
     ? `${name} names a sign-only build (build.ts --sign --no-notarize): an unnotarized build is never published`
     : undefined;
-}
-
-/** The daemon's target each OS's release build makes (scripts/build-daemon.ts's). */
-export const CORE_TARGET: Readonly<Record<ReleaseOs, CoreTarget>> = { mac: "darwin-arm64", win: "windows-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64" };
-
-/** The daemon's files in `os`'s release: its binary and its update file for each channel served. */
-export function coreArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [coreBinaryFile(version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => coreFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** Plain Bun for plugins in `os`'s release, for a server install (scripts/bundled-binaries.ts): its binary, named by
- *  the daemon's Bun version, and its update file for each channel served. */
-export function pluginBunArtifacts(os: ReleaseOs, channel: Channel): string[] {
-  return [pluginBunBinaryFile(PLUGIN_BUN.version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => pluginBunFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** The bundled plugins in `os`'s release, for a server install: the tarball and its update file for each channel. */
-export function pluginsArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [pluginsTarballFile(version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => pluginsFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** Every file `os`'s release build must leave: its installers, its update files for each channel served, the
- *  daemon's (`coreArtifacts`), plugin Bun's (`pluginBunArtifacts`) and the bundled plugins' (`pluginsArtifacts`). */
-export function expectedArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [...installers(version, os), ...channelsServed(channel).map((c) => feedFile(c, os)), ...coreArtifacts(version, os, channel), ...pluginBunArtifacts(os, channel), ...pluginsArtifacts(version, os, channel)];
 }
 
 /** Every regular file under `dir` with its executable bit, for the tarball; a symlink or anything else throws. */

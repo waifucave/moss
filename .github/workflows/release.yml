@@ -4,9 +4,10 @@ name: release
 # this run's artifacts. Unsigned, with no secret but the workflow's own token for the install, and nothing is
 # published: the owner signs and notarizes the macOS build on their Mac (scripts/release/build.ts, signing) and
 # gathers it with these into a draft release (scripts/release/publish.ts), which they publish themselves.
-#   macOS     the dmg and its update zip (Apple silicon); this run's is unsigned, for checking, not for release
-#   Windows   the per-user installer (x64), unsigned (spec §13)
-#   Linux     deb, rpm and AppImage for x64 and arm64, each built and checked on its own architecture
+#   macOS     the dmg and its update zip (Apple silicon) of MOSS Code and of MOSS; this run's are unsigned, for checking, not for release
+#   Windows   the per-user installers (x64) of both apps, unsigned (spec §13)
+#   Linux     deb, rpm and AppImage of both apps for x64 and arm64, each built and checked on its own architecture
+# The files a run makes are the artifact table's (scripts/release/artifacts.ts), checked at the end of each build.
 # Only from main: every job refuses another ref first. Each build records the commit it is of
 # (BUILD-COMMIT-<os>.txt), and the owner's step tags the release at it.
 
@@ -77,6 +78,8 @@ jobs:
         run: |
           bun scripts/release/build.ts --channel "$CHANNEL"
           test "$(cat apps/desktop/out/dist/BUILD-COMMIT-${{ matrix.os }}.txt)" = "$GITHUB_SHA"
+          # Both apps' files and the engine's, exactly the artifact table's (scripts/release/artifacts.ts), before anything is uploaded.
+          bun scripts/release/check-artifacts.ts --os ${{ matrix.os }} --channel "$CHANNEL"
           version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
           bun scripts/release/check-plugins-tarball.ts "$(ls apps/desktop/out/dist/moss-core-"$version"-*)" "$(ls apps/desktop/out/dist/moss-plugins-"$version"-*.tar.gz)"
 
@@ -141,6 +144,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bun scripts/build-packages.ts --arch ${{ matrix.arch }} --channel "$CHANNEL" --check
+          bun scripts/release/check-artifacts.ts --os linux-${{ matrix.arch }} --channel "$CHANNEL"
           version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
           bun scripts/release/check-plugins-tarball.ts "$(ls apps/desktop/out/dist/moss-core-"$version"-linux-*)" "$(ls apps/desktop/out/dist/moss-plugins-"$version"-linux-*.tar.gz)"
           cd apps/desktop/out/dist && sha256sum *.deb *.rpm *.AppImage *.yml moss-core-* moss-plugin-bun-* moss-plugins-* > SHA256SUMS-linux-${{ matrix.arch }}.txt

@@ -11,9 +11,14 @@
 ; so leaves the old daemon running, its exe locked while the new files are written. Stopping it there must not turn
 ; login start off (`disable` is the user's choice and stays), so it needs a stop without a disable from lane C.
 
+; Login start and the engine are shared with MOSS (packaging/windows/installer-moss.nsh is its twin): removing MOSS Code while MOSS is
+; installed leaves them to MOSS (spec §3.1: removing one app leaves the other working).
+
 !macro customUnInstall
   ${ifNot} ${isUpdated}
-    nsExec::ExecToLog '"$INSTDIR\resources\daemon\moss-core.exe" autostart remove'
-    Pop $0
+    ${ifNot} ${FileExists} "$LOCALAPPDATA\Programs\MOSS\MOSS.exe"
+      nsExec::ExecToLog '"$INSTDIR\resources\daemon\moss-core.exe" autostart remove'
+      Pop $0
+    ${endIf}
   ${endIf}
 !macroend

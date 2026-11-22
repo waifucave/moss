@@ -37,6 +37,16 @@ describe("ci-changes", () => {
     expect(on(["apps/desktop/electron-builder.yml"])).toEqual(["workspaces", "app", "packages", "installers", "typecheck", "scripts"]);
   });
 
+  test("MOSS's packages and installers build when MOSS's builder config, host layout or icons change (not for its window's code alone)", () => {
+    for (const f of ["apps/moss/electron-builder.yml", "apps/moss/scripts/host-helper.mjs", "apps/moss/build/icons/16x16.png", "apps/moss/package.json"]) {
+      expect(areasFor([f]).packages, f).toBe(true);
+      expect(areasFor([f]).installers, f).toBe(true);
+    }
+    expect(areasFor(["apps/moss/src/window/a.tsx"]).installers).toBe(false);
+    expect(areasFor(["packaging/moss.rb.tmpl"]).installers).toBe(true);
+    expect(areasFor(["scripts/release/artifacts.ts"]).packages).toBe(true);
+  });
+
   test("the installers' release build runs for what makes them, never for code, CI's own files or a lockfile alone", () => {
     for (const f of ["scripts/release/lib.ts", "packaging/windows/installer.nsh", "apps/desktop/electron-builder.yml", "apps/desktop/package.json", "scripts/build-packages.ts", "packages/update-feed/src/index.ts"]) {
       expect(areasFor([f]).installers).toBe(true);

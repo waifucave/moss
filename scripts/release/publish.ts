@@ -38,31 +38,38 @@ import { fileURLToPath } from "node:url";
 import { SIGNATURE_SUFFIX, signFeed, verifyFeed } from "../../packages/update-feed/src/index";
 import { keychain, signingKey } from "./feed-key";
 import { nameScan } from "./name-scan";
+import { APP_KEYS, appArtifacts, appOfInstaller, engineArtifacts, RELEASE_OSES, type AppKey } from "./artifacts";
+import { renderPackageManagers } from "./package-managers";
 import { buildCommitFile, checkCoreFeed, checkPluginBunFeed, checkPluginsFeed, isPluginsFeed, checkUpdateInfo, CORE_TARGET, expectedArtifacts, isCoreFeed, isPluginBunFeed, parseChannel, parseCodesignDisplay, parseUpdateInfo, signOnlyCommitProblem, testBuildCommitProblem, type Channel, type ReleaseOs } from "./lib";
 import { coreBinaryFile, parseCoreFeed, parsePluginBunFeed, parsePluginsFeed, pluginBunBinaryFile, pluginsTarballFile } from "../../packages/update-feed/src/index";
 import { PLUGIN_BUN } from "../bundled-binaries";
 
-export const RELEASE_OSES: readonly ReleaseOs[] = ["mac", "win", "linux-x64", "linux-arm64"];
+// Every system and both apps come from the artifact table (scripts/release/artifacts.ts); `RELEASE_OSES` is kept as this module's name for it.
+export { RELEASE_OSES };
 
 export type PublishArgs =
-  | { mode: "draft"; from: string[]; channel: Channel; create: boolean }
+  | { mode: "draft"; from: string[]; channel: Channel; create: boolean; dryRun?: true; renderTo?: string }
   | { mode: "promote"; version: string; yes: boolean };
 
 export function parsePublishArgs(argv: readonly string[]): PublishArgs {
   let from: string[] | undefined;
   let channel: Channel = "latest";
   let create = false;
+  let dryRun = false;
+  let renderTo: string | undefined;
   let promote: string | undefined;
   let yes = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     const value = (name: string): string | undefined => (a === name ? argv[++i] : a.slice(name.length + 1));
     if (a === "--create-draft") create = true;
+    else if (a === "--dry-run") dryRun = true;
+    else if (a === "--render-to" || a.startsWith("--render-to=")) renderTo = value("--render-to");
     else if (a === "--yes") yes = true;
     else if (a === "--from" || a.startsWith("--from=")) from = (value("--from") ?? "").split(",").filter(Boolean);
     else if (a === "--channel" || a.startsWith("--channel=")) channel = parseChannel(value("--channel"));
     else if (a === "--promote" || a.startsWith("--promote=")) promote = value("--promote");
-    else throw new Error(`unknown argument ${a} (usage: release/publish --from <dir>[,…] [--channel latest|beta] [--create-draft] | --promote <version> [--yes])`);
+    else throw new Error(`unknown argument ${a} (usage: release/publish --from <dir>[,…] [--channel latest|beta] [--create-draft | --dry-run [--render-to <dir>]] | --promote <version> [--yes])`);
   }
   if (promote !== undefined) {
     if (from !== undefined || create) throw new Error("--promote takes a published version alone");
@@ -71,7 +78,9 @@ export function parsePublishArgs(argv: readonly string[]): PublishArgs {
   }
   if (from === undefined || from.length === 0) throw new Error("--from names the folders holding the release builds");
   if (yes) throw new Error("--yes is for --promote; a draft is created with --create-draft");
-  return { mode: "draft", from, channel, create };
+  if (dryRun && create) throw new Error("--dry-run never creates anything: it can't be given with --create-draft");
+  if (renderTo !== undefined && !dryRun) throw new Error("--render-to is for --dry-run");
+  return { mode: "draft", from, channel, create, ...(dryRun ? { dryRun: true as const } : {}), ...(renderTo !== undefined ? { renderTo } : {}) };
 }
 
 export interface ReleasePlan {
@@ -130,6 +139,9 @@ export function planRelease(
         const info = parseUpdateInfo(new TextDecoder().decode(read(where.get(name)!, name)));
         const readAny = (n: string) => (where.has(n) ? read(where.get(n)!, n) : undefined);
         problems.push(...checkUpdateInfo(info, version, readAny).map((p) => `${name}: ${p}`));
+        // Each app's update file names its own app's files only (MOSS's carry `moss-`, and neither passes as the other's).
+        const owner: AppKey = name.startsWith("moss-") ? "moss" : "code";
+        for (const f of info.files) if (appOfInstaller(f.url, version) !== owner) problems.push(`${name} names ${f.url}, which is not ${owner === "moss" ? "MOSS's" : "MOSS Code's"}`);
         for (const f of info.files) {
           add(f.url);
           if (where.has(`${f.url}.blockmap`)) add(`${f.url}.blockmap`);
@@ -193,18 +205,18 @@ export function promotedSignature(betaName: string, bytes: Uint8Array, privateKe
   return { name, signature };
 }
 
-/** A beta update file's latest name (`beta-mac.yml` → `latest-mac.yml`, `beta.yml` → `latest.yml`). */
+/** A beta update file's latest name (`beta-mac.yml` → `latest-mac.yml`, `beta.yml` → `latest.yml`, MOSS's `moss-beta-mac.yml` → `moss-latest-mac.yml`). */
 export function promotedName(name: string): string {
   if (!BETA_FEED.test(name)) throw new Error(`${name} is not a beta update file`);
-  return name.replace(/^beta/, "latest");
+  return name.replace(/^(moss-)?beta/, "$1latest");
 }
 
 const REPO = "waifucave/moss";
 
 /** A beta update file: the app's for each OS, and the daemon's, plugin Bun's and the bundled plugins' for each target. */
-const BETA_FEED = /^beta(-mac|-linux|-linux-arm64|-(?:core|plugin-bun|plugins)-(darwin-arm64|linux-x64|linux-arm64|windows-x64))?\.yml$/;
-/** A release's beta update files: the app's four, and four each for the daemon, plugin Bun and the bundled plugins. */
-const BETA_FEEDS = 16;
+export const BETA_FEED = /^(?:moss-)?beta(-mac|-linux|-linux-arm64|-(?:core|plugin-bun|plugins)-(darwin-arm64|linux-x64|linux-arm64|windows-x64))?\.yml$/;
+/** A release's beta update files: each app's four (the systems), and four each for the daemon, plugin Bun and the bundled plugins. */
+export const BETA_FEEDS = RELEASE_OSES.length * APP_KEYS.length + 3 * RELEASE_OSES.length;
 
 const CORE_IN_APP = ["MOSS Code.app", "Contents", "Resources", "daemon", "moss-core"] as const;
 
@@ -297,6 +309,46 @@ function macSignedAndStapled(dmg: string): string[] {
   return problems;
 }
 
+/** The plan's files by system and by app: what a release would hold (the dry run prints it). */
+export function planListing(plan: ReleasePlan): string[] {
+  const has = new Set(plan.assets.map((x) => x.name));
+  const lines: string[] = [];
+  for (const os of RELEASE_OSES) {
+    for (const app of APP_KEYS) lines.push(`${os} / ${app === "moss" ? "MOSS" : "MOSS Code"}: ${appArtifacts(app, plan.version, os, plan.channel).filter((n) => has.has(n)).join(", ")}`);
+    lines.push(`${os} / the engine: ${engineArtifacts(plan.version, os, plan.channel).filter((n) => has.has(n)).join(", ")}`);
+  }
+  return lines;
+}
+
+/** The checks a dry run does not make, each named (it never reaches GitHub, git, the Keychain or codesign). */
+export const DRY_RUN_SKIPS = [
+  "the builds' commit is on main (git fetch and merge-base)",
+  "the dmgs are Developer ID signed and stapled (codesign, stapler)",
+  "the name scan over the assets and the unpacked apps",
+  "the sealed core's proof on this Mac (SIP on)",
+  "that v<version> does not exist yet, the feed signatures and the draft itself (gh, the Keychain)",
+] as const;
+
+function dryRun(a: Extract<PublishArgs, { mode: "draft" }>, version: string, plan: ReleasePlan, root: string): number {
+  for (const p of plan.problems) console.error(`release/publish: ${p}`);
+  if (plan.problems.length > 0) return 1;
+  console.log(`release/publish: DRY RUN: v${version} on ${a.channel}, at ${plan.commit}, ${plan.assets.length} files from ${a.from.join(", ")}:`);
+  for (const line of planListing(plan)) console.log(`  ${line}`);
+  for (const s of DRY_RUN_SKIPS) console.log(`release/publish: dry run skips: ${s}`);
+  if (a.renderTo !== undefined) {
+    const sums = new Map(plan.assets.map((x) => [x.name, createHash("sha256").update(readFileSync(join(x.dir, x.name))).digest("hex")] as const));
+    const shaOf = (name: string): string => { const v = sums.get(name); if (v === undefined) throw new Error(`${name} is not in the release`); return v; };
+    const files = renderPackageManagers(root, version, new Date().toISOString().slice(0, 10), shaOf);
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(a.renderTo, rel)), { recursive: true });
+      writeFileSync(join(a.renderTo, rel), text);
+    }
+    console.log(`release/publish: rendered ${Object.keys(files).join(", ")} into ${a.renderTo}`);
+  }
+  console.log("release/publish: nothing signed, uploaded or created");
+  return 0;
+}
+
 export async function main(argv: readonly string[], root: string, deps: { proveSeal?: (core: string) => boolean; openers?: ShippedOpeners } = {}): Promise<number> {
   let a: PublishArgs;
   try {
@@ -350,18 +402,24 @@ export async function main(argv: readonly string[], root: string, deps: { proveS
   const version = (JSON.parse(readFileSync(join(root, "apps", "desktop", "package.json"), "utf8")) as { version: string }).version;
   for (const d of a.from) if (!existsSync(d)) { console.error(`release/publish: ${d} doesn't exist`); return 2; }
   const plan = planRelease(version, a.channel, a.from, (d) => readdirSync(d), (d, n) => new Uint8Array(readFileSync(join(d, n))));
+  // A dry run (`--dry-run`) reads the folders and checks what the files alone can show: the table's files, every update file against the
+  // files it names, one commit across the systems. It never calls gh, git, codesign or the Keychain; each check it skips is named.
+  if (a.dryRun) return dryRun(a, version, plan, root);
   if (plan.commit !== undefined) {
     // The builds' commit must be main's: a release never comes from a branch.
     spawnSync("git", ["fetch", "--quiet", "origin", "main"], { cwd: root });
     if ((spawnSync("git", ["merge-base", "--is-ancestor", plan.commit, "origin/main"], { cwd: root }).status ?? 1) !== 0) plan.problems.push(`the builds' commit ${plan.commit} is not on main`);
   }
+  // Both apps' dmgs are signed with the Developer ID and stapled (the sealed core below is proven on MOSS Code's, the one `moss-core`
+  // both carry byte for byte, checked at the build).
   const dmg = plan.assets.find((x) => x.name === `MOSS-Code-${version}.dmg`);
-  if (dmg !== undefined) plan.problems.push(...macSignedAndStapled(join(dmg.dir, dmg.name)));
+  const mossDmg = plan.assets.find((x) => x.name === `MOSS-${version}.dmg`);
+  for (const d of [dmg, mossDmg]) if (d !== undefined) plan.problems.push(...macSignedAndStapled(join(d.dir, d.name)));
   // The name scan: every asset, inside where it opens, and the signed app as built (scripts/release/name-scan.ts).
   if (plan.problems.length === 0) {
     // The unpacked apps beside the builds: the signed MOSS Code.app, and CI's win-unpacked.
     const apps = [
-      ...(dmg !== undefined && existsSync(join(dmg.dir, "mac-arm64", "MOSS Code.app")) ? [join(dmg.dir, "mac-arm64", "MOSS Code.app")] : []),
+      ...["MOSS Code.app", "MOSS.app"].map((app) => (dmg !== undefined ? join(dmg.dir, "mac-arm64", app) : "")).filter((p) => p !== "" && existsSync(p)),
       ...a.from.map((d) => join(d, "win-unpacked")).filter((d) => existsSync(d)),
     ];
     const scan = nameScan(plan.assets.map((x) => join(x.dir, x.name)), apps);

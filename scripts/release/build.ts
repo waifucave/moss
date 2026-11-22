@@ -87,11 +87,12 @@ import { MOSS_TEAM_ID } from "../../packages/core/src/auth/app-token-acl";
 import { BUNDLED_MANIFEST_FILE, type BundledManifest } from "../../packages/core/src/bundled-plugins-dir";
 import { MOSS_APP_IDENTIFIER as MOSS_APP_IDENTIFIERS, MOSS_PROGRAM_IDENTIFIERS, appRequirement } from "../../packages/core/src/bundled-identities";
 import { hostRequirement } from "../../packages/core/src/host/world";
-import { CODE_APP, HOST_HELPER, HOST_HELPER_STASH, MOSS_APP as MOSS_BOTS_APP, MOSS_TEST_BUILD_ARTIFACT_ARGS, mossArtifacts, mossFeedFile, mossInstallers, mossServedCopies, mossTestBuildArtifacts, moveMossOutputs, oneVersionProblems, samePayloadProblems, type ReleaseApp } from "./two-apps";
+import { CODE_APP, HOST_HELPER, HOST_HELPER_STASH, MOSS_APP as MOSS_BOTS_APP, MOSS_TEST_BUILD_ARTIFACT_ARGS, hostTreeProblems, mossFeedFile, mossInstallers, mossServedCopies, mossTestBuildArtifacts, moveMossOutputs, oneVersionProblems, samePayloadProblems, type ReleaseApp } from "./two-apps";
 import { LINK_BUILD, LINK_OUTPUT, linkBuildEnv } from "../build-packages";
 import { bundledBinaryProblems, bundledFiles } from "../bundled-binaries";
 import { sealProblems } from "../seal-bun-doors";
 import { runNameScan } from "./name-scan";
+import { builtArtifactProblems } from "./artifacts";
 import { resolveDevSigningIdentity } from "../dev-daemon-lib";
 import { buildBundledPlugins, bundledPluginsProblems, STAGED_PLUGINS, walkTree, writeStagedManifest } from "./bundled-plugins";
 import {
@@ -574,7 +575,7 @@ export async function main(argv: readonly string[], root: string): Promise<numbe
     if (a.signDev) console.log(`release/build: sign each Mach-O file of the staged plugins (their native addons) before measuring: ${codesignDevArgs("out/plugins/<file>", dev!.hash, nativeIdentifier("<file>"), MOSS_TEAM_ID).join(" ").replace(dev!.hash, "<SHA-1>")}`);
     if (a.signDev) for (const b of RESOURCE_BINARIES) console.log(`release/build: sign ${b.file}: ${codesignDevArgs(`out/daemon/${b.file}`, dev!.hash, b.identifier, MOSS_TEAM_ID, b.entitlements, undefined, { restrict: b.restrict }).join(" ").replace(dev!.hash, "<SHA-1>")}`);
     console.log(`release/build: package: (in apps/desktop, MOSS_HOST_HELPER_STASH=apps/desktop/${HOST_HELPER_STASH}) ${shown.join(" ")}`);
-    console.log(`release/build: package MOSS from the same stage (the daemon, the tree, MOSS Code's host helper): (in apps/moss, MOSS_HOST_HELPER_STASH=apps/desktop/${HOST_HELPER_STASH}) ${mossBuilder.map((c) => (c.startsWith("-c.mac.identity=") ? "-c.mac.identity=<identity>" : c.startsWith("-c.win.signtoolOptions.publisherName=") ? "-c.win.signtoolOptions.publisherName=<MOSS_WIN_PUBLISHER>" : c)).join(" ")}`);
+    console.log(`release/build: package MOSS from the same stage (the daemon, the tree, ${a.os === "mac" ? "MOSS Code's host helper" : "MOSS Code's unpacked app as the host, resources/host/moss-host.exe"}): (in apps/moss, ${a.os === "mac" ? `MOSS_HOST_HELPER_STASH=apps/desktop/${HOST_HELPER_STASH}` : "MOSS_HOST_TREE_FROM=apps/desktop/out/dist/win-unpacked"}) ${mossBuilder.map((c) => (c.startsWith("-c.mac.identity=") ? "-c.mac.identity=<identity>" : c.startsWith("-c.win.signtoolOptions.publisherName=") ? "-c.win.signtoolOptions.publisherName=<MOSS_WIN_PUBLISHER>" : c)).join(" ")}`);
     console.log(`release/build: MOSS's outputs moved beside MOSS Code's (its update files as ${mossFeedFile(a.channel, a.os)}…); then the two apps' daemon/, plugins/ and ${a.os === "mac" ? `${HOST_HELPER}'s code are` : "are"} checked byte for byte the same`);
     if (a.testBuild) {
       console.log(`release/build: the dmg: sign; never notarized or stapled; no update files (electron-builder's removed); in apps/desktop/${TEST_BUILD_OUT}`);
@@ -586,7 +587,7 @@ export async function main(argv: readonly string[], root: string): Promise<numbe
     }
     if (a.sign && a.os === "mac") for (const app of [CODE_APP, MOSS_BOTS_APP]) console.log(`release/build: ${app.product}'s dmg: sign, ${notarizeArgs(`${app.artifact}-${version}.dmg`, "<APPLE_KEYCHAIN_PROFILE>").join(" ")}, xcrun stapler staple`);
     console.log(`release/build: the daemon's own update: ${daemonInApp("out/dist", a.os)} as its release file, with its update files`);
-    console.log(`release/build: expects ${[...expectedArtifacts(version, a.os, a.channel), ...mossArtifacts(version, a.os, a.channel)].join(", ")}`);
+    console.log(`release/build: expects (the artifact table, scripts/release/artifacts.ts) ${expectedArtifacts(version, a.os, a.channel).join(", ")}`);
     return 0;
   }
   try {
@@ -664,7 +665,8 @@ export async function main(argv: readonly string[], root: string): Promise<numbe
       if (staging.length > 0) throw new Error(`the package gate: ${staging.join("; ")}`);
       // MOSS Code first: its afterPack makes the host helper and stashes a copy (apps/desktop/scripts/host-helper.mjs), which
       // MOSS's afterPack carries into MOSS.app before MOSS is signed (apps/moss/scripts/host-helper.mjs).
-      const withStash = { ...builderEnv(a, process.env), MOSS_HOST_HELPER_STASH: stash };
+      // On Windows MOSS carries MOSS Code's unpacked app as the host (apps/moss/scripts/host-helper.mjs); macOS's is the stash.
+      const withStash = { ...builderEnv(a, process.env), MOSS_HOST_HELPER_STASH: stash, MOSS_HOST_TREE_FROM: join(outDir, "win-unpacked") };
       must(`${a.os === "mac" ? "the dmg and the zip" : "the installer"} on ${a.channel}`, builder, desktop, withStash);
       // MOSS, from the very same stage (apps/moss/electron-builder.yml packs apps/desktop/out/daemon and out/plugins).
       must(`MOSS's ${a.os === "mac" ? "dmg and zip" : "installer"} on ${a.channel}`, mossBuilder, mossDir, withStash);
@@ -692,7 +694,10 @@ export async function main(argv: readonly string[], root: string): Promise<numbe
         ...(a.os === "mac" ? { codeBundle: join(outDir, "mac-arm64", `${CODE_APP.product}.app`), mossBundle: join(outDir, "mac-arm64", `${MOSS_BOTS_APP.product}.app`), hostIdentifier: MOSS_PROGRAM_IDENTIFIERS.host.dist } : {}),
       });
       if (same.length > 0) throw new Error(`one release, two apps: ${same.join("; ")}`);
-      console.log("release/build: MOSS Code and MOSS carry the same engine, tree and host helper");
+      // On Windows the host is MOSS Code's app MOSS carries in resources/host (the macOS helper is checked above).
+      const hostTree = a.os === "win" ? hostTreeProblems({ os: "win", codeResources: resourcesIn(outDir, a.os), mossResources }) : [];
+      if (hostTree.length > 0) throw new Error(`MOSS's host: ${hostTree.join("; ")}`);
+      console.log("release/build: MOSS Code and MOSS carry the same engine, tree and host");
     } finally {
       rmSync(staged, { recursive: true, force: true });
       rmSync(stagedPlugins, { recursive: true, force: true });
@@ -790,7 +795,9 @@ export async function main(argv: readonly string[], root: string): Promise<numbe
     mossServedCopies(outDir, a.channel, a.os, copyFileSync);
 
     const problems: string[] = [];
-    for (const name of [...expectedArtifacts(version, a.os, a.channel), ...mossArtifacts(version, a.os, a.channel)]) if (!existsSync(join(outDir, name))) problems.push(`${name} is missing from ${outDir}`);
+    // Everything this build left against the artifact table (scripts/release/artifacts.ts), both ways: a file the table doesn't
+    // name, and a file of the table that wasn't built.
+    problems.push(...builtArtifactProblems(version, [a.os], a.channel, readdirSync(outDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name)));
     for (const ch of a.channel === "latest" ? (["latest", "beta"] as const) : (["beta"] as const)) {
       const path = join(outDir, feedFile(ch, a.os));
       if (!existsSync(path)) continue;

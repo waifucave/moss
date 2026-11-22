@@ -466,10 +466,12 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # The Linux packages (plan §4 M1): the deb, the rpm and the AppImage of the app with the daemon inside, for x64 and
-  # arm64, built on one x64 machine and opened to check what they hold (scripts/build-packages.ts --check). Then the
-  # x64 deb is installed on this runner, checked (`moss` is the daemon's command line, the AppArmor profile is in)
-  # and removed (both are gone). Nothing is uploaded: the packages are unsigned skeletons until M2.
+  # The Linux packages (plan §4 M1): the deb, the rpm and the AppImage of BOTH apps (MOSS Code and MOSS, the artifact table's
+  # files, scripts/release/artifacts.ts) with the daemon inside, for x64 and arm64, each built on its own architecture's
+  # machine and opened to check what they hold (scripts/build-packages.ts --check). Then both debs are installed on this
+  # runner, checked (`moss` is the daemon's command line, the AppArmor profiles are in, MOSS carries the host) and removed one
+  # at a time (the other keeps working); and both rpms are installed and removed the same way in a Fedora container. Nothing
+  # is uploaded: the packages are unsigned skeletons until M2.
   packages:
     name: packages · linux-${{ matrix.arch }} (deb, rpm, AppImage)
     needs: changes
@@ -515,6 +517,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun scripts/build-packages.ts --arch ${{ matrix.arch }} --check
 
+      # The folder holds exactly the artifact table's files for this system, both apps (the build checked it; this is the log's proof).
+      - name: Every artifact of the table is built, and nothing else
+        run: bun scripts/release/check-artifacts.ts --os linux-${{ matrix.arch }}
+
       # A server on this architecture takes the daemon's release file and the bundled plugins' tarball: the tarball is
       # the tree that daemon embeds the manifest of (#244).
       - name: The bundled plugins' tarball is the tree the daemon's manifest names
@@ -522,20 +528,69 @@ jobs:
           version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
           bun scripts/release/check-plugins-tarball.ts "$(ls apps/desktop/out/dist/moss-core-"$version"-linux-*)" "$(ls apps/desktop/out/dist/moss-plugins-"$version"-linux-*.tar.gz)"
 
-      - name: Install the deb, check it, and remove it
+      # Both debs on this runner (its architecture): the two apps are two packages with one engine and one `moss` command. Removing
+      # one leaves the other working (spec §3.1), and no file is in both packages (dpkg would refuse the second install).
+      - name: Install both debs, check them, and remove them one at a time
         run: |
-          deb=$(ls apps/desktop/out/dist/*_${{ matrix.deb }}.deb)
-          name=$(dpkg-deb -f "$deb" Package)
-          sudo apt-get install -y -qq "./$deb"
+          version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
+          code=apps/desktop/out/dist/moss-code_${version}_${{ matrix.deb }}.deb
+          moss=apps/desktop/out/dist/moss_${version}_${{ matrix.deb }}.deb
+          test "$(dpkg-deb -f "$code" Package)" = moss-code
+          test "$(dpkg-deb -f "$moss" Package)" = moss
+          # No regular file in both packages.
+          files() { dpkg-deb -c "$1" | awk '$1 !~ /^d/ {print $6}' | sort; }
+          test -z "$(comm -12 <(files "$code") <(files "$moss"))" || { echo "::error::a file is in both packages"; comm -12 <(files "$code") <(files "$moss"); exit 1; }
+          sudo apt-get install -y -qq "./$code" "./$moss"
+          for root in /opt/moss-code /opt/moss; do
+            test -x $root/resources/daemon/moss-link
+            test "$(cat $root/resources/daemon/install.json)" = '{"kind":"package"}'
+          done
+          test -x /opt/moss-code/moss-code
+          test -x /opt/moss/moss-app
+          test -f /etc/apparmor.d/moss-code
+          test -f /etc/apparmor.d/moss-app
+          # MOSS carries the host: MOSS Code's app, with MOSS Code's own app.asar, and the host's profile for it.
+          test -x /opt/moss/resources/host/moss-host
+          cmp /opt/moss/resources/host/resources/app.asar /opt/moss-code/resources/app.asar
+          grep -q 'profile moss-app-host /opt/moss/resources/host/moss-host' /etc/apparmor.d/moss-app
+          case "$(readlink -f /usr/bin/moss)" in /opt/moss-code/resources/daemon/moss-core|/opt/moss/resources/daemon/moss-core) ;; *) echo "::error::moss is not a daemon of ours"; exit 1;; esac
+          MOSS_HOME="$(mktemp -d)" moss --version
+          # Removing MOSS leaves MOSS Code, its `moss` command and its profile working.
+          sudo apt-get remove -y -qq moss
+          test ! -e /opt/moss/resources/daemon/install.json
+          test ! -e /etc/apparmor.d/moss-app
           test "$(readlink -f /usr/bin/moss)" = /opt/moss-code/resources/daemon/moss-core
           MOSS_HOME="$(mktemp -d)" moss --version
-          test -x /opt/moss-code/resources/daemon/moss-link
           test -f /etc/apparmor.d/moss-code
           test "$(cat /opt/moss-code/resources/daemon/install.json)" = '{"kind":"package"}'
-          sudo apt-get remove -y -qq "$name"
+          sudo apt-get remove -y -qq moss-code
           test ! -e /opt/moss-code/resources/daemon/install.json
           test ! -e /usr/bin/moss
           test ! -e /etc/apparmor.d/moss-code
+          # And the other way round: MOSS Code first.
+          sudo apt-get install -y -qq "./$code" "./$moss"
+          sudo apt-get remove -y -qq moss-code
+          test "$(readlink -f /usr/bin/moss)" = /opt/moss/resources/daemon/moss-core
+          MOSS_HOME="$(mktemp -d)" moss --version
+          sudo apt-get remove -y -qq moss
+          test ! -e /usr/bin/moss
+          test ! -e /etc/apparmor.d/moss-app
+
+      # Both rpms in a Fedora container (the runner has docker): installed, `moss` answers, removed one at a time.
+      - name: Install both rpms in Fedora, check them, and remove them one at a time
+        run: |
+          version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
+          rpmarch=${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+          docker run --rm -v "$PWD/apps/desktop/out/dist:/pkg:ro" fedora:42 bash -euxc '
+            dnf install -y -q /pkg/moss-code-'"$version"'.'"$rpmarch"'.rpm /pkg/moss-'"$version"'.'"$rpmarch"'.rpm
+            test -x /opt/moss-code/moss-code && test -x /opt/moss/moss-app && test -x /opt/moss/resources/host/moss-host
+            MOSS_HOME="$(mktemp -d)" moss --version
+            rpm -e moss
+            test ! -e /opt/moss
+            MOSS_HOME="$(mktemp -d)" moss --version
+            rpm -e moss-code
+            test ! -e /opt/moss-code
+            test ! -e /usr/bin/moss'
 
   # The macOS and Windows installers (plan §4 M-M2): the release build itself, unsigned (scripts/release/build.ts), so
   # each PR that touches them shows they still build: the dmg and its update zip on Apple silicon, the NSIS installer
@@ -605,6 +660,18 @@ jobs:
         run: |
           version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
           bun scripts/release/check-plugins-tarball.ts "$(ls apps/desktop/out/dist/moss-core-"$version"-*)" "$(ls apps/desktop/out/dist/moss-plugins-"$version"-*.tar.gz)"
+
+      # The folder holds exactly the artifact table's files for this system: both apps' installers and update files, and the
+      # engine's (the build checked it at its end; this is the log's proof, and the same check the release workflow runs).
+      - name: Every artifact of the table is built, and nothing else
+        shell: bash
+        run: bun scripts/release/check-artifacts.ts --os ${{ matrix.os }}
+
+      # Both apps installed from what was built, checked and removed (scripts/release/install-check.ts): the dmgs mounted read-only
+      # and their apps copied out on macOS, the NSIS installers run silently on Windows, removing MOSS first and then MOSS Code.
+      - name: Install both apps, check them, and remove them
+        shell: bash
+        run: bun scripts/release/install-check.ts ${{ matrix.os }}
 
   installers-windows:
     name: installers · ${{ matrix.os }} (${{ matrix.what }})

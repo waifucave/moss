@@ -18,7 +18,14 @@ CLI='/opt/${sanitizedProductName}/resources/daemon/moss-core'
 if type update-alternatives >/dev/null 2>&1; then
     update-alternatives --remove 'moss' "$CLI"
 else
-    rm -f '/usr/bin/moss'
+    # Only our own link: the other app's package (MOSS and MOSS Code share the one `moss` command) keeps its.
+    if [ "$(readlink '/usr/bin/moss' 2>/dev/null)" = "$CLI" ]; then
+        rm -f '/usr/bin/moss'
+        # ...and the link goes to the other app's daemon when that one is installed (the same daemon, one release).
+        for OTHER in /opt/moss-code/resources/daemon/moss-core /opt/moss/resources/daemon/moss-core; do
+            if [ "$OTHER" != "$CLI" ] && [ -x "$OTHER" ]; then ln -sf "$OTHER" '/usr/bin/moss'; break; fi
+        done
+    fi
 fi
 
 # The install marker after-install.sh wrote beside the binary (no package owns it).

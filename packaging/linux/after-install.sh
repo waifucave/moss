@@ -15,9 +15,11 @@ if type update-alternatives >/dev/null 2>&1; then
     if [ -L '/usr/bin/moss' -a -e '/usr/bin/moss' -a "`readlink '/usr/bin/moss'`" != '/etc/alternatives/moss' ]; then
         rm -f '/usr/bin/moss'
     fi
-    update-alternatives --install '/usr/bin/moss' 'moss' "$CLI" 100 || ln -sf "$CLI" '/usr/bin/moss'
+    update-alternatives --install '/usr/bin/moss' 'moss' "$CLI" 100 || { [ -e '/usr/bin/moss' ] || ln -sf "$CLI" '/usr/bin/moss'; }
 else
-    ln -sf "$CLI" '/usr/bin/moss'
+    # Never over another package's link: MOSS and MOSS Code are two packages, each with this script, and `moss` is one command
+    # (the same daemon in both, one release). The first to install owns the plain link; removing it leaves the other's.
+    [ -e '/usr/bin/moss' ] || ln -sf "$CLI" '/usr/bin/moss'
 fi
 
 # The install marker (packages/core/src/update/install-marker.ts): this daemon updates through apt or dnf, never
@@ -25,12 +27,16 @@ fi
 # daemon reads it first.
 printf '{"kind":"package"}\n' > "$(dirname "$CLI")/install.json" || true
 
-# The SUID Chromium sandbox helper only where the kernel has no working user namespaces.
+# The SUID Chromium sandbox helper only where the kernel has no working user namespaces. MOSS also carries MOSS Code's app as
+# the background host (resources/host/, apps/moss/scripts/host-helper.mjs), with a sandbox helper of its own.
 if ! { [[ -L /proc/self/ns/user ]] && unshare --user true; }; then
-    chmod 4755 '/opt/${sanitizedProductName}/chrome-sandbox' || true
+    SANDBOX_MODE=4755
 else
-    chmod 0755 '/opt/${sanitizedProductName}/chrome-sandbox' || true
+    SANDBOX_MODE=0755
 fi
+for SANDBOX in '/opt/${sanitizedProductName}/chrome-sandbox' '/opt/${sanitizedProductName}/resources/host/chrome-sandbox'; do
+    [ -f "$SANDBOX" ] && { chmod "$SANDBOX_MODE" "$SANDBOX" || true; }
+done
 
 if hash update-mime-database 2>/dev/null; then
     update-mime-database /usr/share/mime || true

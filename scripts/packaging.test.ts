@@ -3,12 +3,12 @@
 // build-packages.ts's pure parts. The packages themselves are built and opened by CI's packages job.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUTOSTART_SUBCOMMAND, INSTALLER_HOOKS, LAUNCHD_LABEL, autostartArgs } from "../packaging/installer-hooks";
 import { linkBinaryName } from "../packages/core/src/links/sidecar-binary";
-import { AFTER_INSTALL_MARK, checkPackage, electronBuilderArgs, LINK_BUILD, LINK_OUTPUT, packageArchNames, parseBuildPackagesArgs, parseListing, REQUIRED_FILES } from "./build-packages";
+import { AFTER_INSTALL_MARK, checkPackage, electronBuilderArgs, executablesOf, LINK_BUILD, LINK_OUTPUT, packageArchNames, parseBuildPackagesArgs, parseListing, REQUIRED_FILES, requiredFiles } from "./build-packages";
 import { caskFrom } from "./release-lib";
 import { BUNDLED_PLUGIN_IDS, BUNDLED_PLUGINS_DIR, STAGED_PLUGINS } from "./release/bundled-plugins";
 import { renderWinget, wingetInstallerUrl } from "./winget";
@@ -324,5 +324,157 @@ describe("build-packages.ts", () => {
     };
     for (const arg of ["upgrade", "failed-upgrade", "1", "2"]) expect(run(arg), arg).toBe("");
     for (const arg of ["remove", "purge", "0"]) expect(run(arg), arg).toBe(`update-alternatives --remove moss ${AFTER_INSTALL_MARK}\n`);
+  });
+});
+
+// ---- MOSS, the second app (the release wave, lane RP): its Linux packages, Windows installer, cask and winget package ----
+
+const mossBuilder = Bun.YAML.parse(read("apps/moss/electron-builder.yml")) as Record<string, any>;
+
+describe("MOSS's Linux packages (apps/moss/electron-builder.yml and packaging/linux, shared with MOSS Code's)", () => {
+  test("the deb and the rpm are `moss`, file and package, the folder /opt/moss, the program moss-app", () => {
+    expect(mossBuilder.deb.packageName).toBe("moss");
+    expect(mossBuilder.rpm.packageName).toBe("moss");
+    expect(mossBuilder.deb.artifactName).toBe("moss_${version}_${arch}.${ext}");
+    expect(mossBuilder.rpm.artifactName).toBe("moss-${version}.${arch}.${ext}");
+    expect(mossBuilder.appImage.artifactName).toBe("MOSS-${version}-${arch}.AppImage");
+    expect(mossBuilder.linux.executableName).toBe("moss-app");
+    expect(electronBuilderArgs("x64", ["deb"], "latest", "moss")).toContain("-c.productName=moss");
+    expect(electronBuilderArgs("x64", ["deb"], "latest")).toContain("-c.productName=moss-code");
+    expect(mossBuilder.linux.icon).toBe("build/icons");
+    for (const n of [16, 24, 32, 48, 64, 128, 256, 512]) expect(existsSync(join(ROOT, "apps", "moss", "build", "icons", `${n}x${n}.png`)), `${n}`).toBe(true);
+  });
+
+  test("they run the same scripts and profile as MOSS Code's, with the same dependencies, and their own launcher entry with Quit", () => {
+    for (const format of ["deb", "rpm"] as const) {
+      for (const k of ["afterInstall", "afterRemove", "appArmorProfile", "depends"] as const) expect(mossBuilder[format][k], `${format} ${k}`).toEqual(builder[format][k]);
+      expect(mossBuilder[format].desktop.entry).toEqual({ Name: "MOSS", Actions: "Quit;" });
+      expect(mossBuilder[format].desktop.desktopActions.Quit).toEqual({ Name: "Quit MOSS", Exec: "/opt/moss/moss-app --quit" });
+    }
+    expect(mossBuilder.deb.recommends).toEqual(builder.deb.recommends);
+    expect(mossBuilder.deb.depends).toContain("bubblewrap");
+    expect(mossBuilder.deb.depends).toContain("libsecret-1-0");
+  });
+
+  test("a package of MOSS is checked for what it holds: the daemon, the sidecar, plugin Bun, the profile, the tree AND the host", () => {
+    expect(requiredFiles("moss")).toEqual(expect.arrayContaining(["/opt/moss/resources/daemon/moss-core", "/opt/moss/resources/daemon/moss-link", "/opt/moss/moss-app", "/opt/moss/resources/host/moss-host", "/opt/moss/resources/host/resources/app.asar"]));
+    expect(requiredFiles("code")).toEqual([...REQUIRED_FILES]);
+    expect(requiredFiles("code")).not.toContain("/opt/moss/resources/host/moss-host");
+    const listing = [
+      ...requiredFiles("moss").map((f) => `${executablesOf("moss").includes(f) ? "-rwxr-xr-x" : "-rw-r--r--"} root/root 100 2026-11-05 12:00 .${f}`),
+    ].join("\n");
+    const scripts = "ln -sf /opt/moss/resources/daemon/moss-core /usr/bin/moss; apparmor_parser --replace";
+    expect(checkPackage("deb", listing, scripts, "moss")).toEqual([]);
+    // MOSS Code's package must not pass for MOSS's, nor the other way round.
+    expect(checkPackage("deb", listing, scripts, "code").length).toBeGreaterThan(0);
+    expect(checkPackage("deb", listing.replace("-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss/resources/host/moss-host", "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss/resources/host/moss-host"), scripts, "moss"))
+      .toEqual(["deb: /opt/moss/resources/host/moss-host is -rw-r--r-- root/root, not -rwxr-xr-x root/root"]);
+    expect(checkPackage("deb", listing.split("\n").filter((l) => !l.includes("/resources/host/")).join("\n"), scripts, "moss"))
+      .toEqual(["deb: /opt/moss/resources/host/moss-host is missing", "deb: /opt/moss/resources/host/resources/app.asar is missing"]);
+    expect(checkPackage("deb", listing, "ln -sf /opt/moss-code/resources/daemon/moss-core /usr/bin/moss; apparmor_parser", "moss")).toEqual(["deb: its after-install script is not packaging/linux/after-install.sh (no /opt/moss/resources/daemon/moss-core)"]);
+  });
+
+  test("the shared scripts never take another package's `moss` link, and give it back when the owner is removed", () => {
+    const install = read("packaging/linux/after-install.sh");
+    // The fallback without update-alternatives links only when nothing is there; with it, a failed registration never overwrites a link.
+    expect(install).toContain("[ -e '/usr/bin/moss' ] || ln -sf \"$CLI\" '/usr/bin/moss'");
+    expect(install).not.toMatch(/^\s*ln -sf "\$CLI" '\/usr\/bin\/moss'\s*$/m);
+    const remove = read("packaging/linux/after-remove.sh");
+    expect(remove).toContain(`[ "$(readlink '/usr/bin/moss' 2>/dev/null)" = "$CLI" ]`);
+    expect(remove).toContain("/opt/moss-code/resources/daemon/moss-core /opt/moss/resources/daemon/moss-core");
+    // The host's sandbox helper too (MOSS carries MOSS Code's app, with its own chrome-sandbox).
+    expect(install).toContain("/opt/${sanitizedProductName}/resources/host/chrome-sandbox");
+  });
+
+  test("the scripts, run on a stand-in filesystem without update-alternatives, leave `moss` working through either removal order", () => {
+    if (process.platform === "win32") return;
+    // The scripts' own link logic, run as written: only the paths are the stand-in's (the macros filled, then each fixed path replaced once).
+    if (spawnSync("bash", ["-c", "command -v update-alternatives"], { env: { PATH: "/usr/bin:/bin" } }).status === 0) return; // Debian's own: CI's Fedora container covers this branch
+    const work = mkdtempSync(join(tmpdir(), "moss-after-scripts-"));
+    try {
+      const codeCli = join(work, "opt", "moss-code", "daemon", "moss-core"), mossCli = join(work, "opt", "moss", "daemon", "moss-core");
+      const link = join(work, "usr-bin-moss");
+      for (const f of [codeCli, mossCli]) { mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(f, "#!/bin/sh\necho moss\n", { mode: 0o755 }); }
+      const prepare = (rel: string, cli: string): string => renderLinux(rel)
+        .replaceAll("'/usr/bin/moss'", `'${link}'`)
+        .replaceAll("/opt/moss-code/resources/daemon/moss-core /opt/moss/resources/daemon/moss-core", `${codeCli} ${mossCli}`)
+        .replace(`CLI='/opt/moss-code/resources/daemon/moss-core'`, `CLI='${cli}'`);
+      const head = (text: string, upTo: string): string => text.slice(0, text.indexOf(upTo));
+      const install = (cli: string): void => {
+        expect(spawnSync("bash", ["-c", head(prepare("packaging/linux/after-install.sh", cli), "# The SUID Chromium sandbox helper")], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).status).toBe(0);
+      };
+      const remove = (cli: string): void => {
+        rmSync(cli); // the package's files go before its after-remove runs (dpkg's postrm, rpm's %postun)
+        // Past the script's `case` (it acts on a removal only): the link logic, from `CLI=` to the profile.
+        const text = prepare("packaging/linux/after-remove.sh", cli);
+        const body = text.slice(text.indexOf("CLI="), text.indexOf("APPARMOR_PROFILE_DEST="));
+        expect(spawnSync("bash", ["-c", body], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).status).toBe(0);
+      };
+      install(codeCli);
+      install(mossCli);
+      expect(readlinkSync(link)).toBe(codeCli); // the first owns the link; the second never overwrote it
+      remove(codeCli); // the owner goes: the link moves to the other app's daemon
+      expect(readlinkSync(link)).toBe(mossCli);
+      remove(mossCli);
+      expect(existsSync(link)).toBe(false);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  test("the AppArmor profile grants user namespaces to the app's executable and to the host MOSS carries", () => {
+    const profile = renderLinux("packaging/linux/apparmor-profile");
+    expect(profile).toContain("profile moss-code-host /opt/moss-code/resources/host/moss-host flags=(unconfined) {");
+    expect(profile.match(/userns,/g)?.length).toBe(2);
+    const forMoss = read("packaging/linux/apparmor-profile").replaceAll("${executable}", "moss-app").replaceAll("${sanitizedProductName}", "moss");
+    expect(forMoss).toContain("profile moss-app /opt/moss/moss-app flags=(unconfined) {");
+    expect(forMoss).toContain("profile moss-app-host /opt/moss/resources/host/moss-host flags=(unconfined) {");
+  });
+});
+
+describe("MOSS's Windows installer and Homebrew cask: removing one app leaves the other's engine and login start", () => {
+  test("the NSIS installer is per user and carries installer-moss.nsh, whose uninstall hook skips login start while MOSS Code is installed", () => {
+    expect(mossBuilder.nsis.perMachine).toBe(false);
+    expect(resolve(ROOT, "apps", "moss", mossBuilder.nsis.include)).toBe(join(ROOT, "packaging", "windows", "installer-moss.nsh"));
+    const code = codeLines(read("packaging/windows/installer-moss.nsh"), ";");
+    expect(code).toContain("!macro customUnInstall");
+    expect(code).toContain("${ifNot} ${isUpdated}");
+    expect(code).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\MOSS Code\\MOSS Code.exe"');
+    expect(code).toContain(`nsExec::ExecToLog '"$INSTDIR\\resources\\daemon\\moss-core.exe" ${autostartArgs("remove").join(" ")}'`);
+    // The other way: MOSS Code's hook leaves it to MOSS while MOSS is installed.
+    expect(codeLines(read("packaging/windows/installer.nsh"), ";")).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\MOSS\\MOSS.exe"');
+    for (const f of ["packaging/windows/installer.nsh", "packaging/windows/installer-moss.nsh"]) expect(codeLines(read(f), ";").join("\n"), f).not.toMatch(/\b(schtasks|systemctl|launchctl)\b/);
+  });
+
+  test("the cask's uninstall removes login start only when MOSS Code is not installed, and links no second `moss` command", () => {
+    const code = codeLines(read("packaging/moss.rb.tmpl"), "#").join("\n");
+    expect(code).toContain('cask "moss" do');
+    expect(code).not.toMatch(/^\s*binary /m);
+    expect(code).not.toContain("launchctl");
+    expect(code).toContain("must_succeed: false");
+    expect(code).toContain("sudo:         false");
+    expect(code).toContain('quit:   "com.waifucave.moss"');
+    expect(code).toContain(`"#{appdir}/MOSS.app/Contents/Resources/daemon/moss-core", "#{appdir}/MOSS Code.app"]`);
+    if (process.platform !== "win32") {
+      const guard = '[ -x "$1" ] || exit 0; [ -d "$2" ] && exit 0; exec "$1" autostart remove';
+      const dir = mkdtempSync(join(tmpdir(), "moss-cask-guard-"));
+      const fake = join(dir, "moss-core"), other = join(dir, "MOSS Code.app");
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).status).toBe(0);
+      writeFileSync(fake, `#!/bin/sh\necho "ran: $*"\n`, { mode: 0o755 });
+      // MOSS Code is installed: nothing is removed.
+      spawnSync("mkdir", ["-p", other]);
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).stdout).toBe("");
+      // It is not: login start goes, through the daemon's own command.
+      rmSync(other, { recursive: true });
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).stdout).toBe("ran: autostart remove\n");
+    }
+  });
+
+  test("the cask's zap takes the caches, the preferences and the logs of MOSS, never ~/.moss or the shared login item", () => {
+    const code = codeLines(read("packaging/moss.rb.tmpl"), "#").join("\n");
+    const zap = code.slice(code.indexOf("zap trash: ["), code.indexOf("]", code.indexOf("zap trash: [")));
+    expect([...zap.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(["~/Library/Caches/@waifucavemoss-moss-updater", "~/Library/Caches/com.waifucave.moss", "~/Library/Caches/com.waifucave.moss.ShipIt", "~/Library/Logs/MOSS", "~/Library/Preferences/com.waifucave.moss.plist"]);
+    expect(zap).not.toContain("LaunchAgents");
+    expect(zap).not.toContain("~/.moss");
   });
 });

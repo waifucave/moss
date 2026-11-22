@@ -18,6 +18,7 @@ import { checkoutCommit, dirtyEntries, pluginBunArtifacts, pluginsArtifacts, wri
 import { TEST_BUILD_LABEL, TEST_BUILD_SENTINEL } from "../test-build";
 import { pluginsFeedFile, pluginsTarballFile, parsePluginsFeed, unpackTarball, pluginBunBinaryFile, pluginBunFeedFile, coreBinaryFile, coreFeedFile, formatCoreFeed, generateFeedKey, parseCoreFeed, publicKeyOf, verifyFeed } from "../../packages/update-feed/src/index";
 import { FEED_KEY_ITEM, generate, signingKey, withPublicKey, type KeyStore } from "./feed-key";
+import { APP_KEYS, appFeedFile, installersOf } from "./artifacts";
 import { draftReleaseArgs, parsePublishArgs, planRelease, promotedName, promotedSignature, RELEASE_OSES, signFeeds, proveShippedMacCore, sealProofCommand, sealProofProblem, type ShippedOpeners } from "./publish";
 
 /** A Keychain of the test's own: the real one is never touched. */
@@ -55,9 +56,11 @@ describe("the feed and the channels", () => {
     expect(builder.mac.artifactName).toBe("MOSS-Code-${version}-mac.${ext}");
     expect(builder.nsis.artifactName).toBe("MOSS-Code-Setup-${version}.${ext}");
     expect(read("packaging/moss-code.rb.tmpl")).toContain("/releases/download/v#{version}/MOSS-Code-#{version}.dmg");
-    expect(installers("1.2.3", "mac")).toEqual(["MOSS-Code-1.2.3.dmg", "MOSS-Code-1.2.3-mac.zip"]);
-    expect(installers("1.2.3", "linux-arm64")).toEqual(["moss_1.2.3_arm64.deb", "moss-1.2.3.arm64.rpm", "MOSS-Code-1.2.3-arm64.AppImage"]);
-    expect(expectedArtifacts("1.2.3", "win", "latest")).toEqual(["MOSS-Code-Setup-1.2.3.exe", "latest.yml", "beta.yml", "moss-core-1.2.3-windows-x64.exe", "latest-core-windows-x64.yml", "beta-core-windows-x64.yml",
+    // The release wave (lane RP): `installers` is the artifact table's, BOTH apps' (MOSS Code's first), and the Linux names are the ones
+    // electron-builder writes (moss-code_ and moss-code- for MOSS Code, moss_ and moss- for MOSS; the arm64 rpm says aarch64).
+    expect(installers("1.2.3", "mac")).toEqual(["MOSS-Code-1.2.3.dmg", "MOSS-Code-1.2.3-mac.zip", "MOSS-1.2.3.dmg", "MOSS-1.2.3-mac.zip"]);
+    expect(installers("1.2.3", "linux-arm64")).toEqual(["moss-code_1.2.3_arm64.deb", "moss-code-1.2.3.aarch64.rpm", "MOSS-Code-1.2.3-arm64.AppImage", "moss_1.2.3_arm64.deb", "moss-1.2.3.aarch64.rpm", "MOSS-1.2.3-arm64.AppImage"]);
+    expect(expectedArtifacts("1.2.3", "win", "latest")).toEqual(["MOSS-Code-Setup-1.2.3.exe", "latest.yml", "beta.yml", "MOSS-Setup-1.2.3.exe", "moss-latest.yml", "moss-beta.yml", "moss-core-1.2.3-windows-x64.exe", "latest-core-windows-x64.yml", "beta-core-windows-x64.yml",
       `moss-plugin-bun-${PLUGIN_BUN.version}-windows-x64.exe`, "latest-plugin-bun-windows-x64.yml", "beta-plugin-bun-windows-x64.yml",
       "moss-plugins-1.2.3-windows-x64.tar.gz", "latest-plugins-windows-x64.yml", "beta-plugins-windows-x64.yml"]);
     expect(pluginsArtifacts("1.2.3", "linux-arm64", "beta")).toEqual(["moss-plugins-1.2.3-linux-arm64.tar.gz", "beta-plugins-linux-arm64.yml"]);
@@ -522,8 +525,12 @@ describe("the owner's publish step (scripts/release/publish.ts)", () => {
     for (const os of RELEASE_OSES) {
       const blobs = new Map<string, Uint8Array>(installers(version, os).map((n) => [n, utf8(`${n} bytes`)]));
       blobs.set(`${installers(version, os)[0]}.blockmap`, utf8("map"));
-      const named = os === "mac" ? installers(version, os) : installers(version, os).filter((n) => !n.endsWith(".deb") && !n.endsWith(".rpm"));
-      for (const c of channelsServed(channel)) blobs.set(feedFile(c, os), yml(named, blobs));
+      // Each app's own update file, naming its own files (MOSS's carry `moss-`).
+      for (const app of APP_KEYS) {
+        const own = installersOf(version, os, app);
+        const named = os === "mac" ? own : own.filter((n) => !n.endsWith(".deb") && !n.endsWith(".rpm"));
+        for (const c of channelsServed(channel)) blobs.set(appFeedFile(app, c, os), yml(named, blobs));
+      }
       const core = coreBinaryFile(version, CORE_TARGET[os]);
       blobs.set(core, utf8(`${core} bytes`));
       for (const c of channelsServed(channel)) blobs.set(coreFeedFile(c, CORE_TARGET[os]), utf8(formatCoreFeed({ version, file: core, sha512: sha512Base64(blobs.get(core)!), size: blobs.get(core)!.length })));
@@ -611,7 +618,7 @@ describe("the owner's publish step (scripts/release/publish.ts)", () => {
     expect(p.problems.some((x) => x.includes(feedFile("beta", "mac")))).toBe(true);
     expect(p.commit).toBeUndefined();
     // The other OSes' builds are fine on their own: the refusal is the mac build's.
-    expect(p.problems.every((x) => x.includes("mac") || x.includes(CORE_TARGET.mac))).toBe(true);
+    expect(p.problems.every((x) => x.includes("mac") || x.includes(CORE_TARGET.mac) || installersOf(version, "mac").some((n) => x.includes(n)))).toBe(true);
   });
 
   // A sign-only dmg left beside a real release's stale update files (every feed present and matching, as if a real
@@ -684,7 +691,7 @@ describe("the owner's publish step (scripts/release/publish.ts)", () => {
   test("each update file and daemon binary is signed with the Keychain's key, checked against the app's, and nothing else is signed", () => {
     const dirs = builds("latest");
     const p = plan(dirs, "latest");
-    expect(p.feeds.sort()).toEqual(RELEASE_OSES.flatMap((os) => [...channelsServed("latest").flatMap((c) => [feedFile(c, os), coreFeedFile(c, CORE_TARGET[os]), pluginBunFeedFile(c, CORE_TARGET[os]), pluginsFeedFile(c, CORE_TARGET[os])]), coreBinaryFile(version, CORE_TARGET[os]), pluginBunBinaryFile(PLUGIN_BUN.version, CORE_TARGET[os]), pluginsTarballFile(version, CORE_TARGET[os])]).sort());
+    expect(p.feeds.sort()).toEqual(RELEASE_OSES.flatMap((os) => [...channelsServed("latest").flatMap((c) => [...APP_KEYS.map((app) => appFeedFile(app, c, os)), coreFeedFile(c, CORE_TARGET[os]), pluginBunFeedFile(c, CORE_TARGET[os]), pluginsFeedFile(c, CORE_TARGET[os])]), coreBinaryFile(version, CORE_TARGET[os]), pluginBunBinaryFile(PLUGIN_BUN.version, CORE_TARGET[os]), pluginsTarballFile(version, CORE_TARGET[os])]).sort());
     const key = generateFeedKey();
     const sigs = signFeeds(p, (d, n) => dirs.get(d)!.get(n)!, key.privateKey, key.publicKey);
     expect(sigs.map((s) => s.name).sort()).toEqual(p.feeds.map((f) => `${f}.sig`).sort());

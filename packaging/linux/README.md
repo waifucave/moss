@@ -4,6 +4,10 @@ MOSS ships a deb and an rpm (the main Linux packages, with the AppArmor profile 
 
 The repositories' address, `https://packages.waifucave.com`, is not final: hosting is the owner's decision. `REPO_BASE_URL` in `scripts/release/linux-repo.ts` is the one place that names it, and `linux-repo.test.ts` holds these lines to it.
 
+## Which package
+
+One release ships two apps, each a package of its own in both repositories, with the same engine inside: `moss` is MOSS, the app for bots, and `moss-code` is MOSS Code, the app for coding sessions. Install either or both (`sudo apt install moss moss-code`); they share the one `moss` command and the one engine, and removing one leaves the other working. MOSS carries the background host too, as a copy of MOSS Code's app in `/opt/moss/resources/host/`. The AppImages are `MOSS-<version>-<arch>.AppImage` and `MOSS-Code-<version>-<arch>.AppImage`. The file names are the release's artifact table (`scripts/release/artifacts.ts`).
+
 ## apt (Debian, Ubuntu)
 
 ```sh

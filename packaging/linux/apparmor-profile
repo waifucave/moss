@@ -2,10 +2,18 @@ abi <abi/4.0>,
 include <tunables/global>
 
 # MOSS's desktop app (Electron). Ubuntu 24.04 and later restrict unprivileged user namespaces, which Electron's
-# sandbox needs; this profile grants them to the app's executable only, and confines nothing else (spec §4).
+# sandbox needs; this profile grants them to the app's executable (and the host's, below) only, and confines nothing else (spec §4).
 profile ${executable} /opt/${sanitizedProductName}/${executable} flags=(unconfined) {
   userns,
 
   # Site-specific additions and overrides. See local/README for details.
   include if exists <local/${executable}>
+}
+
+# MOSS (the app for bots) carries MOSS Code's app as the background host, in its own folder (resources/host/): the same
+# grant for that executable. For MOSS Code the path does not exist and the profile never attaches.
+profile ${executable}-host /opt/${sanitizedProductName}/resources/host/moss-host flags=(unconfined) {
+  userns,
+
+  include if exists <local/${executable}-host>
 }
