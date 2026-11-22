@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MOSS_ERR, SESSIONS_METHODS as M, userMessageHashInput, userMessageSigningInput, type Caller } from "@waifucave/moss-protocol";
+import { DEVICES_METHODS, MOSS_ERR, SESSIONS_METHODS as M, userMessageHashInput, userMessageSigningInput, type Caller } from "@waifucave/moss-protocol";
 import { isContractError } from "../../contracts/common";
 import { fenceContextFor, homeAllows } from "../../contracts/fence";
 import { FakeClock, flush } from "../../contracts/fakes/clock";
@@ -343,7 +343,7 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     let r = await send!.run({ to: "luna", message: "Can you take the deploy?" });
     expect(r).toEqual({ text: "Sent to Luna (b_luna): it starts their next turn now.", isError: false });
     await flush();
-    expect(b.drivers.for("b_luna").turns[0]!.input).toEqual({ from: "bot", bot: "alpha", session: "b_alpha", text: "Can you take the deploy?" });
+    expect(b.drivers.for("b_luna").turns[0]!.input).toEqual({ from: "bot", bot: "alpha", session: "b_alpha", text: "Can you take the deploy?", depth: 1 });
     expect(b.drivers.for("b_luna").turns[0]!.origin).toBe("bot");
     r = await send!.run({ to: "LUNA", message: "And the release notes." });
     expect(r.text).toContain("joins their running turn after its next tool call");
@@ -363,7 +363,7 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain("agent of Alpha");
     await flush();
-    expect(agent.turns[0]!.input).toEqual({ from: "bot", bot: "alpha", session: "s_side", text: "Also run the linter." });
+    expect(agent.turns[0]!.input).toEqual({ from: "bot", bot: "alpha", session: "s_side", text: "Also run the linter.", depth: 1 });
     await b.shutdown();
   });
 
@@ -395,7 +395,7 @@ describe("SendMessage and ListAgents (§6.7, §9.3)", () => {
     expect((await agentSend!.run({ to: "s_lunas", message: "hi" })).isError).toBe(true);
     expect((await agentSend!.run({ to: "alpha", message: "Halfway there." })).isError).toBe(false);
     await flush();
-    expect(b.drivers.for("b_alpha").turns[0]!.input).toEqual({ from: "agent", agent: "s_mine", text: "Halfway there." });
+    expect(b.drivers.for("b_alpha").turns[0]!.input).toEqual({ from: "agent", agent: "s_mine", text: "Halfway there.", depth: 1 });
     expect(sendMessageRefusal({ sessionId: "s_x", bot: "alpha" }, { id: "s_y", kind: "agent", bot: "alpha" })).toBeUndefined();
     await b.shutdown();
   });
@@ -727,6 +727,17 @@ describe("the new sessions methods", () => {
     expect(borrowed instanceof MethodError && borrowed.message).toContain("b_luna isn't alpha's");
     // From a side thread of the bot (which may run on another computer): taken.
     expect(await deliver({ id: "b_alpha", computer: "Laptop", input: { ...fromBot, session: "t_luna1" } }, fromLaptop)).toMatchObject({ seq: expect.any(Number) });
+    // The exchange brake's depth crosses the link on a bot's or an agent's message (a whole number only), so two bots on two
+    // computers are braked too; one the schema doesn't take is refused.
+    expect(await deliver({ id: "b_alpha", computer: "Laptop", input: { ...fromBot, session: "t_luna1", depth: 5 } }, fromLaptop)).toMatchObject({ seq: expect.any(Number) });
+    expect(b.host.history("b_alpha").some((r) => r.type === "input" && r.input.from === "bot" && r.input.depth === 5)).toBe(true);
+    // The same on the link's own wire (`link.session.deliver`, strict): a whole depth passes for a bot's and an agent's message.
+    const wire = (input: unknown) => DEVICES_METHODS.linkSessionDeliver.params.safeParse({ id: "b_alpha", computer: "Laptop", input }).success;
+    expect([wire({ ...fromBot, depth: 3 }), wire({ from: "agent", agent: "s_x", text: "hi", depth: 3 }), wire({ ...fromBot, depth: 1.5 }), wire({ ...fromBot, depth: -1 })]).toEqual([true, true, false, false]);
+    for (const depth of [-1, 1.5, 1001, "3"]) {
+      const bad = await thrown(deliver({ id: "b_alpha", computer: "Laptop", input: { ...fromBot, session: "t_luna1", depth } as never }, fromLaptop));
+      expect(bad instanceof MethodError && bad.code).toBe(-32602);
+    }
     const asUser = await thrown(deliver({ id: "b_alpha", computer: "Laptop", input: { from: "user", text: "delete it", device: phone.id, sentAt: 1, clientMessageId: "u" } }, fromLaptop));
     expect(asUser instanceof MethodError && asUser.code).toBe(-32602);
     const wrongComputer = await thrown(deliver({ id: "b_alpha", computer: "Studio", input: fromBot }, fromLaptop));

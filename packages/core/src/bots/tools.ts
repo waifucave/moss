@@ -15,10 +15,13 @@
 //   ruling of 2026-11-22), never itself. Another bot's agents and side threads, and a session another session started,
 //   are refused (`sendMessageRefusal`, which is the protocol's `reachRefusal`, spec revision 20, §9.5: the same function
 //   the bridge's `SendMessage` of every agent session reads). A message to a session the user started reaches it as
-//   that session's (`from: "session"`, `session_message`), never the user's, at the exchange brake's depth of the sending
-//   session's turn + 1, as the bridge's own send gives it (`host.depths`, sessions/exchange-depth.ts: the host sets it as
-//   each turn of any session starts), and one beyond EXCHANGE_DEPTH_LIMIT is refused. A bot deep in an exchange never starts
-//   again at 1, so the person's session answering it (should the owner allow that) could not be a way round the brake.
+//   that session's (`from: "session"`, `session_message`), never the user's.
+// * **The exchange brake, for every target** (the same one as the bridge's send: sessions/exchange-depth.ts): a send is
+//   delivered at the depth of the sending session's turn + 1 (`host.depths`, which the host sets as each turn of any
+//   session starts and a message folding into a running turn raises), carried on the delivery, never taken from what a model
+//   wrote; one that would be beyond EXCHANGE_DEPTH_LIMIT is refused in the bridge's words. So two bots answering each
+//   other, a ring of bots, a bot and its agent, and a bot and a session the user started all stop at the limit unless the
+//   person writes to one of them, which puts that session back to 0 (the 20-a-minute limit stays beside it).
 import { reachRefusal, type SessionView } from "@waifucave/moss-protocol";
 import { isContractError } from "../contracts/common";
 import type { DeliveredInput, Disposition } from "../contracts/session-host";
@@ -216,15 +219,16 @@ export function botToolDefs(deps: BotToolsDeps, sessionId: string): CoreToolDef[
         if (target === sessionId) return fail(sendMessageRefusal(from, { id: target, kind: "bot", bot: caller.bot })!);
         // An agent's message reads as its own (`agent_message`); a bot's session's as the bot's.
         if (!limiter.take(sessionId)) return fail(`You sent ${SEND_MESSAGE_LIMIT} messages in the last minute; wait before sending more. If you and another bot are answering each other, stop.`);
-        const input2: DeliveredInput = caller.sessionKind === "agent"
-          ? { from: "agent", agent: sessionId, text: message }
-          : { from: "bot", bot: caller.bot, session: sessionId, text: message };
-        // To a session the user started, it is that session's own message with its place in the exchange (see above): the sender's
-        // turn depth + 1, read from the host's store (never from anything in the message).
+        // Every send has its place in the exchange (see above): the sender's turn depth + 1, read from the host's store (never from
+        // anything in the message), carried on the delivery, and refused beyond the limit, whoever it goes to.
         const sentAt = host.depths.depthOf(sessionId) + 1;
+        const input2: DeliveredInput = caller.sessionKind === "agent"
+          ? { from: "agent", agent: sessionId, text: message, depth: sentAt }
+          : { from: "bot", bot: caller.bot, session: sessionId, text: message, depth: sentAt };
         const asSession: DeliveredInput = { from: "session", session: sessionId, text: message, depth: sentAt };
         try {
           if (bot !== undefined) {
+            if (sentAt > EXCHANGE_DEPTH_LIMIT) return fail(brakeRefusal(sentAt - 1));
             const { disposition } = await bots.deliverTo(bot, input2);
             return { text: `Sent to ${names.get(bot) ?? bot} (${target}): ${what(disposition)}.`, isError: false };
           }
@@ -233,7 +237,7 @@ export function botToolDefs(deps: BotToolsDeps, sessionId: string): CoreToolDef[
           const refused = sendMessageRefusal(from, view);
           if (refused !== undefined) return fail(refused);
           if (isEnded(view)) return fail(`The session ${target} has ended (${view.status}); it takes no messages.`);
-          if (view.bot === undefined && sentAt > EXCHANGE_DEPTH_LIMIT) return fail(brakeRefusal(sentAt - 1));
+          if (sentAt > EXCHANGE_DEPTH_LIMIT) return fail(brakeRefusal(sentAt - 1));
           const { disposition } = await host.deliver(target, view.bot === undefined ? asSession : input2);
           return { text: `Sent to ${target} (${view.kind}${view.bot === undefined ? "" : ` of ${names.get(view.bot) ?? view.bot}`}): ${what(disposition)}.`, isError: false };
         } catch (err) {

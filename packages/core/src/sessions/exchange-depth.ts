@@ -54,6 +54,13 @@ export class ExchangeDepths {
     if (d !== undefined) this.#set(session, d);
   }
 
+  /** Another session's message folds into `session`'s RUNNING turn (no new turn starts): the exchange has gone at least as far as the
+   *  message says, so the depth only rises (two sessions whose turns are always running would otherwise never count). */
+  folded(session: string, input: TurnInput): void {
+    const d = depthStartedBy(input);
+    if (d !== undefined && d > this.depthOf(session)) this.#set(session, d);
+  }
+
   /** The person answered one of `session`'s cards or questions: it is back at depth 0. */
   personSpoke(session: string): void {
     this.#set(session, 0);
