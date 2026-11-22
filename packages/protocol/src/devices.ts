@@ -150,6 +150,15 @@ export const AccountView = z.object({
 });
 export type AccountView = z.infer<typeof AccountView>;
 
+/** The relay this computer's links use (§8.3): n0's public relays (the default), none (a pair that can't connect directly then
+ *  can't connect), or the person's own relay server by its address (`https://`). A cloud computer's relay and a Cloudflare
+ *  relay are relay plugins, which the links don't take yet. */
+export const RelayView = z.object({
+  mode: z.enum(["n0", "off", "custom"]),
+  url: utf16(2048, 1).optional(),
+});
+export type RelayView = z.infer<typeof RelayView>;
+
 /** No-account pairing (§8.1): a code or QR, plus the inherited 4-word check. */
 export const PairingView = z.object({
   pairingId: utf16(128, 1),
@@ -230,6 +239,16 @@ export const DEVICES_METHODS = {
     name: "device.pair.cancel", owner: "H", roles: ["app", "cli"], userOnly: true,
     params: z.object({ pairingId: utf16(128, 1) }), result: Ok,
     doc: "Cancels a pairing.",
+  }),
+  deviceRelayGet: defineMethod({
+    name: "device.relay.get", owner: "H", roles: ["app", "cli"],
+    params: Empty, result: RelayView,
+    doc: "Which relay this computer's links use: n0's public relays by default, none, or the person's own relay server (§8.3).",
+  }),
+  deviceRelaySet: defineMethod({
+    name: "device.relay.set", owner: "H", roles: ["app", "cli"], userOnly: true,
+    params: RelayView, result: RelayView,
+    doc: "Chooses the relay (the setup guide's relay page, §8.3): `n0`, `off`, or `custom` with the relay server's `https://` address. The links use it at once; a relay sees which devices are online and how much they send, never what.",
   }),
   accountStatus: defineMethod({
     name: "account.status", owner: "H", roles: ["app", "cli", "remote"],

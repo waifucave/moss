@@ -693,3 +693,32 @@ async function waitFor(cond: () => boolean, ms = 10_000): Promise<void> {
     await Bun.sleep(10);
   }
 }
+
+describe("the relay choice (§8.3, the setup guide's relay page), against a fake process", () => {
+  test("the sidecar starts on the relay the wire was given; setRelay ends it and the restart asks for the new one, keeping the seed and the lists", async () => {
+    const store = new MemorySecretStore();
+    const key = await DeviceKey.loadOrCreate(store);
+    const procs: FakeSidecar[] = [];
+    const wire = await SidecarWire.start({
+      binary: "moss-link", key, relay: "default", n0Lookup: false, restartBackoffMs: [20, 100],
+      spawn: () => { const p = new FakeSidecar(toHex(key.publicKey)); procs.push(p); return p; },
+    });
+    stops.push(() => wire.close());
+    const peer = new Uint8Array(32).fill(9);
+    wire.allow([peer]);
+    expect(procs[0]!.ops[0]).toMatchObject({ op: "init", relay: "default" });
+    // The same choice again does nothing.
+    wire.setRelay("default");
+    await Bun.sleep(60);
+    expect(procs.length).toBe(1);
+    // A relay of the person's own: the running sidecar ends, and the next one is told the address.
+    wire.setRelay("https://relay.example.test/");
+    expect(wire.relayChoice).toBe("https://relay.example.test/");
+    await waitFor(() => procs.length === 2);
+    expect(procs[1]!.ops[0]).toMatchObject({ op: "init", relay: "https://relay.example.test/", allow: [toHex(peer)] });
+    // And off.
+    wire.setRelay("disabled");
+    await waitFor(() => procs.length === 3);
+    expect(procs[2]!.ops[0]).toMatchObject({ op: "init", relay: "disabled" });
+  });
+});

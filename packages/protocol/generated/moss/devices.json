@@ -578,6 +578,98 @@
         "additionalProperties": false
       }
     },
+    "device.relay.get": {
+      "doc": "Which relay this computer's links use: n0's public relays by default, none, or the person's own relay server (§8.3).",
+      "owner": "H",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "n0",
+              "off",
+              "custom"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "device.relay.set": {
+      "doc": "Chooses the relay (the setup guide's relay page, §8.3): `n0`, `off`, or `custom` with the relay server's `https://` address. The links use it at once; a relay sees which devices are online and how much they send, never what.",
+      "owner": "H",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "userOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "n0",
+              "off",
+              "custom"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "n0",
+              "off",
+              "custom"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false
+      }
+    },
     "account.status": {
       "doc": "The waifucave account this computer is signed in with, if any (§8.1).",
       "owner": "H",
