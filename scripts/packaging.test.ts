@@ -10,6 +10,7 @@ import { AUTOSTART_SUBCOMMAND, INSTALLER_HOOKS, LAUNCHD_LABEL, autostartArgs } f
 import { linkBinaryName } from "../packages/core/src/links/sidecar-binary";
 import { AFTER_INSTALL_MARK, checkPackage, electronBuilderArgs, executablesOf, LINK_BUILD, LINK_OUTPUT, packageArchNames, parseBuildPackagesArgs, parseListing, REQUIRED_FILES, requiredFiles } from "./build-packages";
 import { caskFrom } from "./release-lib";
+import { windowsInstallFolder } from "./release/install-check";
 import { BUNDLED_PLUGIN_IDS, BUNDLED_PLUGINS_DIR, STAGED_PLUGINS } from "./release/bundled-plugins";
 import { renderWinget, wingetInstallerUrl } from "./winget";
 
@@ -439,10 +440,13 @@ describe("MOSS's Windows installer and Homebrew cask: removing one app leaves th
     const code = codeLines(read("packaging/windows/installer-moss.nsh"), ";");
     expect(code).toContain("!macro customUnInstall");
     expect(code).toContain("${ifNot} ${isUpdated}");
-    expect(code).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\MOSS Code\\MOSS Code.exe"');
+    expect(code).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\@waifucavemoss-desktop\\MOSS Code.exe"');
     expect(code).toContain(`nsExec::ExecToLog '"$INSTDIR\\resources\\daemon\\moss-core.exe" ${autostartArgs("remove").join(" ")}'`);
     // The other way: MOSS Code's hook leaves it to MOSS while MOSS is installed.
-    expect(codeLines(read("packaging/windows/installer.nsh"), ";")).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\MOSS\\MOSS.exe"');
+    expect(codeLines(read("packaging/windows/installer.nsh"), ";")).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\@waifucavemoss-moss\\MOSS.exe"');
+    // The folder names are the package names, as the NSIS installer made them on the Windows runner (CI's install-check proves it).
+    expect(windowsInstallFolder("code")).toBe("@waifucavemoss-desktop");
+    expect(windowsInstallFolder("moss")).toBe("@waifucavemoss-moss");
     for (const f of ["packaging/windows/installer.nsh", "packaging/windows/installer-moss.nsh"]) expect(codeLines(read(f), ";").join("\n"), f).not.toMatch(/\b(schtasks|systemctl|launchctl)\b/);
   });
 

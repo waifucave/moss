@@ -16,7 +16,7 @@
 
 !macro customUnInstall
   ${ifNot} ${isUpdated}
-    ${ifNot} ${FileExists} "$LOCALAPPDATA\Programs\MOSS\MOSS.exe"
+    ${ifNot} ${FileExists} "$LOCALAPPDATA\Programs\@waifucavemoss-moss\MOSS.exe"
       nsExec::ExecToLog '"$INSTDIR\resources\daemon\moss-core.exe" autostart remove'
       Pop $0
     ${endIf}

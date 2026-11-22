@@ -72,9 +72,16 @@ export function checkMac(dist: string, version: string): void {
   }
 }
 
-/** A per-user NSIS install lives under %LOCALAPPDATA%\Programs\<product>. */
-export function windowsInstallDir(localAppData: string, product: string): string {
-  return join(localAppData, "Programs", product);
+/** The folder electron-builder's per-user NSIS installer makes: the app's package name without the slash. */
+export function windowsInstallFolder(key: AppKey): string {
+  const dir = key === "code" ? "desktop" : "moss";
+  const name = (JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "apps", dir, "package.json"), "utf8")) as { name: string }).name;
+  return name.replace("/", "");
+}
+
+/** A per-user NSIS install lives under %LOCALAPPDATA%\Programs\<package name>. */
+export function windowsInstallDir(localAppData: string, key: AppKey): string {
+  return join(localAppData, "Programs", windowsInstallFolder(key));
 }
 
 /** For a failed install: what is in the per-user Programs folder and the usual machine-wide ones. */
@@ -86,7 +93,7 @@ function whereIs(local: string, product: string): string {
 export function checkWin(dist: string, version: string): void {
   const local = process.env.LOCALAPPDATA;
   if (local === undefined || local === "") throw new Error("no LOCALAPPDATA: a per-user install needs a user profile");
-  const dirs = { code: windowsInstallDir(local, "MOSS Code"), moss: windowsInstallDir(local, "MOSS") };
+  const dirs = { code: windowsInstallDir(local, "code"), moss: windowsInstallDir(local, "moss") };
   for (const [key, app] of Object.entries(APPS) as Array<[AppKey, (typeof APPS)[AppKey]]>) {
     const exe = join(dist, installersOf(version, "win", key)[0]!);
     // /S: silent (and a silent install doesn't start the app); it returns when the install is done.

@@ -3,11 +3,11 @@
 ;
 ; The uninstaller removes login start through the daemon's own command (never through schtasks) on a real uninstall, as
 ; installer.nsh does, but only when MOSS Code is not installed: it is the other app's engine too, and `autostart remove` stops
-; the daemon and deletes its task. A per-user install of each app lives in its own folder under %LOCALAPPDATA%\Programs.
+; the daemon and deletes its task. A per-user install of each app lives in its own folder under %LOCALAPPDATA%\Programs, named by the app's package name (@waifucavemoss-desktop, @waifucavemoss-moss: electron-builder's per-user default).
 
 !macro customUnInstall
   ${ifNot} ${isUpdated}
-    ${ifNot} ${FileExists} "$LOCALAPPDATA\Programs\MOSS Code\MOSS Code.exe"
+    ${ifNot} ${FileExists} "$LOCALAPPDATA\Programs\@waifucavemoss-desktop\MOSS Code.exe"
       nsExec::ExecToLog '"$INSTDIR\resources\daemon\moss-core.exe" autostart remove'
       Pop $0
     ${endIf}
