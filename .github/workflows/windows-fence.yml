@@ -86,4 +86,4 @@ jobs:
 
       - name: Core · the Windows fence's unit tests
         working-directory: packages/core
-        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
