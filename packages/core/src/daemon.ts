@@ -142,7 +142,9 @@ import { openPluginRegistry, type OpenedRegistry } from "./registry/open";
 import { PluginWorkshop } from "./registry/workshop";
 import { plainText } from "./bots/service";
 import { ClientBuilds } from "./registry/client-builds";
-import { botDriverFactory, botFileFence } from "./runtime-sdk/turn-loop/driver";
+import { botDriverFactory, botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "./runtime-sdk/turn-loop/driver";
+import { fencedSpawner } from "./fence/fenced-process";
+import { windowsShellTools } from "./fence/win-shell-tools";
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
@@ -4703,6 +4705,20 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             pathFolders: pathFolders(hostOs() === "windows" ? process.env.Path ?? process.env.PATH : process.env.PATH, hostOs()),
           });
         };
+        // Windows (lane WS): a bot's Bash and PowerShell are the core's (fence/win-shell-tools.ts), run through the fence's
+        // Windows leg and held to the same settings the runtime gets (`sandboxOf`, under the driver's floors), since the
+        // runtime has no Windows sandbox. Elsewhere none: the runtime's own Bash runs under Seatbelt or bubblewrap.
+        const winSpawner = process.platform === "win32" ? fencedSpawner({ fence }) : undefined;
+        const winFileFence = botFileFence(fence, mossHome, hostOs(), fence.home);
+        const winShellTools = (ctx: BotSessionContext) => winSpawner === undefined ? [] : windowsShellTools({
+          spawner: winSpawner, caller: ctx.caller, kind: ctx.kind, cwd: () => ctx.paths.scratch,
+          sandbox: () => {
+            const ff = winFileFence(ctx);
+            const floored = botSandbox(withBotKeyReads(withSecretReads(sandboxOf(ctx), ff), ff), { ...(ff.userHome === undefined ? {} : { userHome: ff.userHome }), ...(ff.os === undefined ? {} : { os: ff.os }) });
+            return floored;
+          },
+          userHome: fence.home, temp: fence.temp, mossHome,
+        });
         botShellRoots = (conversation, bot, level) => {
           const session = conversation ?? "";
           const paths = botPaths(mossHome, bot);
@@ -4844,6 +4860,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             broker, grants, pathClass: folderClass, home: userHome, levelOf: levelOfSession, writable: writableAlready, mossHome,
             pathFolders: () => pathFolders(hostOs() === "windows" ? process.env.Path ?? process.env.PATH : process.env.PATH, hostOs()),
           }, ctx, origin)]),
+          ...winShellTools(ctx),
         ],
         registry: registry,
         epoch: () => main.epoch() ?? 0,

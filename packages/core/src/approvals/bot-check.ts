@@ -344,6 +344,11 @@ export function outsideSandboxInputError(tool: string, input: Record<string, unk
 /** The card's sentence for a command that leaves the sandbox: MOSS's own words, so a `text` field. */
 export const OUTSIDE_SANDBOX_SENTENCE = "It runs as you, with the network and everything your account can reach.";
 
+/** The same sentence on Windows, where what the user lets out is narrower and the card says so (lane WS,
+ *  `fence/win-shell-tools.ts` rule E): the command still runs as MOSS's sandbox account, can write the user's home and
+ *  temp folder, never MOSS's own settings and secrets, and has no network. */
+export const OUTSIDE_SANDBOX_SENTENCE_WINDOWS = "It can write your home folder, but not MOSS's own settings, and it has no network.";
+
 /** MOSS's words after the bot's name on the card for a command that leaves the sandbox (`headlineByBot`). */
 export const OUTSIDE_SANDBOX_HEADLINE_WORDS = "wants to run a command outside the sandbox";
 
@@ -676,7 +681,7 @@ export function botApprovalCheck(
       // The headline names the bot as the user sees it: the broker writes it from the bot side, never from here.
       req.headlineByBot = OUTSIDE_SANDBOX_HEADLINE_WORDS;
       req.fields.command = { type: "code", code: shownCode(command), language: tool === "PowerShell" ? "powershell" : "sh" };
-      req.fields.reason = { type: "text", text: OUTSIDE_SANDBOX_SENTENCE };
+      req.fields.reason = { type: "text", text: process.platform === "win32" ? OUTSIDE_SANDBOX_SENTENCE_WINDOWS : OUTSIDE_SANDBOX_SENTENCE };
       // The call's own time limit, when it carries one (validated above): one plain line MOSS builds, sealed like
       // the other card fields. When absent, no line. The bot's `description` is never shown as a fact: the bot wrote it.
       if (typeof input.timeout === "number") req.fields.detail = { type: "text", text: outsideSandboxTimeoutLine(input.timeout) };

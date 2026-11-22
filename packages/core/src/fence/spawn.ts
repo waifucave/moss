@@ -27,6 +27,13 @@ export interface FencedRun {
   readonly stdin?: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
+  /** Windows: the shell the command runs in, Git Bash (the default) or Windows PowerShell (the PowerShell tool).
+   *  macOS and Linux run `/bin/sh` whatever this says. */
+  readonly shell?: "bash" | "powershell";
+  /** Windows: the runtime sandbox settings this run is held to, when the caller has them (a bot's Bash and PowerShell:
+   *  the very settings its runtime's Seatbelt or bubblewrap get on macOS and Linux, `botSandboxSettings`). Without
+   *  them the run's sandbox is drawn from the fence's policy for `who`. macOS and Linux ignore it. */
+  readonly sandbox?: import("@waifucave/clover-agent-sdk").SandboxSettingsConfig;
   /** Whose run it is: the fence's set, the home default-deny's allows, and the network rule are this caller's. */
   readonly who: {
     readonly caller: Caller; readonly hook?: string;

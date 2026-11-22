@@ -71,10 +71,11 @@ import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
  *  `TaskStop` and `Agent` are not: the core's take those names. Nor are `Skill` and `ToolSearch` (retired for
  *  `Glossary`), `NotebookEdit`, worktrees and plan mode (the coding agents'), or the web tools (the web plugin's). */
 export const BOT_BUILTIN_TOOLS: readonly string[] = [
-  "Bash", "Read", "Write", "Edit", "Glob", "Grep", "AskUserQuestion",
+  // On Windows the core serves Bash and PowerShell itself (`fence/win-shell-tools.ts`, the daemon's core tools): the
+  // runtime has no Windows sandbox, so its own are left out here and the core's plain names take theirs.
+  ...(process.platform === "win32" ? [] : ["Bash"]), "Read", "Write", "Edit", "Glob", "Grep", "AskUserQuestion",
   "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", "Monitor",
   "ListMcpResourcesTool", "ReadMcpResourceTool",
-  ...(process.platform === "win32" ? ["PowerShell"] : []),
 ];
 
 /** What the runtime was given of the plugins' servers: each server's name and each of its tools with how it loads. A tool turned
