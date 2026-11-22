@@ -594,12 +594,6 @@ class ProjectorImpl implements Projector {
         const text = assistantText(assistant);
         if (text.length > 0) out.push({ type: "assistant_message", sessionId: this.deps.sessionId, threadId, text });
         out.push(...toolCalls(assistant, this.deps.sessionId, threadId, (n) => this.renameTool(n), this.deps.toolDisplayTitle));
-        // MCP Apps: each call's runtime name and input, so its result can tell whether the tool names a page.
-        if (this.deps.onToolUse !== undefined) {
-          for (const b of assistant.message.content) {
-            if (b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") { try { this.deps.onToolUse(b.id, b.name, b.input); } catch { /* display only */ } }
-          }
-        }
         // A spawning call opens a child thread. `thread_started` follows its own `tool_call` so the
         // transcript reads parent-call-then-child, and the child's threadId IS the tool_use id —
         // the same identifier its spawn's `tool_result` and its background-task frames carry

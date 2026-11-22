@@ -31,7 +31,9 @@ import type { HookSession, HookSource } from "../runtime-sdk/turn-loop/hooks";
 import { partsServe } from "../runtime-sdk/turn-loop/only-backends";
 import { toolDisplay } from "../runtime-sdk/tool-display";
 import type { BotMcpServer, McpRunner } from "../runtime-sdk/turn-loop/servers";
-import type { AgentSessionFacts, BridgeCallContext, BridgeToolDef, BridgeToolSource, GlossaryAnswer } from "./bridge/tools";
+import type { McpAppsService } from "../mcp-apps/service";
+import type { UiResourceContent } from "../mcp-apps/resource";
+import type { AgentSessionFacts, BridgeCallContext, BridgeToolDef, BridgeToolSource, GlossaryAnswer, PendingApp } from "./bridge/tools";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 
 /** The longest bridge tool name: the agent sees `mcp__<bridge server>__<name>`, many clients refuse a full name past
@@ -56,6 +58,9 @@ export interface AgentPluginReachDeps {
   /** J's router: runs a call where its server is. */
   runner: McpRunner;
   judge: AgentToolJudge;
+  /** MCP Apps (`mcp-apps/`): where a plugin tool's page is bound, and the plugin MCP's own reads (`PluginMcp.uiTools`, `readUi`). Without
+   *  them a result shows as text. */
+  mcpApps?: { service: McpAppsService; ui: { tools(server: string, tool: string): { name: string; ui?: { resourceUri?: string; visibility: readonly ("model" | "app")[] } }[]; read(server: string, tool: string, uri: string, as: Caller, o?: { signal?: AbortSignal }): Promise<UiResourceContent[]> } };
   /** A call's result as its tool returned it, before any hook, in the session `agentCheckContext` makes: what the
    *  conversation saw, as a bot's turn reports it (a web search's hits, for the seen addresses). */
   observeResult?: (ctx: BotSessionContext, served: string, result: unknown, input: Record<string, unknown>) => void;
@@ -188,6 +193,46 @@ export function bridgeToolDescription(t: Pick<BridgeTool, "server" | "tool" | "n
 
 const text = (t: string) => ({ content: [{ type: "text", text: t }], isError: true });
 
+/** MCP Apps: the page a plugin tool's successful result names, with the doors a page of it gets: this server's tools only, and
+ *  this session's own gate for a call (the plugins' `tool.before` hooks, then the same judge a model's call meets). */
+function pendingApp(
+  d: AgentPluginReachDeps, s: AgentSessionFacts, ctx: BridgeCallContext, server: BotMcpServer, tool: BotMcpServer["tools"][number],
+  call: { input: Record<string, unknown>; result: { content: unknown[]; isError: boolean } },
+): PendingApp | undefined {
+  const resourceUri = tool.ui?.resourceUri;
+  const apps = d.mcpApps;
+  if (resourceUri === undefined || apps === undefined) return undefined;
+  const as = agentCallerOf(s);
+  return {
+    resourceUri,
+    bind: (callId) => apps.service.bind(s.id, callId, {
+      pluginId: server.plugin, server: server.server, tool: tool.name, resourceUri, input: call.input, result: { content: call.result.content },
+      listTools: async () => apps.ui.tools(server.server, tool.name).map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { _meta: { ui: t.ui } }) })),
+      readResource: (uri) => apps.ui.read(server.server, tool.name, uri, as),
+      callTool: async (name, args, signal) => {
+        const r = await d.runner.run(server.server, name, args, { session: s.id, as, callId: `mcp-app-${crypto.randomUUID()}`, signal });
+        return { content: Array.isArray(r.result.content) ? r.result.content : [], ...(r.result.isError === true ? { isError: true } : {}) };
+      },
+      approve: async (name, args, signal, cardId) => {
+        const served = `mcp__${server.server}__${name}`;
+        try {
+          const hooks = d.hooks?.() ?? (d.hooks === undefined ? "none" : undefined);
+          if (hooks === undefined) return { allowed: false, message: `${served} was refused: MOSS's plugin hooks aren't running yet.` };
+          if (hooks !== "none") {
+            const hookSession: HookSession = { id: s.id, kind: s.kind, caller: as, ...(s.bot === undefined ? {} : { bot: s.bot }), computer: s.computer, backend: s.backend };
+            const before = await hooks.toolBefore(hookSession, { name: served, callId: cardId }, args, signal);
+            if (before.deny !== undefined) return { allowed: false, message: `${served} was refused by a plugin's hook: ${before.deny}` };
+          }
+          const verdict = await d.judge(s, ctx, { served, input: args, callId: cardId });
+          return verdict.allowed ? { allowed: true } : { allowed: false, message: verdict.message };
+        } catch {
+          return { allowed: false, message: `${served} was not run: the approval couldn't be asked.` };
+        }
+      },
+    }),
+  };
+}
+
 /** The bridge's plugin tools for one daemon. */
 export function agentPluginTools(d: AgentPluginReachDeps): BridgeToolSource {
   const listing = (s: AgentSessionFacts | undefined) => (s === undefined ? new Map<string, BridgeTool>() : bridgeToolsOf(d.servers(s.kind, s.backend, s.bot)));
@@ -231,7 +276,10 @@ export function agentPluginTools(d: AgentPluginReachDeps): BridgeToolSource {
         try { d.observeResult?.(agentCheckContext(s, ctx.level), served, out, verdict.input); } catch { /* an observer never fails a call */ }
         // What its successful result shows in the conversation, as a bot's (`ToolDisplays.put`: a success's valid one only).
         const display = out.isError ? undefined : toolDisplay(result.structuredContent);
-        const shown = <T extends { content: unknown[]; isError: boolean }>(r: T) => (display === undefined || r.isError ? r : { ...r, display });
+        // MCP Apps: a successful call of a tool that names a page: the page waits for the agent's own record of this call, whose
+        // id is the agent's (`PendingApp.bind`), and its doors are this call's own: the server's, and this session's gate.
+        const app = out.isError ? undefined : pendingApp(d, s, ctx, found.server, found.tool, { input: verdict.input, result: out });
+        const shown = <T extends { content: unknown[]; isError: boolean }>(r: T) => (display === undefined && app === undefined) || r.isError ? r : { ...r, ...(display === undefined ? {} : { display }), ...(app === undefined ? {} : { app }) };
         if (hooks === "none") return shown(out);
         at("the plugins' tool hooks (after)");
         const after = await hooks.toolAfter(hookSession, { name: served, callId: c.callId }, verdict.input, out, ctx.signal);

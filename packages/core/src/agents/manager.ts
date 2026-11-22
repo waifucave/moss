@@ -1407,6 +1407,7 @@ export class AgentManager {
         });
         // What its result shows stays in MOSS, for the conversation; the agent gets the content.
         if (r.display !== undefined && !r.isError) e.shows.put(c.tool, c.input, r.display);
+        if (r.app !== undefined && !r.isError) e.shows.putApp(c.tool, c.input, r.app);
         return { content: r.content, isError: r.isError };
       },
       sendMessage: async (id, m) => {

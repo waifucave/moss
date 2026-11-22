@@ -4240,8 +4240,8 @@ function uiRowRunners(ctx: ExampleCtx, session: string, launch?: Awaited<ReturnT
     [CANVAS_WAITING_STEP, () => canvasWaitingStep(ctx)],
     [CANVAS_TITLE_STEP, () => canvasTitleStep(ctx)],
     // MCP Apps (lane MA, §14.2 item 66): a tool's ui:// page drawn in an isolated view, and its own calls under the session's approvals.
-    [MCP_APPS_VIEW_STEP, () => mcpAppsViewStep(ctx, bot)],
-    [MCP_APPS_CALL_STEP, () => mcpAppsCallStep(ctx, bot)],
+    [MCP_APPS_VIEW_STEP, () => mcpAppsViewStep(ctx, session)],
+    [MCP_APPS_CALL_STEP, () => mcpAppsCallStep(ctx, session)],
     // The plugin builder's 15 examples installed and drawn on the app (checklist 5.4), and a bot's plugin that takes a plugin (5.12).
     [BUILDER_EXAMPLES_STEP, () => builderExamplesStep(ctx, session)],
     [WORKSHOP_POINTS_STEP, () => workshopPointsStep(ctx, bot)],

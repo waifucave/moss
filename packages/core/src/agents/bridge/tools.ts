@@ -5,7 +5,14 @@
 //
 // Plugin tools come from lane B's registry (B-M2: the plugins scoped to `agents` or `both`); until then the source
 // is empty, and `BridgeToolSource` is the seam it plugs into.
-import { CROSS_SESSION_TOOLS, SESSION_SEND_LIMIT, type Level, type ReachableSession, type ToolDisplay, type TurnOrigin } from "@waifucave/moss-protocol";
+import { CROSS_SESSION_TOOLS, SESSION_SEND_LIMIT, type Level, type ReachableSession, type ToolApp, type ToolDisplay, type TurnOrigin } from "@waifucave/moss-protocol";
+
+/** MCP Apps: a successful call's page, waiting for the agent's own record of the call (its id is the agent's, not the bridge's):
+ *  `bind` keeps the page's site under that id and gives the event's stamp. */
+export interface PendingApp {
+  resourceUri: string;
+  bind(callId: string): ToolApp;
+}
 
 export interface BridgeToolDef {
   name: string;
@@ -73,7 +80,7 @@ export interface BridgeToolSource {
   tools(sessionId: string, session?: AgentSessionFacts): Promise<BridgeToolDef[]>;
   /** `display`: what a plugin tool's successful result showed (its `structuredContent` as a `ToolDisplay`), for the
    *  conversation only; the bridge never passes it to the agent. */
-  call(sessionId: string, call: { callId: string; tool: string; input: unknown }, ctx: BridgeCallContext): Promise<{ content: unknown[]; isError: boolean; display?: ToolDisplay }>;
+  call(sessionId: string, call: { callId: string; tool: string; input: unknown }, ctx: BridgeCallContext): Promise<{ content: unknown[]; isError: boolean; display?: ToolDisplay; app?: PendingApp }>;
   /** The plugins' own instructions, which the bridge sends as its server instructions and `Glossary` also serves. */
   instructions?(sessionId: string, session?: AgentSessionFacts): Promise<string>;
   /** Waits, at most `timeoutMs`, for the plugins' servers installed or enabled a moment ago to have listed their tools, so a

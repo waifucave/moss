@@ -8,6 +8,7 @@ import type { BotMcpServer } from "../../runtime-sdk/turn-loop/servers";
 import { AgentDriver } from "../driver";
 import { agentPluginTools } from "../plugin-reach";
 import { AgentToolDisplays, AGENT_DISPLAYS_MAX } from "../tool-shows";
+import { McpAppsService } from "../../mcp-apps/service";
 
 const PIN = { kind: "note", label: "Pinned", value: "milk, eggs", swatch: "#ffcc00" };
 const BRIDGE = "mcp__moss_0123456789abcdef__notes__pin";
@@ -128,5 +129,90 @@ describe("the bridge's Glossary answer", () => {
     const text = glossaryResultText({ results: [], loaded: [{ name: "kit:haiku", kind: "skill", text: '<skill name="kit:haiku">\nfive "seven" five\n</skill>' }, { name: "x", found: false }] });
     expect(text).toContain('\n\n<skill name="kit:haiku">\nfive "seven" five\n</skill>');
     expect(JSON.parse(text.slice(0, text.indexOf("\n\n<skill")))).toEqual({ results: [], loaded: [{ name: "kit:haiku", kind: "skill", text: "(below)" }, { name: "x", found: false }] });
+  });
+});
+
+describe("MCP Apps through the bridge", () => {
+  const server: BotMcpServer = {
+    server: "charts", plugin: "acme.charts",
+    tools: [
+      { name: "plot", inputSchema: { type: "object" }, ui: { resourceUri: "ui://charts/p", visibility: ["model", "app"] } },
+      { name: "plain", inputSchema: { type: "object" } },
+    ] as BotMcpServer["tools"],
+  };
+  const session = { id: "s_code", kind: "coding" as const, backend: "moss-code", computer: "Studio", root: "/tmp" };
+  const ctx = { computer: "Studio", origin: "user" as const, session };
+
+  function setup(opts: { allow: { now: boolean } } = { allow: { now: true } }) {
+    const service = new McpAppsService({ version: "0", deliver: async () => undefined });
+    const ran: string[] = [];
+    const asked: string[] = [];
+    const tools = agentPluginTools({
+      servers: () => [server],
+      runner: { run: async (_s, tool) => { ran.push(tool); return { result: { content: [{ type: "text", text: `ran ${tool}` }], isError: false }, computer: "Studio" }; } },
+      judge: async (_s, _c, call) => { asked.push(call.served); return opts.allow.now ? { allowed: true, input: call.input } : { allowed: false, message: "No." }; },
+      registry: { entries: () => [], get: () => undefined, list: () => [], points: () => [] } as never,
+      mcpApps: {
+        service,
+        ui: {
+          tools: () => [{ name: "plot", ui: { resourceUri: "ui://charts/p", visibility: ["model", "app"] } }, { name: "refresh", ui: { visibility: ["app"] } }],
+          read: async (_s, _t, uri) => [{ uri, mimeType: "text/html;profile=mcp-app", text: "<p>chart</p>" }],
+        },
+      },
+    });
+    return { service, tools, ran, asked };
+  }
+
+  test("a successful call of a tool that names a page comes back with it; one that names none, and a failed one, don't", async () => {
+    const { tools } = setup();
+    const r = await tools.call("s_code", { callId: "b1", tool: "charts__plot", input: {} }, ctx);
+    expect(r.app?.resourceUri).toBe("ui://charts/p");
+    expect((await tools.call("s_code", { callId: "b2", tool: "charts__plain", input: {} }, ctx)).app).toBeUndefined();
+  });
+
+  test("the agent's own call id gets the page: the driver stamps the result, the wire shows it, and the page opens and calls its server under the session's judge", async () => {
+    const { service, tools, ran, asked } = setup();
+    const shows = new AgentToolDisplays();
+    const title = "mcp__moss_0123456789abcdef__charts__plot";
+    const r = await tools.call("s_code", { callId: "b1", tool: "charts__plot", input: { q: 1 } }, ctx);
+    shows.putApp("charts__plot", { q: 1 }, r.app!);
+    const agent = scriptedSession([
+      { type: "tool_call", id: "t1", kind: "other", title, status: "pending", rawInput: { q: 1 } },
+      { type: "tool_call_update", id: "t1", status: "completed", output: "ran plot" },
+    ]);
+    const driver = new AgentDriver({ start: async () => agent, promptOf: async (i) => ({ text: (i as { text?: string }).text ?? "" }), toolShows: shows, coalesceMs: 0 });
+    const recorded: { type: string; [k: string]: unknown }[] = [];
+    const ctl = { origin: "user", signal: new AbortController().signal, onFold: () => () => {}, record: (e: { type: string }) => recorded.push(e as never) } as unknown as TurnControl;
+    await driver.turn({ from: "user", text: "plot", device: "d", sentAt: 1, clientMessageId: "m1" } as never, ctl);
+    const wire = projectRecords(recorded.map((event, seq) => ({ type: "driver", seq, sessionId: "s_code", ts: 1, event })) as SessionRecord[], { kind: "coding" });
+    expect(wire.find((e) => e.type === "tool_result")?.app).toEqual({ resourceUri: "ui://charts/p" });
+    // The page is bound under the AGENT's call id, for this session only.
+    const open = await service.open("s_code", "t1");
+    expect(open.html).toBe("<p>chart</p>");
+    await expect(service.open("s_code", "b1")).rejects.toThrow();
+    await expect(service.open("s_other", "t1")).rejects.toThrow();
+    await service.request("s_code", "t1", { jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} });
+    // Its app-only tool: the session's judge is asked first, then the server runs it.
+    const call = await service.request("s_code", "t1", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "refresh", arguments: {} } });
+    expect(asked).toEqual(["mcp__charts__plot"].concat(["mcp__charts__refresh"]));
+    expect(ran).toEqual(["plot", "refresh"]);
+    expect((call.messages[0] as { result?: unknown }).result).toBeDefined();
+  });
+
+  test("a call the judge refuses never runs, and the page is told its words; the page is taken once", async () => {
+    const allow = { now: true };
+    const { service, tools, ran } = setup({ allow });
+    const shows = new AgentToolDisplays();
+    const r = await tools.call("s_code", { callId: "b1", tool: "charts__plot", input: {} }, ctx);
+    shows.putApp("charts__plot", {}, r.app!);
+    const title = "mcp__moss_0123456789abcdef__charts__plot";
+    expect(shows.takeApp(title, {}, "t9")).toEqual({ resourceUri: "ui://charts/p" });
+    expect(shows.takeApp(title, {}, "t10")).toBeUndefined();
+    await service.open("s_code", "t9");
+    allow.now = false;
+    ran.length = 0;
+    const call = await service.request("s_code", "t9", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "refresh", arguments: {} } });
+    expect((call.messages[0] as { error: { message: string } }).error.message).toBe("No.");
+    expect(ran).toEqual([]);
   });
 });

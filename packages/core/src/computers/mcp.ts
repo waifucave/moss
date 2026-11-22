@@ -39,6 +39,15 @@ export interface McpToolDef {
   name: string;
   description?: string;
   inputSchema: { type: "object"; properties?: Record<string, unknown>; required?: string[]; [k: string]: unknown };
+  /** MCP Apps (`mcp-apps/`): the tool's `_meta.ui` as the engine keeps it, from a local listing only (a remote computer's
+   *  listing carries none): the page it names (`ui://`, checked) and who may call it. */
+  ui?: ToolUi;
+}
+
+/** `_meta.ui` of a tool, reduced: the page's address when it names one, and who may call the tool (default both). */
+export interface ToolUi {
+  resourceUri?: string;
+  visibility: readonly ("model" | "app")[];
 }
 
 /** Where a server runs: local ones on the computers it is installed (or ticked) on, in order; remote ones anywhere. */

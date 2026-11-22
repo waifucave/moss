@@ -14,6 +14,7 @@
 import type { Caller } from "@waifucave/moss-protocol";
 import type { McpSdkServerConfigWithInstance, WinterMcpServerInstance } from "@waifucave/clover-agent-sdk";
 import { isContractError } from "../../contracts/common";
+import type { ToolUi } from "../../computers/mcp";
 
 /** A core tool in lane K's neutral shape (`agents/tools.ts`, `bots/tools.ts`). */
 export interface CoreToolDef {
@@ -52,6 +53,8 @@ export interface BotMcpTool {
   /** The tool's own title, for the conversation only (`tool_call.displayTitle`): never in what the runtime lists to the
    *  model, never on a card. */
   title?: string;
+  /** MCP Apps: the page this tool names (its `_meta.ui`), when it has one. */
+  ui?: ToolUi;
 }
 
 /** A plugin's MCP server as the session sees it (lanes B and D's host, J's placement). */
@@ -120,6 +123,9 @@ export function routedMcpServer(o: {
    *  (`ToolDisplays`, which keeps only a success's valid display). The runtime, and so the model, gets the content
    *  alone, as before. */
   displays?: { put(callId: string, result: { isError?: unknown; structuredContent?: unknown }): void; drop(callId: string): void };
+  /** MCP Apps: a call that succeeded, by call id, with the tool and its input, so a tool that names a page can be bound to
+   *  its page (`mcp-apps/`); a call that failed or was cancelled is dropped. */
+  apps?: { put(callId: string, call: { tool: string; input: Record<string, unknown>; result: { content: unknown[]; isError?: boolean } }): void; drop(callId: string): void };
 }): McpSdkServerConfigWithInstance {
   const { server } = o;
   const names = new Set(server.tools.map((t) => t.name));
@@ -140,12 +146,17 @@ export function routedMcpServer(o: {
         });
         o.onRan?.({ server: server.server, tool: name, computer });
         // A call cancelled while it ran shows nothing: its result never reaches the conversation as a success.
-        if (extra?.signal?.aborted === true) o.displays?.drop(callId);
-        else o.displays?.put(callId, result);
+        if (extra?.signal?.aborted === true) { o.displays?.drop(callId); o.apps?.drop(callId); }
+        else {
+          o.displays?.put(callId, result);
+          if (result.isError === true) o.apps?.drop(callId);
+          else o.apps?.put(callId, { tool: name, input: args as Record<string, unknown>, result: { content: result.content } });
+        }
         return { content: Array.isArray(result.content) && result.content.length > 0 ? result.content : [{ type: "text", text: "" }], isError: result.isError === true };
       } catch (err) {
         // A call that failed, timed out or was cancelled: nothing of it waits to be shown.
         o.displays?.drop(callId);
+        o.apps?.drop(callId);
         const msg = err instanceof Error ? err.message : String(err);
         return text(isContractError(err) ? `${msg} (${err.code})` : msg, true);
       }

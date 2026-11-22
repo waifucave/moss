@@ -15,7 +15,7 @@
 import type { AgentEvent, AgentSession, AgentTurnEnd } from "../contracts/agent-backend";
 import { isContractError } from "../contracts/common";
 import type { SessionDriver, TurnControl, TurnEnd, TurnInput } from "../contracts/session-host";
-import type { ToolDisplay, TurnOrigin } from "@waifucave/moss-protocol";
+import type { ToolApp, ToolDisplay, TurnOrigin } from "@waifucave/moss-protocol";
 
 export interface AgentDriverOptions {
   /** Starts the agent (or reattaches to it); called once, by the first turn. */
@@ -54,6 +54,8 @@ export interface AgentToolShows {
   title(callTitle: string): string | undefined;
   /** What the call's result showed, by its title and input, taken once; none for a call with no display. */
   take(callTitle: string, rawInput: unknown): ToolDisplay | undefined;
+  /** MCP Apps: the page a plugin tool's call named, bound under the agent's call id; taken once. */
+  takeApp?(callTitle: string, rawInput: unknown, callId: string): ToolApp | undefined;
 }
 
 /** The most calls whose title and input the driver keeps for their end. */
@@ -64,7 +66,7 @@ export type AgentLogEvent =
   | { type: "agent_text"; text: string }
   | { type: "agent_thought"; text: string }
   | { type: "agent_tool_call"; id: string; kind: string; title: string; status: string; rawInput?: unknown; displayTitle?: string }
-  | { type: "agent_tool_call_update"; id: string; status: string; refused?: boolean; closedByMoss?: boolean; output?: string; display?: ToolDisplay }
+  | { type: "agent_tool_call_update"; id: string; status: string; refused?: boolean; closedByMoss?: boolean; output?: string; display?: ToolDisplay; app?: ToolApp }
   | { type: "agent_usage"; inputTokens: number; outputTokens: number }
   /** The call `id` started a subagent of the agent's own (§9.5): the session's view lists it as a row (the host's
    *  graph); never sent to clients as an event of its own. */
@@ -167,7 +169,8 @@ export class AgentDriver implements SessionDriver {
         this.#calls.delete(e.id);
         if (call === undefined || e.status !== "completed" || e.refused === true) return e;
         const display = shows.take(call.title, call.rawInput);
-        return display === undefined ? e : { ...e, display };
+        const app = shows.takeApp?.(call.title, call.rawInput, e.id);
+        return display === undefined && app === undefined ? e : { ...e, ...(display === undefined ? {} : { display }), ...(app === undefined ? {} : { app }) };
       }
     } catch {
       // Display only: a lookup that throws shows nothing more.

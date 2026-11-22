@@ -7,7 +7,9 @@
 // ends: by the tool its title names (`mcp__<bridge server>__<tool>`, or any title that holds the tool's bridge name)
 // and, of two calls of one tool, the one with the same input first. Display only: nothing here decides anything.
 import type { ToolDisplay } from "@waifucave/moss-protocol";
+import type { ToolApp } from "@waifucave/moss-protocol";
 import type { AgentToolShows } from "./driver";
+import type { PendingApp } from "./bridge/tools";
 
 /** The most results kept waiting for their call's end (a call the agent never reported ending). */
 export const AGENT_DISPLAYS_MAX = 64;
@@ -27,6 +29,8 @@ export class AgentToolDisplays implements AgentToolShows {
   /** The bridge tools' declared titles, by bridge name, as the session's last listing gave them. */
   #titles = new Map<string, string>();
   readonly #waiting: { tool: string; input: string; display: ToolDisplay }[] = [];
+  /** The pages (MCP Apps) successful results named, waiting the same way. */
+  readonly #pages: { tool: string; input: string; app: PendingApp }[] = [];
 
   /** The session's bridge listing now (its plugin tools' titles). */
   listed(tools: readonly { name: string; displayTitle?: string }[]): void {
@@ -37,6 +41,23 @@ export class AgentToolDisplays implements AgentToolShows {
   put(tool: string, input: unknown, display: ToolDisplay): void {
     this.#waiting.push({ tool, input: inputKey(input), display });
     while (this.#waiting.length > AGENT_DISPLAYS_MAX) this.#waiting.shift();
+  }
+
+  /** A bridge call's successful result named a page. */
+  putApp(tool: string, input: unknown, app: PendingApp): void {
+    this.#pages.push({ tool, input: inputKey(input), app });
+    while (this.#pages.length > AGENT_DISPLAYS_MAX) this.#pages.shift();
+  }
+
+  /** The agent's call `callId` ended: the page its bridge call named, bound under that id, taken once. */
+  takeApp(callTitle: string, rawInput: unknown, callId: string): ToolApp | undefined {
+    const tool = this.#toolOf(callTitle, this.#pages.map((w) => w.tool));
+    if (tool === undefined) return undefined;
+    const key = inputKey(rawInput);
+    let at = this.#pages.findIndex((w) => w.tool === tool && w.input === key);
+    if (at < 0) at = this.#pages.findIndex((w) => w.tool === tool);
+    if (at < 0) return undefined;
+    return this.#pages.splice(at, 1)[0]!.app.bind(callId);
   }
 
   #toolOf(callTitle: string, known: Iterable<string>): string | undefined {

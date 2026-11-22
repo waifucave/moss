@@ -204,7 +204,7 @@ export function isErrorResult(block: ContentBlock): boolean {
  */
 export function toolResults(
   frame: UserFrame, sessionId: string, threadId: string, takeDisplay?: (callId: string) => ToolDisplay | undefined,
-  takeApp?: (callId: string, result: { output: string; isError: boolean }) => ToolApp | undefined,
+  takeApp?: (callId: string) => ToolApp | undefined,
 ): ProjectedEvent[] {
   const out: ProjectedEvent[] = [];
   for (const b of frame.message.content) {
@@ -223,7 +223,9 @@ export function toolResults(
     const display = isError ? undefined : taken;
     const output = toolResultOutput(b);
     // MCP Apps: the page the call's tool names (`ProjectorDeps.takeToolApp`), taken once, only for a success.
-    const app = takeApp?.(callId, { output, isError });
+    // (taken for a failed call too, so it never waits for a later result, and dropped).
+    const takenApp = takeApp?.(callId);
+    const app = isError ? undefined : takenApp;
     out.push({
       type: "tool_result", sessionId, threadId, callId, output, isError,
       ...(app === undefined ? {} : { app }),
