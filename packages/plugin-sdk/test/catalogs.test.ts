@@ -411,7 +411,9 @@ describe("tokens", () => {
     // The sidebar's tint lighter than F's measured 70% since the owner's try 21 (it read as solid): 40% and 35%.
     expect(value("sidebar.tint")).toEqual(["color", "#F5F5F566", "#20202059"]);
     expect(value("sidebar.solid")).toEqual(["color", "#F5F5F5", "#202020"]);
-    expect(value("titlebar.tint")).toEqual(["color", "#FFFFFFC7", "#191919C7"]);
+    // The bar's tint is the sidebar's, by the owner's word (2026-11-22): one glass for both.
+    expect(value("titlebar.tint")).toEqual(["color", "#F5F5F566", "#20202059"]);
+    expect(value("titlebar.tint").slice(1)).toEqual(value("sidebar.tint").slice(1));
     expect(value("titlebar.blur")).toEqual(["dimension", "16px", undefined]);
     expect(value("titlebar.height")).toEqual(["dimension", "45px", undefined]);
     expect(value("color.scrim")).toEqual(["color", "#00000033", "#00000080"]);

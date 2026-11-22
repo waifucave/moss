@@ -142,9 +142,9 @@
   --moss-avatar-exposure: 1;
 
   /* The moss plugin's own tokens, until B's catalog has them. */
-  --moss-plugin-moss-sidebar-tint: #F5F5F5B3; /* The sidebar over the window's material (request: a catalog sidebar tint). */
+  --moss-plugin-moss-sidebar-tint: #F5F5F566; /* The sidebar over the window's material (request: a catalog sidebar tint). */
   --moss-plugin-moss-sidebar-solid: #F5F5F5; /* The sidebar with no material behind it: Linux, or a window without one. */
-  --moss-plugin-moss-bar-tint: #FFFFFFC7; /* The title bar over the transcript. */
+  --moss-plugin-moss-bar-tint: #F5F5F566; /* The title bar over the transcript. */
   --moss-plugin-moss-bar-blur: 16px; /* The title bar's backdrop blur. */
   --moss-plugin-moss-bar-height: 45px; /* The title bar's height, its rule included. */
   --moss-plugin-moss-scrim: #00000033; /* The layer behind a dialog (request: color.scrim). */
@@ -217,9 +217,9 @@
   --moss-avatar-light-rim: #FF9CC9;
   --moss-avatar-exposure: 0.95;
 
-  --moss-plugin-moss-sidebar-tint: #202020B3;
+  --moss-plugin-moss-sidebar-tint: #20202059;
   --moss-plugin-moss-sidebar-solid: #202020;
-  --moss-plugin-moss-bar-tint: #191919C7;
+  --moss-plugin-moss-bar-tint: #20202059;
   --moss-plugin-moss-scrim: #00000080;
   --moss-plugin-moss-diff-added-soft: #8CC28324;
   --moss-plugin-moss-diff-removed-soft: #DA6F8024;

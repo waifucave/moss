@@ -79,7 +79,8 @@ export const TOKENS: readonly TokenInfo[] = [
   // keeps the text readable, as a native sidebar's does; the tint only evens it.
   t("sidebar.tint", "color", "#F5F5F566", "#20202059", "The sidebar over the window's material."),
   t("sidebar.solid", "color", "#F5F5F5", "#202020", "The sidebar where the window has no material (Linux)."),
-  t("titlebar.tint", "color", "#FFFFFFC7", "#191919C7", "The title bar over what scrolls under it."),
+  // The same tint as the sidebar's (the owner, 2026-11-22: "give the same tint to both the sidebar and the top bar").
+  t("titlebar.tint", "color", "#F5F5F566", "#20202059", "The title bar over what scrolls under it."),
   t("titlebar.blur", "dimension", "16px", undefined, "The title bar's backdrop blur."),
   t("titlebar.height", "dimension", "45px", undefined, "The title bar's height, its rule included."),
   // Text.

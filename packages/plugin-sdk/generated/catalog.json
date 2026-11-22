@@ -2107,8 +2107,8 @@
     {
       "name": "titlebar.tint",
       "type": "color",
-      "default": "#FFFFFFC7",
-      "dark": "#191919C7",
+      "default": "#F5F5F566",
+      "dark": "#20202059",
       "doc": "The title bar over what scrolls under it."
     },
     {
