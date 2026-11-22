@@ -20,6 +20,8 @@ export interface Options {
   headless: boolean;
   shot?: string;
   appearance: Appearance;
+  /** Where to copy the run's logs (the engine's, the app's, the builds', the fake agents' reports) before its folder is removed. */
+  logs?: string;
   /** A start that only builds and seeds, then ends (a test's way to see the world made); never visible. */
   help: boolean;
 }
@@ -40,6 +42,7 @@ export function parseOptions(argv: readonly string[]): Options {
     else if (a === "--stop") o.mode = "stop";
     else if (a === "--headless") o.headless = true;
     else if (a === "--shot") o.shot = value();
+    else if (a === "--logs") o.logs = value();
     else if (a === "--appearance") {
       const v = value();
       if (v !== "light" && v !== "dark" && v !== "system") throw new UsageError(`--appearance is light, dark or system, not ${v}`);
@@ -59,6 +62,7 @@ export const USAGE = [
   "scripts/pinned-bun scripts/preview/run.ts --once     the same, with no watching",
   "scripts/pinned-bun scripts/preview/run.ts --stop     end a running preview (by the pid it recorded)",
   "scripts/pinned-bun scripts/preview/run.ts --headless --shot <png> [--appearance light|dark]   offscreen: one picture of the window, then end",
+  "                              --logs <dir> (with any start) copies the run's logs there before its folder is removed",
 ].join("\n");
 
 /** Why a preview must not start here, or undefined. The first thing the command checks, before any folder or process. */
@@ -120,6 +124,8 @@ export function baseEnv(i: EnvInput): Record<string, string> {
     LANG: "en_US.UTF-8",
     MOSS_HOME: l.home,
     MOSS_PROFILE: "dev",
+    // The engine merges the login shell's PATH IN FRONT of its own (login-shell-path.ts mergePathLists): left on, /opt/homebrew/bin's real agents would win over the shims.
+    MOSS_LOGIN_SHELL_PATH: "off",
     MOSS_KEYCHAIN_SERVICE: i.service,
     MOSS_TEST_KEYCHAIN: l.keychain,
     MOSS_ACCEPTANCE_PLUGIN_WORLD: l.pluginWorld,

@@ -131,7 +131,10 @@ export async function seed(i: SeedInput): Promise<Seeded> {
     const claude = await start("claude-code", folder("api-server"), "Hand the API changes over to the mobile session");
     await turnEnded(claude); await titled(claude);
     await until("the link from Claude Code's session to Codex's", 60_000, async () =>
-      (await c.request<{ pairs: { from: { session?: string }; to: { session: string } }[] }>("session.links", {})).pairs.find((p) => p.from.session === claude && p.to.session === codex) === undefined ? undefined : true);
+      (await c.request<{ pairs: { from: { session?: string }; to: { session: string } }[] }>("session.links", {})).pairs.find((p) => p.from.session === claude && p.to.session === codex) === undefined ? undefined : true).catch(async (err: unknown) => {
+      for (const [name, id] of [["codex", codex], ["claude-code", claude]] as const) i.say(`seed: ${name}'s events: ${JSON.stringify((await history(id)).map((e) => ({ type: e.type, ...(e.type === "turn_completed" || e.type === "turn_ended" ? { end: e.end ?? e.reason ?? e.stopReason } : {}), text: typeof e.text === "string" ? e.text.slice(0, 80) : undefined }))).slice(0, 900)}`);
+      throw err;
+    });
     note(claude, "started a line to the Codex session (Claude Code)");
 
     // Gemini (a fake ACP agent): a turn, then stopped: ended.
@@ -149,7 +152,11 @@ export async function seed(i: SeedInput): Promise<Seeded> {
     const running = await start("moss-code", folder("web-app"), "Profile the checkout page load", { model: i.keyedModel });
     await turnEnded(running); await titled(running);
     await send(running, "Keep going, the profile is not done yet ACCEPTANCE-SLOW");
-    await until("the running session to read running", 60_000, async () => ((await c.request<{ session: { status: string } }>("session.get", { id: running })).session.status === "running" ? true : undefined));
+    await until("the held turn to read prompting", 60_000, async () => ((await c.request<{ session: { status: string } }>("session.get", { id: running })).session.status === "prompting" ? true : undefined)).catch(async (err: unknown) => {
+      i.say(`seed: the running session: ${JSON.stringify(await c.request("session.get", { id: running })).slice(0, 700)}`);
+      i.say(`seed: its events: ${JSON.stringify((await history(running)).map((e) => ({ type: e.type, text: typeof e.text === "string" ? e.text.slice(0, 60) : undefined }))).slice(0, 900)}`);
+      throw err;
+    });
     note(running, "running (MOSS's agent, a turn held open)");
 
     await sleep(1_200);
