@@ -60,6 +60,9 @@ describe("models.list", () => {
     };
     const agent = await listModels(deps, { session: "s_agent" });
     expect(agent).toEqual({ models: own, default: "anthropic/claude-opus-5-5" });
+    const withOptions = await listModels({ ...deps, sessionModels: () => ({ kind: "own" as const, models: own, options: [{ id: "verbosity", name: "Verbosity", current: "terse", values: [{ value: "terse" }, { value: "chatty", name: "Chatty" }] }] }) }, { session: "s_agent" });
+    expect(MODELS_LIST.result.safeParse(withOptions).success).toBe(true);
+    expect(withOptions.options?.[0]).toMatchObject({ id: "verbosity", current: "terse" });
     const bot = await listModels(deps, { session: "b_alpha" });
     expect(bot.models.length).toBeGreaterThan(100);
     const methods = modelsMethods(deps);

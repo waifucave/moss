@@ -279,6 +279,16 @@ export const ModelListing = z.object({
 });
 export type ModelListing = z.infer<typeof ModelListing>;
 
+/** An option a session's agent reports and lets the person choose from a fixed list of values (an ACP config option other
+ *  than the model, the effort and the approval level's mode, which MOSS has controls for). `name`s are the agent's own. */
+export const SessionOption = z.object({
+  id: utf16(128, 1),
+  name: Text.optional(),
+  current: utf16(200).optional(),
+  values: z.array(z.object({ value: utf16(200, 1), name: Text.optional() })).min(2).max(200),
+});
+export type SessionOption = z.infer<typeof SessionOption>;
+
 /** What a first working reply still needs (the setup guide, 2026-11-20): a model provider (a key or a sign-in), then a
  *  default model; or (`default-provider`) the default model the settings name is kept but its provider isn't signed in
  *  now. Engine state, so every client asks the same question and gets the same answer. */
@@ -436,6 +446,12 @@ export const SESSIONS_METHODS = {
     result: Ok,
     doc: "Switches an agent's or coding session's model mid-session; a bot's model is its user layer (§6.3).",
   }),
+  sessionSetConfig: defineMethod({
+    name: "session.setConfig", owner: "D", roles: ["app", "cli"], userOnly: true,
+    params: z.object({ id: SessionId, option: utf16(128, 1), value: utf16(200, 1) }),
+    result: Ok,
+    doc: "Sets one of an agent session's other options (`models.list {session}`'s `options`) to one of its listed values: the person's own app or CLI only (a bot, a plugin's page or another session is refused). The agent may refuse it.",
+  }),
   sessionStageImage: defineMethod({
     name: "session.stageImage", owner: "D", roles: ["app", "cli", "remote"], userOnly: true,
     params: z.object({
@@ -450,7 +466,7 @@ export const SESSIONS_METHODS = {
   modelsList: defineMethod({
     name: "models.list", owner: "A", roles: ["app", "cli", "remote"],
     params: z.object({ session: SessionId.optional() }),
-    result: z.object({ models: z.array(ModelListing).max(10_000), default: utf16(200).optional() }),
+    result: z.object({ models: z.array(ModelListing).max(10_000), default: utf16(200).optional(), options: z.array(SessionOption).max(32).optional() }),
     doc: "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes: an ACP agent's session lists the models its agent reported (or, before its first turn, the agent's own list as MOSS knows it), under the agent's backend id. `default` is the user's default model.",
   }),
   modelsSetDefault: defineMethod({

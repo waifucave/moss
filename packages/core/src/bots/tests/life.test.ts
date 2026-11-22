@@ -582,6 +582,34 @@ describe("the new sessions methods", () => {
     await b.shutdown();
   });
 
+  test("session.setConfig: the person's app or CLI only, an agent's or coding session's never a bot's, and the agent's refusal is the caller's to see", async () => {
+    const b = await boot({ home: tempDir(), plugins: await alpha() });
+    const set: string[] = [];
+    const methods = sessionsMethods({
+      home: b.home, computer: "Studio", bots: b.bots, host: b.host, clock: b.clock, localDevice: "studio",
+      setAgentOption: async (id, option, value) => {
+        if (value === "loud") throw new Error("the agent refused");
+        set.push(`${id} ${option}=${value}`);
+      },
+    });
+    b.host.open({ id: "s_agent", kind: "agent", bot: "alpha", parent: "b_alpha", computer: "Studio", backend: "codex" }, new FakeSessionDriver({ canFold: false }));
+    const spec = M.sessionSetConfig;
+    expect(spec.roles).toEqual(["app", "cli"]);
+    await methods[spec.name]!({ id: "s_agent", option: "verbosity", value: "chatty" }, { caller: theUser });
+    await methods[spec.name]!({ id: "s_agent", option: "verbosity", value: "terse" }, { caller: { kind: "user", client: "cli" } });
+    expect(set).toEqual(["s_agent verbosity=chatty", "s_agent verbosity=terse"]);
+    // A bot, another session, a plugin's page: not the user.
+    for (const caller of [{ kind: "session", sessionId: "b_alpha", sessionKind: "bot", bot: "alpha" }, { kind: "session", sessionId: "s_other", sessionKind: "agent", bot: "alpha" }, { kind: "plugin", pluginId: "weather" }] as const) {
+      const err = await thrown(methods[spec.name]!({ id: "s_agent", option: "verbosity", value: "normal" }, { caller: caller as never }));
+      expect(err instanceof MethodError && err.code).toBe(MOSS_ERR.NOT_THE_USER);
+    }
+    expect(set.length).toBe(2);
+    const bot = await thrown(methods[spec.name]!({ id: "b_alpha", option: "verbosity", value: "terse" }, { caller: theUser }));
+    expect(bot instanceof MethodError && bot.message).toContain("no agent options");
+    await expect(methods[spec.name]!({ id: "s_agent", option: "verbosity", value: "loud" }, { caller: theUser })).rejects.toThrow("the agent refused");
+    await b.shutdown();
+  });
+
   test("session.compact: refused for a driver that compacts itself", async () => {
     const b = await boot({ home: tempDir(), plugins: await alpha() });
     const methods = sessionsMethods({ home: b.home, computer: "Studio", bots: b.bots, host: b.host, clock: b.clock, localDevice: "studio" });

@@ -98,6 +98,22 @@ describe("the composer spot's callbacks", () => {
     }
   });
 
+  test("setOption is session.setConfig for the person's own press only; a malformed one is refused and spends no gesture", async () => {
+    const other: ComposerMount = { windowId: 1, pluginId: "moss/composer", session: "s_1", capabilities: BUNDLED_COMPOSER };
+    const none = setup({ composer: other, op: "setOption", args: { option: "verbosity", value: "high" }, gestures: 0 });
+    await expect(routeComposer(none.r)).rejects.toThrow("only right after the user's own key press or click");
+    const { r, calls } = setup({ composer: other, op: "setOption", args: { option: "verbosity", value: "high" }, gestures: 1 });
+    await routeComposer(r);
+    expect(calls).toEqual(['app:session.setConfig:{"id":"s_1","option":"verbosity","value":"high"}']);
+    for (const args of [{}, { option: "x" }, { option: "", value: "v" }, { option: "x", value: 3 }, { option: "x", value: "y".repeat(201) }]) {
+      const bad = setup({ composer: other, op: "setOption", args, gestures: 1 });
+      await expect(routeComposer(bad.r)).rejects.toThrow("not an option");
+      expect(bad.calls).toEqual([]);
+    }
+    const frame = setup({ composer: undefined, op: "setOption", args: { option: "a", value: "b" }, gestures: 5 });
+    await expect(routeComposer(frame.r)).rejects.toThrow("isn't the entry the core mounted");
+  });
+
   describe("the slash menu's commands", () => {
     // command.list as the core answers it, and the plugins it names: running, off, waiting for its OK, a child of a
     // running plugin, the bot's own (alpha), and one whose top-level plugin stopped.

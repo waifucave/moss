@@ -154,6 +154,11 @@ export class AcpAgentBackend implements AgentBackend {
     return this.#opts.modelList;
   }
 
+  /** The agent's read-only mode (the approval level's option), which MOSS owns. */
+  get readOnlyMode(): { option: string; values: readonly string[] } | undefined {
+    return this.#opts.readOnlyMode;
+  }
+
   /** The backend's own program and identity: a list command of the same program is checked against these. */
   get ownProgram(): { program: string; identity: { versionArgs: readonly string[]; versionPattern: string } } | undefined {
     const c = this.command();

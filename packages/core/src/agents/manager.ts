@@ -158,6 +158,7 @@ const PAUSE_POLL_MS = 1_000;
 export interface AgentSessionHooks {
   agents: { list(): SessionView[] };
   setAgentModel(id: string, model: string, effort?: string): Promise<void>;
+  setAgentOption(id: string, option: string, value: string): Promise<void>;
   reattach(views: SessionView[]): void;
 }
 
@@ -1305,15 +1306,26 @@ export class AgentManager {
     return {
       agents: { list: () => this.list() },
       setAgentModel: (id, model, effort) => this.setModel(id, model, effort),
+      setAgentOption: (id, option, value) => this.setOption(id, option, value),
       reattach: (views) => this.reattachAll(views),
     };
   }
 
   /** The backend of an agent or coding session on this computer and the config options its running agent reported (none
    *  before its first turn starts it), for `models.list {session}`; undefined: not such a session here. */
-  sessionOptions(sessionId: string): { backend: AgentBackend; options: ReturnType<NonNullable<AgentSession["configOptions"]>> | undefined } | undefined {
+  sessionOptions(sessionId: string): { backend: AgentBackend; options: ReturnType<NonNullable<AgentSession["configOptions"]>> | undefined; session: AgentSession | undefined } | undefined {
     const e = this.#entries.get(sessionId);
-    return e === undefined ? undefined : { backend: e.backend, options: e.driver.session?.configOptions?.() };
+    return e === undefined ? undefined : { backend: e.backend, options: e.driver.session?.configOptions?.(), session: e.driver.session };
+  }
+
+  /** `session.setConfig`: the person's pick of one of the running agent's other options (never the model, effort or the
+   *  approval level's mode). The agent may refuse it; a session that hasn't started has none to set. */
+  async setOption(sessionId: string, option: string, value: string): Promise<void> {
+    const e = this.#entries.get(sessionId);
+    if (!e) throw new ContractError("not_found", `no agent ${sessionId} on this computer`);
+    const s = e.driver.session;
+    if (s?.setOption === undefined) throw new ContractError("refused", "this agent has no option to set yet");
+    await s.setOption(option, value);
   }
 
   /** `session.setModel` on an agent or coding session (item 90's model picker). */

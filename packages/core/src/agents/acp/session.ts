@@ -39,6 +39,7 @@ import type { Clock } from "../../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../../contracts/common";
 import { RPC_METHOD_NOT_FOUND, RpcError, RpcPeer, type JsonRpcMessage } from "@waifucave/clover-agent-sdk/acp";
 import { UserSelections } from "./selections";
+import { ownedByMoss } from "../session-options";
 import { metaToolName, subagentOf } from "../subagents";
 import {
   ACP_PROTOCOL_VERSION, type AgentCaps, type ConfigOption, type StdioMcpServer, at, isAuthRequired, obj, pathsOf, readCaps,
@@ -170,6 +171,7 @@ export class AcpAgentSession implements AgentSession {
   #state: AgentSessionState = "starting";
   #caps: AgentCaps | undefined;
   #config: ConfigOption[] = [];
+  #labels = new Map<string, { name?: string; values: Map<string, string> }>();
   /** The backend's record of the user's own selections, and the options this session changed. */
   readonly #selections: { keeper: UserSelections; backend: string };
   readonly #held = new Set<string>();
@@ -273,6 +275,36 @@ export class AcpAgentSession implements AgentSession {
     return this.#config;
   }
 
+  /** The options as the agent names them: its own name for each option and each value (the SDK's `ConfigOption` keeps
+   *  only ids), for a picker. Read from the same answers as `configOptions`. */
+  optionLabels(): ReadonlyMap<string, { name?: string; values: ReadonlyMap<string, string> }> {
+    return this.#labels;
+  }
+
+  /** The config options an answer carries, and their names. */
+  #takeConfig(raw: unknown): void {
+    const read = readConfigOptions(raw);
+    if (read === undefined) return;
+    this.#config = read;
+    const list = Array.isArray(obj(raw)?.["configOptions"]) ? (obj(raw)!["configOptions"] as unknown[]) : Array.isArray(raw) ? raw : [];
+    const labels = new Map<string, { name?: string; values: Map<string, string> }>();
+    for (const o of list.slice(0, 64)) {
+      const c = obj(o);
+      const id = str(c?.["id"]);
+      if (id === undefined || id === "") continue;
+      const values = new Map<string, string>();
+      for (const v of (Array.isArray(c?.["options"]) ? (c!["options"] as unknown[]) : []).slice(0, 512)) {
+        const x = obj(v);
+        const value = str(x?.["value"]);
+        const name = str(x?.["name"]);
+        if (value !== undefined && name !== undefined && name.length <= 120) values.set(value, name);
+      }
+      const name = str(c?.["name"]);
+      labels.set(id, { ...(name !== undefined && name.length <= 120 ? { name } : {}), values });
+    }
+    this.#labels = labels;
+  }
+
   state(): AgentSessionState {
     return this.#state;
   }
@@ -332,7 +364,7 @@ export class AcpAgentSession implements AgentSession {
       if (!id) throw new ContractError("failed", "the agent answered session/new without a session id");
       this.#agentSessionId = id;
     }
-    this.#config = readConfigOptions(obj(result)?.["configOptions"]) ?? this.#config;
+    this.#takeConfig(obj(result)?.["configOptions"]);
     const modes = obj(obj(result)?.["modes"]);
     if (modes) {
       const available = (Array.isArray(modes["availableModes"]) ? modes["availableModes"] : []).map((m) => str(obj(m)?.["id"])).filter((x): x is string => !!x);
@@ -451,6 +483,21 @@ export class AcpAgentSession implements AgentSession {
     await this.#setOption(id, value);
   }
 
+  /** The person's pick of one of the agent's other options (never the model, the effort or the approval level's mode:
+   *  MOSS has controls and rules of its own for those): the option must be one the agent reports, with a fixed list of
+   *  values that holds the one asked for. The agent may still refuse it, which is the caller's to show. */
+  async setOption(id: string, value: string): Promise<void> {
+    if (this.#state === "stopped" || this.#state === "failed") throw new ContractError("closed", "the agent's session has ended");
+    const q = this.#quirks.config;
+    const option = this.#config.find((c) => c.id === id);
+    if (option === undefined) throw new ContractError("refused", `the agent reports no option ${id.slice(0, 64)}`);
+    if (ownedByMoss(option, { modelOption: q.modelOption, effortOption: q.effortOption, ...(this.#readOnlyMode ? { readOnlyOption: this.#readOnlyMode.option } : {}) })) {
+      throw new ContractError("refused", `${id.slice(0, 64)} is changed by MOSS's own control, not here`);
+    }
+    if (!option.values.includes(value)) throw new ContractError("refused", `${id.slice(0, 64)} has no value ${value.slice(0, 64)}`);
+    await this.#setOption(id, value);
+  }
+
   /** A choice an earlier delegation left in the user's own settings (its process crashed before it could set it
    *  back): set back now, before anything else (check 2's minor 4). */
   async #setBackLeftovers(): Promise<void> {
@@ -465,7 +512,7 @@ export class AcpAgentSession implements AgentSession {
       const result = await this.#call("session/set_config_option", { sessionId: this.#agentSessionId, configId: c.id, value: user }, CONFIG_TIMEOUT_MS).catch(() => undefined);
       if (result === undefined) continue;
       keeper.restored(backend, c.id);
-      this.#config = readConfigOptions(result) ?? this.#config;
+      this.#takeConfig(result);
     }
   }
 
@@ -606,7 +653,7 @@ export class AcpAgentSession implements AgentSession {
     }
     const result = await this.#call("session/set_config_option", { sessionId: this.#agentSessionId, configId: id, value }, CONFIG_TIMEOUT_MS);
     if (persists) keeper.set(backend, id, value);
-    this.#config = readConfigOptions(result) ?? this.#config;
+    this.#takeConfig(result);
   }
 
   /** Lets go of the options this session changed; the last holder sets the user's own value back when it can. */
@@ -754,7 +801,7 @@ export class AcpAgentSession implements AgentSession {
           const used = Number(update?.["used"]);
           if (Number.isInteger(used) && used >= 0) turn.contextTokens = used;
         }
-        if (str(update?.["sessionUpdate"]) === "config_option_update") this.#config = readConfigOptions(update?.["configOptions"]) ?? this.#config;
+        if (str(update?.["sessionUpdate"]) === "config_option_update") this.#takeConfig(update?.["configOptions"]);
         if (str(update?.["sessionUpdate"]) === "current_mode_update" && this.#modes) {
           const id = str(update?.["currentModeId"]) ?? str(update?.["modeId"]);
           if (id) {

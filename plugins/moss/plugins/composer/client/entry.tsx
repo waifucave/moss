@@ -66,6 +66,21 @@ function modelsOf(catalog: unknown): ComposerModel[] {
   });
 }
 
+/** The agent's other selectable options (`models.list {session}`'s `options`), read defensively: a fixed list of values each. */
+function optionsOf(catalog: unknown): { id: string; name: string; current?: string; values: { value: string; label: string }[] }[] {
+  const list = (catalog as { options?: unknown[] } | undefined)?.options;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((o) => {
+    const x = o as { id?: unknown; name?: unknown; current?: unknown; values?: unknown };
+    if (typeof x.id !== "string" || !Array.isArray(x.values)) return [];
+    const values = x.values.flatMap((v) => {
+      const y = v as { value?: unknown; name?: unknown };
+      return typeof y.value === "string" ? [{ value: y.value, label: typeof y.name === "string" && y.name !== "" ? y.name : y.value }] : [];
+    });
+    return values.length === 0 ? [] : [{ id: x.id, name: typeof x.name === "string" && x.name !== "" ? x.name : S.optionFallback(x.id), ...(typeof x.current === "string" ? { current: x.current } : {}), values }];
+  });
+}
+
 export function ComposerEntry({ props }: { props: ComposerEntryProps }) {
   const api = usePluginApi();
   const host = useComposerHost();
@@ -78,7 +93,8 @@ export function ComposerEntry({ props }: { props: ComposerEntryProps }) {
   const session = useLoad(() => api.sessions?.get?.(props.session), [api, props.session, rev]);
   const kind = session?.kind ?? props.sessionKind;
   const computers = useLoad(() => api.computers?.list?.(), [api]);
-  const catalog = useLoad(() => host?.models(), [host]);
+  // Read again after a pick and when the session's state changes: its agent reports its options once it has started.
+  const catalog = useLoad(() => host?.models(), [host, rev, session?.status]);
   // The draft is the user's: it outlives a reload of the window's document (installing or turning on a plugin with
   // its own layer loads it again), per conversation.
   const [draft, setDraft] = useKept<string>(`composer.draft:${props.session}`, "");
@@ -91,6 +107,7 @@ export function ComposerEntry({ props }: { props: ComposerEntryProps }) {
   const effort = session?.effort;
   const models = modelsOf(catalog);
   const currentModel = models.find((m) => m.id === current);
+  const options = host === undefined ? [] : optionsOf(catalog);
   const [commands, setCommands] = useState<SlashCommand[] | undefined>(undefined);
   const [slashResult, setSlashResult] = useState<ComposerSlash["result"]>(undefined);
 
@@ -182,6 +199,18 @@ export function ComposerEntry({ props }: { props: ComposerEntryProps }) {
       cardPending={cardPending}
       {...(slash ? { slash } : {})}
       {...(model ? { model } : {})}
+      {...(options.length > 0 && host !== undefined
+        ? {
+            options: options.map((o) => ({
+              id: o.id, name: o.name, ...(o.current !== undefined ? { value: o.current } : {}), values: o.values,
+              // The person's pick, through the engine; the agent may refuse it, which is said as a refused model is.
+              onChange: (value: string) => {
+                setNotice(undefined);
+                host.setOption(o.id, value).then(() => setRev((n) => n + 1), () => setNotice(S.optionRefused));
+              },
+            })),
+          }
+        : {})}
       {...(computer
         ? {
             level: {

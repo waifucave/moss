@@ -56,6 +56,9 @@ export interface FakeAcpConfig {
   /** What its list command prints (`<program> <config> models`): the models as JSON, one `{ slug, display_name,
    *  visibility, levels }` each; the agent's own model list, as a real one's list command gives it. */
   modelsList?: { slug: string; display_name?: string; visibility?: string; levels?: { effort: string }[] }[];
+  /** A third selectable config option the agent reports (not MOSS's: no category), the first value current; a set is
+   *  reported as `{type:"config", option:<its id>, value}`. */
+  extraOption?: { id: string; name: string; values: string[] };
   /** A `mode` config option with these values (Cursor's `agent`, `plan`, `ask`), the first one current. */
   modes?: string[];
   /** ACP's session modes (`modes` at `session/new`, `session/set_mode`, `current_mode_update`), the first current. */
@@ -141,8 +144,10 @@ function configOptions(): unknown[] {
   if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: (cfg.modelValues ?? ["fake-model-a", "fake-model-b"]).map((v) => ({ value: v, name: v })) });
   if (q.config.effortOption) out.push({ id: q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
   if (cfg.modes?.length) out.push({ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: current.mode ?? cfg.modes[0], options: cfg.modes.map((v) => ({ value: v, name: v })) });
+  if (cfg.extraOption) out.push({ id: cfg.extraOption.id, name: cfg.extraOption.name, type: "select", currentValue: extra ?? cfg.extraOption.values[0], options: cfg.extraOption.values.map((v) => ({ value: v, name: v.toUpperCase() })) });
   return out;
 }
+let extra: string | undefined;
 const current: { model?: string; effort?: string; mode?: string } = {};
 
 function startMcpServers(servers: unknown): void {
@@ -247,6 +252,12 @@ async function handle(method: string, params: Record<string, unknown>): Promise<
     case "session/set_config_option": {
       const id = String(params["configId"]);
       const value = String(params["value"]);
+      if (cfg.extraOption && id === cfg.extraOption.id) {
+        if (!cfg.extraOption.values.includes(value)) throw new RpcError(-32602, `no value ${value} for ${id}`);
+        extra = value;
+        report({ type: "config", option: id, value });
+        return { configOptions: configOptions() };
+      }
       const option = id === q.config.modelOption ? "model" : id === q.config.effortOption ? "effort" : id === "mode" && cfg.modes?.length ? "mode" : undefined;
       if (!option) throw new RpcError(-32602, `no config option ${id}`);
       current[option] = value;

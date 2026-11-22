@@ -15,7 +15,7 @@
 //
 // Owner: lane A. The method's spec is the protocol's (`SESSIONS_METHODS.modelsList`).
 import { z } from "zod";
-import { ModelListing, SESSIONS_METHODS, Text } from "@waifucave/moss-protocol";
+import { ModelListing, SESSIONS_METHODS, Text, type SessionOption } from "@waifucave/moss-protocol";
 import type { WinterCatalog, WinterModelDescriptor } from "@waifucave/clover-provider-catalog";
 import { ContractError } from "../contracts/common";
 import { handler, type MethodHandler } from "../rpc/handler";
@@ -32,7 +32,7 @@ export type ModelsListResult = z.infer<typeof MODELS_LIST.result>;
 
 /** What a session's runtime takes: the catalog (the embedded runtime: bots, side threads, coding sessions), or its own
  *  list (an agent backend's models, lane K). `undefined`: no such session. */
-export type SessionModels = { kind: "catalog" } | { kind: "own"; models: readonly ModelListing[] };
+export type SessionModels = { kind: "catalog" } | { kind: "own"; models: readonly ModelListing[]; options?: readonly SessionOption[] };
 
 export interface ModelsListDeps {
   /** Which providers hold a credential now (`credentialPresenceFrom(secrets).byProvider`); read per call. */
@@ -127,14 +127,15 @@ export function contributedProviders(records: Iterable<{ enabled?: boolean; mani
 /** `models.list`'s answer. */
 export async function listModels(deps: ModelsListDeps, params: { session?: string }): Promise<ModelsListResult> {
   const def = deps.defaultModel?.();
-  const withDefault = (models: readonly ModelListing[]): ModelsListResult => ({
+  const withDefault = (models: readonly ModelListing[], options?: readonly SessionOption[]): ModelsListResult => ({
     models: models.slice(0, 10_000),
+    ...(options !== undefined && options.length > 0 ? { options: options.slice(0, 32) } : {}),
     ...(def !== undefined && def.length > 0 && def.length <= 200 ? { default: def } : {}),
   });
   if (params.session !== undefined && deps.sessionModels !== undefined) {
     const takes = await deps.sessionModels(params.session);
     if (takes === undefined) throw new ContractError("not_found", `no session ${params.session}`);
-    if (takes.kind === "own") return withDefault(takes.models);
+    if (takes.kind === "own") return withDefault(takes.models, takes.options);
   }
   const catalog = (deps.catalog ?? activeCatalog)();
   return withDefault(catalogModelListings(catalog, await deps.signedIn()));

@@ -359,9 +359,9 @@ export interface LayerBridge {
    *  own sight of the press and the cursor, and only for the shell it mounted in `app.root`. */
   windowDrag(mount: string): void;
   /** The `composer` spot's host callbacks (spec §5.5), for the entry the core mounted there: `models` and `commands`,
-   *  and the acting `setModel`, `interrupt`, `stop` and `runCommand`, each of which counts only inside the user's own key
+   *  and the acting `setModel`, `setOption`, `interrupt`, `stop` and `runCommand`, each of which counts only inside the user's own key
    *  press or click. `commands` and `runCommand` are the bundled composer's only. */
-  composer(mount: string, op: "models" | "setModel" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown): Promise<unknown>;
+  composer(mount: string, op: "models" | "setModel" | "setOption" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown): Promise<unknown>;
   /** `PluginApi.shell` from a component: the window's state and apps, or an act of the window's own. Main checks the plugin's capability, that a bot of
    *  the plugin shows its tab, and for an act the user's own key press or click in this frame. */
   shell(mount: string, method: ShellMethod, args?: unknown): Promise<unknown>;

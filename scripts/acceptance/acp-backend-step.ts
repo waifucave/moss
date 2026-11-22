@@ -15,7 +15,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, until, type ExampleCtx } from "./example-steps";
 
-export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, and agent.recent keeps that agent's own last choice";
+export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, the agent's third option is a picker of the session that session.setConfig sets and the agent hears (MOSS's own options refused), and agent.recent keeps that agent's own last choice";
 
 export const ACP_ID = "acceptance-acp";
 export const ACP_NAME = "Acceptance ACP";
@@ -53,6 +53,7 @@ export function agentConfig(quirksFile: string, o: { report: string; selection: 
     version: "fake-agent 1.0.0",
     modelsList: ACP_MODELS,
     modelValues: ACP_MODELS.filter((m) => m.visibility === "list").map((m) => m.slug),
+    extraOption: { id: "verbosity", name: "Verbosity", values: ["terse", "normal", "chatty"] },
     report: o.report,
     selection: o.selection,
     ...(o.mcpEnv !== undefined ? { mcpEnv: o.mcpEnv } : {}),
@@ -163,7 +164,7 @@ async function run(ctx: ExampleCtx): Promise<string> {
   return done.join("; ");
 }
 
-type Models = { models: { id: string; name: string; provider?: string; efforts: string[] }[] };
+type Models = { models: { id: string; name: string; provider?: string; efforts: string[] }[]; options?: { id: string; name?: string; current?: string; values: { value: string; name?: string }[] }[] };
 
 /** 3. The agent's own models (lane MS). This plugin is a third party's, so no list command of its own is run: what the
  *  session of step 2 reported is what `agent.options` offers (source `session`); a session started on one of them has it set before its first prompt; the
@@ -206,6 +207,17 @@ async function modelsRow(ctx: ExampleCtx, o: { computer: string; report: string 
   void after;
   const view = (await rpc.request<{ session: { model?: string; effort?: string } }>("session.get", { id: session })).session;
   if (view.model !== ids[0] || view.effort !== "low") fail(`the session says ${view.model}/${view.effort} after the pick`);
+  // The agent's third option is the session's own picker (MOSS's model and effort have theirs): named as the agent names it,
+  // set by the person through session.setConfig, and heard by the agent; MOSS's own options and unlisted values are refused.
+  const withOptions = await rpc.request<Models>("models.list", { session });
+  const third = withOptions.options ?? [];
+  if (third.length !== 1 || third[0]!.id !== "verbosity" || third[0]!.name !== "Verbosity" || third[0]!.values.map((v) => v.value).join() !== "terse,normal,chatty") fail(`models.list lists the options ${JSON.stringify(third)}, not the agent's one other option`);
+  await rpc.request("session.setConfig", { id: session, option: "verbosity", value: "chatty" });
+  await until("the agent set to chatty", 30_000, async () => mine().find((x) => x.type === "config" && x.option === "verbosity" && x.value === "chatty"));
+  for (const bad of [{ option: "model", value: ids[1]! }, { option: "verbosity", value: "loud" }, { option: "nope", value: "x" }]) {
+    const refused = await rpc.request("session.setConfig", { id: session, ...bad }).then(() => false, () => true);
+    if (!refused) fail(`session.setConfig took ${JSON.stringify(bad)}, which it must refuse`);
+  }
   // The person's last choice for this agent, theirs only: the agent's own row holds what they started on.
   const recent = await rpc.request<{ byBackend?: { backend: string; model?: string; effort?: string }[] }>("agent.recent", {});
   const row = recent.byBackend?.find((b) => b.backend === ACP_ID);

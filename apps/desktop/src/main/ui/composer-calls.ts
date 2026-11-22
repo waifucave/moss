@@ -8,6 +8,8 @@
 //               says it changes your bots' settings) sends it on the app's own connection, any other plugin's goes on its
 //               own `layer` connection, where the core turns it into the sealed card it raises for a user-layer change. On
 //               any other session it is `session.setModel`, a session's own, with the gesture.
+//   setOption   one of the session agent's other options (`models`' `options`): `session.setConfig` on the app's own connection,
+//               with the gesture; the engine refuses it for a bot's conversation and for an option MOSS has its own control for.
 //   interrupt   `session.interrupt`, stop: `session.stop`: the spot and the gesture.
 //   commands    a read for the slash menu: `command.list` joined with `plugin.list`, only the commands of plugins that
 //               are on, OK'd and running, each with its plugin's name and scope, the bot's own plugin's first.
@@ -19,7 +21,7 @@
 //   gets them by its id (F2).
 // Every acting call spends one key press or click the main process saw come to the window (the SendGate).
 
-export const COMPOSER_OPS = ["models", "setModel", "interrupt", "stop", "commands", "runCommand"] as const;
+export const COMPOSER_OPS = ["models", "setModel", "setOption", "interrupt", "stop", "commands", "runCommand"] as const;
 export type ComposerOp = (typeof COMPOSER_OPS)[number];
 
 /** The composer mount the core made: where it is, which session and bot it was handed, whose it is. */
@@ -149,6 +151,14 @@ async function routeComposerOp(r: ComposerRoute): Promise<unknown> {
     if (!(await commandsFor(r, c)).some((x) => x.name === name)) return refuse(`no command ${name} is running here`);
     if (!r.takeGesture(c.windowId)) return refuse("a command runs only right after your own key press or click");
     return r.asApp("command.run", { name, ...(a.args === undefined ? {} : { args: a.args }) });
+  }
+  if (op === "setOption") {
+    const o = (r.args ?? {}) as { option?: unknown; value?: unknown };
+    const option = short(o.option, 128);
+    const value = short(o.value, 200);
+    if (option === undefined || value === undefined) return refuse("not an option");
+    if (!r.takeGesture(c.windowId)) return refuse("setOption goes only right after the user's own key press or click");
+    return r.asApp("session.setConfig", { id: c.session, option, value });
   }
   const a = (r.args ?? {}) as { model?: unknown; effort?: unknown };
   const model = op === "setModel" ? short(a.model, 200) : undefined;
