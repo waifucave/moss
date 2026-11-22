@@ -299,12 +299,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   // srt-win's profile read grant, which never grants the key and credential stores, browser data or the registry hives
   // (they get a read deny instead). Written once per daemon, before its first command (srt-win refuses to change it
   // while a session it holds runs): a folder made in the home after it is not readable until the next daemon start.
-  /** The install record's sandbox user (`srt-win user status`, `marker_user_sid`): the SID the persistent grants are
-   *  recorded against. Read at each command (a `setup --force` may change it). */
+  /** The machine-wide install record's sandbox user (`HKLM\SOFTWARE\sandbox-runtime`, `SandboxUserSid`, which
+   *  srt-win's `acl grant --persistent` checks its `--sandbox-user-sid` against): read from the registry, where every
+   *  user may read it, because `srt-win user status` withholds that record from a standard user (it carries no owner;
+   *  only the per-principal records do). Read at each command (a `setup --force` may change it). */
   const installedSandboxSid = async (): Promise<string | null> => {
-    const r = await deps.exec([deps.launcher, "user", "status"], { timeoutMs: 30_000 });
+    const r = await deps.exec(["reg", "query", "HKLM\\SOFTWARE\\sandbox-runtime", "/v", "SandboxUserSid"], { timeoutMs: 15_000 });
     if (r.code !== 0) return null;
-    try { const o = JSON.parse(r.stdout) as { marker_user_sid?: unknown }; return typeof o.marker_user_sid === "string" ? o.marker_user_sid : null; } catch { return null; }
+    const m = /SandboxUserSid\s+REG_SZ\s+(S-1-[0-9-]+)/i.exec(r.stdout);
+    return m ? m[1]! : null;
   };
   let profileGrant: Promise<string | null> | undefined;
   const grantProfile = (): Promise<string | null> => (profileGrant ??= (async () => {
