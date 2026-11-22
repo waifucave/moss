@@ -98,7 +98,7 @@ export function layoutFor(root: string): Layout {
   return {
     root, userHome, home: join(userHome, ".moss"), logs: join(root, "logs"), tmp: join(root, "tmp"),
     keychain: join(root, "kc", "preview.keychain-db"), answerKey: join(root, "kc", "answer-key"),
-    bin: join(root, "bin"), stubBin: join(root, "bin", "moss-core-stub"), agents: join(root, "agents"), work: join(userHome, "work"),
+    bin: join(root, "bin"), stubBin: join(root, "bin", "engine-stub"), agents: join(root, "agents"), work: join(userHome, "work"),
     pluginWorld: join(root, "plugin-world"), reloadFile: join(root, "reload"), userData: join(root, "user-data"),
   };
 }
@@ -167,7 +167,7 @@ export function isolationProblems(env: Readonly<Record<string, string>>, layout:
   }
   if (env.MOSS_HOME === undefined || env.HOME === undefined || env.MOSS_TEST_KEYCHAIN === undefined || env.MOSS_KEYCHAIN_SERVICE === undefined) out.push("the home, the user home, the throwaway keychain and its service are not all named");
   if (env.MOSS_KEYCHAIN_SERVICE !== undefined && !/\.test\.preview-[0-9a-f]+$/.test(env.MOSS_KEYCHAIN_SERVICE)) out.push(`the keychain service ${env.MOSS_KEYCHAIN_SERVICE} is not a throwaway one`);
-  if (realHome !== "" && env.MOSS_HOME !== undefined && (resolve(env.MOSS_HOME) === join(realHome, ".moss") || resolve(env.MOSS_HOME) === join(realHome, ".clover"))) out.push("MOSS_HOME is the person's own home");
+  if (realHome !== "" && env.MOSS_HOME !== undefined && (resolve(env.MOSS_HOME) === join(realHome, ".moss"))) out.push("MOSS_HOME is the person's own home");
   if (env.PATH !== undefined) for (const d of env.PATH.split(":")) if (d.startsWith(realHome) && realHome !== "" && !inside(d) && !d.includes("moss-bun")) out.push(`PATH names ${d}, a folder of the person's`);
   for (const k of Object.keys(env)) {
     if (/^(MOSS_APP_HEADLESS|MOSS_HOST_COMMAND|MOSS_OLD_HOME|MOSS_TEST_INVISIBLE|MOSS_USER_DATA)$/.test(k)) out.push(`${k} must not be set`);

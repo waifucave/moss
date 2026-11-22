@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, TEST_ONLY_APP_STRINGS, acceptanceBuildDefine, testBuildDefine } from "../../../scripts/test-build";
+import { TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, TEST_ONLY_APP_STRINGS, acceptanceBuildDefine, previewBuildDefine, testBuildDefine } from "../../../scripts/test-build";
 
 /** A real compile of the main process, as scripts/build.ts does it: the define folds the test-only code out of a real
  *  build (neither the label nor the sentinel remains), and a test build has both. */
@@ -10,7 +10,7 @@ async function compile(test: boolean, acceptance = false): Promise<string> {
   const out = mkdtempSync(join(tmpdir(), "moss-main-"));
   try {
     // In a process of its own, so no other test's module mocks reach the compile.
-    const define = Object.entries({ ...testBuildDefine(test), ...acceptanceBuildDefine(acceptance) }).flatMap(([k, v]) => ["--define", `${k}=${v}`]);
+    const define = Object.entries({ ...testBuildDefine(test), ...acceptanceBuildDefine(acceptance), ...previewBuildDefine(false) }).flatMap(([k, v]) => ["--define", `${k}=${v}`]);
     const r = Bun.spawnSync([process.execPath, "build", join(import.meta.dir, "..", "src", "main", "index.ts"), "--outdir", out, "--target", "node", "--format", "esm", "--external", "electron", "--no-macros", ...define], { cwd: join(import.meta.dir, "..") });
     expect(r.exitCode).toBe(0);
     return readdirSync(out).filter((f) => f.endsWith(".js")).map((f) => readFileSync(join(out, f), "utf8")).join("\n");
