@@ -502,8 +502,9 @@ async function blockRow(s: Ctx, cp: CpState): Promise<string> {
 }
 
 /** The sidebar's glass must let at least this much of a magenta ground through (the mean of R−G and B−G, 0 to 255): a 70%
- *  tint (the base theme's before the owner's try 21, which read as solid) gives about 76; the 40% and 35% tints about 150. */
-export const GLASS_MIN = 110;
+ *  tint (the base theme's before the owner's try 21, which read as solid) gives about 76; the 40% and 35% tints read 113 to
+ *  166 (a source run here, a headless probe), so the bar sits between. */
+export const GLASS_MIN = 95;
 /** And the main column none of it (it paints its own surface). */
 export const MAIN_MAX = 8;
 /** With nothing painted, the sidebar's alpha where the capture keeps it: at most this (a 70% tint is 179; 40% is 102, 35% 89). */
