@@ -8,6 +8,14 @@ import { ACCOUNT, APPS, PROJECTS } from "../gallery/fixtures";
 
 afterEach(cleanup);
 
+/** The document goes with no unmount (a reload runs no cleanup): the window's session storage as it was. */
+const reload = (again: () => void) => {
+  const atReload = Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i)!).map((k) => [k, sessionStorage.getItem(k)!]));
+  cleanup();
+  for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
+  again();
+};
+
 function setup(props: Partial<SidebarProps> = {}) {
   const handlers = {
     onNavigate: mock((_r: unknown) => undefined),
@@ -127,5 +135,37 @@ describe("the room for the window's controls, and ids", () => {
     expect(rule('.cl-sidebar__dot[data-status="running"]')).toContain("--moss-color-accent");
     expect(rule('.cl-sidebar__dot[data-status="stalled"]')).toContain("--moss-color-danger");
     expect(rule('.cl-sidebar__dot[data-status="needs-you"]')).toContain("--moss-color-attention");
+  });
+});
+
+describe("the sidebar across a reload of the window's document (a plugin with its own layer installed)", () => {
+  test("a folded project stays folded, and the list's scroll comes back once the rows are tall enough", () => {
+    sessionStorage.clear();
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Fold moss" }));
+    expect(screen.queryByText("The panels as plugins")).toBeNull();
+    reload(() => void setup());
+    expect(screen.getByRole("button", { name: "Unfold moss" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("The panels as plugins")).toBeNull();
+  });
+
+  test("the scroll position is written after a scroll and put back in a document loaded again", async () => {
+    sessionStorage.clear();
+    // happy-dom lays nothing out: the list is 2000 tall in a 500 window.
+    const proto = HTMLElement.prototype;
+    Object.defineProperty(proto, "scrollHeight", { configurable: true, get: () => 2000 });
+    Object.defineProperty(proto, "clientHeight", { configurable: true, get: () => 500 });
+    try {
+      setup();
+      const scroller = document.querySelector<HTMLElement>(".cl-sidebar__scroll")!;
+      scroller.scrollTop = 640;
+      fireEvent.scroll(scroller);
+      await new Promise((done) => setTimeout(done, 250));
+      reload(() => void setup());
+      expect(document.querySelector<HTMLElement>(".cl-sidebar__scroll")!.scrollTop).toBe(640);
+    } finally {
+      delete (proto as { scrollHeight?: number }).scrollHeight;
+      delete (proto as { clientHeight?: number }).clientHeight;
+    }
   });
 });

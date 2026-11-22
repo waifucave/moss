@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Island, OPEN_IDLE_MS, type IslandTimers } from "../src/ui/Island";
 import { IslandQueue } from "../src/model/queue";
 import { MORPH } from "../src/model/morph";
@@ -291,5 +291,46 @@ describe("Island", () => {
     clock.advance(600);
     fireEvent.click(screen.getByRole("tab", { name: "Devices" }));
     expect(screen.getByText("Studio · this computer")).toBeTruthy();
+  });
+
+  test("an open island and its chosen tab outlive a reload of the document (a plugin with its own layer installed), and a tab that arrives after it is chosen when it shows up", () => {
+    sessionStorage.clear();
+    const guest = [{ id: "devices", title: "Devices", pluginId: "moss", render: () => <p>Studio · this computer</p> }];
+    const first = mount([APPROVAL], { tabs: guest });
+    first.clock.advance(8000);
+    fireEvent.click(first.view.container.querySelector(".clv-strip")!);
+    first.clock.advance(600);
+    fireEvent.click(screen.getByRole("tab", { name: "Devices" }));
+    // The document goes with no unmount (a reload runs no cleanup): the window's session storage as it was.
+    const atReload = Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i)!).map((k) => [k, sessionStorage.getItem(k)!]));
+    cleanup();
+    for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
+    const opened = mock((_: boolean) => undefined);
+    // The new document knows no guest tab yet (it announces them after its first render): open, on Needs you meanwhile.
+    const again = mount([APPROVAL], { onOpenChange: opened });
+    expect(opened).toHaveBeenCalledWith(true);
+    expect(screen.getByRole("tabpanel", { name: "Needs you" })).toBeTruthy();
+    again.view.rerender(
+      <SealedKitContext.Provider value={kit}>
+        <Island shape={NOTCH} cards={[APPROVAL]} timers={again.clock.timers} tabs={guest} onOpenChange={opened} />
+      </SealedKitContext.Provider>,
+    );
+    expect(screen.getByText("Studio · this computer")).toBeTruthy();
+  });
+
+  test("an island put away is closed after a reload, and an unmount drops the place", () => {
+    sessionStorage.clear();
+    const first = mount([APPROVAL]);
+    first.clock.advance(8000);
+    fireEvent.click(first.view.container.querySelector(".clv-strip")!);
+    first.clock.advance(600);
+    fireEvent.keyDown(document, { key: "Escape" });
+    first.clock.advance(2000);
+    const atReload = Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i)!).map((k) => [k, sessionStorage.getItem(k)!]));
+    cleanup();
+    for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
+    const opened = mock((_: boolean) => undefined);
+    mount([APPROVAL], { onOpenChange: opened });
+    expect(opened).not.toHaveBeenCalled();
   });
 });

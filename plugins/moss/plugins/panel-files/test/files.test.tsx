@@ -6,6 +6,14 @@ import { COMPUTER, LISTING, OPEN_FILE, ROOT } from "../gallery/fixtures";
 
 afterEach(cleanup);
 
+/** The document goes with no unmount (a reload runs no cleanup): the window's session storage as it was. */
+const reload = (again: () => void) => {
+  const atReload = Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i)!).map((k) => [k, sessionStorage.getItem(k)!]));
+  cleanup();
+  for (const [k, v] of Object.entries(atReload)) sessionStorage.setItem(k, v);
+  again();
+};
+
 describe("the files panel", () => {
   test("folders first, then files; a folder opens, and one not listed yet asks the host", () => {
     const onList = mock((_p: string) => undefined);
@@ -123,5 +131,23 @@ describe("a code session's folder (the owner's scope ruling)", () => {
     render(<FilesPanel root={ROOT} listing={listing} onOpen={() => undefined} />);
     expect(screen.queryByText("beds.csv")).toBeNull();
     expect(screen.getByText("README.md")).toBeTruthy();
+  });
+});
+
+describe("the files panel across a reload of the window's document (a plugin with its own layer installed)", () => {
+  test("the filter and the open folders stand, the open folders are listed again, and a closed panel starts clean", () => {
+    sessionStorage.clear();
+    render(<FilesPanel root={ROOT} listing={LISTING} onOpen={() => undefined} />);
+    fireEvent.click(screen.getByRole("treeitem", { name: "docs" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter files" }), { target: { value: "moss" } });
+    const onList = mock((_p: string) => undefined);
+    reload(() => void render(<FilesPanel root={ROOT} listing={{ [ROOT]: LISTING[ROOT]! }} onList={onList} onOpen={() => undefined} />));
+    expect((screen.getByRole("searchbox", { name: "Filter files" }) as HTMLInputElement).value).toBe("moss");
+    expect(onList).toHaveBeenCalledWith(`${ROOT}/docs`);
+    // Left and opened again (an unmount): the tree as it first is.
+    cleanup();
+    render(<FilesPanel root={ROOT} listing={LISTING} onOpen={() => undefined} />);
+    expect((screen.getByRole("searchbox", { name: "Filter files" }) as HTMLInputElement).value).toBe("");
+    expect(screen.queryByRole("treeitem", { name: "moss-spec.md" })).toBeNull();
   });
 });
