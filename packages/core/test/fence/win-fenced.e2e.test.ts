@@ -4,8 +4,8 @@
 // the daemon gives a bot's runtime. Every refusal is asserted against a positive control by the test's own process
 // (the user), so a refusal is the fence's and not a missing file or a broken shell.
 //
-// Runs only on Windows with MOSS_WIN_FENCE_E2E=1 (the windows-fence workflow, after setup, with MOSS_SRT_WIN naming the
-// protected copy's launcher). It writes a throwaway MOSS home in the runner's own profile (`.moss-e2e`) and a few
+// Runs only on Windows with MOSS_WIN_FENCE_E2E=1 (the windows-fence workflow, after setup; the launcher is the protected
+// copy's, as the daemon finds it, with no override). It writes a throwaway MOSS home in the runner's own profile (`.moss-e2e`) and a few
 // files beside it, and prints only dummy values (`PROBE_SECRET=dummy123`).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -40,10 +40,13 @@ const sandboxFor = () => {
   });
   return botSandbox(withBotKeyReads(withSecretReads(settings, { userHome: home, os: "windows" }), { home: moss }), { userHome: home, os: "windows" });
 };
-const call = async (t: CoreToolDef, input: Record<string, unknown>) => {
+/** One call; a launch refusal (`was refused:`) fails the test there, so no refusal of the fence's own launch can pass
+ *  as the fence refusing what the command did. `refusal: true` for the one call that must be refused by the tool. */
+const call = async (t: CoreToolDef, input: Record<string, unknown>, o: { refusal?: boolean } = {}) => {
   const started = Date.now();
   const r = await t.run(input);
   console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${r.isError ? "error" : "ok"} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
+  if (o.refusal !== true) expect(r.text).not.toContain("was refused:");
   return r;
 };
 const fresh = (name: string) => { const p = join(home, name); rmSync(p, { force: true }); return p; };
@@ -160,6 +163,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     rmSync(marker, { force: true });
     const r = await call(tools.Bash!, { command: "(sleep 5; echo late > late.txt) & sleep 60", timeout: 2000 });
     expect(r.isError).toBe(true);
+    expect(r.text).toContain("Command timed out");
     await Bun.sleep(8000);
     expect(existsSync(marker)).toBe(false);
   }, 300_000);
@@ -171,28 +175,32 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(a.text.trim()).not.toBe(b.text.trim());
   }, 300_000);
 
-  test("nothing carries over: what one command leaves in its account's profile and hive is gone before the next", async () => {
-    // A command plants in its own account's real profile (by absolute path, past its per-command HOME) and in its
-    // hive (HKCU\\Environment, which a later logon would load into a command's environment).
-    const plant = await call(tools.PowerShell!, { command: [
-      "$p = [Environment]::GetFolderPath('UserProfile')",
-      "Set-Content -LiteralPath (Join-Path $p 'carry.txt') -Value planted",
-      "[Environment]::SetEnvironmentVariable('MOSS_CARRY', 'planted', 'User')",
-      "'planted in ' + $p + ' as ' + [Environment]::UserName",
-    ].join("; ") });
-    expect(plant.text).toContain("planted in");
-    const who = /as (moss-sb-\S+)/.exec(plant.text)?.[1];
-    // Every later command, whichever account it gets, sees neither (the reset deleted the profile and its hive).
-    for (let i = 0; i < 3; i++) {
-      const look = await call(tools.PowerShell!, { command: [
-        "$p = [Environment]::GetFolderPath('UserProfile')",
-        "'user=' + [Environment]::UserName + ' file=' + (Test-Path -LiteralPath (Join-Path $p 'carry.txt')) + ' env=' + [Environment]::GetEnvironmentVariable('MOSS_CARRY', 'User') + ' process=' + $env:MOSS_CARRY",
-      ].join("; ") });
+  test("nothing carries over: what a command leaves in its account's real profile and hive is gone when that account runs again", async () => {
+    // The account's real profile, by its SID in ProfileList (past the command's own HOME), and its hive
+    // (HKCU\\Environment, which a later logon would load into the next command's environment).
+    const realProfile = "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $p = (Get-ItemProperty \"HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\$sid\").ProfileImagePath";
+    const plant = await call(tools.PowerShell!, { command: `${realProfile}; Set-Content -LiteralPath (Join-Path $p 'carry.txt') -Value planted; [Environment]::SetEnvironmentVariable('MOSS_CARRY', 'planted', 'User'); 'as=' + [Environment]::UserName + ' in ' + $p` });
+    const who = /as=(moss-sb-\S+)/.exec(plant.text)?.[1];
+    expect(who).toBeDefined();
+    let seen = false;
+    for (let i = 0; i < 10 && !seen; i++) {
+      const look = await call(tools.PowerShell!, { command: `${realProfile}; 'user=' + [Environment]::UserName + ' file=' + (Test-Path -LiteralPath (Join-Path $p 'carry.txt')) + ' env=' + [Environment]::GetEnvironmentVariable('MOSS_CARRY', 'User') + ' process=' + $env:MOSS_CARRY` });
       console.log(`[e2e] after the plant by ${who}: ${look.text.trim()}`);
       expect(look.text).toContain("file=False");
       expect(look.text).not.toContain("planted");
+      if (look.text.includes(`user=${who} `)) seen = true;
     }
-  }, 600_000);
+    expect(seen).toBe(true); // the planting account ran again, on a profile and hive made fresh
+  }, 900_000);
+
+  test("the escape floor holds where nothing exists yet: a PowerShell profile planted under Documents is moved aside", async () => {
+    mkdirSync(join(home, "Documents"), { recursive: true });
+    const dir = join(home, "Documents", "WindowsPowerShell");
+    rmSync(dir, { recursive: true, force: true });
+    const r = await call(tools.PowerShell!, { command: `New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null; Set-Content -LiteralPath '${join(dir, "Microsoft.PowerShell_profile.ps1")}' -Value 'planted'; 'made'`, dangerouslyDisableSandbox: true });
+    expect(r.text).toContain("made");
+    expect(existsSync(join(dir, "Microsoft.PowerShell_profile.ps1"))).toBe(false);
+  }, 900_000);
 
   test("nothing runs later: a risky git key is reverted and a planted hook is moved aside", async () => {
     const r = await call(tools.Bash!, { command: "rm -rf repo && git init -q repo && git -C repo config core.hooksPath /c/elsewhere && printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout && echo done" });
@@ -216,7 +224,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const n = await call(tools.Bash!, { command: "timeout 8 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo CONNECTED || echo REFUSED", dangerouslyDisableSandbox: true });
     expect(n.text).toContain("REFUSED");
     // A side thread's command never leaves the sandbox, whatever it asks.
-    const side = await call(sideTools.Bash!, { command: "echo hi", dangerouslyDisableSandbox: true });
+    const side = await call(sideTools.Bash!, { command: "echo hi", dangerouslyDisableSandbox: true }, { refusal: true });
     expect(side.isError).toBe(true);
     expect(side.text).toContain("never leave the sandbox");
   }, 900_000);
@@ -233,8 +241,10 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const before = readFileSync(join(moss, "settings.json"), "utf8");
     const no = await exec.run("Bash", { command: `echo x > '${join(moss, "settings.json").replace(/\\/g, "/")}'` }, ctx);
     expect(no.isError).toBe(true);
+    expect(JSON.stringify(no.output)).not.toContain("refused:");
     expect(readFileSync(join(moss, "settings.json"), "utf8")).toBe(before);
     const read = await exec.run("Bash", { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}'` }, ctx);
+    expect(JSON.stringify(read.output)).not.toContain("refused:");
     expect(JSON.stringify(read.output)).not.toContain("a note any bot may read"); // the MOSS home is default-deny for a coding session
   }, 300_000);
 });
