@@ -41,7 +41,7 @@ export function previewBuildDefine(preview: boolean): Record<string, string> {
 }
 /** What only the preview build's code reads (the environment variables the preview command hands its app). Every other
  *  build's app code carries none of them, nor the label. */
-export const PREVIEW_ONLY_APP_STRINGS = ["MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_APPEARANCE", "MOSS_PREVIEW_BANNER", "moss-preview-line", "the window's files changed; reloading it"] as const;
+export const PREVIEW_ONLY_APP_STRINGS = ["MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_APPEARANCE", "MOSS_PREVIEW_BANNER", "moss-preview-line", "the window's files changed; reloading it", "MOSS_PREVIEW_CONTROL_SOCKET", "MOSS_PREVIEW_CONTROL_TOKEN", "moss-preview-control"] as const;
 
 /** The release build's own define (apps/desktop/scripts/build.ts --release, which release/build.ts passes for every
  *  build but the test twin): `__MOSS_RELEASE_BUILD__`, the label in a release-shaped build (signed, sign-only,

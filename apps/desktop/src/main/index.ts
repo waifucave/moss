@@ -145,6 +145,9 @@ const quiet: boolean = headless || preview;
 const previewBanner: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_BANNER : undefined;
 const previewReloadFile: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_RELOAD_FILE : undefined;
 const previewAppearance: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_APPEARANCE : undefined;
+/** The control door's socket and token (`--control` only; apps/desktop/src/main/preview-control.ts). Absent: no door is opened. */
+const previewControlSocket: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_CONTROL_SOCKET : undefined;
+const previewControlToken: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_CONTROL_TOKEN : undefined;
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
 // The source acceptance run's own build of the app (apps/desktop/scripts/build.ts --acceptance, which only
@@ -900,6 +903,12 @@ async function ready(): Promise<void> {
       log("preview: the window's files changed; reloading it");
       mainWindow.webContents.reloadIgnoringCache();
     });
+  }
+  // The preview's control door, only when its command asked for it (`--control`): a private socket the command relays through.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewControlSocket !== undefined && previewControlToken !== undefined && isAbsolute(previewControlSocket)) {
+    const socketPath = previewControlSocket;
+    const token = previewControlToken;
+    void import("./preview-control").then((m) => m.startPreviewControl({ socketPath, token, window: () => mainWindow, log }));
   }
   startFrontSeam();
   startViewportPressSeam();

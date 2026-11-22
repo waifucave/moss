@@ -35,6 +35,8 @@ import { settingsWithFake, socketPathProblem } from "../acceptance/state";
 import { listProcesses, nameLeftovers, reap, runProcesses } from "../acceptance/reaper";
 import { AGENT_SHIMS, PREVIEW_PREFIX, USAGE, UsageError, WATCHED, appArgs, appEnv, baseEnv, daemonEnv, isolationProblems, layoutFor, ownRoot, parseOptions, parseRecord, reloads, sameProcess, shimScript, type Options, type Record_, type Started } from "./lib";
 import { quirksOf, seed, titleFor } from "./seed";
+import { startControl, type RunningControl } from "./control";
+import { newToken } from "./control-lib";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const DESKTOP = join(REPO, "apps", "desktop");
@@ -138,6 +140,7 @@ let fake: FakeProvider | undefined;
 let root = "";
 let ending = false;
 let logsTo: string | undefined;
+let control: RunningControl | undefined;
 
 function note(name: string, proc: ChildProcess): void {
   if (proc.pid === undefined) return;
@@ -172,6 +175,8 @@ async function cleanup(code: number): Promise<never> {
   if (ending) await new Promise(() => undefined);
   ending = true;
   say("ending: the window's app, the engine and the fake, then the temp folders");
+  // The control door first: nothing is driven while the preview ends.
+  try { control?.close(); } catch { /* gone */ }
   for (const c of [...children].reverse()) await endChild(c.proc);
   try { fake?.close(); } catch { /* gone */ }
   // Anything of this run's still running: in one of its groups or running a program from its folder. Never by a name.
@@ -236,6 +241,17 @@ async function main(o: Options): Promise<void> {
   for (const d of [layout.home, layout.userHome, layout.logs, layout.tmp, join(root, "kc"), layout.bin, layout.agents, layout.work, layout.pluginWorld]) mkdirSync(d, { recursive: true, mode: 0o700 });
   const sockProblem = socketPathProblem(layout.home);
   if (sockProblem !== undefined) throw new Error(sockProblem);
+  // The control door (--control): its folder is closed to everyone but this user BEFORE a socket or a token exists; two tokens, the app's (only this process
+  // holds it, handed to the app in its environment) and ctl.ts's (in the record, a 0600 file in a 0700 folder).
+  const appToken = o.control ? newToken() : undefined;
+  const ctlToken = o.control ? newToken() : undefined;
+  if (o.control) {
+    mkdirSync(layout.ctlDir, { mode: 0o700 });
+    chmodSync(layout.ctlDir, 0o700);
+    for (const sp of [layout.appDoor, layout.ctlSock]) if (sp.length > 100) throw new Error(`the control socket's path is too long for a Unix socket (${sp.length} characters): ${sp}`);
+    record = { ...record, control: { socket: layout.ctlSock, token: ctlToken! } };
+    writeRecord(record);
+  }
   const service = `com.waifucave.moss.core.test.preview-${randomBytes(4).toString("hex")}`;
   const bunDir = dirname(process.execPath);
   const input = { layout, service, bunDir };
@@ -257,7 +273,7 @@ async function main(o: Options): Promise<void> {
   // The app's isolation, said once for what a reader can check.
   const problems = [
     ...isolationProblems(daemonEnv({ ...input, runPid: process.pid, usageInert: USAGE_INERT_ENV }), layout, process.env.HOME ?? ""),
-    ...isolationProblems(appEnv({ ...input, headless: o.headless, appearance: o.appearance }), layout, process.env.HOME ?? ""),
+    ...isolationProblems(appEnv({ ...input, headless: o.headless, appearance: o.appearance, ...(appToken !== undefined ? { control: { token: appToken } } : {}) }), layout, process.env.HOME ?? ""),
   ];
   if (problems.length > 0) throw new Error(`the preview's environment is not isolated: ${problems.join("; ")}`);
 
@@ -302,19 +318,27 @@ async function main(o: Options): Promise<void> {
   client.close();
 
   // The window.
-  const port = o.headless ? await freePort() : undefined;
-  const app = startChild("app", exe, appArgs({ desktopDir: DESKTOP, headless: o.headless, ...(port !== undefined ? { port } : {}) }), appEnv({ ...input, headless: o.headless, appearance: o.appearance }), join(layout.logs, "app.out.log"));
+  const port = o.headless && !o.control ? await freePort() : undefined;
+  const app = startChild("app", exe, appArgs({ desktopDir: DESKTOP, headless: o.headless, control: o.control, ...(port !== undefined ? { port } : {}) }), appEnv({ ...input, headless: o.headless, appearance: o.appearance, ...(appToken !== undefined ? { control: { token: appToken } } : {}) }), join(layout.logs, "app.out.log"));
   say(`${o.headless ? "the app is starting offscreen" : "the window is opening"} (${Math.round((Date.now() - t0) / 1000)} s since the start)`);
 
-  if (o.headless) {
+  if (o.headless && !o.control) {
     await shot(port!, o.shot!, app, layout.home);
     await cleanup(0);
   }
 
   writeFileSync(layout.reloadFile, "0");
+  if (o.control) {
+    control = await startControl({
+      socketPath: layout.ctlSock, token: ctlToken!, appSocketPath: layout.appDoor, appToken: appToken!, engineSock: sock, engineTokenFile: token,
+      seed: { layout, keyedModel, dummyKey, fakeAcpAgent: FAKE_ACP_AGENT, say, quirks: Object.fromEntries(AGENT_SHIMS.map((s) => [s.backend, quirksOf(REPO, s.backend)])) },
+      logs: { app: join(layout.home, "logs", "app.log"), engine: join(layout.logs, "engine.log"), appOut: join(layout.logs, "app.out.log") },
+      say,
+    });
+  }
   let watcher: (() => void) | undefined;
   if (!o.once) watcher = watching(rebuild, layout.reloadFile);
-  say(`the preview is up (${Math.round((Date.now() - t0) / 1000)} s). Close its window to end it, or run: scripts/pinned-bun scripts/preview/run.ts --stop`);
+  say(`the preview is up (${Math.round((Date.now() - t0) / 1000)} s). ${o.control ? "Drive it with: scripts/pinned-bun scripts/preview/ctl.ts --help. " : ""}${o.headless ? "" : "Close its window to end it, or run"}${o.headless ? "End it with" : ""}: scripts/pinned-bun scripts/preview/run.ts --stop`);
   await new Promise<void>((r) => app.once("exit", () => r()));
   watcher?.();
   say("the window closed");

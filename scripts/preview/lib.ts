@@ -19,6 +19,8 @@ export interface Options {
   /** Offscreen, one picture, then end (`--shot`). */
   headless: boolean;
   shot?: string;
+  /** Open the control door (scripts/preview/ctl.ts drives it): a private socket in the run's own folder, a token in the run's record. Without it the preview opens none. */
+  control: boolean;
   appearance: Appearance;
   /** Where to copy the run's logs (the engine's, the app's, the builds', the fake agents' reports) before its folder is removed. */
   logs?: string;
@@ -30,7 +32,7 @@ export class UsageError extends Error {}
 
 /** The command line: `--once`, `--stop`, `--headless --shot <png>`, `--appearance light|dark|system`. Anything else is refused. */
 export function parseOptions(argv: readonly string[]): Options {
-  const o: Options = { mode: "start", once: false, headless: false, appearance: "system", help: false };
+  const o: Options = { mode: "start", once: false, headless: false, control: false, appearance: "system", help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     const value = (): string => {
@@ -43,6 +45,7 @@ export function parseOptions(argv: readonly string[]): Options {
     else if (a === "--headless") o.headless = true;
     else if (a === "--shot") o.shot = value();
     else if (a === "--logs") o.logs = value();
+    else if (a === "--control") o.control = true;
     else if (a === "--appearance") {
       const v = value();
       if (v !== "light" && v !== "dark" && v !== "system") throw new UsageError(`--appearance is light, dark or system, not ${v}`);
@@ -50,8 +53,9 @@ export function parseOptions(argv: readonly string[]): Options {
     } else if (a === "--help" || a === "-h") o.help = true;
     else throw new UsageError(`unknown argument ${a}`);
   }
-  if (o.mode === "stop" && (o.once || o.headless || o.shot !== undefined)) throw new UsageError("--stop stands alone");
-  if (o.headless && o.shot === undefined) throw new UsageError("--headless needs --shot <png>: it draws one picture and ends");
+  if (o.mode === "stop" && (o.once || o.headless || o.shot !== undefined || o.control)) throw new UsageError("--stop stands alone");
+  if (o.headless && o.shot === undefined && !o.control) throw new UsageError("--headless needs --shot <png> (one picture, then it ends) or --control (it runs until ctl ends it)");
+  if (o.shot !== undefined && o.control) throw new UsageError("--shot and --control do not go together: a controlled preview takes its pictures with ctl.ts shot <png>");
   if (o.shot !== undefined && !o.headless) throw new UsageError("--shot is for --headless: the visible preview is looked at, not photographed");
   if (o.shot !== undefined && !o.shot.endsWith(".png")) throw new UsageError("--shot names a .png file");
   return o;
@@ -63,6 +67,7 @@ export const USAGE = [
   "scripts/pinned-bun scripts/preview/run.ts --stop     end a running preview (by the pid it recorded)",
   "scripts/pinned-bun scripts/preview/run.ts --headless --shot <png> [--appearance light|dark]   offscreen: one picture of the window, then end",
   "                              --logs <dir> (with any start) copies the run's logs there before its folder is removed",
+  "scripts/pinned-bun scripts/preview/run.ts --control [--headless]   start with the control door open: scripts/preview/ctl.ts then drives the window and the engine (ctl.ts --help)",
 ].join("\n");
 
 /** Why a preview must not start here, or undefined. The first thing the command checks, before any folder or process. */
@@ -91,6 +96,10 @@ export interface Layout {
   pluginWorld: string;
   reloadFile: string;
   userData: string;
+  /** The control door's folder (mode 0700) and its two sockets: the app's own (only the preview command dials it) and the command's (ctl.ts dials it). */
+  ctlDir: string;
+  appDoor: string;
+  ctlSock: string;
 }
 
 export function layoutFor(root: string): Layout {
@@ -100,6 +109,7 @@ export function layoutFor(root: string): Layout {
     keychain: join(root, "kc", "preview.keychain-db"), answerKey: join(root, "kc", "answer-key"),
     bin: join(root, "bin"), stubBin: join(root, "bin", "engine-stub"), agents: join(root, "agents"), work: join(userHome, "work"),
     pluginWorld: join(root, "plugin-world"), reloadFile: join(root, "reload"), userData: join(root, "user-data"),
+    ctlDir: join(root, "ctl"), appDoor: join(root, "ctl", "a.sock"), ctlSock: join(root, "ctl", "c.sock"),
   };
 }
 
@@ -138,7 +148,7 @@ export function daemonEnv(i: EnvInput & { runPid: number; usageInert: Readonly<R
 }
 
 /** The app's environment. Visible: nothing that opens a debugging door. Headless (`--shot`): the dev opt-in the source app takes for its DevTools port on loopback, so the command can take the picture. */
-export function appEnv(i: EnvInput & { headless: boolean; appearance: Appearance }): Record<string, string> {
+export function appEnv(i: EnvInput & { headless: boolean; appearance: Appearance; control?: { token: string } }): Record<string, string> {
   const l = i.layout;
   return {
     ...baseEnv(i),
@@ -146,15 +156,17 @@ export function appEnv(i: EnvInput & { headless: boolean; appearance: Appearance
     MOSS_PREVIEW_BANNER: PREVIEW_BANNER,
     MOSS_PREVIEW_RELOAD_FILE: l.reloadFile,
     ...(i.appearance === "system" ? {} : { MOSS_PREVIEW_APPEARANCE: i.appearance }),
-    ...(i.headless ? { MOSS_DEV_DEBUG: "1" } : {}),
+    // The DevTools port (loopback, no token) only for the one-picture run; a controlled preview uses its own door and opens no port.
+    ...(i.headless && i.control === undefined ? { MOSS_DEV_DEBUG: "1" } : {}),
+    ...(i.control !== undefined ? { MOSS_PREVIEW_CONTROL_SOCKET: l.appDoor, MOSS_PREVIEW_CONTROL_TOKEN: i.control.token } : {}),
   };
 }
 
 /** The app's command line after Electron's folder argument. Never a debugging switch in a visible preview; headless is the one place the DevTools port comes, on loopback, for the picture. */
-export function appArgs(o: { desktopDir: string; headless: boolean; port?: number }): string[] {
+export function appArgs(o: { desktopDir: string; headless: boolean; port?: number; control?: boolean }): string[] {
   return [
     o.desktopDir, "--mute-audio", "--use-mock-keychain",
-    ...(o.headless ? ["--moss-headless", `--remote-debugging-port=${o.port ?? 0}`] : []),
+    ...(o.headless ? ["--moss-headless", ...(o.control === true ? [] : [`--remote-debugging-port=${o.port ?? 0}`])] : []),
   ];
 }
 
@@ -162,7 +174,7 @@ export function appArgs(o: { desktopDir: string; headless: boolean; port?: numbe
 export function isolationProblems(env: Readonly<Record<string, string>>, layout: Layout, realHome: string): string[] {
   const out: string[] = [];
   const inside = (p: string | undefined): boolean => p !== undefined && (resolve(p) === layout.root || resolve(p).startsWith(`${layout.root}${sep}`));
-  for (const k of ["HOME", "TMPDIR", "MOSS_HOME", "MOSS_TEST_KEYCHAIN", "MOSS_DAEMON_BIN", "MOSS_ACCEPTANCE_PLUGIN_WORLD", "MOSS_ACCEPTANCE_USER_HOME", "MOSS_PREVIEW_RELOAD_FILE"]) {
+  for (const k of ["HOME", "TMPDIR", "MOSS_HOME", "MOSS_TEST_KEYCHAIN", "MOSS_DAEMON_BIN", "MOSS_ACCEPTANCE_PLUGIN_WORLD", "MOSS_ACCEPTANCE_USER_HOME", "MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_CONTROL_SOCKET"]) {
     if (env[k] !== undefined && !inside(env[k])) out.push(`${k} is ${env[k]}, outside the preview's folder`);
   }
   if (env.MOSS_HOME === undefined || env.HOME === undefined || env.MOSS_TEST_KEYCHAIN === undefined || env.MOSS_KEYCHAIN_SERVICE === undefined) out.push("the home, the user home, the throwaway keychain and its service are not all named");
@@ -192,14 +204,17 @@ export function shimScript(o: { bun: string; fake: string; config: string }): st
 
 /** One process the preview started, with its start time so a pid a later process reused is never taken for it. */
 export interface Started { pid: number; start: string; what: string }
-export interface Record_ { v: 1; pid: number; start: string; root: string; at: number; children: Started[] }
+/** `control`: where ctl.ts finds the running preview's door and the token for it; the record is a 0600 file in a 0700 folder, so only this user reads it. */
+export interface Record_ { v: 1; pid: number; start: string; root: string; at: number; children: Started[]; control?: { socket: string; token: string } }
 
 export function parseRecord(text: string): Record_ | undefined {
   try {
     const r = JSON.parse(text) as Partial<Record_>;
     if (r.v !== 1 || !Number.isInteger(r.pid) || typeof r.start !== "string" || typeof r.root !== "string" || !Array.isArray(r.children)) return undefined;
     const children = r.children.filter((c): c is Started => c !== null && typeof c === "object" && Number.isInteger((c as Started).pid) && typeof (c as Started).start === "string" && typeof (c as Started).what === "string");
-    return { v: 1, pid: r.pid!, start: r.start, root: r.root, at: typeof r.at === "number" ? r.at : 0, children };
+    const c = r.control;
+    const control = c !== undefined && c !== null && typeof c.socket === "string" && typeof c.token === "string" && c.socket !== "" && c.token.length >= 32 ? { socket: c.socket, token: c.token } : undefined;
+    return { v: 1, pid: r.pid!, start: r.start, root: r.root, at: typeof r.at === "number" ? r.at : 0, children, ...(control !== undefined ? { control } : {}) };
   } catch {
     return undefined;
   }

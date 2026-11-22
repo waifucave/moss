@@ -8,6 +8,13 @@ import { scaled } from "./time-scale";
 export interface ConsoleEntry { session: string; url: string; level: string; text: string }
 export interface FrameInfo { session: string; url: string; type: string; targetId?: string }
 
+/** What `Cdp.over` needs of a door: `send`, `close`, and `message` events carrying the protocol's JSON text. */
+export interface WsLike {
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: "message", fn: (m: { data: unknown }) => void): void;
+}
+
 type Pending = { method: string; resolve(v: any): void; reject(e: Error): void };
 
 /** In-page source of `clippedAway(el, x, y)`: whether the point lies outside the visible box of the page or of any ancestor that clips
@@ -46,6 +53,10 @@ export class Cdp {
     await cdp.send("Target.setDiscoverTargets", { discover: true });
     return cdp;
   }
+
+  /** A client over a door that is shaped like a WebSocket (it sends a line of text and hands back messages): the preview's control door,
+   *  which relays the same protocol to the app's own window. The caller names the page's session itself (it is not discovered). */
+  static over(ws: WsLike): Cdp { return new Cdp(ws as unknown as WebSocket); }
 
   close(): void { try { this.ws.close(); } catch { /* gone */ } }
 
