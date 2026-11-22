@@ -110,6 +110,7 @@ export class EncryptedFileValues implements BatchValues {
   readonly #lockPath: string;
   readonly #disk: PrivateFileDeps;
   readonly #log: (line: string) => void;
+  #toldRecovery = false;
   constructor(
     private readonly path: string, private readonly key: () => Promise<Buffer>, private readonly source: SecretKeySource, lockPath?: string,
     /** `step` is a test seam (`PrivateFileDeps.step`); `log` says when the previous file was used. */
@@ -123,6 +124,9 @@ export class EncryptedFileValues implements BatchValues {
   /** What `blob` holds, or `invalid` when it isn't a whole file this store wrote under this key. */
   async #decrypt(blob: Buffer): Promise<Record<string, string>> {
     if (blob.length < 2 + 12 + 16 || blob[0] !== 2) throw new ContractError("invalid", "the secrets file is not one this store wrote");
+    // A code that names no key source is damage (the previous copy may be whole); a known one that is not this store's is the
+    // downgrade rule (#205's S3): locked, whatever else is beside it.
+    if (!Object.values(SOURCE_CODES).includes(blob[1]!)) throw new ContractError("invalid", "the secrets file's header is damaged");
     if (blob[1] !== SOURCE_CODES[this.source]) throw new ContractError("locked", "the secrets file's key is kept elsewhere than this store looks");
     const iv = blob.subarray(2, 14), tag = blob.subarray(14, 30), body = blob.subarray(30);
     const d = createDecipheriv("aes-256-gcm", await this.key(), iv);
@@ -154,7 +158,7 @@ export class EncryptedFileValues implements BatchValues {
       try {
         const blob = await readFileRetrying(bak);
         const all = await this.#decrypt(blob);
-        this.#log(`[secrets] secrets.enc was ${damage === undefined ? "missing" : "damaged"}: read from the previous whole file (credentials/secrets.enc.bak); the next write puts it back`);
+        if (!this.#toldRecovery) { this.#toldRecovery = true; this.#log(`[secrets] secrets.enc was ${damage === undefined ? "missing" : "damaged"}: read from the previous whole file (credentials/secrets.enc.bak); the next write puts it back`); }
         return { all, blob, recovered: true };
       } catch { /* no better: the first failure stands */ }
     }

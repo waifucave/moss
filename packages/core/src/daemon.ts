@@ -39,7 +39,7 @@ import { applicationPathsForBundleId, keychainUnlocked, withKeychainUserInteract
 import { loginKeychain } from "./auth/login-keychain";
 import { CredentialMigrationBusy } from "./auth/credential-migration-lock";
 import { beginKeychainPass, finishCredentialPass, type KeychainPass } from "./auth/keychain-boot";
-import { defaultSecretsBackend, KeychainSecretStore, type SecretStore } from "./auth/secret-store";
+import { daemonSecretStore, type SecretStore } from "./auth/secret-store";
 import { guardBunSecrets } from "./auth/test-isolation";
 import { migrateLegacyCredentialMaterial } from "./auth/credential-material";
 import { SessionStore } from "./sessions/store";
@@ -818,10 +818,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
 
   // The service is THIS daemon's home's (`keychainService(profile, home)`): on a custom home a
   // `MOSS_KEYCHAIN_SERVICE` is honoured, so an experiment or e2e daemon never reads the profile's real items.
-  // On Windows and Linux the backend is this home's encrypted secrets file (`defaultSecretsBackend`; spec §9.1): `home` is
+  // On Windows and Linux the backend is this home's encrypted secrets file (`daemonSecretStore`; spec §9.1): `home` is
   // named, so a daemon on a home of its own never reads the file of the profile's default one.
   const secretsService = keychainService(profile, home);
-  const secrets = opts.secrets ?? new KeychainSecretStore(defaultSecretsBackend({ home, service: secretsService }), secretsService);
+  const secrets = opts.secrets ?? daemonSecretStore({ home, service: secretsService });
 
   // WS-27: the credential items' access lists (`auth/credential-acl.ts`) — same guards as the app-token
   // slot below: real production boot, the profile's own default home, macOS, never fatal, skipped when the

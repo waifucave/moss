@@ -149,6 +149,12 @@ export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
       if (!told.has(o.service)) { told.add(o.service); log(`[secrets] ${WAIT_NOTE}`); }
     }
   };
+  /** A name that may still be in the OS store, and is not in the file, is neither "missing" nor "deleted": `locked`. */
+  const refuseWhilePending = async (st: Open, name: string): Promise<void> => {
+    if (!st.pending.has(name)) return;
+    if (Date.now() >= st.retryAt) await runMove(st);
+    if (st.pending.has(name)) throw new ContractError("locked", WAIT_NOTE);
+  };
   const open = (): Promise<Open> => {
     ready ??= (async () => {
       const c = await chooseFileStore({ home: o.home, service: o.service, os, ...(o.vault ? { vault: o.vault } : {}), ...(o.interactive !== undefined ? { interactive: o.interactive } : {}), ...(o.systemdCreds !== undefined ? { systemdCreds: o.systemdCreds } : {}), ...(o.credsRunner ? { credsRunner: o.credsRunner } : {}) });
@@ -164,10 +170,7 @@ export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
       const st = await open();
       const v = await st.values.get(itemKey(a.service, a.name));
       if (v !== null) return v;
-      if (st.pending.has(a.name)) {
-        if (Date.now() >= st.retryAt) await runMove(st);
-        if (st.pending.has(a.name)) throw new ContractError("locked", WAIT_NOTE);
-      }
+      await refuseWhilePending(st, a.name);
       return null;
     }) as SecretsBackend["get"],
     set: (async (a: { service: string; name: string; value: string }) => {
@@ -176,8 +179,12 @@ export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
       else await values.set(itemKey(a.service, a.name), a.value);
     }) as SecretsBackend["set"],
     delete: (async (a: { service: string; name: string }) => {
-      const { values } = await open();
+      const st = await open();
+      const { values } = st;
       const key = itemKey(a.service, a.name);
+      // A name the move may still find in the OS store is not "deleted" while it can't be read there: it would come back
+      // into the file at the next start (the person logged out, and the credential returned).
+      if ((await values.get(key)) === null) await refuseWhilePending(st, a.name);
       let had = false;
       await values.mutate((all) => { had = key in all; delete all[key]; return had; }); // one hold: whether it was there and its removal
       return had;

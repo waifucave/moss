@@ -1,6 +1,6 @@
 // What the secrets file needs from the disk (spec §9.1; spike S8's "M1 must pin ... atomic writes"):
 //   * `writePrivateFile`: a file only its owner can read, never readable by anyone else even for a moment, replaced
-//     atomically and durably (flushed before the rename, the rename flushed after). It is made empty under a temporary name, locked down (0600; on Windows the inherited entries dropped
+//     atomically and durably (flushed before the rename, the rename flushed after: `renameDurably`). It is made empty under a temporary name, locked down (0600; on Windows the inherited entries dropped
 //     and the user's SID alone granted, `icacls`, as `platform/pair/run-files.ts` does for the app token), then written
 //     and renamed into place, so a reader sees the old file or the new one, never half of one. Windows refuses a
 //     rename over a file another process has open for a moment: it is retried briefly.
@@ -16,14 +16,13 @@ import { ContractError } from "../contracts/common";
 import { bunRunner, windowsUserSid, type Runner } from "../platform/login/live";
 
 /** The durable steps of a write, in the order they happen. */
-export type PrivateFileStep = "created" | "locked" | "written" | "file-flushed" | "renamed" | "folder-flushed";
+export type PrivateFileStep = "created" | "locked" | "written" | "file-flushed" | "renamed" | "rename-flushed";
 
 export interface PrivateFileDeps {
   /** Where the temporary file is made: a folder on the same volume as the file, by default the file's own. The secrets
    *  files pass the run folder, which every fence hides, so a half-made copy never sits under a name no deny list knows. */
   tmpDir?: string;
-  /** A test seam: called right after each durable step (`detail` says how the rename was made on Windows). A throw here is
-   *  a crash at that point: nothing after it runs. */
+  /** A test seam: called right after each durable step. A throw here is a crash at that point: nothing after it runs. */
   step?: (name: PrivateFileStep, detail?: string) => void;
   /** Defaults to this process's platform. */
   platform?: NodeJS.Platform;
@@ -71,7 +70,7 @@ export function flushFile(path: string): void {
 }
 
 /** Flushes a folder's entries (a rename into it, a file gone from it): fsync of the folder on Linux and macOS. Windows
- *  cannot open a folder to flush it; there the rename is made write-through instead (`renameDurably`). Only a file
+ *  cannot open a folder to flush it; there the renamed file is flushed instead (`renameDurably`). Only a file
  *  system that has no such flush (EINVAL, ENOTSUP) is let go; any other failure is the caller's. */
 export function flushFolder(dir: string, platform: NodeJS.Platform = process.platform): void {
   if (platform === "win32") return;
@@ -81,48 +80,35 @@ export function flushFolder(dir: string, platform: NodeJS.Platform = process.pla
   finally { closeSync(fd); }
 }
 
-let moveFileEx: ((from: string, to: string) => boolean) | null | undefined;
-/** Windows: `MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` through Bun's FFI, the rename that
- *  returns only when the move is on the disk (Node's own rename, libuv's, leaves WRITE_THROUGH off). Null when FFI is not there. */
-function windowsMoveFileEx(): ((from: string, to: string) => boolean) | null {
-  if (moveFileEx !== undefined) return moveFileEx;
-  try {
-    const { dlopen, FFIType, ptr } = require("bun:ffi") as typeof import("bun:ffi");
-    const k = dlopen("kernel32.dll", { MoveFileExW: { args: [FFIType.ptr, FFIType.ptr, FFIType.u32], returns: FFIType.i32 } });
-    moveFileEx = (from, to) => {
-      const a = Buffer.from(`${from}\0`, "utf16le"), b = Buffer.from(`${to}\0`, "utf16le");
-      return k.symbols.MoveFileExW(ptr(a), ptr(b), 0x1 | 0x8) !== 0;
-    };
-  } catch { moveFileEx = null; }
-  return moveFileEx;
-}
-
-/** Renames `from` over `to` and does not return until the rename is durable: the folder flushed after it on Linux and
- *  macOS; on Windows a write-through move (`windowsMoveFileEx`), or, only where FFI is not there, the plain rename
- *  (the file's data was flushed before, so a crash leaves the old whole file or the new whole file; the name switch itself
- *  may be lost). Retried over the sharing errors Windows gives while another process holds either file. */
+/** Renames `from` over `to` and does not return until the rename has been flushed as far as this OS lets a program ask:
+ *   * Linux and macOS: `fsync` of the folder the name now lives in (and of the one it left, when they differ), which is
+ *     what makes a rename survive a power cut.
+ *   * Windows: Node's rename (`MoveFileExW` with REPLACE_EXISTING), then `FlushFileBuffers` on the renamed file
+ *     (`fsync` of a handle opened on it). A folder cannot be flushed on Windows. Microsoft does not state that a rename
+ *     is durable once its file is flushed, and `MOVEFILE_WRITE_THROUGH` is documented only for a move made as a copy and
+ *     a delete (not a same-volume rename), so it is not claimed: what is relied on is that NTFS commits a file's pending
+ *     metadata, its directory entry included, through its log when the file is flushed. The file's DATA was flushed before
+ *     the rename either way, so a power cut leaves the old whole file or the new whole file, never a short one.
+ *  Retried over the sharing errors Windows gives while another process holds either file. */
 export async function renameDurably(from: string, to: string, deps: PrivateFileDeps = {}): Promise<void> {
   const platform = deps.platform ?? process.platform;
-  const wt = platform === "win32" && process.platform === "win32" ? windowsMoveFileEx() : null;
-  let detail: string | undefined;
   for (let i = 0; ; i++) {
-    try {
-      if (wt !== null && i < RENAME_RETRIES) {
-        if (!wt(from, to)) throw Object.assign(new Error("MoveFileExW failed"), { code: "EBUSY" });
-        detail = "write-through";
-      } else { renameSync(from, to); detail = platform === "win32" ? "plain" : undefined; }
-      break;
-    } catch (e) { if (!transient(e) || i >= RENAME_RETRIES + 1) throw e; await sleep(25); }
+    try { renameSync(from, to); break; }
+    catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
   }
-  deps.step?.("renamed", detail);
-  flushFolder(dirname(to), platform);
-  if (dirname(from) !== dirname(to)) flushFolder(dirname(from), platform);
-  deps.step?.("folder-flushed");
+  deps.step?.("renamed");
+  if (platform === "win32") flushFile(to);
+  else {
+    flushFolder(dirname(to), platform);
+    if (dirname(from) !== dirname(to)) flushFolder(dirname(from), platform);
+  }
+  deps.step?.("rename-flushed");
 }
 
 /** Writes `data` to `path`: owner-only from the first byte, flushed to the disk before the rename that puts it in place,
  *  and the rename itself made durable (`renameDurably`). It returns only when a power cut can no longer take the new
- *  file back or leave a short one: the name holds the old whole file or the new whole file. */
+ *  file back or leave a short one: the name holds the old whole file or the new whole file. (Windows: see `renameDurably`
+ *  for what is and is not promised of the rename itself.) */
 export async function writePrivateFile(path: string, data: Buffer | string, deps: PrivateFileDeps = {}): Promise<void> {
   const tmpDir = deps.tmpDir ?? dirname(path);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

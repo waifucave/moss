@@ -89,6 +89,14 @@ export function defaultSecretsBackend(o: { home?: string; service?: string; file
   return sharedFileSecretsBackend({ home, service: o.service ?? keychainService(resolveMossProfile(), home) });
 }
 
+/** The daemon's own store of named secrets (`daemon.ts` builds it with this, and a test of the Windows and Linux wiring calls
+ *  this same function): `KeychainSecretStore` over `defaultSecretsBackend` for this home and service. `file` is a TEST-ONLY
+ *  door (see `defaultSecretsBackend`): both `home` and `service` must be named by the caller, and the file's key still goes
+ *  through the isolated OS store. */
+export function daemonSecretStore(o: { home: string; service: string; file?: boolean }): KeychainSecretStore {
+  return new KeychainSecretStore(defaultSecretsBackend({ home: o.home, service: o.service, ...(o.file ? { file: true } : {}) }), o.service);
+}
+
 /** Production store: the OS's secret store, on macOS the login keychain by path (`defaultSecretsBackend`). */
 export class KeychainSecretStore implements SecretStore {
   /** `backend`/`service` exist for tests only (a recording fake, or a throwaway keychain — never the real one). */
