@@ -364,6 +364,8 @@ async function plusRow(s: Ctx, cp: CpState): Promise<string> {
   // What + preselects is the last start (agent.recent): the agent, its model and effort, the folder.
   const recent = await c.request<{ backend?: string; model?: string; effort?: string; roots: { root: string }[] }>("agent.recent", {});
   if (recent.backend === undefined || recent.roots[0] === undefined) x.fail(`agent.recent offers no last start to preselect: ${JSON.stringify(recent)}`);
+  // The bar's line and + come once the canvas has loaded its sessions (the page tells its line; until then nothing to press).
+  await canvas.waitFor("the canvas's line and + on the window's bar", "!!document.querySelector('.cl-window__bar .cv-plus')", 60_000);
   // One bar: the window's own, its title the canvas's live line, a plain + at its right end named New session; the canvas has no
   // bar of its own, no zoom buttons and no Fit, and runs up under the window's bar (frosted).
   const bar = await canvas.eval<{ bars: number; title: boolean; plus: { name: string | null; tip: string | null; text: string; right: number; barRight: number } | null; line: string | null; zoom: number; under: number | null; frost: string }>(`(() => {
