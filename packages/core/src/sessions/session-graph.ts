@@ -39,7 +39,8 @@ interface Node {
   /** The first delivery from its starter has been heard (that one is the spawn). */
   spawned: boolean;
   /** Its turn ended and nothing is queued for it: it sits idle, which its starter doesn't wait for (`waiting.children`),
-   *  until its next turn begins. A child that has not run its first turn is not idle. */
+   *  until its next turn begins, unless a background task of its own will wake it. A child that has not run its first turn is
+   *  not idle. */
   idle: boolean;
 }
 
@@ -249,11 +250,11 @@ export class EngineSessionGraph implements SessionGraph {
     return this.#nodes.has(session);
   }
 
-  started(session: string, kind: SessionKind, by: SessionStarter, bot?: string, opts: { ended?: boolean; quiet?: boolean } = {}): void {
+  started(session: string, kind: SessionKind, by: SessionStarter, bot?: string, opts: { ended?: boolean; quiet?: boolean; idle?: boolean } = {}): void {
     if (this.#nodes.has(session)) throw new ContractError("conflict", `${session} has started already`);
     const starter = starterSessionOf(by);
     const node: Node = {
-      kind, by: structuredClone(by), ended: opts.ended === true, tasks: new Set(), subagents: [], spawned: false, idle: false,
+      kind, by: structuredClone(by), ended: opts.ended === true, tasks: new Set(), subagents: [], spawned: false, idle: opts.idle === true && opts.ended !== true,
       ...(bot === undefined ? {} : { bot }), ...(starter === undefined || starter === session ? {} : { starter }),
     };
     this.#nodes.set(session, node);
@@ -288,6 +289,12 @@ export class EngineSessionGraph implements SessionGraph {
     if (n.starter !== undefined) this.#changed(n.starter);
   }
 
+  /** Whether its starter waits for the child `id`: it has not ended (the set holds only those) and is not idle, or a task will wake it. */
+  #waitedFor(id: string): boolean {
+    const n = this.#nodes.get(id);
+    return n !== undefined && (!n.idle || n.tasks.size > 0);
+  }
+
   /** The session's turn ended with nothing queued: its starter no longer waits for it (until `busy`). */
   idled(session: string): void {
     const n = this.#nodes.get(session);
@@ -319,12 +326,14 @@ export class EngineSessionGraph implements SessionGraph {
     if (n.ended || n.tasks.has(task)) return;
     n.tasks.add(task);
     this.#changed(session);
+    if (n.idle && n.starter !== undefined) this.#changed(n.starter);
   }
 
   taskEnded(session: string, task: string): void {
     const n = this.#node(session);
     if (!n.tasks.delete(task)) return;
     this.#changed(session);
+    if (n.idle && n.starter !== undefined) this.#changed(n.starter);
   }
 
   /** Every background task of the session ended at once (the agent's process went away without saying). */
@@ -333,6 +342,7 @@ export class EngineSessionGraph implements SessionGraph {
     if (n === undefined || n.tasks.size === 0) return;
     n.tasks.clear();
     this.#changed(session);
+    if (n.idle && n.starter !== undefined) this.#changed(n.starter);
   }
 
   subagent(parent: string, row: SessionSubagent): void {
@@ -418,7 +428,8 @@ export class EngineSessionGraph implements SessionGraph {
   fields(session: string): SessionGraphFields {
     const n = this.#node(session);
     // Its children that have not ended and are not idle: an agent that reported and waits for its next message is not waited for.
-    const children = [...(this.#children.get(session) ?? [])].filter((c) => this.#nodes.get(c)?.idle !== true).length;
+    // A child that is idle but has a background task of its own is still working: that task will wake it and it will report again.
+    const children = [...(this.#children.get(session) ?? [])].filter((c) => this.#waitedFor(c)).length;
     const tasks = n.tasks.size;
     return {
       startedBy: structuredClone(n.by),

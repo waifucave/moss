@@ -7,6 +7,20 @@ import { EngineSessionTitles } from "../session-titles";
 runSessionTitlesConformance((titler, lightModelFor) => new EngineSessionTitles({ titler, lightModelFor }));
 
 describe("EngineSessionTitles", () => {
+  // 2026-11-22: an outside agent's model is its own name (OpenCode's `provider/model` is its own account's): it never names a
+  // provider of MOSS's, so its title is the titles job's usual answer (no model asked for). MOSS's own runtime names its own.
+  test("the model a title is asked for: MOSS's own runtime's, never an outside agent's", async () => {
+    const asked: (string | undefined)[] = [];
+    const t = new EngineSessionTitles({ titler: async () => "A title", lightModelFor: (m) => (asked.push(m), "light") });
+    const ended = (session: string, backend?: string) => t.turnEnded({ session, kind: "agent", model: "openai/gpt-6.1-terra", firstMessage: "fix it", ...(backend === undefined ? {} : { backend }) });
+    await ended("s_1");
+    await ended("s_2", "moss-code");
+    await ended("s_3", "moss");
+    await ended("s_4", "opencode");
+    await ended("s_5", "claude-code");
+    expect(asked).toEqual(["openai/gpt-6.1-terra", "openai/gpt-6.1-terra", "openai/gpt-6.1-terra", undefined, undefined]);
+  });
+
   test("a turn that ends while the title is being made doesn't ask again", async () => {
     let asked = 0;
     let release!: (title: string) => void;

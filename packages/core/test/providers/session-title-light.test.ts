@@ -62,6 +62,23 @@ describe("a session's title on its own family's light model", () => {
     expect(isInternalRefusal(plan.resolve("titles.model", s, { lightOf: "openai/gpt-6.1-terra" as ModelTag }))).toBe(true);
   });
 
+  // The brief: a title of a code session on an ACP agent stays on MOSS's own providers as today. OpenCode's models are
+  // `provider/model` of its own account, so the string can parse as a catalog tag of a provider with no key of MOSS's here.
+  test("an ACP agent's session whose model reads as another provider's tag is titled on the default's light model, through the host's titles", async () => {
+    const { EngineSessionTitles } = await import("../../src/sessions/session-titles");
+    const r = await routerWith(["anthropic"]);
+    const s = settingsWith("anthropic/claude-opus-5-5");
+    const t = mossSessionTitles(r, () => s);
+    const used: string[] = [];
+    const titles = new EngineSessionTitles({ titler: async (_text, model) => (used.push(model), "A title"), lightModelFor: t.lightModelFor });
+    await titles.turnEnded({ session: "s_acp", kind: "agent", model: "openai/gpt-6.1-terra", backend: "opencode", firstMessage: "fix it" });
+    expect(titles.title("s_acp")?.title).toBe("A title");
+    // The same string on MOSS's own runtime has no key for its provider: no title, not another provider's.
+    await titles.turnEnded({ session: "s_own", kind: "coding", model: "openai/gpt-6.1-terra", backend: "moss-code", firstMessage: "fix it" });
+    expect(titles.title("s_own")).toBeUndefined();
+    expect(used).toEqual(["anthropic/claude-haiku-5-5"]); // only the ACP session's title ran, on the default's light model
+  });
+
   test("a session on a provider that serves no light model of its family: not run on its main model", async () => {
     const r = await routerWith(["groq", "anthropic"]);
     const s = settingsWith("anthropic/claude-opus-5-5");

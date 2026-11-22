@@ -62,11 +62,16 @@ export function runSessionGraphConformance(make: SessionGraphFactory): void {
       g.ended("s_d");
       g.ended("s_e"); // an idle child that ends: no count either way
       expect(g.fields("s_moss").waiting).toBeUndefined();
-      // Its own background tasks still make the idle child's own view wait.
+      // An idle child with a background task of its own will wake and report again: its starter still waits for it, until
+      // the task ends (its own view waits on the task either way).
       g.started("s_f", "agent", { kind: "bot", bot: "moss", session: "s_moss" }, "moss");
       g.idled("s_f");
+      expect(g.fields("s_moss").waiting).toBeUndefined();
       g.taskStarted("s_f", "bash_1");
       expect(g.fields("s_f").waiting).toEqual({ tasks: 1, children: 0 });
+      expect(g.fields("s_moss").waiting).toEqual({ tasks: 0, children: 1 });
+      g.taskEnded("s_f", "bash_1");
+      expect(g.fields("s_moss").waiting).toBeUndefined();
     });
 
     test("a subagent row keeps its id, is replaced in place, ends with a time, and the list is bounded", () => {

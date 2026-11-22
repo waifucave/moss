@@ -80,11 +80,16 @@ export class FakeSessionGraph implements SessionGraph {
     if (n.ended) return;
     n.tasks.add(task);
     this.#changed(session);
+    const starter = n.idle ? this.#starterOf(n) : undefined;
+    if (starter !== undefined) this.#changed(starter);
   }
 
   taskEnded(session: string, task: string): void {
-    this.#node(session).tasks.delete(task);
+    const n = this.#node(session);
+    n.tasks.delete(task);
     this.#changed(session);
+    const starter = n.idle ? this.#starterOf(n) : undefined;
+    if (starter !== undefined) this.#changed(starter);
   }
 
   subagent(parent: string, row: SessionSubagent): void {
@@ -149,7 +154,7 @@ export class FakeSessionGraph implements SessionGraph {
 
   fields(session: string): SessionGraphFields {
     const n = this.#node(session);
-    const children = [...this.#nodes.values()].filter((c) => !c.ended && !c.idle && this.#starterOf(c) === session).length;
+    const children = [...this.#nodes.values()].filter((c) => !c.ended && (!c.idle || c.tasks.size > 0) && this.#starterOf(c) === session).length;
     const tasks = n.tasks.size;
     return {
       startedBy: n.by,

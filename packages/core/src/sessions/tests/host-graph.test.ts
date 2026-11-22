@@ -108,6 +108,37 @@ describe("waiting", () => {
     expect(host.get("b_moss")!.waiting).toBeUndefined();
   });
 
+  test("a restart keeps an idle child idle (not waited for), and a child that has not run yet is still waited for", async () => {
+    const { home, clock, host } = hostOn();
+    host.open({ id: "b_moss", kind: "bot", bot: "moss", computer: "Studio" }, new FakeSessionDriver());
+    const ran = new FakeSessionDriver({ canFold: false });
+    host.open({ id: "agent_ran", kind: "agent", bot: "moss", parent: "b_moss", computer: "Studio" }, ran);
+    host.open({ id: "agent_new", kind: "agent", bot: "moss", parent: "b_moss", computer: "Studio" }, new FakeSessionDriver({ canFold: false }));
+    await host.deliver("agent_ran", { from: "bot", bot: "moss", session: "b_moss", text: "Write the tests." });
+    await flush();
+    ran.end({ text: "Done." });
+    await flush();
+    expect(host.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 });
+    const again = new DurableSessionHost({ home, clock });
+    expect(again.get("agent_ran")!.status).toBe("idle");
+    expect(again.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 }); // agent_new only
+  });
+
+  test("an idle agent with a background task of its own is still waited for until the task ends", async () => {
+    const { host } = hostOn();
+    host.open({ id: "b_moss", kind: "bot", bot: "moss", computer: "Studio" }, new FakeSessionDriver());
+    const agent = new FakeSessionDriver({ canFold: false });
+    host.open({ id: "agent_1", kind: "agent", bot: "moss", parent: "b_moss", computer: "Studio" }, agent);
+    await host.deliver("agent_1", { from: "bot", bot: "moss", session: "b_moss", text: "Run the build." });
+    await flush();
+    host.taskStarted("agent_1", "bash_1");
+    agent.end({ text: "Started it." });
+    await flush();
+    expect(host.get("b_moss")!.waiting).toEqual({ tasks: 0, children: 1 });
+    host.taskEnded("agent_1", "bash_1");
+    expect(host.get("b_moss")!.waiting).toBeUndefined();
+  });
+
   test("a restart has no task running, and counts the children that are still running", async () => {
     const { home, clock, host } = hostOn();
     host.open({ id: "b_moss", kind: "bot", bot: "moss", computer: "Studio" }, new FakeSessionDriver());

@@ -19,7 +19,7 @@ export type TitleSource = "user" | "spawn" | "engine";
 
 export interface SessionTitles {
   /** A turn of `session` ended. `firstMessage` is the session's first message (the person's, or the spawn's prompt). */
-  turnEnded(s: { session: string; kind: "bot" | "side-thread" | "agent" | "coding"; model?: string; firstMessage?: string }): Promise<void>;
+  turnEnded(s: { session: string; kind: "bot" | "side-thread" | "agent" | "coding"; model?: string; backend?: string; firstMessage?: string }): Promise<void>;
   set(session: string, title: string, by: "user" | "spawn"): void;
   title(session: string): { title: string; by: TitleSource } | undefined;
   watch(fn: (change: { session: string; title: string; by: TitleSource }) => void): Unsubscribe;

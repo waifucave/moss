@@ -1674,7 +1674,9 @@ export class DurableSessionHost implements SessionHost {
   #graphAdd(s: Hosted, rows?: readonly Replayed[]): void {
     const meta = s.meta;
     if (this.graph.has(meta.id)) return;
-    this.graph.started(meta.id, meta.kind, meta.startedBy ?? derivedStarter(meta), meta.bot, { ended: isEnded(s.view.status), quiet: true });
+    // A child that was idle before the restart (its turn ended, nothing queued) is still idle: not waited for until its next turn.
+    const idle = s.view.status === "idle" && s.queue.length === 0 && !s.running && !s.compacting;
+    this.graph.started(meta.id, meta.kind, meta.startedBy ?? derivedStarter(meta), meta.bot, { ended: isEnded(s.view.status), quiet: true, idle });
     for (const r of rows ?? []) this.#trackSubagent(s, r.event, r.ts);
   }
 
@@ -1719,7 +1721,7 @@ export class DurableSessionHost implements SessionHost {
       return;
     }
     if (first === undefined) return;
-    void titles.turnEnded({ session: s.meta.id, kind: s.meta.kind, ...(s.meta.model === undefined ? {} : { model: s.meta.model }), firstMessage: first }).catch(() => {});
+    void titles.turnEnded({ session: s.meta.id, kind: s.meta.kind, ...(s.meta.model === undefined ? {} : { model: s.meta.model }), ...(s.meta.backend === undefined ? {} : { backend: s.meta.backend }), firstMessage: first }).catch(() => {});
   }
 
   #ended(s: Hosted, running: Running, end: TurnEnd): void {

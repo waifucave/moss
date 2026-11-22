@@ -11,6 +11,7 @@
 // them, so a restart never retitles one; with none they live in memory.
 import { displayText } from "@waifucave/moss-plugin-sdk/plain";
 import { Listeners, type Unsubscribe } from "../contracts/common";
+import { listedBackendOf, MOSS_BACKEND } from "../runtime-sdk/turn-loop/only-backends";
 import { titleLine, type SessionTitles, type TitleSource } from "../contracts/session-titles";
 
 /** The longest title the engine's titler gives (the inherited `SessionTitler`'s 60); the person's and a spawn's may be as
@@ -69,7 +70,7 @@ export class EngineSessionTitles implements SessionTitles {
     this.#warn = o.warn ?? (() => {});
   }
 
-  async turnEnded(s: { session: string; kind: TitleKind; model?: string; firstMessage?: string }): Promise<void> {
+  async turnEnded(s: { session: string; kind: TitleKind; model?: string; backend?: string; firstMessage?: string }): Promise<void> {
     if (s.kind !== "coding" && s.kind !== "agent") return;
     if (this.#store.get(s.session) !== undefined || this.#inFlight.has(s.session)) return;
     const first = s.firstMessage?.trim() ?? "";
@@ -79,7 +80,10 @@ export class EngineSessionTitles implements SessionTitles {
       let model: string;
       let made: string;
       try {
-        model = this.#lightModelFor(s.model);
+        // A session on MOSS's own runtime names a model of MOSS's providers: its title runs on that model's family's light model
+        // on ITS provider, or not at all. An outside agent's model is its own name (a provider/model of its own account, such as
+        // OpenCode's) and no key of MOSS's: its title is the titles job's usual answer, on MOSS's own providers as before.
+        model = this.#lightModelFor(s.backend === undefined || listedBackendOf(s.backend) === MOSS_BACKEND ? s.model : undefined);
         made = titleText(await this.#titler(first, model), ENGINE_TITLE_MAX);
       } catch (err) {
         // Never the turn's failure: the session stays untitled and its next turn's end tries again (said once a session).
