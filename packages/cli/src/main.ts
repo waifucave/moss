@@ -1845,6 +1845,12 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         members.push({ principal, principalSid, sublayer });
       }
       if (failed) return;
+      // The first logons above left each principal a profile; a command runs only as a principal with none (the
+      // per-command reset, `sandbox reset`), so they go now, while setup is elevated.
+      for (const m of members) {
+        const gone = await run([...deleteProfileArgs(m.principalSid)]);
+        if (gone.code !== 0) console.error(`sandbox setup: ${m.principal}'s first profile couldn't be deleted yet (exit ${gone.code}); the reset task retries it`);
+      }
       // Record this install for the next setup/remove (ruling 3): owner plus every pool member.
       await mkdir(dirname(markerFile), { recursive: true });
       await writeFile(markerFile, formatInstallMarker({ version: 2, ownerSid, members }), "utf8");
