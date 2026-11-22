@@ -56,7 +56,31 @@ const WORDS = {
   doneIntro: (model: string, bot: string) => `${model} answers ${bot}'s first message. You can change it, or add providers, in Settings at any time.`,
   talk: (bot: string) => `Talk to ${bot}`,
   failed: "That didn't work. Try again.",
+  signedOut: (model: string, provider: string) => `Your default model, ${model}, needs you signed in to ${provider}.`,
+  signIn: "Sign in",
 };
+
+/** One plain line when the default model's provider is signed out (a key removed, a sign-in that lapsed), in the model's and
+ *  the provider's own names (any provider: the catalog's row for the tag, else the tag's parts). With `onSignIn`, a button that
+ *  takes the person to where they sign in (the guide's provider step). */
+export function SignedOutLine(props: { tag: string; onSignIn?: () => void }) {
+  const [names, setNames] = useState<{ model: string; provider: string } | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    void bridge().models().then((rows) => {
+      const row = "waiting" in rows ? undefined : rows.find((m) => m.id === props.tag);
+      if (live) setNames({ model: row?.title ?? props.tag, provider: row?.provider ?? providerOf(props.tag) ?? props.tag });
+    }, () => live && setNames({ model: props.tag, provider: providerOf(props.tag) ?? props.tag }));
+    return () => { live = false; };
+  }, [props.tag]);
+  if (names === undefined) return null;
+  return (
+    <p className="setup__signed-out" role="status" data-setup-signed-out={props.tag}>
+      {WORDS.signedOut(names.model, names.provider)}
+      {props.onSignIn !== undefined ? <> <button type="button" className="text-button" onClick={props.onSignIn} data-setup="sign-in">{WORDS.signIn}</button></> : null}
+    </p>
+  );
+}
 
 export function SetupGuide(props: { setup: SetupRow | undefined; botName: string; initialStep?: SetupStep; onClose: () => void; onDone: () => void }) {
   const [step, setStep] = useState<SetupStep>(props.initialStep ?? "providers");
@@ -110,6 +134,7 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
     <>
       <h1 id="setup-title">{WORDS.welcome}</h1>
       <p>{WORDS.intro}</p>
+      {props.setup?.signedOut !== undefined ? <SignedOutLine tag={props.setup.signedOut} /> : null}
       <p className="muted small">{WORDS.noClaude}</p>
       {rows === undefined ? <p className="muted">{WORDS.loading}</p> : rows === "waiting" || rows.length === 0 ? <p className="muted">{WORDS.none}</p> : (
         <>

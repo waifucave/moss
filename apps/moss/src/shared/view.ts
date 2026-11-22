@@ -66,6 +66,8 @@ export interface SetupRow {
   /** The providers the person added, by catalog id. */
   providers: string[];
   default?: { model: string; source: "chosen" | "computed"; effort?: string };
+  /** The default model the settings name while its provider isn't signed in (`missing` has `default-provider`). */
+  signedOut?: string;
   /** Each added provider's recommended default (its family's model and effort), where it has one. */
   recommended?: Record<string, { model: string; effort?: string }>;
   dismissed: boolean;
