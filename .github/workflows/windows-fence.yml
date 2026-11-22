@@ -62,7 +62,7 @@ jobs:
         working-directory: packages/core
         run: |
           $env:MOSS_WIN_FENCE_E2E = "1"
-          $env:MOSS_SRT_WIN = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "MOSS Sandbox\$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)\srt-win.exe"
+          $env:MOSS_WIN_FENCE_TIMING = "1"
           bun test --timeout 900000 test/fence/win-fenced.e2e.test.ts
 
       - name: sandbox remove, twice, and nothing left

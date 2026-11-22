@@ -71,7 +71,7 @@ $code = Invoke-Limited "reset for $name, by the administrator" $ucore @("sandbox
 $e2e = @(
   "cd /d `"$Root\packages\core`"",
   "set MOSS_WIN_FENCE_E2E=1",
-  "set `"MOSS_SRT_WIN=$prot\srt-win.exe`"",
+  "set MOSS_WIN_FENCE_TIMING=1",
   $probe,
   "`"$bun`" test --timeout 900000 test/fence/win-fenced.e2e.test.ts",
   "echo exit=%ERRORLEVEL%"

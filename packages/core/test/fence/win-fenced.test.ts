@@ -8,7 +8,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolLockPath, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -57,6 +57,13 @@ describe("the plan", () => {
       exists: (p) => disk.has(p), list: (d) => dirs[d] ?? [], isDir: (p) => dirs[p] !== undefined,
     });
     expect(got).toEqual(["C:\\h\\.moss\\run", "C:\\h\\.moss\\projects\\a\\x.provider-state.jsonl", "C:\\h\\.moss\\projects\\a\\b\\Y.PROVIDER-STATE.JSONL"]);
+  });
+
+  test("past the walk's budget, each glob's folder is denied whole: stricter, never a deny left out", () => {
+    const dirs: Record<string, string[]> = { "C:\\h\\p": Array.from({ length: 50 }, (_, i) => `d${i}`) };
+    const got = existingDeniesOf(["C:\\h\\p\\**\\*.key"], { exists: (p) => p === "C:\\h\\p" || dirs[p] !== undefined, list: (d) => dirs[d] ?? [], isDir: (p) => p.startsWith("C:\\h\\p\\d"), budget: 10 });
+    expect(got.exhausted).toBe(true);
+    expect(got.paths).toContain("C:\\h\\p");
   });
 
   test("the broker's argv: the principal, the write-restricted token, the roots and denies, then `--` and the shell; too long is refused", () => {

@@ -132,6 +132,12 @@ const GLOB = /[*?[\]{}]/;
 /** The paths a deny list names that exist now: literal paths as they are, a glob expanded over what exists (its `*`
  *  one whole name, `**` any depth, bounded). A path that doesn't exist isn't stamped (srt-win fails an exec on one). */
 export function existingDenies(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; isDir?: (p: string) => boolean; budget?: number } = {}): string[] {
+  return existingDeniesOf(paths, o).paths;
+}
+
+/** `existingDenies`, and whether the walk ran out of its budget before every glob was expanded; when it did, each
+ *  glob's fixed folder is in `paths` whole, so a glob left unexpanded is never a deny not stamped. */
+export function existingDeniesOf(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; isDir?: (p: string) => boolean; budget?: number } = {}): { paths: string[]; exhausted: boolean } {
   const exists = o.exists ?? ((p: string) => { try { lstatSync(p); return true; } catch { return false; } });
   const list = o.list ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } });
   // A folder the walk enters: never through a link.
@@ -151,14 +157,20 @@ export function existingDenies(paths: readonly string[], o: { exists?: (p: strin
     const re = new RegExp(`^${seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
     for (const n of list(base)) if (re.test(n)) expand(win32.join(base, n), rest);
   };
+  const prefixes: string[] = [];
   for (const p of paths) {
     if (!GLOB.test(p)) { if (exists(p)) out.push(p); continue; }
     const norm = win32.normalize(p);
     const parts = norm.split("\\");
     const first = parts.findIndex((s) => GLOB.test(s));
-    expand(parts.slice(0, first).join("\\") || "\\", parts.slice(first));
+    const prefix = parts.slice(0, first).join("\\") || "\\";
+    prefixes.push(prefix);
+    expand(prefix, parts.slice(first));
   }
-  return uniq(out);
+  // Past the budget, fail closed: every glob's fixed folder is denied whole (stricter than the glob, never looser).
+  const exhausted = budget < 0;
+  if (exhausted) for (const p of prefixes) if (exists(p)) out.push(p);
+  return { paths: uniq(out), exhausted };
 }
 
 /** CreateProcessW's command line holds 32 767 characters; past ~30 000 (with quoting) the command isn't run. */
@@ -227,8 +239,13 @@ export function windowsDeps(mossHome: string, o: { ownerSid: string | null; prog
   const env = minimalChildEnv();
   const leasesDir = sandboxLeasesDir(mossHome);
   let store: LeaseStore | undefined;
+  // The launcher is the protected copy's (`%ProgramFiles%\MOSS Sandbox\<SID>\srt-win.exe`, written by the installer
+  // elevated, admin-write only), never the one beside the daemon in its user-writable install folder: nothing can
+  // swap it between the digest check and the spawn. `MOSS_SRT_WIN` still names one in dev (the digest is checked).
+  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+  const launcher = process.env.MOSS_SRT_WIN ?? (o.ownerSid === null ? srtWinPath() : win32.join(programFiles, "MOSS Sandbox", o.ownerSid, "srt-win.exe"));
   return {
-    launcher: srtWinPath(),
+    launcher,
     launcherProblem() { return launcherProblem(this.launcher, srtWinArch()); },
     ownerSid: o.ownerSid,
     programData: o.programData,
@@ -329,7 +346,12 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       // Rules 2 and 9: a principal for this command alone, and a fresh one.
       let leases: LeaseStore;
       try { leases = deps.leases(); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
+      // Each phase's time, on stderr with MOSS_WIN_FENCE_TIMING=1 (the windows-fence workflow's measurement).
+      const phases: string[] = [];
+      let at = Date.now();
+      const mark = (name: string) => { const now = Date.now(); phases.push(`${name} ${now - at} ms`); at = now; };
       const lease = await leaseFresh(leases, got.marker, deps.ownerSid!);
+      mark("lease");
       if (!lease.ok) return refuse(lease.reason);
       let runHome: string | null = null;
       try {
@@ -364,11 +386,23 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const grant = await deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
           stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
         });
+        mark("grant");
         if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
         try {
           // Rule 4: what exists of the fenced set, stamped for this command.
-          const denyRead = existingDenies(plan.denyRead);
-          const denyWrite = existingDenies(plan.denyWrite);
+          // Rule 4, and past the walk's budget its fail-closed form (`existingDeniesOf`: each glob's folder whole).
+          const denyRead = existingDeniesOf(plan.denyRead).paths, denyWrite = existingDeniesOf(plan.denyWrite).paths;
+          mark("denies");
+          // Rule 4's belt: a fenced path that doesn't exist yet but could be made inside a write root (a PowerShell
+          // profile under Documents when the home's folders are written) can't carry a deny; if the command makes it,
+          // it is moved aside after the run, as on Linux (`quarantinePlanted`).
+          const missingFenced = new Map<string, boolean>();
+          for (const d of plan.denyWrite) {
+            if (GLOB.test(d) || !roots.some((x) => winUnder(d, x) && fold(d) !== fold(x))) continue;
+            let there = false;
+            try { lstatSync(d); there = true; } catch { /* missing */ }
+            if (!there && missingFenced.size < 2_000) missingFenced.set(d, false);
+          }
           const gitRoot = deps.shells.bash === null ? null : win32.dirname(win32.dirname(deps.shells.bash));
           const env = winChildEnv({ profileRoot: runHome, temp, systemRoot: deps.systemRoot, gitRoot, gitTemplate: template });
           const built = winExecArgv({ launcher: deps.launcher, user: lease.principal, plan: grantPlan, denyRead, denyWrite, env, shell: shellArgv(shell, exe, r.command), heldBy: process.pid });
@@ -382,12 +416,16 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (result.kind === "refused") return result;
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
-          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome)].filter((n): n is string => n !== null);
+          mark("exec");
+          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome)].filter((n): n is string => n !== null);
+          mark("belt");
           return notes.length === 0 ? result : { ...result, stderr: result.stderr + notes.join("") };
         } finally {
           // The command's per-session claims end with it; the persistent roots stay (only a token carrying a root's
           // capability SID writes there, and only a command whose sandbox names the root gets it).
           await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
+          mark("revoke");
+          if (process.env.MOSS_WIN_FENCE_TIMING === "1") console.error(`[win-fence] ${lease.principal}: ${phases.join(", ")}`);
         }
       } finally {
         lease.release();
