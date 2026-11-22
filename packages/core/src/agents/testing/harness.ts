@@ -76,6 +76,8 @@ export function writeFakeAgent(dir: string, c: Omit<FakeAcpConfig, "report" | "s
 export interface HarnessExtra {
   /** Overrides the wire tap per session (the transcript tests). */
   wire?: (sessionId: string) => AgentWire;
+  /** More of the fake agent's own config (a third option, a model list). */
+  fake?: Partial<Omit<FakeAcpConfig, "report" | "selection">>;
 }
 
 let harnessSeq = 0;
@@ -94,6 +96,7 @@ export function acpHarness(dir: string, opts: FakeAgentBackendOptions & { script
     ...(opts.history ? { history: opts.history } : {}),
     ...(opts.signedIn === undefined ? {} : { signedIn: opts.signedIn }),
     version: impostor ? "agent 9.9.9 (not the vendor's)" : "fake-agent 1.0.0",
+    ...(extra.fake ?? {}),
   });
   const workRoot = join(dir, "work");
   mkdirSync(workRoot, { recursive: true });

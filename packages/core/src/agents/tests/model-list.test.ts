@@ -14,6 +14,7 @@ import { FakeFence } from "../../contracts/fakes/fence";
 import { S5_ANTIGRAVITY_QUIRKS } from "../../contracts/fakes/agent-backend";
 import { acpHarness, FAKE_AGENT_PATH, fakeLaunch, readReport, writeFakeAgent } from "../testing/harness";
 import { agentMethods } from "../rpc";
+import { selectableOptions } from "../session-options";
 
 const READER: ModelReader = { list: "models", id: "slug", name: "display_name", hideUnless: { key: "visibility", value: "list" }, efforts: { list: "levels", id: "effort" }, defaultEffort: "def" };
 const GOOD = JSON.stringify({ models: [
@@ -380,6 +381,37 @@ describe("with a real fake ACP agent process: its declared list command, and a s
     await s.setConfig("model", "fake-model-a");
     expect(h.sessions[0]!.config.model).toBe("fake-model-a");
     await s.stop();
+  }, 30_000);
+});
+
+describe("the options a session's agent lets the person choose (a third option of the fake agent)", () => {
+  const QUIRKS = { ...S5_ANTIGRAVITY_QUIRKS, config: { ...S5_ANTIGRAVITY_QUIRKS.config, modelOption: "model", effortOption: "thought_level" } };
+  const start = async (name: string) => {
+    const h = acpHarness(join(fresh(name)), { id: "demo", clock: new FakeClock(), quirks: QUIRKS, script: [[{ say: "hi" }]] }, { fake: { extraOption: { id: "verbosity", name: "Verbosity", values: ["terse", "normal", "chatty"] }, modes: ["agent", "plan"] } });
+    const fence = new FakeFence({ home: "/Users/me", mossHome: "/Users/me/.moss" }).policy();
+    await h.start({ sessionId: "s1", root: "/Users/me/p", fence, bridge: { name: "moss-bridge", command: "/opt/moss/moss-core", args: ["bridge"], env: { MOSS_BRIDGE_TOKEN: "x" }, tools: [] } });
+    return { h, s: h.sessions[0]!.session as unknown as import("../acp/session").AcpAgentSession };
+  };
+  const OWNED = { modelOption: "model", effortOption: "thought_level" };
+  test("only the agent's other options are offered, with its own names; the model, effort and mode have their own controls", async () => {
+    const { s } = await start("opt-list");
+    await s.prompt({ text: "go" });
+    const got = selectableOptions(s, OWNED);
+    expect(got).toEqual([{ id: "verbosity", name: "Verbosity", current: "terse", values: [{ value: "terse", name: "TERSE" }, { value: "normal", name: "NORMAL" }, { value: "chatty", name: "CHATTY" }] }]);
+    await s.stop();
+  }, 30_000);
+  test("a pick reaches the agent; an unreported option, an unlisted value and MOSS's own options are refused and never sent", async () => {
+    const { h, s } = await start("opt-set");
+    await s.prompt({ text: "go" });
+    await s.setOption("verbosity", "chatty");
+    expect(readReport(h.run.report).filter((r) => r.type === "config" && r["option"] === "verbosity").map((r) => r["value"])).toEqual(["chatty"]);
+    expect(selectableOptions(s, OWNED)[0]!.current).toBe("chatty");
+    for (const [id, value] of [["nope", "x"], ["verbosity", "loud"], ["model", "fake-model-b"], ["thought_level", "high"], ["mode", "plan"]] as const) {
+      await expect(s.setOption(id, value)).rejects.toThrow();
+    }
+    expect(readReport(h.run.report).filter((r) => r.type === "config").length).toBe(1);
+    await s.stop();
+    await expect(s.setOption("verbosity", "terse")).rejects.toThrow();
   }, 30_000);
 });
 

@@ -172,6 +172,7 @@ export function Composer(props: ComposerProps) {
     onStop,
     asleep,
     model,
+    options = [],
     level,
     cardPending = false,
     maxAttachments = MAX_ATTACHMENTS,
@@ -190,7 +191,8 @@ export function Composer(props: ComposerProps) {
   const [dragging, setDragging] = useState(false);
   // The model menu shows the signed-in providers' models; the rest of the catalog (a thousand more) is one press away.
   const [allModels, setAllModels] = useState(false);
-  const [menu, setMenu] = useState<"model" | "level" | null>(() =>
+  const optionPills = useRef(new Map<string, HTMLButtonElement | null>());
+  const [menu, setMenu] = useState<"model" | "level" | `option:${string}` | null>(() =>
     initialMenu === "model" && model ? "model" : initialMenu === "level" && level ? "level" : null,
   );
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -341,6 +343,30 @@ export function Composer(props: ComposerProps) {
       )
     : null;
 
+  // One pill for each option the agent lets the person choose (a fixed list of values), after the model's.
+  const optionButtons = options.map((o) => {
+    const label = o.values.find((v) => v.value === o.value)?.label ?? o.value ?? "";
+    return (
+      <button
+        key={`option:${o.id}`}
+        ref={(el) => { optionPills.current.set(o.id, el); }}
+        type="button"
+        className="cl-composer__pill"
+        data-option={o.id}
+        aria-haspopup="menu"
+        aria-expanded={menu === `option:${o.id}`}
+        aria-label={S.option(o.name, label)}
+        disabled={cardPending}
+        onClick={() => setMenu((m) => (m === `option:${o.id}` ? null : `option:${o.id}`))}
+      >
+        <span className="cl-composer__pill-label">{o.name}</span>
+        {label !== "" && <span className="cl-composer__pill-detail">{label}</span>}
+        <IconChevronDown />
+      </button>
+    );
+  });
+  const openOption = options.find((o) => menu === `option:${o.id}`);
+
   const levelName = (id: string) => level?.levels.find((l) => l.id === id)?.label ?? id;
   const levelLabel = level ? levelName(level.level) : "";
   const requestedLabel = level?.requested && level.requested !== level.level ? levelName(level.requested) : undefined;
@@ -448,6 +474,17 @@ export function Composer(props: ComposerProps) {
               ]
             : []),
         ]}
+      />
+    ) : openOption ? (
+      <Menu
+        label={S.optionMenu(openOption.name)}
+        side="end"
+        opener={{ current: optionPills.current.get(openOption.id) ?? null }}
+        onClose={closeMenu}
+        sections={[{
+          title: openOption.name,
+          items: openOption.values.map((v) => ({ id: v.value, label: v.label, checked: v.value === openOption.value, onPick: () => openOption.onChange(v.value) })),
+        }]}
       />
     ) : menu === "level" && level ? (
       <Menu
@@ -618,6 +655,7 @@ export function Composer(props: ComposerProps) {
           <div className="cl-composer__under" data-inside="">
             {levelButton}
             {modelButton}
+            {optionButtons}
             <span className="cl-composer__spacer" />
             {stopButton}
             {sendButton}
@@ -625,11 +663,12 @@ export function Composer(props: ComposerProps) {
         )}
         {dragging && <div className="cl-composer__drop">{S.dropHere}</div>}
       </div>
-      {!controlsInside && (levelButton || modelButton) && (
+      {!controlsInside && (levelButton || modelButton || optionButtons.length > 0) && (
         <div className="cl-composer__under">
           {levelButton}
           <span className="cl-composer__spacer" />
           {modelButton}
+          {optionButtons}
         </div>
       )}
       {note}

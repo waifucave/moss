@@ -226,6 +226,11 @@ export interface AgentSession {
   setConfig(option: "model" | "effort", value: string): Promise<void>;
   /** The config options the agent reported (ACP `configOptions`): its models and efforts, for a picker. Not every session has them. */
   configOptions?(): readonly { id: string; category?: string; currentValue?: string; values: readonly string[] }[];
+  /** The agent's own names for those options and their values, where it gives them. */
+  optionLabels?(): ReadonlyMap<string, { name?: string; values: ReadonlyMap<string, string> }>;
+  /** The person's pick of one of those options (not the model, the effort or the approval level's mode, which have their
+   *  own controls): refused for an option the agent doesn't report or a value it doesn't list. */
+  setOption?(id: string, value: string): Promise<void>;
   /** Cancel, then end the process group (§9.3 "Stopping"). */
   stop(): Promise<void>;
   /** The host's permission handler; until one is set, requests are answered `cancelled`. */

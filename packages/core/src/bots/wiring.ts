@@ -52,6 +52,8 @@ export interface AgentHooks {
   agents: AgentRows;
   /** `session.setModel` on an agent or coding session. */
   setAgentModel(id: string, model: string, effort?: string): Promise<void>;
+  /** `session.setConfig` on an agent or coding session. */
+  setAgentOption?(id: string, option: string, value: string): Promise<void>;
   /** A restart's dormant agent and coding sessions, reattached. */
   reattach(views: readonly SessionView[]): void | Promise<void>;
 }
@@ -356,7 +358,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
       const sessions = sessionsMethods({
         home: o.home, computer: o.computer, bots, host, clock: deps.clock ?? o.clock, localDevice: deps.localDevice,
         ...(updates === undefined ? {} : { updateGate: updates }),
-        ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort) }),
+        ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort), ...(hooks.setAgentOption === undefined ? {} : { setAgentOption: (id: string, option: string, value: string) => hooks.setAgentOption!(id, option, value) }) }),
         questions,
         capabilitiesOf: (pluginId: string) => grantsInForce(o.registry.get(pluginId)),
       });

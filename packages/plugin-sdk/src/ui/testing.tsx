@@ -61,7 +61,7 @@ export interface TestCore {
 }
 
 /** The composer spot's host (`useComposerHost`), each member optional. */
-export type TestComposerHost = Partial<Record<"models" | "setModel" | "interrupt" | "stop" | "commands" | "runCommand" | "listenStatus" | "listenStart" | "listenStop", (...args: any[]) => Promise<unknown>>>;
+export type TestComposerHost = Partial<Record<"models" | "setModel" | "setOption" | "interrupt" | "stop" | "commands" | "runCommand" | "listenStatus" | "listenStart" | "listenStop", (...args: any[]) => Promise<unknown>>>;
 
 /** Everything the fake layer answers from. Every member but `spot`, `entries` and `component` is optional. */
 export interface TestRuntime {
@@ -532,6 +532,7 @@ export function setUpTestLayer(runtime: TestRuntime, root: { pluginId: string; e
       if (fn === undefined) throw new Error(`the test's composer host has no ${op}`);
       const a = args as Record<string, unknown> | undefined;
       if (op === "setModel") return fn(a?.model, a?.effort);
+      if (op === "setOption") return fn(a?.option, a?.value);
       if (op === "runCommand") return fn(a?.name, a?.args);
       return fn();
     },

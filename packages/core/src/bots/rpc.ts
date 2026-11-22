@@ -49,6 +49,8 @@ export interface SessionsMethodsDeps {
   /** `session.setModel` for a background agent or a coding session (lane K's `AgentManager.setModel`); without it the
    *  new model is recorded in the session's view and its driver reads it at the next turn. */
   setAgentModel?(id: string, model: string, effort?: string): Promise<void>;
+  /** `session.setConfig` on an agent or coding session (`AgentManager.setOption`). */
+  setAgentOption?(id: string, option: string, value: string): Promise<void>;
   /** The bot side's questions (questions.ts): `session.answer` resolves the one waiting. Without it, none waits. */
   questions?: Pick<BotQuestions, "answer">;
   /** A plugin's capabilities in force (its OK's), for what it may hear of `session.links`; without it a plugin hears none. */
@@ -329,6 +331,16 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       if (v.status === "stopped" || v.status === "failed") throw new ContractError("closed", `session ${id} has ended`);
       await deps.setAgentModel?.(id, model, effort);
       host.update(id, { model, effort: effort ?? null });
+      return { ok: true as const };
+    }),
+
+    [M.sessionSetConfig.name]: handler(M.sessionSetConfig, async ({ id, option, value }, ctx) => {
+      requireUser(ctx, "change a session's option");
+      const v = view(id);
+      if (v.kind === "bot" || v.kind === "side-thread") throw new ContractError("refused", "a bot's conversation and side threads have no agent options");
+      if (v.status === "stopped" || v.status === "failed") throw new ContractError("closed", `session ${id} has ended`);
+      if (deps.setAgentOption === undefined) throw new ContractError("refused", "this session's runtime has no options to set");
+      await deps.setAgentOption(id, option, value);
       return { ok: true as const };
     }),
 

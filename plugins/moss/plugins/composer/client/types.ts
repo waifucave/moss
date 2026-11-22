@@ -44,6 +44,19 @@ export interface ComposerModelChoice {
   onChange: (choice: { model: string; effort?: string }) => void;
 }
 
+/** One option the session's agent reports and lets the person choose from a fixed list (an ACP config option other than
+ *  the model, the effort and the approval level, which have controls of their own). A pick is the person's, through the
+ *  engine; the agent may refuse it, which the host shows as it shows a refused model. */
+export interface ComposerOption {
+  id: string;
+  /** The agent's own name for it, or a plain fallback. */
+  name: string;
+  /** The value now in force, if the agent says. */
+  value?: string;
+  values: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}
+
 /** The composer's buttons, keyed like the `composer.action` spot (spec §5.5). */
 export type ComposerActionId = "attach" | "model" | "level" | "send" | "stop";
 
@@ -105,6 +118,8 @@ export interface ComposerProps {
    *  §6.4: sending needs a live connection). */
   asleep?: { reason: string };
   model?: ComposerModelChoice;
+  /** The agent's other selectable options, one pill each (after the model's). */
+  options?: ComposerOption[];
   /** The approval-level pill. */
   level?: ComposerLevel;
   /** A sealed approval card waits in the conversation: menus close and the pills wait, so nothing of

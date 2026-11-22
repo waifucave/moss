@@ -177,6 +177,7 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   "session.createPr": { disposition: "unserved" },
   // Session control isn't this door's: it goes through the composer spot's callbacks (composer-calls.ts).
   "session.setModel": { disposition: "unserved" },
+  "session.setConfig": { disposition: "unserved" },
   "session.interrupt": { disposition: "unserved" },
   "session.stop": { disposition: "unserved" },
 };

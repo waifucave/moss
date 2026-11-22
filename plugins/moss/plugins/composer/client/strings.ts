@@ -8,6 +8,10 @@ export const S = {
   remove: (name: string) => `Remove ${name}`,
   model: (label: string) => `Model: ${label}`,
   modelMenu: "Model and effort",
+  option: (name: string, value: string) => (value === "" ? name : `${name}: ${value}`),
+  optionFallback: (id: string) => `Option ${id}`,
+  optionRefused: "That option wasn't changed.",
+  optionMenu: (name: string) => name,
   modelFrom: (plugin: string) => `from ${plugin}`,
   modelSection: "Model",
   /** The pill's label for an agent session started on the agent's own default (it has no model of its own yet). */

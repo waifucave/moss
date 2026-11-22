@@ -1513,8 +1513,11 @@ export function useUserSend(): ((to: UserSendTarget, message: string | { text: s
  *  click. On a bot's main conversation a model switch changes a user layer: the `moss` layer's entry changes it
  *  directly, any other plugin's ends in the sealed card the core raises for it. Undefined outside that spot. */
 export interface ComposerHost {
-  models(): Promise<{ models: { id: string; name?: string; providerName?: string; efforts?: string[] }[]; default?: string }>;
+  models(): Promise<{ models: { id: string; name?: string; providerName?: string; efforts?: string[] }[]; default?: string; options?: ComposerHostOption[] }>;
   setModel(model: string, effort?: string): Promise<unknown>;
+  /** Sets one of the session agent's other selectable options (`models()`'s `options`) to one of its values: the person's
+   *  own press only, the engine's `session.setConfig`; the agent may refuse it. */
+  setOption(option: string, value: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
   /** The slash menu's commands: those of plugins that are on, OK'd and running, the bot's own plugin's first. The
@@ -1523,6 +1526,14 @@ export interface ComposerHost {
   /** Runs `<namespace>.<name>` as the user, with `args` for that command's plugin alone, inside the user's own key
    *  press or click; the result is the handler's. The bundled composer's only. */
   runCommand(name: string, args?: unknown): Promise<{ result: unknown }>;
+}
+
+/** An option the session's agent reports and lets the person choose from a fixed list of values (`ComposerHost.models`). */
+export interface ComposerHostOption {
+  id: string;
+  name?: string;
+  current?: string;
+  values: { value: string; name?: string }[];
 }
 
 /** A command the slash menu lists (`ComposerHost.commands`). */
@@ -1545,10 +1556,11 @@ export function useComposerHost(): ComposerHost | undefined {
   const inSpot = part.entry.spot === "composer";
   return useMemo(() => {
     if (!inSpot) return undefined;
-    const ask = (op: "models" | "setModel" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown) => rt().bridge.composer(part.mount, op, args);
+    const ask = (op: "models" | "setModel" | "setOption" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown) => rt().bridge.composer(part.mount, op, args);
     return {
       models: () => ask("models") as ReturnType<ComposerHost["models"]>,
       setModel: (model, effort) => ask("setModel", { model, ...(effort !== undefined ? { effort } : {}) }),
+      setOption: (option, value) => ask("setOption", { option, value }),
       interrupt: () => ask("interrupt").then(() => undefined),
       stop: () => ask("stop").then(() => undefined),
       commands: () => ask("commands") as ReturnType<ComposerHost["commands"]>,

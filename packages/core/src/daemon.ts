@@ -74,6 +74,7 @@ import { programKeyMethods } from "./surfaces/rpc";
 import { lateAgentMethods } from "./agents/rpc";
 import { AcpAgentBackend } from "./agents/backend";
 import { agentSessionListing } from "./agents/model-list";
+import { selectableOptions } from "./agents/session-options";
 import { EngineAgentStartOptions, FileRecentStore } from "./agents/start-options";
 import { BackendLooks } from "./agents/backend-look";
 import { EngineBackendIcons } from "./agents/backend-icons";
@@ -3588,7 +3589,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       const info = daemonParts?.agents?.manager.sessionOptions(id);
       const lists = daemonParts?.agents?.lists;
       if (info === undefined || lists === undefined || !(info.backend instanceof AcpAgentBackend)) return { kind: "catalog" };
-      return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists) };
+      const options = selectableOptions(info.session, { modelOption: info.backend.quirks.config.modelOption, effortOption: info.backend.quirks.config.effortOption, ...(info.backend.readOnlyMode ? { readOnlyOption: info.backend.readOnlyMode.option } : {}) });
+      return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists), options };
     },
   })));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.

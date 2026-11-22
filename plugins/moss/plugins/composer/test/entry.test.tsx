@@ -13,13 +13,14 @@ const ALPHA: BotView = { id: "alpha", name: "Alpha", model: "openai/gpt-6", effo
 const STUDIO: ComputerView = computerView("Studio", { device: "d1", level: "ask-risky", link: "self", isMain: true });
 const session = (extra: Partial<SessionView>): SessionView => ({ id: "s_alpha", kind: "bot", bot: "alpha", computer: "Studio", status: "idle", startedAt: 0, updatedAt: 0, ...extra });
 
-async function mount(s: SessionView = session({}), opts: { level?: "applied" | "card"; entries?: Parameters<typeof runtimeWith>[0]["entries"]; component?: EntryComponent; refuse?: string; kept?: Map<string, string>; models?: { id: string; name: string; providerName: string; plugin?: string; signedIn?: boolean; efforts?: string[]; defaultEffort?: string }[]; commands?: SlashCommand[]; run?: (name: string, args: unknown) => unknown; tokens?: Record<string, number> } = {}) {
+async function mount(s: SessionView = session({}), opts: { options?: unknown[]; refuseOption?: boolean; level?: "applied" | "card"; entries?: Parameters<typeof runtimeWith>[0]["entries"]; component?: EntryComponent; refuse?: string; kept?: Map<string, string>; models?: { id: string; name: string; providerName: string; plugin?: string; signedIn?: boolean; efforts?: string[]; defaultEffort?: string }[]; commands?: SlashCommand[]; run?: (name: string, args: unknown) => unknown; tokens?: Record<string, number> } = {}) {
   const core = fakeCore({ "computer.setLevel": () => (opts.level === "applied" ? { applied: true } : { applied: false, card: "card-level" }) });
   // The composer spot's host callbacks: the core decides what each one is (a bot's user layer, a session's model).
   const host: string[][] = [];
   let held: BotView = ALPHA; // what the daemon holds: a pick changes it
   const composerHost = {
-    models: async () => ({ models: opts.models ?? [{ id: "openai/gpt-6", name: "GPT-6", providerName: "OpenAI" }, { id: "xai/grok-5", name: "Grok 5", providerName: "xAI" }] }),
+    models: async () => ({ models: opts.models ?? [{ id: "openai/gpt-6", name: "GPT-6", providerName: "OpenAI" }, { id: "xai/grok-5", name: "Grok 5", providerName: "xAI" }], ...(opts.options ? { options: opts.options } : {}) }),
+    setOption: async (option: string, value: string) => { host.push(["setOption", option, value]); if (opts.refuseOption) throw new Error("refused"); },
     setModel: async (model: string, effort?: string) => { host.push(["setModel", model, effort ?? ""]); held = { ...held, model, ...(effort !== undefined ? { effort } : {}) }; },
     interrupt: async () => { host.push(["interrupt"]); },
     stop: async () => { host.push(["stop"]); },
@@ -117,6 +118,33 @@ describe("the composer entry", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Model: GPT-6/ }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Grok 5/ }));
     expect(agent.host).toEqual([["setModel", "xai/grok-5", ""]]);
+  });
+
+  test("each option the agent lets the person choose is its own picker, named as the agent names it; a pick goes through the host", async () => {
+    const own = [{ id: "a-1", name: "Agent One", providerName: "Demo", signedIn: true }];
+    const options = [
+      { id: "verbosity", name: "Verbosity", current: "terse", values: [{ value: "terse", name: "Terse" }, { value: "chatty", name: "Chatty" }] },
+      { id: "style", current: "a", values: [{ value: "a" }, { value: "b" }] },
+    ];
+    const coding = await mount(session({ id: "code-1", kind: "coding", bot: undefined, backend: "demo" }), { models: own, options });
+    const verbosity = await screen.findByRole("button", { name: "Verbosity: Terse" });
+    // No name from the agent: a plain fallback, never the id alone.
+    expect(screen.getByRole("button", { name: "Option style: a" })).toBeDefined();
+    fireEvent.click(verbosity);
+    expect(screen.getByRole("menuitemradio", { name: "Terse" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Chatty" }));
+    expect(coding.host).toEqual([["setOption", "verbosity", "chatty"]]);
+  });
+
+  test("an option the agent refuses is said, as a refused model is; no options, no pickers", async () => {
+    const own = [{ id: "a-1", name: "Agent One", providerName: "Demo", signedIn: true }];
+    await mount(session({ id: "code-1", kind: "coding", bot: undefined, backend: "demo" }), { models: own, refuseOption: true, options: [{ id: "v", name: "Verbosity", current: "x", values: [{ value: "x" }, { value: "y" }] }] });
+    fireEvent.click(await screen.findByRole("button", { name: "Verbosity: x" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "y" }));
+    expect(await screen.findByText("That option wasn't changed.")).toBeDefined();
+    cleanup();
+    await mount(session({ id: "code-2", kind: "coding", bot: undefined, backend: "demo" }), { models: own });
+    expect(screen.queryByRole("button", { name: /Verbosity/ })).toBeNull();
   });
 
   test("a coding session on an agent's own default still offers the models its agent has, and a pick goes through the host", async () => {
