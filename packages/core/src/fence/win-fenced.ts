@@ -5,9 +5,8 @@
 // a fallback to an unsandboxed shell. Every refusal below is a refusal of the whole run.
 //
 // The rules, each enforced where it says:
-//  1. Who: the launcher must be the pinned build (`launcherProblem`), the install marker must name this owner, and the
-//     leased principal's profile must resolve by its SID and not be a temporary profile (`profileLaunchCheck`), at every
-//     launch (`run`, steps 1–3).
+//  1. Who: the launcher must be the pinned build (`launcherProblem`) and the install marker must name this owner, at
+//     every launch.
 //  2. One principal per command: a pool member is leased exclusively for the command's whole run (an OS file lock,
 //     `acquirePoolLease`), so two commands never share a principal, and the lease ends with the command.
 //  3. Writes: only the run's write roots, each a persistent root with its own capability SID (`acl grant
@@ -19,13 +18,18 @@
 //     places there (rule 7).
 //  5. Network: the principal's WFP filters (installed by setup, loopback closed) refuse every connection but the
 //     loopback proxy range 60080–60089, as `srt-win install` sets them; no `--allow-loopback` is ever passed.
-//  6. Environment: built here, whole. The broker gets a fixed system environment; the child gets the principal's own
-//     profile as HOME/USERPROFILE/APPDATA (the controller's ruling 2: never the user's), its run's temp folder as
-//     TEMP/TMP, a fixed PATH and MOSS's empty git template. Nothing of the daemon's environment reaches it.
+//  6. Environment: built here, whole. The broker gets a fixed system environment; the child gets a home folder of its
+//     own, made for the command inside its temp folder and removed after it, as HOME/USERPROFILE/APPDATA (never the
+//     user's: the controller's ruling 2, and the M1 floor's "HOME and TEMP in the session's own temp"), its run's temp
+//     folder as TEMP/TMP, a fixed PATH and MOSS's empty git template. Nothing of the daemon's environment reaches it.
 //  7. Run later: a git config key a command set in a repo under its write roots is reverted after the run, and a hook
 //     it planted in such a repo's `.git/hooks` is moved aside (`revertPlantedGitKeys`, `quarantineHooks`).
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+//  9. Nothing carries over (spec §9.1): a principal's whole profile and hive are deleted after each of its commands
+//     by the reset task `sandbox setup` registers (SYSTEM; `sandbox reset`), and a command runs only as a principal
+//     with no profile left (`leaseFresh`), so its logon makes a fresh one. Checked at every launch; failing closed.
+import { randomBytes } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -35,8 +39,8 @@ import { gitTemplateDir } from "./layout";
 import { quarantinePlanted, reposUnder, revertPlantedGitKeys, snapshotFiles } from "./fenced-process";
 import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner, type RunShell } from "./spawn";
 import {
-  acquirePoolLease, createWindowsLockStore, execArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
-  parseProfileImagePath, profileLaunchCheck, profileQueryArgs, sandboxLeasesDir, sessionGrantArgs, sessionGrantInput,
+  createWindowsLockStore, execArgs, poolLockPath, runResetTaskArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
+  parseProfileImagePath, profileQueryArgs, sandboxLeasesDir, sessionGrantArgs, sessionGrantInput,
   sessionRevokeArgs, setupBashRefusal, srtWinArch, srtWinPath, winLaunchPlan, type InstallMarker, type LeaseStore,
 } from "./win-sandbox";
 
@@ -197,8 +201,9 @@ export interface WinFencedDeps {
   /** A short helper process (srt-win's acl and status, reg): exit code and output. */
   exec(argv: readonly string[], o?: { stdin?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>;
   readFile(path: string): string | null;
-  /** How long a command waits for a free principal before it is refused. */
+  /** How long a command waits for a free, reset principal before it is refused, and how often it looks. */
   readonly leaseTimeoutMs?: number;
+  readonly leasePollMs?: number;
 }
 
 /** The real machine's deps. */
@@ -295,19 +300,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       const shell: WinShell = r.shell ?? "bash";
       const exe = shell === "powershell" ? deps.shells.powershell : deps.shells.bash;
       if (exe === null) return refuse(shell === "powershell" ? "Windows PowerShell isn't in System32" : "Git for Windows' bash isn't installed (Program Files\\Git, or this user's Programs\\Git)");
-      // Rule 2: a principal for this command alone.
+      // Rules 2 and 9: a principal for this command alone, and a fresh one.
       let leases: LeaseStore;
       try { leases = deps.leases(); } catch (e) { return refuse(e instanceof Error ? e.message : String(e)); }
-      const lease = await acquirePoolLease({ store: leases, leasesDir: deps.leasesDir, pool: got.marker.members, timeoutMs: deps.leaseTimeoutMs ?? 30_000 });
+      const lease = await leaseFresh(leases, got.marker, deps.ownerSid!);
       if (!lease.ok) return refuse(lease.reason);
+      let runHome: string | null = null;
       try {
         const member = got.marker.members.find((m) => m.principal === lease.principal)!;
         const sid = member.principalSid!;
-        // Rule 1's second half: the profile, by SID, at every launch.
-        const reg = await deps.exec(profileQueryArgs(sid), { timeoutMs: 15_000 });
-        const profileRoot = reg.code === 0 ? parseProfileImagePath(reg.stdout) : null;
-        const check = profileLaunchCheck(profileRoot === null ? null : { sid, path: profileRoot });
-        if (!check.ok) return refuse(`${check.reason}; run \`moss-core sandbox setup\` again`);
         const plan = r.sandbox !== undefined ? planFromSettings(r.sandbox) : planFromPolicy(fence, r.who.caller, r.cwd, { ...(o.bots ? { bots: o.bots() } : {}) });
         // The caller's own folders exist before they are granted: a root must be on the disk to carry its ACE.
         for (const root of plan.writeRoots) {
@@ -316,6 +317,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const roots = plan.writeRoots.filter((p) => existsSync(p));
         const grantPlan = { ...plan, writeRoots: roots };
         const temp = r.env.TMPDIR !== undefined && roots.some((x) => winUnder(r.env.TMPDIR!, x)) ? r.env.TMPDIR : fence.temp;
+        // Rule 6: the command's home is a folder of its own inside its temp folder, made now and removed after it,
+        // so what a tool keeps in its home (a git config, a cache) goes with the command too.
+        runHome = win32.join(temp, `.moss-home-${randomBytes(6).toString("hex")}`);
+        try { mkdirSync(win32.join(runHome, "AppData", "Roaming"), { recursive: true }); mkdirSync(win32.join(runHome, "AppData", "Local"), { recursive: true }); }
+        catch (e) { return refuse(`its home folder ${runHome} can't be made (${e instanceof Error ? e.message : String(e)})`); }
         const template = gitTemplateDir(fence.mossHome);
         try { mkdirSync(template, { recursive: true }); } catch { /* git then finds no template, and copies nothing */ }
         // Rule 3: the session's write roots, held by the daemon (`--holder-pid`), each with its capability SID.
@@ -328,7 +334,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           const denyRead = existingDenies(plan.denyRead);
           const denyWrite = existingDenies(plan.denyWrite);
           const gitRoot = deps.shells.bash === null ? null : win32.dirname(win32.dirname(deps.shells.bash));
-          const env = winChildEnv({ profileRoot: profileRoot!, temp, systemRoot: deps.systemRoot, gitRoot, gitTemplate: template });
+          const env = winChildEnv({ profileRoot: runHome, temp, systemRoot: deps.systemRoot, gitRoot, gitTemplate: template });
           const built = winExecArgv({ launcher: deps.launcher, user: lease.principal, plan: grantPlan, denyRead, denyWrite, env, shell: shellArgv(shell, exe, r.command), heldBy: process.pid });
           if ("refused" in built) return refuse(built.refused);
           // Rule 7's snapshot: the git places under the roots as they are now.
@@ -349,7 +355,41 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         }
       } finally {
         lease.release();
+        if (runHome !== null) { try { rmSync(runHome, { recursive: true, force: true }); } catch { /* best effort: it is in the command's own temp */ } }
+        // Rule 9: the principal's profile and hive go now, before another command takes it (the reset task, SYSTEM).
+        void deps.exec(runResetTaskArgs(deps.ownerSid!), { timeoutMs: 30_000 });
       }
     },
   };
+
+  /** Rules 2 and 9: lease a pool member no command holds and whose profile was reset since its last command (no
+   *  ProfileList entry for its SID: the logon of this command makes a fresh one from the default profile). One that
+   *  isn't reset yet is let go and the reset task asked for; past the wait, the command is refused, never run on a
+   *  profile another command wrote. */
+  async function leaseFresh(leases: LeaseStore, marker: InstallMarker, ownerSid: string): Promise<{ ok: true; principal: string; release: () => void } | { ok: false; reason: string }> {
+    const deadline = Date.now() + (deps.leaseTimeoutMs ?? 60_000);
+    let asked = false;
+    let stale = 0;
+    for (;;) {
+      stale = 0;
+      for (const m of marker.members) {
+        const guard = leases.tryLock(poolLockPath(deps.leasesDir, m.principal));
+        if (guard === null) continue;
+        const reg = await deps.exec(profileQueryArgs(m.principalSid!), { timeoutMs: 15_000 });
+        if (reg.code !== 0 || parseProfileImagePath(reg.stdout) === null) {
+          let released = false;
+          return { ok: true, principal: m.principal, release: () => { if (!released) { released = true; guard.release(); } } };
+        }
+        stale++;
+        guard.release();
+      }
+      if (!asked && stale > 0) { asked = true; await deps.exec(runResetTaskArgs(ownerSid), { timeoutMs: 30_000 }); }
+      if (Date.now() >= deadline) {
+        return { ok: false, reason: stale > 0
+          ? "no sandbox account was reset since its last command (the reset task didn't run, or couldn't delete its profile); run `moss-core sandbox setup` again"
+          : `the sandbox pool is busy; all ${marker.members.length} accounts run a command` };
+      }
+      await Bun.sleep(deps.leasePollMs ?? 500);
+    }
+  }
 }

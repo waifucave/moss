@@ -104,7 +104,7 @@ function machine(o: { pinned?: boolean; marker?: string | null; profile?: (sid: 
       execs.push(argv);
       if (argv[0] === "reg") {
         const sid = /ProfileList\\(S-[0-9-]+)/.exec(argv[2]!)?.[1] ?? "";
-        const p = (o.profile ?? ((s: string) => `C:\\Users\\p-${s}`))(sid);
+        const p = (o.profile ?? (() => null))(sid);
         return p === null ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: `    ProfileImagePath    REG_EXPAND_SZ    ${p}\r\n`, stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
@@ -138,19 +138,28 @@ describe("the Windows leg refuses, whole, before anything runs", () => {
     }
   });
 
-  test("a principal on a temporary profile, or with none resolved by its SID: refused at launch, the lease let go", async () => {
-    for (const profile of [() => "C:\\Users\\TEMP", () => null]) {
-      const m = machine({ profile });
-      const s = winFencedSpawner({ fence: m.fence, deps: m.deps });
-      const r = await s.run(runOf(m.home));
-      expect(r).toMatchObject({ kind: "refused" });
-      expect((r as { reason: string }).reason).toMatch(/temporary profile|resolved by its SID/);
-      // Nothing was granted or launched: only the profile grant and the profile lookup ran.
-      expect(m.execs.some((a) => a.includes("acl") || a.includes("exec"))).toBe(false);
-      // The lease was let go: the next run takes principal 1 again.
-      await s.run(runOf(m.home));
-      expect(m.execs.filter((a) => a[0] === "reg").map((a) => a[2]!.slice(-4))).toEqual(["1001", "1001"]);
-    }
+  test("a principal whose profile wasn't reset since its last command is never used: the reset task is asked, then refused", async () => {
+    const m = machine({ profile: (sid) => `C:\\Users\\p-${sid}` });
+    const s = winFencedSpawner({ fence: m.fence, deps: m.deps });
+    const r = await s.run(runOf(m.home));
+    expect(r).toMatchObject({ kind: "refused" });
+    expect((r as { reason: string }).reason).toContain("reset since its last command");
+    // Both members were looked at, the reset task was asked for, and nothing was granted or launched.
+    expect(m.execs.filter((a) => a[0] === "reg").map((a) => a[2]!.slice(-4))).toEqual(["1001", "1002"]);
+    expect(m.execs.some((a) => a[0] === "schtasks" && a.includes("/run") && a.includes("MOSS Sandbox Reset S-1-5-21-1"))).toBe(true);
+    expect(m.execs.some((a) => a.includes("acl") || a.includes("exec"))).toBe(false);
+  });
+
+  test("a reset principal is taken first, and an unreset one is skipped", async () => {
+    const m = machine({ profile: (sid) => (sid.endsWith("1001") ? "C:\\Users\\moss-sb-aaaaaa-1" : null) });
+    const s = winFencedSpawner({ fence: m.fence, deps: { ...m.deps, exec: async (argv, x) => {
+      if (argv.includes("exec")) return { code: 0, stdout: "", stderr: "" };
+      return m.deps.exec(argv, x);
+    } } });
+    await s.run(runOf(m.home)).catch(() => undefined);
+    const grant = m.execs.find((a) => a.includes("grant") && a.includes("--persistent"));
+    expect(grant).toBeDefined();
+    expect(grant).toContain("S-1-5-21-1002");
   });
 
   test("every principal busy: refused rather than shared", async () => {

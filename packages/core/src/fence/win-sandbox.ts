@@ -731,6 +731,57 @@ export function removeDirArgs(path: string): readonly string[] {
   return psEncodedArgs(`Remove-Item -Recurse -Force -Path "${path}"`);
 }
 
+/** A SID as Windows writes one (`S-1-5-21-…`): the only shape the profile and task scripts below put in a script. */
+export const SID_RE = /^S-1-\d+(?:-\d+)+$/;
+
+/** Delete a principal's whole profile the way Windows does (`Win32_UserProfile`, userenv's DeleteProfile): its hive,
+ *  its ProfileList key and its folder, junctions included, never followed (PowerShell 5.1's `Remove-Item -Recurse`
+ *  follows the profile's legacy junctions). Exits 0 when there is no profile; non-zero when it is loaded or can't be
+ *  deleted. Elevated only. */
+export function deleteProfileArgs(sid: string): readonly string[] {
+  if (!SID_RE.test(sid)) throw new Error(`not a SID: ${sid}`);
+  return psEncodedArgs(`$ErrorActionPreference='Stop'; $p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"; if ($p) { $p | Remove-CimInstance }`);
+}
+
+/** The scheduled task `sandbox setup` registers for the per-session reset (spec §9.1: the principal's profile and
+ *  hive reset for each session): it runs the protected copy's `moss-core sandbox reset` as SYSTEM, and its owner (only)
+ *  may start it, so the unelevated daemon asks for a reset without elevation. One per owner. */
+export function resetTaskName(ownerSid: string): string {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return `MOSS Sandbox Reset ${ownerSid}`;
+}
+
+/** Register (or replace) the reset task: SYSTEM, highest privileges, on demand only (no trigger), one instance at a time,
+ *  ten minutes at most; its security descriptor adds read and run for the owner alone. */
+export function registerResetTaskArgs(o: { exe: string; ownerSid: string }): readonly string[] {
+  const name = resetTaskName(o.ownerSid);
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$exe='${o.exe.replace(/'/g, "''")}'`,
+    `$name='${name}'`,
+    "$action = New-ScheduledTaskAction -Execute $exe -Argument 'sandbox reset'",
+    "$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",
+    "$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+    "Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force | Out-Null",
+    "$svc = New-Object -ComObject Schedule.Service; $svc.Connect()",
+    "$task = $svc.GetFolder('\\').GetTask($name)",
+    "$sd = $task.GetSecurityDescriptor(0xF)",
+    `if ($sd -notmatch '\(A;;GRGX;;;${o.ownerSid}\)') { $task.SetSecurityDescriptor($sd + '(A;;GRGX;;;${o.ownerSid})', 0) }`,
+  ].join("; ");
+  if (!SID_RE.test(o.ownerSid)) throw new Error(`not a SID: ${o.ownerSid}`);
+  return psEncodedArgs(script);
+}
+
+/** Unregister the reset task (`sandbox remove`); exits 0 when it isn't there. */
+export function unregisterResetTaskArgs(ownerSid: string): readonly string[] {
+  return psEncodedArgs(`$t = Get-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -ErrorAction SilentlyContinue; if ($t) { Unregister-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -Confirm:$false }`);
+}
+
+/** Start the reset task (the daemon, unelevated, as its owner). */
+export function runResetTaskArgs(ownerSid: string): readonly string[] {
+  return ["schtasks", "/run", "/tn", resetTaskName(ownerSid)];
+}
+
 /** A step of setup/remove: its argv, optional stdin, and whether its failure fails the whole run. */
 export interface SandboxStep {
   readonly name: string;

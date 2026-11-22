@@ -1683,8 +1683,14 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     markerAllowsSetup,
     markerAllowsRemove,
     minimalChildEnv,
+    deleteProfileArgs,
+    registerResetTaskArgs,
+    unregisterResetTaskArgs,
+    createWindowsLockStore,
+    poolLockPath,
+    sandboxLeasesDir,
   } = await import("@waifucave/moss-core");
-  const usage = "usage: moss-core sandbox setup [--force]|remove|status [--json]";
+  const usage = "usage: moss-core sandbox setup [--force]|remove|reset|status [--json]";
   if (process.platform !== "win32") {
     console.error("sandbox setup runs on Windows only");
     process.exitCode = 1;
@@ -1842,6 +1848,14 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       // Record this install for the next setup/remove (ruling 3): owner plus every pool member.
       await mkdir(dirname(markerFile), { recursive: true });
       await writeFile(markerFile, formatInstallMarker({ version: 2, ownerSid, members }), "utf8");
+      // The per-session reset (spec §9.1): a SYSTEM task the owner may start, which deletes each free principal's
+      // profile and hive after its command (`sandbox reset`, below). The daemon starts it unelevated.
+      const task = await run([...registerResetTaskArgs({ exe: process.execPath, ownerSid })]);
+      if (task.code !== 0) {
+        console.error(`sandbox setup: registering the reset task failed (exit ${task.code})${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
+        process.exitCode = 1;
+        return;
+      }
       console.log("Bash is set up under MOSS's fence");
       return;
     }
@@ -1921,9 +1935,13 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // Undo what setup did outside srt-win (best effort: the uninstall already took the account).
           // A temporary profile is shared and keyless: never delete it or its (absent) key.
           if (profileRoot !== null && principalSid !== null && !isTemporaryProfile(profileRoot)) {
-            await run(["reg", "unload", `HKU\\${principalSid}`]);
-            await run(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${principalSid}`, "/f"]);
-            await run([...removeDirArgs(profileRoot)]);
+            // The profile as Windows deletes one (hive, ProfileList key and folder; its junctions never followed).
+            const gone = await run([...deleteProfileArgs(principalSid)]);
+            if (gone.code !== 0) {
+              await run(["reg", "unload", `HKU\\${principalSid}`]);
+              await run(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${principalSid}`, "/f"]);
+              await run([...removeDirArgs(profileRoot)]);
+            }
             if (realUserProfile !== null && commonStartup !== null) {
               const startups = startupFolders({ profileRoot, realUserProfile, commonStartup });
               for (const path of startups) await run([...icaclsRemoveDenyArgs(path, principalSid)]);
@@ -1931,10 +1949,70 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           }
         }
         if (failed) return;
+        const task = await run([...unregisterResetTaskArgs(ownerSid)]);
+        if (task.code !== 0) {
+          console.error(`sandbox remove: the reset task couldn't be unregistered (exit ${task.code})${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
+          process.exitCode = 1;
+          return;
+        }
         await unlink(markerFile).catch(() => {});
         console.log("Bash's fence is removed");
         return;
       }
+    }
+    case "reset": {
+      // The per-session reset (spec §9.1: nothing a command writes carries over): run by the reset task as SYSTEM, from
+      // the protected copy. Each pool member that no command holds (its lease lock is free: the daemon's own OS lock,
+      // taken here for the reset's length, so no command starts on a half-deleted profile) has its whole profile and
+      // hive deleted; its next logon makes a fresh one from the default profile. A held member is left for the next
+      // reset. Exit 0 when every free member is clean, 1 when a profile couldn't be deleted (the next launch refuses it).
+      const elevated = (await run([...NET_SESSION_PROBE])).code === 0;
+      if (!elevated) {
+        console.error("sandbox reset needs elevation: the reset task runs it as SYSTEM");
+        process.exitCode = SANDBOX_EXIT.NOT_ELEVATED;
+        return;
+      }
+      if (!fromProtected || targetSid === null) {
+        console.error("sandbox reset runs from the protected copy %ProgramFiles%\\MOSS Sandbox\\<your SID>\\moss-core.exe");
+        process.exitCode = 1;
+        return;
+      }
+      const programData = await knownFolder("CommonApplicationData");
+      const ownerReg = await run([...profileQueryArgs(targetSid)]);
+      const ownerProfile = ownerReg.code === 0 ? parseProfileImagePath(ownerReg.out) : null;
+      if (programData === null || ownerProfile === null) {
+        console.error("sandbox reset: could not resolve ProgramData or the owner's profile");
+        process.exitCode = 1;
+        return;
+      }
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const marker = await readFile(installMarkerPath(programData, targetSid), "utf8").then((t) => parseInstallMarker(t), () => null);
+      if (marker === null || marker.ownerSid !== targetSid) {
+        console.log("nothing to reset: Bash isn't set up for this user");
+        return;
+      }
+      // The owner's default MOSS home holds the leases (`<profile>\.moss\sandbox\leases`, as the daemon's).
+      const leasesDir = sandboxLeasesDir(join(ownerProfile, ".moss"));
+      let store: ReturnType<typeof createWindowsLockStore>;
+      try { store = createWindowsLockStore(leasesDir); } catch (e) {
+        console.error(`sandbox reset: ${(e as Error).message}`);
+        process.exitCode = 1;
+        return;
+      }
+      let failed = 0;
+      for (const m of marker.members) {
+        if (m.principalSid === null) continue;
+        const guard = store.tryLock(poolLockPath(leasesDir, m.principal));
+        if (guard === null) { console.log(`${m.principal}: in use, left for the next reset`); continue; }
+        try {
+          const gone = await run([...deleteProfileArgs(m.principalSid)]);
+          if (gone.code !== 0) { failed++; console.error(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
+          else console.log(`${m.principal}: reset`);
+        } finally { guard.release(); }
+      }
+      process.exitCode = failed === 0 ? SANDBOX_EXIT.OK : SANDBOX_EXIT.FAILED;
+      return;
     }
     case "status": {
       // status works from either location; the launcher is the protected copy's when we run from there,
