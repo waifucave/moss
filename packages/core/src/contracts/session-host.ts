@@ -221,6 +221,10 @@ export interface SessionHost {
   /** The user's message. Its `sentAt` is clamped to the host's clock plus or minus `SENT_AT_WINDOW_MS` first (N5). */
   sendUser(id: string, input: Omit<UserInput, "from">): Promise<{ disposition: Disposition }>;
   deliver(id: string, input: DeliveredInput): Promise<{ disposition: Disposition }>;
+  /** The bots whose own conversation or side thread has delivered a message to this session (the engine's own record, made as the
+   *  delivery is accepted, never from anything a model wrote), for the session's life: what the reach rule reads as "that bot has
+   *  messaged it first" (§9.5). A session that is not known, or has none, answers none. */
+  botsThatWrote(id: string): readonly string[];
   /** The user's interrupt of this session's current step. */
   interrupt(id: string): Promise<void>;
   /** `TaskStop`, or the session ending. */

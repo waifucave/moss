@@ -9,6 +9,7 @@ import { botApprovalCheck } from "../../approvals/bot-check";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { agentToolJudge } from "../plugin-reach";
 import { NO_PLUGIN_TOOLS, type AgentSessionFacts, type BridgeToolSource } from "../bridge/tools";
+import { ExchangeDepths, EXCHANGE_DEPTH_LIMIT } from "../../sessions/exchange-depth";
 import { waitFor, World } from "./world";
 
 setDefaultTimeout(60_000);
@@ -94,6 +95,28 @@ describe("the manager asks for a bot's agent's message, at the target the rule r
     await w.manager.bridgeHandlers().sendMessage(sessionId, { text: "progress" });
     expect(w.parentInputs("agent").length).toBe(before + 1);
     expect(judged.length).toBe(1);
+  });
+
+  test("with no approvals wired on this computer a bot's agent's message is refused, not sent without the ask", async () => {
+    const w = (world = new World({ script: [[{ say: "ok" }]], noApprovals: true }));
+    const { sessionId } = await w.manager.start({ caller: BOT, backend: "fake", prompt: "Go.", root: "home/Studio/project1" });
+    await waitFor(() => (w.host.get(sessionId)?.status === "idle" ? true : undefined), "the agent to be idle");
+    const before = w.parentInputs("agent").length;
+    const err = await w.manager.bridgeHandlers().sendMessage(sessionId, { text: "progress" }).catch((e: unknown) => e as Error);
+    expect((err as Error).message).toContain("approvals aren't running");
+    expect(w.parentInputs("agent").length).toBe(before);
+  });
+
+  test("an agent a bot starts begins at the starting session's depth + 1, never at a fresh 0, and never past the limit", async () => {
+    for (const [at, begins] of [[0, 1], [3, 4], [EXCHANGE_DEPTH_LIMIT - 1, EXCHANGE_DEPTH_LIMIT], [EXCHANGE_DEPTH_LIMIT, EXCHANGE_DEPTH_LIMIT]] as const) {
+      const depths = new ExchangeDepths();
+      depths.turnStarted("s_alpha", { from: "session", session: "s_other", text: "x", depth: at });
+      const w = (world = new World({ script: [[{ say: "ok" }]], depths }));
+      const { sessionId } = await w.manager.start({ caller: BOT, backend: "fake", prompt: "Go.", root: "home/Studio/project1" });
+      const first = w.host.history(sessionId).find((r) => r.type === "input");
+      expect([at, first?.type === "input" ? (first.input as { depth?: number }).depth : undefined]).toEqual([at, begins]);
+      await world.close();
+    }
   });
 
   test("a coding session the person started is not asked", async () => {

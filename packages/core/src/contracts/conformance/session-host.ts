@@ -44,6 +44,29 @@ export function runSessionHostConformance(make: SessionHostFactory): void {
   const inputs = (records: SessionRecord[]) => records.filter((r) => r.type === "input").map((r) => (r.type === "input" ? [r.input.from, r.disposition] : []));
 
   describe("SessionHost", () => {
+    test("which bots have written to a session is remembered as the message is accepted: a bot's own conversation or side thread only, once each, from the host's own record of the sender", async () => {
+      const { host } = setup();
+      host.open({ id: "s_side", kind: "side-thread", bot: "alpha", parent: "s_alpha", computer: "Studio", routine: "r_1" }, new FakeSessionDriver());
+      host.open({ id: "s_luna", kind: "bot", bot: "luna", computer: "Studio" }, new FakeSessionDriver());
+      const agent = openAgent(host);
+      void agent;
+      const code = new FakeSessionDriver({ canFold: false });
+      host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", root: "home/Studio/project1" }, code);
+      expect(host.botsThatWrote("s_code")).toEqual([]);
+      // The bot's agent is a session, not the bot: its message opens nothing.
+      await host.deliver("s_code", { from: "session", session: "s_agent", text: "from the agent" });
+      expect(host.botsThatWrote("s_code")).toEqual([]);
+      // The bot's conversation and a side thread of it (one bot, once), then another bot.
+      await host.deliver("s_code", { from: "session", session: "s_alpha", text: "from the bot" });
+      await host.deliver("s_code", { from: "session", session: "s_side", text: "from its routine" });
+      await host.deliver("s_code", { from: "session", session: "s_luna", text: "from luna" });
+      expect(host.botsThatWrote("s_code")).toEqual(["alpha", "luna"]);
+      // A sender the host does not hold (or claims to be) adds nothing; a session never written to has none; an unknown session none.
+      await host.deliver("s_code", { from: "session", session: "s_nobody", text: "who" });
+      expect(host.botsThatWrote("s_alpha")).toEqual([]);
+      expect(host.botsThatWrote("s_missing")).toEqual([]);
+    });
+
     test("the user's message starts a turn in an idle bot", async () => {
       const { host, botDriver } = setup();
       expect(host.get("s_alpha")?.status).toBe("ready");

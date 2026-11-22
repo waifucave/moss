@@ -5,20 +5,22 @@
 // * **One rule.** Who may reach whom is the protocol's `reachRefusal` (reach.ts), read here and nowhere else for a bridge
 //   send; the bots' `sendMessageRefusal` (bots/tools.ts) is the same function. `mayReach` adds only "not ended".
 // * **Both ends carry their bot as `host.callerOf` reads it:** a session's own `bot`, else its parent's, up the chain, so a
-//   session with no `bot` on its view but a bot's session as its parent is a bot's session here too (line 5 of the rule).
+//   session with no `bot` on its view but a bot's session as its parent is a bot's session here too (a session a bot created).
 //   The listing and the send read the same resolved views, so `ListSessions` is exactly what `SendMessage` delivers to.
+// * **The rule reads one more fact: which bots have messaged the sender before** (`world.botsThatWrote`, the host's durable record
+//   of a bot's own conversation or side thread delivering to that very session), never anything a model said.
 // * **Nothing of a session the sender may not reach leaves here.** A `to` by title is looked for only among the sessions the
 //   sender may reach, and a name or an id that no reachable session answers to is refused in ONE sentence whether the id
 //   is unknown, ended-and-forbidden or someone else's, so a refusal tells nothing about a session the sender may not reach.
 //   Message text is never logged.
 // * **The limit counts every send,** refused ones too, per sending session (a guess at ids cannot go on forever), and it is
 //   taken before anything else is read.
-// * A delivery is `{ from: "session" }` to a session the person started, from any session (the receiver's `session_message`;
-//   its turn's origin is `agent`, never the person's: `originOf`), `{ from: "agent" }` from a bot's agent and `{ from: "bot" }`
-//   from a bot's own session to a bot's session, as today.
+// * A delivery is `{ from: "session" }` to any coding or agent session and to another bot's conversation, from any session (the
+//   receiver's `session_message`; its turn's origin is `agent`, never the person's: `originOf`); `{ from: "agent" }` from a bot's
+//   agent to its own bot's conversation or side thread, as today (`deliveredAs`).
 import {
   LIST_SESSIONS_MAX, ReachableSession, SESSION_MESSAGE_MAX_CHARS, SESSION_SEND_LIMIT, SESSION_SEND_WINDOW_MS, SendMessageToolInput,
-  mayReach, reachRefusal, resolveSessionTo, type SessionView,
+  mayReach, reachRefusal, resolveSessionTo, type SessionView, type WroteFirst,
 } from "@waifucave/moss-protocol";
 import type { SessionMessenger, SessionMessengerWorld } from "../../contracts/session-reach";
 import type { DeliveredInput, TurnInput } from "../../contracts/session-host";
@@ -50,7 +52,9 @@ export function sendSlots(now: () => number): SendSlots {
 
 /** The world the engine's messenger stands on: `SessionMessengerWorld`, with a delivery the host answers later and a link
  *  the session graph may take (the graph, lane CG, hears each delivery through the host). */
-export interface EngineMessengerWorld extends Omit<SessionMessengerWorld, "deliver" | "link"> {
+export interface EngineMessengerWorld extends Omit<SessionMessengerWorld, "deliver" | "link" | "botsThatWrote"> {
+  /** The host's record of the bots that have messaged a session (`DurableSessionHost.botsThatWrote`); absent, none has. */
+  botsThatWrote?(session: string): readonly string[];
   deliver(session: string, input: DeliveredInput): void | Promise<unknown>;
   link?(from: string, to: string): void;
 }
@@ -71,6 +75,17 @@ function withBots(sessions: readonly SessionView[]): Map<string, SessionView> {
     out.set(s.id, bot === undefined || bot === s.bot ? s : { ...s, bot });
   }
   return out;
+}
+
+/** The form a message takes to its receiver, and so how the receiver's wire and prompt name the sender (never the person): a bot's own
+ *  session to anything of a bot's is `bot`; a bot's agent to its own bot's conversation or side thread is `agent`; every other
+ *  (a session to a session, a session to another bot's conversation) is that session's own message (`session`). */
+export function deliveredAs(me: Pick<SessionView, "id" | "kind" | "bot">, target: Pick<SessionView, "kind" | "bot">, text: string, depth: number): DeliveredInput {
+  if (me.bot !== undefined && target.bot !== undefined) {
+    if (me.kind === "bot" || me.kind === "side-thread") return { from: "bot", bot: me.bot, session: me.id, text, depth };
+    if ((target.kind === "bot" || target.kind === "side-thread") && target.bot === me.bot) return { from: "agent", agent: me.id, text, depth };
+  }
+  return { from: "session", session: me.id, text, depth };
 }
 
 const isEnded = (s: SessionView) => s.status === "stopped" || s.status === "failed";
@@ -102,14 +117,21 @@ export class EngineSessionMessenger implements SessionMessenger {
     return this.#depths.depthOf(session);
   }
 
+  /** The bots that have messaged `session` before, as the rule's third input. */
+  #wroteTo(session: string): WroteFirst {
+    const bots = new Set(this.#world.botsThatWrote?.(session) ?? []);
+    return (bot) => bots.has(bot);
+  }
+
   reachable(from: string): ReachableSession[] {
     const views = withBots(this.#world.sessions());
     const me = views.get(from);
     if (me === undefined) return [];
+    const wrote = this.#wroteTo(from);
     const out: ReachableSession[] = [];
     for (const s of views.values()) {
       if (out.length >= LIST_SESSIONS_MAX) break;
-      if (mayReach(me, s)) out.push(ReachableSession.parse(s));
+      if (mayReach(me, s, wrote)) out.push(ReachableSession.parse(s));
     }
     return out;
   }
@@ -126,14 +148,15 @@ export class EngineSessionMessenger implements SessionMessenger {
     const views = withBots(this.#world.sessions());
     const me = views.get(from);
     if (me === undefined) return { refused: "This session isn't known here." };
-    const reachable = [...views.values()].filter((s) => mayReach(me, s));
+    const wrote = this.#wroteTo(from);
+    const reachable = [...views.values()].filter((s) => mayReach(me, s, wrote));
     let to: string;
     if (input.data.to === undefined) {
       // A bot's agent with no `to` messages the bot that started it; a session the person drives names one.
       if (me.bot === undefined || me.parent === undefined) return { refused: "Name the session with `to`; ListSessions lists the ones you may message." };
       to = me.parent;
     } else {
-      if (input.data.to.trim() === me.id) return { refused: reachRefusal(me, me)! };
+      if (input.data.to.trim() === me.id) return { refused: reachRefusal(me, me, wrote)! };
       const hit = resolveSessionTo(input.data.to, reachable);
       if ("error" in hit) return { refused: hit.error };
       to = hit.session;
@@ -141,7 +164,7 @@ export class EngineSessionMessenger implements SessionMessenger {
     const target = views.get(to);
     // The rule decides, on the views read above: the one place a bridge send is judged. A refusal says the same of a
     // session that does not exist as of one the sender may not reach.
-    if (target === undefined || reachRefusal(me, target) !== undefined) {
+    if (target === undefined || reachRefusal(me, target, wrote) !== undefined) {
       return { refused: input.data.to === undefined ? "The session that started you can't be messaged now." : `No session you may message is "${input.data.to.trim()}"; ListSessions lists the ones you may.` };
     }
     if (isEnded(target)) return { refused: `${to} has ended; it takes no messages.` };
@@ -156,11 +179,7 @@ export class EngineSessionMessenger implements SessionMessenger {
     if (refusal !== undefined) return { refused: refusal };
     // A message to a session the person started reaches it as that session's own (`session_message`, with the sender's title
     // and id), whoever sent it, a bot's session too: never the person's. Between bot sessions it stays the bots' own forms.
-    const delivered: DeliveredInput = me.bot === undefined || target.bot === undefined
-      ? { from: "session", session: from, text: input.data.message, depth: at }
-      : me.kind === "agent"
-        ? { from: "agent", agent: from, text: input.data.message, depth: at }
-        : { from: "bot", bot: me.bot, session: from, text: input.data.message, depth: at };
+    const delivered = deliveredAs(me, target, input.data.message, at);
     try {
       await this.#world.deliver(to, delivered);
     } catch (err) {

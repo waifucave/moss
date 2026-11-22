@@ -70,11 +70,15 @@ describe("the property: ListSessions is the rule, and SendMessage delivers exact
     test(`generated sessions, seed ${seed}`, async () => {
       const all = generate(seed);
       const delivered: { to: string; input: DeliveredInput }[] = [];
-      const world: EngineMessengerWorld = { sessions: () => all, deliver: (to, input) => void delivered.push({ to, input }), now: () => 0 };
+      // The engine's record of which bots have messaged each session: generated too (the rule's third input).
+      const rr = rng(seed * 7919);
+      const wrote = new Map(all.map((t) => [t.id, new Set(["moss", "luna", "sora"].filter(() => rr.next() < 0.3))]));
+      const world: EngineMessengerWorld = { sessions: () => all, deliver: (to, input) => void delivered.push({ to, input }), now: () => 0, botsThatWrote: (id) => [...(wrote.get(id) ?? [])] };
       const m = new EngineSessionMessenger(world, { take: () => true });
       for (const s of all) {
-        const me = { id: s.id, bot: botOf(all, s) };
-        const want = all.filter((t) => t.status !== "stopped" && t.status !== "failed" && reachRefusal(me, { id: t.id, kind: t.kind, bot: botOf(all, t), startedBy: t.startedBy, parent: t.parent }) === undefined).map((t) => t.id);
+        const me = { id: s.id, kind: s.kind, bot: botOf(all, s) };
+        const has = (b: string) => wrote.get(s.id)!.has(b);
+        const want = all.filter((t) => t.status !== "stopped" && t.status !== "failed" && reachRefusal(me, { id: t.id, kind: t.kind, bot: botOf(all, t), startedBy: t.startedBy, parent: t.parent }, has) === undefined).map((t) => t.id);
         expect([s.id, m.reachable(s.id).map((x) => x.id).sort()]).toEqual([s.id, [...want].sort()]);
         // By id: delivered exactly to the listed ones.
         for (const t of all) {
@@ -108,16 +112,17 @@ describe("the property: ListSessions is the rule, and SendMessage delivers exact
 describe("what the real messenger does that the contract's fake does not", () => {
   const v = (id: string, extra: Partial<SessionView> = {}): SessionView => ({ id, kind: "coding", computer: "Studio", status: "idle", startedAt: 1, updatedAt: 1, ...extra });
 
-  test("a child of a bot's session that carries no bot itself is the bot's, so a session the person drives can't reach it (line 5)", async () => {
+  test("a child of a bot's session that carries no bot itself is the bot's: a session the person created reaches it as any session, and not the bot", async () => {
     const sessions = [v("s_me"), v("s_moss", { kind: "bot", bot: "moss" }), v("s_kid", { kind: "agent", parent: "s_moss", title: "Kid" }), v("s_grand", { kind: "agent", parent: "s_kid", title: "Grand" })];
     const delivered: string[] = [];
     const m = new EngineSessionMessenger({ sessions: () => sessions, deliver: (to) => void delivered.push(to), now: () => 0 });
-    expect(m.reachable("s_me")).toEqual([]);
-    for (const to of ["s_kid", "Kid", "s_grand", "Grand"]) expect([to, "refused" in (await m.send("s_me", { message: "x", to }))]).toEqual([to, true]);
+    // Any session (the owner's rule of 2026-11-22), the bot's conversation not (it has not written to it).
+    expect(m.reachable("s_me").map((s) => s.id).sort()).toEqual(["s_grand", "s_kid"]);
+    expect("refused" in (await m.send("s_me", { message: "x", to: "s_moss" }))).toBe(true);
+    for (const to of ["s_kid", "Kid", "s_grand", "Grand"]) expect([to, "delivered" in (await m.send("s_me", { message: "x", to }))]).toEqual([to, true]);
     // And from the bot's side the child is its own.
-    // (and, by the owner's ruling of 2026-11-22, the person's own session: it started it itself.)
     expect(m.reachable("s_grand").map((s) => s.id).sort()).toEqual(["s_kid", "s_me", "s_moss"]);
-    expect(delivered).toEqual([]);
+    expect(delivered).toEqual(["s_kid", "s_kid", "s_grand", "s_grand"]);
   });
 
   test("a refused send counts toward the limit, before anything is read", async () => {

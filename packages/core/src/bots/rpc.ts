@@ -30,6 +30,7 @@ import { StagedImages } from "./staged-images";
 import { refuseWhileUpdating, type UpdateGateLike } from "./update-gate";
 import type { BotService } from "./service";
 import type { BotQuestions } from "./questions";
+import { fromPeer } from "../sessions/exchange-depth";
 
 // The handler helpers are shared with every lane's methods (rpc/handler.ts, H-M1's ask).
 export { MethodError, handler, requireUser, toMethodError, type MethodContext, type MethodHandler } from "../rpc/handler";
@@ -429,7 +430,7 @@ export function peerSessionMethods(deps: PeerSessionMethodsDeps): Record<string,
         // A bot's message only from the computer running that bot (#313's review): a peer can't name a sender it doesn't run.
         if (input.from === "bot") botSenderCheck(deps.bots, input, computer);
         if (input.from === "routine") routineSenderCheck(deps.routines, input, target.bot!, computer);
-        const { seq } = await deps.host.deliver(id, input);
+        const { seq } = await deps.host.deliver(id, fromPeer(input));
         return { seq };
       } catch (err) {
         throw toMethodError(err);

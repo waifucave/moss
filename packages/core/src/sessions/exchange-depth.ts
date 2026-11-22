@@ -42,6 +42,13 @@ export function depthStartedBy(input: TurnInput): number | undefined {
   }
 }
 
+/** A bot's or agent's message that arrived over the link from another computer, with its depth: one the sender gave no depth reads as
+ *  the limit (an unmarked peer message is never a fresh exchange: it may not start one at 0), the rest as they are. */
+export function fromPeer<T extends { from: string }>(input: T): T {
+  if ((input.from === "bot" || input.from === "agent") && (input as { depth?: unknown }).depth === undefined) return { ...input, depth: EXCHANGE_DEPTH_LIMIT };
+  return input;
+}
+
 export class ExchangeDepths {
   /** The depth of each session's current exchange (absent: 0), set as a turn starts and when the person answers its card. A
    *  queued delivery carries its own depth in its recorded input, so a restart that runs it starts its turn at the depth it
@@ -69,6 +76,11 @@ export class ExchangeDepths {
   /** How far the exchange `session`'s current turn is in has gone without the person. */
   depthOf(session: string): number {
     return this.#depths.get(session) ?? 0;
+  }
+
+  /** The session ended (or left): its place in an exchange goes with it, so the map holds only sessions that can still send. */
+  ended(session: string): void {
+    this.#depths.delete(session);
   }
 
   #set(session: string, d: number): void {

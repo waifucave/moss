@@ -22,7 +22,8 @@ import { bridgeMossParts } from "../bridge/handlers";
 import { serveMoss, type TestMossEndpoint } from "../testing/moss-endpoint";
 import { bridgeCommand } from "../bridge/main";
 import { BridgeTokens } from "../bridge/tokens";
-import type { BridgeToolSource } from "../bridge/tools";
+import { ExchangeDepths } from "../../sessions/exchange-depth";
+import { NO_PLUGIN_TOOLS, type BridgeToolSource } from "../bridge/tools";
 import { AgentManager, type AgentPauseGate , type AgentManagerOptions } from "../manager";
 import type { ProcessTableReader } from "../process/table";
 import { FAKE_AGENT_PATH, fakeLaunch, readReport, writeFakeAgent, type FakeAgentRun } from "../testing/harness";
@@ -64,6 +65,11 @@ export interface WorldOptions {
   history?: AgentEvent[];
   level?: Level;
   pluginTools?: BridgeToolSource;
+  /** No approvals wired at all (the daemon without a plugin registry): no bridge tool source, so a bot's agent's `SendMessage` is refused.
+   *  Otherwise a world answers every bot's agent's `SendMessage` with "allowed" (the judge's own cases are in agent-message-approval.test.ts). */
+  noApprovals?: boolean;
+  /** The exchange depths the manager reads and feeds (the host's store in the daemon). */
+  depths?: ExchangeDepths;
   /** Tells the manager the plugins' tools may have changed (the daemon's registry, tool-setting and listing watches). */
   watchTools?: AgentManagerOptions["watchTools"];
   /** The watchdog's wall clock, to age a running command past its limit. */
@@ -117,6 +123,9 @@ export async function waitFor<T>(fn: () => T | undefined | false | Promise<T | u
     await new Promise((r) => setTimeout(r, 20));
   }
 }
+
+/** The bridge's tool source of a world that wires approvals and gives no plugin tools: every judged call is allowed. */
+export const ALLOWS_SENDS: BridgeToolSource = { ...NO_PLUGIN_TOOLS, judge: async () => ({ allowed: true }) };
 
 export class World {
   readonly root: string;
@@ -187,7 +196,8 @@ export class World {
     manager = new AgentManager({
       home: this.mossHome, userHome: this.userHome, computer: this.computer, host: this.host, approvals: this.approvals, tree: this.tree, fence: this.fence,
       backends: () => [this.backend, ...extra], tokens: this.tokens, bridge: { ...bridgeCommand(), socketPath: sock, ...(o.bridgeServerName ? { serverName: o.bridgeServerName } : {}) }, watchdog: this.watchdog, clock: this.clock,
-      ...(o.pluginTools ? { pluginTools: o.pluginTools } : {}),
+      ...(o.depths ? { depths: o.depths } : {}),
+      ...(o.noApprovals ? {} : { pluginTools: o.pluginTools ?? ALLOWS_SENDS }),
       ...(o.watchTools ? { watchTools: o.watchTools } : {}),
       ...(o.oks ? { oks: o.oks } : {}),
       ...(o.pluginParts ? { pluginParts: o.pluginParts } : {}),

@@ -11,7 +11,7 @@ import { advanceAndSettle, FakeClock, flush } from "../../contracts/fakes/clock"
 import { runSessionHostConformance, type SessionHostHarness } from "../../contracts/conformance/session-host";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import type { DeliveredInput, SessionDriver, SessionRecord, TurnControl, TurnEnd, TurnInput, UserInput } from "../../contracts/session-host";
-import { DurableSessionHost, INTERRUPT_GRACE_MS, PUMP_RETRY_MS } from "../durable-host";
+import { DurableSessionHost, INTERRUPT_GRACE_MS, PUMP_RETRY_MS, WROTE_BOTS_MAX } from "../durable-host";
 import { projectRecords } from "../wire";
 import { MAX_RECORD_BYTES } from "../event-log";
 import { sessionLogPath, sessionMetaPath } from "../ids";
@@ -46,6 +46,7 @@ runSessionHostConformance((opts): SessionHostHarness => {
     subscribe: (id, fn) => host.subscribe(id, fn),
     watch: (fn) => host.watch(fn),
     setAsleep: (id, asleep) => host.setAsleep(id, asleep),
+    botsThatWrote: (id) => host.botsThatWrote(id),
   };
 });
 
@@ -479,6 +480,42 @@ describe("DurableSessionHost when things go wrong", () => {
     expect(d2.turns.map((t) => t.input.from === "user" && t.input.text)).toEqual(["three"]);
     const seqs = readFileSync(sessionLogPath(home, "alpha", "b_alpha"), "utf8").trimEnd().split("\n").map((l) => (JSON.parse(l) as SessionRecord).seq);
     expect(seqs).toEqual(seqs.map((_, i) => i));
+  });
+
+  test("which bots have written to a session survives a restart, lasts the session's life, and is read back only as bot ids; an ended bot's record stays", async () => {
+    const { home, clock, host } = durable();
+    host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, new FakeSessionDriver());
+    host.open({ id: "b_luna", kind: "bot", bot: "luna", computer: "Studio" }, new FakeSessionDriver());
+    host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", root: "home/Studio/project1" }, new FakeSessionDriver());
+    expect(host.botsThatWrote("s_code")).toEqual([]);
+    await host.deliver("s_code", { from: "session", session: "b_alpha", text: "first word" });
+    await host.deliver("s_code", { from: "session", session: "b_alpha", text: "again" });
+    expect(host.botsThatWrote("s_code")).toEqual(["alpha"]);
+    await host.close();
+
+    // A restart: the fact is on disk (the session's meta), not in a model's memory or the process.
+    const again = new DurableSessionHost({ home, clock });
+    again.open({ id: "b_luna", kind: "bot", bot: "luna", computer: "Studio" }, new FakeSessionDriver());
+    again.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", root: "home/Studio/project1" }, new FakeSessionDriver());
+    expect(again.botsThatWrote("s_code")).toEqual(["alpha"]);
+    // A second bot adds to it; the first bot's conversation need not be open: its record is the session's own.
+    await again.deliver("s_code", { from: "session", session: "b_luna", text: "hello" });
+    expect(again.botsThatWrote("s_code")).toEqual(["alpha", "luna"]);
+    await again.close();
+
+    // A forged or damaged meta: anything but a short list of strings reads as no record, and a list is capped and de-duplicated.
+    const path = sessionMetaPath(home, undefined, "s_code");
+    const meta = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    for (const bad of ["alpha", { alpha: true }, [1, null, {}], 7]) {
+      writeFileSync(path, JSON.stringify({ ...meta, wroteBy: bad }));
+      const h = new DurableSessionHost({ home, clock, warn: () => {} });
+      expect([JSON.stringify(bad), h.botsThatWrote("s_code")]).toEqual([JSON.stringify(bad), []]);
+      await h.close();
+    }
+    writeFileSync(path, JSON.stringify({ ...meta, wroteBy: ["alpha", "alpha", ...Array.from({ length: 200 }, (_, i) => `bot${i}`)] }));
+    const capped = new DurableSessionHost({ home, clock, warn: () => {} }).botsThatWrote("s_code");
+    expect(capped.length).toBeLessThanOrEqual(WROTE_BOTS_MAX);
+    expect(new Set(capped).size).toBe(capped.length);
   });
 
   test("a meta written by a newer MOSS stops the start rather than be skipped", async () => {

@@ -26,6 +26,8 @@ interface Hosted {
   queue: TurnInput[];
   running?: Running;
   asleep: boolean;
+  /** The bots whose conversation or side thread delivered to it. */
+  wrote: Set<string>;
 }
 
 export class FakeSessionHost implements SessionHost {
@@ -57,7 +59,7 @@ export class FakeSessionHost implements SessionHost {
       ...(spec.routine === undefined ? {} : { routine: spec.routine }),
       ...(spec.definition === undefined ? {} : { definition: spec.definition }),
     };
-    const s: Hosted = { view, driver, log: [], subscribers: new Listeners(), queue: [], asleep: false };
+    const s: Hosted = { view, driver, log: [], subscribers: new Listeners(), queue: [], asleep: false, wrote: new Set() };
     this.#sessions.set(id, s);
     this.#record(s, { type: "status", status: "ready" });
     this.#watchers.emit({ ...view });
@@ -106,7 +108,16 @@ export class FakeSessionHost implements SessionHost {
       this.#record(s, { type: "input", input, disposition: "note" });
       return { disposition: "note" };
     }
-    return this.#accept(s, input);
+    const accepted = this.#accept(s, input);
+    // A bot's own conversation or side thread delivering to it: remembered (the real host's record, `botsThatWrote`).
+    const from = input.from === "session" ? input.session : input.from === "bot" ? input.session : undefined;
+    const sender = from === undefined ? undefined : this.#sessions.get(from)?.view;
+    if (sender?.bot !== undefined && (sender.kind === "bot" || sender.kind === "side-thread")) s.wrote.add(sender.bot);
+    return accepted;
+  }
+
+  botsThatWrote(id: string): readonly string[] {
+    return [...(this.#sessions.get(id)?.wrote ?? [])];
   }
 
   async interrupt(id: string): Promise<void> {

@@ -6,14 +6,17 @@
 // marked with who ruled it (`REACH_RULE_LINES`); `bots/tools.ts`'s `sendMessageRefusal` delegates to it (lane CM).
 //
 // What the contract promises:
+// * The rule reads a third thing beside the two sessions: which bots have messaged the sender before (`botsThatWrote`, the
+//   engine's durable record). A session reaches a bot only after that bot has (or it is the sender's own bot).
 // * `send` delivers only where `mayReach` says, to a session named by its id or its one matching title
 //   (`resolveSessionTo`); a bot's agent with no `to` reaches its bot's conversation (its `parent`); a session the person
 //   drives must name one. Each refusal is a sentence the agent can act on; nothing is delivered.
 // * At most `SESSION_SEND_LIMIT` sends per sending session in `SESSION_SEND_WINDOW_MS`; a send over it is refused and
 //   delivers nothing.
-// * A delivery records its sender: between two sessions that are no bot's, `{ from: "session", session }` (the wire's
-//   `session_message`); from a bot's agent to its bot's sessions, `{ from: "agent" }` as today; from a bot's session,
-//   `{ from: "bot" }` as today. Each delivery is one `session_link` of kind `message`.
+// * A delivery records its sender: to any coding or agent session, `{ from: "session", session }` (the wire's
+//   `session_message`); from a bot's agent to its own bot's conversation or side thread, `{ from: "agent" }` as today; from a bot's
+//   own session to a bot's conversation, `{ from: "bot" }` as today; from any other session to a bot's conversation,
+//   `{ from: "session" }` (never read as the bot's own agent, never the person's). Each delivery is one `session_link` of kind `message`.
 // * `reachable` lists exactly the sessions `send` would deliver to (not ended, the rule allows), at most
 //   `LIST_SESSIONS_MAX`, so an agent never learns of a session it may not reach.
 import type { ReachableSession, SendMessageToolInput, SessionView } from "@waifucave/moss-protocol";
@@ -30,4 +33,7 @@ export interface SessionMessengerWorld {
   deliver(session: string, input: DeliveredInput): void;
   link(from: string, to: string): void;
   now(): number;
+  /** The bots whose conversation or side thread has delivered a message to `session` before (the engine's record, kept for the
+   *  session's life). */
+  botsThatWrote(session: string): readonly string[];
 }

@@ -73,8 +73,8 @@ describe("the link event (§9.5)", () => {
 describe("who may reach whom (§9.5)", () => {
   const s = (id: string, kind: "bot" | "side-thread" | "agent" | "coding", bot?: string) => ({ id, kind, ...(bot !== undefined ? { bot } : {}) });
 
-  test("a bot's session: its own bot's sessions and every bot's conversation, word for word, and (the owner's ruling of 2026-11-22) the sessions the person started", () => {
-    const from = { id: "s_moss", bot: "moss" };
+  test("a bot's own conversation: its own bot's sessions and every bot's conversation, word for word, and (the owner's ruling of 2026-11-22) the sessions the person started", () => {
+    const from = { id: "s_moss", kind: "bot" as const, bot: "moss" };
     expect(reachRefusal(from, s("s_moss", "bot", "moss"))).toBe("That is this conversation; SendMessage reaches another one.");
     expect(reachRefusal(from, s("s_luna", "bot", "luna"))).toBeUndefined();
     expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBeUndefined();
@@ -83,18 +83,31 @@ describe("who may reach whom (§9.5)", () => {
     expect(reachRefusal(from, s("s_e", "agent", "luna"))).toBe('s_e belongs to the bot luna; message that bot\'s conversation instead (SendMessage with to: "luna").');
   });
 
-  test("a session the person drives: the person's other code sessions and children, never a bot's", () => {
-    const from = { id: "s_a" };
-    expect(reachRefusal(from, s("s_a", "coding"))).toBeDefined();
+  test("a session a bot created: that bot and any other session; another bot only once it has messaged it", () => {
+    const from = { id: "s_d", kind: "agent" as const, bot: "moss" };
+    expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBe("That is this session; SendMessage reaches another one.");
+    expect(reachRefusal(from, s("s_moss", "bot", "moss"))).toBeUndefined();
+    expect(reachRefusal(from, s("s_side", "side-thread", "moss"))).toBeUndefined();
+    for (const t of [s("s_code", "coding"), s("s_e", "agent", "luna"), { ...s("s_kid", "coding"), parent: "s_code", startedBy: { kind: "session" as const, session: "s_code" } }]) expect(reachRefusal(from, t)).toBeUndefined();
+    expect(reachRefusal(from, s("s_luna", "bot", "luna"))).toContain("only after that bot has messaged it first");
+    expect(reachRefusal(from, s("s_luna", "bot", "luna"), (b) => b === "sora")).toContain("only after that bot has messaged it first");
+    expect(reachRefusal(from, s("s_luna", "bot", "luna"), (b) => b === "luna")).toBeUndefined();
+  });
+
+  test("a session the person created: any other session; a bot only once it has messaged it", () => {
+    const from = { id: "s_a", kind: "coding" as const };
+    expect(reachRefusal(from, s("s_a", "coding"))).toBe("That is this session; SendMessage reaches another one.");
     expect(reachRefusal(from, s("s_b", "coding"))).toBeUndefined();
     expect(reachRefusal(from, s("s_c", "agent"))).toBeUndefined();
-    expect(reachRefusal(from, s("s_moss", "bot", "moss"))).toBeDefined();
-    expect(reachRefusal(from, s("s_side", "side-thread", "moss"))).toBeDefined();
-    expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBeDefined();
+    expect(reachRefusal(from, s("s_d", "agent", "moss"))).toBeUndefined();
+    expect(reachRefusal(from, s("s_moss", "bot", "moss"))).toContain("only after that bot has messaged it first");
+    expect(reachRefusal(from, s("s_side", "side-thread", "moss"))).toContain("only after that bot has messaged it first");
+    expect(reachRefusal(from, s("s_moss", "bot", "moss"), (b) => b === "moss")).toBeUndefined();
+    expect(reachRefusal(from, s("s_side", "side-thread", "moss"), (b) => b === "moss")).toBeUndefined();
     expect(mayReach(from, { ...s("s_b", "coding"), status: "stopped" })).toBe(false);
     expect(mayReach(from, { ...s("s_b", "coding"), status: "idle" })).toBe(true);
-    // Two lines are the owner's: a person's session reaches the person's own, and a bot's session reaches the sessions the person started.
-    expect(REACH_RULE_LINES.filter((l) => l.ruled === "owner").length).toBe(2);
+    // Four lines are the owner's own (his words, quoted in the file); two are the controller's (never itself, ended takes nothing).
+    expect(REACH_RULE_LINES.filter((l) => l.ruled === "owner").length).toBe(4);
   });
 
   test("a `to` is an id, else the one title it matches; two titles name the ids", () => {
