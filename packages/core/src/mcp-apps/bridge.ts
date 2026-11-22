@@ -116,7 +116,10 @@ export class AppBridge {
     switch (method) {
       case "ui/initialize": {
         const rid = needId();
-        this.#state = this.#state === "new" ? "initializing" : this.#state;
+        // A page that loads again (its view re-mounted, woke or reloaded) starts the handshake over on the SAME bridge: it is
+        // sent its tool input and result again, and a call still waiting for its card stays.
+        this.#state = "initializing";
+        this.#sent = false;
         answer(ok(rid, {
           protocolVersion: MCP_APPS_SPEC_VERSION,
           hostInfo: this.host.hostInfo,

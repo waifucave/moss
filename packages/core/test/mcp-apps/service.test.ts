@@ -146,3 +146,66 @@ describe("the bridge's calls are the session's own", () => {
     expect(said).toEqual([{ pluginId: "acme/charts", callId: "c1", text: "pick the red one" }]);
   });
 });
+
+describe("one bridge per binding", () => {
+  const initialize = (svc: McpAppsService) => svc.request("s_1", "c1", rpc(1, "ui/initialize", {}));
+  const initialized = (svc: McpAppsService) => svc.request("s_1", "c1", { jsonrpc: "2.0", method: "ui/notifications/initialized" });
+  const refresh = rpc(7, "tools/call", { name: "refresh", arguments: {} });
+
+  test("a call waits for its card, the page is opened again, the card is approved: the tool runs once and the answer reaches the page", async () => {
+    let release!: (v: { allowed: true }) => void;
+    const card = new Promise<{ allowed: true }>((r) => { release = r; });
+    const log: Log = { reads: [], called: [], asked: [] };
+    const svc = make();
+    svc.bind("s_1", "c1", { ...site({ log }), approve: async () => await card });
+    await svc.open("s_1", "c1");
+    const first = svc.request("s_1", "c1", refresh);
+    await Promise.resolve();
+    // The view woke / the conversation re-mounted: the same page is opened again while the card waits.
+    await svc.open("s_1", "c1");
+    release({ allowed: true });
+    const reply = await first;
+    expect((reply.messages[0] as { result?: unknown }).result).toBeDefined();
+    expect(log.called).toEqual(["refresh"]);
+  });
+  test("an answer that lands after a newer view attached reaches the view that is there, once", async () => {
+    let release!: (v: { allowed: true }) => void;
+    const card = new Promise<{ allowed: true }>((r) => { release = r; });
+    const svc = make();
+    svc.bind("s_1", "c1", { ...site(), approve: async () => await card });
+    await svc.open("s_1", "c1");
+    const oldView = svc.request("s_1", "c1", refresh);
+    await Promise.resolve();
+    await svc.open("s_1", "c1");
+    release({ allowed: true });
+    await oldView;
+    const newView = await svc.request("s_1", "c1", rpc(2, "ping"));
+    expect(newView.messages.map((m) => (m as { id?: number }).id)).toEqual([7, 2]);
+    expect((await svc.request("s_1", "c1", rpc(3, "ping"))).messages).toHaveLength(1);
+  });
+  test("a page that loads again is sent its tool input and result again; two views of one binding don't cut each other off", async () => {
+    const svc = make();
+    svc.bind("s_1", "c1", site());
+    await svc.open("s_1", "c1");
+    await initialize(svc);
+    expect((await initialized(svc)).messages.map((m) => (m as { method?: string }).method)).toEqual(["ui/notifications/tool-input", "ui/notifications/tool-result"]);
+    await svc.open("s_1", "c1");
+    await initialize(svc);
+    expect((await initialized(svc)).messages.map((m) => (m as { method?: string }).method)).toEqual(["ui/notifications/tool-input", "ui/notifications/tool-result"]);
+    // Both views keep asking through the one bridge, and the waiting-call limit and message budget are the binding's.
+    expect((await svc.request("s_1", "c1", rpc(4, "ping"))).messages).toHaveLength(1);
+    expect((await svc.request("s_1", "c1", rpc(5, "ping"))).messages).toHaveLength(1);
+  });
+  test("only the binding's end closes the bridge: the session ending cancels a waiting call", async () => {
+    let seen: AbortSignal | undefined;
+    const svc = make();
+    svc.bind("s_1", "c1", { ...site(), approve: async (_n, _a, signal) => { seen = signal; return await new Promise(() => {}); } });
+    await svc.open("s_1", "c1");
+    void svc.request("s_1", "c1", refresh);
+    await Promise.resolve();
+    await svc.open("s_1", "c1");
+    expect(seen?.aborted).toBe(false);
+    svc.detach("s_1");
+    expect(seen?.aborted).toBe(true);
+  });
+});

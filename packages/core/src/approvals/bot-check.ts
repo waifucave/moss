@@ -444,6 +444,8 @@ export function botApprovalCheck(
      *  refuses it with no card and the message is what the bot is told; undefined is Ask, today's judging. Only a tool
      *  that is not one of the core's own is asked, and every check above it (fenced places, secrets, the sandbox flag)
      *  has already had its say. */
+    /** Where the one line goes when a page's call runs with no card (the daemon's log). */
+    log?: (line: string) => void;
     toolSetting?: (ctx: BotSessionContext, tool: string) => { setting: "allow" } | { setting: "deny"; message: string } | undefined;
     /** Whether the conversation already saw a web address (`SeenUrls`): a fetch of one is contained, while the turn's
      *  budget (`fetchBudget`) holds. */
@@ -689,7 +691,11 @@ export function botApprovalCheck(
     if (!builtin && !hostTools.has(tool)) {
       const set = opts.toolSetting?.(ctx, tool);
       if (set?.setting === "deny") return { behavior: "deny", message: set.message };
-      if (set?.setting === "allow") return { behavior: "allow", updatedInput: input };
+      if (set?.setting === "allow") {
+        // The person's own setting for this tool runs a PAGE's call with no card too; so it is never invisible, one plain line.
+        if (page !== undefined) opts.log?.(`mcp-apps: a page shown by ${plainOf(page.plugin).slice(0, 100)} ran ${plainOf(tool).slice(0, 200)} with no card (the tool is set to always allow in Settings)`);
+        return { behavior: "allow", updatedInput: input };
+      }
     }
     let decision: Awaited<ReturnType<typeof broker.request>> | undefined;
     try {
