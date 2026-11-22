@@ -12,6 +12,7 @@
 // holds the files (§9.1 "Approvals follow the files"). Paths are absolute and canonical on that computer; the real
 // implementation canonicalizes per OS (case, symlinks, junctions, 8.3 names, hard-link aliases), the fake is POSIX.
 import { isAnyPluginId, type Caller, type Os } from "@waifucave/moss-protocol";
+import { SECRET_FILE_SEGMENTS } from "../secrets/secret-files";
 import { isInside, type Unsubscribe } from "./common";
 
 /** The fenced set (§9.1), plus the files that hold secrets on Windows and Linux (§8.5). */
@@ -436,7 +437,7 @@ export const BOT_READ_DENIED: readonly (readonly string[])[] = [
   // The headless browser's profiles (cookies and saved sign-ins: #355's review).
   ["browser"],
   // The secrets file and its keys by name on every OS (macOS's are in the Keychain, but a file store may be there too).
-  ["secrets.enc"], ["secrets.key"], ["secrets.key.cred"],
+  ...SECRET_FILE_SEGMENTS,
   // The runtime's user settings, where an `env` block can carry API keys (the user edits it; legacy settings are
   // carried into it).
   ["sdk", "settings.json"],

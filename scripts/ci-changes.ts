@@ -67,7 +67,9 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
     // an agent backend's bare command on PATH (its .exe or .cmd on Windows)
     "packages/core/src/agents/backend.ts", "packages/core/src/agents/process/launch.ts", "packages/core/src/agents/tests/windows-path.test.ts",
     // the bundled agent plugins' manifests, whose bare commands that check is about
-    "plugins/moss/plugins/agent-*/moss.json"],
+    "plugins/moss/plugins/agent-*/moss.json",
+    // the secrets file on Windows (its key in Credential Manager, its ACL), and the store's door
+    "packages/core/src/secrets/", "packages/core/test/secrets/", "packages/core/src/auth/secret-store.ts", "packages/core/test/fence/secrets-file-fence.test.ts"],
   // the link sidecar (moss-link) built on every OS, and the core's link tests over it: the sidecar, the links, and
   // what they import (the devices and identity the handshake and pairing use, the contracts, the clock, the protocol)
   link: ["native/link/", "packages/core/src/links/", "packages/core/src/devices/", "packages/core/src/identity/",

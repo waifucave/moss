@@ -15,6 +15,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { fenceLayout } from "../../fence/layout";
+import { SECRET_FILE_NAMES } from "../../secrets/secret-files";
 import { escapeSandboxGlobPath } from "../host/run-home/settings";
 
 /** The generated config copies of a run folder or a staging root (the MCP fold with stdio servers' `env`, the
@@ -34,7 +35,7 @@ export function hostOsOf(platform: NodeJS.Platform = process.platform): Os {
 export function homeNamedDenials(home: string, os: Os = hostOsOf()): string[] {
   const out = new Set<string>();
   for (const paths of Object.values(fenceLayout(home, os))) for (const p of paths) if (strictlyInside(p, home)) out.add(resolve(p));
-  for (const name of ["secrets.enc", "secrets.key", "secrets.key.cred"]) out.add(join(resolve(home), name));
+  for (const name of SECRET_FILE_NAMES) out.add(join(resolve(home), name));
   return [...out].sort();
 }
 

@@ -9,6 +9,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, posix, resolve, sep, win32 } from "node:path";
 import { BOT_READ_DENIED } from "./contracts/fence";
+import { SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_SEALED_KEY_FILE_NAME } from "./secrets/secret-files";
 import { LEGACY_DEV_HOME_DIR, LEGACY_HOME_DIR, LEGACY_KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE_DEV } from "./legacy-names";
 
 /** The installed Clover app's home folder, and its dev profile's: the app this one replaces, kept running beside it. */
@@ -77,8 +78,8 @@ function kindOf(rel: readonly string[], os: "macos" | "linux" | "windows"): Othe
   if (first === "plugin-data") return "plugin-data";
   if (first === "browser") return "browser-profiles";
   // macOS keeps the secret store in the Keychain, so a file of that name there is named a credential store.
-  if (first === "secrets.enc") return os === "macos" ? "credential-store" : "secrets-file";
-  if (first === "secrets.key" || first === "secrets.key.cred") return os === "macos" ? "credential-store" : "key-file";
+  if (first === SECRETS_FILE_NAME) return os === "macos" ? "credential-store" : "secrets-file";
+  if (first === SECRETS_KEY_FILE_NAME || first === SECRETS_SEALED_KEY_FILE_NAME) return os === "macos" ? "credential-store" : "key-file";
   // The runtime's copies of a session's files, its caches and builds.
   return "transcripts";
 }

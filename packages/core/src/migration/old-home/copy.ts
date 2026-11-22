@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ruleDisplay, ruleKeyHash } from "../../approvals/strings";
+import { SECRET_FILE_NAMES } from "../../secrets/secret-files";
 import { writeJsonAtomic } from "../../sessions/atomic-file";
 import { carryFromOldRegistry, type RegistryCarry } from "./carry";
 import { leftBehindFrom, type LeftBehind } from "./left-behind";
@@ -80,7 +81,7 @@ export interface CopyReport {
 export const LEFT_OUT_TOP: readonly string[] = [
   "run", "logs", "cache", "bin", "login", "update", "install.json", "credentials", "devices", "plugins-state",
   // The old secret store's file and key files (Windows and Linux): its secrets never come over (ruling 7).
-  "secrets.enc", "secrets.key", "secrets.key.cred",
+  ...SECRET_FILE_NAMES,
 ];
 /** The one file of `runtimes/` and the marks of `migration/` that do travel. */
 const KEPT_UNDER: Readonly<Record<string, readonly string[]>> = {

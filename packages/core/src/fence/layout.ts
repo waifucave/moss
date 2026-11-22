@@ -37,6 +37,7 @@ import type { Os } from "@waifucave/moss-protocol";
 import { agentConfigEntries, autoRunEntries, type FencedKind, type RunLaterEntry, type RunLaterExtras } from "../contracts/fence";
 import { linkedRouterSupportsRunHome } from "../runtime-sdk/run-home-support";
 import { parseGitConfigWatched } from "./git-config";
+import { SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_SEALED_KEY_FILE_NAME } from "../secrets/secret-files";
 import { runLaterExtras } from "./run-later";
 
 export type LaidOutKind = Exclude<FencedKind, "dev-folders" | "bot-memory" | "login-start" | "browser-profiles" | "agent-installs">;
@@ -70,8 +71,8 @@ export function fenceLayout(mossHome: string, os: Os): Record<LaidOutKind, strin
     usage: [h("usage")],
     "sessions-runtime": [h("sessions-runtime")],
     "run-folder": [h("run")],
-    "secrets-file": offMac(h("secrets.enc")),
-    "key-file": offMac(h("secrets.key"), h("secrets.key.cred")),
+    "secrets-file": offMac(h(SECRETS_FILE_NAME)),
+    "key-file": offMac(h(SECRETS_KEY_FILE_NAME), h(SECRETS_SEALED_KEY_FILE_NAME)),
   };
 }
 

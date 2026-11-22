@@ -727,6 +727,14 @@ jobs:
         working-directory: packages/core
         run: bun test --timeout 30000 src/agents/tests/windows-path.test.ts
 
+      # The secrets file on Windows (lane SF, spec §9.1): the real Credential Manager holds the file's key (a throwaway
+      # service the test makes and removes), the file's ACL is read back from icacls, and the writers of several processes
+      # share the file's lock. Linux runs the same files in `core-linux`, on a private Secret Service.
+      - name: The secrets file, its key in Credential Manager (Windows)
+        if: runner.os == 'Windows'
+        working-directory: packages/core
+        run: bun test --timeout 60000 test/secrets test/fence/secrets-file-fence.test.ts
+
   tree-windows:
     name: tree · ${{ matrix.runner }}
     needs: changes

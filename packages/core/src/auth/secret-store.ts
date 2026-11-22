@@ -58,16 +58,32 @@ export function setDefaultSecretsBackendForTests(backend: Pick<typeof Bun.secret
   testBackend = backend;
 }
 
-/** The production backend: on macOS keychain-ffi pinned to the account's login keychain (`login-keychain.ts` says
+/** The raw OS secret store: on macOS keychain-ffi pinned to the account's login keychain (`login-keychain.ts` says
  *  why the search list `Bun.secrets` uses is not enough); elsewhere `Bun.secrets` (libsecret, the Credential
- *  Manager). Loaded only on macOS, so this module stays free of the FFI everywhere else. */
-export function defaultSecretsBackend(): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
+ *  Manager). Loaded only on macOS, so this module stays free of the FFI everywhere else. On Windows and Linux this is
+ *  NOT where MOSS keeps its secrets (`defaultSecretsBackend` is, the encrypted file): it holds only that file's key
+ *  (`secrets/moss-secret-store.ts`'s `bunVault`) and is what the one-time move out of the OS store reads. */
+export function osSecretsBackend(): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
   if (testBackend !== undefined) return testBackend;
   // Under a test (a test daemon too, by the variables it inherits): an isolated store only (test-isolation.ts). On
   // macOS the pinned backend below already opens the test keychain file, or throws.
   if (process.platform !== "darwin") return underTest() ? isolatedTestBackend(Bun.secrets) : Bun.secrets;
   const { pinnedSecretsBackend } = require("./login-keychain") as typeof import("./login-keychain");
   return pinnedSecretsBackend();
+}
+
+/** Where MOSS's named secrets (provider keys, sign-in tokens, the pairing tokens) are kept, the one door for every
+ *  reader and writer of them (`KeychainSecretStore`, the MCP sign-in store, the CLI): on macOS the login keychain
+ *  (`osSecretsBackend`); on Windows and Linux the encrypted secrets file in the MOSS home, its key in the OS store
+ *  (spec §9.1, §8.5; `secrets/file-backend.ts`). A process under a test never reaches the file of any home it did not
+ *  name: it gets the isolated store `osSecretsBackend` gives (so a test that builds a store with no home can never write
+ *  the real `~/.moss`); a test of the file backend builds it itself, on a temp home. `home` and `service` default to the
+ *  process's own (`MOSS_HOME`, the profile's service). */
+export function defaultSecretsBackend(o: { home?: string; service?: string } = {}): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
+  if (testBackend !== undefined || process.platform === "darwin" || underTest()) return osSecretsBackend();
+  const { sharedFileSecretsBackend } = require("../secrets/file-backend") as typeof import("../secrets/file-backend");
+  const home = o.home ?? (require("../moss-dir") as typeof import("../moss-dir")).resolveMossHome();
+  return sharedFileSecretsBackend({ home, service: o.service ?? keychainService(resolveMossProfile(), home) });
 }
 
 /** Production store: the OS's secret store, on macOS the login keychain by path (`defaultSecretsBackend`). */

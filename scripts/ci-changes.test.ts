@@ -184,6 +184,8 @@ describe("ci-changes", () => {
     expect(on(["packages/core/src/daemon.ts"])).not.toContain("tree");
     expect(on(["plugins/moss/plugins/agent-cursor/quirks.json"])).not.toContain("tree");
     expect(on(["packages/core/src/contracts/tests/secret-store.test.ts"])).not.toContain("tree");
+    // The secrets file's code and tests (lane SF) take the Windows leg, whose step reads the file's key from Credential Manager.
+    for (const f of ["packages/core/src/secrets/file-backend.ts", "packages/core/test/secrets/secrets-file-backend.test.ts", "packages/core/src/auth/secret-store.ts"]) expect(on([f]), f).toContain("tree");
   });
 
   test("the link job runs for the sidecar, the links, and the devices and identity under them; the sidecar's change builds the packages too", () => {
