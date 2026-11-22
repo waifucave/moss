@@ -243,7 +243,13 @@ export const APP_METHODS = {
   }),
   mcpAppRequest: defineMethod({
     name: "mcpApp.request", owner: "E", roles: ["app"], userOnly: true, windowOnly: true,
-    params: z.strictObject({ session: SessionId, callId: utf16(128, 1), message: z.unknown() }),
+    params: z.strictObject({
+      session: SessionId, callId: utf16(128, 1), message: z.unknown(),
+      /** Set by the app's main process alone, never taken from the page: the person's own press (a click or a key) landed in
+       *  THIS view just before, and this message is the one that press pays for. A page's `ui/message` and `ui/open-link` are
+       *  refused without it. */
+      pressed: z.boolean().optional(),
+    }),
     result: McpAppReply,
     doc: "One JSON-RPC message from the page's frame (the MCP Apps bridge): the engine answers it, or refuses it, under the approvals every tool call gets.",
   }),

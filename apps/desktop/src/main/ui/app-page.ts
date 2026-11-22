@@ -92,11 +92,31 @@ export function appNavigationAllowed(id: string, url: string): boolean {
   }
 }
 
-/** Whether the session may fetch from the network at all: only a page that declared a host can reach one. Everything but the
- *  app's own scheme, `data:` and `blob:` is cancelled otherwise (belt beside the policy). */
-export function appNetworkWanted(csp: string): boolean {
-  return /https:\/\//.test(csp);
+/** The origins the page's own policy names (its declared domains, `https://host[:port]`, a leading `*.` for subdomains): the
+ *  ONLY network the view's session reaches, a second belt beside the policy. None declared: none. */
+export function appAllowedOrigins(csp: string): string[] {
+  return [...new Set(csp.match(/https:\/\/[^\s;]+/g) ?? [])];
 }
-export function appRequestAllowed(url: string, networkWanted: boolean): boolean {
-  return /^(moss-app|data|blob):/.test(url) || (networkWanted && url.startsWith("https://"));
+/** `origins` are the ones `appAllowedOrigins` read from the policy. The app's own scheme, `data:` and `blob:` always pass; an `https:`
+ *  request passes only to a declared origin (host and port, a wildcard covering subdomains), never to "any https" once one is declared. */
+export function appRequestAllowed(url: string, origins: readonly string[]): boolean {
+  if (/^(moss-app|data|blob):/.test(url)) return true;
+  let u: URL;
+  try { u = new URL(url); } catch { return false; }
+  if (u.protocol !== "https:" || u.username !== "" || u.password !== "") return false;
+  const port = u.port === "" ? "443" : u.port;
+  for (const o of origins) {
+    let d: URL;
+    try { d = new URL(o.replace("://*.", "://")); } catch { continue; }
+    if ((d.port === "" ? "443" : d.port) !== port) continue;
+    if (o.startsWith("https://*.") ? u.hostname.endsWith(`.${d.hostname}`) : u.hostname === d.hostname) return true;
+  }
+  return false;
+}
+
+/** Who may place an MCP Apps page: only a part that draws a conversation, which is a part its OK let read one (spec §5.4:
+ *  `sessions.read` for code sessions, `conversation.read` for bots'), the same rule that lets it see the call whose page this is.
+ *  Enforced in main (`moss:app-view`): any other part's request changes nothing. */
+export function mayPlaceAppView(capabilities: ReadonlySet<string>): boolean {
+  return capabilities.has("sessions.read") || capabilities.has("conversation.read");
 }

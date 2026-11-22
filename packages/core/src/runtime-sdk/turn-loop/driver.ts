@@ -56,6 +56,7 @@ import { NO_HOOKS, turnOutcomeOf, type HookSession, type TurnHooks } from "./hoo
 import { harnessPrompt, mcpChangesSince, mcpFingerprint, type PromptComputer, type PromptMcpServer } from "./prompt";
 import { coreToolsServer, routedMcpServer, type BotMcpServer, type CallIds, type CoreToolDef, type McpRunner } from "./servers";
 import { formatTurnInput, TASK_NOTIFICATION_FRAME } from "./input";
+import { botPageCalls, type PageCallDoors } from "./page-calls";
 import { embeddedSessionOptions, fillProvider } from "./embedded-session";
 import { mergedHooks } from "./hook-merge";
 import { NAMESPACE_RE } from "@waifucave/moss-plugin-sdk";
@@ -693,81 +694,89 @@ export class BotSessionDriver implements SessionDriver {
     };
   }
 
+  /** A tool call's PreToolUse, in one place: a MODEL's call reaches it as the runtime's hook, and a PAGE's call (MCP Apps) is
+   *  made to meet this very function (`#appsFor`), so the page gets all the model's call gets: the pause and the lease, the
+   *  plugins' `tool.before` (deny, ask, a rewritten input), the file fence and the sandbox-escape rule. */
+  async #preTool(raw: unknown, toolUseId: string | undefined, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const input = raw as ToolUseInput;
+    const name = input.tool_name ?? "";
+    const callId = input.tool_use_id ?? toolUseId ?? "";
+    this.#dropsBefore(name, callId);
+    const stop = await this.#gate(signal);
+    if (stop !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stop } };
+    const r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
+    if (r.deny !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: r.deny } };
+    // The plugins' hooks take time: the pause may have come on, or the lease gone, meanwhile. A call that asks no
+    // one (a read-only tool) has no later check (`#gatedCanUseTool`), so the gate is asked again here.
+    const after = await this.#gate(signal);
+    if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
+    // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
+    const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
+    const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: changedInput ? r.input : input.tool_input });
+    if (fenced !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: fenced } };
+    // A command asking to leave the sandbox always reaches the approval check: the runtime handles a hook's ask
+    // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
+    // the plugins left it (a hook that strips the flag leaves a sandboxed call, which needs no card; one that
+    // adds it is caught here). Anything but exactly `true` is refused outright, never passed through unflagged.
+    const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input);
+    if (escape !== undefined) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: escape.decision,
+          permissionDecisionReason: escape.reason,
+          ...(changedInput ? { updatedInput: r.input as Record<string, unknown> } : {}),
+        },
+      };
+    }
+    // The call id the router gets, queued only for a call that goes on; a refusal after this drops it
+    // (`#gatedCanUseTool`, `PostToolUseFailure`), so the next call of the tool never takes a stale one (review S1).
+    if (name.startsWith("mcp__") && callId !== "") {
+      const q = this.#callIds.get(name) ?? [];
+      q.push(callId);
+      this.#callIds.set(name, q);
+    }
+    const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
+    if (r.ask !== undefined || changed) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          ...(r.ask !== undefined ? { permissionDecision: "ask" as const, permissionDecisionReason: r.ask } : {}),
+          ...(changed ? { updatedInput: r.input as Record<string, unknown> } : {}),
+        },
+      };
+    }
+    return {};
+  }
+
+  /** A tool call's PostToolUse, in one place (the model's and a page's, as `#preTool`): the plugins' `tool.after` and the observer. */
+  async #postTool(raw: unknown, toolUseId: string | undefined, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const input = raw as ToolUseInput;
+    const name = input.tool_name ?? "";
+    this.#dropCallId(name, input.tool_use_id ?? toolUseId);
+    this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
+    // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
+    const fenced = this.#fileFence === undefined ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
+    const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
+    try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
+    // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
+    // goes on in a new runtime turn.
+    const stop = this.#continueWith !== undefined ? { continue: false, stopReason: "MOSS continues this turn under a changed sandbox." } : {};
+    if (result === input.tool_response) return stop;
+    return { ...stop, hookSpecificOutput: { hookEventName: "PostToolUse", ...(name.startsWith("mcp__") ? { updatedMCPToolOutput: result } : { updatedToolOutput: result }) } };
+  }
+
   /** The tool hooks: the pause and the lease first, then the plugins' `tool.before`; `tool.after` after the call. */
   #toolHooks(): Partial<Record<"PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit", HookCallbackMatcher[]>> {
     const pre: HookCallbackMatcher = {
       // A hook that breaks must never wave the call through.
       failClosed: true,
       timeout: TOOL_HOOK_TIMEOUT_S,
-      hooks: [async (raw, toolUseId, { signal }) => {
-        const input = raw as ToolUseInput;
-        const name = input.tool_name ?? "";
-        const callId = input.tool_use_id ?? toolUseId ?? "";
-        this.#dropsBefore(name, callId);
-        const stop = await this.#gate(signal);
-        if (stop !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stop } };
-        const r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
-        if (r.deny !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: r.deny } };
-        // The plugins' hooks take time: the pause may have come on, or the lease gone, meanwhile. A call that asks no
-        // one (a read-only tool) has no later check (`#gatedCanUseTool`), so the gate is asked again here.
-        const after = await this.#gate(signal);
-        if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
-        // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
-        const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-        const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: changedInput ? r.input : input.tool_input });
-        if (fenced !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: fenced } };
-        // A command asking to leave the sandbox always reaches the approval check: the runtime handles a hook's ask
-        // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
-        // the plugins left it (a hook that strips the flag leaves a sandboxed call, which needs no card; one that
-        // adds it is caught here). Anything but exactly `true` is refused outright, never passed through unflagged.
-        const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input);
-        if (escape !== undefined) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: escape.decision,
-              permissionDecisionReason: escape.reason,
-              ...(changedInput ? { updatedInput: r.input as Record<string, unknown> } : {}),
-            },
-          };
-        }
-        // The call id the router gets, queued only for a call that goes on; a refusal after this drops it
-        // (`#gatedCanUseTool`, `PostToolUseFailure`), so the next call of the tool never takes a stale one (review S1).
-        if (name.startsWith("mcp__") && callId !== "") {
-          const q = this.#callIds.get(name) ?? [];
-          q.push(callId);
-          this.#callIds.set(name, q);
-        }
-        const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-        if (r.ask !== undefined || changed) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              ...(r.ask !== undefined ? { permissionDecision: "ask" as const, permissionDecisionReason: r.ask } : {}),
-              ...(changed ? { updatedInput: r.input as Record<string, unknown> } : {}),
-            },
-          };
-        }
-        return {};
-      }],
+      hooks: [(raw, toolUseId, { signal }) => this.#preTool(raw, toolUseId, signal)],
     };
     const post: HookCallbackMatcher = {
       timeout: 600,
-      hooks: [async (raw, toolUseId, { signal }) => {
-        const input = raw as ToolUseInput;
-        const name = input.tool_name ?? "";
-        this.#dropCallId(name, input.tool_use_id ?? toolUseId);
-        this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
-        // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
-        const fenced = this.#fileFence === undefined ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
-        const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
-        try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
-        // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
-        // goes on in a new runtime turn.
-        const stop = this.#continueWith !== undefined ? { continue: false, stopReason: "MOSS continues this turn under a changed sandbox." } : {};
-        if (result === input.tool_response) return stop;
-        return { ...stop, hookSpecificOutput: { hookEventName: "PostToolUse", ...(name.startsWith("mcp__") ? { updatedMCPToolOutput: result } : { updatedToolOutput: result }) } };
-      }],
+      hooks: [(raw, toolUseId, { signal }) => this.#postTool(raw, toolUseId, signal)],
     };
     const failed: HookCallbackMatcher = {
       hooks: [async (raw, toolUseId) => {
@@ -954,6 +963,13 @@ export class BotSessionDriver implements SessionDriver {
     const ui = this.#d.mcp?.ui;
     const runner = this.#d.mcp?.runner;
     if (svc === undefined || ui === undefined || runner === undefined) return undefined;
+    // The driver's own pieces: a page's call goes through the very functions a model's call does (`page-calls.ts`).
+    const doors: PageCallDoors = {
+      preTool: (raw, id, signal) => this.#preTool(raw, id, signal),
+      postTool: (raw, id, signal) => this.#postTool(raw, id, signal),
+      dropCallId: (name, id) => this.#dropCallId(name, id),
+      canUse: (pageCtx) => this.#gatedCanUseTool(this.#d.canUseTool(pageCtx, origin)),
+    };
     return {
       drop: (callId) => apps.drop(callId),
       put: (callId, call) => {
@@ -963,27 +979,7 @@ export class BotSessionDriver implements SessionDriver {
           pluginId: server.plugin, server: server.server, tool: call.tool, resourceUri, input: call.input, result: call.result,
           listTools: async () => ui.tools(server.server, call.tool).map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { _meta: { ui: t.ui } }) })),
           readResource: (uri) => ui.read(server.server, call.tool, uri, ctx.caller),
-          callTool: async (name, args, signal) => {
-            const r = await runner.run(server.server, name, args, { session: ctx.sessionId, as: ctx.caller, callId: `mcp-app-${crypto.randomUUID()}`, signal });
-            return { content: Array.isArray(r.result.content) ? r.result.content : [], ...(r.result.isError === true ? { isError: true } : {}) };
-          },
-          // The door a model's call to this tool meets, in the same order: the pause and the lease, the plugins' `tool.before`
-          // hooks, then the approval check (level, the tool setting, saved answers, the card).
-          approve: async (name, args, signal, cardId) => {
-            const served = `mcp__${server.server}__${name}`;
-            try {
-              const stop = await this.#gate(signal);
-              if (stop !== undefined) return { allowed: false, message: stop };
-              const before = await this.#hooks.toolBefore(this.#hookSession, { name: served, callId: cardId }, args, signal);
-              if (before.deny !== undefined) return { allowed: false, message: `${served} was refused by a plugin's hook: ${before.deny}` };
-              const verdict = await this.#gatedCanUseTool(this.#d.canUseTool(ctx, origin))(served, args, { signal, toolUseID: cardId, suggestions: [], mcpServer: { name: server.server, configName: server.server } } as unknown as Parameters<CanUseTool>[2]);
-              // No decision at all is no leave: only an allow runs the call.
-              if (verdict?.behavior === "allow") return { allowed: true };
-              return { allowed: false, message: (verdict !== null && verdict.behavior === "deny" && verdict.message) || `${served} was not run.` };
-            } catch {
-              return { allowed: false, message: `${served} was not run: the approval couldn't be asked.` };
-            }
-          },
+          ...botPageCalls({ ctx, server, runner, doors }),
         };
         apps.put(callId, svc.bind(ctx.sessionId, callId, site));
       },

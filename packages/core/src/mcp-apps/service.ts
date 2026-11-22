@@ -34,9 +34,9 @@ export interface AppSite {
   /** `resources/read` on the same connection that serves the tool. */
   readResource(uri: string): Promise<readonly UiResourceContent[]>;
   /** Runs a tool of the server (called only after `approve` allowed it). */
-  callTool(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<{ content: unknown[]; isError?: boolean }>;
+  callTool(name: string, args: Record<string, unknown>, signal: AbortSignal, ticket?: unknown): Promise<{ content: unknown[]; isError?: boolean }>;
   /** The session's own approval for that tool call: what a model's call gets, with `callId` as the card's id. */
-  approve(name: string, args: Record<string, unknown>, signal: AbortSignal, callId: string): Promise<{ allowed: true } | { allowed: false; message: string }>;
+  approve(name: string, args: Record<string, unknown>, signal: AbortSignal, callId: string): Promise<{ allowed: true; input?: Record<string, unknown>; ticket?: unknown } | { allowed: false; message: string }>;
 }
 
 export interface McpAppsDeps {
@@ -50,7 +50,7 @@ export interface McpAppsDeps {
 const BINDINGS_MAX = 64;
 const READ_MS = 15_000;
 
-interface Binding { site: AppSite; bridge?: AppBridge; approvals: number }
+interface Binding { site: AppSite; bridge?: AppBridge; approvals: number; budget: { sent: number } }
 
 /** What a driver keeps between a call's result and its projected `tool_result`: the page's address, taken once. */
 export class ToolApps {
@@ -80,7 +80,7 @@ export class McpAppsService {
     if (mine === undefined) this.#sessions.set(sessionId, (mine = new Map()));
     mine.get(callId)?.bridge?.close();
     mine.delete(callId);
-    mine.set(callId, { site, approvals: 0 });
+    mine.set(callId, { site, approvals: 0, budget: { sent: 0 } });
     while (mine.size > BINDINGS_MAX) {
       const oldest = mine.keys().next().value!;
       mine.get(oldest)?.bridge?.close();
@@ -117,10 +117,10 @@ export class McpAppsService {
   }
 
   /** `mcpApp.request`: one message from the page's frame. */
-  async request(sessionId: string, callId: string, message: unknown): Promise<McpAppReply> {
+  async request(sessionId: string, callId: string, message: unknown, pressed = false): Promise<McpAppReply> {
     const b = this.#binding(sessionId, callId);
     if (b.bridge === undefined) throw new McpAppRefusal("not_here", "this page isn't open");
-    return await b.bridge.handle(message);
+    return await b.bridge.handle(message, pressed);
   }
 
   #hostFor(sessionId: string, callId: string, b: Binding, tool: BridgeTool): BridgeHost {
@@ -129,13 +129,15 @@ export class McpAppsService {
       hostInfo: { name: "MOSS Code", version: this.deps.version },
       tool, input: site.input, result: site.result,
       listTools: () => site.listTools(),
-      callTool: (name, args, signal) => site.callTool(name, args, signal),
+      callTool: (name, args, signal, ticket) => site.callTool(name, args, signal, ticket),
       readResource: (uri) => site.readResource(uri),
       // A card of its own (an id no model call has), so it is placed and answered as any card is.
       approve: (name, args, signal) => site.approve(name, args, signal, `app-${callId}-${++b.approvals}`),
       message: async (text) => {
         await this.deps.deliver(sessionId, { pluginId: site.pluginId, callId, text });
       },
+      // Counted by the binding, so closing and opening the same page again never earns a fresh allowance.
+      budget: b.budget,
       log: this.deps.log,
     };
   }

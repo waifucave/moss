@@ -4,11 +4,11 @@
 // What a page may ask (the extension's list, 2026-01-26, cut to what the spec lets it have):
 //   ui/initialize, ui/notifications/initialized, ui/notifications/size-changed, ui/request-display-mode, ping,
 //   notifications/message                  answered here, touching nothing
-//   ui/open-link                           an http(s) address, for the person's browser (the app opens it, on a press)
-//   ui/message                             words for the conversation, never the user's (the host labels them)
+//   ui/open-link                           an http(s) address, for the person's browser, only inside the person's press in the view
+//   ui/message                             words for the conversation, never the user's (the host labels them), only inside the person's press
 //   tools/call                             a tool of ITS OWN server whose `_meta.ui.visibility` has `app`, through the
 //                                          SAME approval a model's call to it gets (`host.approve`): a refusal is the page's answer
-//   resources/read                         a resource of its own server, bounded
+//   resources/read                         a ui:// resource of its own server, bounded
 // Everything else, `ui/update-model-context` included, is refused with "method not found": the page is told, nothing runs.
 //
 // What a page can never do, by construction: name a server (the binding is the host's, made when the result was
@@ -32,12 +32,14 @@ export interface BridgeHost {
   result: { content: unknown[]; isError?: boolean };
   /** The server's own tool listing (fresh or cached; never another server's). */
   listTools(): Promise<readonly BridgeTool[]>;
-  callTool(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<{ content: unknown[]; isError?: boolean }>;
+  callTool(name: string, args: Record<string, unknown>, signal: AbortSignal, ticket?: unknown): Promise<{ content: unknown[]; isError?: boolean }>;
   readResource(uri: string): Promise<readonly UiResourceContent[]>;
   /** The session's own approval for this tool call (what a model's call gets): allowed, or the words it was refused with. */
-  approve(toolName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: true } | { allowed: false; message: string }>;
+  approve(toolName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: true; input?: Record<string, unknown>; ticket?: unknown } | { allowed: false; message: string }>;
   /** `ui/message`: put these words in the conversation as outside content, labelled. */
   message(text: string): Promise<void>;
+  /** How many messages this PAGE (its binding: every opening of it, not one bridge) has sent; the bridge counts into it. */
+  budget?: { sent: number };
   log?(line: string): void;
 }
 
@@ -67,7 +69,7 @@ function jsonLength(v: unknown): number | undefined {
 export class AppBridge {
   #state: "new" | "initializing" | "ready" = "new";
   #sent = false;
-  #messages = 0;
+  #own = { sent: 0 };
   #calling = false;
   #size: { width: number; height: number } | undefined;
   #open = new AbortController();
@@ -81,7 +83,7 @@ export class AppBridge {
 
   /** One message from the page's frame, as received (anything at all). Never throws: whatever the page sent, the answer
    *  is a reply the app can post back, possibly empty. */
-  async handle(raw: unknown): Promise<McpAppReply> {
+  async handle(raw: unknown, pressed = false): Promise<McpAppReply> {
     const out: McpAppReply = { messages: [] };
     const length = jsonLength(raw);
     if (!isObject(raw) || length === undefined || length > MCP_APP_MESSAGE_MAX) return out;
@@ -96,7 +98,7 @@ export class AppBridge {
     const method = raw["method"];
     const params = (raw["params"] ?? {}) as Record<string, unknown>;
     try {
-      await this.#route(method, params, id, out, answer);
+      await this.#route(method, params, id, out, answer, pressed);
     } catch (err) {
       const refusal = err instanceof McpAppRefusal ? err : undefined;
       if (id !== undefined) answer(fail(id, refusal?.code === "bad_message" ? RPC.invalidParams : RPC.refused, refusal?.message ?? "the host couldn't do that"));
@@ -106,7 +108,7 @@ export class AppBridge {
     return out;
   }
 
-  async #route(method: string, params: Record<string, unknown>, id: Id | undefined, out: McpAppReply, answer: (m: Record<string, unknown>) => void): Promise<void> {
+  async #route(method: string, params: Record<string, unknown>, id: Id | undefined, out: McpAppReply, answer: (m: Record<string, unknown>) => void, pressed: boolean): Promise<void> {
     const needId = (): Id => {
       if (id === undefined) throw new McpAppRefusal("bad_message", `${method} is a request`);
       return id;
@@ -156,6 +158,8 @@ export class AppBridge {
         return;
       case "ui/open-link": {
         const rid = needId();
+        // THE PRESS RULE: `pressed` is the app's own word that the person's press landed in THIS view just before (never from the page).
+        if (!pressed) throw new McpAppRefusal("refused_by_user", "a page may open a link only right after you press in it");
         const url = params["url"];
         let ok_ = false;
         if (typeof url === "string" && url.length <= OPEN_LINK_MAX) {
@@ -175,11 +179,13 @@ export class AppBridge {
       }
       case "ui/message": {
         const rid = needId();
+        if (!pressed) throw new McpAppRefusal("refused_by_user", "a page may send a message only right after you press in it");
         const content = params["content"];
         const text = isObject(content) && content["type"] === "text" && typeof content["text"] === "string" ? content["text"] : undefined;
         if (params["role"] !== "user" || text === undefined || text.trim() === "" || text.length > TEXT_MESSAGE_MAX) throw new McpAppRefusal("bad_message", "a message is { role: \"user\", content: { type: \"text\", text } } of at most 10,000 characters");
-        if (this.#messages >= MESSAGES_PER_PAGE_MAX) throw new McpAppRefusal("refused_by_user", "this page has sent as many messages as it may");
-        this.#messages++;
+        const budget = this.host.budget ?? this.#own;
+        if (budget.sent >= MESSAGES_PER_PAGE_MAX) throw new McpAppRefusal("refused_by_user", "this page has sent as many messages as it may");
+        budget.sent++;
         await this.host.message(text);
         answer(ok(rid, {}));
         return;
@@ -193,6 +199,8 @@ export class AppBridge {
         const rid = needId();
         const uri = params["uri"];
         if (typeof uri !== "string" || uri.length === 0 || uri.length > UI_URI_MAX) throw new McpAppRefusal("bad_message", "resources/read takes a uri");
+        // A page reads only `ui://` resources (pages) of ITS OWN server (the host's door is that server's); never a file or any other scheme.
+        if (!/^ui:\/\/[!-~]+$/.test(uri)) throw new McpAppRefusal("bad_message", "a page may read only ui:// resources of its own server");
         const contents = await this.host.readResource(uri);
         const result = { contents: contents.map((c) => ({ uri: c.uri, ...(c.mimeType !== undefined ? { mimeType: c.mimeType } : {}), ...(c.text !== undefined ? { text: c.text } : {}), ...(c.blobBase64 !== undefined ? { blob: c.blobBase64 } : {}) })) };
         const size = jsonLength(result);
@@ -229,7 +237,8 @@ export class AppBridge {
       }
       if (signal.aborted) throw new McpAppRefusal("failed", "the page was closed");
       const timeout = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS);
-      const result = await this.host.callTool(name, args, AbortSignal.any([signal, timeout]));
+      // On the input the session's hooks and approval left (a hook may have rewritten it), never the page's own words once changed.
+      const result = await this.host.callTool(name, verdict.input ?? args, AbortSignal.any([signal, timeout]), verdict.ticket);
       const len = jsonLength(result);
       if (len === undefined || len > RESULT_MAX) throw new McpAppRefusal("too_large", "the tool's answer is bigger than a page may take");
       answer(ok(rid, result));

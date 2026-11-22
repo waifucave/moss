@@ -1,6 +1,6 @@
 // MCP Apps view documents (`ui/app-page.ts`): the host page, its relay, and what a view may navigate to or fetch.
 import { describe, expect, test } from "bun:test";
-import { HOST_CSP, HOST_SCRIPT, appNavigationAllowed, appNetworkWanted, appRequestAllowed, hostDocument, pageHeaders } from "../src/main/ui/app-page";
+import { HOST_CSP, HOST_SCRIPT, appNavigationAllowed, appAllowedOrigins, appRequestAllowed, mayPlaceAppView, hostDocument, pageHeaders } from "../src/main/ui/app-page";
 
 describe("the host page", () => {
   test("holds the page in a sandboxed frame with no same-origin right, and nothing else", () => {
@@ -45,16 +45,34 @@ describe("what a view may navigate to", () => {
 describe("what a view's session may fetch", () => {
   test("a page that declared no host reaches no network", () => {
     const csp = "default-src 'none'; connect-src 'none'; frame-src 'none'";
-    expect(appNetworkWanted(csp)).toBe(false);
-    expect(appRequestAllowed("https://example.com/x", false)).toBe(false);
-    expect(appRequestAllowed("http://example.com/x", false)).toBe(false);
-    expect(appRequestAllowed("file:///etc/passwd", false)).toBe(false);
-    expect(appRequestAllowed("moss-app://abc/view", false)).toBe(true);
-    expect(appRequestAllowed("data:text/plain,hi", false)).toBe(true);
+    const none = appAllowedOrigins(csp);
+    expect(none).toEqual([]);
+    expect(appRequestAllowed("https://example.com/x", none)).toBe(false);
+    expect(appRequestAllowed("http://example.com/x", none)).toBe(false);
+    expect(appRequestAllowed("file:///etc/passwd", none)).toBe(false);
+    expect(appRequestAllowed("moss-app://abc/view", none)).toBe(true);
+    expect(appRequestAllowed("data:text/plain,hi", none)).toBe(true);
   });
-  test("a page that declared a host may reach https only (the policy narrows it to that host)", () => {
-    expect(appNetworkWanted("connect-src https://api.example.com")).toBe(true);
-    expect(appRequestAllowed("https://api.example.com/x", true)).toBe(true);
-    expect(appRequestAllowed("http://api.example.com/x", true)).toBe(false);
+  test("a page that declared a host reaches only that origin, never any https", () => {
+    const o = appAllowedOrigins("connect-src https://api.example.com https://*.cdn.example.net https://x.example.org:8443");
+    expect(appRequestAllowed("https://api.example.com/x", o)).toBe(true);
+    expect(appRequestAllowed("http://api.example.com/x", o)).toBe(false);
+    expect(appRequestAllowed("https://other.example.com/x", o)).toBe(false);
+    expect(appRequestAllowed("https://evil.com/?https://api.example.com", o)).toBe(false);
+    expect(appRequestAllowed("https://api.example.com.evil.com/", o)).toBe(false);
+    expect(appRequestAllowed("https://a.cdn.example.net/x", o)).toBe(true);
+    expect(appRequestAllowed("https://cdn.example.net/x", o)).toBe(false);
+    expect(appRequestAllowed("https://x.example.org/x", o)).toBe(false);
+    expect(appRequestAllowed("https://x.example.org:8443/x", o)).toBe(true);
+    expect(appRequestAllowed("https://u:p@api.example.com/x", o)).toBe(false);
+  });
+});
+
+describe("who may place an app view", () => {
+  test("only a part that reads sessions or bots' conversations", () => {
+    expect(mayPlaceAppView(new Set(["sessions.read"]))).toBe(true);
+    expect(mayPlaceAppView(new Set(["conversation.read"]))).toBe(true);
+    expect(mayPlaceAppView(new Set(["browser", "user.send", "approvals"]))).toBe(false);
+    expect(mayPlaceAppView(new Set())).toBe(false);
   });
 });

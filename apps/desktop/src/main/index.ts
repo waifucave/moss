@@ -3114,12 +3114,13 @@ const webViews = new WebViews((windowId) => {
     if (client === undefined || client === null) return undefined;
     return {
       open: (session, callId) => client.request("mcpApp.open", { session, callId }, 30_000),
-      request: (session, callId, message) => client.request("mcpApp.request", { session, callId, message }, 90_000),
+      request: (session, callId, message, pressed) => client.request("mcpApp.request", { session, callId, message, pressed }, 90_000),
     };
   },
-  // A page's link goes to the person's browser (http and https only; the engine checked, this does again).
+  // A page's link goes the way every other address the app is asked to open goes (`show`'s url kind: the headless
+  // "would open" line, http and https only). The engine accepted it only inside the person's press in that view.
   openLink: (url) => {
-    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    void show({ kind: "url", url }).catch((err: unknown) => log(`mcp-apps: a link didn't open (${why(err)})`));
   },
 });
 

@@ -22,6 +22,7 @@ import { cleanReport, hearsShell, providedNow, routeShell } from "./shell-calls"
 import type { UiPlugin } from "./model";
 import type { IpcStats } from "./ipc-stats";
 import type { AppNote } from "./web-views";
+import { mayPlaceAppView } from "./app-page";
 
 /** Registers the app's schemes as standard and secure origins, before the app is ready. Service workers and
  *  `bypassCSP` are never granted. */
@@ -696,6 +697,12 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     const callId = str(a.callId, 128);
     if (mount === undefined || session === undefined || callId === undefined) throw new LayerError("bad request");
     runtime.partOf(s.frame, mount);
+    // Only a part that draws a conversation (one its OK let read sessions or bots' conversations) may place a page: any other
+    // part that learns a (session, call) can't open one, and so can't replace the real page's bridge under it.
+    if (!mayPlaceAppView(runtime.capabilitiesOf(s.frame, mount))) {
+      log(`layers: ${runtime.partOf(s.frame, mount)} may not place an app view (it needs a conversation or session read capability)`);
+      return { state: "hidden" };
+    }
     if (hooks.appFrame === undefined) return { state: "hidden" };
     const key = `${mount}|${session}|${callId}`;
     const seq = (appSeq.get(key) ?? 0) + 1;

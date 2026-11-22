@@ -71,15 +71,27 @@ export interface UiCsp {
 
 export const NO_CSP: UiCsp = { connectDomains: [], resourceDomains: [], frameDomains: [], baseUriDomains: [] };
 
-/** One declared domain as a CSP source: an `https://host[:port]` origin (a leading `*.` wildcard host allowed), nothing
- *  else. No path, query, credentials, other scheme, bare `*`, quote, semicolon or space: a value that would let a
- *  declaration write more policy than a host is refused. */
+/** Names a person's own machine or network answers to, whatever the address behind them: never a page's to reach. */
+const LOCAL_NAME = /(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|corp|private|home\.arpa)$/;
+
+/** One declared domain as a CSP source: an `https://host[:port]` origin (a leading `*.` host wildcard allowed, covering the
+ *  subdomains of a name of at least two labels), nothing else. No path, query, credentials, other scheme, bare `*`, quote,
+ *  semicolon or space: a value that would let a declaration write more policy than a host is refused. THE PAGE'S REACH
+ *  STOPS AT THE PUBLIC INTERNET: an address (any all-numeric label, so every dotted IPv4 form), a name for this machine or
+ *  a private network (`localhost`, `.local`, `.internal`, …) and a wildcard on a bare top-level name (`*.com`) are refused. */
 export function cspSourceOf(v: unknown): string | undefined {
   if (typeof v !== "string" || v.length === 0 || v.length > 253) return undefined;
   const m = /^https:\/\/((?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)(?::([0-9]{1,5}))?$/i.exec(v);
   if (m === null) return undefined;
   if (m[2] !== undefined && (Number(m[2]) < 1 || Number(m[2]) > 65_535)) return undefined;
-  return `https://${m[1]!.toLowerCase()}${m[2] === undefined ? "" : `:${Number(m[2])}`}`;
+  const host = m[1]!.toLowerCase();
+  const wildcard = host.startsWith("*.");
+  const labels = (wildcard ? host.slice(2) : host).split(".");
+  // The last label of a real name has a letter (a top-level name is never all digits): an all-numeric one is an address.
+  if (/^[0-9]+$/.test(labels[labels.length - 1]!)) return undefined;
+  if (LOCAL_NAME.test(labels.join("."))) return undefined;
+  // A wildcard covers one name's subdomains and no more: the pattern above already needs the base to have two labels (`*.com` never matches).
+  return `https://${host}${m[2] === undefined ? "" : `:${Number(m[2])}`}`;
 }
 
 /** `_meta.ui.csp` as the server declared it. Absent: no network. Declared but malformed (not an object, a kind that is not
