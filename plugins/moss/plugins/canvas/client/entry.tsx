@@ -160,9 +160,11 @@ export interface CanvasBarProps {
 export function CanvasBar({ props }: { props: CanvasBarProps }) {
   const link = props.link ?? barLink;
   const bar = useBar(link);
+  // Nothing until the page is there to act (it stopped, or hasn't drawn yet): a + that did nothing would be a dead end.
+  if (!bar.ready) return <div className="cv-barline" />;
   return (
     <div className="cv-barline">
-      <span className="cv-summary" role="status">{bar.ready ? S.summary(bar.sessions, bar.running, bar.waiting) : ""}</span>
+      <span className="cv-summary" role="status">{S.summary(bar.sessions, bar.running, bar.waiting)}</span>
       {bar.folded > 0 && (
         <button type="button" className="cv-folded" aria-pressed={bar.showEnded} onClick={() => link.toggleEnded()}>
           {bar.showEnded ? S.hideEnded : S.endedCount(bar.folded)}

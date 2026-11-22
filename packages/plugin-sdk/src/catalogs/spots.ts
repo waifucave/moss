@@ -86,7 +86,7 @@ export const SPOTS: readonly SpotInfo[] = [
     fields: z.object({ title: Text, icon: Path, opens: utf16(128, 1) }), props: none,
     doc: "App buttons in the sidebar; `opens` names the `main` and `panel` key it shows." },
   { name: "main", shape: "keyed", declaredBy: "shell", botsOffer: false, keys: MAIN_ROUTES, fields: none,
-    props: z.object({ route: z.string(), params: z.record(z.string(), z.string()) }),
+    props: z.object({ route: z.string(), params: z.record(z.string(), z.string()), barHeight: z.number().optional() }),
     doc: "The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: \"start\" })` shows. A plugin's entry keyed `start` fills it; with none, the shell shows its own new-session page (the reusable `NewSession`, `layout=\"panel\"`). Each entry also gets `navigate`, as every `main` entry does." },
   { name: "page.bar", shape: "keyed", declaredBy: "shell", botsOffer: false, keys: MAIN_ROUTES, fields: titledOpt,
     props: z.object({ route: z.string(), params: z.record(z.string(), z.string()), barHeight: z.number() }),

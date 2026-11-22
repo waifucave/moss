@@ -46,7 +46,7 @@ export const CANVAS_START_STEP = "the start page: on a fresh home it is the bund
 export const CANVAS_START_SESSION_STEP = "a start through the app's door from the start page's button: a model, an effort, a recent folder (a token, never a path) and a first message; the window opens the new session's tab, the engine says it runs on that model and effort, the first message is the user's own, and agent.recent then offers that agent, model, effort and folder";
 export const CANVAS_CORNER_STEP = "a session tab's top corner holds a plugin's control (the `session.corner` spot, given the session and its kind): pressing it returns the window to the start page";
 export const CANVAS_OPEN_IN_STEP = "\"Open in MOSS\" from a part of MOSS Code with MOSS not running: the engine is asked to start MOSS (it starts nothing itself in the run: a marker, answered by the run starting its own MOSS from source), and MOSS opens the bot's conversation";
-export const CANVAS_PLUS_STEP = "the canvas is MOSS Code's start page, and its + creates a session with what it preselects (the last start's agent, model, effort and folder): the engine says the session runs on them, and the window opens its tab";
+export const CANVAS_PLUS_STEP = "the canvas is MOSS Code's start page under one frosted bar (the window's: the canvas's live line in the title's place, a plain + named New session at its right end, no zoom buttons or Fit), and its + creates a session with what it preselects (the last start's agent, model, effort and folder): the engine says the session runs on them, and the window opens its tab";
 export const CANVAS_BACK_STEP = "a session tab's corner control (the canvas's) returns the window to the canvas with that session's block in view";
 export const CANVAS_LINE_STEP = "a message between two code sessions shows on the line joining their blocks: the message's light on that line and both blocks' rings reacting, drawn when its session_link is heard; the line is still there after the canvas is closed and opened again (from the engine's session.links)";
 export const CANVAS_BLOCK_STEP = "after a real drag of one block, one press on another opens it, and Enter on a focused block opens it; a block's composer sends as the user (a user_message in that session), and a bot's block opens \"Open in MOSS\" (MOSS shows that bot's conversation)";
@@ -504,6 +504,8 @@ async function blockRow(s: Ctx, cp: CpState): Promise<string> {
 export const GLASS_MIN = 110;
 /** And the main column none of it (it paints its own surface). */
 export const MAIN_MAX = 8;
+/** With nothing painted, the sidebar's alpha where the capture keeps it: at most this (a 70% tint is 179; 40% is 102, 35% 89). */
+export const GLASS_ALPHA_MAX = 150;
 
 /** The magenta in one pixel: the mean of R−G and B−G. */
 export const magentaOf = (p: readonly number[]): number => ((p[0]! - p[1]!) + (p[2]! - p[1]!)) / 2;
@@ -542,6 +544,22 @@ async function glassRow(s: Ctx, cp: CpState): Promise<string> {
   const rootSession = await root.session();
   const notes: string[] = [];
   try {
+    // First with nothing painted: where the capture keeps the window's clear backing (alpha), the sidebar is see-through
+    // (an opaque layer anywhere under it, in either scheme, shows as alpha 255) and the main column opaque.
+    for (const scheme of ["light", "dark"] as const) {
+      writeFileSync(s.appearance, scheme);
+      await canvas.waitFor(`the window in ${scheme}`, `matchMedia('(prefers-color-scheme: dark)').matches === ${scheme === "dark"}`, 10_000);
+      await sleep(600);
+      const box = await canvas.eval<{ sidebar: { x: number; y: number; w: number; h: number }; main: { x: number; y: number; w: number; h: number }; dpr: number }>(`(() => { const r = (q) => { const b = document.querySelector(q).getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; }; return { sidebar: r('.cl-window__sidebar'), main: r('.cl-window__main'), dpr: devicePixelRatio }; })()`);
+      const img = readPng(Buffer.from((await s.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, rootSession)).data, "base64"));
+      if (img.bpp !== 4) { notes.push(`${scheme} unpainted: the capture keeps no alpha here`); continue; }
+      const alpha = (px0: number, py0: number) => img.rows[Math.round(py0 * box.dpr)]![Math.round(px0 * box.dpr) * 4 + 3]!;
+      const side = alpha(box.sidebar.x + 3, box.sidebar.y + box.sidebar.h * 0.6);
+      const main = alpha(box.main.x + box.main.w - 6, box.main.y + box.main.h * 0.5);
+      if (side > GLASS_ALPHA_MAX) x.fail(`in ${scheme}, with nothing painted, the sidebar is ${side === 255 ? "opaque" : "too nearly opaque"} (alpha ${side}, at most ${GLASS_ALPHA_MAX}): something under it hides the window's material`);
+      if (main !== 255) x.fail(`in ${scheme}, the main column isn't opaque (alpha ${main})`);
+      notes.push(`${scheme} unpainted: sidebar alpha ${side}, main column ${main}`);
+    }
     await root.eval("(() => { document.body.style.setProperty('background', '#FF00FF', 'important'); return true; })()");
     for (const scheme of ["light", "dark"] as const) {
       writeFileSync(s.appearance, scheme);

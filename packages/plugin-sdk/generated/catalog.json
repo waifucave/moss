@@ -899,6 +899,9 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "barHeight": {
+            "type": "number"
           }
         },
         "required": [

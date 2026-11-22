@@ -178,6 +178,11 @@ button.cl-window__title:hover {
   padding-top: 0;
 }
 
+/* Unless that page stopped: the shell's own page in its place starts below the bar, as it always does. */
+.cl-window[data-under-bar] .cl-window__content:has([data-start-stopped]) {
+  padding-top: var(--moss-plugin-moss-bar-height);
+}
+
 /* The session column scrolls under the bar too: its cards start 12 px below it. */
 .cl-window__side {
   box-sizing: border-box;

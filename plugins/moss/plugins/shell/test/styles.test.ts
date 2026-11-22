@@ -75,6 +75,12 @@ describe("the frame's material and its bar", () => {
     expect(decl(".cl-window[data-translucent] .cl-window__sidebar", "background")).toBe("var(--moss-plugin-moss-sidebar-tint)");
   });
 
+  test("a page that fills the bar (page.bar) runs up under it, unless it stopped: the shell's own page then starts below the bar", () => {
+    expect(decl(".cl-window[data-under-bar] .cl-window__content", "padding-top")).toBe("0");
+    expect(decl(".cl-window[data-under-bar] .cl-window__content:has([data-start-stopped])", "padding-top")).toBe("var(--moss-plugin-moss-bar-height)");
+    expect(decl(".cl-window__page-bar + .cl-window__note", "flex")).toBe("0 1 auto");
+  });
+
   test("the bar is translucent and blurs what passes under it; the bot tab tells the conversation its height", () => {
     expect(decl(".cl-window__bar", "background")).toBe("var(--moss-plugin-moss-bar-tint)");
     expect(decl(".cl-window__bar", "backdrop-filter")).toContain("var(--moss-plugin-moss-bar-blur)");

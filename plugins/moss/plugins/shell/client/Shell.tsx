@@ -157,8 +157,11 @@ export function Shell({ props }: EntryProps<ShellProps>) {
   // A page's own line and controls on the bar (`page.bar`, keyed by route as `main` is): only from the plugin whose `main`
   // entry the window shows for this route. That page runs up under the bar, told the bar's height.
   const pageRoute = shown?.route ?? "start";
-  const pageOwner = useSpotEntries("main", pageRoute).entries[0];
-  const barOwn = useSpotEntries("page.bar", pageRoute).entries.find((e) => pageOwner !== undefined && e.pluginId === pageOwner.pluginId);
+  // Only once both have answered for this route: a list held over from the last route is not this page's.
+  const pageEntries = useSpotEntries("main", pageRoute);
+  const barEntries = useSpotEntries("page.bar", pageRoute);
+  const pageOwner = pageEntries.loaded ? pageEntries.entries[0] : undefined;
+  const barOwn = barEntries.loaded ? barEntries.entries.find((e) => pageOwner !== undefined && e.pluginId === pageOwner.pluginId) : undefined;
   const [barMeasured, setBarMeasured] = useState<number | undefined>();
   const barHeight = barMeasured ?? 45;
   const underBar = barOwn !== undefined ? { barHeight } : {};

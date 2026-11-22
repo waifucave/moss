@@ -299,6 +299,12 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
       expect(document.querySelector(".cl-new-session")).toBeNull();
       fireEvent.click(document.querySelector('[data-stub="break-start"]')!);
       await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
+      cleanup();
+      // With its own line on the bar (`page.bar`): the shell's own page still takes its place (the stylesheet starts it below
+      // the bar again, styles.test.ts), and the line stays the plugin's to draw (the canvas's draws nothing once its page is gone).
+      await mount({ route: { route: "start", params: {} } }, [entry("canvas", "main", "StartThrows", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed" })], SESSIONS, undefined, {}, { "agent.backends": backends, "computer.list": () => ({ computers: [] }) });
+      await waitFor(() => expect(document.querySelector("[data-start-stopped] .cl-new-session")).not.toBeNull());
+      expect(document.querySelector(".cl-window[data-under-bar]")).not.toBeNull();
     } finally {
       console.error = quiet;
     }
@@ -330,6 +336,13 @@ describe("the start page and a session tab's corner (spec revision 20, §9.5)", 
     expect(title()).toBe("New session");
     expect(stubText("main:start")).not.toContain("barHeight");
     expect(document.querySelector("[data-under-bar]")).toBeNull();
+    cleanup();
+    // A session's tab keeps its own bar: its title, and the conversation under the bar's frost as it always was (the
+    // canvas's line is the start page's only).
+    await mount({ route: { route: "agent", params: { session: "code-1" } } }, [entry("canvas", "main", "StartPage", { key: "start", source: "installed" }), entry("canvas", "page.bar", "PageBar", { key: "start", source: "installed" })]);
+    expect(stubText("page.bar:start")).toBeNull();
+    expect(document.querySelector("[data-under-bar]")).toBeNull();
+    expect(title()).not.toBeNull();
   });
 
   test("a window that kept the route `new` (before the canvas) opens the start page", async () => {
