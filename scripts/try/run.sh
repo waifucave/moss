@@ -27,6 +27,9 @@
 #   copies go: for re-running packaged units against it (scripts/try/watch.sh "<dir>/MOSS Code.app" <checkout> <run
 #   folder> --units <ids> --moss-app "<dir>/MOSS.app") without building again. Whoever keeps it unregisters and
 #   deletes it when done: a test-marked app must not stay on a Mac that gets the real one installed.
+#   --build-only is the quick install's build (the owner, 2026-11-22: small look and text changes need no two-hour try):
+#   1 and 2 only (the signed real build and its static checks); no test twin, no packaged run, no upgrade pair. What it
+#   does not prove is said in its summary; GitHub's run of the same commit from source is the tests' judge.
 #   6. the per-step table (each run's status per step; a step the script can't drive on a packaged app is shown NOT
 #      RUN ON PACKAGED with its reason), the upgrade pair's two tables, and how long each stage took, printed and kept
 #      in <out>/SUMMARY.txt.
@@ -40,9 +43,9 @@
 # carry the time, so a try's minutes can be read off its log. The out folder must be new or empty.
 set -u
 ARGV=("$@")
-usage() { echo "usage: scripts/try/run.sh <commit> <out folder> [--runs N] [--cold-start N] [--upgrade-from <previous try's commit>] [--twin-only] [--keep-twin <dir>] [--renders <dir>] [--work <dir>]" >&2; exit 2; }
+usage() { echo "usage: scripts/try/run.sh <commit> <out folder> [--runs N] [--cold-start N] [--upgrade-from <previous try's commit>] [--twin-only] [--build-only] [--keep-twin <dir>] [--renders <dir>] [--work <dir>]" >&2; exit 2; }
 [ $# -ge 2 ] || usage
-COMMIT="$1"; OUT="$2"; shift 2; RUNS=3; COLD=5; WORK=""; UPFROM=""; TWINONLY=false; RENDERS=""; KEEPTWIN=""
+COMMIT="$1"; OUT="$2"; shift 2; RUNS=3; COLD=5; WORK=""; UPFROM=""; TWINONLY=false; BUILDONLY=false; RENDERS=""; KEEPTWIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs) RUNS="${2:-}"; shift 2 ;;
@@ -51,11 +54,17 @@ while [ $# -gt 0 ]; do
     --work) WORK="${2:-}"; shift 2 ;;
     --renders) RENDERS="${2:-}"; [ -n "$RENDERS" ] || usage; shift 2 ;;
     --twin-only) TWINONLY=true; shift ;;
+    --build-only) BUILDONLY=true; shift ;;
     --keep-twin) KEEPTWIN="${2:-}"; [ -n "$KEEPTWIN" ] || usage; shift 2 ;;
     *) usage ;;
   esac
 done
 [[ "$RUNS" =~ ^[0-9]+$ && "$COLD" =~ ^[0-9]+$ ]] || usage
+if [ "$BUILDONLY" = true ]; then
+  [ "$TWINONLY" = false ] || usage
+  # Nothing after the real build and its checks: no twin, no runs, no upgrade pair.
+  RUNS=0; COLD=0; UPFROM=""; KEEPTWIN=""
+fi
 # One acceptance or try run on this machine at a time: the whole try holds scripts/heavy's exclusive lock, as a packaged
 # run (ordinary heavy jobs wait while it runs; what it starts through heavy runs under the same hold).
 [ -n "${MOSS_HEAVY_EXCLUSIVE:-}" ] || exec "$(cd "$(dirname "$0")/.." && pwd -P)/heavy" --exclusive --packaged "$0" "${ARGV[@]}"
@@ -140,10 +149,14 @@ else
 fi
 
 # ── 3. the test twin ─────────────────────────────────────────────────────────────────────────────────────────────
+if [ "$BUILDONLY" = false ]; then
 timed "twin build (test-marked, same commit)" build "$OUT/build-test-twin.log" --test-build || die "the test twin's build failed (build-test-twin.log)"
 mkdir -p "$WORK/twin" && ditto "$DESKTOP/out/test-build/mac-arm64/MOSS Code.app" "$WORK/twin/MOSS Code.app"
 ditto "$DESKTOP/out/test-build/mac-arm64/MOSS.app" "$WORK/twin/MOSS.app" || die "the test twin has no MOSS.app (one release builds both apps)"
 rm -rf "$DESKTOP/out/test-build" "$MOSSOUT/test-build"; unregister_builds
+else
+  echo "try: --build-only: the signed build and its checks only (no test twin, no packaged run, no upgrade pair)"
+fi
 if [ -n "$KEEPTWIN" ]; then
   mkdir -p "$KEEPTWIN" && ditto "$WORK/twin/MOSS Code.app" "$KEEPTWIN/MOSS Code.app" && ditto "$WORK/twin/MOSS.app" "$KEEPTWIN/MOSS.app" || die "the twin pair couldn't be kept in $KEEPTWIN"
   echo "try: the test twin pair kept in $KEEPTWIN (unregister and delete it when done)"
@@ -231,6 +244,7 @@ LEFT=$(( $(registered_under "$DESKTOP/out") + $(registered_under "$MOSSOUT") + $
   else
     echo "try $COMMIT, --twin-only: no real build, no verify"
   fi
+  [ "$BUILDONLY" = true ] && echo "--build-only: NOT run on this build: the test twin, the packaged acceptance, the upgrade pair. Proven here: it builds, it is signed, its static checks."
   echo
   # The upgrade's two halves are their own tables (the old build's full run, the upgrade steps): their rows differ.
   COLS2=(); for c in ${COLS[@]+"${COLS[@]}"}; do case "$c" in upgrade-*) ;; *) COLS2+=("$c") ;; esac; done

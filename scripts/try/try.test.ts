@@ -42,6 +42,10 @@ describe("scripts/try", () => {
     expect(run).toContain("--sign --no-notarize");
     // --twin-only skips the release-shaped build and its checks (the twins and their runs only).
     expect(run).toMatch(/--twin-only\) TWINONLY=true/);
+    // --build-only is the quick install's build: the signed build and its checks, then nothing (no twin, no runs, no upgrade pair), and its summary says what was not run.
+    expect(run).toMatch(/--build-only\) BUILDONLY=true/);
+    expect(run).toMatch(/RUNS=0; COLD=0; UPFROM=""; KEEPTWIN=""/);
+    expect(run).toMatch(/--build-only: NOT run on this build: the test twin, the packaged acceptance, the upgrade pair/);
     expect(run).toMatch(/if \[ "\$TWINONLY" = false \]; then\n  timed "real build/);
     // --runs 0 runs none (BSD seq counts down: `seq 1 0` is "1 0").
     expect(run).not.toMatch(/seq 1 "\$RUNS"/);
