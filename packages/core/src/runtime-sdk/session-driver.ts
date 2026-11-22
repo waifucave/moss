@@ -60,6 +60,7 @@ import { NO_DEFAULT_MODEL_CODE, NO_DEFAULT_MODEL_REASON } from "../default-model
 import { CLAUDE_FIRST_PARTY_PROVIDER_IDS, effortRefusalFor, effortToSpendForRole, ownProviderFor, permittedProviders, pinsFor, providerBaseUrlFor, sdkAllowRules, sdkDenyRules, mossOptionsFromSettings, type Settings } from "../settings";
 import { d30DefaultModel } from "./advisor-reviewer";
 import { canUseToolFor, type BridgedApprovalRequest } from "./approval-bridge";
+import type { McpAppsService } from "../mcp-apps/service";
 import { elicitationHandlerFor, elicitationTurnTracker, type ElicitationBroker } from "./url-elicitation";
 import type { WinterRuntimeSdk, SessionMode } from "./create";
 import { clearSession as clearDiffSession } from "./diff-attach";
@@ -84,6 +85,18 @@ import { loadUserAgentDefinitions, loadProjectAgentDefinitions, mergeAgentDefini
 
 /** The per-session, in-memory tool_result side channel: `fileDiff` (`siteIcons` now ride the runtime's own block, statelessly). */
 function clearSession(sessionId: string): void { clearDiffSession(sessionId); }
+
+/** The call ids of the `tool_result` blocks of a `user` frame (nothing for any other message). */
+function toolResultIds(msg: unknown): string[] {
+  const m = msg as { type?: unknown; message?: { content?: unknown } } | null;
+  if (m === null || typeof m !== "object" || m.type !== "user" || !Array.isArray(m.message?.content)) return [];
+  const ids: string[] = [];
+  for (const b of m.message!.content as unknown[]) {
+    const r = b as { type?: unknown; tool_use_id?: unknown } | null;
+    if (r !== null && typeof r === "object" && r.type === "tool_result" && typeof r.tool_use_id === "string") ids.push(r.tool_use_id);
+  }
+  return ids;
+}
 
 /**
  * Daemon settings surface batch 3: the ONE merge the incarnation builder calls — `<home>/agents/*.md`
@@ -514,6 +527,9 @@ export interface MossLegDeps {
    * Absent: none.
    */
   pluginMcpServers?: () => Record<string, McpServerConfig>;
+  /** MCP Apps (spec §5.5, `mcp-apps/`): which tool results come with a page and the bridge a page's calls go through, under
+   *  this session's own approvals. Absent: no result shows a page. */
+  mcpApps?: McpAppsService;
   /**
    * WS-21 (spec §4.3): the daemon's `TrustStore.isTrusted`. An approval card offers "Allow … in this
    * project" only for a trusted project (the answer is saved to its `.moss/settings.local.json`, a tier
@@ -939,6 +955,19 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       ...(deps.planBridge === undefined ? {} : { planBridge: deps.planBridge }),
       ...(deps.connectors === undefined ? {} : { connectors: deps.connectors }),
     });
+    // MCP Apps (`mcp-apps/`): a page's call to its own server's tool asks THIS bridge, the one a model's call to that tool
+    // asks (its level, the tool setting, the saved answers, the card), under a call id of its own. Allowed or refused in
+    // the bridge's own words; a refusal is the page's answer.
+    const appReg = deps.mcpApps?.attach(sessionId, async ({ toolName, server, input, callId, signal }) => {
+      try {
+        const verdict = await canUseTool(toolName, input, { signal, toolUseID: callId, suggestions: [], mcpServer: { name: server, configName: server } } as unknown as Parameters<typeof canUseTool>[2]);
+        // No decision at all is no leave: only an allow runs the call.
+        if (verdict?.behavior === "allow") return { allowed: true };
+        return { allowed: false, message: (verdict !== null && verdict.behavior === "deny" && verdict.message) || `${toolName} was not run.` };
+      } catch {
+        return { allowed: false, message: `${toolName} was not run: the approval couldn't be asked.` };
+      }
+    });
     // WS-27: an MCP server's URL-mode elicitation — a card, like a connector prompt (`url-elicitation.ts`).
     const elicitations = deps.elicitations;
     // The main turn in progress, so a turn's end cancels only the cards raised during it (fed in `append`).
@@ -1141,6 +1170,8 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       // (`MossSession.mcpServerNames`).
       const configuredMcp = runHomeApplied ? { ...(deps.pluginMcpServers?.() ?? {}), ...(deps.extraMcpServers?.(capSession) ?? {}) } : extra;
       inc.noteMcpServers?.(Object.keys(configuredMcp));
+      // MCP Apps: the same servers, as a copy the daemon may connect to read a tool's page (`mcp-apps/service.ts`).
+      appReg?.setServers(configuredMcp);
       // P8d-8 (D30), computed ONCE (review Minor fix): `runtimes.advisorModel` when the user set
       // one, else MOSS's own D30 default for this session's model family.
       //
@@ -1385,6 +1416,8 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
         // C2 (lane C, 2026-09-22): a card the child abandoned (an interrupt's `[interrupted]` result)
         // is withdrawn before that result lands — this SDK never cancels the pending `canUseTool`.
         onToolResults: (callIds) => { for (const callId of callIds) canUseTool.withdrawPending(callId); },
+        // MCP Apps: a plugin tool's call and its result, so a result whose tool names a page carries its address.
+        ...(appReg === undefined ? {} : { onToolUse: (callId: string, name: string, input: unknown) => appReg.onToolUse(callId, name, input), takeToolApp: (callId: string, result: { output: string; isError: boolean }) => appReg.takeApp(callId, result) }),
         ...(deps.onRateLimit === undefined ? {} : { onRateLimit: (info: Record<string, unknown>) => deps.onRateLimit!(sessionId, info) }),
         ...(deps.onTurnUsage === undefined ? {} : { onTurnUsage: (u: { sourceId: string; rows: import("../projector/terminal").TurnModelUsageRow[] }) => deps.onTurnUsage!(sessionId, u) }),
         checkpoint: checkpoints,
@@ -1481,6 +1514,8 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       spawnRefusal: () => (shuttingDown ? shutdownRefusal() : undefined),
       endedWhileOpeningRefusal: () => new MossLegRefusal(SESSION_REPLACED, "this session's runtime was replaced while it was starting; send again"),
       projector: projectorFor,
+      // MCP Apps: a result waits (bounded) for its tool's listing, so the page's address rides the very event.
+      ...(appReg === undefined ? {} : { beforeProject: (msg: unknown) => appReg.settle(toolResultIds(msg)) }),
       append,
       broadcast: (event) => { deps.hub.broadcastTransient(sessionId, event); },
       messaging: {

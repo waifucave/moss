@@ -2,6 +2,148 @@
   "area": "app",
   "owner": "E (with C, D, G, M)",
   "methods": {
+    "mcpApp.open": {
+      "doc": "The page an MCP tool's result names (its `ui://` resource, read from its own server), with the content policy its declared domains allow, for the window's isolated view.",
+      "owner": "E",
+      "direction": "to-daemon",
+      "roles": [
+        "app"
+      ],
+      "userOnly": true,
+      "windowOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "session",
+          "callId"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "csp": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "html": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "prefersBorder": {
+            "type": "boolean"
+          },
+          "maxHeight": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1200
+          }
+        },
+        "required": [
+          "csp",
+          "html",
+          "maxHeight"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "mcpApp.request": {
+      "doc": "One JSON-RPC message from the page's frame (the MCP Apps bridge): the engine answers it, or refuses it, under the approvals every tool call gets.",
+      "owner": "E",
+      "direction": "to-daemon",
+      "roles": [
+        "app"
+      ],
+      "userOnly": true,
+      "windowOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "message": {}
+        },
+        "required": [
+          "session",
+          "callId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "messages": {
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "size": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1200
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          },
+          "openLink": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "additionalProperties": false
+      }
+    },
     "app.open": {
       "doc": "The user's own navigation of this computer's app from a terminal: shows a bot's tab, a plugin's page, Settings, Plugins, Archive or the coding side in the main window by the route its own sidebar uses, waits until it shows, and says where the window is and its frames; never shows, raises, focuses, moves or resizes a window, and never clicks or types in a page. A local user's CLI only.",
       "owner": "D",

@@ -80,6 +80,8 @@
       "main.get",
       "main.handOver",
       "main.set",
+      "mcpApp.open",
+      "mcpApp.request",
       "memory.list",
       "memory.read",
       "models.list",

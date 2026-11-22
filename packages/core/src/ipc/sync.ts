@@ -545,7 +545,7 @@ export function syncPush(ctx: SyncPushContext, p: SyncPushParams): SyncPushResul
     // A plugin tool's `tool_call.displayTitle` and `tool_result.display` (`runtime-sdk/tool-display.ts`) are the
     // daemon's own stamps from a plugin's listing and result: a pushed one is stripped the same way, never stored.
     const stamps = event.type === "tool_result"
-      ? [...(event.siteIcons !== undefined ? ["siteIcons"] : []), ...(event.display !== undefined ? ["display"] : [])]
+      ? [...(event.siteIcons !== undefined ? ["siteIcons"] : []), ...(event.display !== undefined ? ["display"] : []), ...(event.app !== undefined ? ["app"] : [])]
       : event.type === "tool_call" && event.displayTitle !== undefined ? ["displayTitle"] : [];
     if (stamps.length > 0) entries[i] = stripDaemonStamps(entries[i]!, stamps);
     // The thinking pill (2026-10-05): a `thinking_delta` is TRANSIENT — it is never in a log, so a pushed

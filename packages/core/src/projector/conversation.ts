@@ -1,6 +1,6 @@
 import { takeFileDiff } from "../runtime-sdk/diff-attach";
 import { siteIconsForResult } from "../runtime-sdk/site-icons";
-import type { ToolDisplay } from "@waifucave/moss-protocol";
+import type { ToolApp, ToolDisplay } from "@waifucave/moss-protocol";
 import type { ProjectedEvent, ProtocolSdkMessage } from "./types";
 
 /**
@@ -202,7 +202,10 @@ export function isErrorResult(block: ContentBlock): boolean {
  * (`diff-attach.ts`'s own doc), so a replayed `tool_result` never re-attaches a diff — the summary
  * rides the event exactly once, the same turn it was produced on. `siteIcons` follows the same rule.
  */
-export function toolResults(frame: UserFrame, sessionId: string, threadId: string, takeDisplay?: (callId: string) => ToolDisplay | undefined): ProjectedEvent[] {
+export function toolResults(
+  frame: UserFrame, sessionId: string, threadId: string, takeDisplay?: (callId: string) => ToolDisplay | undefined,
+  takeApp?: (callId: string, result: { output: string; isError: boolean }) => ToolApp | undefined,
+): ProjectedEvent[] {
   const out: ProjectedEvent[] = [];
   for (const b of frame.message.content) {
     if (b.type !== "tool_result") continue;
@@ -218,8 +221,12 @@ export function toolResults(frame: UserFrame, sessionId: string, threadId: strin
     // (a failed call's is taken too, so it never waits for a later result, and dropped).
     const taken = takeDisplay?.(callId);
     const display = isError ? undefined : taken;
+    const output = toolResultOutput(b);
+    // MCP Apps: the page the call's tool names (`ProjectorDeps.takeToolApp`), taken once, only for a success.
+    const app = takeApp?.(callId, { output, isError });
     out.push({
-      type: "tool_result", sessionId, threadId, callId, output: toolResultOutput(b), isError,
+      type: "tool_result", sessionId, threadId, callId, output, isError,
+      ...(app === undefined ? {} : { app }),
       ...(fileDiff === undefined ? {} : { fileDiff }),
       ...(siteIcons === undefined ? {} : { siteIcons }),
       ...(display === undefined ? {} : { display }),

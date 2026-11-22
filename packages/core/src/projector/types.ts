@@ -5,7 +5,7 @@
 // `user` and `stream_event` frames cannot occur, while the runtime yields both. Import the real one.
 import type { ProtocolSdkMessage } from "@waifucave/clover-agent-sdk";
 import type { RuntimeKind } from "../runtime-sdk/host";
-import type { NewSessionEvent, SessionEvent, ToolDisplay } from "@waifucave/moss-protocol";
+import type { NewSessionEvent, SessionEvent, ToolApp, ToolDisplay } from "@waifucave/moss-protocol";
 import type { DrivableSessionMode, RunnableSessionMode } from "../sessions/session-mode";
 
 export type { ProtocolSdkMessage };
@@ -153,6 +153,11 @@ export interface ProjectorDeps {
   /** What a plugin tool's result showed, taken once by call id (`ToolDisplays.take`): stamped as
    *  `tool_result.display` on a success. Absent → none. */
   takeToolDisplay?: (callId: string) => ToolDisplay | undefined;
+  /** MCP Apps (`mcp-apps/`): an assistant's `tool_use` block, by call id, the runtime's tool name and its input. */
+  onToolUse?: (callId: string, runtimeName: string, input: unknown) => void;
+  /** MCP Apps: the page a result's tool names, taken once by call id as the result is projected: stamped as
+   *  `tool_result.app` on a success. Absent → none. */
+  takeToolApp?: (callId: string, result: { output: string; isError: boolean }) => ToolApp | undefined;
   /**
    * The usage service's Codex plan fallback (`usage/codex-windows.ts`): a `rate_limit_event` frame's `rate_limit_info` (a plan window's
    * status, kind, utilization and reset), handed over as it arrives — the frame itself stays observed, never persisted.

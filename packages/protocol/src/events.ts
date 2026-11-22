@@ -227,6 +227,11 @@ export const ToolDisplay = z.object({
 }).strict();
 export type ToolDisplay = z.infer<typeof ToolDisplay>;
 
+/** `ToolResultEvent.app` (MCP Apps, spec §5.5): the `ui://` page the tool names, which shows where the result shows. */
+export const TOOL_APP_URI_MAX = 2048;
+export const ToolApp = z.object({ resourceUri: utf16(TOOL_APP_URI_MAX, 6).regex(/^ui:\/\/[!-~]+$/) }).strict();
+export type ToolApp = z.infer<typeof ToolApp>;
+
 export const ToolResultEvent = ThreadBase.extend({
   type: z.literal("tool_result"), callId: z.string().min(1), output: z.string(), isError: z.boolean(),
   /** Set only by the daemon engine for edit/write/notebook_edit; chat-mode engines never produce it. */
@@ -239,6 +244,11 @@ export const ToolResultEvent = ThreadBase.extend({
   /** Set only by the daemon, for a plugin (MCP) tool's successful result whose `structuredContent` gives a valid
    *  `ToolDisplay`; absent otherwise. `sync.push` strips it; the phone's view withholds it. */
   display: ToolDisplay.optional(),
+  /** Set only by the daemon, for a successful result of an MCP tool that names a `ui://` page (`_meta.ui.resourceUri`),
+   *  and only when the engine holds the page for this call (`mcp-apps/`): the page's address, nothing of it. The app
+   *  asks the engine for the page (`mcpApp.open`); an address in a log proves nothing. `sync.push` strips it; the
+   *  phone's view withholds it. */
+  app: ToolApp.optional(),
 });
 /** Opaque provider reasoning item (Responses API), captured at output_item.done and replayed
  *  verbatim into later requests (CC/Codex parity — see the history-parity spec). itemJson is

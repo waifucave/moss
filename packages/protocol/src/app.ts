@@ -208,7 +208,45 @@ export const UiPickResult = z.object({
 });
 export type UiPickResult = z.infer<typeof UiPickResult>;
 
+// MCP Apps (spec §5.5; the extension `io.modelcontextprotocol/ui`, 2026-01-26): the app's main process asks the engine
+// for the page a tool's result names and relays what the page's frame says; the engine decides everything (`mcp-apps/`).
+/** The page's HTML, in UTF-16 units: a bigger resource is refused when read. */
+export const MCP_APP_HTML_MAX = 1_000_000;
+/** One JSON-RPC message from a page, in UTF-16 units once serialised; bigger is refused by the app and the engine. */
+export const MCP_APP_MESSAGE_MAX = 1_000_000;
+/** How tall a page's view may grow, in CSS pixels. */
+export const MCP_APP_HEIGHT_MAX = 1_200;
+export const McpAppOpen = z.strictObject({
+  /** The `Content-Security-Policy` header value for the page's document, built from its declared domains. */
+  csp: utf16(8_000, 1),
+  html: utf16(MCP_APP_HTML_MAX, 1),
+  prefersBorder: z.boolean().optional(),
+  maxHeight: z.number().int().positive().max(MCP_APP_HEIGHT_MAX),
+});
+export type McpAppOpen = z.infer<typeof McpAppOpen>;
+export const McpAppReply = z.strictObject({
+  /** JSON-RPC messages for the page, in order: the answer to its request, then any the host sends at this moment. */
+  messages: z.array(z.record(z.string(), z.unknown())).max(8),
+  /** The page's latest size, from its `ui/notifications/size-changed` (height clamped to `MCP_APP_HEIGHT_MAX`). */
+  size: z.strictObject({ width: z.number().int().nonnegative().max(10_000), height: z.number().int().nonnegative().max(MCP_APP_HEIGHT_MAX) }).optional(),
+  /** An address the page asked to open (`ui/open-link`, http or https): the app opens it for the user, once per press in the page. */
+  openLink: utf16(2_048, 1).optional(),
+});
+export type McpAppReply = z.infer<typeof McpAppReply>;
+
 export const APP_METHODS = {
+  mcpAppOpen: defineMethod({
+    name: "mcpApp.open", owner: "E", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({ session: SessionId, callId: utf16(128, 1) }),
+    result: McpAppOpen,
+    doc: "The page an MCP tool's result names (its `ui://` resource, read from its own server), with the content policy its declared domains allow, for the window's isolated view.",
+  }),
+  mcpAppRequest: defineMethod({
+    name: "mcpApp.request", owner: "E", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({ session: SessionId, callId: utf16(128, 1), message: z.unknown() }),
+    result: McpAppReply,
+    doc: "One JSON-RPC message from the page's frame (the MCP Apps bridge): the engine answers it, or refuses it, under the approvals every tool call gets.",
+  }),
   appOpen: defineMethod({
     name: "app.open", owner: "D", roles: ["cli"], userOnly: true,
     params: AppOpenParams, result: AppOpenResult,

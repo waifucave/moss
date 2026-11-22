@@ -228,8 +228,9 @@ export function phoneViewOf(event: SessionEvent, log?: () => readonly SessionEve
     const { displayTitle: _withheld, ...rest } = event;
     return rest;
   }
-  if (event.type === "tool_result" && event.display !== undefined) {
-    const { display: _withheld, ...rest } = event;
+  if (event.type === "tool_result" && (event.display !== undefined || event.app !== undefined)) {
+    // An MCP Apps page's address (`app`) is likewise withheld: the phone draws no page, it shows the result's text.
+    const { display: _withheld, app: _page, ...rest } = event;
     return rest;
   }
   if (event.type === "thinking_block") return event.text.length === 0 ? event : { ...event, text: "" };
