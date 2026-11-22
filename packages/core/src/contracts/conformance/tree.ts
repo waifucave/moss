@@ -185,7 +185,10 @@ export function runTreeConformance(make: TreeFactory, opts: { pending?: readonly
       const err = await rejection(tree.write("home/Laptop1/.moss/settings/settings.json", utf8("{}"), { as: BOT }));
       expect(isContractError(err, "fenced")).toBe(true);
       expect((err as { detail: unknown }).detail).toEqual({ computer: "Laptop1", reason: "settings" });
-      expect(isContractError(await rejection(tree.read("home/Laptop1/.moss/secrets.enc", { as: BOT })), "fenced")).toBe(true);
+      // The secrets file, both key files, and the previous copy and the note (lane SF): a bot reads none of them through the tree.
+      for (const name of ["secrets.enc", "secrets.key", "secrets.key.cred", "credentials/secrets.enc.bak", "credentials/secrets-file.made"]) {
+        expect([name, isContractError(await rejection(tree.read(`home/Laptop1/.moss/${name}`, { as: BOT })), "fenced")]).toEqual([name, true]);
+      }
       await tree.write("home/Laptop1/.moss/settings/settings.json", utf8("{}"), { as: USER });
       // The installed plugins folder is fenced too (#197's check 2), and the rest of the MOSS home with it (the home
       // default-deny), but for the bot's own ways in: its own routines are its to write, another bot's aren't.
@@ -228,7 +231,9 @@ export function runTreeConformance(make: TreeFactory, opts: { pending?: readonly
 
       // Always fenced: a peer never passes as the user, whatever its level.
       expect(await code(tree.write("home/Laptop1/.moss/settings/settings.json", utf8("{}"), { as: PEER, level: "automatic" }))).toBe("fenced");
-      expect(await code(tree.read("home/Laptop1/.moss/secrets.enc", { as: PEER }))).toBe("fenced");
+      for (const name of ["secrets.enc", "secrets.key", "secrets.key.cred", "credentials/secrets.enc.bak", "credentials/secrets-file.made"]) {
+        expect([name, await code(tree.read(`home/Laptop1/.moss/${name}`, { as: PEER }))]).toEqual([name, "fenced"]);
+      }
       // Reads are never asked about; a change says its level.
       expect(await code(tree.stat("home/Studio/a.txt", { as: PEER }))).toBe("ok");
       expect(await code(tree.write("home/Laptop1/a.txt", utf8("a"), { as: PEER }))).toBe("invalid");

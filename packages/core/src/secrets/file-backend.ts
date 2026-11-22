@@ -16,7 +16,8 @@ import { join } from "node:path";
 import { ContractError } from "../contracts/common";
 import { MIGRATION_B_SECRET_NAMES } from "../auth/legacy-secret-names";
 import { osSecretsBackend } from "../auth/secret-store";
-import { chooseFileStore, EncryptedFileValues, type CredsRunner, type SystemdCreds, type ValueBackend, type Vault } from "./moss-secret-store";
+import { chooseFileStore, EncryptedFileValues, type BatchValues, type CredsRunner, type SystemdCreds, type Vault } from "./moss-secret-store";
+import type { PrivateFileStep } from "./private-file";
 import { SECRETS_FILE_NAME } from "./secret-files";
 
 export type SecretsBackend = Pick<typeof Bun.secrets, "get" | "set" | "delete">;
@@ -44,35 +45,52 @@ const OS_STORE_PROBE_MS = 5_000;
 
 export type MoveResult = "moved" | "nothing" | "unreachable" | "partial" | "done-before";
 
-/** The one-time move of what the OS store holds into the file. Idempotent and safe to stop anywhere: an item is copied,
- *  read back from the file, and only then deleted from the OS store; one the file already holds (a newer value, written
- *  since) is left as the file has it and its OS copy deleted only when equal. The note that it is done is written last,
- *  and only when every name was read: with the OS store unreachable (no Secret Service on a headless computer) nothing is
- *  written and the next start tries again. */
-export async function moveOsStoreItems(o: { values: ValueBackend; from: SecretsBackend; service: string; names: readonly string[]; log?: (line: string) => void }): Promise<MoveResult> {
+/** The one-time move of what the OS store holds into the file. Idempotent and safe to stop anywhere (a power cut too):
+ *   1. every known name is read from the OS store;
+ *   2. in ONE hold of the file's lock (a daemon and a CLI starting together cannot each write what the other's read made
+ *      stale), the file is read and every item it does not hold yet is added, a value the file already has being the
+ *      newer one and kept; the file is written whole, durably (flushed, renamed, the rename flushed: `writePrivateFile`);
+ *   3. only after that returns is an original deleted from the OS store, and only when the file's value is the same;
+ *   4. the note that it is done is written last, and only when every name was read.
+ *  So at every instant each secret is readable from the file or from the OS store, and a power cut inside the disk's
+ *  commit window can lose only a copy that was never deleted. With the OS store unreachable (a locked keyring with no
+ *  display, no Secret Service at all) nothing is written and the next start tries again; `o.pending` then holds the names
+ *  that may still be there, so the caller never answers "nothing" for them (a missing token would be made anew). */
+export async function moveOsStoreItems(o: { values: BatchValues; from: SecretsBackend; service: string; names: readonly string[]; log?: (line: string) => void; pending?: Set<string>; probeMs?: number }): Promise<MoveResult> {
   const mark = movedMarkKey(o.service);
+  o.pending?.clear();
   if ((await o.values.get(mark)) !== null) return "done-before";
   const first = o.names[0];
   if (first === undefined) return "nothing";
   try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       o.from.get({ service: o.service, name: first }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), OS_STORE_PROBE_MS).unref?.()),
-    ]);
-  } catch { return "unreachable"; }
-  let moved = 0, whole = true;
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), o.probeMs ?? OS_STORE_PROBE_MS); timer.unref?.(); }),
+    ]).finally(() => clearTimeout(timer));
+  } catch { for (const n of o.names) o.pending?.add(n); return "unreachable"; }
+  const read = new Map<string, string>();
+  let whole = true;
   for (const name of o.names) {
     try {
       const value = await o.from.get({ service: o.service, name });
-      if (value === null || value === "") continue;
-      const key = itemKey(o.service, name);
-      const held = await o.values.get(key);
-      if (held === null) {
-        await o.values.set(key, value);
-        if ((await o.values.get(key)) !== value) { whole = false; continue; } // not read back: the original stays
-      }
-      if (held === null || held === value) { await o.from.delete({ service: o.service, name }); moved++; }
-    } catch { whole = false; }
+      if (value !== null && value !== "") read.set(name, value);
+    } catch { whole = false; o.pending?.add(name); }
+  }
+  if (read.size > 0) {
+    await o.values.mutate((all) => {
+      let changed = false;
+      for (const [name, value] of read) { const k = itemKey(o.service, name); if (!(k in all)) { all[k] = value; changed = true; } }
+      return changed;
+    }); // returns when the file is durable
+  }
+  let moved = 0;
+  for (const [name, value] of read) {
+    try {
+      const held = await o.values.get(itemKey(o.service, name));
+      if (held === null) { whole = false; o.pending?.add(name); continue; } // not in the file after all: the original stays
+      if (held === value) { await o.from.delete({ service: o.service, name }); moved++; } // a differing original is the older one: left
+    } catch { whole = false; o.pending?.add(name); }
   }
   if (!whole) { o.log?.(`[secrets] moved ${moved} item(s) out of the OS store; some could not be read or written and stay there for the next start`); return "partial"; }
   await o.values.set(mark, new Date().toISOString());
@@ -95,39 +113,73 @@ export interface FileBackendOptions {
   moveFrom?: SecretsBackend | null;
   names?: () => readonly string[];
   log?: (line: string) => void;
+  /** Tests: how long the OS store gets to answer the move's first read. */
+  probeMs?: number;
+  /** Tests: called after each durable step of the file's writes (`PrivateFileDeps.step`). */
+  step?: (name: PrivateFileStep, detail?: string) => void;
 }
 
+/** What a person is told, once per process and service, when the OS store holds the older logins and can't be read. */
+const told = new Set<string>();
+const WAIT_NOTE = "the OS keyring holds MOSS's saved logins from the previous version and isn't answering (locked, or no display to ask on): MOSS makes no new pairing tokens or logins in their place until it answers; unlock the keyring and start MOSS again";
+
+/** How soon the move is tried again after the OS store did not answer, so a caller that asks every second does not wait
+ *  the probe's seconds every time. */
+const RETRY_MOVE_MS = 30_000;
+
 /** The backend over this home's secrets file. Same contract as `Bun.secrets`: `get` answers null for a missing item and
- *  throws when the store can't be opened, `set` with an empty value deletes, `delete` says whether something was there. */
+ *  throws when the store can't be opened, `set` with an empty value deletes, `delete` says whether something was there.
+ *  One more rule: while the one-time move has not finished (the OS store did not answer), a `get` of a name that may
+ *  still be there and is not in the file throws `locked` and never answers null, because the callers mint a new pairing
+ *  token for a missing one and would strand the old tokens, unpairing every device with no message. */
 export function fileSecretsBackend(o: FileBackendOptions): SecretsBackend {
   const os = o.os ?? (process.platform === "win32" ? "windows" : "linux");
-  let ready: Promise<ValueBackend> | undefined;
-  const open = (): Promise<ValueBackend> => {
+  const log = o.log ?? ((l: string) => console.error(l));
+  interface Open { values: EncryptedFileValues; pending: Set<string>; osStore: "absent" | "locked" | "unlocked" | undefined; retryAt: number }
+  let ready: Promise<Open> | undefined;
+  const runMove = async (st: Open): Promise<void> => {
+    const from = o.moveFrom === undefined ? osSecretsBackend() : o.moveFrom;
+    if (from === null) return;
+    const r = await moveOsStoreItems({ values: st.values, from, service: o.service, names: (o.names ?? osStoreItemNames)(), log, pending: st.pending, ...(o.probeMs !== undefined ? { probeMs: o.probeMs } : {}) })
+      .catch((e: unknown) => { if (e instanceof ContractError) throw e; st.pending.clear(); return "nothing" as MoveResult; /* any other failure: the file works without the move */ });
+    // No Secret Service at all (a headless computer): nothing was ever there to move, and nothing waits.
+    if (r === "unreachable" && st.osStore === "absent") st.pending.clear();
+    if (st.pending.size > 0) {
+      st.retryAt = Date.now() + RETRY_MOVE_MS;
+      if (!told.has(o.service)) { told.add(o.service); log(`[secrets] ${WAIT_NOTE}`); }
+    }
+  };
+  const open = (): Promise<Open> => {
     ready ??= (async () => {
       const c = await chooseFileStore({ home: o.home, service: o.service, os, ...(o.vault ? { vault: o.vault } : {}), ...(o.interactive !== undefined ? { interactive: o.interactive } : {}), ...(o.systemdCreds !== undefined ? { systemdCreds: o.systemdCreds } : {}), ...(o.credsRunner ? { credsRunner: o.credsRunner } : {}) });
       if (c.locked !== undefined) throw new ContractError("locked", `the secrets file is locked: ${c.locked}`);
-      const values = new EncryptedFileValues(join(o.home, SECRETS_FILE_NAME), c.key, c.source);
-      const from = o.moveFrom === undefined ? osSecretsBackend() : o.moveFrom;
-      if (from !== null) {
-        await moveOsStoreItems({ values, from, service: o.service, names: (o.names ?? osStoreItemNames)(), ...(o.log ? { log: o.log } : { log: (l: string) => console.error(l) }) })
-          .catch((e: unknown) => { if (e instanceof ContractError) throw e; /* the move is best effort: the file works without it */ });
-      }
-      return values;
+      const st: Open = { values: new EncryptedFileValues(join(o.home, SECRETS_FILE_NAME), c.key, c.source, undefined, { log, ...(o.step ? { step: o.step } : {}) }), pending: new Set(), osStore: c.osStore, retryAt: 0 };
+      await runMove(st);
+      return st;
     })().catch((e: unknown) => { ready = undefined; throw e; }); // a locked store is asked again at the next call, never remembered
     return ready;
   };
   return {
-    get: (async (a: { service: string; name: string }) => (await (await open()).get(itemKey(a.service, a.name))) ?? null) as SecretsBackend["get"],
+    get: (async (a: { service: string; name: string }) => {
+      const st = await open();
+      const v = await st.values.get(itemKey(a.service, a.name));
+      if (v !== null) return v;
+      if (st.pending.has(a.name)) {
+        if (Date.now() >= st.retryAt) await runMove(st);
+        if (st.pending.has(a.name)) throw new ContractError("locked", WAIT_NOTE);
+      }
+      return null;
+    }) as SecretsBackend["get"],
     set: (async (a: { service: string; name: string; value: string }) => {
-      const values = await open();
+      const { values } = await open();
       if (a.value === "") await values.delete(itemKey(a.service, a.name)); // `Bun.secrets`' rule: an empty value deletes
       else await values.set(itemKey(a.service, a.name), a.value);
     }) as SecretsBackend["set"],
     delete: (async (a: { service: string; name: string }) => {
-      const values = await open();
+      const { values } = await open();
       const key = itemKey(a.service, a.name);
-      const had = (await values.get(key)) !== null;
-      if (had) await values.delete(key);
+      let had = false;
+      await values.mutate((all) => { had = key in all; delete all[key]; return had; }); // one hold: whether it was there and its removal
       return had;
     }) as SecretsBackend["delete"],
   };

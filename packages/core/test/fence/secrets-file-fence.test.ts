@@ -10,13 +10,24 @@ import { MossFence } from "../../src/fence/fence";
 import { LEFT_OUT_TOP } from "../../src/migration/old-home/copy";
 import { homeNamedDenials } from "../../src/runtime-sdk/turn-loop/home-deny";
 import { fileSecretsBackend } from "../../src/secrets/file-backend";
-import { SECRET_FILE_NAMES, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_SEALED_KEY_FILE_NAME } from "../../src/secrets/secret-files";
+import { SECRET_FILE_NAMES, SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_MADE_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME, SECRETS_TMP_DIR_SEGMENTS } from "../../src/secrets/secret-files";
 
 // The secrets file and its key material are hidden from every tool runner (spec §9.1; lane SF): one list of names
 // (`secrets/secret-files.ts`) that the fence's layout, the bots' deny list, the home's named denials and the old-home copy
 // all read, and, on Linux, the real sandbox refusing a command that tries every way to reach them.
 
 describe("one list of names for the secrets file and its key", () => {
+  test("the previous copy, the note and the half-made copies live in folders every deny list already names", () => {
+    // Review item 11: not under names of their own that a deny list would have to know, but inside `credentials/` and `run/`.
+    expect(SECRETS_BACKUP_SEGMENTS[0]).toBe("credentials");
+    expect(SECRETS_MADE_SEGMENTS[0]).toBe("credentials");
+    expect(SECRETS_TMP_DIR_SEGMENTS).toEqual(["run"]);
+    for (const dir of ["credentials", "run"]) {
+      if (dir === "credentials") expect(BOT_READ_DENIED.some((rel) => rel.length === 1 && rel[0] === dir)).toBe(true); // `run` is the fence's run-folder kind
+      expect([dir, homeNamedDenials("/h/.moss", "linux").includes(join(resolve("/h/.moss"), dir))]).toEqual([dir, true]);
+    }
+  });
+
   test("the names are the three files, and every deny list is built from them", () => {
     expect(SECRET_FILE_NAMES).toEqual(["secrets.enc", "secrets.key", "secrets.key.cred"]);
     for (const os of ["linux", "windows"] as const) {
@@ -67,6 +78,7 @@ const coding: Caller = { kind: "session", sessionId: "c1", sessionKind: "coding"
     const none = { get: async () => null, set: async () => { throw new Error("org.freedesktop.DBus.Error.ServiceUnknown"); }, delete: async () => false };
     const backend = fileSecretsBackend({ home: moss, service: "svc", os: "linux", vault: () => none, interactive: false, systemdCreds: null, moveFrom: null });
     await backend.set({ service: "svc", name: "anthropic:default", value: MARKER });
+    await backend.set({ service: "svc", name: "anthropic:default", value: `${MARKER}-2` }); // a second write: the previous copy exists
     writeFileSync(join(moss, SECRETS_SEALED_KEY_FILE_NAME), MARKER);
     writeFileSync(join(moss, "run", "app.token"), MARKER);
     writeFileSync(join(moss, "credentials", "index.json"), MARKER);
@@ -79,51 +91,80 @@ const coding: Caller = { kind: "session", sessionId: "c1", sessionKind: "coding"
   const text = (r: Awaited<ReturnType<Awaited<ReturnType<typeof world>>["run"]>>) => (r.kind === "exited" ? `${r.stdout}\n${r.stderr}` : r.kind === "refused" ? `refused: ${r.reason}` : "timeout");
   const ran = (r: Awaited<ReturnType<Awaited<ReturnType<typeof world>>["run"]>>) => r.kind === "exited";
 
+  /** Real bytes, not the fixture's marker: `secrets.enc` and `secrets.key` hold ciphertext and random bytes, so a leak is
+   *  found by the real file's own first bytes (as base64, 30 bytes = 40 exact characters) in what the shell printed. */
+  const needleOf = (path: string) => readFileSync(path).subarray(0, 30).toString("base64");
+  const base64 = (path: string) => `base64 -w0 '${path}'`;
+
   for (const [label, caller] of [["a coding agent's command", coding], ["a bot's command", bot("luna", "s1")]] as const) {
     test(`${label} reads none of the file, the key files or the run folder, by any road`, async () => {
       const w = await world();
       if (!w.spawner.available) return;
-      const control = Bun.spawnSync(["/bin/sh", "-c", `cat '${join(w.moss, SECRETS_SEALED_KEY_FILE_NAME)}'`]).stdout.toString();
-      expect(control).toBe(MARKER); // unfenced the same read works, so what follows is the fence's refusal
       const secret = (n: string) => join(w.moss, n);
-      const probes = [
-        ...SECRET_FILE_NAMES.map((n) => `cat '${secret(n)}'`),
-        `cat '${join(w.moss, "run", "app.token")}'`,
-        `cat '${join(w.moss, "credentials", "index.json")}'`,
-        `ls -la '${w.moss}'`,
-        `find '${w.moss}' -maxdepth 2`,
-        `head -c 4000 '${secret(SECRETS_FILE_NAME)}' | base64`,
-        `cp '${secret(SECRETS_FILE_NAME)}' '${join(w.home, "project", "copy")}'; cat '${join(w.home, "project", "copy")}'`,
-        // A link planted in a writable folder, soft and hard: the target is not there for either.
-        `ln -s '${secret(SECRETS_FILE_NAME)}' '${join(w.home, "project", "soft")}'; cat '${join(w.home, "project", "soft")}'`,
-        `ln '${secret(SECRETS_FILE_NAME)}' '${join(w.home, "project", "hard")}'; cat '${join(w.home, "project", "hard")}'`,
-        // Through the shell's own spellings and through /proc.
-        `cat "$HOME/.moss/${SECRETS_FILE_NAME}"; cat "$HOME/.moss/../.moss/${SECRETS_KEY_FILE_NAME}"`,
-        `cat /proc/self/root'${secret(SECRETS_FILE_NAME)}'`,
-      ];
+      const prev = join(w.moss, ...SECRETS_BACKUP_SEGMENTS);
+      const real = [secret(SECRETS_FILE_NAME), secret(SECRETS_KEY_FILE_NAME), prev, join(w.moss, ...SECRETS_MADE_SEGMENTS)];
+      const needles = real.map(needleOf);
+      expect(real.every((p) => existsSync(p))).toBe(true); // the store made all of them: the file, its key, the previous copy, the note
+      const project = join(w.home, "project");
+      const probes: string[] = [];
+      for (const f of real) {
+        probes.push(
+          `cat '${f}' | base64 -w0`, base64(f), `head -c 4000 '${f}' | base64 -w0`, `dd if='${f}' bs=64 count=1 2>/dev/null | base64 -w0`,
+          `python3 -c "import base64,sys; sys.stdout.write(base64.b64encode(open(sys.argv[1],'rb').read()).decode())" '${f}'`,
+          `cp '${f}' '${project}/copy'; base64 -w0 '${project}/copy'`,
+          // A link planted in a writable folder, soft and hard: the target is not there for either.
+          `ln -s '${f}' '${project}/soft'; base64 -w0 '${project}/soft'`,
+          `ln '${f}' '${project}/hard'; base64 -w0 '${project}/hard'`,
+          // Through the shell's own spellings and through /proc.
+          `base64 -w0 "$HOME/.moss/${f.slice(w.moss.length + 1)}"; base64 -w0 "$HOME/.moss/../.moss/${f.slice(w.moss.length + 1)}"`,
+          `base64 -w0 /proc/self/root'${f}'`,
+          `rm -f '${project}/copy' '${project}/soft' '${project}/hard'`,
+        );
+      }
+      probes.push(`cat '${join(w.moss, "run", "app.token")}'`, `cat '${join(w.moss, "credentials", "index.json")}'`, `cat '${secret(SECRETS_SEALED_KEY_FILE_NAME)}'`);
+
+      // The control: unfenced, the same reads print the real bytes, so what the fenced runs below do not print is the fence's doing.
+      const sh = (cmd: string) => Bun.spawnSync(["/bin/sh", "-c", cmd], { env: { PATH: "/usr/bin:/bin", HOME: w.home } }).stdout.toString();
+      for (const f of real) expect([f, sh(base64(f)).includes(needleOf(f))]).toEqual([f, true]);
+      expect(sh(`cat '${secret(SECRETS_SEALED_KEY_FILE_NAME)}'`)).toBe(MARKER);
+
       for (const p of probes) {
         const r = await w.run(p, caller);
-        expect([label, p, ran(r) || text(r).startsWith("refused"), text(r).includes(MARKER)]).toEqual([label, p, true, false]);
+        const out = text(r);
+        expect([label, p, ran(r) || out.startsWith("refused")]).toEqual([label, p, true]);
+        expect([label, p, needles.filter((n) => out.includes(n)).length]).toEqual([label, p, 0]);
+        expect([label, p, out.includes(MARKER)]).toEqual([label, p, false]);
       }
-      expect(existsSync(join(w.home, "project", "copy"))).toBe(false);
-      expect(existsSync(join(w.home, "project", "hard"))).toBe(false);
-    }, 240_000);
+      expect(existsSync(join(project, "copy"))).toBe(false);
+      expect(existsSync(join(project, "hard"))).toBe(false);
+
+      // Listings name none of the files (the names are absent, not refused), and a search finds none.
+      for (const p of [`ls -la '${w.moss}'`, `ls -la '${join(w.moss, "credentials")}' 2>&1`, `find '${w.moss}' -maxdepth 3 2>&1`, `find '${w.home}' -name 'secrets*' 2>&1`, `ls -la '${w.moss}/..' 2>&1`]) {
+        const out = text(await w.run(p, caller));
+        for (const n of [...SECRET_FILE_NAMES, "secrets.enc.bak", "secrets-file.made"]) expect([label, p, n, out.includes(n)]).toEqual([label, p, n, false]);
+      }
+    }, 300_000);
 
     test(`${label} neither changes nor moves the file, nor makes its key over again`, async () => {
       const w = await world();
       if (!w.spawner.available) return;
       const before = readFileSync(join(w.moss, SECRETS_FILE_NAME));
+      const keyBefore = readFileSync(join(w.moss, SECRETS_KEY_FILE_NAME));
+      const runBefore = readFileSync(join(w.moss, "run", "app.token"));
       for (const p of [
         `echo x > '${join(w.moss, SECRETS_FILE_NAME)}'`, `echo x >> '${join(w.moss, SECRETS_FILE_NAME)}'`, `rm -f '${join(w.moss, SECRETS_FILE_NAME)}'`,
         `mv '${join(w.moss, SECRETS_FILE_NAME)}' '${join(w.home, "project", "gone")}'`,
-        `mv '${w.moss}' '${w.moss}.away'`, `rm -rf '${join(w.moss, "run")}'`,
+        `mv '${w.moss}' '${w.moss}.away'`, `rm -rf '${join(w.moss, "run")}'`, `rm -rf '${join(w.moss, "credentials")}'`,
+        `echo x > '${join(w.moss, ...SECRETS_BACKUP_SEGMENTS)}'`, `rm -f '${join(w.moss, ...SECRETS_MADE_SEGMENTS)}'`,
         `echo x > '${join(w.moss, SECRETS_KEY_FILE_NAME)}'`,
       ]) await w.run(p, caller);
       expect(readFileSync(join(w.moss, SECRETS_FILE_NAME)).equals(before)).toBe(true);
       expect(existsSync(`${w.moss}.away`)).toBe(false);
       expect(existsSync(join(w.home, "project", "gone"))).toBe(false);
-      expect(existsSync(join(w.moss, SECRETS_KEY_FILE_NAME))).toBe(true); // the store's key file, made when the file was, still the store's
-      expect(readFileSync(join(w.moss, SECRETS_KEY_FILE_NAME)).length).toBe(32);
+      expect(readFileSync(join(w.moss, SECRETS_KEY_FILE_NAME)).equals(keyBefore)).toBe(true); // the store's own key file, byte for byte
+      expect(readFileSync(join(w.moss, "run", "app.token")).equals(runBefore)).toBe(true); // `rm -rf run` took nothing
+      expect(existsSync(join(w.moss, "run"))).toBe(true);
+      expect(readFileSync(join(w.moss, ...SECRETS_BACKUP_SEGMENTS)).length).toBeGreaterThan(0);
     }, 240_000);
 
     test(`${label}: a secrets file made while the command runs never shows in it`, async () => {

@@ -8,6 +8,12 @@
 //   secrets.key.cred   the file's key sealed by `systemd-creds` (headless Linux)
 //   run/secrets-file.lock   the lock the processes of one user take around a write (inside the run folder, which is
 //                      fenced and read-denied; it holds a pid and a time, never a secret)
+//   credentials/secrets.enc.bak   the previous whole secrets file, kept until the next write is durable (a file that is
+//                      damaged or lost is read from it); inside the credentials folder, which is fenced and read-denied
+//   credentials/secrets-file.made  a note that a secrets file was made here, so a deleted file with its key still in the
+//                      OS store is answered "locked", never a quiet new empty store (no secret in it)
+//   run/<name>.<pid>.<id>.tmp      the half-made copy of any of these while a write is under way: always in the run
+//                      folder, never beside the file under a name a deny list does not know
 // macOS keeps its secrets in the Keychain and has none of these.
 
 /** The encrypted secrets file's name, in the MOSS home. */
@@ -25,3 +31,10 @@ export const SECRET_FILE_SEGMENTS: readonly (readonly string[])[] = SECRET_FILE_
 
 /** The lock's place relative to the MOSS home. */
 export const SECRETS_LOCK_SEGMENTS: readonly string[] = ["run", "secrets-file.lock"];
+
+/** The previous whole secrets file, relative to the MOSS home. */
+export const SECRETS_BACKUP_SEGMENTS: readonly string[] = ["credentials", "secrets.enc.bak"];
+/** The note that a secrets file was made here, relative to the MOSS home. */
+export const SECRETS_MADE_SEGMENTS: readonly string[] = ["credentials", "secrets-file.made"];
+/** The folder the half-made copies are made in, relative to the MOSS home. */
+export const SECRETS_TMP_DIR_SEGMENTS: readonly string[] = ["run"];

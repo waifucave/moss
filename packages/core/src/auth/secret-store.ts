@@ -78,9 +78,12 @@ export function osSecretsBackend(): Pick<typeof Bun.secrets, "get" | "set" | "de
  *  (spec §9.1, §8.5; `secrets/file-backend.ts`). A process under a test never reaches the file of any home it did not
  *  name: it gets the isolated store `osSecretsBackend` gives (so a test that builds a store with no home can never write
  *  the real `~/.moss`); a test of the file backend builds it itself, on a temp home. `home` and `service` default to the
- *  process's own (`MOSS_HOME`, the profile's service). */
-export function defaultSecretsBackend(o: { home?: string; service?: string } = {}): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
-  if (testBackend !== undefined || process.platform === "darwin" || underTest()) return osSecretsBackend();
+ *  process's own (`MOSS_HOME`, the profile's service). `file` forces the file under a test, for a home and service the test names. */
+export function defaultSecretsBackend(o: { home?: string; service?: string; file?: boolean } = {}): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
+  // `file: true` is for a test of the Windows and Linux wiring that names its own throwaway home and service: it takes the
+  // very path a daemon takes there, never the isolated store. (It is no way to reach a real home: the home is the caller's.)
+  const forced = o.file === true && o.home !== undefined && o.service !== undefined && process.platform !== "darwin";
+  if (!forced && (testBackend !== undefined || process.platform === "darwin" || underTest())) return osSecretsBackend();
   const { sharedFileSecretsBackend } = require("../secrets/file-backend") as typeof import("../secrets/file-backend");
   const home = o.home ?? (require("../moss-dir") as typeof import("../moss-dir")).resolveMossHome();
   return sharedFileSecretsBackend({ home, service: o.service ?? keychainService(resolveMossProfile(), home) });
