@@ -18,6 +18,9 @@ foreach ($round in 1, 2) {
 }
 # A rebuild still running after remove must not bring anything back: look again after it would have finished.
 Start-Sleep -Seconds 60
+# What the raced reset did (its own log): a member it found gone says "no such account, left".
+$resetLog = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\reset-$Sid.log"
+if (Test-Path -LiteralPath $resetLog) { Get-Content -LiteralPath $resetLog -Tail 4 | ForEach-Object { Write-Output "reset log: $_" } }
 $left = @()
 foreach ($m in $pool) {
   if (Get-LocalUser -Name $m.principal -ErrorAction SilentlyContinue) { $left += "account $($m.principal)" }

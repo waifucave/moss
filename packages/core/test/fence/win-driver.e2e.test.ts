@@ -90,6 +90,10 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
       const sr = results(sub);
       console.log(`[driver] subagent tools: ${JSON.stringify(sr)}; runs ${JSON.stringify(runs.map((x) => [x.command, x.network ?? false]))}; asked ${JSON.stringify(asked.map((a) => [a.name, a.input.dangerouslyDisableSandbox ?? false, a.agentID ?? null]))}`);
       expect(sr.find((x) => x.name === "Agent")?.isError).toBe(true);
+      // `Task` is no tool of the runtime's (no descriptor is registered under the name): the test model's executor
+      // echoes it here, and a real session answers "unknown tool". It starts nothing.
+      const task = sr.find((x) => x.name === "Task");
+      if (task !== undefined) expect(task.isError || task.content.startsWith("Task:")).toBe(true);
       expect(runs).toHaveLength(3);
       expect(asked.filter((a) => a.input.dangerouslyDisableSandbox === true)).toHaveLength(1);
       const detection = await inProcessAgentBackend({ spawn } as unknown as Parameters<typeof inProcessAgentBackend>[0]).detect();
