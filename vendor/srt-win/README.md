@@ -15,6 +15,10 @@ The Bash fence on Windows runs bots' commands as a dedicated per-user sandbox pr
   and adds a `--user` selector to `exec`, `user status` and `uninstall`, so one
   install no longer orphans another's launch path. The global record keeps its
   exact semantics (last install wins); everything new is opt-in behind `--user`.
+  `0002-session-0-named-objects.patch` lets a broker in session 0 (a password
+  scheduled task) launch: the named-object grant opens the global
+  `\BaseNamedObjects` there (no `\Sessions\0\...` exists), and is skipped with a
+  warning when a standard user may not change it.
 - `vendor/srt-win/srt-win.exe` is the static-CRT build lane M's CI makes and
   signs (with the patches applied); the Authenticode digest check in
   `packages/core/src/fence/windows-launcher.ts` (`SRT_WIN_PINS`) fails closed

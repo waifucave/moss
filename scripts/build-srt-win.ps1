@@ -51,9 +51,10 @@ $outExe = Join-Path $outDir "srt-win.exe"
 # unknown or extra `*.patch` files and any hash mismatch before building.
 $PinnedPatches = @{
   "0001-per-principal-setup-records.patch" = "188ad4c0c5ed37bc9cdba8db821fc5d0a82fb380b79278c300a1507afe81f55d"
+  "0002-session-0-named-objects.patch" = "917ef2e36f7621274d3d794e70d27787d898662a103c99042d9136d7298ec1c9"
 }
 
-# What the pinned patch set must change (per-principal records). After
+# What the pinned patch set must change (per-principal records; session 0's named objects). After
 # applying, the tree must show exactly these files with this shape, or
 # the build stops: a patch that applies cleanly but changes nothing
 # (wrong -p level, already-applied upstream, CRLF damage) must fail
@@ -62,10 +63,11 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/cli.rs",
   "vendor/srt-win-src/src/install.rs",
   "vendor/srt-win-src/src/reg.rs",
-  "vendor/srt-win-src/src/user.rs"
+  "vendor/srt-win-src/src/user.rs",
+  "vendor/srt-win-src/src/winsta.rs"
 )
-$ExpectedPatchAdded = 409
-$ExpectedPatchDeleted = 43
+$ExpectedPatchAdded = 437
+$ExpectedPatchDeleted = 45
 
 function Check-Tools {
   foreach ($t in @("git", "cargo") ) {
