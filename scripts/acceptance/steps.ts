@@ -38,7 +38,7 @@ import { BROWSER_STEP } from "./browser-step";
 import { SCHEDULED_ROUTINE_STEP } from "./routine-schedule-step";
 import { BOT_RECORDS_STEP } from "./bot-records-step";
 import { MOSS_STEPS } from "./moss-step";
-import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 
 export type Status = "PASS" | "FAIL" | "BLOCKED";
 /** Stage 2 of "bots ask less": its name, which its number is looked up by (it sits before the three web steps, whose
@@ -141,6 +141,7 @@ export const FULL_STEPS = [
   // Lane HS's row, after RT's for the same reason.
   HOST_STEP,
   HOST_GAVE_UP_STEP,
+  HOST_IDLE_STEP,
   BROWSER_HOST_STEP,
   SURFACE_COPY_HOST_STEP,
   // Lane SG's rows: the setup guide in both apps on a fresh home (the `setup` unit, setup-step.ts).

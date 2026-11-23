@@ -84,7 +84,8 @@ import { BRIDGE_ECHO, CHILD_REPORT, netCommand, newestDirective as newestDirecti
 import { Cdp } from "./cdp";
 import { diagnosing, runnerState, stallReportsDone, startRunnerLog, watchAppStall, watchPingLines } from "./stall-watch";
 // lane HS
-import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
+import { parseIpcLine } from "../../apps/desktop/src/main/ui/ipc-stats";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_CPU_PERCENT, HOST_IDLE_MESSAGES_PER_S, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
 import { BACKGROUND_IDS, writeBackground } from "./manifest-fields-step";
 import { checkPageReport } from "./layer-page-step";
 import { shellDoc, dumpFrames, failureShot, renderNewUser, treeDocs, treeText, UI_STEPS, uiSteps } from "./ui-steps";
@@ -524,6 +525,8 @@ function hostAppCopy(app: { exe: string; args: string[] }): { exe: string; args:
   const i = app.exe.indexOf(".app/");
   if (i < 0) return app;
   const dst = join(root, "host-app", "MOSS Host Acceptance.app");
+  // A later row of the unit uses the copy the first one made (a second `cp -R` onto it would copy into it).
+  if (existsSync(dst)) return { exe: join(dst, app.exe.slice(i + 5)), args: app.args };
   mkdirSync(dirname(dst), { recursive: true });
   for (const argv of [["cp", "-cR", app.exe.slice(0, i + 4), dst], ["plutil", "-replace", "LSUIElement", "-bool", "true", join(dst, "Contents", "Info.plist")], ["plutil", "-replace", "CFBundleIdentifier", "-string", "com.waifucave.moss.host.acceptance", join(dst, "Contents", "Info.plist")], ["codesign", "--force", "--sign", "-", dst]]) {
     const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
@@ -4054,7 +4057,7 @@ async function otherUnitsRun(app: { exe: string; args: string[] }, ids: readonly
   let bot: string | undefined;
   let c: MossClient | undefined;
   // lane HS: the host unit runs alone (its own daemon starts the host).
-  if (ids.includes("host")) { await hostOnlyRun(app); await hostGaveUpRun(app); return; }
+  if (ids.includes("host")) { await hostOnlyRun(app); await hostGaveUpRun(app); await hostIdleRun(app); return; }
   if (ids.includes("browser-host")) { await browserOnlyRun(app, { withHost: true }); return; }
   if (ids.includes("surface-copy-host")) { await browserOnlyRun(app, { withHost: true, row: "surface-copy" }); return; }
   try {
@@ -4989,6 +4992,86 @@ async function browserOnlyRun(app: { exe: string; args: string[] }, o: { withHos
  *  (`MOSS_HOST_COMMAND`, the engine's source seam, as its own child: the run's cleanup of the daemon's group ends it). */
 /** lane HS (the reviewer's B2): a host command that always fails, so the engine gives up after its bounded starts; MOSS Code's
  *  window (not in front) then keeps the fallback card for a card the router placed with no island: it is shown and pressed. */
+/** lane HC: the host idle row (host-step.ts HOST_IDLE_STEP). Its own daemon starts the host with its surfaces drawn as real windows,
+ *  invisible (`MOSS_TEST_INVISIBLE`), its counters on (`MOSS_IPC_STATS`, a line every 5 s) and the screen seam (`MOSS_TEST_SCREEN_FILE`);
+ *  the row plays the owner's evening through the seam (the island stepping aside and back, the display moving, going and coming
+ *  back, a suspend and a resume), lets it settle, and holds the host's next windows to HOST_IDLE_MESSAGES_PER_S and HOST_IDLE_CPU_PERCENT. */
+async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> {
+  const n = stepNumber(FULL_STEPS, HOST_IDLE_STEP);
+  const lines: string[] = [];
+  try {
+    if (target !== "source") fail("the host idle row needs the engine's source seam (MOSS_HOST_COMMAND)");
+    // Linux's surfaces have no window opacity (an invisible window there is a shown one, and the run fails on any), and the spin it
+    // guards came from macOS's displays and sleep.
+    if (onLinux()) { record(n, "PASS", notOnLinux("the surfaces can't be drawn invisible there (no window opacity on X11), and the spin came from macOS's display change and sleep")); return; }
+    await endStartedHosts();
+    const hostLog = join(home, "logs", "host.out.log");
+    const from = readLog(hostLog).length;
+    const hostText = () => readLog(hostLog).slice(from);
+    const screenFile = join(root, "host-idle-screen");
+    writeFileSync(screenFile, "");
+    const hostApp = hostAppCopy(app);
+    const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain"]);
+    const d = await startDaemonProc({ MOSS_HOST_COMMAND: hostCommand, MOSS_TEST_INVISIBLE: "1", MOSS_IPC_STATS: "1", MOSS_TEST_SCREEN_FILE: screenFile, MOSS_DEV_DEBUG: "1" });
+    const hostPid = await until("the host the engine started, ready", 120_000, () => { const p = hostLockPid(home); if (p !== undefined) startedHosts.add(p); return readyCount(readLog(d.log)) > 0 ? p : undefined; }, 500);
+    await until("the island on the screen (invisible)", 60_000, () => (/\[host\] surfaces: [1-9]\d* on the screen \([^)]*island/.test(readLog(d.log)) ? true : undefined), 500);
+    await until("the host's counters", 30_000, () => (/ipc: counters on/.test(hostText()) ? true : undefined), 300);
+    const windows = () => hostText().split("\n").filter((l) => l.includes("ipc: ")).map((l) => ({ raw: l.replace(/^.*?ipc: /, ""), p: parseIpcLine(l) })).filter((w): w is { raw: string; p: NonNullable<ReturnType<typeof parseIpcLine>> } => w.p !== undefined);
+    const next = async (count: number, what: string) => {
+      const have = windows().length;
+      await until(what, (count + 2) * 6_000, () => (windows().length >= have + count ? true : undefined), 500);
+      return windows().slice(have, have + count);
+    };
+    const cpuOf = (w: { p: { cpu: { percent: number }[] } }) => w.p.cpu.reduce((a, c) => a + c.percent, 0);
+    const summary = (ws: { raw: string; p: { inPerSecond: number; outPerSecond: number; cpu: { percent: number }[] } }[]) => {
+      const msgs = ws.reduce((a, w) => a + w.p.inPerSecond + w.p.outPerSecond, 0) / ws.length;
+      const cpu = ws.reduce((a, w) => a + cpuOf(w), 0) / ws.length;
+      return { msgs, cpu, text: `${msgs.toFixed(1)} msg/s, ${cpu.toFixed(1)}% CPU (last window: ${ws.at(-1)!.raw.slice(0, 220)})` };
+    };
+    // Before: the island shown and left alone (the first window covers the start).
+    await next(1, "the host's first counted window");
+    const before = summary(await next(2, "two counted windows before the sequence"));
+    lines.push(`before: ${before.text}`);
+    // The owner's evening, through the seam: the island steps aside and comes back (a MOSS window to the front and away), the display
+    // moves and its work area changes, goes and comes back, its scale changes, the computer suspends and resumes and unlocks.
+    const played: string[] = [];
+    let k = 0;
+    const play = async (command: string, json?: unknown) => {
+      k++;
+      appendFileSync(screenFile, `${k} ${command}${json === undefined ? "" : ` ${JSON.stringify(json)}`}\n`);
+      played.push(command);
+      await until(`the host hearing "${command}"`, 10_000, () => ((hostText().match(/test: screen seam /g) ?? []).length >= k ? true : undefined), 100);
+      await sleep(1_500);
+    };
+    await play("front");
+    await play("back");
+    await play("front");
+    await play("back");
+    await play("display", { bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 33, width: 1512, height: 949 } });
+    await play("display-removed");
+    await play("display-added");
+    await play("display-metrics-changed");
+    await play("suspend");
+    await play("resume");
+    await play("unlock-screen");
+    await play("display", { bounds: { x: 0, y: 0, width: 1728, height: 1117 }, workArea: { x: 0, y: 38, width: 1728, height: 1079 } });
+    lines.push(`played: ${played.join(", ")}`);
+    // Settled: a window to let the last change finish, then three measured.
+    await next(1, "a counted window after the sequence");
+    const after = await next(3, "three counted windows after the sequence");
+    const a = summary(after);
+    lines.push(`after: ${a.text}`);
+    if (!/surface: island bounds/.test(hostText())) fail("the host never placed its island");
+    if (a.msgs > HOST_IDLE_MESSAGES_PER_S) fail(`the host and its pages kept talking after the sequence: ${a.msgs.toFixed(1)} messages/s (budget ${HOST_IDLE_MESSAGES_PER_S}); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
+    if (a.cpu > HOST_IDLE_CPU_PERCENT) fail(`the host stayed busy after the sequence: ${a.cpu.toFixed(1)}% of a core (budget ${HOST_IDLE_CPU_PERCENT}%); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
+    record(n, "PASS", `host pid ${hostPid}; ${lines.join("; ")}`);
+  } catch (err) {
+    record(n, statusOf(err), `${why(err)}${lines.length > 0 ? ` (after: ${lines.join("; ").slice(0, 900)})` : ""}`);
+  } finally {
+    await endStartedHosts();
+  }
+}
+
 async function hostGaveUpRun(app: { exe: string; args: string[] }): Promise<void> {
   const n = stepNumber(FULL_STEPS, HOST_GAVE_UP_STEP);
   let c: MossClient | undefined;

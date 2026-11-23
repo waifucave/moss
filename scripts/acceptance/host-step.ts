@@ -66,6 +66,17 @@ function onscreenWindowsX11(): { pid: number; alpha: number; w: number; h: numbe
   return out;
 }
 
+/** lane HC: the owner's host spun about 55% of a core in its main process and 35% in two renderers for 37 minutes after a lid
+ *  opened, logging nothing. The row plays that evening to a host whose island and pill are real composited windows (invisible:
+ *  opacity 0, deaf to the mouse) and reads the host's own counters (`MOSS_IPC_STATS`: messages by channel, CPU by process). */
+export const HOST_IDLE_STEP = "an idle host settles (lane HC): the background host with its island shown, after the island steps aside and back, the display moves, goes and comes back and the computer suspends and resumes, sends its pages next to nothing and stays near idle";
+
+/** The host idle row's budget once the sequence has settled: messages per second between the host's main process and its pages
+ *  (both ways), and the host's CPU (every process of it, in percent of one core), each the mean over the measured windows. A
+ *  settled host sends none; the owner's spun at about 125% of a core in all. */
+export const HOST_IDLE_MESSAGES_PER_S = 2;
+export const HOST_IDLE_CPU_PERCENT = 25;
+
 /** The browser rows again with the background host running (the controller's ruling): the same row, its pages in the host. */
 export const BROWSER_HOST_STEP = "the Browser rows again with the background host running (lane HS): the pages in the host, the cards pressed where the router put them, MOSS Code's panel drawing the host's tabs";
 

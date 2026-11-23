@@ -890,6 +890,41 @@ async function ready(): Promise<void> {
     // when it changes, which process draws which window's frames (origins only, never a URL's path or query).
     startProcessDiag();
   }
+  // The host idle row (a headless test-marked or acceptance build only, compiled out of a release; the marker gate's
+  // TEST_ONLY_APP_STRINGS checks it): what a lid opening does to a running program, played from a file the harness appends to, one
+  // line per change, "<n> <command> [json]" with n counting up. `display {"bounds":…,"workArea":…}` puts the surfaces' display there
+  // (`surfaceDisplay`) and emits the screen's `display-metrics-changed`; `display-removed`, `display-added` and
+  // `display-metrics-changed` emit those events, `suspend`, `resume` and `unlock-screen` the power monitor's; `front` and `back` are
+  // the engine's word that a window is or is no longer in front (the host's island steps aside and comes back). Each is emitted on
+  // the real module, so every listener the program has runs as it would.
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_SCREEN_FILE) {
+    const file = process.env.MOSS_TEST_SCREEN_FILE;
+    let seen = 0;
+    const emitOn = (target: unknown, event: string, ...rest: unknown[]) => (target as NodeJS.EventEmitter).emit(event, ...rest);
+    watchFile(file, { interval: 100 }, () => {
+      let text = "";
+      try { text = readFileSync(file, "utf8"); } catch { return; }
+      for (const line of text.split("\n")) {
+        const m = /^(\d+) ([a-z-]+)(?: (.*))?$/.exec(line.trim());
+        if (m === null || Number(m[1]) <= seen) continue;
+        seen = Number(m[1]);
+        const command = m[2]!;
+        const real = screen.getPrimaryDisplay();
+        if (command === "display") {
+          try {
+            const d = JSON.parse(m[3] ?? "{}") as { bounds?: Electron.Rectangle; workArea?: Electron.Rectangle };
+            testDisplay = d.bounds !== undefined && d.workArea !== undefined ? { bounds: d.bounds, workArea: d.workArea } : undefined;
+          } catch { testDisplay = undefined; }
+          emitOn(screen, "display-metrics-changed", {}, real, ["bounds", "workArea"]);
+        } else if (command === "display-removed" || command === "display-added") emitOn(screen, command, {}, real);
+        else if (command === "display-metrics-changed") emitOn(screen, command, {}, real, ["scaleFactor"]);
+        else if (command === "suspend" || command === "resume" || command === "unlock-screen") emitOn(powerMonitor, command);
+        else if ((command === "front" || command === "back") && program === "host") hostDeps().front?.(command === "front");
+        else continue;
+        log(`test: screen seam ${command}`);
+      }
+    });
+  }
   // The preview (compile-time mark): the window reloads when the command says its files changed (a counter in a file, read
   // twice a second, as the acceptance's key file is), and holds the pinned appearance from its first paint.
   if (previewAppearance !== undefined) applyThemeSource(coreThemeSource);
@@ -2708,8 +2743,16 @@ function syncSurfaces(): void {
   }
 }
 
+/** The display the surfaces sit on: the primary one, or the host idle row's stand-in for it (`MOSS_TEST_SCREEN_FILE`, a headless
+ *  test-marked or acceptance build only; undefined on every other run). */
+let testDisplay: { bounds: Electron.Rectangle; workArea: Electron.Rectangle } | undefined;
+function surfaceDisplay(): { id: number; bounds: Electron.Rectangle; workArea: Electron.Rectangle } {
+  const d = screen.getPrimaryDisplay();
+  return testDisplay === undefined ? d : { id: d.id, ...testDisplay };
+}
+
 function place(s: Surface, [width, height]: number[]): void {
-  const display = screen.getPrimaryDisplay();
+  const display = surfaceDisplay();
   s.win.setBounds(surfacePlacement({ ...(s.placement !== undefined ? { placement: s.placement } : {}), size: { width: width!, height: height! }, display: display.bounds, workArea: display.workArea }));
 }
 
@@ -2722,14 +2765,14 @@ function steerSurface(windowId: number, request: Record<string, unknown>): void 
   const trusted = s.floats;
   const wayland = session_ === "wayland";
   // A whole place on the screen, kept on its display (on Wayland the compositor may ignore where).
-  const display = screen.getPrimaryDisplay();
+  const display = surfaceDisplay();
   const bounds = request.bounds === undefined ? undefined : surfaceBounds(request.bounds, display, trusted);
   if (bounds !== undefined) {
     s.win.setBounds(bounds);
     log(`surface: ${id} bounds ${bounds.width}x${bounds.height}`);
   } else if (request.width !== undefined || request.height !== undefined) {
     const [w, h] = s.win.getSize();
-    const size = surfaceSize(request, { width: w!, height: h! }, { trusted, workArea: screen.getPrimaryDisplay().workArea });
+    const size = surfaceSize(request, { width: w!, height: h! }, { trusted, workArea: surfaceDisplay().workArea });
     place(s, [size.width, size.height]);
     log(`surface: ${id} sized to ${size.width}x${size.height}`);
   }
@@ -2877,7 +2920,7 @@ let screens: ReturnType<typeof loadScreens> | null = null;
  *  the camera housing, which the screen add-on reads (null where there is none). */
 function surfaceEnvironment(windowId: number): SurfaceEnvironment | undefined {
   if (![...surfaces.values()].some((s) => !s.win.isDestroyed() && s.win.id === windowId)) return undefined;
-  const d = screen.getPrimaryDisplay();
+  const d = surfaceDisplay();
   if (screens === null) screens = loadScreens(join(here, "native", "screen.node"), log);
   return { os, ...(session_ !== undefined ? { session: session_ } : {}), display: { bounds: d.bounds, workArea: d.workArea, notch: housingFor(d.id, screens) }, mainFront: (program === "host" ? windowHoldsCard() || engineFront : mainWindowFront(mainState())) && !islandHoldsCard() } as SurfaceEnvironment; // `mainFront` rides along: the SDK's declaration doesn't name it (the island reads it)
 }

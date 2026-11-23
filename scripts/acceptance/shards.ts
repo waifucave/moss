@@ -65,7 +65,7 @@ import { SETUP_STEPS } from "./setup-step";
 import { CANVAS_STEPS } from "./canvas-step";
 import { MCP_APPS_STEPS } from "./mcp-apps-step";
 import { CANVAS_APP_STEPS } from "./canvas-app-step";
-import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 import { ROWS_ELSEWHERE } from "./elsewhere";
 
 export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas" | "canvas-app";
@@ -142,7 +142,7 @@ const OTHERS: readonly Unit[] = [
   // lane HS: the background host's rows start their own daemon (and the host) on a home no other unit has used: beside other
   // units each is a run of its own (`ownHome`), so a set that names them with others runs every unit, not just the first of them.
   // lane HS: the background host's row, alone (its own daemon starts the host, host-step.ts).
-  { id: "host", rows: [HOST_STEP, HOST_GAVE_UP_STEP], phase: "serial", estimate: 240, ownHome: true },
+  { id: "host", rows: [HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP], phase: "serial", estimate: 330, ownHome: true },
   // …and the Browser rows with that host running (the controller's ruling: every browser row passes with a host too).
   { id: "browser-host", rows: [BROWSER_HOST_STEP], phase: "serial", estimate: 90, ownHome: true },
   // lane HS: row 65 (the island and pill copies) with the background host drawing the screen (the controller's R12 ruling).
