@@ -892,7 +892,8 @@ async function ready(): Promise<void> {
   }
   // The host idle row (a headless test-marked or acceptance build only, compiled out of a release; the marker gate's
   // TEST_ONLY_APP_STRINGS checks it): what a lid opening does to a running program, played from a file the harness appends to, one
-  // line per change, "<n> <command> [json]" with n counting up. `display {"bounds":…,"workArea":…}` puts the surfaces' display there
+  // line per change, "<n> <command> [json]" with n counting up. `display {"bounds":…,"workArea":…,"notch":…}` puts the surfaces' display there,
+  // its camera housing (display-local, as the screen add-on reports one) with it,
   // (`surfaceDisplay`) and emits the screen's `display-metrics-changed`; `display-removed`, `display-added` and
   // `display-metrics-changed` emit those events, `suspend`, `resume` and `unlock-screen` the power monitor's; `front` and `back` are
   // the engine's word that a window is or is no longer in front (the host's island steps aside and comes back). Each is emitted on
@@ -912,8 +913,8 @@ async function ready(): Promise<void> {
         const real = screen.getPrimaryDisplay();
         if (command === "display") {
           try {
-            const d = JSON.parse(m[3] ?? "{}") as { bounds?: Electron.Rectangle; workArea?: Electron.Rectangle };
-            testDisplay = d.bounds !== undefined && d.workArea !== undefined ? { bounds: d.bounds, workArea: d.workArea } : undefined;
+            const d = JSON.parse(m[3] ?? "{}") as { bounds?: Electron.Rectangle; workArea?: Electron.Rectangle; notch?: Rect | null };
+            testDisplay = d.bounds !== undefined && d.workArea !== undefined ? { bounds: d.bounds, workArea: d.workArea, notch: d.notch ?? null } : undefined;
           } catch { testDisplay = undefined; }
           emitOn(screen, "display-metrics-changed", {}, real, ["bounds", "workArea"]);
         } else if (command === "display-removed" || command === "display-added") emitOn(screen, command, {}, real);
@@ -2745,8 +2746,8 @@ function syncSurfaces(): void {
 
 /** The display the surfaces sit on: the primary one, or the host idle row's stand-in for it (`MOSS_TEST_SCREEN_FILE`, a headless
  *  test-marked or acceptance build only; undefined on every other run). */
-let testDisplay: { bounds: Electron.Rectangle; workArea: Electron.Rectangle } | undefined;
-function surfaceDisplay(): { id: number; bounds: Electron.Rectangle; workArea: Electron.Rectangle } {
+let testDisplay: { bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch: Rect | null } | undefined;
+function surfaceDisplay(): { id: number; bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch?: Rect | null } {
   const d = screen.getPrimaryDisplay();
   return testDisplay === undefined ? d : { id: d.id, ...testDisplay };
 }
@@ -2922,7 +2923,7 @@ function surfaceEnvironment(windowId: number): SurfaceEnvironment | undefined {
   if (![...surfaces.values()].some((s) => !s.win.isDestroyed() && s.win.id === windowId)) return undefined;
   const d = surfaceDisplay();
   if (screens === null) screens = loadScreens(join(here, "native", "screen.node"), log);
-  return { os, ...(session_ !== undefined ? { session: session_ } : {}), display: { bounds: d.bounds, workArea: d.workArea, notch: housingFor(d.id, screens) }, mainFront: (program === "host" ? windowHoldsCard() || engineFront : mainWindowFront(mainState())) && !islandHoldsCard() } as SurfaceEnvironment; // `mainFront` rides along: the SDK's declaration doesn't name it (the island reads it)
+  return { os, ...(session_ !== undefined ? { session: session_ } : {}), display: { bounds: d.bounds, workArea: d.workArea, notch: d.notch !== undefined ? d.notch : housingFor(d.id, screens) }, mainFront: (program === "host" ? windowHoldsCard() || engineFront : mainWindowFront(mainState())) && !islandHoldsCard() } as SurfaceEnvironment; // `mainFront` rides along: the SDK's declaration doesn't name it (the island reads it)
 }
 
 /** The displays changed: each surface's part hears its environment as it is now. */

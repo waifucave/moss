@@ -5001,9 +5001,9 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
   const lines: string[] = [];
   try {
     if (target !== "source") fail("the host idle row needs the engine's source seam (MOSS_HOST_COMMAND)");
-    // Linux's surfaces have no window opacity (an invisible window there is a shown one, and the run fails on any), and the spin it
-    // guards came from macOS's displays and sleep.
-    if (onLinux()) { record(n, "PASS", notOnLinux("the surfaces can't be drawn invisible there (no window opacity on X11), and the spin came from macOS's display change and sleep")); return; }
+    // Linux's windows have no opacity (an invisible window there would be a shown one): its host draws its surfaces offscreen, as
+    // every headless host does, and the row holds it to the same budget.
+    const invisible = !onLinux();
     await endStartedHosts();
     const hostLog = join(home, "logs", "host.out.log");
     const from = readLog(hostLog).length;
@@ -5012,9 +5012,23 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
     writeFileSync(screenFile, "");
     const hostApp = hostAppCopy(app);
     const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain"]);
-    const d = await startDaemonProc({ MOSS_HOST_COMMAND: hostCommand, MOSS_TEST_INVISIBLE: "1", MOSS_IPC_STATS: "1", MOSS_TEST_SCREEN_FILE: screenFile, MOSS_DEV_DEBUG: "1" });
+    const d = await startDaemonProc({ MOSS_HOST_COMMAND: hostCommand, ...(invisible ? { MOSS_TEST_INVISIBLE: "1" } : {}), MOSS_IPC_STATS: "1", MOSS_TEST_SCREEN_FILE: screenFile, MOSS_DEV_DEBUG: "1" });
     const hostPid = await until("the host the engine started, ready", 120_000, () => { const p = hostLockPid(home); if (p !== undefined) startedHosts.add(p); return readyCount(readLog(d.log)) > 0 ? p : undefined; }, 500);
-    await until("the island on the screen (invisible)", 60_000, () => (/\[host\] surfaces: [1-9]\d* on the screen \([^)]*island/.test(readLog(d.log)) ? true : undefined), 500);
+    await until("the host placing its island", 60_000, () => (/surface: island bounds/.test(hostText()) ? true : undefined), 500);
+    // A MacBook's built-in display, its camera housing included (a runner's display has none, and with none and nothing to say the
+    // island draws nothing): the island hangs its strip from the housing, as the owner's did (214x46).
+    const housed = (width: number, height: number, top: number) => ({ bounds: { x: 0, y: 0, width, height }, workArea: { x: 0, y: top, width, height: height - top }, notch: { x: (width - 185) / 2, y: 0, width: 185, height: 32 } });
+    const played: string[] = [];
+    let k = 0;
+    const play = async (command: string, json?: unknown) => {
+      k++;
+      appendFileSync(screenFile, `${k} ${command}${json === undefined ? "" : ` ${JSON.stringify(json)}`}\n`);
+      played.push(command);
+      await until(`the host hearing "${command}"`, 10_000, () => ((hostText().match(/test: screen seam /g) ?? []).length >= k ? true : undefined), 100);
+      await sleep(1_500);
+    };
+    await play("display", housed(1512, 982, 33));
+    if (invisible) await until("the island on the screen (invisible)", 60_000, () => (/\[host\] surfaces: [1-9]\d* on the screen \([^)]*island/.test(readLog(d.log)) ? true : undefined), 500);
     await until("the host's counters", 30_000, () => (/ipc: counters on/.test(hostText()) ? true : undefined), 300);
     const windows = () => hostText().split("\n").filter((l) => l.includes("ipc: ")).map((l) => ({ raw: l.replace(/^.*?ipc: /, ""), p: parseIpcLine(l) })).filter((w): w is { raw: string; p: NonNullable<ReturnType<typeof parseIpcLine>> } => w.p !== undefined);
     const next = async (count: number, what: string) => {
@@ -5034,37 +5048,29 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
     lines.push(`before: ${before.text}`);
     // The owner's evening, through the seam: the island steps aside and comes back (a MOSS window to the front and away), the display
     // moves and its work area changes, goes and comes back, its scale changes, the computer suspends and resumes and unlocks.
-    const played: string[] = [];
-    let k = 0;
-    const play = async (command: string, json?: unknown) => {
-      k++;
-      appendFileSync(screenFile, `${k} ${command}${json === undefined ? "" : ` ${JSON.stringify(json)}`}\n`);
-      played.push(command);
-      await until(`the host hearing "${command}"`, 10_000, () => ((hostText().match(/test: screen seam /g) ?? []).length >= k ? true : undefined), 100);
-      await sleep(1_500);
-    };
     await play("front");
     await play("back");
     await play("front");
     await play("back");
-    await play("display", { bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 33, width: 1512, height: 949 } });
+    await play("display", housed(1728, 1117, 38));
     await play("display-removed");
     await play("display-added");
     await play("display-metrics-changed");
     await play("suspend");
     await play("resume");
     await play("unlock-screen");
-    await play("display", { bounds: { x: 0, y: 0, width: 1728, height: 1117 }, workArea: { x: 0, y: 38, width: 1728, height: 1079 } });
+    await play("display", housed(1512, 982, 33));
     lines.push(`played: ${played.join(", ")}`);
     // Settled: a window to let the last change finish, then three measured.
     await next(1, "a counted window after the sequence");
     const after = await next(3, "three counted windows after the sequence");
     const a = summary(after);
     lines.push(`after: ${a.text}`);
-    if (!/surface: island bounds/.test(hostText())) fail("the host never placed its island");
+    const shown = hostText().split("\n").find((l) => /window: shown while headless/.test(l));
+    if (shown !== undefined) fail(`the host showed a window while headless: ${shown.slice(0, 200)}`);
     if (a.msgs > HOST_IDLE_MESSAGES_PER_S) fail(`the host and its pages kept talking after the sequence: ${a.msgs.toFixed(1)} messages/s (budget ${HOST_IDLE_MESSAGES_PER_S}); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
     if (a.cpu > HOST_IDLE_CPU_PERCENT) fail(`the host stayed busy after the sequence: ${a.cpu.toFixed(1)}% of a core (budget ${HOST_IDLE_CPU_PERCENT}%); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
-    record(n, "PASS", `host pid ${hostPid}; ${lines.join("; ")}`);
+    record(n, "PASS", `host pid ${hostPid}, its surfaces ${invisible ? "shown invisible" : "drawn offscreen"}; ${lines.join("; ")}`);
   } catch (err) {
     record(n, statusOf(err), `${why(err)}${lines.length > 0 ? ` (after: ${lines.join("; ").slice(0, 900)})` : ""}`);
   } finally {
