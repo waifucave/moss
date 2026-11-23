@@ -1,7 +1,7 @@
 #!/bin/bash
 # lane: run CI on GitHub for the branch you are on, so many lanes can be checked at once without queuing on one Mac.
 #
-#   scripts/ci/lane start [--only acceptance]   push this branch, start CI on it, print the run's number and address
+#   scripts/ci/lane start [--only acceptance|acceptance-linux]   push this branch, start CI on it, print the run's number and address
 #   scripts/ci/lane wait [run]                  block until the run ends, print each job's result and time; exits 0
 #                                               when the `lane gate` job passed (Windows aside), 1 when it did not
 #   scripts/ci/lane failures [run]              each failed job's failing steps and the error lines of their logs
@@ -28,7 +28,7 @@ cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   start)
     only=all
-    if [ "${1:-}" = "--only" ]; then only="${2:-}"; [ "$only" = acceptance ] || die "--only takes acceptance"; shift 2; fi
+    if [ "${1:-}" = "--only" ]; then only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ]; } || die "--only takes acceptance or acceptance-linux"; shift 2; fi
     [ -z "$(git status --porcelain --untracked-files=no)" ] || say "note: uncommitted changes are not in the run (it runs what is pushed)"
     case "$branch" in
       lane-int/*) say "pushing $branch: a push to an integration branch starts CI by itself"
