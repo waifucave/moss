@@ -3,7 +3,7 @@
 // way after its OK, a quirks file that leaves the plugin's folder or doesn't hold quirks is left out, and only MOSS's
 // own plugin for an id gets what the core grants by id.
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLUGIN_API_VERSION, catalogPointDecl } from "@waifucave/moss-plugin-sdk";
@@ -11,7 +11,7 @@ import { RegistryCore } from "../../registry/core";
 import { PluginFolders } from "../../registry/folders";
 import { fileRegistryStore } from "../../registry/state";
 import type { Contribution, PluginRecord, PluginRegistry } from "../../contracts/plugin-registry";
-import { ContributedBackendCache, RESERVED_BACKEND_IDS, contributedBackends, looksLikeSecret, readQuirksFile } from "../plugin-backends";
+import { ContributedBackendCache, RESERVED_BACKEND_IDS, contributedBackends, looksLikeSecret, readAdapter, readQuirksFile } from "../plugin-backends";
 import { BUNDLED_PLUGINS_DIR, bundledBackends } from "../testing/bundled-backends";
 
 const temps: string[] = [];
@@ -268,5 +268,84 @@ describe("agent backends from plugins", () => {
     records["moss/agent-cursor"]!.treeHash = "c".repeat(64);
     cache.backends(registry);
     expect(built).toBe(2);
+  });
+});
+
+// An agent plugin may say its program is an adapter MOSS provides (`launch.adapter`, spec §9.3): what the bundled Claude Code
+// and Codex plugins declare, and what a plugin's own declaration is held to.
+describe("an adapter a plugin declares", () => {
+  const bundled = bundledBackends();
+
+  test("Claude Code and Codex declare theirs: an exact version inside the tested range, a SHA-512, MOSS's own runtime, the person's own program they drive", () => {
+    const claude = bundled["claude-code"]!.file.adapter!;
+    const codex = bundled["codex"]!.file.adapter!;
+    expect(claude).toMatchObject({ package: "@agentclientprotocol/claude-agent-acp", version: "0.100.0", run: "dist/index.js", runtime: "moss-bun", lock: "adapter-lock.json" });
+    expect(codex).toMatchObject({ package: "@agentclientprotocol/codex-acp", version: "2.6.0", run: "dist/index.js", runtime: "moss-bun" });
+    expect(codex.lock).toBeUndefined(); // one self-contained file: nothing locked beside it
+    expect(claude.integrity).toBe("sha512-X+f2M5RiehzSzWRJjDSf0Sbzoc8JK66l85YnYW5TAdHJX53CLQV00v2M72bfCKJ4IZ11qt+WQ/Yg9NVKcuDAhQ==");
+    expect(codex.integrity).toBe("sha512-/PBsd0H6URy4bhXhAeXqwb7RqctbXfNceRihAh6nDmn5HJ873uzoHvHxF45YmeWfgOKKRrNRLZjYsket2a7EsQ==");
+    expect(claude.uses).toMatchObject([{ program: "claude", env: "CLAUDE_CODE_EXECUTABLE" }]);
+    expect(codex.uses).toMatchObject([{ program: "codex", env: "CODEX_PATH" }]);
+    // The version the plugin names is a version its own row was tested with.
+    for (const id of ["claude-code", "codex"]) {
+      const b = bundled[id]!;
+      const v = b.file.adapter!.version.split(".").map(Number) as [number, number, number];
+      const [lo, hi] = [/>=(\d+)\.(\d+)\.(\d+)/.exec(b.file.quirks.launch.versions)!, /<(\d+)\.(\d+)\.(\d+)/.exec(b.file.quirks.launch.versions)!];
+      const cmp = (a: number[], c: number[]) => (a[0]! - c[0]! || a[1]! - c[1]! || a[2]! - c[2]!);
+      expect([id, cmp(v, lo.slice(1).map(Number)) >= 0 && cmp(v, hi.slice(1).map(Number)) < 0]).toEqual([id, true]);
+    }
+    // The adapter block isn't in the descriptor the client reads.
+    expect("adapter" in bundled["claude-code"]!.quirks.launch).toBe(false);
+  });
+
+  test("Claude Code's lock holds the closure npm resolved, each with its integrity, none of them the adapter itself, and says where its hashes came from", () => {
+    const folder = bundled["claude-code"]!.folder;
+    const decl = readAdapter(folder, bundled["claude-code"]!.file.adapter!);
+    expect(decl.packages.length).toBe(106);
+    expect(decl.packages.every((p) => /^sha512-[A-Za-z0-9+/]{86}==$/.test(p.integrity) && /^\d+\.\d+\.\d+$/.test(p.version) && p.size !== undefined)).toBe(true);
+    expect(decl.packages.some((p) => p.name === "@agentclientprotocol/claude-agent-acp")).toBe(false);
+    // The Claude Agent SDK's platform binaries are optional and left out: the person's own `claude` is used instead.
+    expect(decl.packages.some((p) => /^@anthropic-ai\/claude-agent-sdk-(darwin|linux|win32)/.test(p.name))).toBe(false);
+    const lock = JSON.parse(readFileSync(join(folder, "adapter-lock.json"), "utf8")) as { source: string };
+    expect(lock.source).toContain("registry.npmjs.org");
+    expect(lock.source).toContain("dist.integrity");
+    expect(readAdapter(bundled["codex"]!.folder, bundled["codex"]!.file.adapter!).packages).toEqual([]);
+  });
+
+  test("a lock that names the adapter itself, a lock outside the plugin's folder, and a lock that isn't one are refused", () => {
+    const folder = mkdtempSync(join(tmpdir(), "moss-adapter-plugin-"));
+    temps.push(folder);
+    const decl = { ...bundled["claude-code"]!.file.adapter!, lock: "lock.json" };
+    const own = { path: `node_modules/${decl.package}`, name: decl.package, version: decl.version, integrity: decl.integrity };
+    writeFileSync(join(folder, "lock.json"), JSON.stringify({ lock: 1, source: "x", packages: [own] }));
+    expect(() => readAdapter(folder, decl)).toThrow(/locks the adapter itself/);
+    writeFileSync(join(folder, "lock.json"), JSON.stringify({ lock: 1, packages: "nope" }));
+    expect(() => readAdapter(folder, decl)).toThrow(/isn't a lock file/);
+    expect(() => readAdapter(folder, { ...decl, lock: "../lock.json" })).toThrow(/isn't a path inside the plugin/);
+    expect(() => readAdapter(folder, { ...decl, lock: "/etc/hosts" })).toThrow(/isn't a path inside the plugin/);
+  });
+
+  test("a third-party plugin's declaration is read the same way, and one that hands a program's path in a name only MOSS sets is left out, with a line saying why", async () => {
+    const w = world();
+    const make = (id: string, env: string) => {
+      const folder = join(w.pluginsDir, id);
+      mkdirSync(join(folder, "rows"), { recursive: true });
+      writeFileSync(join(folder, "moss.json"), JSON.stringify({
+        manifest: 1, id, name: id, version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` },
+        contributes: { agentBackends: [{ id, name: id, protocol: "acp", command: id, args: ["acp"], quirks: "rows/quirks.json" }] },
+      }));
+      const file = structuredClone(QUIRKS_OF("grok")) as unknown as Record<string, unknown> & { quirks: { launch: Record<string, unknown> } };
+      file.quirks.launch.adapter = { ...bundled["codex"]!.file.adapter!, uses: [{ program: "tool", env }] };
+      writeFileSync(join(folder, "rows", "quirks.json"), JSON.stringify(file));
+    };
+    make("ok-adapter", "TOOL_PATH");
+    make("bad-adapter", "MOSS_HOME");
+    await w.folders.scan();
+    for (const id of ["ok-adapter", "bad-adapter"]) await w.core.approve(id, w.core.get(id)!.treeHash!);
+    const lines: string[] = [];
+    const got = contributedBackends(w.core, (l) => lines.push(l));
+    expect(got.find((c) => c.id === "ok-adapter")!.adapter).toMatchObject({ package: "@agentclientprotocol/codex-acp", packages: [] });
+    expect(got.some((c) => c.id === "bad-adapter")).toBe(false);
+    expect(lines.join("\n")).toContain("bad-adapter isn't offered: its adapter declaration is refused");
   });
 });
