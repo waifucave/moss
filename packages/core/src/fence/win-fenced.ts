@@ -410,6 +410,9 @@ export function quarantinePatternMatches(patterns: readonly string[], roots: rea
   return quarantinePlanted(planted, mossHome);
 }
 
+/** The profile read grant, by launcher: made once per process (`grantProfile`), again after one that failed. */
+const profileGrants = new Map<string, Promise<string | null>>();
+
 /** The session grants this process holds (`acl grant --holder-pid <this pid>`), counted across every spawner in it
  *  (the daemon has more than one: the bot shell's and the computer node's). srt-win's `acl revoke --holder-pid`
  *  releases ALL of a holder's grants and its holds on the kept roots, so a command that ended revoking while another
@@ -456,15 +459,21 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   };
   // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
   // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
-  let profileGrant: Promise<string | null> | undefined;
-  const grantProfile = (): Promise<string | null> => (profileGrant ??= (async () => {
-    const started = Date.now();
-    const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json"], { timeoutMs: 1_800_000 });
-    const took = `${Math.round((Date.now() - started) / 1000)} s`;
-    if (r.code === 0) return null;
-    profileGrant = undefined;
-    return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
-  })());
+  // One grant per process, whichever spawner asks first (the daemon has two).
+  const grantProfile = (): Promise<string | null> => {
+    const had = profileGrants.get(deps.launcher);
+    if (had !== undefined) return had;
+    const p = (async () => {
+      const started = Date.now();
+      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json"], { timeoutMs: 1_800_000 });
+      const took = `${Math.round((Date.now() - started) / 1000)} s`;
+      if (r.code === 0) return null;
+      profileGrants.delete(deps.launcher);
+      return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
+    })();
+    profileGrants.set(deps.launcher, p);
+    return p;
+  };
   // The read grant is made when the spawner is, off any command's path (its first run walks the profile: ~18 s on the
   // runner); a command that comes before it ends waits for it, as before.
   if (o.grantAhead !== false) setTimeout(() => { if (!("why" in install())) void grantProfile(); }, 0);

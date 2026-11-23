@@ -63,6 +63,12 @@ import {
   userStatusArgs,
   sandboxLeasesDir,
   acquirePoolLease,
+  remakeProfileArgs,
+  poolStateDir,
+  poolStateFiles,
+  isFreshGeneration,
+  poolDirAclArgs,
+  poolFileAclArgs,
 } from "../../src/fence/win-sandbox";
 import { authenticodeDigest, validateCertificateTable } from "../../src/fence/windows-launcher";
 import type { SandboxPolicy } from "../../src/contracts/fence";
@@ -881,5 +887,39 @@ describe("the leases-dir trust check (Addendum 12)", () => {
     expect(leasesDirAccessProblem("D:\\leases", { profileRoot: "C:\\Users\\amy", security: inherited })).toContain(users);
     expect(leasesDirAccessProblem("D:\\leases", { profileRoot: "C:\\Users\\amy", security: null })).toContain("could not be read");
     expect(leasesDirAccessProblem("D:\\leases", { profileRoot: null, security: null })).toContain("could not be read");
+  });
+});
+
+describe("the pool's state (lane WS2: profiles remade ahead)", () => {
+  test("its folder and files are per owner, under ProgramData", () => {
+    const dir = poolStateDir("C:\\ProgramData", "S-1-5-21-1-2-3-1001");
+    expect(dir).toBe("C:\\ProgramData\\MOSS Sandbox\\pool\\S-1-5-21-1-2-3-1001");
+    expect(poolStateFiles(dir, "moss-sb-abcdef-1")).toEqual({ lock: `${dir}\\moss-sb-abcdef-1.lock`, gen: `${dir}\\moss-sb-abcdef-1.gen`, used: `${dir}\\moss-sb-abcdef-1.used` });
+  });
+
+  test("fresh only for a generation the reset wrote and the daemon hasn't used", () => {
+    const g = "ab".repeat(16);
+    expect(isFreshGeneration(g, "")).toBe(true);
+    expect(isFreshGeneration(`${g}\r\n`, null)).toBe(true);
+    expect(isFreshGeneration(g, g)).toBe(false);
+    expect(isFreshGeneration(g, `${g}\n`)).toBe(false);
+    for (const bad of [null, "", "x", "AB".repeat(16), "ab".repeat(15)]) expect(isFreshGeneration(bad, "")).toBe(false);
+  });
+
+  test("the owner lists and reads the folder (no create, no delete); it writes only the lock and its used record", () => {
+    expect(poolDirAclArgs("C:\\p", "S-1-5-21-9")).toEqual(["icacls", "C:\\p", "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-21-9:(RX)"]);
+    expect(poolFileAclArgs("C:\\p\\a.gen", "S-1-5-21-9", false)).toEqual(["icacls", "C:\\p\\a.gen", "/grant:r", "*S-1-5-21-9:(R)"]);
+    expect(poolFileAclArgs("C:\\p\\a.used", "S-1-5-21-9", true)).toEqual(["icacls", "C:\\p\\a.used", "/grant:r", "*S-1-5-21-9:(R,W)"]);
+    expect(() => poolDirAclArgs("C:\\p", "Everyone")).toThrow();
+  });
+
+  test("a remake deletes the profile (left alone while loaded) and makes it again with CreateProfile, by SID and name only", () => {
+    const argv = remakeProfileArgs("S-1-5-21-1-2-3-1004", "moss-sb-abcdef-2");
+    const script = Buffer.from(argv[argv.length - 1]!, "base64").toString("utf16le");
+    expect(script).toContain("Win32_UserProfile");
+    expect(script).toContain("if ($p -and $p.Loaded) { exit 3 }");
+    expect(script).toContain("CreateProfile('S-1-5-21-1-2-3-1004', 'moss-sb-abcdef-2'");
+    expect(() => remakeProfileArgs("S-1-5-21-1'; rm", "x")).toThrow();
+    expect(() => remakeProfileArgs("S-1-5-21-1", "a'b")).toThrow();
   });
 });
