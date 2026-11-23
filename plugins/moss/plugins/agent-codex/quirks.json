@@ -127,7 +127,7 @@
     },
     "config": {
       "modelOption": "model",
-      "effortOption": "thought_level",
+      "effortOption": "reasoning_effort",
       "effortInModel": false,
       "choicePersists": false
     },

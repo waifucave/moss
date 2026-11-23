@@ -384,6 +384,26 @@ describe("with a real fake ACP agent process: its declared list command, and a s
   }, 30_000);
 });
 
+describe("the effort is set under the agent's own option id", () => {
+  test("an agent whose effort option has an id of its own (Codex: reasoning_effort, category thought_level) takes the effort at the start and on a later pick", async () => {
+    const dir = fresh("effort-id");
+    const clock = new FakeClock();
+    // The plugin names the category, as the bundled agent plugins do; the agent reports and accepts the option under its own id.
+    const quirks = { ...S5_ANTIGRAVITY_QUIRKS, config: { ...S5_ANTIGRAVITY_QUIRKS.config, modelOption: "model", effortOption: "thought_level" } };
+    const h = acpHarness(dir, { id: "demo", clock, quirks, script: [[{ say: "hello" }]] }, { fake: { effortId: "reasoning_effort" } });
+    const fence = new FakeFence({ home: "/Users/me", mossHome: "/Users/me/.moss" }).policy();
+    const s = await h.start({ sessionId: "s1", root: "/Users/me/p", fence, model: "fake-model-b", effort: "high", bridge: { name: "moss-bridge", command: "/opt/moss/moss-core", args: ["bridge"], env: { MOSS_BRIDGE_TOKEN: "x" }, tools: [] } });
+    await s.prompt({ text: "go" });
+    const report = readReport(h.run.report);
+    const at = (type: string, option?: string) => report.findIndex((r) => r.type === type && (option === undefined || r["option"] === option));
+    expect(report[at("config", "effort")]!["value"]).toBe("high");
+    expect(at("config", "effort")).toBeLessThan(at("prompt"));
+    await s.setConfig("effort", "low");
+    expect(h.sessions[0]!.config.effort).toBe("low");
+    await s.stop();
+  }, 30_000);
+});
+
 describe("the options a session's agent lets the person choose (a third option of the fake agent)", () => {
   const QUIRKS = { ...S5_ANTIGRAVITY_QUIRKS, config: { ...S5_ANTIGRAVITY_QUIRKS.config, modelOption: "model", effortOption: "thought_level" } };
   const start = async (name: string) => {

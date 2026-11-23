@@ -476,11 +476,17 @@ export class AcpAgentSession implements AgentSession {
   async setConfig(option: "model" | "effort", value: string): Promise<void> {
     if (this.#state === "stopped" || this.#state === "failed") throw new ContractError("closed", "the agent's session has ended");
     const q = this.#quirks.config;
-    const id = option === "model" ? q.modelOption : q.effortOption;
-    if (id === null) {
+    const named = option === "model" ? q.modelOption : q.effortOption;
+    if (named === null) {
       throw new ContractError("refused", `this agent takes no ${option} option${option === "effort" && q.effortInModel ? "; its effort is part of the model" : ""}`);
     }
-    await this.#setOption(id, value);
+    // The id sent is the AGENT'S OWN id for that option: the one the plugin names when the agent reports an option under it,
+    // else the reported option of that category. A plugin may name the category where the agent's id differs: Codex reports
+    // its effort as `reasoning_effort` in the category `thought_level`, and a set under `thought_level` is refused as invalid
+    // params, which failed every turn of a session that had an effort (the owner's installed build, 2026-11-23).
+    const category = option === "model" ? "model" : "thought_level";
+    const reported = this.#config.find((c) => c.id === named) ?? this.#config.find((c) => c.category === category);
+    await this.#setOption(reported?.id ?? named, value);
   }
 
   /** The person's pick of one of the agent's other options (never the model, the effort or the approval level's mode:

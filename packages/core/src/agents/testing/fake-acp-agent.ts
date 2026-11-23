@@ -56,6 +56,10 @@ export interface FakeAcpConfig {
   /** What its list command prints (`<program> <config> models`): the models as JSON, one `{ slug, display_name,
    *  visibility, levels }` each; the agent's own model list, as a real one's list command gives it. */
   modelsList?: { slug: string; display_name?: string; visibility?: string; levels?: { effort: string }[] }[];
+  /** The id the effort option is reported and set under, when it is not the name the quirks give (a real agent's option
+   *  has an id of its own beside its category: Codex's effort is `reasoning_effort` in the category `thought_level`).
+   *  A set under any other id is refused as invalid params, as the real agent does. */
+  effortId?: string;
   /** A third selectable config option the agent reports (not MOSS's: no category), the first value current; a set is
    *  reported as `{type:"config", option:<its id>, value}`. */
   extraOption?: { id: string; name: string; values: string[] };
@@ -142,7 +146,7 @@ function configOptions(): unknown[] {
     // No selection yet.
   }
   if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: (cfg.modelValues ?? ["fake-model-a", "fake-model-b"]).map((v) => ({ value: v, name: v })) });
-  if (q.config.effortOption) out.push({ id: q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
+  if (q.config.effortOption) out.push({ id: cfg.effortId ?? q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
   if (cfg.modes?.length) out.push({ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: current.mode ?? cfg.modes[0], options: cfg.modes.map((v) => ({ value: v, name: v })) });
   if (cfg.extraOption) out.push({ id: cfg.extraOption.id, name: cfg.extraOption.name, type: "select", currentValue: extra ?? cfg.extraOption.values[0], options: cfg.extraOption.values.map((v) => ({ value: v, name: v.toUpperCase() })) });
   return out;
@@ -258,7 +262,7 @@ async function handle(method: string, params: Record<string, unknown>): Promise<
         report({ type: "config", option: id, value });
         return { configOptions: configOptions() };
       }
-      const option = id === q.config.modelOption ? "model" : id === q.config.effortOption ? "effort" : id === "mode" && cfg.modes?.length ? "mode" : undefined;
+      const option = id === q.config.modelOption ? "model" : id === (cfg.effortId ?? q.config.effortOption) ? "effort" : id === "mode" && cfg.modes?.length ? "mode" : undefined;
       if (!option) throw new RpcError(-32602, `no config option ${id}`);
       current[option] = value;
       report({ type: "config", option, value });
