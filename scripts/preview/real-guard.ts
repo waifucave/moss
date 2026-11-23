@@ -42,7 +42,9 @@ if (probe) {
   let active: { id: unknown; sessionId: unknown; timer: ReturnType<typeof setTimeout> } | undefined;
   const reply = (id: unknown, why: string): void => {
     noteRefusal(budget, agent, why);
-    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code: -32000, message: `preview budget: ${why}` } })}\n`);
+    // -32603 (internal error), never -32000: in ACP -32000 is "authentication required", and MOSS would show a budget refusal as
+    // "this agent needs its own sign-in" and drop the agent's process (the first real run read exactly that).
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code: -32603, message: `preview budget: ${why}` } })}\n`);
   };
   /** A session slot, once per session this process starts (a prompt with none started yet claims one); false when the agent's slots are spent. */
   const slot = (): boolean => {
