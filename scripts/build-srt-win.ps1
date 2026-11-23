@@ -66,7 +66,7 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/user.rs",
   "vendor/srt-win-src/src/winsta.rs"
 )
-$ExpectedPatchAdded = 437
+$ExpectedPatchAdded = 438
 $ExpectedPatchDeleted = 45
 
 function Check-Tools {
