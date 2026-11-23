@@ -163,8 +163,6 @@ export function appEnv(i: EnvInput & { headless: boolean; appearance: Appearance
     ...(i.appearance === "system" ? {} : { MOSS_PREVIEW_APPEARANCE: i.appearance }),
     // The DevTools port (loopback, no token) only for the one-picture run; a controlled preview uses its own door and opens no port.
     ...(i.headless && i.control === undefined ? { MOSS_DEV_DEBUG: "1" } : {}),
-    // A controlled headless preview shows its window at opacity 0, deaf to the mouse (the app's own measuring mode, unpackaged builds only): the sealed card buttons read themselves visible only in a composited window, and nothing is drawn on the screen.
-    ...(i.headless && i.control !== undefined ? { MOSS_TEST_INVISIBLE: "1" } : {}),
     ...(i.control !== undefined ? { MOSS_PREVIEW_CONTROL_SOCKET: l.appDoor, MOSS_PREVIEW_CONTROL_TOKEN: i.control.token } : {}),
   };
 }

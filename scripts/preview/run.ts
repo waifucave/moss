@@ -302,7 +302,7 @@ async function main(o: Options): Promise<void> {
   // The app's isolation, said once for what a reader can check.
   const problems = [
     ...isolationProblems(daemonEnv({ ...input, runPid: process.pid, usageInert: USAGE_INERT_ENV }), layout, process.env.HOME ?? ""),
-    ...isolationProblems(appEnv({ ...input, headless: o.headless, appearance: o.appearance, ...(appToken !== undefined ? { control: { token: appToken } } : {}) }), layout, process.env.HOME ?? "", o.headless && appToken !== undefined ? ["MOSS_TEST_INVISIBLE"] : []),
+    ...isolationProblems(appEnv({ ...input, headless: o.headless, appearance: o.appearance, ...(appToken !== undefined ? { control: { token: appToken } } : {}) }), layout, process.env.HOME ?? ""),
   ];
   if (problems.length > 0) throw new Error(`the preview's environment is not isolated: ${problems.join("; ")}`);
 
