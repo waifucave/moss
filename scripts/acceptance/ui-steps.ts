@@ -2172,7 +2172,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       landedOn = session;
       const tag = `WINDOW-TAG-${randomBytes(4).toString("hex").toUpperCase()}`;
       await rpc.request("session.send", { id: session, message: { text: `ACCEPTANCE-CALL Window {"text":"${tag}"}`, clientMessageId: `window-${tag}` } }, 30_000);
-      const carded = "a read-only tool of its own: it ran with no card";
+      // A read-only tool of the plugin's own runs with no card where its host is fenced (macOS); where it is not (Linux: plugin code
+      // runs as the user, spec §5.2 item 58) the registry cannot forecast it contained, so the tool asks and the card is pressed.
+      const carded = process.platform === "darwin" ? "a read-only tool of its own: it ran with no card" : "a tool of its own that asks where its host is unfenced: its card pressed";
+      if (process.platform !== "darwin") await ctx.pressCard!("its tool card (its host is unfenced here, so even a read-only tool asks)", (c) => c.kind === "tool" && c.session === session);
       await until("the tool's result in the model's next request", 90_000, async () => ctx.requests().find((r) => r.toolResult?.text.includes(`acceptance-window-pong: ${tag}`)),
         async () => `${carded}; the provider's last requests: ${JSON.stringify(ctx.requests().slice(-3).map((r) => ({ said: r.lastUserText.slice(0, 80), answered: r.answered?.slice(0, 80), result: r.toolResult?.text.slice(0, 80) })))}`);
       // 1.83 composer.action: its button is in the composer of Alpha's tab, pressed in the window.
