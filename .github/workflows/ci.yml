@@ -16,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone"
+        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone. acceptance-linux: only the Linux acceptance (lane LX), which no other choice but `all` and `acceptance` runs"
         type: choice
-        options: [all, acceptance]
+        options: [all, acceptance, acceptance-linux]
         default: all
 
 # One run per branch: a new push to a pull request or an integration branch, or a new manual run on a branch, cancels
@@ -113,7 +113,7 @@ jobs:
               git fetch --no-tags --depth=1 origin "$GROUP_BASE" || true
               bun scripts/ci-changes.ts --base "$GROUP_BASE" ;;
             # A manual run of the acceptance alone: no change, so no area (the acceptance job takes none).
-            *) if [ "$ONLY" = acceptance ]; then bun scripts/ci-changes.ts --base HEAD; else bun scripts/ci-changes.ts --all; fi ;;
+            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ]; then bun scripts/ci-changes.ts --base HEAD; else bun scripts/ci-changes.ts --all; fi ;;
           esac
 
   # Always, whatever changed: the rename's residue and the live install's names over every tracked file, the rename's
@@ -1287,7 +1287,7 @@ jobs:
   # under the lockfile. scripts/heavy's exclusive lock is free on a fresh runner and is taken as on a Mac.
   acceptance:
     name: acceptance · ${{ matrix.unit }}
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-linux')
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
@@ -1451,7 +1451,7 @@ jobs:
   swift-cowork-launcher:
     name: swift (WinterCoworkLauncher)
     # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux'
     runs-on: macos-latest
     permissions:
       contents: read
@@ -1475,7 +1475,7 @@ jobs:
   libkrun-queue:
     name: libkrun patch queue
     # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run. Skipped, the job reports success.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
