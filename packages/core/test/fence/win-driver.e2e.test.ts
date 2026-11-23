@@ -4,10 +4,10 @@
 // reaches the fenced spawner with the session's sandbox; a call asking to leave the sandbox reaches the permission
 // check (`canUseTool`, where bot-check raises its escape card) under the plain name, with the flag, before it runs.
 //
-// Windows only, and only with MOSS_WIN_RUNTIME_E2E=1: the agent runtime (0.0.83) doesn't start on Windows yet. Its temp
-// base is `MOSS_TMPDIR` or else "/tmp" (on Windows the current drive's `\tmp`, missing), and with that set it stops at
-// `process.getuid()`, which Windows hasn't: "runtime exited before init" (windows-fence run 45083249080). Run it once
-// the runtime starts there. The spawner is a recording fake; the fence itself is proven by win-fenced.e2e.test.ts.
+// Windows only, and only with MOSS_WIN_RUNTIME_E2E=1, which the windows-fence workflow's `unit` job sets: it is a real
+// embedded-runtime session, kept off the other Windows jobs. The agent runtime starts on Windows since 0.0.84 (0.0.83
+// died on its "/tmp" temp base and on `process.getuid()`). The spawner is a recording fake; the fence itself is proven
+// by win-fenced.e2e.test.ts.
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

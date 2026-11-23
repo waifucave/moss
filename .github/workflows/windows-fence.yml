@@ -118,3 +118,9 @@ jobs:
       - name: Core · the Windows fence's unit tests
         working-directory: packages/core
         run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
+
+      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.84)
+        working-directory: packages/core
+        run: |
+          $env:MOSS_WIN_RUNTIME_E2E = "1"
+          bun test --timeout 300000 test/fence/win-driver.e2e.test.ts
