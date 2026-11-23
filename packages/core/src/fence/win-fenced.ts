@@ -342,7 +342,7 @@ export function windowsDeps(mossHome: string, o: { ownerSid: string | null; prog
     programData: o.programData,
     systemRoot: process.env.SystemRoot ?? "C:\\Windows",
     shells: windowsShells(),
-    leases: () => (store ??= createWindowsLockStore(leasesDir)),
+    leases: () => (store ??= createWindowsLockStore(leasesDir, { poolState: o.ownerSid !== null && o.programData !== null })),
     leasesDir,
     async exec(argv, x = {}) {
       try {
