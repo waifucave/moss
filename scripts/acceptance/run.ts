@@ -828,7 +828,10 @@ function sourceApp(): { exe: string; args: string[] } {
     if (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))) throw new Error(`electron's install.js failed: ${(r.stderr ?? "").trim().slice(0, 300)}`);
   }
   const exe = join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim());
-  return { exe, args: [DESKTOP, "--mute-audio"] };
+  // A runner has no GPU: on Linux Chromium draws in software (as apps/desktop/test/ui-smoke.test.ts does), or its GPU process fails to
+  // start, the screenshots of a hidden window get no answer and a WebGL page (the 3D renderer) never draws.
+  const software = process.platform === "linux" ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] : [];
+  return { exe, args: [DESKTOP, "--mute-audio", ...software] };
 }
 
 function packagedApp(bundle: string): { exe: string; args: string[] } {
