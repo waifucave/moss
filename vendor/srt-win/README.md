@@ -16,9 +16,11 @@ The Bash fence on Windows runs bots' commands as a dedicated per-user sandbox pr
   install no longer orphans another's launch path. The global record keeps its
   exact semantics (last install wins); everything new is opt-in behind `--user`.
   `0002-session-0-named-objects.patch` lets a broker in session 0 (a password
-  scheduled task) launch: the named-object grant opens the global
-  `\BaseNamedObjects` there (no `\Sessions\0\...` exists), and is skipped with a
-  warning when a standard user may not change it.
+  scheduled task) launch: there the named-object grant isn't made (no
+  `\Sessions\0\...` directory exists, and the global one must not be changed).
+  `0003-network-open-principal.patch` adds `install --network-open`: the account's
+  user-keyed filter blocks only the cloud metadata address, for the account that
+  runs a command the person approved to leave the sandbox.
 - `vendor/srt-win/srt-win.exe` is the static-CRT build lane M's CI makes and
   signs (with the patches applied); the Authenticode digest check in
   `packages/core/src/fence/windows-launcher.ts` (`SRT_WIN_PINS`) fails closed
