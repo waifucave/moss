@@ -142,11 +142,7 @@ describe("the preview's options and record carry the door", () => {
     expect(ctl.MOSS_PREVIEW_CONTROL_SOCKET).toBe("/tmp/mprev-abc123/ctl/a.sock");
     expect(ctl.MOSS_PREVIEW_CONTROL_TOKEN).toBe(t);
     expect(ctl.MOSS_DEV_DEBUG).toBeUndefined();
-    // a controlled headless window is shown at opacity 0 (the sealed buttons need a composited window): allowed for the app's env only
-    expect(ctl.MOSS_TEST_INVISIBLE).toBe("1");
-    expect(isolationProblems(ctl, layout, "/Users/someone", ["MOSS_TEST_INVISIBLE"])).toEqual([]);
-    expect(isolationProblems(ctl, layout, "/Users/someone").join(" ")).toContain("MOSS_TEST_INVISIBLE must not be set");
-    expect(appEnv({ ...input, headless: false, appearance: "system", control: { token: t } }).MOSS_TEST_INVISIBLE).toBeUndefined();
+    expect(isolationProblems(ctl, layout, "/Users/someone")).toEqual([]);
     expect(appArgs({ desktopDir: "/d", headless: true, control: true }).join(" ")).not.toContain("remote-debugging");
     expect(appArgs({ desktopDir: "/d", headless: true, port: 9 }).join(" ")).toContain("--remote-debugging-port=9");
     expect(appArgs({ desktopDir: "/d", headless: false, control: true }).join(" ")).not.toMatch(/remote-debugging|inspect/);
