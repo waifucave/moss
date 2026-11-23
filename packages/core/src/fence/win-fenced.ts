@@ -380,6 +380,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // roots' entries are for the sandbox group every pool member is in (the patched launcher's shared group), and
         // srt-win records them against the installed sandbox user, the install record's own (`marker_user_sid`):
         // so they are granted as that user, whichever member runs this command.
+        mark("plan");
         const installed = await installedSandboxSid();
         if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
         const grantSid = installed;
@@ -411,12 +412,13 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           const places = gitPlaces(roots);
           const configBefore = snapshotFiles(places.configs);
           const hooksBefore = hookFiles(places.hooks);
+          mark("snapshot");
           const runShell: RunShell = shell === "powershell" ? "none" : "git-bash";
           const result = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv: built.argv });
+          mark("exec");
           if (result.kind === "refused") return result;
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
-          mark("exec");
           const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome)].filter((n): n is string => n !== null);
           mark("belt");
           return notes.length === 0 ? result : { ...result, stderr: result.stderr + notes.join("") };
