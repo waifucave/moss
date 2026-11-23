@@ -1,5 +1,5 @@
 {
-  "notes": "Codex, through `@agentclientprotocol/codex-acp` 2.5.0, which drives the user's own `codex app-server`  (`CODEX_PATH`); its fence is `CODEX_CONFIG`, and `NO_BROWSER` keeps its sign-in from opening a browser. Unmeasured (from docs, `--help` and code, S5 §3): where a row isn't known it takes the cautious value (a reattach by `load` with its replay dropped, MCP names unread, calls a cancel leaves open closed by MOSS), it is held as acting without asking (`unasked-actions`) since it loads the user's own approval settings, and no sandbox is admitted, so it asks for the user's OK. The agent suite's live gates measure each row. Its adapter answers `--version` with its package's name and the number (`@agentclientprotocol/codex-acp 2.6.0`, measured on a real install 2026-11-22).",
+  "notes": "Codex, through `@agentclientprotocol/codex-acp` 2.5.0, which drives the user's own `codex app-server`  (`CODEX_PATH`); its fence is `CODEX_CONFIG`, and `NO_BROWSER` keeps its sign-in from opening a browser. Unmeasured (from docs, `--help` and code, S5 §3): where a row isn't known it takes the cautious value (a reattach by `load` with its replay dropped, MCP names unread, calls a cancel leaves open closed by MOSS), it is held as acting without asking (`unasked-actions`) since it loads the user's own approval settings, and no sandbox is admitted, so it asks for the user's OK. The agent suite's live gates measure each row. Its adapter answers `--version` with its package's name and the number (`@agentclientprotocol/codex-acp 2.6.0`, measured on a real install 2026-11-22). MOSS provides the adapter itself (`launch.adapter`): 2.6.0, one self-contained file with its dependencies bundled in (the integrity is the registry metadata's `dist.integrity`), fetched behind one card, checked before it is unpacked, and run on MOSS's own Bun. It drives the user's own `codex`, which MOSS finds and hands it in `CODEX_PATH` (without it the adapter looks for a `@openai/codex` package that isn't fetched). The user's own installed adapter is the fallback while MOSS's copy isn't there.",
   "source": "docs and code (S5 §3)",
   "readOnlyMode": {
     "option": "mode",
@@ -70,7 +70,27 @@
       "envSet": {
         "NO_BROWSER": "1"
       },
-      "versions": ">=2.5.0 <3.0.0"
+      "versions": ">=2.5.0 <3.0.0",
+      "adapter": {
+        "package": "@agentclientprotocol/codex-acp",
+        "version": "2.6.0",
+        "integrity": "sha512-/PBsd0H6URy4bhXhAeXqwb7RqctbXfNceRihAh6nDmn5HJ873uzoHvHxF45YmeWfgOKKRrNRLZjYsket2a7EsQ==",
+        "size": 407881,
+        "run": "dist/index.js",
+        "runtime": "moss-bun",
+        "uses": [
+          {
+            "program": "codex",
+            "env": "CODEX_PATH",
+            "identity": {
+              "versionArgs": [
+                "--version"
+              ],
+              "versionPattern": "^codex-cli\\s+v?(\\d+\\.\\d+\\.\\d+)"
+            }
+          }
+        ]
+      }
     },
     "mcp": {
       "transports": [

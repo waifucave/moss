@@ -54,6 +54,7 @@ import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessio
 import { AgentDriver } from "./driver";
 import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
+import { isAdapterBackend, type AdapterBackend, type AdapterOffer } from "./adapter/types";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
 import { EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
@@ -299,6 +300,8 @@ export class AgentManager {
   /** Agents this computer's bots placed on other computers. */
   readonly #remote = new Map<string, RemoteAgentEntry>();
   readonly #oks: AgentOks;
+  /** One card and one fetch per adapter package and version, however many sessions start while it is open. */
+  readonly #adapterFlights = new Map<string, Promise<void>>();
   /** The one door behind `SendMessage` and `ListSessions` for every session (messenger.ts): the protocol's `reachRefusal` decides. */
   readonly #messenger: EngineSessionMessenger;
   #peers: AgentPeers | undefined;
@@ -956,8 +959,72 @@ export class AgentManager {
     }
   }
 
+  /** An agent whose adapter MOSS provides, with none in place: one card (the package and version, where from, that it is
+   *  code MOSS will run, its size), shared by every session that starts while it is open; then, on the yes, the fetch.
+   *  Nothing is fetched without the yes. Never throws: what came of it is noted on the backend, and `detect` then says
+   *  plainly why the agent isn't there (or the person's own adapter, where there is one, is what starts). */
+  async #provideAdapter(e: Entry): Promise<void> {
+    const b = e.backend;
+    if (!isAdapterBackend(b)) return;
+    const offer = await b.adapterOffer().catch(() => undefined);
+    if (offer === undefined) return;
+    const key = `${offer.package}@${offer.version}`;
+    let flight = this.#adapterFlights.get(key);
+    if (flight === undefined) {
+      flight = this.#askAdapter(e, b, offer).finally(() => this.#adapterFlights.delete(key));
+      this.#adapterFlights.set(key, flight);
+    }
+    await flight;
+  }
+
+  async #askAdapter(e: Entry, b: AdapterBackend, offer: AdapterOffer): Promise<void> {
+    const name = (b as { name?: string }).name ?? e.backend.id;
+    const mb = (n: number) => (n < 1024 * 1024 ? "under 1 MB" : `about ${Math.round(n / (1024 * 1024))} MB`);
+    const decision = await this.#o.approvals.request({
+      kind: "change",
+      change: "agent-adapter",
+      session: e.id,
+      ...(e.bot === undefined ? {} : { bot: e.bot }),
+      origin: e.driver.currentOrigin() ?? "agent",
+      computers: [e.computer],
+      effect: "other",
+      fields: {
+        title: { type: "text", text: `Download ${sealedText(name, 200)}'s adapter?` },
+        what: { type: "text", text: `${sealedText(name, 200)} doesn't speak ACP itself, so MOSS runs an adapter for it: ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm. It is code from npm that MOSS will run on this computer to talk to ${sealedText(name, 200)}, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes.` },
+        computer: { type: "text", text: e.computer },
+        source: { type: "rows", rows: [
+          { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          { label: "Package", value: sealedText(`${offer.package} ${offer.version}`, 4000) },
+          { label: "Downloaded from", value: sealedText(offer.registry, 4000) },
+          { label: "Size", value: sealedText(`${offer.bytes === undefined ? "size not known" : mb(offer.bytes)}, ${offer.packages} package${offer.packages === 1 ? "" : "s"}`, 4000) },
+          { label: "Kept in", value: sealedText(offer.folder, 4000) },
+          { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
+          { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
+        ] },
+        detail: { type: "rows", rows: [
+          { label: "Runs on", value: "MOSS's own runtime, never your own node" },
+          ...(offer.uses.length === 0 ? [] : [{ label: "Drives, from your computer", value: sealedText(offer.uses.join(", "), 4000) }]),
+          ...(offer.again === undefined ? [] : [{ label: "Why again", value: sealedText(offer.again, 4000) }]),
+        ] },
+      },
+    }, (e.driver.currentSignal() === undefined ? {} : { signal: e.driver.currentSignal()! })).catch(() => undefined);
+    if (decision === undefined || !decision.allowed) {
+      b.noteAdapter(decision?.by === "card" ? { declined: true } : { failed: "the question about it wasn't answered" });
+      return;
+    }
+    try {
+      await b.provideAdapter();
+      b.noteAdapter({ ok: true });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      b.noteAdapter({ failed: why });
+      this.#o.log?.(`agents: ${e.backend.id}'s adapter ${offer.package} ${offer.version} wasn't placed: ${why}`);
+    }
+  }
+
   /** Before an agent launches: an agent that isn't sandboxed, or is outside its tested versions, needs the user's OK. */
   async #admit(e: Entry): Promise<NonNullable<AcpStartSpec["admitted"]>> {
+    await this.#provideAdapter(e);
     const d = await e.backend.detect();
     if (!d.installed) throw new ContractError("not_installed", d.reason ?? `${e.backend.id} isn't installed on this computer`);
     if (!d.identityOk) throw new ContractError("refused", d.reason ?? `${e.backend.id}'s program isn't its publisher's`);

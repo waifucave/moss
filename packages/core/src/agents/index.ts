@@ -44,7 +44,10 @@ import { hookShimCommand } from "./claude-code/hook-shim";
 import { placeInClaudeCode } from "./claude-code/placement";
 import type { HookSource } from "../runtime-sdk/turn-loop/hooks";
 import type { PluginPartsSource } from "./placement";
-import { ContributedBackendCache, type ContributedBackend } from "./plugin-backends";
+import { contributedBackends, ContributedBackendCache, type ContributedBackend } from "./plugin-backends";
+import { AdapterStore } from "./adapter/store";
+import type { IndexFetch } from "../registry/indexes/client";
+import { pluginBun } from "../registry/plugin-run";
 import { BackendModelLists, reportedModels } from "./model-list";
 import { ADMISSIONS } from "./sandbox/admission";
 import type { PluginRegistry } from "../contracts/plugin-registry";
@@ -92,6 +95,9 @@ export { FileAgentOks, MemoryAgentOks, agentOksPath, type AgentOks, type AgentOk
 
 export interface AgentsOptions {
   home: string;
+  /** The fetch for an agent's adapter tarballs (the pinned https fetch with the plugin downloads' limits by default; tests
+   *  pass a fake registry's). */
+  adapterDownload?: IndexFetch;
   /** The bot's own shell write roots for a conversation at a level, as its sandbox draws them now, with its
    *  RequestAccess grants (the conversation's and its kept ones): a bot's agent whose root they cover runs its commands
    *  with no card (the manager's `childCommandsHeld`); without it every command of a bot's agent asks on a card. */
@@ -229,12 +235,21 @@ export function createAgents(o: AgentsOptions): { manager: AgentManager; moss: B
   const selections = new UserSelections(join(o.home, "run", "agents", "selections"));
   // Every ACP backend is a plugin's entry; what the core grants by backend id (an admitted sandbox, Claude Code's
   // placement) applies only to MOSS's own `moss/agent-<id>`.
+  // The adapters MOSS provides (agents/adapter): kept under the run folder, fetched behind the card, never in the
+  // background. Another version of a package that no active plugin names is removed once a new one is in place.
+  const adapters = new AdapterStore({
+    home: o.home,
+    ...(o.adapterDownload ? { download: o.adapterDownload } : {}),
+    keep: () => (o.registry ? contributedBackends(o.registry) : []).flatMap((c) => (c.adapter ? [{ package: c.adapter.package, version: c.adapter.version }] : [])),
+    ...(o.log ? { log: o.log } : {}),
+  });
   const build = (c: ContributedBackend) => new AcpAgentBackend({
     id: c.id, pluginId: c.pluginId, bundled: c.bundled, name: c.name, quirks: c.quirks, clock: o.clock, wire, selections,
     admissions: c.bundled ? ADMISSIONS : {},
     ...(c.bundled && c.id in place ? { place: place[c.id as keyof typeof place] } : {}),
     ...(c.file.readOnlyMode ? { readOnlyMode: c.file.readOnlyMode } : {}),
     ...(c.modelList ? { modelList: c.modelList } : {}),
+    ...(c.adapter ? { adapter: c.adapter, adapters, runtime: () => pluginBun(o.home) } : {}),
   });
   const cache = new ContributedBackendCache(build);
   // Core backends: MOSS's own coding agent and lane A's in-process subagents.
