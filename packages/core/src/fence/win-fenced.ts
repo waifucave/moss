@@ -38,7 +38,7 @@ import { closeSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, 
 import { join, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
-import { fenceContextFor } from "../contracts/fence";
+import { BOT_READ_DENIED, fenceContextFor, secretReadPlaces } from "../contracts/fence";
 import type { MossFence } from "./fence";
 import { gitTemplateDir } from "./layout";
 import { ordinaryTopFolders } from "./sandbox-settings";
@@ -410,8 +410,10 @@ export function quarantinePatternMatches(patterns: readonly string[], roots: rea
   return quarantinePlanted(planted, mossHome);
 }
 
-/** The profile read grant, by launcher: made once per process (`grantProfile`), again after one that failed. */
+/** The profile read grant, by launcher: made once per process (`grantProfile`), again after one that failed; and the
+ *  paths the grant in force excludes (`perExecReadDenies`). */
 const profileGrants = new Map<string, Promise<string | null>>();
+const excludedReads = new Map<string, string[]>();
 
 /** The session grants this process holds (`acl grant --holder-pid <this pid>`), counted across every spawner in it
  *  (the daemon has more than one: the bot shell's and the computer node's). srt-win's `acl revoke --holder-pid`
@@ -457,30 +459,45 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     const m = /SandboxUserSid\s+REG_SZ\s+(S-1-[0-9-]+)/i.exec(r.stdout);
     return m ? m[1]! : null;
   };
-  // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
-  // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
-  // Rule 8's floor for what the daemon writes WHILE a command runs (the reviewer's finding 2): the fenced read set
-  // under the MOSS home that exists is excluded from the profile read grant (`--exclude`: never granted, a read deny
-  // of its own, kept). With an exclusion beneath it, each folder on the way is granted child by child instead of
-  // whole, so a file the daemon makes there later (a settings or secrets file written to a temporary name and renamed
-  // over the old one, a new one) carries no grant at all: unreadable to a running command until the daemon's next
-  // start grants what is readable again. The bot caller's set is the widest (every caller's reads are a subset).
+  // Rule 8's floor, kept in the profile read grant itself (`--exclude`: never granted, a read deny of its own, kept
+  // while the grant is): every literal path of the fenced read set inside the home that exists when the grant is made.
+  // The set is a bot's (`profileExcludes`): bots read the most, so what a bot may not read, no caller may. Two things
+  // follow:
+  //  - What the daemon writes WHILE a command runs (the reviewer's finding 2): with an exclusion beneath it, each
+  //    folder on the way is granted child by child instead of whole, so a file the daemon makes there later (a
+  //    settings or secrets file written to a temporary name and renamed over the old one, a new one) carries no
+  //    grant at all, unreadable to a running command until the daemon's next start grants what is readable again.
+  //  - Speed: a per-exec read deny under the profile grant is also stamped on every allow the grant recorded beneath
+  //    it, then taken off after (srt-win's deny expansion: seconds a command); what is excluded here needs no per-exec
+  //    deny at all (`perExecReadDenies`).
   const profileExcludes = (): string[] => {
     try {
       const bot: Caller = { kind: "session", sessionId: "profile-read-grant", sessionKind: "bot", bot: "profile-read-grant" } as Caller;
-      const denied = fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead;
-      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.mossHome) && winUnder(p, fence.home) && existsSync(p))).slice(0, 200);
+      // The fence's own read denies, the secret places (`SECRET_READ_PLACES`) and the MOSS home's key places
+      // (`BOT_READ_DENIED`): every literal read deny a bot's shell carries (`withSecretReads`, `withBotKeyReads`).
+      const denied = [...fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead,
+        ...secretReadPlaces("windows", fence.home).map((x) => x.path), ...BOT_READ_DENIED.map((rel) => win32.join(fence.mossHome, ...rel))];
+      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.home) && fold(p) !== fold(fence.home) && existsSync(p))).slice(0, 400);
     } catch { return []; }
   };
+  /** A command's read denies less what the profile grant in force excludes already (a path at or under one). */
+  const perExecReadDenies = (denies: readonly string[]): string[] => {
+    const ex = excludedReads.get(deps.launcher) ?? [];
+    return ex.length === 0 ? [...denies] : denies.filter((d) => !ex.some((e) => winUnder(d, e)));
+  };
+  // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
+  // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
   // One grant per process, whichever spawner asks first (the daemon has two).
   const grantProfile = (): Promise<string | null> => {
     const had = profileGrants.get(deps.launcher);
     if (had !== undefined) return had;
     const p = (async () => {
       const started = Date.now();
-      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...profileExcludes().flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      const excludes = profileExcludes();
+      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...excludes.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
-      if (r.code === 0) return null;
+      if (r.code === 0) { excludedReads.set(deps.launcher, excludes); return null; }
+      excludedReads.delete(deps.launcher);
       profileGrants.delete(deps.launcher);
       return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
     })();
@@ -552,7 +569,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
           // didn't read are denied whole (`existingDeniesOf`).
-          const denyRead = existingDeniesOf(plan.denyRead).paths;
+          const denyRead = perExecReadDenies(existingDeniesOf(plan.denyRead).paths);
           const writeWalk = existingDeniesOf(plan.denyWrite);
           const denyWrite = writeWalk.paths;
           mark("denies");
