@@ -57,6 +57,10 @@ jobs:
         timeout-minutes: 40
         run: scripts/ci/windows-fence/setup.ps1
 
+      - name: Where a fenced command's time goes (the launcher's logon, the shells, the reset, the read grant)
+        timeout-minutes: 20
+        run: scripts/ci/windows-fence/timing.ps1
+
       - name: Bash and PowerShell under the fence, end to end
         timeout-minutes: 40
         working-directory: packages/core
