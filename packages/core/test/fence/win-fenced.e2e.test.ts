@@ -61,7 +61,10 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     writeFileSync(join(moss, "notes", "readme.txt"), "a note any bot may read\n");
     mkdirSync(join(home, ".ssh"), { recursive: true });
     writeFileSync(join(home, ".ssh", "id_e2e"), `${SECRET}\n`);
-    writeFileSync(join(home, "ws-plain.txt"), "an ordinary file in the home\n");
+    // In a folder of the home: srt-win's profile read grant leaves the profile ROOT's own files unreadable but for a
+    // named list (profile_plan.rs), unlike macOS, where a bot reads an ordinary file at the home's top.
+    mkdirSync(join(home, "ws-e2e-plain"), { recursive: true });
+    writeFileSync(join(home, "ws-e2e-plain", "plain.txt"), "an ordinary file in the home\n");
     fence = new MossFence({ home, mossHome: moss });
     const spawner = fencedSpawner({ fence });
     const mk = (kind: "bot" | "side-thread") => Object.fromEntries(windowsShellTools({
@@ -70,7 +73,7 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     tools = mk("bot");
     sideTools = mk("side-thread");
   });
-  afterAll(() => { rmSync(moss, { recursive: true, force: true }); });
+  afterAll(() => { for (const d of [moss, join(home, "ws-e2e-plain"), join(home, "ws-escape-dir")]) rmSync(d, { recursive: true, force: true }); });
 
   test("Bash and PowerShell run as a pool principal, never as the user", async () => {
     const b = await call(tools.Bash!, { command: "whoami" });
@@ -110,8 +113,8 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       const p = await call(tools.PowerShell!, { command: `Get-Content -LiteralPath '${secret}'` });
       expect(p.text).not.toContain("dummy123");
     }
-    // The control: a plain note in the MOSS home is read (a bot's open access), and a plain file in the home.
-    const note = await call(tools.Bash!, { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}' '${join(home, "ws-plain.txt").replace(/\\/g, "/")}'` });
+    // The control: a plain note in the MOSS home is read (a bot's open access), and a plain file in a home folder.
+    const note = await call(tools.Bash!, { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}' '${join(home, "ws-e2e-plain", "plain.txt").replace(/\\/g, "/")}'` });
     expect(note.text).toContain("a note any bot may read");
     expect(note.text).toContain("an ordinary file in the home");
   }, 900_000);

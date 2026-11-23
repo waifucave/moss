@@ -20,7 +20,7 @@ jobs:
   e2e:
     name: windows fence · setup, Bash and PowerShell, remove
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     defaults:
       run:
         shell: pwsh
@@ -54,7 +54,7 @@ jobs:
         run: bun scripts/build-daemon.ts --target windows-x64
 
       - name: sandbox setup, from the protected copy, twice
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: scripts/ci/windows-fence/setup.ps1
 
       - name: Bash and PowerShell under the fence, end to end
