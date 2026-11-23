@@ -535,8 +535,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           });
         });
         try {
-        mark("grant");
-        if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
+          mark("grant");
+          if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
           // didn't read are denied whole (`existingDeniesOf`).
           const denyRead = existingDeniesOf(plan.denyRead).paths;
