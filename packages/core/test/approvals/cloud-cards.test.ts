@@ -67,7 +67,11 @@ describe("cloud cards", () => {
   test("names from settings or a provider lose their hiding characters", () => {
     const r = cloudCardRequest({ kind: "cloud-create", name: "stu\u202Edio", provider: "het\u200Bzner", size: "cx22", region: "fsn1", folder: "Pro\u0007jects" });
     expect((r.fields.computer as { code: string }).code).toBe('name: "studio"');
-    expect((r.fields.detail as { code: string }).code).toBe('folder: "Projects"\nprovider: "hetzner"\nsize: "cx22"\nregion: "fsn1"');
+    expect((r.fields.detail as { code: string }).code).toBe('folder: "Projects"\nprovider: "hetzner"\nsize: "cx22"\nregion: "fsn1"\nimage: "MOSS\'s own image"');
+    // (CC2: the card now says which image; the line is MOSS's own words when the folder names none.) A custom one is shown
+    // too, its hiding characters out.
+    const c = cloudCardRequest({ kind: "cloud-create", name: "a", provider: "p", size: "s", region: "r", folder: "f", image: "projects/x\u202E/global/images/y" });
+    expect((c.fields.detail as { code: string }).code).toContain('image: "a custom image: projects/x/global/images/y"');
   });
 
   test("through the broker: approve is yes, deny and the report's OK are no", async () => {
