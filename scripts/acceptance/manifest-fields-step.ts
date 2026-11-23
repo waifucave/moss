@@ -378,12 +378,12 @@ export function offered(tools: readonly string[], suffix: string): boolean {
 }
 
 /** What a turn's offer says wrong, for the reach and placement fixtures; empty when right. */
-export function offerWrong(o: { bot: readonly string[]; coding: readonly string[] }): string[] {
+export function offerWrong(o: { bot: readonly string[]; coding: readonly string[] }, platform: NodeJS.Platform = process.platform): string[] {
   const wrong: string[] = [];
   if (!offered(o.bot, "FieldsLocal")) wrong.push("Alpha wasn't offered FieldsLocal (a perComputer server, on this computer)");
   // when.os is the computer's own: macOS offers the macos server, and another system (Linux) must not.
-  if (process.platform === "darwin" && !offered(o.bot, "FieldsMac")) wrong.push("Alpha wasn't offered FieldsMac (when.os macos)");
-  if (process.platform !== "darwin" && offered(o.bot, "FieldsMac")) wrong.push("Alpha was offered FieldsMac on a computer that isn't a Mac (when.os macos)");
+  if (platform === "darwin" && !offered(o.bot, "FieldsMac")) wrong.push("Alpha wasn't offered FieldsMac (when.os macos)");
+  if (platform !== "darwin" && offered(o.bot, "FieldsMac")) wrong.push("Alpha was offered FieldsMac on a computer that isn't a Mac (when.os macos)");
   if (offered(o.bot, "FieldsWin")) wrong.push("Alpha was offered FieldsWin (when.os windows)");
   if (offered(o.bot, "AgentsOnly")) wrong.push("Alpha was offered AgentsOnly (scope: agents)");
   if (!offered(o.bot, "CcOnly")) wrong.push("Alpha wasn't offered CcOnly (onlyBackends never narrows a bot)");

@@ -115,8 +115,12 @@ test("the offer verdict names each field that went wrong", () => {
   const bot = ["mcp__acc-fields-local__FieldsLocal", "mcp__acc-fields-mac__FieldsMac", "mcp__acc-cc-tools__CcOnly"];
   const coding = [`mcp__moss_0123456789abcdef__${AGENTS_ONLY_SHORT}`];
   expect(AGENTS_ONLY_SHORT).toMatch(/^acceptance-agen__AgentsOnly_[0-9a-f]{6}$/);
-  expect(offerWrong({ bot, coding })).toEqual([]);
-  expect(offerWrong({ bot: [...bot, "mcp__acc-fields-win__FieldsWin"], coding: [...coding, "mcp__x__CcOnly"] })).toEqual([
+  expect(offerWrong({ bot, coding }, "darwin")).toEqual([]);
+  // The macos server is the Mac's alone: a Mac not offered it is wrong, any other system offered it is wrong.
+  expect(offerWrong({ bot: bot.filter((t) => !t.endsWith("FieldsMac")), coding }, "darwin")).toEqual(["Alpha wasn't offered FieldsMac (when.os macos)"]);
+  expect(offerWrong({ bot: bot.filter((t) => !t.endsWith("FieldsMac")), coding }, "linux")).toEqual([]);
+  expect(offerWrong({ bot, coding }, "linux")).toEqual(["Alpha was offered FieldsMac on a computer that isn't a Mac (when.os macos)"]);
+  expect(offerWrong({ bot: [...bot, "mcp__acc-fields-win__FieldsWin"], coding: [...coding, "mcp__x__CcOnly"] }, "darwin")).toEqual([
     "Alpha was offered FieldsWin (when.os windows)",
     "the coding session on MOSS's own agent was offered CcOnly (onlyBackends: claude-code)",
   ]);
