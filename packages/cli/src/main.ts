@@ -1654,7 +1654,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     removeArgs,
     statusArgs,
     userStatusArgs,
-    sandboxPool,
+    installedPool,
     parseSrtStatus,
     setupExitMessage,
     NET_SESSION_PROBE,
@@ -1760,7 +1760,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         return;
       }
       const ownerSid = targetSid;
-      const pool = sandboxPool(ownerSid);
+      const pool = installedPool(ownerSid);
       const launcher = srtWinPath();
       const problem = launcherProblem(launcher, arch);
       if (problem !== null) {
@@ -1818,12 +1818,13 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       }
       // One install per pool member: each principal gets its own account, WFP filters (per-slot
       // sublayer), warm-up logon, resolved profile and locked-down Startup folders.
-      const members: { principal: string; principalSid: string; sublayer: string }[] = [];
+      const members: { principal: string; principalSid: string; sublayer: string; network?: boolean }[] = [];
       let failed = false;
       for (const slot of pool) {
         const { principal, sublayer } = slot;
         const fail = (msg: string) => { console.error(`sandbox setup: ${principal}: ${msg}`); process.exitCode = 1; failed = true; };
-        const { code, out } = await run([...setupArgs(launcher, sublayer, principal, ownerSid), ...(force ? ["--force"] : [])]);
+        // The escape account gets the network but the cloud metadata address (srt-win patch 0003, `escapeMember`).
+        const { code, out } = await run([...setupArgs(launcher, sublayer, principal, ownerSid, { networkOpen: slot.network === true }), ...(force ? ["--force"] : [])]);
         const message = setupExitMessage(code);
         if (message !== null) { fail(`${message}${out.trim() ? `\n${out.trim().slice(0, 2000)}` : ""}`); break; }
         // Finish the profile work in the same call (brief item 5): stamp the owner SID, warm up
@@ -1856,7 +1857,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           if (deny.code !== 0) { fail(`denying ${path} failed (exit ${deny.code})${deny.out.trim() ? `\n${deny.out.trim().slice(0, 2000)}` : ""}`); break; }
         }
         if (failed) break;
-        members.push({ principal, principalSid, sublayer });
+        members.push({ principal, principalSid, sublayer, ...(slot.network === true ? { network: true } : {}) });
       }
       if (failed) return;
       // The pool's state (`poolStateDir`): administrators' folder, the owner may only read it and read or write the
@@ -1915,7 +1916,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         return;
       }
       const ownerSid = targetSid;
-      const pool = sandboxPool(ownerSid);
+      const pool = installedPool(ownerSid);
       const launcher = srtWinPath();
       // Remove uninstalls each pool member's principal and WFP filters. Deleting the protected-copy
       // folder itself belongs to the installer, which removes it after `remove` exits 0 (Addendum 8).
@@ -2119,7 +2120,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         return;
       }
       // Every pool member reports: per-principal user status plus its slot's WFP filters.
-      const pool = sandboxPool(ownerSid);
+      const pool = installedPool(ownerSid);
       const members: { principal: string; ready: boolean; reason: string | null }[] = [];
       let firstUser: unknown = null;
       for (const slot of pool) {
