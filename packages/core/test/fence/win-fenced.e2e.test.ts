@@ -8,7 +8,7 @@
 // copy's, as the daemon finds it, with no override). It writes a throwaway MOSS home in the runner's own profile (`.moss-e2e`) and a few
 // files beside it, and prints only dummy values (`PROBE_SECRET=dummy123`).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -17,6 +17,7 @@ import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
 import { windowsShellTools } from "../../src/fence/win-shell-tools";
+import { profileExcludeCandidates, quarantineWin } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
@@ -252,14 +253,81 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
   }, 900_000);
 
   test("a fenced command can't register a scheduled task as its account (something that would run later, outside a command)", async () => {
-    // A trigger any account may register for itself (`/sc once`), so a refusal is the fence's, not schtasks' own
-    // need for an administrator; its message is printed.
-    const r = await call(tools.PowerShell!, { command: "schtasks /create /tn moss-e2e-planted /tr 'cmd /c echo planted' /sc once /st 23:59 /f 2>&1 | Out-String; 'exit=' + $LASTEXITCODE" });
-    const made = Bun.spawnSync(["schtasks", "/query", "/tn", "moss-e2e-planted"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-    console.log(`[e2e] schtasks /create as the account: ${r.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made}`);
-    if (made) Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-planted", "/f"]);
+    // A program that exists and a trigger any account may register for itself (`/sc once`): the test's own process
+    // registers the very same task first (the control), so a refusal is the fence's, never a bad path or argument.
+    const tr = "C:\\Windows\\System32\\cmd.exe";
+    const args = ["/create", "/tn", "moss-e2e-control", "/tr", tr, "/sc", "once", "/st", "23:59", "/f"];
+    const control = Bun.spawnSync(["schtasks", ...args], { stdout: "pipe", stderr: "pipe" });
+    console.log(`[e2e] schtasks /create as the user (control): exit ${control.exitCode} ${control.stdout.toString().trim()} ${control.stderr.toString().trim()}`);
+    expect(control.exitCode).toBe(0);
+    Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-control", "/f"]);
+    const ps = await call(tools.PowerShell!, { command: `schtasks /create /tn moss-e2e-planted /tr '${tr}' /sc once /st 23:59 /f 2>&1 | Out-String; 'exit=' + $LASTEXITCODE` });
+    const cim = await call(tools.PowerShell!, { command: `try { Register-ScheduledTask -TaskName moss-e2e-planted2 -Action (New-ScheduledTaskAction -Execute '${tr}') -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(6)) -ErrorAction Stop | Out-Null; 'REGISTERED' } catch { 'REFUSED ' + $_.Exception.Message }` });
+    const exists = (n: string) => Bun.spawnSync(["schtasks", "/query", "/tn", n], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+    const made = exists("moss-e2e-planted"), made2 = exists("moss-e2e-planted2");
+    console.log(`[e2e] schtasks /create as the account: ${ps.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made}`);
+    console.log(`[e2e] Register-ScheduledTask as the account: ${cim.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made2}`);
+    for (const [n, m] of [["moss-e2e-planted", made], ["moss-e2e-planted2", made2]] as const) if (m) Bun.spawnSync(["schtasks", "/delete", "/tn", n, "/f"]);
     expect(made).toBe(false);
-    expect(r.text).not.toContain("exit=0");
+    expect(made2).toBe(false);
+    expect(ps.text).not.toContain("exit=0");
+    expect(cim.text).not.toContain("REGISTERED");
+  }, 900_000);
+
+  test("outside the profile: a folder Users may modify (a made-up one on the system drive, and Public) is never written", async () => {
+    // Controls: the folder exists, the fenced command READS it (so a refusal of the write is the fence's, not a missing
+    // path), and the same command writes its own scratch folder.
+    const made = "C:\\moss-e2e-users-modify";
+    rmSync(made, { recursive: true, force: true });
+    mkdirSync(made, { recursive: true });
+    expect(Bun.spawnSync(["icacls", made, "/grant", "*S-1-5-32-545:(OI)(CI)M"], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+    writeFileSync(join(made, "seen.txt"), "visible\n");
+    const pub = join(process.env.PUBLIC ?? "C:\\Users\\Public", "Documents");
+    try {
+      for (const dir of [made, pub]) {
+        const target = join(dir, "moss-e2e-written.txt");
+        rmSync(target, { force: true });
+        const u = dir.replace(/\\/g, "/");
+        const b = await call(tools.Bash!, { command: `cat '${u}/seen.txt' 2>/dev/null; ls '${u}' >/dev/null && echo LISTED; echo w > '${u}/moss-e2e-written.txt' && echo WROTE || echo REFUSED; echo ok > own.txt && echo OWN` });
+        const p = await call(tools.PowerShell!, { command: `try { Set-Content -LiteralPath '${target}' -Value w -ErrorAction Stop; 'WROTE' } catch { 'REFUSED' }` });
+        const wrote = existsSync(target);
+        console.log(`[e2e] write outside the profile into ${dir}: bash ${b.text.includes("WROTE") ? "WROTE" : "REFUSED"}, powershell ${p.text.includes("WROTE") ? "WROTE" : "REFUSED"}, file there: ${wrote}`);
+        rmSync(target, { force: true });
+        expect(b.text).toContain("LISTED");
+        if (dir === made) expect(b.text).toContain("visible");
+        expect(b.text).toContain("OWN");
+        expect(wrote).toBe(false);
+        expect(b.text).toContain("REFUSED");
+        expect(p.text).toContain("REFUSED");
+      }
+    } finally { rmSync(made, { recursive: true, force: true }); }
+  }, 900_000);
+
+  test("the move aside across drives and never through a link: quarantined on another drive, a junction on the way named and left", async () => {
+    const other = ["D:\\", "E:\\"].find((d) => { try { return lstatSync(d).isDirectory() && d.toUpperCase()[0] !== moss.toUpperCase()[0]; } catch { return false; } });
+    console.log(`[e2e] another drive: ${other ?? "none"}`);
+    if (other === undefined) return;
+    const root = join(other, `moss-e2e-q-${process.pid}`);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(join(root, "real"), { recursive: true });
+    try {
+      const planted = join(root, ".envrc");
+      writeFileSync(planted, "planted\n");
+      const line = quarantineWin(new Map([[planted, false]]), moss);
+      console.log(`[e2e] across drives: ${line?.trim()}`);
+      expect(existsSync(planted)).toBe(false);
+      expect(line).toContain("quarantined");
+      expect(readdirSync(join(moss, "quarantine")).some((n) => n.startsWith(".envrc.quarantined-"))).toBe(true);
+      // A junction on the way: the move would act through it, so it is left and named.
+      expect(Bun.spawnSync(["cmd", "/c", "mklink", "/J", join(root, "via"), join(root, "real")], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+      const through = join(root, "via", ".mcp.json");
+      writeFileSync(through, "planted\n");
+      const left = quarantineWin(new Map([[through, false]]), moss);
+      console.log(`[e2e] through a junction: ${left?.trim()}`);
+      expect(left).toContain("could NOT be moved");
+      expect(left).toContain(through);
+      expect(existsSync(join(root, "real", ".mcp.json"))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   }, 900_000);
 
   test("two commands at once: when one ends, the one still running still can't read a denied file, and its own grants hold", async () => {
@@ -306,19 +374,34 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(bb.text).not.toContain("dummy123");
   }, 900_000);
 
-  test("the escape: a bot's own conversation's approved command writes the home, never MOSS's settings, and has no network", async () => {
+  test("the escape: a bot's own conversation's approved command writes the home, never MOSS's settings, and has the network but the metadata address", async () => {
     mkdirSync(join(home, "ws-escape-dir"), { recursive: true });
     const target = join(home, "ws-escape-dir", "x.txt");
     rmSync(target, { force: true });
-    const e = await call(tools.Bash!, { command: `echo escaped > '${target.replace(/\\/g, "/")}'`, dangerouslyDisableSandbox: true });
+    const e = await call(tools.Bash!, { command: `echo escaped > '${target.replace(/\\/g, "/")}'; whoami`, dangerouslyDisableSandbox: true });
     expect(e.isError).toBe(false);
     expect(readFileSync(target, "utf8").trim()).toBe("escaped");
+    expect(e.text).toMatch(/moss-sb-[0-9a-f]{6}-e/); // the escape account, never a pool account nor the user
     const before = readFileSync(join(moss, "settings.json"), "utf8");
     const s = await call(tools.Bash!, { command: `echo x > '${join(moss, "settings.json").replace(/\\/g, "/")}'`, dangerouslyDisableSandbox: true });
     expect(s.isError).toBe(true);
     expect(readFileSync(join(moss, "settings.json"), "utf8")).toBe(before);
-    const n = await call(tools.Bash!, { command: "timeout 8 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo CONNECTED || echo REFUSED", dangerouslyDisableSandbox: true });
-    expect(n.text).toContain("REFUSED");
+    const probe = (host: string, port: number) => `timeout 8 bash -c 'exec 3<>/dev/tcp/${host}/${port}' && echo CONNECTED || echo REFUSED`;
+    const n = await call(tools.Bash!, { command: probe("1.1.1.1", 443), dangerouslyDisableSandbox: true });
+    expect(n.text).toContain("CONNECTED");
+    const psNet = await call(tools.PowerShell!, { command: "try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('1.1.1.1', 443); 'CONNECTED' } catch { 'REFUSED' }", dangerouslyDisableSandbox: true });
+    expect(psNet.text).toContain("CONNECTED");
+    // The metadata address: refused to the escape account wherever the user reaches it.
+    const reach = async (host: string, port: number) => {
+      try { const c = await Promise.race([Bun.connect({ hostname: host, port, socket: { data() {} } }), Bun.sleep(5000).then(() => null)]); if (c) { c.end(); return true; } return false; } catch { return false; }
+    };
+    const metadata = await reach("169.254.169.254", 80);
+    const md = await call(tools.Bash!, { command: probe("169.254.169.254", 80), dangerouslyDisableSandbox: true });
+    console.log(`[e2e] escape network: public ${n.text.includes("CONNECTED")}, metadata from the user ${metadata}, from the escape ${md.text.includes("CONNECTED")}`);
+    if (metadata) expect(md.text).toContain("REFUSED");
+    // The same bot's next command in the sandbox has no network again.
+    const back = await call(tools.Bash!, { command: probe("1.1.1.1", 443) });
+    expect(back.text).toContain("REFUSED");
     // A side thread's command never leaves the sandbox, whatever it asks.
     const side = await call(sideTools.Bash!, { command: "echo hi", dangerouslyDisableSandbox: true }, { refusal: true });
     expect(side.isError).toBe(true);
@@ -343,4 +426,51 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(JSON.stringify(read.output)).not.toContain("refused:");
     expect(JSON.stringify(read.output)).not.toContain("a note any bot may read"); // the MOSS home is default-deny for a coding session
   }, 900_000);
+
+  test("two engines, two homes, one Windows user: neither's grant opens the other's secrets; a grant in force without them fails closed", async () => {
+    // A second engine's home (the developers' and the test twin's way): its own spawner, so its own profile grant, made
+    // AFTER this home's; its exclusions are added to the ones in force, never replacing this home's.
+    const mossB = join(home, ".moss-e2e-b");
+    rmSync(mossB, { recursive: true, force: true });
+    for (const d of [join(mossB, "run"), join(mossB, "scratch", BOT), join(mossB, "bots", BOT, "memory")]) mkdirSync(d, { recursive: true });
+    writeFileSync(join(mossB, "run", "token"), `${SECRET}\n`);
+    writeFileSync(join(mossB, "secrets.enc"), `${SECRET}\n`);
+    const fenceB = new MossFence({ home, mossHome: mossB });
+    const toolsB = Object.fromEntries(windowsShellTools({
+      spawner: fencedSpawner({ fence: fenceB }), caller: CALLER, kind: "bot", cwd: () => join(mossB, "scratch", BOT), userHome: home, temp: fenceB.temp, mossHome: mossB,
+      sandbox: () => {
+        const settings = botSandboxSettings(fenceB.forCaller(CALLER).policy(), { mossHome: mossB, userHome: home, level: undefined, windows: true, ownFolders: [join(mossB, "scratch", BOT), join(mossB, "bots", BOT)], pathFolders: [] });
+        return botSandbox(withBotKeyReads(withSecretReads(settings, { userHome: home, os: "windows" }), { home: mossB }), { userHome: home, os: "windows" });
+      },
+    }).map((t) => [t.name, t]));
+    const u = (p: string) => p.replace(/\\/g, "/");
+    const readBoth = `cat '${u(join(moss, "secrets.enc"))}' '${u(join(moss, "run", "token"))}' '${u(join(mossB, "secrets.enc"))}' '${u(join(mossB, "run", "token"))}' 2>/dev/null; echo done`;
+    try {
+      const b = await call(toolsB.Bash!, { command: readBoth });
+      expect(b.text).toContain("done");
+      expect(b.text).not.toContain("dummy123");
+      const a = await call(tools.Bash!, { command: readBoth });
+      expect(a.text).toContain("done");
+      expect(a.text).not.toContain("dummy123");
+      // Fail closed: a grant in force made WITHOUT this home's exclusions (as a replacing run of another engine leaves
+      // it): this engine still believes its grant holds, reads back what the grant in force excludes, and stamps the
+      // rest for the command.
+      const launcher = join(process.env.ProgramFiles ?? "C:\\Program Files", "MOSS Sandbox", currentUserSid()!, "srt-win.exe");
+      const replaced = Bun.spawnSync([launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes"], { stdout: "pipe", stderr: "pipe" });
+      console.log(`[e2e] a replacing grant with no added exclusions: exit ${replaced.exitCode}`);
+      expect(replaced.exitCode).toBe(0);
+      // (This home's own secrets: the other home's exclusions are gone with the replacing run, and this engine's plan
+      // knows nothing of that home; no run of this version replaces.)
+      const c = await call(tools.Bash!, { command: `cat '${u(join(moss, "secrets.enc"))}' '${u(join(moss, "run", "token"))}' 2>/dev/null; echo done` });
+      console.log(`[e2e] two homes, after the replacing grant: dummy visible = ${c.text.includes("dummy123")}`);
+      expect(c.text).toContain("done");
+      expect(c.text).not.toContain("dummy123");
+    } finally {
+      // The exclusions of both homes again, as each engine's next start would make them.
+      const launcher = join(process.env.ProgramFiles ?? "C:\\Program Files", "MOSS Sandbox", currentUserSid()!, "srt-win.exe");
+      const ex = [...profileExcludeCandidates(fence), ...profileExcludeCandidates(fenceB)].filter((p) => existsSync(p));
+      Bun.spawnSync([launcher, "profile", "grant", "--quiet", "--json", ...ex.flatMap((p) => ["--exclude", p])], { stdout: "pipe", stderr: "pipe" });
+      rmSync(mossB, { recursive: true, force: true });
+    }
+  }, 1_800_000);
 });

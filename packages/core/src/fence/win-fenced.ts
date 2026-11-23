@@ -13,7 +13,10 @@
 //  3. Writes: only the run's write roots, each a persistent root with its own capability SID (`acl grant
 //     --persistent`), passed to `exec --write-root`; the write-restricted token lets nothing else be written, whatever
 //     BUILTIN\Users or Authenticated Users may write. The roots are the runner's sandbox's `allowWrite` (`planFor`).
-//     The session's grants are revoked only when this process's last command ends (`heldGrants`).
+//     The session's grants are revoked only when this process's last command ends (`heldGrants`). Outside the
+//     roots (a folder on the system drive that Users may modify, `C:\Users\Public`) the token alone refuses the write:
+//     the e2e asserts it. 3b: two commands of different callers never run at once when one's read grant lies strictly
+//     under the other's read deny (`grantsConflict`).
 //  4. Denies: every fenced path of the run's sandbox that exists is stamped `--deny-write` / `--deny-read` for this
 //     command; a glob is expanded over what exists, one walk per folder with its own budget, and past it the folders
 //     not read are denied whole (`existingDeniesOf`); a deny wins over every allow (an explicit deny ACE comes first).
@@ -32,7 +35,10 @@
 //     `.git`…) it made under a root is moved aside and named in the result (`revertPlantedGitKeys`,
 //     `quarantineHooks`, `quarantineWin`, `quarantinePatternMatches`): Linux's way, where the Mac refuses the write.
 //     What can't be moved (a folder on its way is a link, or the move failed) is left and named in the result.
-//  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`.
+//  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`. The
+//     grant's exclusions are added to the ones in force, never replacing another engine's (another MOSS home of the
+//     same Windows user); a per-command read deny is dropped only when the grant IN FORCE, read back at that command
+//     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`).
 //  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
@@ -481,7 +487,7 @@ export function parseProfileExclusions(stdout: string): string[] {
   try {
     const o = JSON.parse(stdout) as { exclusions?: unknown; state?: unknown };
     if (o.state === "in_progress" || !Array.isArray(o.exclusions)) return [];
-    return o.exclusions.filter((e): e is string => typeof e === "string" && !GLOB.test(e)).map((e) => e.replace(/^\\\\\?\\/, ""));
+    return o.exclusions.filter((e): e is string => typeof e === "string").map((e) => e.replace(/^\\\\\?\\/, "")).filter((e) => !GLOB.test(e));
   } catch { return []; }
 }
 
@@ -489,10 +495,17 @@ export function parseProfileExclusions(stdout: string): string[] {
 interface PlanInFlight { readonly caller: string; readonly readGrants: readonly string[]; readonly denyRead: readonly string[] }
 const plansInFlight = new Set<PlanInFlight>();
 const callerKey = (c: Caller): string => c.kind === "session" ? `session:${c.sessionId}` : c.kind === "plugin" ? `plugin:${c.pluginId}` : c.kind;
-/** Two commands of different callers where one's read grant lies under the other's read deny. */
+/** Two commands of different callers where one's read grant lies STRICTLY under the other's read deny and the other
+ *  doesn't deny that very folder too. Windows orders an object's explicit deny before its explicit allow, and a
+ *  closer inherited entry before a farther one: a grant on the denied folder itself (a bot's on the MOSS home beside a
+ *  coding session's deny of it), or on a folder the other denies by name (another session's folder that existed when
+ *  the other started), is still refused to it; only a deeper grant beneath a farther deny (a folder made since) would
+ *  open to it. */
 export function grantsConflict(x: PlanInFlight, y: PlanInFlight): boolean {
   if (x.caller === y.caller) return false;
-  const opens = (a: PlanInFlight, b: PlanInFlight) => a.readGrants.some((g) => b.denyRead.some((d) => winUnder(g, d)));
+  const same = (a: string, b: string) => win32.normalize(a).toUpperCase() === win32.normalize(b).toUpperCase();
+  const opens = (a: PlanInFlight, b: PlanInFlight) => a.readGrants.some((g) =>
+    !b.denyRead.some((d) => same(d, g)) && b.denyRead.some((d) => winUnder(g, d)));
   return opens(x, y) || opens(y, x);
 }
 
@@ -648,11 +661,12 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // so they are granted as that user, whichever member runs this command.
         mark("plan");
         // Rule 3b (the reviewer's WS2 finding 6): read grants are the sandbox group's, so while two commands run, each
-        // can read what the other's grant opens. Only the computer node's plans carry read grants (a session's own
-        // folders in the MOSS home), and every plan denies the others' folders that exist when it starts; but a grant
-        // made AFTER a command started (a folder another session made since) carries an explicit allow that beats the
-        // inherited deny it has there. So a command waits while one of another caller runs whose read grants its own
-        // plan denies, or whose plan denies its read grants (`grantsConflict`): never both at once.
+        // can read what the other's grant opens. Read grants are a caller's own folders in the MOSS home (and the home
+        // itself for a bot), and every plan denies by name the others' folders that exist when it starts; but a grant
+        // on a folder made AFTER the other started carries an explicit allow that beats the farther deny the other
+        // has above it. So a command waits while one of another caller runs whose read grant lies strictly under its
+        // own read deny, or the reverse (`grantsConflict`): never both at once. Anything else a running command can
+        // read through another's grant, its own plan allows too.
         flight = { caller: callerKey(r.who.caller), readGrants: plan.readGrants, denyRead: plan.denyRead.filter((d) => !GLOB.test(d)) };
         const waitUntil = Date.now() + (deps.leaseTimeoutMs ?? 120_000);
         while ([...plansInFlight].some((y) => grantsConflict(flight!, y))) {
