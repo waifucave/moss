@@ -50,6 +50,7 @@ describe("format", () => {
 
 describe("tool phrases", () => {
   test("core tools, shipped tools, plugin tools and unknown names", () => {
+    expect(toolFragment("mcp__SendMessage", 1)).toBe("sent a message");
     expect(toolFragment("Bash", 1)).toBe("ran a command");
     expect(toolFragment("Bash", 3)).toBe("ran 3 commands");
     expect(toolFragment("Read", 2)).toBe("read 2 files");
