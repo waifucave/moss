@@ -8,7 +8,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, planFromSettings, profileExcludeCandidates, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parseProfileExclusions, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -248,6 +248,34 @@ describe("the Windows leg refuses, whole, before anything runs", () => {
     expect((r as { reason: string }).reason).toContain("busy");
   });
 
+  test("the escape account: only an approved escape runs as it, and only it runs an approved escape", async () => {
+    const withEscape = formatInstallMarker({ version: 2, ownerSid: "S-1-5-21-1", members: [
+      { principal: "moss-sb-aaaaaa-1", principalSid: "S-1-5-21-1001", sublayer: "x" }, { principal: "moss-sb-aaaaaa-e", principalSid: "S-1-5-21-1009", sublayer: "e", network: true },
+    ] });
+    const files = () => ({ "moss-sb-aaaaaa-1.gen": GEN1, "moss-sb-aaaaaa-1.used": "", "moss-sb-aaaaaa-e.gen": GEN2, "moss-sb-aaaaaa-e.used": "" });
+    // Which account was leased: the one whose used record was written (the launch itself can't start off Windows).
+    const leased = async (network: boolean) => {
+      const m = machine({ marker: withEscape, files: files() });
+      await winFencedSpawner({ fence: m.fence, deps: m.deps, grantAhead: false }).run({ ...runOf(m.home), ...(network ? { network: true } : {}) });
+      return m.writes.map((w) => w.split(".used=")[0]);
+    };
+    expect(await leased(false)).toEqual(["moss-sb-aaaaaa-1"]);
+    expect(await leased(true)).toEqual(["moss-sb-aaaaaa-e"]);
+    // An install made before the escape account existed: the escape is refused, never run as a pool account.
+    const old = machine();
+    const r = await winFencedSpawner({ fence: old.fence, deps: old.deps, grantAhead: false }).run({ ...runOf(old.home), network: true });
+    expect(r).toMatchObject({ kind: "refused" });
+    expect((r as { reason: string }).reason).toContain("escape account");
+  });
+
+  test("the profile read grant adds this home's exclusions to the ones in force, never replacing another home's", async () => {
+    const m = machine();
+    await winFencedSpawner({ fence: m.fence, deps: m.deps, grantAhead: false }).run(runOf(m.home));
+    const grants = m.execs.filter((a) => a[1] === "profile" && a[2] === "grant");
+    expect(grants.length).toBeGreaterThan(0);
+    for (const g of grants) expect(g).not.toContain("--replace-excludes");
+  });
+
   test("a shell that isn't installed: refused, never another shell", async () => {
     const m = machine();
     const s = winFencedSpawner({ fence: m.fence, deps: { ...m.deps, shells: { bash: null, powershell: null } } });
@@ -292,6 +320,10 @@ describe("a bot's Bash and PowerShell on Windows (the core's tools)", () => {
     expect(s.denyWrite).toEqual(["C:\\h\\.moss\\settings.json", "C:\\h\\.moss"]);
     expect(s.denyRead).toEqual(["C:\\h\\.moss\\run"]);
     expect(escapedSandbox(SANDBOX, { userHome: "C:\\h", temp: "C:\\t", mossHome: "C:\\h\\.moss" }).filesystem!.denyRead).toEqual(["C:\\h\\.moss\\run"]);
+    // The approved escape asks for the escape account (the network); a command in the sandbox never does.
+    expect(runs[0]!.network).toBe(true);
+    await tools("bot", spawner).Bash!.run({ command: "echo hi" });
+    expect(runs[1]!.network).toBeUndefined();
   });
 
   test("a refusal and a failed command reach the model as errors", async () => {
@@ -328,5 +360,42 @@ describe("the profile read grant's exclusions (rule 8's floor)", () => {
       expect(fold(m) === fold(c) || fold(m).startsWith(`${fold(c)}\\`)).toBe(false);
       for (const d of ["bots", "scratch", "outputs"]) expect(fold(c).startsWith(fold(win32.join(m, d)))).toBe(false);
     }
+  });
+});
+
+describe("the grant in force, read back (the reviewer's WS2 finding 1)", () => {
+  test("the literal exclusions of `profile status`; none while a grant is half-written or unreadable", () => {
+    const st = JSON.stringify({ state: "granted", exclusions: ["\\\\?\\C:\\Users\\u\\.ssh", "C:\\Users\\u\\.moss\\run", "C:\\Users\\u\\*.pem"] });
+    expect(parseProfileExclusions(st)).toEqual(["C:\\Users\\u\\.ssh", "C:\\Users\\u\\.moss\\run"]);
+    expect(parseProfileExclusions(JSON.stringify({ state: "in_progress", exclusions: ["C:\\x"] }))).toEqual([]);
+    expect(parseProfileExclusions("not json")).toEqual([]);
+    expect(parseProfileExclusions(JSON.stringify({ state: "absent" }))).toEqual([]);
+  });
+});
+
+describe("read grants of two commands at once (rule 3b, the reviewer's WS2 finding 6)", () => {
+  const moss = "C:\\h\\.moss";
+  const node = (id: string, others: string[]) => ({ caller: `session:${id}`, readGrants: [`${moss}\\outputs\\${id}`], denyRead: [moss, ...others.map((o) => `${moss}\\outputs\\${o}`)] });
+  test("a session's folder made after the other started (not denied by name) is a conflict; one denied by name is not", () => {
+    expect(grantsConflict(node("a", []), node("b", []))).toBe(true);
+    expect(grantsConflict(node("a", ["b"]), node("b", ["a"]))).toBe(false);
+    expect(grantsConflict(node("a", ["b"]), node("b", []))).toBe(true);
+  });
+  test("a bot's grant on the MOSS home beside a coding session's deny of the same folder is not; the same caller never is", () => {
+    const bot = { caller: "session:bot", readGrants: [moss], denyRead: [`${moss}\\run`] };
+    expect(grantsConflict(bot, { caller: "session:c", readGrants: [], denyRead: [moss] })).toBe(false);
+    expect(grantsConflict(node("a", []), { ...node("a", []) })).toBe(false);
+  });
+});
+
+describe("rule 7's move aside on Windows (the reviewer's WS2 finding 4)", () => {
+  test("a folder on the way that is a link stops the move", () => {
+    const st = (link: boolean) => ({ isDirectory: () => !link, isSymbolicLink: () => link });
+    expect(winChainIsClean("C:\\a\\b\\f", () => st(false))).toBe(true);
+    expect(winChainIsClean("C:\\a\\b\\f", (p) => st(p === "C:\\a\\b"))).toBe(false);
+    expect(winChainIsClean("C:\\a\\b\\f", (p) => { if (p === "C:\\a") throw new Error("gone"); return st(false); })).toBe(false);
+  });
+  test("nothing made: no line", () => {
+    expect(quarantineWin(new Map([["C:\\nowhere\\x", false]]), "C:\\h\\.moss")).toBeNull();
   });
 });
