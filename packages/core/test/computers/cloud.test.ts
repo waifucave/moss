@@ -403,6 +403,30 @@ describe("on the VM after pairing (#254, should-fix 6)", () => {
   });
 });
 
+describe("a token made while this computer was alone (tenure `-:<epoch>`)", () => {
+  async function made(authority: FakeAuthority) {
+    authority.tenure = () => (authority.holding ? "-:1" : undefined);
+    const s = setup({ authority });
+    await s.cloud.reconcile([folder()]);
+    const token = tokenIn(s.provider.userData[0]!)!;
+    // The VM's own pairing founded the group: the scope appears and the epochs start again, on the same computer.
+    authority.tenure = () => (authority.holding ? "group-1:1" : undefined);
+    return { ...s, token };
+  }
+
+  test("still works under the group's tenure while this computer holds the lease", async () => {
+    const { cloud, token } = await made(new FakeAuthority());
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toEqual({ computer: "Cloud1" });
+  });
+
+  test("never works once this computer has lost the lease", async () => {
+    const authority = new FakeAuthority();
+    const { cloud, token } = await made(authority);
+    authority.lose();
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toBeNull();
+  });
+});
+
 describe("a card nobody answered is never a \"no\" (the controller's ruling on #290)", () => {
   test("an unanswered delete card keeps nothing hidden: the VM is asked about again on the next pass; only a decline keeps it", async () => {
     let delAnswer: CloudAnswer = "unanswered";

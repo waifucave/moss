@@ -445,6 +445,10 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         closers.push(approvalCoreEvents(broker, (e, o) => send(e, o), () => links.clock.now()));
       }
       if (input.cardRouting) closers.push(input.cardRouting(broker));
+      // The node's first pass over the cloud computer folders ran as the node started, before this broker was there, and
+      // its cards were unanswered. Ask again now that the person can be asked (a folder written while the daemon was
+      // off, a delete card a restart cut off). Later passes follow the registry and the lease on their own.
+      if (n.cloud) void n.cloud.sync().catch((err: unknown) => log(`[computers] cloud computers: ${err instanceof Error ? err.message : String(err)}`));
     }
 
     let agents: DaemonAgents | undefined;

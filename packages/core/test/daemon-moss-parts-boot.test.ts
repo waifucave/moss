@@ -497,6 +497,33 @@ describe("the daemon's MOSS parts at the edges", () => {
     }
   }, 30_000);
 
+  test("the daemon's real boot hands the computer node its cloud option, with the plugin registry and host it started", async () => {
+    const net = new MemoryNetwork();
+    const home = temp("moss-int-home-");
+    let seen: unknown;
+    const realStart = nodeModule.startComputerNode;
+    const nodeSpy = spyOn(nodeModule, "startComputerNode").mockImplementation((o) => { seen = (o as { cloud?: unknown }).cloud; return realStart(o); });
+    const registry = new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] });
+    const host = new FakePluginHost({ clock });
+    try {
+      daemon = await startDaemon({
+        home, secrets: new FileSecretStore(join(home, "secrets.json")), agentProvider: null, pair: false,
+        links: { wire: (k) => net.endpoint(k.publicKey), handshake: null, publicTime: null, mainComputer, watch: () => () => {} },
+        parts: { userHome: temp("moss-int-user-") },
+        pluginHost: async () => ({
+          host, registry, pluginSecrets: { forPlugin: () => ({ get: async () => null }) }, settings: { watch: () => () => {} } as never,
+          addApiHandlers: () => () => {}, close: async () => {},
+        }) as unknown as DaemonPluginHost,
+      });
+      await daemon.mossParts.ready;
+      expect(seen).toMatchObject({ plugins: registry, host });
+      expect(typeof (seen as { confirm: unknown }).confirm).toBe("function");
+      expect(typeof (seen as { userData: unknown }).userData).toBe("function");
+    } finally {
+      nodeSpy.mockRestore();
+    }
+  }, 30_000);
+
   test("the model plugins' start guard and a stop while they are still starting", async () => {
     const net = new MemoryNetwork();
     const fakeHost = (calls: { added: number; removed: number }) => async (registry: unknown) => ({

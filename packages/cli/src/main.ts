@@ -2769,7 +2769,7 @@ if (import.meta.main) {
       const cloudJoin = cloudJoinDir === undefined ? undefined : readCloudJoinFiles(cloudJoinDir);
       daemon = await startDaemon({
         ...(cloudJoinDir !== undefined && cloudJoin !== null && cloudJoin !== undefined
-          ? { cloudJoin: { dir: cloudJoinDir }, links: { self: { name: cloudJoin.name, kind: "server" as const, os: "linux" as const } } }
+          ? { cloudJoin: { dir: cloudJoinDir }, links: { self: { name: cloudJoin.name, kind: "cloud" as const, os: "linux" as const } } }
           : {}),
         requestRestart: () => {
           console.error("old home: restarting to swap the copy in");

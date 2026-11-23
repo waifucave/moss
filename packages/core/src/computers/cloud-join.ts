@@ -92,6 +92,32 @@ export class CloudPairer {
 
 type VmPairing = Pick<PairingService, "join" | "watch" | "confirm" | "get">;
 
+/** `joinCloudComputer`, again and again until it pairs or the ticket's hour is over: a main that is asleep, offline or
+ *  restarting when the VM finishes booting is the usual case, not an edge, and a VM left unpaired is deleted and made
+ *  again (billed again) by the main's pair-again card. Backs off from 5 seconds to 5 minutes; stops on a pairing that
+ *  has expired or was refused for good. `sleep` and `now` are test seams. */
+export async function joinCloudComputerUntilPaired(o: {
+  pairing: VmPairing; ticket: string; dir?: string; log?: (line: string) => void;
+  sleep?: (ms: number) => Promise<void>; now?: () => number; firstWaitMs?: number; maxWaitMs?: number; giveUpAfterMs?: number;
+}): Promise<void> {
+  const sleep = o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = o.now ?? (() => Date.now());
+  const until = now() + (o.giveUpAfterMs ?? CLOUD_PAIRING_TTL_MS);
+  let wait = o.firstWaitMs ?? 5_000;
+  for (;;) {
+    try {
+      await joinCloudComputer(o);
+      return;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      if (now() + wait >= until || /expired/.test(why)) throw e;
+      o.log?.(`not paired yet (${why}); trying again in ${Math.round(wait / 1000)} s`);
+      await sleep(wait);
+      wait = Math.min(wait * 2, o.maxWaitMs ?? 5 * 60_000);
+    }
+  }
+}
+
 /** The VM's side: joins with the ticket and confirms, with nobody at its screen. Resolves when it is paired, rejects
  *  when the pairing failed or ended. The ticket and the token are deleted from the disk once it is paired. */
 export async function joinCloudComputer(o: { pairing: VmPairing; ticket: string; dir?: string; log?: (line: string) => void }): Promise<void> {

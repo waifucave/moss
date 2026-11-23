@@ -103,7 +103,7 @@ import { agentDefinitionOf, GLOSSARY_TOOL_NAME } from "./runtime-sdk/turn-loop/g
 import { partsServe } from "./runtime-sdk/turn-loop/only-backends";
 import { AgentStarts, agentStartPolicy } from "./agents/start-policy";
 import { computerNameFor } from "./devices/registry";
-import { joinCloudComputer } from "./computers/cloud-join";
+import { joinCloudComputerUntilPaired } from "./computers/cloud-join";
 import { readCloudJoinFiles } from "./computers/image";
 import { startPluginHost, type DaemonPluginHost, type MainHere } from "./plugin-host/daemon-host";
 import { pluginBotSettings } from "./bots/plugin-bot-settings";
@@ -661,7 +661,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
    *  public time, the lease's timings. Production passes nothing: the sidecar beside the daemon, waifucave's handshake. */
   /** A cloud computer's own first start (spec §9.2): the folder `/etc/moss` holds its name, its join ticket and its single-use
    *  pairing token (`computers/image.ts`). The daemon names this device that, joins the main computer with the ticket
-   *  (`computers/cloud-join.ts`), and deletes the ticket and the token once paired. `moss-core daemon run --cloud-join-dir`. */
+  *  (`computers/cloud-join.ts`), trying again with a back-off for as long as the ticket lasts, and deletes the ticket and
+   *  the token once paired. `moss-core daemon run --cloud-join-dir`. */
   cloudJoin?: { dir: string };
   links?: false | Pick<DaemonLinksInput, "wire" | "directory" | "handshake" | "account" | "publicTime" | "mainComputer" | "driver" | "watch" | "binary" | "sidecar" | "self" | "openCard">;
   /** The daemon integration: this computer's node and bot side, started over the links once they're up. `node: false`
@@ -5405,14 +5406,14 @@ if (import.meta.main) {
 
 
 /** A folder's real path, or the path as given when it can't be read. */
-/** A cloud computer's first start: join the main computer with the ticket the image left in `dir`, once. Nothing is
- *  waited on (the links and the plugins start as they do on any computer); a failure is logged and the next start tries
- *  again while the files are still there, and they are deleted only once paired. A computer with no ticket (already
+/** A cloud computer's first start: join the main computer with the ticket the image left in `dir`, trying again with a
+ *  back-off until it works or the ticket is spent. Nothing is waited on (the links and the plugins start as they do on
+ *  any computer); the files are deleted only once paired, so a restart tries again. A computer with no ticket (already
  *  paired, or not a cloud computer) does nothing. */
 function startCloudJoin(links: DeviceLinks, dir: string): void {
   const files = readCloudJoinFiles(dir);
   if (files === null) return;
-  void joinCloudComputer({ pairing: links.pairing, ticket: files.join, dir, log: (line) => console.error(`[cloud-join] ${line}`) }).catch((err: unknown) => {
+  void joinCloudComputerUntilPaired({ pairing: links.pairing, ticket: files.join, dir, log: (line) => console.error(`[cloud-join] ${line}`) }).catch((err: unknown) => {
     console.error(`[cloud-join] this computer did not pair with its main computer: ${err instanceof Error ? err.message : String(err)}`);
   });
 }

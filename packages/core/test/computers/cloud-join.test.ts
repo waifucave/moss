@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudComputers, FileCloudStateStore, type CloudAuthority, type CloudCard, type CloudFolder, type CloudProviderHandler } from "../../src/computers/cloud";
-import { CloudPairer, joinCloudComputer } from "../../src/computers/cloud-join";
+import { automaticMain } from "../../src/lease/main-choice";
+import { CloudPairer, joinCloudComputer, joinCloudComputerUntilPaired } from "../../src/computers/cloud-join";
 import { cloudInit, readCloudJoinFiles } from "../../src/computers/image";
 import { MemorySecretStore } from "../../src/contracts/fakes/secret-store";
 import { SystemClock } from "../../src/clock/system-clock";
@@ -22,10 +23,10 @@ afterEach(async () => {
   cleanup = [];
 });
 
-async function device(net: MemoryNetwork, name: string, kind: "desktop" | "server" = "desktop") {
+async function device(net: MemoryNetwork, name: string, kind: "desktop" | "server" | "cloud" = "desktop") {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
-  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-cc-join-")), key, clock, self: { name, os: kind === "server" ? "linux" : "macos", kind } });
+  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-cc-join-")), key, clock, self: { name, os: kind === "desktop" ? "macos" : "linux", kind } });
   const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({ relay: "https://relay.test/" }), account: () => null });
   cleanup.push(() => pairing.close());
   return { name, key, registry, pairing };
@@ -91,7 +92,7 @@ describe("a cloud computer joins its main computer", () => {
   test("the VM pairs once with its ticket: it is added, the cloud clears its user-data, the person is asked about the main, the ticket is gone", async () => {
     const net = new MemoryNetwork();
     const main = await device(net, "Studio");
-    const vm = await device(net, "Cloud1", "server");
+    const vm = await device(net, "Cloud1", "cloud");
     const { provider, cloud, cards } = setup(net, main);
     expect(await cloud.reconcile([folder])).toMatchObject({ created: ["Cloud1"] });
     const dir = etcMoss(provider.userData[0]!);
@@ -109,13 +110,49 @@ describe("a cloud computer joins its main computer", () => {
     expect(readCloudJoinFiles(dir)).toBeNull();
     expect(existsSync(join(dir, "join")) || existsSync(join(dir, "pairing-token"))).toBe(false);
     expect(existsSync(join(dir, "name"))).toBe(true);
+    // Pairing alone never makes the VM the main computer: that is the person's answer to the make-main card (§9.2), and
+    // the automatic choice never picks a cloud computer.
+    expect(automaticMain(main.registry.list())).toBe(main.key.id);
+    expect(main.registry.list().find((d) => d.computer === "Cloud1")?.kind).toBe("cloud");
+  });
+
+  test("a main that is away when the VM first tries is tried again with a back-off, and the VM pairs when it is back", async () => {
+    const net = new MemoryNetwork();
+    const main = await device(net, "Studio");
+    const vm = await device(net, "Cloud1", "cloud");
+    const { provider, cloud } = setup(net, main);
+    await cloud.reconcile([folder]);
+    const dir = etcMoss(provider.userData[0]!);
+    let tries = 0;
+    const waits: number[] = [];
+    // The first two attempts find nobody home.
+    const flaky = {
+      get: vm.pairing.get.bind(vm.pairing), watch: vm.pairing.watch.bind(vm.pairing), confirm: vm.pairing.confirm.bind(vm.pairing),
+      join: async (t: string) => { if (++tries <= 2) throw new Error("the other device can't be reached"); return vm.pairing.join(t); },
+    };
+    await joinCloudComputerUntilPaired({ pairing: flaky, ticket: readCloudJoinFiles(dir)!.join, dir, sleep: async (ms) => { waits.push(ms); }, firstWaitMs: 5_000 });
+    expect(tries).toBe(3);
+    expect(waits).toEqual([5_000, 10_000]);
+    await until(() => cloud.get("Cloud1")?.state === "paired");
+    expect(cloud.get("Cloud1")?.state).toBe("paired");
+  });
+
+  test("the VM stops trying once its ticket is spent or its hour is over", async () => {
+    const net = new MemoryNetwork();
+    const vm = await device(net, "Cloud1", "cloud");
+    const never = { get: vm.pairing.get.bind(vm.pairing), watch: vm.pairing.watch.bind(vm.pairing), confirm: vm.pairing.confirm.bind(vm.pairing), join: async () => { throw new Error("the pairing has expired"); } };
+    await expect(joinCloudComputerUntilPaired({ pairing: never, ticket: "x", sleep: async () => {} })).rejects.toThrow("expired");
+    let t = 0;
+    const down = { ...never, join: async () => { throw new Error("the other device can't be reached"); } };
+    await expect(joinCloudComputerUntilPaired({ pairing: down, ticket: "x", sleep: async (ms) => { t += ms; }, now: () => t, giveUpAfterMs: 60_000 })).rejects.toThrow("can't be reached");
+    expect(t).toBeLessThanOrEqual(60_000);
   });
 
   test("the ticket works once: a second device with it is turned away, and the spent pairing adds nothing", async () => {
     const net = new MemoryNetwork();
     const main = await device(net, "Studio");
-    const vm = await device(net, "Cloud1", "server");
-    const copy = await device(net, "Cloud1", "server");
+    const vm = await device(net, "Cloud1", "cloud");
+    const copy = await device(net, "Cloud1", "cloud");
     const { provider, cloud } = setup(net, main);
     await cloud.reconcile([folder]);
     const dir = etcMoss(provider.userData[0]!);
@@ -128,7 +165,7 @@ describe("a cloud computer joins its main computer", () => {
   test("a device that doesn't call itself the VM's computer is not confirmed by the main, even with the right ticket", async () => {
     const net = new MemoryNetwork();
     const main = await device(net, "Studio");
-    const intruder = await device(net, "Mallory", "server");
+    const intruder = await device(net, "Mallory", "cloud");
     const { provider, cloud } = setup(net, main);
     await cloud.reconcile([folder]);
     const ticket = readCloudJoinFiles(etcMoss(provider.userData[0]!))!.join;
@@ -141,7 +178,7 @@ describe("a cloud computer joins its main computer", () => {
   test("the person's own pairing is never confirmed by the main for them, whatever the other device calls itself", async () => {
     const net = new MemoryNetwork();
     const main = await device(net, "Studio");
-    const vm = await device(net, "Cloud1", "server");
+    const vm = await device(net, "Cloud1", "cloud");
     setup(net, main);
     const view = await main.pairing.begin();
     await vm.pairing.join(view.qr!);
@@ -154,7 +191,7 @@ describe("a cloud computer joins its main computer", () => {
   test("a lone main that founded the group while the VM paired (its tenure changed scope) still finishes the VM's pairing", async () => {
     const net = new MemoryNetwork();
     const main = await device(net, "Studio");
-    const vm = await device(net, "Cloud1", "server");
+    const vm = await device(net, "Cloud1", "cloud");
     const authority = new Authority();
     const { provider, cloud } = setup(net, main, { authority });
     await cloud.reconcile([folder]);
