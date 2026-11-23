@@ -575,7 +575,10 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // didn't read are denied whole (`existingDeniesOf`).
           const denyRead = perExecReadDenies(existingDeniesOf(plan.denyRead).paths);
           const writeWalk = existingDeniesOf(plan.denyWrite);
-          const denyWrite = writeWalk.paths;
+          // Only a write deny at or under a write root is stamped: nothing outside the roots is writable with the
+          // write-restricted token (rule 3), and each stamp on a folder is a DACL write Windows carries down its whole
+          // tree, then takes back after the command (tens of seconds on a big one).
+          const denyWrite = writeWalk.paths.filter((d) => roots.some((x) => winUnder(d, x)));
           mark("denies");
           // Rule 4's belt: a fenced path that doesn't exist yet but could be made inside a write root (a PowerShell
           // profile under Documents when the home's folders are written) can't carry a deny; if the command makes it,
@@ -607,7 +610,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           let result = ran;
           if (timing) {
             const said = ran.stderr.split(/\r?\n/).filter((l) => l.startsWith("srt-win:"));
-            phases.push(`denies ${denyRead.length}r/${denyWrite.length}w, except ${grantPlan.denyReadExcept.length}, roots ${roots.length}; ${said.join(" | ").slice(0, 1500)}`);
+            phases.push(`denies ${denyRead.length}r/${denyWrite.length}w (read: ${denyRead.map((d) => win32.basename(d)).join(",").slice(0, 300)}), except ${grantPlan.denyReadExcept.length}, roots ${roots.length}; ${said.join(" | ").slice(0, 1500)}`);
             result = { ...ran, stderr: ran.stderr.split(/\r?\n/).filter((l) => !l.startsWith("srt-win:")).join("\n") };
           }
           const after = gitPlaces(roots);
