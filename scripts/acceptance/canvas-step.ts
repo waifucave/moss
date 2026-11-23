@@ -113,8 +113,8 @@ async function crossWorld(ctx: ExampleCtx) {
     }
     return probe(await history(session));
   }, async () => `${extra?.() ?? ""} events: ${(await history(session)).slice(-6).map((e) => String(e.type)).join(", ") || "none"}`);
-  const mcpResult = (report: string, tool: string) => until(`the ${tool} call's answer`, 60_000, async () => reportOf(report).find((x) => x.type === "mcp-result" && x.tool === tool),
-    async () => `the agent's report: ${reportOf(report).map((x) => x.type).join(", ") || "none (it never started)"}`);
+  const mcpResult = (report: string, tool: string, session?: string) => until(`the ${tool} call's answer`, 60_000, async () => reportOf(report).find((x) => x.type === "mcp-result" && x.tool === tool),
+    async () => `the agent's report: ${reportOf(report).map((x) => x.type).join(", ") || "none (it never started)"}${session === undefined ? "" : `; its session's last events: ${JSON.stringify((await history(session)).slice(-4)).slice(0, 900)}`}`);
 
   // The links the engine announces from here on (a `core.event` of the sessions area; a plugin hears one only when it may read both ends).
   const links: Ev[] = [];
@@ -214,7 +214,7 @@ async function botReach(ctx: ExampleCtx): Promise<string> {
   await ctx.turn(bot.mainSession, `ACCEPTANCE-CALL Agent ${input}`, 150_000);
   const k = await until("the session Alpha started", 60_000, async () => (await rpc.request<{ sessions: { id: string; bot?: string; parent?: string; startedBy?: { kind: string } }[] }>("session.list", { kinds: ["agent"] })).sessions.find((x) => !before.has(x.id) && x.parent === bot.mainSession));
   if (k.bot !== "alpha" || k.startedBy?.kind !== "bot") fail(`the session Alpha started reads ${JSON.stringify(k).slice(0, 300)}: a bot's session`);
-  const listed = await mcpResult(reportK, "ListSessions");
+  const listed = await mcpResult(reportK, "ListSessions", k.id);
   if (listed.isError === true) fail(`K's ListSessions answered an error: ${String(listed.text).slice(0, 300)}`);
   const listText = String(listed.text);
   if (!listText.includes(b)) fail(`K's ListSessions doesn't name B (${b}), a session the person started: "${listText.slice(0, 400)}"`);
