@@ -15,7 +15,7 @@
 //      turn's reply is in the session; a second session starts with no card.
 // Removed afterwards, whatever happened.
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, until, type ExampleCtx } from "./example-steps";
 import { FAKE_NPM_HOST } from "./fake-exa";
@@ -42,6 +42,13 @@ export function adapterFiles(o: { fake: string; ran: string }, version = ADAPTER
       "",
     ].join("\n"),
   };
+}
+
+/** The fixture's quirks file with the published package's integrity and size in its `launch.adapter`. Pure. */
+export function withAdapter(quirksFile: string, o: { integrity: string; size: number }): string {
+  const file = JSON.parse(quirksFile) as { quirks: { launch: { adapter: Record<string, unknown> } } };
+  file.quirks.launch.adapter = { ...file.quirks.launch.adapter, integrity: o.integrity, size: o.size };
+  return `${JSON.stringify(file, null, 2)}\n`;
 }
 
 export const sriOf = (bytes: Uint8Array): string => `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
@@ -73,8 +80,9 @@ async function run(ctx: ExampleCtx): Promise<string> {
   cpSync(FIXTURE, folder, { recursive: true });
   const written = fixtureWith({ "moss.json": readFileSync(join(folder, "moss.json"), "utf8"), "quirks.json": readFileSync(join(folder, "quirks.json"), "utf8") }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config });
   writeFileSync(join(folder, "moss.json"), written["moss.json"]!);
-  writeFileSync(join(folder, "quirks.json"), written["quirks.json"]!.replaceAll("__INTEGRITY__", integrity));
-  writeFileSync(config, agentConfig(written["quirks.json"]!, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile } }));
+  const quirks = withAdapter(written["quirks.json"]!, { integrity, size: genuine.byteLength });
+  writeFileSync(join(folder, "quirks.json"), quirks);
+  writeFileSync(config, agentConfig(quirks, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile } }));
 
   // Installed behind its OK card, pressed in the window.
   const installed = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
@@ -150,7 +158,7 @@ async function run(ctx: ExampleCtx): Promise<string> {
   if (!existsSync(entry)) fail(`the adapter isn't kept where MOSS keeps it (${entry})`);
   const records = readFileSync(ran, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { execArgv: string[]; entry: string });
   const r = records.at(-1);
-  if (r === undefined || r.entry !== entry) fail(`the adapter ran from ${r?.entry ?? "nowhere"}, not MOSS's copy ${entry}`);
+  if (r === undefined || realpathSync(r.entry) !== realpathSync(entry)) fail(`the adapter ran from ${r?.entry ?? "nowhere"}, not MOSS's copy ${entry}`);
   for (const flag of ["--no-install", "--no-env-file"]) if (!r!.execArgv.includes(flag)) fail(`MOSS started the adapter without ${flag} (${r!.execArgv.join(" ")})`);
   if (!r!.execArgv.some((f) => f.startsWith("--config="))) fail(`MOSS started the adapter without its own config (${r!.execArgv.join(" ")})`);
   const listing = readdirSync(join(kept, ADAPTER_PACKAGE)).sort().join(",");
