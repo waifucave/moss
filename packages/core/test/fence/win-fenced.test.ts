@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
@@ -11,7 +11,7 @@ import {
   existingDenies, existingDeniesOf, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
-import { formatInstallMarker, poolLockPath, type LeaseStore } from "../../src/fence/win-sandbox";
+import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
 import type { FencedRun, FencedSpawner } from "../../src/fence/spawn";
 
 const BOT: Extract<Caller, { kind: "session" }> = { kind: "session", sessionId: "s1", sessionKind: "bot", bot: "luna" } as Extract<Caller, { kind: "session" }>;
@@ -141,14 +141,19 @@ describe("the plan", () => {
   });
 });
 
-/** Fake machine: a launcher that is (or isn't) pinned, a marker, a profile per principal and an in-memory lease store. */
-function machine(o: { pinned?: boolean; marker?: string | null; profile?: (sid: string) => string | null } = {}) {
+const GEN1 = "1".repeat(32), GEN2 = "2".repeat(32);
+
+/** Fake machine: a launcher that is (or isn't) pinned, a marker, the pool's state files (each principal's generation
+ *  and used record; by default both remade since their last command) and an in-memory lease store. */
+function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "moss-winfenced-"));
   const home = join(root, "home");
   mkdirSync(join(home, ".moss"), { recursive: true });
   const held = new Set<string>();
   const leases: LeaseStore = { tryLock: (p) => (held.has(p) ? null : (held.add(p), { release: () => { held.delete(p); } })) };
   const execs: (readonly string[])[] = [];
+  const writes: string[] = [];
+  const files: Record<string, string> = o.files ?? { "moss-sb-aaaaaa-1.gen": GEN1, "moss-sb-aaaaaa-1.used": "", "moss-sb-aaaaaa-2.gen": GEN2, "moss-sb-aaaaaa-2.used": "" };
   const marker = o.marker === undefined ? formatInstallMarker({ version: 2, ownerSid: "S-1-5-21-1", members: [
     { principal: "moss-sb-aaaaaa-1", principalSid: "S-1-5-21-1001", sublayer: "x" }, { principal: "moss-sb-aaaaaa-2", principalSid: "S-1-5-21-1002", sublayer: "y" },
   ] }) : o.marker;
@@ -160,22 +165,18 @@ function machine(o: { pinned?: boolean; marker?: string | null; profile?: (sid: 
     systemRoot: "C:\\Windows",
     shells: { bash: "C:\\Program Files\\Git\\bin\\bash.exe", powershell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" },
     leases: () => leases,
-    leasesDir: join(root, "leases"),
+    leasesDir: "C:\\ProgramData\\MOSS Sandbox\\pool\\S-1-5-21-1",
     async exec(argv) {
       execs.push(argv);
       if (argv[0] === "reg" && argv[2] === "HKLM\\SOFTWARE\\sandbox-runtime") return { code: 0, stdout: "    SandboxUserSid    REG_SZ    S-1-5-21-1002\r\n", stderr: "" };
-      if (argv[0] === "reg") {
-        const sid = /ProfileList\\(S-[0-9-]+)/.exec(argv[2]!)?.[1] ?? "";
-        const p = (o.profile ?? (() => null))(sid);
-        return p === null ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: `    ProfileImagePath    REG_EXPAND_SZ    ${p}\r\n`, stderr: "" };
-      }
       return { code: 0, stdout: "", stderr: "" };
     },
-    readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : null),
+    readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : files[win32.basename(p)] ?? null),
+    writeFile: (p, text) => { const k = win32.basename(p); if (!(k in files)) return false; files[k] = text; writes.push(`${k}=${text}`); return true; },
     leaseTimeoutMs: 0,
   };
   const fence = new MossFence({ home, mossHome: join(home, ".moss"), os: "windows" });
-  return { deps, fence, execs, home };
+  return { deps, fence, execs, home, files, writes };
 }
 
 const runOf = (cwd: string): FencedRun => ({ command: "echo hi", cwd, env: {}, timeoutMs: 1000, who: { caller: BOT } });
@@ -200,33 +201,47 @@ describe("the Windows leg refuses, whole, before anything runs", () => {
     }
   });
 
-  test("a principal whose profile wasn't reset since its last command is never used: the reset task is asked, then refused", async () => {
-    const m = machine({ profile: (sid) => `C:\\Users\\p-${sid}` });
-    const s = winFencedSpawner({ fence: m.fence, deps: m.deps });
-    const r = await s.run(runOf(m.home));
+  test("a principal whose profile wasn't remade since its last command is never used: the reset task is asked, then refused", async () => {
+    const m = machine({ files: { "moss-sb-aaaaaa-1.gen": GEN1, "moss-sb-aaaaaa-1.used": GEN1, "moss-sb-aaaaaa-2.gen": GEN2, "moss-sb-aaaaaa-2.used": GEN2 } });
+    const r = await winFencedSpawner({ fence: m.fence, deps: m.deps }).run(runOf(m.home));
     expect(r).toMatchObject({ kind: "refused" });
     expect((r as { reason: string }).reason).toContain("reset since its last command");
-    // Both members were looked at, the reset task was asked for, and nothing was granted or launched.
-    expect(m.execs.filter((a) => a[0] === "reg").map((a) => a[2]!.slice(-4))).toEqual(["1001", "1002"]);
     expect(m.execs.some((a) => a[0] === "schtasks" && a.includes("/run") && a.includes("MOSS Sandbox Reset S-1-5-21-1"))).toBe(true);
     expect(m.execs.some((a) => a.includes("acl") || a.includes("exec"))).toBe(false);
+    expect(m.writes).toEqual([]);
   });
 
-  test("a reset principal is taken first, and an unreset one is skipped", async () => {
-    const m = machine({ profile: (sid) => (sid.endsWith("1001") ? "C:\\Users\\moss-sb-aaaaaa-1" : null) });
+  test("no generation, or one that isn't the reset's (an empty or odd .gen), is never fresh", async () => {
+    for (const gen of ["", "not-a-generation", "  "]) {
+      const m = machine({ files: { "moss-sb-aaaaaa-1.gen": gen, "moss-sb-aaaaaa-1.used": "", "moss-sb-aaaaaa-2.gen": gen, "moss-sb-aaaaaa-2.used": "" } });
+      expect(await winFencedSpawner({ fence: m.fence, deps: m.deps }).run(runOf(m.home))).toMatchObject({ kind: "refused" });
+    }
+  });
+
+  test("a remade principal is taken, its generation marked used before anything is granted; it isn't taken again until remade", async () => {
+    const m = machine({ files: { "moss-sb-aaaaaa-1.gen": GEN1, "moss-sb-aaaaaa-1.used": GEN1, "moss-sb-aaaaaa-2.gen": GEN2, "moss-sb-aaaaaa-2.used": "" } });
     const s = winFencedSpawner({ fence: m.fence, deps: { ...m.deps, exec: async (argv, x) => {
       if (argv.includes("exec")) return { code: 0, stdout: "", stderr: "" };
       return m.deps.exec(argv, x);
     } } });
     await s.run(runOf(m.home)).catch(() => undefined);
-    const grant = m.execs.find((a) => a.includes("grant") && a.includes("--persistent"));
-    expect(grant).toBeDefined();
-    expect(grant).toContain("S-1-5-21-1002");
+    expect(m.writes[0]).toBe(`moss-sb-aaaaaa-2.used=${GEN2}`);
+    const grantAt = m.execs.findIndex((a) => a.includes("grant") && a.includes("--persistent"));
+    expect(grantAt).toBeGreaterThanOrEqual(0);
+    // The next command finds both used: refused until the reset remakes one.
+    const again = await s.run(runOf(m.home));
+    expect(again).toMatchObject({ kind: "refused" });
+  });
+
+  test("a used record that can't be written refuses the principal (it would be taken again unremade)", async () => {
+    const m = machine({ files: { "moss-sb-aaaaaa-1.gen": GEN1, "moss-sb-aaaaaa-2.gen": GEN2 } }); // no .used files to write
+    expect(await winFencedSpawner({ fence: m.fence, deps: m.deps }).run(runOf(m.home))).toMatchObject({ kind: "refused" });
+    expect(m.execs.some((a) => a.includes("acl"))).toBe(false);
   });
 
   test("every principal busy: refused rather than shared", async () => {
     const m = machine({ marker: formatInstallMarker({ version: 2, ownerSid: "S-1-5-21-1", members: [{ principal: "moss-sb-aaaaaa-1", principalSid: "S-1-5-21-1001", sublayer: "x" }] }) });
-    const held = m.deps.leases().tryLock(poolLockPath(m.deps.leasesDir, "moss-sb-aaaaaa-1"));
+    const held = m.deps.leases().tryLock(poolStateFiles(m.deps.leasesDir, "moss-sb-aaaaaa-1").lock);
     expect(held).not.toBeNull();
     const r = await winFencedSpawner({ fence: m.fence, deps: m.deps }).run(runOf(m.home));
     expect(r).toMatchObject({ kind: "refused" });

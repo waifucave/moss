@@ -1687,7 +1687,16 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     registerResetTaskArgs,
     unregisterResetTaskArgs,
     PROFILE_IN_USE_EXIT,
+    remakeProfileArgs,
+    poolStateDir,
+    poolStateFiles,
+    isFreshGeneration,
+    poolDirAclArgs,
+    poolFileAclArgs,
+    createWindowsLockStore,
   } = await import("@waifucave/moss-core");
+  /** A profile generation: what the reset writes each time it remakes a principal's profile (`isFreshGeneration`). */
+  const newGeneration = async () => (await import("node:crypto")).randomBytes(16).toString("hex");
   const usage = "usage: moss-core sandbox setup [--force]|remove|forget|reset|status [--json]";
   if (process.platform !== "win32") {
     console.error("sandbox setup runs on Windows only");
@@ -1821,6 +1830,13 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // (first logon creates the profile), resolve by SID, lock down Startup.
         const stamp = await run([...setDescriptionArgs(principal, ownerSid)]);
         if (stamp.code !== 0) { fail(`stamping the owner SID failed (exit ${stamp.code})${stamp.out.trim() ? `\n${stamp.out.trim().slice(0, 2000)}` : ""}`); break; }
+        // A profile left from before (a setup run again over commands' profiles) goes first, so the warm-up's logon
+        // makes a fresh one: the pool starts with every principal remade and unused (its generation, below).
+        const before = await memberSid(launcher, principal);
+        if (before.sid !== null) {
+          const gone = await run([...deleteProfileArgs(before.sid)]);
+          if (gone.code !== 0) { fail(`its old profile couldn't be deleted (exit ${gone.code}); a command may be running as it`); break; }
+        }
         const warm = await run([...warmUpArgs({ launcher, systemRoot, user: principal })]);
         if (warm.code !== 0) { fail(`the first logon failed (exit ${warm.code})${warm.out.trim() ? `\n${warm.out.trim().slice(0, 2000)}` : ""}`); break; }
         const { sid: principalSid } = await memberSid(launcher, principal);
@@ -1843,11 +1859,26 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         members.push({ principal, principalSid, sublayer });
       }
       if (failed) return;
-      // The first logons above left each principal a profile; a command runs only as a principal with none (the
-      // per-command reset, `sandbox reset`), so they go now, while setup is elevated.
+      // The pool's state (`poolStateDir`): administrators' folder, the owner may only read it and read or write the
+      // files made here (no file of its own, no link). Each principal starts remade and unused: its profile is the
+      // warm-up's, fresh, under a new generation.
+      const poolRoot = join(markersRoot, "pool");
+      const poolDir = poolStateDir(programData, ownerSid);
+      for (const [dir, claim] of [[poolRoot, claimDirArgs(poolRoot)], [poolDir, claimDirArgs(poolDir)], [poolDir, poolDirAclArgs(poolDir, ownerSid)]] as const) {
+        const r = await run([...claim]);
+        if (r.code !== 0) { console.error(`sandbox setup: cannot secure ${dir} (exit ${r.code})${r.out.trim() ? `\n${r.out.trim().slice(0, 500)}` : ""}`); process.exitCode = 1; return; }
+      }
       for (const m of members) {
-        const gone = await run([...deleteProfileArgs(m.principalSid)]);
-        if (gone.code !== 0) console.error(`sandbox setup: ${m.principal}'s first profile couldn't be deleted yet (exit ${gone.code}); the reset task retries it`);
+        const files = poolStateFiles(poolDir, m.principal);
+        try {
+          await writeFile(files.lock, "", { flag: "a" });
+          await writeFile(files.used, "");
+          await writeFile(files.gen, await newGeneration());
+        } catch (e) { console.error(`sandbox setup: ${m.principal}'s pool state can't be written (${(e as Error).message})`); process.exitCode = 1; return; }
+        for (const [file, write] of [[files.lock, true], [files.used, true], [files.gen, false]] as const) {
+          const r = await run([...poolFileAclArgs(file, ownerSid, write)]);
+          if (r.code !== 0) { console.error(`sandbox setup: ${file} can't be opened to its owner (exit ${r.code})`); process.exitCode = 1; return; }
+        }
       }
       // Record this install for the next setup/remove (ruling 3): owner plus every pool member.
       await mkdir(dirname(markerFile), { recursive: true });
@@ -1968,6 +1999,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           return;
         }
         await unlink(markerFile).catch(() => {});
+        // The pool's state goes with it (its folder is administrators', made by setup).
+        await (await import("node:fs/promises")).rm(poolStateDir(programData, ownerSid), { recursive: true, force: true }).catch(() => {});
         console.log("Bash's fence is removed");
         return;
       }
@@ -1990,10 +2023,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     }
     case "reset": {
       // The per-session reset (spec §9.1: nothing a command writes carries over): run by the reset task as SYSTEM, from
-      // the protected copy. Each pool member that no command holds (its lease lock is free: the daemon's own OS lock,
-      // taken here for the reset's length, so no command starts on a half-deleted profile) has its whole profile and
-      // hive deleted; its next logon makes a fresh one from the default profile. A held member is left for the next
-      // reset. Exit 0 when every free member is clean, 1 when a profile couldn't be deleted (the next launch refuses it).
+      // the protected copy, which the daemon starts when a command ends (and again while it finds no principal fresh).
+      // Exit 0 when every principal it could take is remade, 1 when one couldn't be (the daemon then never takes it).
       // What it did is also kept in `%ProgramData%\\MOSS Sandbox\\reset-<owner SID>.log`: the task has no console.
       const said: string[] = [];
       const say = (line: string) => { said.push(line); console.error(line); };
@@ -2031,17 +2062,40 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         say("nothing to reset: Bash isn't set up for this user");
         await keepLog(); return;
       }
-      // Which principals a command runs as now is read from Windows itself, never from a file in the user's folders
-      // (SYSTEM opens nothing a user could plant a link in): a profile that is loaded belongs to a running command and
-      // is left for the next reset; an unloaded one is deleted. The daemon runs a command only as a principal with no
-      // profile, so a profile deleted here was never one a command was about to use.
+      // Each principal no command holds (its `.lock` in the pool's state, an OS lock the daemon takes for a command's
+      // whole run) whose profile was used since it was last remade (`isFreshGeneration` false) gets its profile and
+      // hive deleted and a fresh one made from the default profile (`remakeProfileArgs`), then a new generation: the
+      // daemon takes it again only then. SYSTEM opens only the pool's own files, in administrators' folder (the owner
+      // reads and writes those files, never makes one or a link). A profile Windows still has loaded is left for the
+      // next pass. Passes repeat while one remade something (a command that ended during a pass is caught), at most 10.
       let failed = 0;
-      for (const m of marker.members) {
-        if (m.principalSid === null) continue;
-        const gone = await run([...deleteProfileArgs(m.principalSid)]);
-        if (gone.code === PROFILE_IN_USE_EXIT) say(`${m.principal}: in use, left for the next reset`);
-        else if (gone.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be deleted (exit ${gone.code})${gone.out.trim() ? `\n${gone.out.trim().slice(0, 1000)}` : ""}`); }
-        else say(`${m.principal}: reset`);
+      const poolDir = poolStateDir(programData, targetSid);
+      let store: ReturnType<typeof createWindowsLockStore>;
+      try { store = createWindowsLockStore(poolDir); } catch (e) {
+        say(`sandbox reset: the pool's state can't be locked (${(e as Error).message}); run \`moss-core sandbox setup\` again`);
+        process.exitCode = 1;
+        await keepLog(); return;
+      }
+      const { writeFile } = await import("node:fs/promises");
+      const read = async (p: string) => readFile(p, "utf8").catch(() => null);
+      for (let pass = 0; pass < 10; pass++) {
+        let remade = 0;
+        for (const m of marker.members) {
+          if (m.principalSid === null) continue;
+          const files = poolStateFiles(poolDir, m.principal);
+          const guard = store.tryLock(files.lock);
+          if (guard === null) { say(`${m.principal}: in use, left for the next pass`); continue; }
+          try {
+            if (isFreshGeneration(await read(files.gen), await read(files.used))) continue;
+            const r = await run([...remakeProfileArgs(m.principalSid, m.principal)]);
+            if (r.code === PROFILE_IN_USE_EXIT) { say(`${m.principal}: its profile is still loaded, left for the next pass`); continue; }
+            if (r.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be remade (exit ${r.code})${r.out.trim() ? `\n${r.out.trim().slice(0, 1000)}` : ""}`); continue; }
+            await writeFile(files.gen, await newGeneration());
+            remade++;
+            say(`${m.principal}: reset`);
+          } finally { guard.release(); }
+        }
+        if (remade === 0) break;
       }
       process.exitCode = failed === 0 ? SANDBOX_EXIT.OK : SANDBOX_EXIT.FAILED;
       await keepLog(); return;

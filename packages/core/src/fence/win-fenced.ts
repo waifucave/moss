@@ -7,29 +7,34 @@
 // The rules, each enforced where it says:
 //  1. Who: the launcher must be the pinned build (`launcherProblem`) and the install marker must name this owner, at
 //     every launch.
-//  2. One principal per command: a pool member is leased exclusively for the command's whole run (an OS file lock,
-//     `acquirePoolLease`), so two commands never share a principal, and the lease ends with the command.
+//  2. One principal per command: a pool member is leased exclusively for the command's whole run (an OS lock on its
+//     `.lock` in the pool's state, `poolStateDir`, which the reset takes too), so two commands never share a
+//     principal, and the lease ends with the command.
 //  3. Writes: only the run's write roots, each a persistent root with its own capability SID (`acl grant
 //     --persistent`), passed to `exec --write-root`; the write-restricted token lets nothing else be written, whatever
 //     BUILTIN\Users or Authenticated Users may write. The roots are the runner's sandbox's `allowWrite` (`planFor`).
+//     The session's grants are revoked only when this process's last command ends (`heldGrants`).
 //  4. Denies: every fenced path of the run's sandbox that exists is stamped `--deny-write` / `--deny-read` for this
-//     command; a glob is expanded over what exists; a deny wins over every allow (an explicit deny ACE comes first).
-//     A fenced path that doesn't exist yet can only be made inside a write root; the post-run belt checks the git
-//     places there (rule 7).
+//     command; a glob is expanded over what exists, one walk per folder with its own budget, and past it the folders
+//     not read are denied whole (`existingDeniesOf`); a deny wins over every allow (an explicit deny ACE comes first).
+//     A fenced path that doesn't exist yet can only be made inside a write root; rule 7 puts it away after the run.
 //  5. Network: the principal's WFP filters (installed by setup, loopback closed) refuse every connection but the
 //     loopback proxy range 60080–60089, as `srt-win install` sets them; no `--allow-loopback` is ever passed.
 //  6. Environment: built here, whole. The broker gets a fixed system environment; the child gets a home folder of its
 //     own, made for the command inside its temp folder and removed after it, as HOME/USERPROFILE/APPDATA (never the
 //     user's: the controller's ruling 2, and the M1 floor's "HOME and TEMP in the session's own temp"), its run's temp
 //     folder as TEMP/TMP, a fixed PATH and MOSS's empty git template. Nothing of the daemon's environment reaches it.
-//  7. Run later: a git config key a command set in a repo under its write roots is reverted after the run, and a hook
-//     it planted in such a repo's `.git/hooks` is moved aside (`revertPlantedGitKeys`, `quarantineHooks`).
+//  7. Run later: after the run, a git config key a command set in a repo under its write roots is reverted, a hook it
+//     planted in such a repo's `.git/hooks` is moved aside, and a fenced path or run-later name (`.vscode`, `.envrc`,
+//     `.git`…) it made under a root is moved aside and named in the result (`revertPlantedGitKeys`,
+//     `quarantineHooks`, `quarantinePlanted`, `quarantinePatternMatches`): Linux's way, where the Mac refuses the write.
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`.
-//  9. Nothing carries over (spec §9.1): a principal's whole profile and hive are deleted after each of its commands
-//     by the reset task `sandbox setup` registers (SYSTEM; `sandbox reset`), and a command runs only as a principal
-//     with no profile left (`leaseFresh`), so its logon makes a fresh one. Checked at every launch; failing closed.
+//  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
+//     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
+//     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
+//     before it starts. The reset is off the command's path; checked at every launch; failing closed.
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { join, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -40,8 +45,8 @@ import { ordinaryTopFolders } from "./sandbox-settings";
 import { quarantinePlanted, reposUnder, revertPlantedGitKeys, snapshotFiles } from "./fenced-process";
 import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner, type RunShell } from "./spawn";
 import {
-  createWindowsLockStore, execArgs, poolLockPath, runResetTaskArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
-  parseProfileImagePath, profileQueryArgs, sandboxLeasesDir, sessionGrantArgs, sessionGrantInput,
+  createWindowsLockStore, execArgs, isFreshGeneration, poolStateDir, poolStateFiles, runResetTaskArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
+  sandboxLeasesDir, sessionGrantArgs, sessionGrantInput,
   sessionRevokeArgs, setupBashRefusal, srtWinArch, srtWinPath, winLaunchPlan, type InstallMarker, type LeaseStore,
 } from "./win-sandbox";
 
@@ -301,10 +306,13 @@ export interface WinFencedDeps {
   readonly systemRoot: string;
   readonly shells: { bash: string | null; powershell: string | null };
   readonly leases: () => LeaseStore;
+  /** The pool's state folder (`poolStateDir`): the leases' locks and each principal's generation and used record. */
   readonly leasesDir: string;
   /** A short helper process (srt-win's acl and status, reg): exit code and output. */
   exec(argv: readonly string[], o?: { stdin?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>;
   readFile(path: string): string | null;
+  /** Writes an existing file whole (the pool's `.used` record); false when it can't. */
+  writeFile(path: string, text: string): boolean;
   /** How long a command waits for a free, reset principal before it is refused, and how often it looks. */
   readonly leaseTimeoutMs?: number;
   readonly leasePollMs?: number;
@@ -315,7 +323,9 @@ declare const __MOSS_TEST_BUILD__: string | false | undefined;
 /** The real machine's deps. */
 export function windowsDeps(mossHome: string, o: { ownerSid: string | null; programData: string | null }): WinFencedDeps {
   const env = minimalChildEnv();
-  const leasesDir = sandboxLeasesDir(mossHome);
+  // The pool's state lives where only SYSTEM and administrators write (`poolStateDir`); without the owner's SID or
+  // ProgramData it is the old per-home folder, which no install has (every launch is then refused at `install`).
+  const leasesDir = o.ownerSid !== null && o.programData !== null ? poolStateDir(o.programData, o.ownerSid) : sandboxLeasesDir(mossHome);
   let store: LeaseStore | undefined;
   // The launcher is the protected copy's (`%ProgramFiles%\MOSS Sandbox\<SID>\srt-win.exe`, written by the installer
   // elevated, admin-write only), never the one beside the daemon in its user-writable install folder: nothing can
@@ -348,6 +358,8 @@ export function windowsDeps(mossHome: string, o: { ownerSid: string | null; prog
       }
     },
     readFile: (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
+    // `r+`: the file must already be there (setup made it; the owner can't make one in that folder).
+    writeFile: (p, text) => { try { const fd = openSync(p, "r+"); try { ftruncateSync(fd, 0); writeSync(fd, text, 0); fsyncSync(fd); } finally { closeSync(fd); } return true; } catch { return false; } },
   };
 }
 
@@ -404,7 +416,14 @@ export function quarantinePatternMatches(patterns: readonly string[], roots: rea
  *  ran would take that one's read grants from under it (the reviewer's finding 5). The revoke runs only when the last
  *  command of this process ends; until then a root granted by an ended command stays granted, as a persistent root
  *  does anyway (only a token carrying the root's capability SID writes there). */
-const heldGrants = { inFlight: 0 };
+const heldGrants = { inFlight: 0, chain: Promise.resolve() as Promise<unknown> };
+/** `f` after every grant and revoke this process started before it: a revoke never lands between another command's
+ *  count and its grant. */
+function grantsInTurn<T>(f: () => Promise<T>): Promise<T> {
+  const next = heldGrants.chain.then(f, f);
+  heldGrants.chain = next.catch(() => {});
+  return next;
+}
 
 /** The Windows leg of the fenced spawner. */
 export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bots?: () => readonly string[] }): FencedSpawner {
@@ -497,11 +516,13 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const installed = await installedSandboxSid();
         if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
         const grantSid = installed;
-        heldGrants.inFlight++;
-        try {
-        const grant = await deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
-          stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
+        const grant = await grantsInTurn(() => {
+          heldGrants.inFlight++;
+          return deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
+            stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
+          });
         });
+        try {
         mark("grant");
         if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
@@ -542,7 +563,9 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         } finally {
           // The per-session claims end with the last command of this process (`heldGrants`); the persistent roots stay
           // (only a token carrying a root's capability SID writes there, and only a command whose sandbox names it).
-          if (--heldGrants.inFlight === 0) await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
+          await grantsInTurn(async () => {
+            if (--heldGrants.inFlight === 0) await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
+          });
           mark("revoke");
           if (process.env.MOSS_WIN_FENCE_TIMING === "1") console.error(`[win-fence] ${lease.principal}: ${phases.join(", ")}`);
         }
@@ -555,22 +578,24 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     },
   };
 
-  /** Rules 2 and 9: lease a pool member no command holds and whose profile was reset since its last command (no
-   *  ProfileList entry for its SID: the logon of this command makes a fresh one from the default profile). One that
-   *  isn't reset yet is let go and the reset task asked for; past the wait, the command is refused, never run on a
-   *  profile another command wrote. */
+  /** Rules 2 and 9: lease a pool member no command holds (its `.lock`, an OS lock the reset takes too) whose profile
+   *  the reset remade since its last command (`isFreshGeneration`: its `.gen` isn't its `.used`). The generation is
+   *  marked used BEFORE the command runs, so a command that dies half way still leaves its principal for the reset. A
+   *  member not remade yet is let go and the reset task asked for; past the wait, the command is refused, never run on
+   *  a profile another command wrote. The reset's own work (delete and `CreateProfile`, ~10 s a member) is off every
+   *  command's path: the task is started when a command ends. */
   async function leaseFresh(leases: LeaseStore, marker: InstallMarker, ownerSid: string): Promise<{ ok: true; principal: string; release: () => void } | { ok: false; reason: string }> {
     const deadline = Date.now() + (deps.leaseTimeoutMs ?? 30_000);
-    // Asked again every few seconds while none is fresh: a reset that met a hive Windows hadn't unloaded yet left it.
     let asked = 0;
     let stale = 0;
     for (;;) {
       stale = 0;
       for (const m of marker.members) {
-        const guard = leases.tryLock(poolLockPath(deps.leasesDir, m.principal));
+        const files = poolStateFiles(deps.leasesDir, m.principal);
+        const guard = leases.tryLock(files.lock);
         if (guard === null) continue;
-        const reg = await deps.exec(profileQueryArgs(m.principalSid!), { timeoutMs: 15_000 });
-        if (reg.code !== 0 || parseProfileImagePath(reg.stdout) === null) {
+        const gen = deps.readFile(files.gen);
+        if (isFreshGeneration(gen, deps.readFile(files.used)) && deps.writeFile(files.used, gen!.trim())) {
           let released = false;
           return { ok: true, principal: m.principal, release: () => { if (!released) { released = true; guard.release(); } } };
         }
@@ -580,7 +605,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       if (stale > 0 && Date.now() - asked >= 3_000) { asked = Date.now(); await deps.exec(runResetTaskArgs(ownerSid), { timeoutMs: 30_000 }); }
       if (Date.now() >= deadline) {
         return { ok: false, reason: stale > 0
-          ? "no sandbox account was reset since its last command (the reset task didn't run, or couldn't delete its profile); run `moss-core sandbox setup` again"
+          ? "no sandbox account was reset since its last command (the reset task didn't run, or couldn't remake its profile); run `moss-core sandbox setup` again"
           : `the sandbox pool is busy; all ${marker.members.length} accounts run a command` };
       }
       await Bun.sleep(deps.leasePollMs ?? 500);
