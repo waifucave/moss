@@ -477,7 +477,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       // (`BOT_READ_DENIED`): every literal read deny a bot's shell carries (`withSecretReads`, `withBotKeyReads`).
       const denied = [...fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead,
         ...secretReadPlaces("windows", fence.home).map((x) => x.path), ...BOT_READ_DENIED.map((rel) => win32.join(fence.mossHome, ...rel))];
-      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.home) && fold(p) !== fold(fence.home) && existsSync(p))).slice(0, 400);
+      // Never the MOSS home or a folder above it, nor anything in the folders sessions are given (a bot's folder, its
+      // scratch, an agent's outputs): srt-win refuses every session grant that lies inside an exclusion, or reaches one.
+      const sessionFolders = ["bots", "scratch", "outputs"].map((d) => win32.join(fence.mossHome, d));
+      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.home) && !winUnder(fence.mossHome, p)
+        && !sessionFolders.some((f) => winUnder(p, f)) && existsSync(p))).slice(0, 400);
     } catch { return []; }
   };
   /** A command's read denies less what the profile grant in force excludes already (a path at or under one). */
