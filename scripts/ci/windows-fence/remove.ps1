@@ -16,8 +16,10 @@ foreach ($m in $pool) {
 $profiles = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" | Where-Object { (Get-ItemProperty $_.PSPath).ProfileImagePath -like "*\moss-sb-*" }
 foreach ($k in $profiles) { $left += "ProfileList $($k.PSChildName)" }
 if (Test-Path -LiteralPath $Marker) { $left += "marker $Marker" }
+$poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
+if (Test-Path -LiteralPath $poolState) { $left += "pool state $poolState" }
 $us = & $Srt user status | ConvertFrom-Json
 if ($us.persistent_grants.state -ne "none") { $left += "persistent grants: $($us.persistent_grants | ConvertTo-Json -Compress)" }
 if ($us.profile_grant.state -ne "none") { $left += "profile read grant: $($us.profile_grant | ConvertTo-Json -Compress)" }
 if ($left.Count -gt 0) { Write-Output "left after remove:"; $left | ForEach-Object { Write-Output "  $_" }; throw "remove left $($left.Count) thing(s)" }
-Write-Output "remove left nothing: no pool account, profile, ProfileList key, WFP filter, marker or persistent grant"
+Write-Output "remove left nothing: no pool account, profile, ProfileList key, WFP filter, marker, pool state or persistent grant"

@@ -13,34 +13,35 @@ foreach ($round in 1, 2) {
 $code = Invoke-Limited "status after setup" $Core @("sandbox", "status", "--json") 120
 if ($code -ne 0) { throw "status after setup exited $code" }
 Write-Output "marker: $(Get-Content -Raw $Marker)"
-# The reset task (SYSTEM) once by hand, as the daemon starts it, and what it reported: every fresh principal is free.
-& schtasks.exe /run /tn "MOSS Sandbox Reset $Sid" | Out-Null
-Start-Sleep -Seconds 10
-$info = Get-ScheduledTaskInfo -TaskName "MOSS Sandbox Reset $Sid"
-Write-Output "reset task: last result $($info.LastTaskResult) at $($info.LastRunTime)"
-$resetLog = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\reset-$Sid.log"
-if (Test-Path -LiteralPath $resetLog) { Get-Content -LiteralPath $resetLog | ForEach-Object { Write-Output "reset log: $_" } }
-$code = Invoke-Limited "reset, by hand (elevated)" $Core @("sandbox", "reset") 300
+$poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
+Get-ChildItem -LiteralPath $poolState | ForEach-Object { Write-Output "pool state: $($_.Name) [$((Get-Content -Raw -LiteralPath $_.FullName) -replace '\s','')]" }
+& icacls.exe $poolState | ForEach-Object { Write-Output "pool acl: $_" }
+# Every principal starts remade and unused: its profile there (the warm-up's), a generation, an empty used record.
 foreach ($m in Get-Pool) {
   $sidOf = (Get-LocalUser -Name $m.principal).SID.Value
   $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sidOf"
-  Write-Output "$($m.principal): profile $(if (Test-Path $k) { 'present' } else { 'reset' })"
+  if (-not (Test-Path $k)) { throw "$($m.principal) has no profile after setup" }
+  $gen = (Get-Content -Raw -LiteralPath (Join-Path $poolState "$($m.principal).gen")).Trim()
+  if ($gen -notmatch '^[0-9a-f]{32}$') { throw "$($m.principal) has no generation after setup" }
 }
 
-# The same reset as SYSTEM with its output kept (the reset task's own run shows only a result code): what it says,
-# and if it is still running after two minutes, which processes it is waiting on (names and pids only).
-$ciDir = "C:\moss-ci"; New-Item -ItemType Directory -Force -Path $ciDir | Out-Null
-$sysLog = Join-Path $ciDir "reset-system.log"
-$act = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /s /c `"`"$Core`" sandbox reset > $sysLog 2>&1`""
-$pr = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName "moss-ci-reset-system" -Action $act -Principal $pr -Force | Out-Null
-Start-ScheduledTask -TaskName "moss-ci-reset-system"
-$deadline = (Get-Date).AddSeconds(120)
-do { Start-Sleep -Seconds 3; $st = (Get-ScheduledTask -TaskName "moss-ci-reset-system").State } while ($st -eq "Running" -and (Get-Date) -lt $deadline)
-Write-Output "reset as SYSTEM: state $st, result $((Get-ScheduledTaskInfo -TaskName "moss-ci-reset-system").LastTaskResult)"
-if (Test-Path $sysLog) { Get-Content $sysLog | ForEach-Object { Write-Output "reset as SYSTEM: $_" } }
-if ($st -eq "Running") {
-  Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("moss-core.exe", "powershell.exe", "reg.exe", "net.exe", "cmd.exe", "icacls.exe") } | ForEach-Object { Write-Output "running: $($_.Name)#$($_.ProcessId) parent $($_.ParentProcessId)" }
-  Stop-ScheduledTask -TaskName "moss-ci-reset-system"
-}
-Unregister-ScheduledTask -TaskName "moss-ci-reset-system" -Confirm:$false
+# The reset task (SYSTEM), as the daemon starts it after a command, on a principal marked used: its profile is
+# remade (deleted, made again by CreateProfile) and it gets a new generation; the others are left as they are.
+$m1 = (Get-Pool)[0].principal
+$genFile = Join-Path $poolState "$m1.gen"; $usedFile = Join-Path $poolState "$m1.used"
+$before = (Get-Content -Raw -LiteralPath $genFile).Trim()
+Set-Content -LiteralPath $usedFile -Value $before -NoNewline
+$sw = [Diagnostics.Stopwatch]::StartNew()
+& schtasks.exe /run /tn "MOSS Sandbox Reset $Sid" | Out-Null
+do { Start-Sleep -Milliseconds 500; $st = (Get-ScheduledTask -TaskName "MOSS Sandbox Reset $Sid").State } while ($st -eq "Running" -or ((Get-Content -Raw -LiteralPath $genFile).Trim() -eq $before -and $sw.Elapsed.TotalSeconds -lt 120))
+$sw.Stop()
+$info = Get-ScheduledTaskInfo -TaskName "MOSS Sandbox Reset $Sid"
+$after = (Get-Content -Raw -LiteralPath $genFile).Trim()
+Write-Output ("timing: the reset task remakes one used principal (SYSTEM) {0} ms; result {1}" -f $sw.ElapsedMilliseconds, $info.LastTaskResult)
+$resetLog = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\reset-$Sid.log"
+if (Test-Path -LiteralPath $resetLog) { Get-Content -LiteralPath $resetLog | ForEach-Object { Write-Output "reset log: $_" } }
+if ($info.LastTaskResult -ne 0) { throw "the reset task exited $($info.LastTaskResult)" }
+if ($after -eq $before) { throw "the reset task didn't remake $m1 (its generation is unchanged)" }
+$sid1 = (Get-LocalUser -Name $m1).SID.Value
+if (-not (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid1")) { throw "$m1 has no profile after the reset" }
+Write-Output "the reset task remade $m1 as SYSTEM and left the others"

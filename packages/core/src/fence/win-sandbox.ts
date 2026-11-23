@@ -754,6 +754,58 @@ export function deleteProfileArgs(sid: string): readonly string[] {
   return psEncodedArgs(`$ErrorActionPreference='Stop'; $p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"; if (-not $p) { exit 0 }; if ($p.Loaded) { exit ${PROFILE_IN_USE_EXIT} }; $p | Remove-CimInstance; exit 0`);
 }
 
+/** A principal's profile made new: the old one deleted (as `deleteProfileArgs`) and a fresh one made from the default
+ *  profile at once by userenv's `CreateProfile`, with no logon, so the next command's logon finds it there (on the
+ *  runner a logon that has to make the profile costs ~7.5 s, one that finds it ~1.3 s; CreateProfile itself ~5 s, off
+ *  the command's path). Exits 0 when done, `PROFILE_IN_USE_EXIT` when the profile is loaded (left alone), anything
+ *  else when it fails. Elevated only (the reset task, SYSTEM; setup). */
+export function remakeProfileArgs(sid: string, name: string): readonly string[] {
+  if (!SID_RE.test(sid)) throw new Error(`not a SID: ${sid}`);
+  if (!/^[A-Za-z0-9._-]{1,20}$/.test(name)) throw new Error(`not a principal name: ${name}`);
+  return psEncodedArgs([
+    "$ErrorActionPreference='Stop'",
+    `$p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"`,
+    `if ($p -and $p.Loaded) { exit ${PROFILE_IN_USE_EXIT} }`,
+    "if ($p) { $p | Remove-CimInstance }",
+    "Add-Type -Namespace MossReset -Name UserEnv -MemberDefinition '[DllImport(\"userenv.dll\", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);'",
+    "$sb = New-Object System.Text.StringBuilder 260",
+    `$hr = [MossReset.UserEnv]::CreateProfile('${sid}', '${name}', $sb, 260)`,
+    "if ($hr -ne 0) { Write-Output ('CreateProfile 0x{0:X8}' -f $hr); exit 4 }",
+    "exit 0",
+  ].join("; "));
+}
+
+/** The pool's state, per owner, where only SYSTEM and administrators write (`%ProgramData%\MOSS Sandbox\pool\<owner
+ *  SID>`, claimed by `sandbox setup`): per principal, `<name>.lock` (the lease, an OS lock the daemon and the reset
+ *  both take; the owner may read and write the file, never make or delete one), `<name>.gen` (the generation of its
+ *  profile, a random value the reset writes each time it remakes it; the owner reads it) and `<name>.used` (the
+ *  generation the owner's daemon last ran a command on; the owner writes it). A principal is fresh for a command when
+ *  its generation is not the one last used (`isFreshGeneration`): its profile was remade since its last command, and
+ *  nothing but the reset can make a new generation. SYSTEM opens only these files, in a folder the owner can't add a
+ *  link to. */
+export function poolStateDir(programData: string, ownerSid: string): string {
+  return win32.join(programData, "MOSS Sandbox", "pool", ownerSid);
+}
+export function poolStateFiles(dir: string, principal: string): { lock: string; gen: string; used: string } {
+  return { lock: win32.join(dir, `${principal}.lock`), gen: win32.join(dir, `${principal}.gen`), used: win32.join(dir, `${principal}.used`) };
+}
+/** Whether a principal's profile was remade since its last command: a generation exists and isn't the one used. */
+export function isFreshGeneration(gen: string | null, used: string | null): boolean {
+  const g = (gen ?? "").trim();
+  return /^[0-9a-f]{32}$/.test(g) && g !== (used ?? "").trim();
+}
+/** `icacls` for the pool's state folder: inheritance cut, SYSTEM and administrators full, the owner list-and-read on
+ *  the folder alone (no create, no delete: no link can be planted where SYSTEM opens files). */
+export function poolDirAclArgs(dir: string, ownerSid: string): readonly string[] {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return ["icacls", dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${ownerSid}:(RX)`];
+}
+/** `icacls` for one pool file: the owner reads it, and writes it when `write` (the lock and the used record). */
+export function poolFileAclArgs(file: string, ownerSid: string, write: boolean): readonly string[] {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return ["icacls", file, "/grant:r", `*${ownerSid}:${write ? "(R,W)" : "(R)"}`];
+}
+
 /** The scheduled task `sandbox setup` registers for the per-session reset (spec §9.1: the principal's profile and
  *  hive reset for each session): it runs the protected copy's `moss-core sandbox reset` as SYSTEM, and its owner (only)
  *  may start it, so the unelevated daemon asks for a reset without elevation. One per owner. */

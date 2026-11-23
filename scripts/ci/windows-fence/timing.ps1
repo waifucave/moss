@@ -26,8 +26,9 @@ function Has-Profile([string]$Name) {
   Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$s"
 }
 
-Measure-Step "reset (all members, elevated, from setup's warm-up profiles)" { & $Core sandbox reset }
 $m1 = $pool[0].principal; $m2 = $pool[1].principal
+# Setup leaves every principal with a profile; the first rows want none.
+foreach ($m in $m1, $m2) { $s = (Get-LocalUser -Name $m).SID.Value; Get-CimInstance Win32_UserProfile -Filter "SID='$s'" | Remove-CimInstance }
 
 # 1. The launcher on a principal with no profile: the logon makes one from the default profile.
 Measure-Exec "exec cmd, no profile (fresh logon)" $m1 @($cmd, "/d", "/c", "exit 0")
@@ -85,14 +86,15 @@ Write-Output ("timing: acl revoke {0} ms" -f $sw.ElapsedMilliseconds)
 & $Srt acl forget --all 2>&1 | Out-Null
 Remove-Item -Recurse -Force $probeDir -ErrorAction SilentlyContinue
 
-# 6. The reset's delete for all four in ONE PowerShell process (the reset today starts one per member).
-$sids = @($pool | ForEach-Object { (Get-LocalUser -Name $_.principal).SID.Value })
-Measure-Step "delete all present profiles in one process" { foreach ($s in $sids) { Get-CimInstance Win32_UserProfile -Filter "SID='$s'" | Remove-CimInstance } }
 
 # 7. The profile read grant (the daemon's first command pays it once), then once more.
 Measure-Step "profile grant (first)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile grant (again)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile forget" { & $Srt profile forget }
 
-Measure-Step "reset (all members, after the probe)" { & $Core sandbox reset }
-foreach ($m in $pool) { Write-Output "timing-note: $($m.principal) profile left: $(Has-Profile $m.principal)" }
+# The probe used every principal: all marked used, then the reset (elevated here; the task runs it as SYSTEM) remakes
+# them all, so the end-to-end suite starts on a pool as the daemon finds it.
+$poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
+foreach ($m in $pool) { Set-Content -NoNewline -LiteralPath (Join-Path $poolState "$($m.principal).used") -Value (Get-Content -Raw -LiteralPath (Join-Path $poolState "$($m.principal).gen")).Trim() }
+Measure-Step "reset: remake all four used principals (one process)" { & $Core sandbox reset }
+foreach ($m in $pool) { Write-Output "timing-note: $($m.principal) profile after the reset: $(Has-Profile $m.principal)" }
