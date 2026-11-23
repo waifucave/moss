@@ -272,6 +272,13 @@ export function ruleShapeOf(ruleKey: string): { kind: RuleKind; target: string }
   return { kind: "other", target: ruleKey };
 }
 
+/** Whether a permission check is for a subagent's call rather than the session's own model: the runtime names the
+ *  subagent of a call (`agentID`, set only for a call made inside one), and a bot's agent session reaches this check
+ *  with its `agentAsking` (agents/plugin-reach.ts). */
+export function subagentCall(ctx: object, call: { agentID?: string } | undefined): boolean {
+  return (typeof call?.agentID === "string" && call.agentID.length > 0) || (ctx as { agentAsking?: unknown }).agentAsking !== undefined;
+}
+
 /** The shell tools whose input may ask to run outside the sandbox (`dangerouslyDisableSandbox`): the runtime's own
  *  escape classification names `Bash`, and `PowerShell` takes the same flag through the same generic executor, so a
  *  flagged call of either is judged the same way. Anything else (an MCP tool, a plugin's tool) has no such flag. */
@@ -655,6 +662,11 @@ export function botApprovalCheck(
       return { behavior: "deny", message: `${builtin ? tool : "The tool"} was refused: \`dangerouslyDisableSandbox\` must be either left out (to stay in the sandbox) or exactly true (to ask to leave it on a card).` };
     }
     if (escape === "escape") {
+      // A subagent's call (spec §6: a subagent keeps its commands inside the sandbox; such a call is refused with no
+      // card): the runtime's subagent (the call's `agentID`) or a bot's agent session (`agentAsking`), whatever tool.
+      if (subagentCall(ctx, call)) {
+        return { behavior: "deny", message: `${tool} was refused: a subagent's commands always run in the sandbox; a command can't run outside it here. Run the command in the sandbox instead.` };
+      }
       // No user can answer in a run with no user present: refused at once, with no card.
       if (ctx.kind !== "bot") {
         return { behavior: "deny", message: `${tool} was refused: a command can't run outside the sandbox in this kind of run (a side thread has no user to approve it). Run the command in the sandbox instead.` };

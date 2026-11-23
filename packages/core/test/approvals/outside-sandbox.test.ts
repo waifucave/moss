@@ -189,6 +189,32 @@ describe("the headline names the bot as the user sees it", () => {
   });
 });
 
+describe("a subagent's escape (lane WS4: a rule about subagents, whatever tool or OS)", () => {
+  test("a call the runtime names a subagent's, or an agent session's, is refused with no card; the bot's own still cards", async () => {
+    for (const tool of ["Bash", "PowerShell"]) {
+      const w = world();
+      const requests: MossApprovalRequest[] = [];
+      const recorder = { request: async (r: ApprovalRequest) => { requests.push(structuredClone(r) as MossApprovalRequest); return { allowed: false, by: "user" as const }; } };
+      const check = botApprovalCheck(recorder, { commandsSandboxed: true });
+      const sub = await check(w.ctx, () => "user")(tool, flagged("git push"), { ...callOpts, agentID: "agent-1" });
+      expect(sub).toMatchObject({ behavior: "deny", message: expect.stringContaining("a subagent's commands always run in the sandbox") });
+      const agentCtx = { ...w.ctx, agentAsking: { backend: "moss", bot: "luna", folder: w.user } } as unknown as BotSessionContext;
+      const asking = await check(agentCtx, () => "user")(tool, flagged("git push"), callOpts);
+      expect(asking).toMatchObject({ behavior: "deny", message: expect.stringContaining("a subagent's commands always run in the sandbox") });
+      expect(requests).toHaveLength(0);
+      // The bot's own call (no agent id): its card, as before.
+      await check(w.ctx, () => "user")(tool, flagged("git push"), callOpts);
+      expect(requests).toHaveLength(1);
+    }
+  });
+  test("the driver's hook refuses a subagent's flagged call (its `agent_id`) and asks for the bot's own", () => {
+    expect(outsideSandboxHookDecision("Bash", { command: "ls", dangerouslyDisableSandbox: true }, { agentId: "a1" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("subagent") });
+    expect(outsideSandboxHookDecision("PowerShell", { command: "ls", dangerouslyDisableSandbox: true }, { agentId: "a1" })).toMatchObject({ decision: "deny" });
+    expect(outsideSandboxHookDecision("Bash", { command: "ls", dangerouslyDisableSandbox: true }, {})).toMatchObject({ decision: "ask" });
+    expect(outsideSandboxHookDecision("Bash", { command: "ls" }, { agentId: "a1" })).toBeUndefined();
+  });
+});
+
 describe("a flagged Bash at every level", () => {
   for (const level of ["ask", "ask-risky", "accept-edits", "automatic"] as const) {
     test(`at ${level}: exactly one card with the headline, the full command and the sentence; no "always"`, async () => {

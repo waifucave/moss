@@ -133,12 +133,17 @@ export const BOT_CONVERSATION_SANDBOX = { ...BOT_SANDBOX, allowUnsandboxedComman
  *  so the call always reaches the approval check and its card), `deny` for any other value present on one (never
  *  passed through unflagged), `deny` for the flag on any other tool but a plugin's or MCP server's (`mcp__…`: the
  *  field means nothing there), and nothing for a call that stays in the sandbox. */
-export function outsideSandboxHookDecision(tool: string, input: unknown): { decision: "ask" | "deny"; reason: string } | undefined {
+export function outsideSandboxHookDecision(tool: string, input: unknown, o: { agentId?: string } = {}): { decision: "ask" | "deny"; reason: string } | undefined {
   if (misplacedSandboxFlag(tool, input)) {
     return { decision: "deny", reason: `${tool} was refused: ${MISPLACED_SANDBOX_FLAG_REFUSAL}.` };
   }
   const flag = outsideSandboxFlagOf(tool, input);
   if (flag === "off") return undefined;
+  // A call made inside a subagent (the hook input's `agent_id`): its commands never leave the sandbox (spec: a subagent's
+  // such call is refused with no card), whatever tool carries the flag.
+  if (typeof o.agentId === "string" && o.agentId.length > 0) {
+    return { decision: "deny", reason: `${tool} was refused: a subagent's commands always run in the sandbox; a command can't run outside it here. Run the command in the sandbox instead.` };
+  }
   if (flag === "escape") {
     return { decision: "ask", reason: "This command asks to run outside the sandbox: the user approves each such command on its own card." };
   }
@@ -719,7 +724,7 @@ export class BotSessionDriver implements SessionDriver {
     // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
     // the plugins left it (a hook that strips the flag leaves a sandboxed call, which needs no card; one that
     // adds it is caught here). Anything but exactly `true` is refused outright, never passed through unflagged.
-    const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input);
+    const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input, typeof (raw as { agent_id?: unknown }).agent_id === "string" ? { agentId: (raw as { agent_id: string }).agent_id } : {});
     if (escape !== undefined) {
       return {
         hookSpecificOutput: {

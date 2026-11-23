@@ -113,7 +113,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     },
   });
   return [
-    tool("Bash", "bash", "Run a bash command (Git for Windows' bash) in MOSS's sandbox on this Windows computer. It writes only the folders the sandbox allows, reaches no network, and starts in the session's folder each time."),
-    tool("PowerShell", "powershell", "Run a Windows PowerShell command in MOSS's sandbox on this computer. It writes only the folders the sandbox allows, reaches no network, and starts in the session's folder each time."),
+    tool("Bash", "bash", "Run a bash command (Git for Windows' bash) in MOSS's sandbox on this Windows computer. It writes only the folders the sandbox allows, reaches no network (a command the user approves to leave the sandbox does), and starts in the session's folder each time."),
+    tool("PowerShell", "powershell", "Run a Windows PowerShell command in MOSS's sandbox on this computer. It writes only the folders the sandbox allows, reaches no network (a command the user approves to leave the sandbox does), and starts in the session's folder each time."),
   ];
 }
