@@ -764,7 +764,7 @@ export class DurableSessionHost implements SessionHost {
     const s = this.#live(id);
     const refuse = (why: string): never => { throw new ContractError("refused", why); };
     const fromComposer = "send it again from the composer";
-    if (s.meta.kind !== "bot") return refuse("only a bot's own conversation is tried again");
+    if (s.meta.kind !== "bot" && s.meta.kind !== "coding") return refuse("only a bot's own conversation or a coding session is tried again");
     if (!this.#runHere(s)) return refuse(`this computer doesn't run ${s.meta.bot ?? id}'s conversation now; ${fromComposer}`);
     if (s.running || s.queue.length > 0) return refuse("a turn is running, or a message is waiting for one");
     const log = this.#logOf(s);

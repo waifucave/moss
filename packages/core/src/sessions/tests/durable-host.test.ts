@@ -774,6 +774,21 @@ describe("Try again: resendFailedTurn", () => {
     expect((await t.host.resendFailedTurn("b_alpha", by)).disposition).toBe("turn");
   });
 
+  test("a coding session's turn that failed on the agent's sign-in is sent again as a new message, and a side thread or a bot's background agent is still refused", async () => {
+    const t = durable();
+    const d = new FakeSessionDriver();
+    t.host.open({ id: "agent_code", kind: "coding", computer: "Studio", backend: "codex" }, d);
+    t.host.open({ id: "agent_bg", kind: "agent", computer: "Studio", backend: "codex" }, new FakeSessionDriver());
+    await t.host.sendUser("agent_code", user("hello"));
+    await flush();
+    d.end({ reason: "failed", failure: "sign-in" });
+    await flush();
+    expect((await t.host.resendFailedTurn("agent_code", by)).disposition).toBe("turn");
+    await flush();
+    expect(d.turns.at(-1)).toMatchObject({ origin: "user", input: { from: "user", text: "hello", device: by.device } });
+    await refused(t.host.resendFailedTurn("agent_bg", by), /only a bot's own conversation or a coding session/);
+  });
+
   test("no failed turn: refused. Failed and then succeeded: refused. A turn running: refused", async () => {
     const t = durable();
     const d = new FakeSessionDriver();
@@ -837,9 +852,9 @@ describe("Try again: resendFailedTurn", () => {
     expect(t.host.length("b_alpha")).toBe(before);
   });
 
-  test("a side thread, an agent and a coding session are refused", async () => {
+  test("a side thread and an agent are refused", async () => {
     const t = durable();
-    for (const [id, kind] of [["t_1", "side-thread"], ["a_1", "agent"], ["c_1", "coding"]] as const) {
+    for (const [id, kind] of [["t_1", "side-thread"], ["a_1", "agent"]] as const) {
       t.host.open({ id, kind, bot: "alpha", parent: "b_alpha", computer: "Studio" }, new FakeSessionDriver());
       await refused(t.host.resendFailedTurn(id, by), /only a bot's own conversation/);
     }

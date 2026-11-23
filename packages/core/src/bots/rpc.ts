@@ -267,8 +267,10 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       const caller = requireUser(ctx, "try a turn again");
       refuseWhileUpdating(deps.updateGate);
       const v = reachable(session);
-      if (v.kind !== "bot" || v.bot === undefined || bots.mainSession(v.bot) !== session) throw new ContractError("refused", "only a bot's own conversation is tried again");
-      if (!bots.botsRunHere().includes(v.bot)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now; send it again from the composer`);
+      // A coding session (the person's own, an agent's too) runs where it was started: its host's `resendFailedTurn` checks that.
+      const coding = v.kind === "coding";
+      if (!coding && (v.kind !== "bot" || v.bot === undefined || bots.mainSession(v.bot) !== session)) throw new ContractError("refused", "only a bot's own conversation or a coding session is tried again");
+      if (!coding && !bots.botsRunHere().includes(v.bot!)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now; send it again from the composer`);
       const { seq } = await host.resendFailedTurn(session, { device: caller.device ?? deps.localDevice }, (input) => {
         if (input.images !== undefined && input.images.length > 0) {
           try {
