@@ -198,7 +198,9 @@ const REPLY = "CROSS-REPLY: confirmed, I have the report.";
 
 async function botReach(ctx: ExampleCtx): Promise<string> {
   const { rpc, work, reportB, reportC, cfg, computer, start, heard, history, mcpResult, links, bot } = await crossWorld(ctx);
-  const reportK = join(work, "agent", "report-k.ndjson");
+  // K is a session a bot started, so its process runs fenced; on Linux the fence (bubblewrap) lets it write only its own folders and the
+  // session's root, so its report goes in the root (`cross-work`), where the fence allows a write on every system.
+  const reportK = process.platform === "linux" ? join(ctx.userHome, "cross-work", "report-k.ndjson") : join(work, "agent", "report-k.ndjson");
   const done: string[] = [];
 
   // B, the person's own session, is up.

@@ -5137,10 +5137,12 @@ async function hostOnlyRun(app: { exe: string; args: string[] }): Promise<void> 
     const second = await startDaemonProc(daemonEnv);
     c.close();
     c = (await appDriver()).client;
-    await until("the restarted engine adopting the host", 60_000, () => { const t = readLog(second.log); return /\[host\] a host holds the lock \(pid \d+\): adopted/.test(t) && readyCount(t) > 0 ? true : undefined; }, 500);
-    if (/\[host\] starting the host/.test(readLog(second.log))) fail("the restarted engine started a second host");
+    // Linux has no host lock for the engine to find a running host by (host-program.ts takeHostLock: macOS only): the restarted engine asks
+    // the service manager to start it (a no-op on an active unit, as the launcher's is) and hears the same host ready again.
+    await until("the restarted engine adopting the host", 60_000, () => { const t = readLog(second.log); return (onLinux() || /\[host\] a host holds the lock \(pid \d+\): adopted/.test(t)) && readyCount(t) > 0 ? true : undefined; }, 500);
+    if (!onLinux() && /\[host\] starting the host/.test(readLog(second.log))) fail("the restarted engine started a second host");
     if (hostLockPid(home) !== hostPid || !processAlive(hostPid)) fail(`the host after the restart is not the same one (lock pid ${hostLockPid(home)}, first ${hostPid})`);
-    lines.push(`adopted: the restarted engine found the host (pid ${hostPid}) by its lock, heard it ready again, and started none`);
+    lines.push(onLinux() ? `the restarted engine heard the same host (pid ${hostPid}) ready again` : `adopted: the restarted engine found the host (pid ${hostPid}) by its lock, heard it ready again, and started none`);
     // 6. Three crashes in two minutes: the next start is in safe mode, which covers the host's UI parts only.
     hostCdp.close();
     hostCdp = undefined;
@@ -5190,7 +5192,7 @@ async function hostOnlyRun(app: { exe: string; args: string[] }): Promise<void> 
       startedHosts.delete(lastHost);
       lines.push(`engine gone: the engine killed (SIGKILL) with nothing to start it again, the host left by itself ${(tookMs / 1000).toFixed(1)} s later (its bound here ${HOST_GONE_TEST_MS / 1000} s), saying "${said!.replace(/^.*?host: /, "").slice(0, 60)}…", and none of its processes stayed`);
     }
-    record(n, "PASS", lines.join("; "));
+    record(n, "PASS", onLinux() ? notOnLinux("the engine's adoption of a running host by the host's OS lock is macOS's (Linux's host holds no lock; its service manager's start of a running unit is a no-op), and no host.lock pid is the host's own word there", lines.join("; ")) : lines.join("; "));
   } catch (err) {
     record(n, statusOf(err), `${why(err)}${lines.length > 0 ? ` (after: ${lines.join("; ").slice(0, 600)})` : ""}`);
   } finally {
