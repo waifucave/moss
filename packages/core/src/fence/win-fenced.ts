@@ -459,13 +459,26 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   };
   // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
   // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
+  // Rule 8's floor for what the daemon writes WHILE a command runs (the reviewer's finding 2): the fenced read set
+  // under the MOSS home that exists is excluded from the profile read grant (`--exclude`: never granted, a read deny
+  // of its own, kept). With an exclusion beneath it, each folder on the way is granted child by child instead of
+  // whole, so a file the daemon makes there later (a settings or secrets file written to a temporary name and renamed
+  // over the old one, a new one) carries no grant at all: unreadable to a running command until the daemon's next
+  // start grants what is readable again. The bot caller's set is the widest (every caller's reads are a subset).
+  const profileExcludes = (): string[] => {
+    try {
+      const bot: Caller = { kind: "session", sessionId: "profile-read-grant", sessionKind: "bot", bot: "profile-read-grant" } as Caller;
+      const denied = fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead;
+      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.mossHome) && winUnder(p, fence.home) && existsSync(p))).slice(0, 200);
+    } catch { return []; }
+  };
   // One grant per process, whichever spawner asks first (the daemon has two).
   const grantProfile = (): Promise<string | null> => {
     const had = profileGrants.get(deps.launcher);
     if (had !== undefined) return had;
     const p = (async () => {
       const started = Date.now();
-      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json"], { timeoutMs: 1_800_000 });
+      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...profileExcludes().flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
       if (r.code === 0) return null;
       profileGrants.delete(deps.launcher);
