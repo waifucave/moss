@@ -1,0 +1,25 @@
+{
+  "manifest": 1,
+  "id": "acceptance-adapter",
+  "name": "Acceptance adapter",
+  "description": "The acceptance run's fixture for an agent whose program is an adapter MOSS provides: one ACP backend, acceptance-adapter, declared in its quirks file as an npm package the run publishes on its fake registry. The run writes the fake agent's config path into this manifest and the adapter's integrity into the quirks file before it installs the plugin.",
+  "version": "0.0.1",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "contributes": {
+    "agentBackends": [
+      {
+        "id": "acceptance-adapter",
+        "name": "Acceptance adapter",
+        "protocol": "acp",
+        "command": "acceptance-adapter-agent",
+        "args": [
+          "__CONFIG__",
+          "acp"
+        ],
+        "quirks": "quirks.json"
+      }
+    ]
+  }
+}

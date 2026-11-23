@@ -241,6 +241,9 @@ export interface DaemonAgentsInput {
   /** How the plugins reach the agents (spec §9.3, agents/plugin-reach.ts): their tools on the bridge, their skills and
    *  agent definitions placed where a backend reads its own, and `Glossary` on the bridge. */
   plugins?: Pick<AgentsOptions, "pluginTools" | "pluginParts" | "glossary">;
+  /** The tarball fetch for an adapter MOSS provides (agents/adapter): the pinned public fetch by default; a test build's
+   *  own outside world through the same pinned fetch, as the plugins' npm downloads reach theirs. */
+  adapterDownload?: AgentsOptions["adapterDownload"];
 }
 
 export type DaemonAgents = ReturnType<typeof createAgents>;
@@ -446,6 +449,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
               ...(a.hooks ? { hooks: a.hooks } : {}), computer: () => here,
             },
             ...(a.backends ? { backends: a.backends } : {}),
+            ...(a.adapterDownload ? { adapterDownload: a.adapterDownload } : {}),
             ...(a.botWriteRoots ? { botWriteRoots: a.botWriteRoots } : {}),
             ...(a.turnStarted ? { turnStarted: a.turnStarted } : {}),
             depths: d.host.depths,
