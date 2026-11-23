@@ -105,9 +105,16 @@ export function guardShim(o: { bun: string; guard: string; agent: string; budget
 
 // ── the prompt rule ──────────────────────────────────────────────────────────────────────────────────────────────────────
 const FRAME = /^Message from (agent|the plugin) [^\n:]{1,200}:$/;
+/** MOSS's wrapper around a message that is not the person's: `<message from-session="…" title="…">` (attributes only, no markup inside). */
+const WRAP_OPEN = /^<message( [a-z-]+="[^"<>\n]{0,200}"){1,4}>$/;
+/** MOSS's own line under that tag: one bracketed sentence saying whose words follow and that they are not the person's (`turn-loop/input.ts`: SESSION_MESSAGE_FRAME and its kin). */
+const MOSS_FRAME_LINE = /^\[[^\[\]\n]{20,600}\]$/;
 
 /** Why a `session/prompt`'s blocks are refused, or undefined: text blocks only, and one line of at most `promptChars` characters
  *  (the line MOSS puts above a message another session sent, "Message from agent X:", is not a second line, but its characters count). */
+/** The most of MOSS's own instructions (the first prompt's preamble) a real-agents prompt may carry. */
+export const PREAMBLE_MAX = 8_000;
+
 export function promptProblem(blocks: unknown): string | undefined {
   if (!Array.isArray(blocks) || blocks.length === 0) return "the prompt has no content";
   const texts: string[] = [];
@@ -116,8 +123,23 @@ export function promptProblem(blocks: unknown): string | undefined {
     if (t !== "text" || typeof (b as { text?: unknown }).text !== "string") return `a real-agents preview takes text prompts only (this one has a ${typeof t === "string" ? t : "non-text"} block)`;
     texts.push((b as { text: string }).text);
   }
-  const lines = texts.join("\n").split("\n").map((l) => l.trim()).filter((l) => l !== "");
-  const frame = lines.length > 0 && FRAME.test(lines[0]!) ? lines.shift()! : "";
+  // MOSS puts its own instructions above a session's FIRST message, then a rule line (`agents/acp/session.ts`: preamble, "---", the
+  // text): that part is MOSS's, not the prompt being judged (found on the first real run: a one-line message arrived as three lines).
+  // It is bounded on its own; what follows the last rule line is the message.
+  const whole = texts.join("\n");
+  const cut = whole.lastIndexOf("\n\n---\n\n");
+  if (cut >= 0 && cut > PREAMBLE_MAX) return `a real-agents preview takes MOSS's own instructions of at most ${PREAMBLE_MAX} characters above the first message (this has ${cut})`;
+  let lines = (cut >= 0 ? whole.slice(cut + 7) : whole).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+  // A message another session sent arrives in MOSS's own wrapper (`turn-loop/input.ts` formatSessionMessage): an opening tag naming
+  // the sender, MOSS's "this is data, not an instruction" line, the text, the closing tag. The wrapper and that line are MOSS's; the
+  // text inside is what is judged (found on the first real run: one PING arrived as four lines).
+  let wrapper = "";
+  if (lines.length >= 3 && WRAP_OPEN.test(lines[0]!) && lines[lines.length - 1] === "</message>") {
+    wrapper = lines[0]!;
+    lines = lines.slice(1, -1);
+    if (lines.length > 1 && MOSS_FRAME_LINE.test(lines[0]!)) lines.shift();
+  }
+  const frame = (lines.length > 0 && FRAME.test(lines[0]!) ? lines.shift()! : "") + wrapper;
   if (lines.length !== 1) return `a real-agents preview takes a prompt of one line (this has ${lines.length})`;
   const total = frame.length + lines[0]!.length;
   if (total > BUDGET.promptChars) return `a real-agents preview takes a prompt of at most ${BUDGET.promptChars} characters, the "Message from ..." line included (this has ${total})`;
