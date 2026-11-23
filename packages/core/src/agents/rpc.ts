@@ -56,8 +56,11 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
       const backends: AgentBackendView[] = [];
       const list = o.backends();
       const looks = await o.looks?.(list.map((b) => b.id)).catch(() => undefined);
-      for (const b of list) {
-        const d = await b.detect().catch(() => ({ installed: false, sandboxed: false, version: undefined }));
+      // Every backend is looked at at once: each detection runs the program's `--version`, and one after another a slow one
+      // (an adapter MOSS provides is checked too) held the whole answer, and the names with it, behind the others.
+      const detected = await Promise.all(list.map((b) => b.detect().catch(() => ({ installed: false, sandboxed: false, version: undefined }))));
+      for (const [i, b] of list.entries()) {
+        const d = detected[i]!;
         const marks = new Set<BackendMark>(b.quirks.marks);
         if (d.installed && !d.sandboxed) marks.add("unsandboxed");
         backends.push({

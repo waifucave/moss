@@ -7,6 +7,7 @@
 // E-M3), MCP Apps (`<AppView>`, E-M3) and the plugin API in layers (`usePluginApi`, with lane B's host side) are
 // placeholders that draw nothing and never fail, so components written against the declarations already run.
 import { EVENT_AREAS } from "./event-areas";
+import { BackendNamesReader } from "./backend-names";
 import {
   Component, createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type CSSProperties, type ErrorInfo, type ReactNode,
@@ -1662,28 +1663,14 @@ export function AgentMark({ backend, size = 24 }: AgentMarkProps) {
 export function useBackendNames(): (backend: string | undefined) => string | undefined {
   const core = useCore();
   const [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
-  const asked = useRef(false);
-  const live = useRef(true);
-  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-  // Read on the first backend a part asks about, so a part that never shows one makes no call.
-  const load = useCallback(() => {
-    if (asked.current || core === undefined) return;
-    asked.current = true;
-    void Promise.resolve(core.call("agent.backends", {})).then((r: { backends?: { id?: unknown; name?: unknown }[] } | undefined) => {
-      if (!live.current) return;
-      const next = new Map<string, string>();
-      for (const b of r?.backends ?? []) {
-        const name = typeof b.name === "string" ? b.name : (b.name as { en?: unknown } | undefined)?.en;
-        if (typeof b.id === "string" && typeof name === "string" && name !== "") next.set(b.id, name);
-      }
-      setNames(next);
-    }, () => undefined);
-  }, [core]);
+  // One reader per core client: it reads on the first lookup, and again on a later one when the read failed or came back empty.
+  const reader = useMemo(() => (core === undefined ? undefined : new BackendNamesReader(() => Promise.resolve(core.call("agent.backends", {})) as Promise<{ backends?: { id?: unknown; name?: unknown }[] } | undefined>, Date.now, setNames)), [core]);
+  useEffect(() => () => reader?.stop(), [reader]);
   return useCallback((backend: string | undefined) => {
     if (backend === undefined) return undefined;
-    queueMicrotask(load);
+    if (reader !== undefined) queueMicrotask(() => reader.ask());
     return names.get(backend) ?? backend;
-  }, [names, load]);
+  }, [names, reader]);
 }
 
 /** State that outlives its document's reload in this window (`useState`'s shape): the user's place, a draft. A layer's
