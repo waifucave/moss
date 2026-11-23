@@ -25,14 +25,14 @@ export type SrtWinArch = "x64" | "arm64";
 /**
  * The pinned launcher digests, one per architecture. Shape is load-bearing: lane M's build check parses this exact
  * constant (`parsePins` in `scripts/release/srt-win.ts`), so keep it a frozen object literal with `x64` and `arm64`.
- * Both are CI digests of the patched static-CRT build (per-principal records, Addendum 13). x64 was re-measured on
- * 2026-11-22 by the windows-fence workflow (`scripts/ci/windows-fence/build-launcher.ps1`, windows-latest, Server
+ * Both are CI digests of the patched static-CRT build (per-principal records, Addendum 13). x64 has patch 0002 too
+ * (session 0's named objects) and was re-measured on 2026-11-23 by the windows-fence workflow (`scripts/ci/windows-fence/build-launcher.ps1`, windows-latest, Server
  * 2025 26100): lane M's earlier x64 pin was no longer reproducible from the pinned source and patch on that image (its
  * MSVC linker had moved on; /BREPRO makes a build repeatable only on one toolchain). arm64 is still lane M's and is not
- * rebuilt by any job here. A release must ship the launcher built on the toolchain that measured its pin.
+ * rebuilt by any job here, and lacks patch 0002 (it must be rebuilt on an arm64 toolchain). A release must ship the launcher built on the toolchain that measured its pin.
  */
 export const SRT_WIN_PINS = Object.freeze({
-  x64: "3ea5afb79ff090460d8c7fb1c32fc782c60fb18c41a0689caa66c160afb7c2a9",
+  x64: "7c142b6e95e5440181ce0b118c79b55709e2b3c1ba5d55abcfff1522172b4736",
   arm64: "bcd117665fe9f64494bd535b9508e4808ae99ad0ff6118fb410a7f60bb47abb9",
 });
 
