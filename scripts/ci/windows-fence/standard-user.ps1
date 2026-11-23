@@ -113,8 +113,7 @@ $own = @(
 )
 Invoke-AsUserHere "e2e-interactive" ($own + $e2e) 2400
 $here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
-# 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0. Measured and reported, a
-#    known gap (spec §14.1 item 2: the Session 0 launch); it fails the job only if it fails some other way.
+# 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0 (spec §14.1 item 2).
 $code = Invoke-AsUser "e2e" $e2e 2400
 $text = Get-Content (Join-Path $ci "e2e.log") -Raw
 # The uninstaller's order: the user forgets its own grants, then the administrator removes the rest.
@@ -130,11 +129,12 @@ if (Get-ChildItem -Directory C:\Users -Filter "moss-sb-*" -ErrorAction SilentlyC
 if (Get-ScheduledTask -TaskName "MOSS Sandbox Reset $ownerSid" -ErrorAction SilentlyContinue) { $left += "the reset task" }
 if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\markers\$ownerSid.json")) { $left += "the marker" }
 if ($left.Count -gt 0) { Write-Output "left after forget and remove: $($left -join '; ')" }
-# Neither launch can be proven green on a runner, and each must fail CLOSED: no command may run at all (a command that
-# ran would print "-> ok"; one refused by the fence it ran under would print the fence's own error, not srt-win's).
-#  - In its own session: the runner has one interactive session, the administrator's; srt-win's broker must own the
-#    session's BaseNamedObjects (0xC0000022 in another user's), so a standard user's own logon is an owner live check.
-#  - In Session 0 (a password startup task): \Sessions\0\BaseNamedObjects isn't there (0xC0000034), spec 14.1 item 2.
+# In Session 0 (a password startup task, as the daemon starts when the user isn't signed in) the suite must pass:
+# srt-win's patch 0002 opens the global BaseNamedObjects there and goes on without its grant.
+# In the user's own session the runner can't host it, and every launch must fail CLOSED: the runner's one interactive
+# session is the administrator's, and srt-win's broker must own the session's BaseNamedObjects (0xC0000022 in another
+# user's), so a standard user's own logon is an owner live check. No command may run there at all (one that ran would
+# print "-> ok"; one refused by the fence it ran under would print the fence's own error, not srt-win's).
 function Assert-FailedClosed([string]$Text, [string]$Where, [string]$Known) {
   if ($Text -match "exit=0") { Write-Output "the fenced suite passed as the standard user $Where"; return }
   $ran = [regex]::Matches($Text, "\[e2e\] (Bash|PowerShell) .* -> ok in") | Where-Object { $_ }
@@ -144,7 +144,8 @@ function Assert-FailedClosed([string]$Text, [string]$Where, [string]$Known) {
 }
 Assert-FailedClosed $here "in the administrator's interactive session" "BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000022"
 if ($text -notmatch "session: 0") { throw "the user's task didn't run in Session 0" }
-Assert-FailedClosed $text "in Session 0" "Sessions\0\BaseNamedObjects, READ_CONTROL|WRITE_DAC): NTSTATUS 0xC0000034"
+if ($text -notmatch "exit=0") { throw "the fenced suite failed as the standard user in Session 0 (a password startup task)" }
+Write-Output "the fenced suite passed as the standard user in Session 0"
 if ($removeCode -ne 0) { throw "remove for the standard user exited $removeCode" }
 if ($left.Count -gt 0) { throw "forget and remove left $($left.Count) thing(s)" }
-Write-Output "a standard user: setup refused unelevated, set up by the administrator, every launch failed closed where the runner can't host it, forget and remove left nothing"
+Write-Output "a standard user: setup refused unelevated, set up by the administrator, the suite passed in Session 0, every launch failed closed in another user's session, forget and remove left nothing"
