@@ -53,10 +53,12 @@ export interface WindowsShellToolsOptions {
   readonly mossHome: string;
 }
 
-/** Rule E, a command outside the sandbox on Windows: still a pool principal (there is no fenced way to run as the
+/** Rule E, a command outside the sandbox on Windows: still a sandbox principal (there is no fenced way to run as the
  *  user), but its writes are the user's home and temp folder (`allowWrite` of the fence at its widest) instead of the
  *  level's, while every deny of the session's sandbox stays (the escape floor: the fenced set is never written, the
- *  MOSS home included) and the network stays closed (the principal's filters don't open for one command). */
+ *  MOSS home included). It runs as the escape account (`FencedRun.network`, `escapeMember`), which reaches the network
+ *  but the cloud metadata address (srt-win patch 0003; the controller's ruling: as the spec and the Mac give it); no
+ *  command in the sandbox ever runs as that account. */
 export function escapedSandbox(s: SandboxSettingsConfig, o: { userHome: string; temp: string; mossHome: string }): SandboxSettingsConfig {
   const f = s.filesystem ?? {};
   return {
