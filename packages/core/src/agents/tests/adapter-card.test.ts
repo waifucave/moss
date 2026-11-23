@@ -13,6 +13,7 @@ import { AdapterStore } from "../adapter/store";
 import { FAKE_REGISTRY, FakeRegistry, packageTarball, publishAdapter } from "../testing/fake-npm";
 import { FAKE_AGENT_PATH, fakeLaunch, writeFakeAgent } from "../testing/harness";
 import { tarballUrl } from "../adapter/types";
+import { agentMethods } from "../rpc";
 import { fakeAdmissions, waitFor, World } from "./world";
 
 setDefaultTimeout(60_000);
@@ -213,3 +214,27 @@ describe("the person's own installed adapter", () => {
   });
 });
 
+
+describe("agent.backends", () => {
+  test("every backend is looked at at once, one that fails to be looked at is listed not installed, and the names stay what the plugins give", async () => {
+    const s = make();
+    const slow = s.backend.detect.bind(s.backend);
+    let running = 0;
+    let most = 0;
+    const watch = (b: { detect: () => Promise<unknown> }, fn: () => Promise<unknown>) => (b.detect = async () => {
+      most = Math.max(most, ++running);
+      await new Promise((r) => setTimeout(r, 30));
+      try {
+        return await fn();
+      } finally {
+        running--;
+      }
+    });
+    watch(s.backend, slow);
+    watch(s.w.backend, async () => { throw new Error("it can't be looked at"); });
+    const methods = agentMethods({ manager: s.w.manager, backends: () => [s.w.backend, s.backend], computer: "Studio", localDevice: () => "a".repeat(32) });
+    const r = await methods["agent.backends"]!({}, { caller: { kind: "user" } as never }) as { backends: { id: string; name: string; computers: { installed: boolean }[] }[] };
+    expect(most).toBe(2);
+    expect(r.backends.map((b) => [b.id, b.name, b.computers[0]!.installed])).toEqual([["fake", "fake", false], ["claude-code", "Claude Code", true]]);
+  });
+});
