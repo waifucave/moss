@@ -1,52 +1,48 @@
 From: MOSS Windows lane <moss@example.com>
 Date: Mon, 23 Nov 2026 00:00:00 +0000
-Subject: [PATCH] Session 0: the global BaseNamedObjects, and a grant that may be skipped
+Subject: [PATCH] Session 0: no named-object grant
 
 ---
 
 Upstream: anthropics/sandbox-runtime, tag v0.0.81 (c40cf14), after 0001.
 Reason: a broker started by a password scheduled task (MOSS's login
-item when the user isn't signed in) runs in session 0, where the
-named-object directory is the global `\BaseNamedObjects`: the launch
-opened `\Sessions\0\BaseNamedObjects`, which doesn't exist (NTSTATUS
-0xC0000034), and refused every command there.
+item when the user isn't signed in) runs in session 0, where there is no
+`\Sessions\0\BaseNamedObjects` (NTSTATUS 0xC0000034 refused every launch).
+The session's named objects there are the global directory's, which a
+standard user may not change and an elevated broker must not leave
+changed (nothing would take the grant back).
 
 Files: src/winsta.rs.
 
-What changes, and nothing else: in session 0 the grant opens the
-global directory, and when that is refused (a standard user may not
-change it) the grant is skipped with a warning instead of failing the
-launch; every other session is unchanged.
+What changes, and nothing else: in session 0 the named-object grant is
+not made and the launch goes on without it; every other session is
+unchanged.
 
 diff --git a/src/winsta.rs b/src/winsta.rs
 --- a/src/winsta.rs
 +++ b/src/winsta.rs
-@@ -277,8 +277,23 @@
+@@ -277,7 +277,20 @@
  /// session — see module doc for why there is no revoke. The broker's
  /// **user** SID has full control on the session BNO (verified by
  /// probe), so this works non-elevated.
 +///
 +/// Session 0 (MOSS patch 0002): a broker started by a password
-+/// scheduled task runs there, where the session's named objects live in
-+/// the global `\BaseNamedObjects` (there is no `\Sessions\0\
-+/// BaseNamedObjects`), which a standard user may not change. There the
-+/// grant is tried on the global directory and, when refused, skipped
-+/// with a warning: the launch goes on, and only what needs the
-+/// subdirectory (msys2/cygwin's shared heap) fails inside the sandbox.
++/// scheduled task runs there, where there is no `\Sessions\0\
++/// BaseNamedObjects` (the session's named objects are the global
++/// directory's). The grant is not made there at all: a standard user may
++/// not change the global directory, and an elevated broker that did would
++/// leave the sandbox group a right on it that nothing takes back. The
++/// launch goes on without it (msys2/cygwin's shared heap was measured to
++/// work there on Windows Server 2025).
  pub fn grant_sandbox_on_session_bno(sb_sid: &str) -> Result<()> {
--    let bno = open_session_bno()?;
-+    let bno = match open_session_bno() {
-+        Ok(h) => h,
-+        Err(e) if broker_session() == Some(0) => {
-+            eprintln!("srt-win: WARNING: session 0: no grant on \\BaseNamedObjects ({e:#}); launching without it");
-+            return Ok(());
-+        }
-+        Err(e) => return Err(e),
-+    };
++    if broker_session() == Some(0) {
++        eprintln!("srt-win: note: session 0: no grant on the named-object directory; launching without it");
++        return Ok(());
++    }
+     let bno = open_session_bno()?;
      let si = DACL_SECURITY_INFORMATION.0;
      recompose_dacl(
-         "session BNO",
-@@ -317,6 +332,13 @@
+@@ -317,6 +330,13 @@
      .context("grant srt-sandbox on session BaseNamedObjects")
  }
  
@@ -60,17 +56,3 @@ diff --git a/src/winsta.rs b/src/winsta.rs
  /// `NtOpenDirectoryObject(\Sessions\<broker-TS>\BaseNamedObjects,
  /// READ_CONTROL | WRITE_DAC)`. The direct path (not via the
  /// `\Sessions\BNOLINKS\<TS>` symlink) so the open targets the
-@@ -328,7 +350,12 @@
-     let mut ts = 0u32;
-     unsafe { ProcessIdToSessionId(std::process::id(), &mut ts) }
-         .context("ProcessIdToSessionId(broker)")?;
--    let path = format!("\\Sessions\\{ts}\\BaseNamedObjects");
-+    // Session 0's named objects are the global directory's (patch 0002).
-+    let path = if ts == 0 {
-+        "\\BaseNamedObjects".to_string()
-+    } else {
-+        format!("\\Sessions\\{ts}\\BaseNamedObjects")
-+    };
-     let (mut path_w, bytes) = crate::util::counted_utf16(&path);
-     let name = UNICODE_STRING {
-         Length: bytes,
