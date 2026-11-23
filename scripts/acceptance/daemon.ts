@@ -15,8 +15,6 @@ import type { PeerFacts } from "../../packages/core/src/platform/caller-probe";
 import { MemoryNetwork } from "../../packages/core/src/links/memory-wire";
 import { USAGE_INERT } from "../../packages/core/src/usage/wiring";
 import { fakeExa, searchOnlySeam } from "./fake-exa";
-import { lookup } from "node:dns/promises";
-import type { PinnedFetchSeam } from "../../packages/core/src/plugin-host/pinned-fetch";
 import { hostLockPid } from "./host-step";
 import { scaled } from "./time-scale";
 
@@ -53,7 +51,7 @@ const answering = Number(process.env.MOSS_ACCEPTANCE_REGISTRY_ANSWER_DELAY_MS);
 // The plugins' keyed net.fetch reaches nothing outside this machine: the bundled web plugin's search host is answered
 // here by the run's fake search backend (fake-exa.ts), and any other host is refused and logged (the run fails on it).
 const exa = fakeExa();
-const worldFetch = searchOnlySeam({
+let pluginFetch = searchOnlySeam({
   calls: exa.calls,
   handle: async (req) => {
     const res = await exa.handle(req);
@@ -64,22 +62,11 @@ const worldFetch = searchOnlySeam({
 // The run's fake plugin index and npm registry (fake-exa.ts pluginWorldResponse): files the run writes to publish.
 process.env.MOSS_ACCEPTANCE_PLUGIN_WORLD);
 // A real-agents PREVIEW only (scripts/preview/run.ts sets the switch; no acceptance run does): the public npm registry is
-// reached for real when the run's own fake registry has no such package, so an agent plugin's pinned adapter (`launch.adapter`,
-// fetched after the person's yes on its card, every hash checked by the store) can be placed and the real agent started. The
-// owner allowed that download for the preview (2026-11-23). Every other name stays as above: answered here or refused.
-const REAL_NPM = "registry.npmjs.org";
-const pluginFetch: PinnedFetchSeam = process.env.MOSS_PREVIEW_REAL_NPM !== "1" ? worldFetch : {
-  ...worldFetch,
-  resolve: async (name) => (name.toLowerCase() === REAL_NPM ? (await lookup(name, { all: true })).map((a) => a.address) : worldFetch.resolve!(name)),
-  fetch: async (url, init) => {
-    const host = (new Headers(init.headers).get("host") ?? new URL(url).host).toLowerCase();
-    if (host !== REAL_NPM) return worldFetch.fetch!(url, init);
-    const own = await worldFetch.fetch!(url, init);
-    if (own.status !== 404) return own;
-    console.error(`acceptance daemon: the real npm registry is asked for ${new URL(url).pathname} (a real-agents preview)`);
-    return fetch(url, init);
-  },
-};
+// reached for what the run's own fake registry lacks (scripts/preview/real-npm.ts), loaded ONLY under the switch. An earlier
+// form of this change built the wrapper here, with two more imports at the top of this file (`node:dns/promises` and the
+// seam's type): with it window-2's row 26 failed on GitHub four runs out of four (the 3D renderer never drew the VRM model)
+// and the same tip without it passed; why is not established (2026-11-23). So this file stays as it was but for these lines.
+if (process.env.MOSS_PREVIEW_REAL_NPM === "1") pluginFetch = (await import("../preview/real-npm")).withRealNpm(pluginFetch);
 // The one-time copy of an old home staged: stop with the app kept, and exit 76 (start me again now), as `moss daemon run`
 // does; the run starts the next daemon, which swaps the copy in.
 const requestRestart = (): void => {
