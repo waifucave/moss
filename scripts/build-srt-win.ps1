@@ -52,7 +52,7 @@ $outExe = Join-Path $outDir "srt-win.exe"
 $PinnedPatches = @{
   "0001-per-principal-setup-records.patch" = "188ad4c0c5ed37bc9cdba8db821fc5d0a82fb380b79278c300a1507afe81f55d"
   "0002-session-0-named-objects.patch" = "60497de7a7c50a166eb73ff03e91e4cbe6389453d6f73fcfc9e06e029c0b3f81"
-  "0003-network-open-principal.patch" = "f14f02873ee245a5945e7f1d96607cc363f6876b9da553c485f14bcdf2ec726a"
+  "0003-network-open-principal.patch" = "4c12672bfdc91edd85c88a3b677b502a6c0eb0bf9a5d972fbeee803be7b1cfb9"
 }
 
 # What the pinned patch set must change (per-principal records; session 0's named objects; a network-open principal). After
@@ -68,8 +68,8 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/winsta.rs",
   "vendor/srt-win-src/src/wfp.rs"
 )
-$ExpectedPatchAdded = 491
-$ExpectedPatchDeleted = 50
+$ExpectedPatchAdded = 540
+$ExpectedPatchDeleted = 51
 
 function Check-Tools {
   foreach ($t in @("git", "cargo") ) {
