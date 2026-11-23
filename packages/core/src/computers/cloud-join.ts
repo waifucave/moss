@@ -6,8 +6,12 @@
 //   that VM and puts the pairing's QR text into the VM's cloud-init as the join ticket. Only a device holding the QR's
 //   secret can say hello to that pairing (`links/pairing.ts` checks the proof), so the ticket is the single-use token:
 //   one pairing, one device, then it is gone (a used or expired pairing answers no hello). The main confirms the
-//   words by itself ONLY for a pairing it began for a VM it made, and only when the device that said hello names that
-//   same computer; any other pairing is the person's, with the words and the card, as before.
+//   words by itself ONLY for a pairing it began for a VM it made from MOSS's OWN image (a folder naming any other image
+//   gets no ticket at all: the person pairs it themselves, `CUSTOM_IMAGE_USER_DATA`), and only when the device that said
+//   hello is a cloud computer that runs the core, holds no answer key (so it can never answer the person's cards as a
+//   phone would) and names that same computer; any other pairing is the person's, with the words and the card.
+//   One pending pairing per VM: a new ticket replaces the old, and a create that fails, a revoked token or a lost lease
+//   cancels it (`drop`, `cancelAll`).
 // * THE VM (`joinCloudComputer`): its daemon reads the ticket from `/etc/moss/join`, joins, confirms its own end as
 //   its own terminal's (the cloud-init is the person's own act on that VM), and then deletes the ticket and the token
 //   from its disk (`removeCloudJoinFiles`).
@@ -48,10 +52,36 @@ export class CloudPairer {
 
   /** The join ticket for a VM named `name` that carries `token`: a pairing begun now, as its QR's text. */
   async offer(name: string, token: string): Promise<string> {
+    // A retry replaces: never two pending pairings for one VM.
+    this.drop(name);
     const view = await this.#o.pairing.begin({ ttlMs: CLOUD_PAIRING_TTL_MS, qrOnly: true });
-    if (view.qr === undefined) throw new Error("the pairing gave no QR text");
+    if (view.qr === undefined) {
+      void this.#cancel(view.pairingId);
+      throw new Error("the pairing gave no QR text");
+    }
     this.#pending.set(view.pairingId, { name, token, confirming: false });
     return view.qr;
+  }
+
+  /** Cancels this VM's pending pairing, if any (the VM it was for will not exist, or its token was taken back). */
+  drop(name: string): void {
+    for (const [id, p] of [...this.#pending]) {
+      if (p.name !== name) continue;
+      this.#pending.delete(id);
+      void this.#cancel(id);
+    }
+  }
+
+  /** Cancels every pending VM pairing (this computer no longer holds the lease: the one that does decides). */
+  cancelAll(): void {
+    for (const id of [...this.#pending.keys()]) {
+      this.#pending.delete(id);
+      void this.#cancel(id);
+    }
+  }
+
+  #cancel(id: string): Promise<void> {
+    return this.#o.pairing.cancel(id).catch(() => undefined);
   }
 
   /** How many VM pairings wait. */
@@ -70,14 +100,20 @@ export class CloudPairer {
     try {
       if (s.status === "words" && !mine.confirming) {
         mine.confirming = true;
-        // Only the VM this pairing was made for: the device that said hello must call itself that computer.
-        if (s.peer?.computer !== mine.name || s.view.words === undefined) {
+        // Only the VM this pairing was made for, and only what such a VM is: a cloud computer that runs the core and holds
+        // no answer key. The ticket opens the pairing, so whoever holds it says hello; it must never become a phone that
+        // answers the person's cards, or a device under another name.
+        const p = s.peer;
+        const isVm = p !== undefined && p.computer === mine.name && p.kind === "cloud" && p.runsCore === true
+          && p.answerKey === undefined && (p.answerKeys === undefined || Object.keys(p.answerKeys).length === 0);
+        if (!isVm || s.view.words === undefined) {
           this.#o.log?.(`cloud computer ${mine.name}: a device that isn't it used its pairing; refused`);
           await this.#o.pairing.cancel(s.view.pairingId);
           return;
         }
-        // The person's OK was the create card; its record is the proof the registry keeps for this device.
-        await this.#o.pairing.confirm(s.view.pairingId, s.view.words, { card: `cloud-create:${mine.name}`, allowed: Promise.resolve(true) });
+        // The person's OK was the create card; the device record says it was a cloud join (`via: "cloud"`), not a card
+        // answered or four words compared.
+        await this.#o.pairing.confirm(s.view.pairingId, s.view.words, { cloud: mine.name });
       } else if (s.status === "paired" && s.peer !== undefined) {
         this.#pending.delete(s.view.pairingId);
         await this.#o.door()?.consume(mine.token, s.peer.id);

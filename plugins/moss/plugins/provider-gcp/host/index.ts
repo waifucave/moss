@@ -13,6 +13,8 @@ export const GCP_SECRET = "gcp-oauth";
 
 export interface ProviderContext {
   readonly signal?: AbortSignal;
+  /** A test's seam for the waits between reads; the core gives none. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly api: Pick<HostPluginApi, "net"> & { readonly settings: Pick<SettingsApi, "get"> };
 }
 
@@ -20,7 +22,7 @@ async function client(ctx: ProviderContext): Promise<ComputeClient> {
   const project = await ctx.api.settings.get<string>("project");
   if (typeof project !== "string" || project === "") throw new Error("Google Cloud: set the project ID in the plugin's settings first");
   return new ComputeClient({
-    project,
+    project, ...(ctx.sleep ? { sleep: ctx.sleep } : {}),
     fetch: (url, init) => ctx.api.net.fetch(url, { ...init, ...(ctx.signal ? { signal: ctx.signal } : {}) }, { auth: GCP_SECRET }),
   });
 }
@@ -54,20 +56,26 @@ export const provider = {
     try {
       const c = await client(ctx);
       const name = instanceName(a.name);
-      let accepted = false;
+      // Deleted again ONLY when the create is KNOWN to have failed: the cloud's operation finished with an error. A read that
+      // failed or found nothing after an accepted create, a poll that couldn't be read or a timeout leave it unknown, and
+      // an instance the person approved is never deleted on a guess: the core looks for it by its label and keeps it.
+      let known = false;
       try {
-        await c.insert({ name, zone: a.region, machineType: a.size, ...(a.image ? { image: a.image } : {}), userData: a.userData, label: a.label });
-        accepted = true;
-        const i = await c.get(a.region, name);
-        if (!i?.id) throw new Error(`Google Cloud: the instance ${name} wasn't there after it was made`);
+        try {
+          await c.insert({ name, zone: a.region, machineType: a.size, ...(a.image ? { image: a.image } : {}), userData: a.userData, label: a.label });
+        } catch (e) {
+          known = e instanceof GcpError && e.opFailed;
+          throw e;
+        }
+        const i = await c.getAfterCreate(a.region, name);
+        if (!i?.id) throw new Error(`Google Cloud: the instance ${name} was accepted but can't be read yet; MOSS looks for it again by its label and keeps it if it is there`);
         const ip = ipOf(i);
         return { serverId: i.id, ...(ip ? { address: ip } : {}) };
       } catch (e) {
-        // A create that failed half-way leaves nothing billing: the instance THIS call made (the user approved this
-        // create) is deleted again, but only when it carries this create's label, so an instance that was already
-        // there under the same name is never touched. It rolls back the one approved operation; it deletes nothing else.
-        // Only when the cloud accepted the create: a request it refused made nothing, so there is nothing to look for.
-        const removed = accepted || (e instanceof GcpError && e.accepted) ? await c.undoCreate(a.region, name, a.label).catch(() => "left" as const) : "none";
+        // A create that failed (known) leaves nothing billing: the instance THIS call made (the user approved this create)
+        // is deleted again, but only when it carries this create's label, so an instance that was already there under the
+        // same name is never touched. It rolls back the one approved operation; it deletes nothing else.
+        const removed = known ? await c.undoCreate(a.region, name, a.label).catch(() => "left" as const) : "none";
         const e2 = plain(e);
         throw removed === "left" ? new Error(`${e2.message}. The half-made instance ${name} could not be removed: delete it in your Google Cloud project`) : e2;
       }

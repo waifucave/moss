@@ -398,9 +398,11 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
             ...(input.cloud.makeMain ? { makeMain: input.cloud.makeMain } : {}),
             confirm: (card: CloudCard) => cloudCards.answer(card),
             imageReady: () => void (input.cloud!.downloads ?? imageDownloads)(),
+            dropTicket: (name: string) => cloudPairer.drop(name),
+            abandonTickets: () => cloudPairer.cancelAll(),
             userData: async (o: { name: string; token: string }) => {
               const downloads = (input.cloud!.downloads ?? imageDownloads)();
-              return cloudInit({ name: o.name, token: o.token, join: await cloudPairer.offer(o.name, o.token), ...downloads });
+              return cloudInit({ name: o.name, join: await cloudPairer.offer(o.name, o.token), ...downloads });
             },
           },
         } : {}),

@@ -25,8 +25,9 @@ export interface Instance {
 export const LABEL = "moss-computer";
 
 export class GcpError extends Error {
-  /** True when the cloud had accepted the request (an operation was started) before this failed. */
-  accepted = false;
+  /** True only when the cloud's operation finished WITH an error: the create is then known to have failed. Any other
+   *  failure (a poll that couldn't be read, a timeout) leaves it unknown whether the instance exists. */
+  opFailed = false;
   constructor(readonly status: number, readonly code: string, message: string) {
     super(message);
   }
@@ -77,7 +78,7 @@ export class ComputeClient {
       o = await this.#call<Operation>("GET", `${this.#zone(zone)}/operations/${seg(o.name)}`);
     }
     const err = o.error?.errors?.[0];
-    if (err) throw new GcpError(500, err.code ?? "operation_failed", err.message ?? `the operation ${o.name} failed`);
+    if (err) throw Object.assign(new GcpError(500, err.code ?? "operation_failed", err.message ?? `the operation ${o.name} failed`), { opFailed: true });
   }
 
   async insert(o: { name: string; zone: string; machineType: string; image?: string; userData: string; label: string }): Promise<void> {
@@ -91,12 +92,18 @@ export class ComputeClient {
       serviceAccounts: [],
       labels: { [LABEL]: o.label },
     });
-    try {
-      await this.#wait(o.zone, op);
-    } catch (e) {
-      if (e instanceof GcpError) e.accepted = true;
-      throw e;
+    await this.#wait(o.zone, op);
+  }
+
+  /** The instance just made, read again a few times: a read that fails or finds nothing right after an accepted create
+   *  is not a failed create, so it is tried again before anyone decides anything. null when it still isn't readable. */
+  async getAfterCreate(zone: string, name: string, tries = 4): Promise<Instance | null> {
+    for (let i = 0; i < tries; i++) {
+      if (i > 0) await this.#sleep(300 * 2 ** (i - 1));
+      const found = await this.get(zone, name).catch(() => null);
+      if (found?.id) return found;
     }
+    return null;
   }
 
   async get(zone: string, name: string): Promise<Instance | null> {

@@ -17,6 +17,8 @@ export class FakeCompute {
   readonly requests: string[] = [];
   /** The next insert's operation ends in this error (the instance is made, then the operation fails). */
   failNextInsert: string | undefined;
+  /** The next this-many reads of one instance by name answer 503 (a transient failure). */
+  failNextGets = 0;
   #op = 1;
   #id = 7_000_000_000_000_000_000n;
   #fp = 1;
@@ -94,7 +96,10 @@ export class FakeCompute {
     }
     const i = this.instances.get(name ?? "");
     if (!i || i.zone !== zone) return fail(404, "NOT_FOUND", `The resource '${name}' was not found`);
-    if (!verb && method === "GET") return reply(200, this.#view(i));
+    if (!verb && method === "GET") {
+      if (this.failNextGets > 0) { this.failNextGets--; return fail(503, "UNAVAILABLE", "try again"); }
+      return reply(200, this.#view(i));
+    }
     if (!verb && method === "DELETE") { this.instances.delete(i.name); return reply(200, this.#operation()); }
     if (verb === "stop") { i.status = "TERMINATED"; return reply(200, this.#operation()); }
     if (verb === "start") { i.status = "RUNNING"; return reply(200, this.#operation()); }

@@ -123,6 +123,10 @@ export function pluginRegistryMethods(o: {
   /** Raises a sensitive change's sealed card (lane C's broker, `brokerCardOpener`): a development folder added from
    *  the app waits for it. Absent until the daemon's broker is wired, when adding one from the app is refused. */
   openCard?: CardOpener;
+  /** Asked before a plugin is removed, after the checks and before its card: a part of the core that holds something the
+   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it,
+   *  and throws to stop the removal. Absent: nothing is asked. */
+  beforeRemove?: (pluginId: string) => Promise<void>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
   indexes?: IndexClient;
@@ -285,6 +289,9 @@ export function pluginRegistryMethods(o: {
       const pluginsDir = resolve(join(o.home, "plugins"));
       const folder = resolve(r.folder);
       if (!folder.startsWith(pluginsDir + sep) || !existsSync(folder)) throw new ContractError("refused", `${id}'s folder isn't in the plugins directory`);
+      // What the plugin holds is asked about first (its cloud computers keep billing once it is gone): the person's answer
+      // to that question, then the removal's own card.
+      await o.beforeRemove?.(id);
       const remove = async (): Promise<string | undefined> => {
         // The tree as it is when the user says yes (a card may wait).
         const now = registry.get(id);

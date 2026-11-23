@@ -116,6 +116,10 @@ export interface ComputerNodeOptions {
     userData: (o: { name: string; token: string }) => string | Promise<string>;
     /** Throws a plain reason when no VM can be made in this build, before any card (`CloudComputersOptions.imageReady`). */
     imageReady?: () => void;
+    /** Gives up a VM's join ticket (`CloudComputersOptions.dropTicket`), and every ticket when this computer stops being
+     *  the main (`abandonTickets`). */
+    dropTicket?: (name: string) => void;
+    abandonTickets?: () => void;
     makeMain?: (name: string) => Promise<void>;
   };
   log?: (line: string) => void;
@@ -443,7 +447,7 @@ export function startComputerNode(o: ComputerNodeOptions): ComputerNode {
     const authority = leaseAuthority(o.lease);
     const vms = new CloudComputers({
       clock: o.clock, store: new FileCloudStateStore(o.mossHome), provider: pluginProviders(c.plugins, c.host), providerIds: () => providerIds(c.plugins),
-      authority, confirm: c.confirm, userData: c.userData, ...(c.imageReady ? { imageReady: c.imageReady } : {}), isPaired: (name) => registry.get(name) !== undefined,
+      authority, confirm: c.confirm, userData: c.userData, ...(c.imageReady ? { imageReady: c.imageReady } : {}), ...(c.dropTicket ? { dropTicket: c.dropTicket } : {}), isPaired: (name) => registry.get(name) !== undefined,
       ...(c.makeMain ? { makeMain: c.makeMain } : {}), ...(o.log ? { log: o.log } : {}),
     });
     const active = () => authority.canAct() && authority.tenure() !== undefined;
@@ -454,6 +458,8 @@ export function startComputerNode(o: ComputerNodeOptions): ComputerNode {
       else if (!active() && offCloud) {
         offCloud();
         offCloud = undefined;
+        // No longer the main: the join tickets this computer opened are no longer its to confirm.
+        c.abandonTickets?.();
       }
     };
     follow();

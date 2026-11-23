@@ -211,6 +211,27 @@ describe("what a plugin leaves when its folder goes by hand", () => {
     }
   });
 
+  test("plugin.remove asks a part of the core first (beforeRemove): its refusal stops the removal, its yes lets it go on", async () => {
+    const w = await world();
+    try {
+      await w.opened.registry.approve("tarot", (await w.install(source("one"))).treeHash);
+      const asked: string[] = [];
+      let answer: "refuse" | "ok" = "refuse";
+      const m = pluginRegistryMethods({
+        opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
+        beforeRemove: async (id) => { asked.push(id); if (answer === "refuse") throw new Error("its cloud computers weren't answered"); },
+      });
+      await expect(m["plugin.remove"]!({ id: "tarot" }, APP)).rejects.toThrow("weren't answered");
+      expect(existsSync(w.dir)).toBe(true);
+      answer = "ok";
+      await m["plugin.remove"]!({ id: "tarot" }, APP);
+      expect(asked).toEqual(["tarot", "tarot"]);
+      expect(existsSync(w.dir)).toBe(false);
+    } finally {
+      w.opened.close();
+    }
+  });
+
   test("the same source: the same index URL, the same npm package name; a local folder or a wrapper only by its tree", () => {
     const at = { by: "user-app", at: 0 } as const;
     const idx = (url: string, version = "1.0.0") => ({ ...at, index: { url, version } });

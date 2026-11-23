@@ -80,7 +80,8 @@ export async function cloudPlugins(o: { asShipped?: boolean } = {}) {
 
 /** The official image's cloud-init with test pins. */
 export const testUserData = ({ name, token }: { name: string; token: string }) => cloudInit({
-  name, token, join: "join-ticket-for-tests",
+  // The unit tests read the main's token from the ticket; the real ticket is a pairing QR and never carries it.
+  name, join: `ticket-${token}`,
   daemon: { url: "https://example.invalid/moss-core-linux-x64.tar.gz", sha256: SHA },
   browser: { url: "https://example.invalid/chrome-headless-shell-linux64.zip", sha256: SHA },
 });

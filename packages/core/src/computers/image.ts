@@ -7,9 +7,12 @@
 // The metadata block comes first (#254's review, should-fix 3): `bootcmd` applies it as early as cloud-init runs one,
 // when nft is on the image already, and the first `runcmd` lines load it, keep it across boots and enable nftables,
 // before any download and before any user service starts. Loading it twice is harmless (the table is dropped first).
-// The daemon and the browser are downloaded by pinned URL and checked by SHA-256 before anything runs. The pairing
-// token works once: the daemon reads it at first start, pairs, and deletes it and the join file
-// (`removeCloudJoinFiles`).
+// The daemon and the browser are downloaded by pinned URL and checked by SHA-256 before anything runs. The join ticket
+// works once: the daemon reads it at first start, pairs, and deletes it (`removeCloudJoinFiles`). The main's own
+// single-use token is NOT written to the VM: the VM never sends it, so it would gate nothing (it is the main's own
+// binding between one pairing and one VM, `PairingTokens`, kept as a hash on the main only).
+// cloud-init itself keeps a copy of the user-data under /var/lib/cloud on the VM's disk, so the join ticket is spent by
+// its single use and its hour, not by the file's deletion.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import headlessPins from "../../../../plugins/moss/plugins/browser/headless-shell.pins.json" with { type: "json" };
@@ -24,8 +27,6 @@ export interface Download {
 export interface CloudInitOptions {
   /** The computer's name in the tree. */
   name: string;
-  /** Its single-use pairing token (`PairingTokens.mint`). */
-  token: string;
   /** How the new daemon reaches the main computer the first time (lane H's join ticket, opaque here). */
   join: string;
   /** The MOSS daemon for Linux, and Chrome for Testing's headless shell (lane M's release pins). */
@@ -40,7 +41,6 @@ const json = (s: string) => JSON.stringify(s);
 
 function check(o: CloudInitOptions): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(o.name)) throw new ContractError("invalid", `${o.name} can't name a VM`);
-  if (!/^[A-Za-z0-9_-]{32,128}$/.test(o.token)) throw new ContractError("invalid", "the pairing token isn't one PairingTokens made");
   if (o.join.length === 0 || o.join.length > 4096 || /[\r\n]/.test(o.join)) throw new ContractError("invalid", "the join ticket isn't one line");
   for (const d of [o.daemon, o.browser]) {
     if (!/^https:\/\/[^\s"'`$\\]+$/.test(d.url)) throw new ContractError("invalid", `${d.url} isn't a plain https URL`);
@@ -91,11 +91,6 @@ export function cloudInit(o: CloudInitOptions): string {
     "    owner: 'moss:moss'",
     "    defer: true",
     `    content: ${json(o.join)}`,
-    "  - path: /etc/moss/pairing-token",
-    "    permissions: '0600'",
-    "    owner: 'moss:moss'",
-    "    defer: true",
-    `    content: ${json(o.token)}`,
     "  - path: /etc/nftables.d/moss-metadata.nft",
     "    permissions: '0644'",
     `    content: ${json(nft)}`,
@@ -123,24 +118,24 @@ export function cloudInit(o: CloudInitOptions): string {
   return `${lines.join("\n")}\n`;
 }
 
-/** Where the official image puts a cloud computer's name, join ticket and pairing token. */
+/** Where the official image puts a cloud computer's name and join ticket. */
 export const CLOUD_JOIN_DIR = "/etc/moss";
 
 /** What a cloud computer's daemon reads at first start (`daemon run --cloud-join-dir`); null
- *  once paired (the join ticket and the token are gone). */
-export function readCloudJoinFiles(dir = CLOUD_JOIN_DIR): { name: string; join: string; token: string } | null {
+ *  once paired (the join ticket is gone). */
+export function readCloudJoinFiles(dir = CLOUD_JOIN_DIR): { name: string; join: string } | null {
   try {
     const read = (f: string) => readFileSync(join(dir, f), "utf8").trim();
-    return { name: read("name"), join: read("join"), token: read("pairing-token") };
+    return { name: read("name"), join: read("join") };
   } catch {
     return null;
   }
 }
 
-/** After the daemon paired (#254's review, should-fix 6): the join ticket and the spent token are deleted, so nothing
- *  on the VM's disk still carries them. The name stays. Lane H's pairing calls it once the main accepted the token. */
+/** After the daemon paired (#254's review, should-fix 6): the join ticket is deleted from /etc/moss. The name stays. (The
+ *  cloud-init's own copy of the user-data under /var/lib/cloud stays; the ticket is spent anyway.) */
 export function removeCloudJoinFiles(dir = CLOUD_JOIN_DIR): void {
-  for (const f of ["join", "pairing-token"]) rmSync(join(dir, f), { force: true });
+  for (const f of ["join"]) rmSync(join(dir, f), { force: true });
 }
 
 /** The MOSS daemon for Linux x64 that a new VM downloads: an https URL of a `.tar.gz` with `moss-core` at its root, and

@@ -25,8 +25,8 @@ export interface CloudVmRef {
 
 /** J's cloud cards (`CloudCard`), with what J's #284 fix round adds to the duplicate. */
 export type CloudCardRequest =
-  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string }
-  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string }
+  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string; image?: string }
+  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string; image?: string }
   | { kind: "cloud-delete"; name: string; provider: string; why: "folder-removed" | "asked" }
   | {
     kind: "cloud-duplicate"; name: string; provider: string; serverId: string; region: string;
@@ -37,12 +37,25 @@ export type CloudCardRequest =
     /** True only when the keeper ranks strictly above this one: then, and only then, the card offers to delete it. */
     deletable?: boolean;
   }
-  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed" }
-  | { kind: "cloud-make-main"; name: string };
+  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed"; image?: string }
+  | { kind: "cloud-make-main"; name: string }
+  /** A computer provider plugin is being removed while it still has machines: delete them, or keep them (and keep
+   *  paying; MOSS can no longer manage them). */
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
 
 /** MOSS's own words for each card. */
 export const CLOUD_CARD_TEXT = {
   "cloud-create": { title: "Create a cloud computer", what: "Create a cloud computer for this folder? It costs money while it exists.", yes: "Create", no: "Not now" },
+  "cloud-create-custom": {
+    title: "Create a cloud computer from a custom image",
+    what: "Create a cloud computer from the image shown, which is not MOSS's own? It costs money while it exists. MOSS will not pair it by itself: whatever that image runs is not MOSS's, so you pair it yourself afterwards, with the four words.",
+    yes: "Create", no: "Not now",
+  },
+  "cloud-provider-removal": {
+    title: "This provider still has cloud computers",
+    what: "Removing this provider leaves its cloud computers running and billing, and MOSS can no longer manage them. Delete them first, or keep them and keep paying until you delete them in the provider's own console?",
+    yes: "Delete them", no: "Keep them and keep paying",
+  },
   "cloud-resize": { title: "Resize a cloud computer", what: "Change this cloud computer's size? Its price changes with it.", yes: "Resize", no: "Not now" },
   "cloud-delete-folder-removed": { title: "Delete a cloud computer", what: "Its folder was removed. Delete this cloud computer and its disk?", yes: "Delete", no: "Keep it" },
   "cloud-delete-asked": { title: "Delete a cloud computer", what: "Delete this cloud computer and its disk?", yes: "Delete", no: "Keep it" },
@@ -75,6 +88,9 @@ function details(lines: readonly (readonly [string, string | undefined])[]): { t
   return { type: "code", code: lines.filter(([, v]) => v !== undefined).map(([k, v]) => `${k}: ${value(v!)}`).join("\n") };
 }
 
+/** The card's image line: MOSS's own image, or a custom one in words a person can judge, with its name. */
+const imageLine = (image: string | undefined): readonly [string, string] => ["image", image === undefined ? "MOSS's own image" : `a custom image: ${image}`];
+
 /** Whether each VM's device is paired: MOSS's own fact, in a text field from this table, never next to a
  *  provider's string. */
 export const CLOUD_PAIRED_TEXT: Record<string, string> = {
@@ -94,17 +110,20 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
   const title = (t: string) => ({ type: "text" as const, text: t });
   switch (card.kind) {
     case "cloud-create": {
-      const t = CLOUD_CARD_TEXT["cloud-create"];
+      // THE IMAGE IS WHAT THE YES IS BOUND TO: it is on the card in words a person can judge, and the broker seals the
+      // card's fields, so a folder that names another image (a bot can write a folder, §9.2) never rides on a card that
+      // doesn't show it. A custom image is also never paired automatically (computers/cloud.ts, cloud-join.ts).
+      const t = CLOUD_CARD_TEXT[card.image === undefined ? "cloud-create" : "cloud-create-custom"];
       return { ...base, change: "computer-create", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), computer: details([["name", card.name]]),
-        detail: details([["folder", card.folder], ["provider", card.provider], ["size", card.size], ["region", card.region]]),
+        detail: details([["folder", card.folder], ["provider", card.provider], ["size", card.size], ["region", card.region], imageLine(card.image)]),
       } };
     }
     case "cloud-resize": {
       const t = CLOUD_CARD_TEXT["cloud-resize"];
       return { ...base, change: "computer-resize", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), computer: details([["name", card.name]]),
-        detail: details([["provider", card.provider], ["from", card.from], ["to", card.to]]),
+        detail: details([["provider", card.provider], ["from", card.from], ["to", card.to], imageLine(card.image)]),
       } };
     }
     case "cloud-delete": {
@@ -133,7 +152,13 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
     case "cloud-repair": {
       const t = CLOUD_CARD_TEXT[card.why === "token-expired" ? "cloud-repair-token-expired" : "cloud-repair-main-changed"];
       return { ...base, change: "device-add", options: yesNo(t), fields: {
-        title: title(t.title), what: title(t.what), computer: details([["name", card.name]]), detail: details([["provider", card.provider]]),
+        title: title(t.title), what: title(t.what), computer: details([["name", card.name]]), detail: details([["provider", card.provider], imageLine(card.image)]),
+      } };
+    }
+    case "cloud-provider-removal": {
+      const t = CLOUD_CARD_TEXT["cloud-provider-removal"];
+      return { ...base, change: "computer-delete", options: yesNo(t), fields: {
+        title: title(t.title), what: title(t.what), detail: details([["provider", card.provider], ["cloud computers", card.machines.join(", ")]]),
       } };
     }
     case "cloud-make-main": {
@@ -159,6 +184,7 @@ export function cloudCardSubject(card: CloudCardRequest): string {
     case "cloud-duplicate": return JSON.stringify(["server", card.provider, card.serverId]);
     case "cloud-create": return JSON.stringify(["folder", card.folder]);
     case "cloud-make-main": return JSON.stringify(["folder", card.name]);
+    case "cloud-provider-removal": return JSON.stringify(["provider", card.provider]);
     default: return JSON.stringify(["computer", card.provider, card.name]);
   }
 }

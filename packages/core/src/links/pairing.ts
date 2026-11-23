@@ -83,7 +83,7 @@ export class MemoryRendezvous implements PairingRendezvous {
 }
 
 /** How a confirm is approved: in the user's own terminal (no card), or by a sealed card the caller opened. */
-export type PairApproval = { terminal: true } | { card: string; allowed: Promise<boolean> };
+export type PairApproval = { terminal: true } | { card: string; allowed: Promise<boolean> } | { cloud: string };
 
 export type PairingStatus = "waiting" | "words" | "confirmed" | "paired" | "failed" | "cancelled";
 
@@ -295,6 +295,10 @@ export class PairingService {
         throw new ContractError("refused", "the card was denied");
       }
       p.proof = { via: "code", card: approval.card };
+    } else if ("cloud" in approval) {
+      // The main's own confirm for a VM it made from its own image after the create card (`computers/cloud-join.ts`).
+      p.status = "confirmed";
+      p.proof = { via: "cloud", computer: approval.cloud };
     } else {
       p.proof = { via: "terminal" };
     }

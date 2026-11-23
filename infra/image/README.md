@@ -14,10 +14,13 @@ prebuilt disk image to publish: the cloud-init is the image. It:
   SHA-256 before anything is unpacked (lane M's release pins);
 - adds a `clover` user with no password, turns lingering on for it, and runs the daemon as a systemd user service, so
   it starts at boot with no login;
-- writes the computer's name, its join ticket and its single-use pairing token to `/etc/clover/`, readable only by
-  `clover`; the daemon pairs once with the token and then deletes the token and the join ticket
-  (`removeCloudJoinFiles`). Google Cloud's `user-data` metadata is cleared after pairing too; Hetzner keeps a server's
-  user-data and can't clear it, but the token in it is spent;
+- writes the computer's name and its join ticket to `/etc/moss/`, readable only by `moss`; the daemon pairs once with
+  the ticket and then deletes it from there (`removeCloudJoinFiles`). cloud-init also keeps a copy of the user-data
+  under `/var/lib/cloud` on the VM's disk, which the daemon does not delete: the ticket is spent by its single use and
+  its hour. The ticket is a pairing QR: besides the secret it carries the main computer's link addresses (its LAN and
+  direct addresses), which stay in the user-data wherever the cloud keeps it. Google Cloud's `user-data` metadata is
+  cleared after pairing; Hetzner keeps a server's user-data and can't clear it, so the main's addresses (not a live
+  secret) stay readable to anyone who can read that server's user-data;
 - carries the `clover-computer` label with its folder's id, by which the main computer finds it (`cloud.json` is only
   a cache).
 
@@ -29,8 +32,10 @@ To see what a VM gets: `scripts/pinned-bun infra/image/print.ts`. It prints the 
 How the VM joins (built, proven on a stand-in; `packages/core/src/computers/cloud-join.ts`): the main computer begins one
 ordinary pairing for the VM and writes its QR text to `/etc/moss/join`; the unit starts
 `moss-core daemon run --cloud-join-dir /etc/moss`, which names the device from `/etc/moss/name`, joins with the ticket,
-confirms its own end, and deletes the ticket and the token once paired. The main confirms its end by itself only for a
-pairing it began for a VM, and only when the device that joined calls itself that VM's computer.
+confirms its own end, and deletes the ticket once paired. The main confirms its end by itself only for a
+pairing it began for a VM made from MOSS's own image, and only when the device that joined is a cloud computer that runs the
+core, has no answer key, and calls itself that VM's computer. A folder that names any other image gets no ticket and no
+automatic confirming: the person pairs it themselves with the four words (the create card says so).
 
 Open before the live gate (the owner's list is in the lane's report):
 

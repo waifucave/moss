@@ -58,11 +58,15 @@ interface NumberedEntry {
   entry: AuthEntry;
   /** The `models` entry's provider, for an entry of one. */
   provider?: string;
+  /** A cloud computer provider's own sign-in (`computerProviders`): it covers no model provider, so it is never a model
+   *  sign-in (it must not make a plugin that ships both look signed in, or keyless, for its models). */
+  computer?: true;
 }
 
 /** The providers a key covers: its `models` entry's own, or, for one of the manifest's own sign-ins, every provider the
  *  plugin's `models` entries name. */
 function coveredBy(record: Pick<PluginRecord, "manifest">, n: NumberedEntry): string[] {
+  if (n.computer) return [];
   if (n.provider !== undefined) return [n.provider];
   const models = (record.manifest as { contributes?: { models?: { provider?: unknown }[] } } | undefined)?.contributes?.models ?? [];
   return [...new Set(models.map((m) => m.provider).filter((p): p is string => typeof p === "string" && p !== ""))];
@@ -84,7 +88,7 @@ export function authEntriesOf(record: Pick<PluginRecord, "manifest">): NumberedE
     for (const entry of m.auth ?? []) out.push({ index: out.length, entry, ...(m.provider !== undefined ? { provider: m.provider } : {}) });
   }
   for (const entry of manifest?.auth ?? []) out.push({ index: out.length, entry });
-  for (const p of manifest?.contributes?.computerProviders ?? []) for (const entry of p.auth ?? []) out.push({ index: out.length, entry });
+  for (const p of manifest?.contributes?.computerProviders ?? []) for (const entry of p.auth ?? []) out.push({ index: out.length, entry, computer: true });
   return out.slice(0, 32);
 }
 
@@ -275,7 +279,7 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         if (r === undefined || bundledModelProviderOf(r) !== undefined) continue;
         // A `models` entry's own sign-ins, and the manifest's own (which cover every provider the plugin serves). A
         // provider with none of either takes no key (a local model).
-        const own = authEntriesOf(r).filter((n) => n.provider === provider || n.provider === undefined);
+        const own = authEntriesOf(r).filter((n) => !n.computer && (n.provider === provider || n.provider === undefined));
         if (own.length === 0) { out.add(provider); continue; }
         const views = await Promise.all(own.map((n) => view(pluginId, n, undefined)));
         if (views.some((v) => v.state === "signed-in")) out.add(provider);
@@ -289,7 +293,7 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         const r = deps.registry.get(pluginId);
         if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
         if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
-        if (authEntriesOf(r).some((n) => n.provider === provider || n.provider === undefined)) continue;
+        if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
         out.add(provider);
       }
       return out;

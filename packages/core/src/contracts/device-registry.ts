@@ -61,6 +61,9 @@ export type PairingProof =
   | { via: "code"; card: string }
   /** The user added it in their own terminal (§5.1: no card). */
   | { via: "terminal" }
+  /** A cloud computer MOSS made from its own image after the person's create card (§9.2): no words were compared and no
+   *  card was asked for the pairing itself; the create card was the OK. `computer` is the VM it was made for. */
+  | { via: "cloud"; computer: string }
   /** This device itself, at install. */
   | { via: "self" };
 

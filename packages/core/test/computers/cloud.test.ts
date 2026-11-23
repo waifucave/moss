@@ -59,20 +59,24 @@ class FakeProvider implements CloudProviderHandler {
 class FakeAuthority implements CloudAuthority {
   holding = true;
   epoch = 1;
+  /** How many times the lease was handed over (`lose`). */
+  count = 0;
+  handovers() { return this.count; }
   canAct() { return this.holding; }
   tenure() { return this.holding ? `group-1:${this.epoch}` : undefined; }
   /** Another computer took the lease; this one got it back later under a new epoch, or never. */
-  lose() { this.holding = false; }
+  lose() { this.holding = false; this.count++; }
   regain() { this.holding = true; this.epoch++; }
 }
 
 const SHA = "a".repeat(64);
 const userData = ({ name, token }: { name: string; token: string }) => cloudInit({
-  name, token, join: "join-ticket-for-tests",
+  // The unit tests read the main's token from the ticket; the real ticket is a pairing QR and never carries it.
+  name, join: `ticket-${token}`,
   daemon: { url: "https://example.invalid/moss-core-linux-x64.tar.gz", sha256: SHA },
   browser: { url: "https://example.invalid/chrome-headless-shell-linux64.zip", sha256: SHA },
 });
-const tokenIn = (y: string) => /pairing-token"?\n[^\n]*\n[^\n]*\n[^\n]*\n\s*content: "([A-Za-z0-9_-]+)"/.exec(y)?.[1];
+const tokenIn = (y: string) => /content: "ticket-([A-Za-z0-9_-]+)"/.exec(y)?.[1];
 const LABEL = "computer-hetzner-1";
 const NONE = { created: [], adopted: [], resized: [], deleted: [], repaired: [], declined: [], failed: [] };
 
@@ -112,7 +116,7 @@ describe("cloud computers", () => {
     expect(await cloud.reconcile([folder()])).toMatchObject({ created: ["Cloud1"] });
     expect(cards[0]).toEqual({ kind: "cloud-create", name: "Cloud1", provider: "hetzner", size: "cx22", region: "fsn1", folder: "computer-hetzner-1" });
     expect(provider.calls.filter((c) => !c.startsWith("list"))).toEqual([`create Cloud1 cx22 fsn1 ${LABEL}`]);
-    // The token travels in the VM's cloud-init only; the main's home keeps its hash and expiry, 0600, never the token.
+    // The main's home keeps the token's hash and expiry, 0600, never the token (the test ticket carries it; the real one does not).
     const token = tokenIn(provider.userData[0]!)!;
     expect(token).toBeDefined();
     const file = join(home, "computers", "cloud.json");
@@ -177,7 +181,10 @@ describe("cloud computers", () => {
     });
     expect(isContractError(await orphan.delete("Cloud1").catch((e) => e), "not_installed")).toBe(true);
     // Nor does a reconcile without the provider delete anything: its VMs can't be seen, so they are left alone.
-    expect(await orphan.reconcile([])).toEqual(NONE);
+    // (CC2: it now says so plainly, and names the machine MOSS can no longer manage: it never stays silent while billing.)
+    const lost = await orphan.reconcile([]);
+    expect({ ...lost, failed: [] }).toEqual(NONE);
+    expect(lost.failed).toEqual([{ name: "Cloud1", reason: expect.stringContaining("can no longer manage Cloud1") }]);
     expect(cards.map((c) => c.kind)).toEqual(["cloud-create"]);
     expect(orphan.get("Cloud1")).toBeDefined();
   });
@@ -383,20 +390,19 @@ describe("the official image", () => {
     expect(y).toContain("delete table inet moss_metadata");
     // Nothing a value carries can break out of its quoting.
     expect(() => userData({ name: "Cloud1\nruncmd:", token: "t".repeat(43) })).toThrow();
-    expect(() => cloudInit({ name: "Cloud1", token: "t".repeat(43), join: "a\nb", daemon: { url: "https://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
-    expect(() => cloudInit({ name: "Cloud1", token: "t".repeat(43), join: "j", daemon: { url: "http://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
+    expect(() => cloudInit({ name: "Cloud1", join: "a\nb", daemon: { url: "https://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
+    expect(() => cloudInit({ name: "Cloud1", join: "j", daemon: { url: "http://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
   });
 });
 
 describe("on the VM after pairing (#254, should-fix 6)", () => {
-  test("the join ticket and the spent token are deleted; the name stays", () => {
+  test("the join ticket is deleted; the name stays", () => {
     const dir = mkdtempSync(join(tmpdir(), "lane-j-etc-moss-"));
     writeFileSync(join(dir, "name"), "Cloud1\n");
     writeFileSync(join(dir, "join"), "join-ticket-for-tests\n");
-    writeFileSync(join(dir, "pairing-token"), `${"t".repeat(43)}\n`);
-    expect(readCloudJoinFiles(dir)).toEqual({ name: "Cloud1", join: "join-ticket-for-tests", token: "t".repeat(43) });
+    expect(readCloudJoinFiles(dir)).toEqual({ name: "Cloud1", join: "join-ticket-for-tests" });
     removeCloudJoinFiles(dir);
-    expect(existsSync(join(dir, "join")) || existsSync(join(dir, "pairing-token"))).toBe(false);
+    expect(existsSync(join(dir, "join"))).toBe(false);
     expect(existsSync(join(dir, "name"))).toBe(true);
     expect(readCloudJoinFiles(dir)).toBeNull();
     removeCloudJoinFiles(dir); // twice is fine
@@ -419,11 +425,78 @@ describe("a token made while this computer was alone (tenure `-:<epoch>`)", () =
     expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toEqual({ computer: "Cloud1" });
   });
 
+  test("never works after a hand-over and a return, though the same computer holds the lease again", async () => {
+    const authority = new FakeAuthority();
+    const { cloud, token } = await made(authority);
+    authority.lose();
+    authority.regain();
+    authority.tenure = () => (authority.holding ? "group-1:2" : undefined);
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toBeNull();
+  });
+
   test("never works once this computer has lost the lease", async () => {
     const authority = new FakeAuthority();
     const { cloud, token } = await made(authority);
     authority.lose();
     expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toBeNull();
+  });
+});
+
+describe("what the person is told and asked about a provider that goes (CC2)", () => {
+  test("removing a provider that still has machines asks first, with a card naming them: yes deletes them, no keeps them and says so", async () => {
+    for (const answer of [true, false] as const) {
+      const { cloud, provider, cards } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? answer : true) });
+      await cloud.reconcile([folder()]);
+      expect(provider.vms.size).toBe(1);
+      expect(await cloud.retireProvider(["hetzner"])).toBe(answer ? "deleted" : "kept");
+      expect(cards.at(-1)).toEqual({ kind: "cloud-provider-removal", provider: "hetzner", machines: ["Cloud1"] });
+      expect(provider.vms.size).toBe(answer ? 0 : 1);
+      expect(cloud.get("Cloud1") !== undefined).toBe(!answer);
+    }
+  });
+
+  test("a card nobody answered refuses the removal: machines are never left billing without the person's word", async () => {
+    const { cloud, provider } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? "unanswered" : true) });
+    await cloud.reconcile([folder()]);
+    const e = await cloud.retireProvider(["hetzner"]).catch((x) => x);
+    expect(isContractError(e, "refused")).toBe(true);
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("a provider with no machines goes at once, and not the main's computers' business: nothing is asked", async () => {
+    const { cloud, cards } = setup();
+    expect(await cloud.retireProvider(["hetzner"])).toBe("none");
+    expect(cards).toEqual([]);
+  });
+
+  test("machines whose provider vanished without a removal (its folder deleted, switched off) are named on every pass", async () => {
+    const { cloud, home, provider } = setup();
+    await cloud.reconcile([folder()]);
+    const orphan = new CloudComputers({
+      clock: { now: () => 0 }, store: new FileCloudStateStore(home), provider: () => undefined, providerIds: () => [],
+      authority: new FakeAuthority(), confirm: async () => true, userData,
+    });
+    for (let i = 0; i < 2; i++) {
+      const r = await orphan.reconcile([]);
+      expect(r.failed).toEqual([{ name: "Cloud1", reason: expect.stringMatching(/hetzner isn't installed or is off.*can no longer manage Cloud1.*billing/) }]);
+    }
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("a person with no cloud computer gets no cloud.json at all", async () => {
+    const { cloud, home } = setup();
+    await cloud.reconcile([]);
+    expect(existsSync(join(home, "computers", "cloud.json"))).toBe(false);
+  });
+
+  test("a resize and a repair card carry the folder's image too, so the yes shows what it applies to", async () => {
+    const { cloud, cards, advance } = setup();
+    const img = "projects/x/global/images/y";
+    await cloud.reconcile([folder({ image: img })]);
+    await cloud.reconcile([folder({ image: img, size: "cx32" })]);
+    expect(cards.map((c) => c.kind)).toEqual(["cloud-create", "cloud-resize"]);
+    expect(cards.every((c) => (c as { image?: string }).image === img)).toBe(true);
+    advance(0);
   });
 });
 

@@ -54,6 +54,27 @@ describe("the computerProviders handler", () => {
     expect(await provider.list({}, context(c))).toEqual([{ serverId: id, label: LABEL, region: Z, size: "e2-small", state: "running", address: "192.0.2.10" }]);
   });
 
+  test("a read that fails after an accepted create is tried again, and an instance the person approved is never deleted on a guess", async () => {
+    const quick = (c: FakeCompute) => ({ ...context(c), sleep: async () => {} });
+    // A transient failure of the first reads: retried, and the create succeeds.
+    const a = new FakeCompute(KEY, "my-moss-123");
+    a.failNextGets = 2;
+    expect((await provider.create({ name: "Cloud1", size: "e2-small", region: Z, userData: USER_DATA, label: LABEL }, quick(a))).serverId).toBe(a.instances.get("cloud1")!.id);
+    expect(a.instances.size).toBe(1);
+    // The reads keep failing: the create is unknown, not failed, so the instance stays (the core finds it by its label).
+    const b = new FakeCompute(KEY, "my-moss-123");
+    b.failNextGets = 99;
+    const err = (await provider.create({ name: "Cloud1", size: "e2-small", region: Z, userData: USER_DATA, label: LABEL }, quick(b)).catch((e: Error) => e)) as Error;
+    expect(err.message).toContain("looks for it again by its label");
+    expect(b.instances.size).toBe(1);
+    expect(b.requests.some((r) => r.startsWith("DELETE"))).toBe(false);
+    // The operation itself finished with an error: that is a known failure, and what it made is removed again.
+    const c = new FakeCompute(KEY, "my-moss-123");
+    c.failNextInsert = "QUOTA_EXCEEDED";
+    await provider.create({ name: "Cloud1", size: "e2-small", region: Z, userData: USER_DATA, label: LABEL }, quick(c)).catch(() => undefined);
+    expect(c.instances.size).toBe(0);
+  });
+
   test("resizes by stopping, setting the machine type and starting; deletes; a gone instance says so", async () => {
     const c = new FakeCompute(KEY, "my-moss-123");
     const ctx = context(c);
