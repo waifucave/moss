@@ -1096,9 +1096,8 @@ export class AgentManager {
   #oneCard(e: Entry, name: string, offer: AdapterOffer, facts: AdapterStartFacts): ApprovalRequest {
     const label = sealedText(name, 200);
     const outside = `Its version ${sealedText(facts.version, 64)} is outside the versions MOSS was tested with`;
-    const risk = facts.sandboxed
-      ? `${outside}, so its sandbox may not hold.`
-      : `It has no sandbox MOSS can count on here.${facts.versionOk ? "" : ` ${outside}.`}`;
+    // The no-sandbox fact is said once (in "without a sandbox"); the version is said only where it is outside the tested ones.
+    const risk = facts.sandboxed ? `${outside}, so its sandbox may not hold. ` : facts.versionOk ? "" : `${outside}. `;
     return {
       kind: "change",
       change: "agent-unsandboxed",
@@ -1109,7 +1108,7 @@ export class AgentManager {
       effect: "other",
       fields: {
         title: { type: "text", text: `Start ${label}?` },
-        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk} While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
+        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
           { label: "Agent", value: sealedText(e.backend.id, 4000) },

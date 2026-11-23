@@ -241,7 +241,7 @@ describe("one card for the download and the start", () => {
     expect(card).toMatchObject({ kind: "change", change: "agent-unsandboxed" });
     expect(card.fields["title"]).toEqual({ type: "text", text: "Start Claude Code?" });
     const what = (card.fields["what"] as { text: string }).text;
-    expect(what).toBe("Claude Code needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads @fake/claude-adapter 1.0.0 from npm (code from npm that MOSS will run, not MOSS's own) and starts Claude Code without a sandbox. It has no sandbox MOSS can count on here. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
+    expect(what).toBe("Claude Code needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads @fake/claude-adapter 1.0.0 from npm (code from npm that MOSS will run, not MOSS's own) and starts Claude Code without a sandbox. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
     const rows = rowsOf(card);
     // The download's facts and the start's, and not the long path of where it is kept.
     expect(rows["Package"]).toBe("@fake/claude-adapter 1.0.0");
@@ -319,9 +319,17 @@ describe("one card for the download and the start", () => {
     expect(what).toContain("downloads @fake/claude-adapter 1.0.0 from npm");
     expect(what).toContain("Its version 1.0.0 is outside the versions MOSS was tested with, so its sandbox may not hold.");
     expect(what).not.toContain("without a sandbox");
+    expect(what).toContain("starts Claude Code. Its version 1.0.0 is outside");
     await answer(s.w, card, "approve");
     expect((await waitFor(() => notification(s.w), "the turn's end")).text).toBe(REPLY);
     expect(s.raised.length).toBe(1);
+  });
+
+  test("no sandbox and a version outside the tested range: the one card says each fact once", async () => {
+    const s = make({ sandbox: "none", versions: ">=2.0.0 <3.0.0" });
+    await s.w.delegate("one", { backend: "claude-code" });
+    const card = await waitFor(() => allCards(s.w)[0], "the one card");
+    expect((card.fields["what"] as { text: string }).text).toBe("Claude Code needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads @fake/claude-adapter 1.0.0 from npm (code from npm that MOSS will run, not MOSS's own) and starts Claude Code without a sandbox. Its version 1.0.0 is outside the versions MOSS was tested with. While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.");
   });
 
   test("two sessions starting together share the one card and one fetch, and both start", async () => {
