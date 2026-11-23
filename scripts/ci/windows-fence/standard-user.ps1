@@ -76,8 +76,20 @@ if ($text -notmatch "needs elevation" -or $text -notmatch "exit=2") { throw "an 
 
 $code = Invoke-Limited "setup for $name, by the administrator" $ucore @("sandbox", "setup") 900
 if ($code -ne 0) { throw "setup for the standard user exited $code" }
-# setup's own first logons leave each principal a profile: reset them once, elevated, before the user's first command.
-$code = Invoke-Limited "reset for $name, by the administrator" $ucore @("sandbox", "reset") 300
+# The pool's state as the owner sees it (`poolStateDir`): it may read a generation and write its used record, and may
+# neither write a generation nor make a file of its own (no link can be planted where the SYSTEM reset opens files).
+$pool1 = (Get-LocalUser | Where-Object Name -like "moss-sb-*" | Sort-Object Name | Select-Object -First 1).Name
+$pdir = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$ownerSid"
+$perm = "powershell -NoProfile -Command `"" +
+  "`$d='$pdir'; " +
+  "'read-gen=' + [bool](Get-Content -Raw -LiteralPath (Join-Path `$d '$pool1.gen') -ErrorAction SilentlyContinue); " +
+  "try { [IO.File]::WriteAllText((Join-Path `$d '$pool1.used'), 'x'); 'write-used=True' } catch { 'write-used=False' }; " +
+  "try { [IO.File]::WriteAllText((Join-Path `$d '$pool1.gen'), 'x'); 'write-gen=True' } catch { 'write-gen=False' }; " +
+  "try { [IO.File]::WriteAllText((Join-Path `$d 'planted.lock'), 'x'); 'make-file=True' } catch { 'make-file=False' }`""
+$null = Invoke-AsUser "pool-perms" @($perm) 300
+$pp = Get-Content (Join-Path $ci "pool-perms.log") -Raw
+if ($pp -notmatch "read-gen=True" -or $pp -notmatch "write-used=True" -or $pp -notmatch "write-gen=False" -or $pp -notmatch "make-file=False") { throw "the owner's rights on the pool's state aren't read-gen, write-used only: $pp" }
+# The used record just written ("x") is no generation: the principal stays fresh for the suite below.
 
 # The fenced suite in the user's own task: an unelevated daemon in Session 0.
 $e2e = @(
@@ -103,7 +115,6 @@ Invoke-AsUserHere "e2e-interactive" ($own + $e2e) 2400
 $here = Get-Content (Join-Path $ci "e2e-interactive.log") -Raw
 # 2. As a password startup task runs it ("whether the user is logged on or not"): Session 0. Measured and reported, a
 #    known gap (spec §14.1 item 2: the Session 0 launch); it fails the job only if it fails some other way.
-$null = & $ucore sandbox reset
 $code = Invoke-AsUser "e2e" $e2e 2400
 $text = Get-Content (Join-Path $ci "e2e.log") -Raw
 # The uninstaller's order: the user forgets its own grants, then the administrator removes the rest.
