@@ -39,6 +39,8 @@ interface Setup {
   bin: string;
   /** Every card the manager asked for, answered or not (the fake broker lists only the open ones). */
   raised: { change: string; title: string }[];
+  /** The declaration the backend holds (a test may change what its plugin pins). */
+  decl: ReturnType<typeof publishAdapter>;
 }
 
 /** A world whose manager also knows `claude-code`, an adapter backend: its adapter's run file is the scripted fake agent
@@ -73,7 +75,7 @@ function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "non
         admissions: { "claude-code": fakeAdmissions(o.sandbox ?? "protected").fake },
         adapter: decl, adapters: store, runtime: () => process.execPath,
       });
-      setup = { w: undefined as never, reg, store, backend, bin, raised: [] };
+      setup = { w: undefined as never, reg, store, backend, bin, raised: [], decl };
       return [backend];
     },
   });
@@ -248,6 +250,7 @@ describe("one card for the download and the start", () => {
     expect(rows["Downloaded from"]).toBe(FAKE_REGISTRY);
     expect(rows["Size"]).toMatch(/under 1 MB, 2 packages/);
     expect(rows["Agent"]).toBe("claude-code");
+    expect(rows["Plugin"]).toBe("moss/agent-claude-code");
     expect(rows["Started by"]).toBe("alpha");
     expect(rows["Folder"]).toBeDefined();
     expect(rows["Gets from your environment"]).toContain("PATH, HOME");
@@ -272,27 +275,55 @@ describe("one card for the download and the start", () => {
     expect(s.reg.asked.length).toBe(2);
   });
 
-  test("the no does neither: nothing is fetched, nothing is started, the plain line says so, with no second card", async () => {
+  test("the no downloads nothing and starts nothing of MOSS's: with no adapter of their own the start ends with the plain line, on the first start and on the next, which asks again as the line says", async () => {
     const s = make({ sandbox: "none" });
     await s.w.delegate("one", { backend: "claude-code" });
     await answer(s.w, await waitFor(() => allCards(s.w)[0], "the one card"), "deny");
     const n = await waitFor(() => notification(s.w), "the notice");
-    expect(n.text).toContain("Claude Code's adapter wasn't downloaded, because you said no");
+    expect(n.text).toContain("Claude Code's adapter wasn't downloaded, because you said no; MOSS asks again the next time you start Claude Code");
     expect(s.reg.asked).toEqual([]);
     expect(s.w.report("started")).toEqual([]);
     expect(existsSync(adapterDir(s.w))).toBe(false);
     expect(s.raised.length).toBe(1);
+    // The next start does what the line said: the one card again.
+    await s.w.delegate("two", { backend: "claude-code" });
+    const again = await waitFor(() => allCards(s.w)[0], "the one card again");
+    expect(again.fields["title"]).toEqual({ type: "text", text: "Start Claude Code?" });
+    expect(s.raised.map((r) => r.title)).toEqual(["Start Claude Code?", "Start Claude Code?"]);
+    expect(s.reg.asked).toEqual([]);
   });
 
-  test("the no starts nothing even where the person has an adapter of their own", async () => {
+  test("the no with an adapter of their own: it starts the agent at once on its own start card, the first start and every later one alike (no card once its OK is kept); nothing of MOSS's is fetched or started", async () => {
     const s = make({ sandbox: "none", own: true });
     await s.w.delegate("one", { backend: "claude-code" });
     await answer(s.w, await waitFor(() => allCards(s.w)[0], "the one card"), "deny");
-    const n = await waitFor(() => notification(s.w), "the notice");
-    expect(n.text).toContain("because you said no");
+    const own = await waitFor(() => allCards(s.w)[0], "the own adapter's start card");
+    expect(own.fields["title"]).toEqual({ type: "text", text: "Start an agent without a sandbox?" });
+    expect((own.fields["source"] as { rows: { label: string; value: string }[] }).rows.find((r) => r.label === "Program")!.value).toContain("claude-agent-acp");
+    await answer(s.w, own, "approve");
+    expect((await waitFor(() => notification(s.w), "the first turn's end")).text).toBe("OWN");
     expect(s.reg.asked).toEqual([]);
+    expect(existsSync(adapterDir(s.w))).toBe(false);
+    expect(s.raised.map((r) => r.title)).toEqual(["Start Claude Code?", "Start an agent without a sandbox?"]);
+    // The second start: the download isn't offered again, and the OK kept for their adapter means no card at all.
+    await s.w.delegate("two", { backend: "claude-code" });
+    await waitFor(() => s.w.parentInputs("task-notification").length >= 2 || undefined, "the second turn's end");
+    expect(s.raised.length).toBe(2);
+    expect(s.w.parentInputs("task-notification").map((i) => (i.input as { text: string }).text)).toEqual(["OWN", "OWN"]);
+    expect(s.reg.asked).toEqual([]);
+  });
+
+  test("the no with an adapter of their own, and its start card refused: nothing starts, and the next start asks for its OK again (the download isn't offered)", async () => {
+    const s = make({ sandbox: "none", own: true });
+    await s.w.delegate("one", { backend: "claude-code" });
+    await answer(s.w, await waitFor(() => allCards(s.w)[0], "the one card"), "deny");
+    await answer(s.w, await waitFor(() => allCards(s.w)[0], "the own adapter's start card"), "deny");
+    await waitFor(() => notification(s.w), "the notice");
     expect(s.w.report("started")).toEqual([]);
-    expect(s.raised.length).toBe(1);
+    await s.w.delegate("two", { backend: "claude-code" });
+    const again = await waitFor(() => allCards(s.w)[0], "the start card again");
+    expect(again.fields["title"]).toEqual({ type: "text", text: "Start an agent without a sandbox?" });
+    expect(s.raised.map((r) => r.title)).toEqual(["Start Claude Code?", "Start an agent without a sandbox?", "Start an agent without a sandbox?"]);
   });
 
   test("a tampered tarball after the yes: nothing is kept and nothing starts, and no second card asks", async () => {
@@ -380,6 +411,23 @@ describe("one card for the download and the start", () => {
     await waitFor(() => s.w.parentInputs("task-notification").length >= 2 || undefined, "the second turn's end");
     expect(s.raised.map((r) => r.title)).toEqual(["Start Claude Code?", "Download Claude Code's adapter?"]); // the combined card of the first start, then the download alone
     expect(s.raised.length).toBe(2);
+  });
+
+  test("the same version with a changed lock raises ONE card, not a download card and then a start card", async () => {
+    const s = make({ sandbox: "none" });
+    await s.w.delegate("one", { backend: "claude-code" });
+    await answer(s.w, await waitFor(() => allCards(s.w)[0], "the one card"), "approve");
+    await waitFor(() => notification(s.w), "the first turn's end");
+    // The plugin locks another zod under the same adapter version: its pin changes, so the OK kept isn't for the copy to be placed.
+    const bytes = packageTarball("zod", "4.6.8", { "index.js": "module.exports = 2\n" });
+    (s.decl as { packages: unknown }).packages = [{ path: "node_modules/zod", name: "zod", version: "4.6.8", integrity: s.reg.publish("zod", "4.6.8", bytes), size: bytes.byteLength }];
+    await s.w.delegate("two", { backend: "claude-code" });
+    const again = await waitFor(() => allCards(s.w)[0], "the card for the changed copy");
+    expect(again.fields["title"]).toEqual({ type: "text", text: "Start Claude Code?" });
+    await answer(s.w, again, "approve");
+    await waitFor(() => s.w.parentInputs("task-notification").length >= 2 || undefined, "the second turn's end");
+    expect(s.raised.map((r) => r.title)).toEqual(["Start Claude Code?", "Start Claude Code?"]);
+    expect(s.reg.asked).toContain(tarballUrl(FAKE_REGISTRY, "zod", "4.6.8"));
   });
 
   test("a copy that isn't the one this yes fetched does not ride on it: the start asks on its own card", async () => {

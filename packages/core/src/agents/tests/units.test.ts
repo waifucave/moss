@@ -590,20 +590,23 @@ describe("sandbox admissions and OKs", () => {
     }
   });
 
-  test("`knows` says an OK was given for a program at a path and version, whatever its hash, and is never a yes by itself", () => {
+  test("`knows` says an OK was kept for a program at a path and version for a copy placed under a pin, whatever its hash, and is never a yes by itself", () => {
     const home = mkdtempSync(join(tmpdir(), "moss-oks-knows-"));
     try {
       const key = { backend: "claude-code", version: "0.100.0", computer: "Studio", path: "/h/run/agent-adapters/a/0.100.0/index.js", sha256: "a".repeat(64) };
       const { sha256: _hash, ...program } = key;
       for (const oks of [new FileAgentOks(home), new MemoryAgentOks()]) {
-        expect(oks.knows(program)).toBe(false);
-        oks.grant(key, { at: 1 });
-        expect(oks.knows(program)).toBe(true);
+        expect(oks.knows(program, "pin-1")).toBe(false);
+        oks.grant(key, { at: 1 }); // an OK kept with no pin (before pins) is not known
+        expect(oks.knows(program, "pin-1")).toBe(false);
+        oks.grant(key, { at: 2, pin: "pin-1" }); // the same yes, now with the pin its copy was placed under
+        expect(oks.knows(program, "pin-1")).toBe(true);
+        expect(oks.knows(program, "pin-2")).toBe(false); // a changed lock under the same version
         expect(oks.has({ ...key, sha256: "b".repeat(64) })).toBe(false);
-        expect(oks.knows({ ...program, version: "0.101.0" })).toBe(false);
-        expect(oks.knows({ ...program, computer: "Desk" })).toBe(false);
-        expect(oks.knows({ ...program, path: "/elsewhere/index.js" })).toBe(false);
-        expect(oks.knows({ ...program, backend: "codex" })).toBe(false);
+        expect(oks.knows({ ...program, version: "0.101.0" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, computer: "Desk" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, path: "/elsewhere/index.js" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, backend: "codex" }, "pin-1")).toBe(false);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

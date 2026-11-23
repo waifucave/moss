@@ -106,6 +106,8 @@ export interface AdapterStartFacts {
   versionOk: boolean;
   /** MOSS admitted a sandbox for it here. */
   sandboxed: boolean;
+  /** What the copy to be placed is, by the declaration's pins (`adapterPin`): the same pin places the same files. */
+  pin: string;
 }
 
 /** The copy a fetch placed and checked whole: what the person's yes for the start may be bound to. */

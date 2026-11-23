@@ -296,6 +296,13 @@ export function lockDigest(d: Pick<AdapterDecl, "packages">): string {
   return sha256(d.packages.map((p) => `${p.path}\0${p.name}\0${p.version}\0${p.integrity}`).sort().join("\n"));
 }
 
+/** What a declaration pins: the package, its version and integrity, and its lock. The same pin places the same files, so
+ *  an OK kept for a copy placed under a pin is an OK for the copy a fetch under that pin places again; a plugin that changes
+ *  its lock under the same version changes the pin. */
+export function adapterPin(d: Pick<AdapterDecl, "package" | "version" | "integrity" | "packages">): string {
+  return sha256(`${d.package}\0${d.version}\0${d.integrity}\0${lockDigest(d)}`);
+}
+
 /** Every file under `dir` (but the record itself), by path, with its SHA-256. Throws on a link or anything not a plain
  *  file or folder. */
 export function hashTree(dir: string): Record<string, string> {

@@ -35,7 +35,7 @@ import { programHash } from "./sandbox/oks";
 import { buildAgentEnv, launchContained, spawnPlan, type AgentJobLike } from "./process/launch";
 import { versionSatisfies } from "./version";
 import type { ModelListDecl } from "./model-list";
-import type { AdapterStore } from "./adapter/store";
+import { adapterPin, type AdapterStore } from "./adapter/store";
 import { adapterDeclinedLine, adapterFailedLine, type AdapterBackend, type AdapterDecl, type AdapterOffer, type AdapterPlaced, type AdapterStartFacts, type AdapterUse } from "./adapter/types";
 
 export { versionSatisfies } from "./version";
@@ -311,7 +311,7 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       return undefined; // `detect` says why it can't start
     }
     const f = this.#providedFacts(a);
-    return { path: store.entryOf(a), version: a.version, versionOk: f.versionOk, sandboxed: f.sandboxed };
+    return { path: store.entryOf(a), version: a.version, versionOk: f.versionOk, sandboxed: f.sandboxed, pin: adapterPin(a) };
   }
 
   async provideAdapter(): Promise<AdapterPlaced> {

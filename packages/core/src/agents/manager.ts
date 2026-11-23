@@ -995,15 +995,18 @@ export class AgentManager {
     if (this.#o.startUnsandboxedForTests === true || b.adapterStart === undefined) return undefined;
     const facts = await b.adapterStart().catch(() => undefined);
     if (facts === undefined || (facts.sandboxed && facts.versionOk)) return undefined;
-    // An OK given for this program (a copy fetched again, say) is the start's answer already: the download is asked alone.
-    if (this.#oks.knows({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path })) return undefined;
+    // An OK kept for this program at this run file for a copy placed under THIS pin (a copy fetched again, say) is the start's
+    // answer already: the download is asked alone. The decision is from what WILL be placed: an OK kept for a copy placed
+    // under another pin (a plugin that changed its lock under the same version) isn't this copy's, so the one card asks.
+    if (this.#oks.knows({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path }, facts.pin)) return undefined;
     return facts;
   }
 
   /** One card for one act. `facts` set (the start needs the OK too): the combined card, "Start <Agent>?", which says both
-   *  halves plainly and whose yes covers both; its no does neither (nothing fetched, nothing started: the plain refusal
-   *  line ends the start, even where the person has an adapter of their own). Without `facts`: the download card, as
-   *  ever, and its no leaves an adapter of the person's own to start the agent. */
+   *  halves plainly and whose yes covers both. Its no, like the download card's, means "don't download and don't start
+   *  MOSS's copy": nothing is fetched. An adapter of the person's own that passes its identity check then starts the agent
+   *  at once, on its own start card where no OK is kept for it (the first start and every later one alike); with none, the
+   *  start ends with the plain line (which says MOSS asks again the next time, as it does). */
   async #askAdapter(e: Entry, b: AdapterBackend, offer: AdapterOffer, facts: AdapterStartFacts | undefined): Promise<AdapterAsk> {
     const name = (b as { name?: string }).name ?? e.backend.id;
     const decision = await this.#o.approvals.request(
@@ -1013,7 +1016,12 @@ export class AgentManager {
     if (decision === undefined || !decision.allowed) {
       const declined = decision?.by === "card";
       b.noteAdapter(declined ? { declined: true } : { failed: "the question about it wasn't answered" });
-      return facts === undefined ? {} : { stop: declined ? adapterDeclinedLine(name) : adapterFailedLine(name, "the question about it wasn't answered") };
+      if (facts === undefined) return {};
+      // The person's own adapter, if it passes its identity check (`detect` says: MOSS's copy isn't placed), goes on as it does
+      // after a no to the download card alone; with none, the start ends here.
+      const own = await e.backend.detect().catch(() => undefined);
+      if (own?.installed === true && own.identityOk) return {};
+      return { stop: declined ? adapterDeclinedLine(name) : adapterFailedLine(name, "the question about it wasn't answered") };
     }
     let placed: AdapterPlaced;
     try {
@@ -1047,7 +1055,7 @@ export class AgentManager {
       && d.versionOk === facts.versionOk && d.sandboxed === facts.sandboxed
       && d.sha256 === placed.digest;
     if (!same) return;
-    this.#oks.grant({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path, sha256: placed.digest }, { ...(cardId === undefined ? {} : { cardId }), at: this.#o.clock.now() });
+    this.#oks.grant({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path, sha256: placed.digest }, { ...(cardId === undefined ? {} : { cardId }), at: this.#o.clock.now(), pin: facts.pin });
   }
 
   /** What a download card says (the start needs nothing of the person here). */
@@ -1113,6 +1121,7 @@ export class AgentManager {
         source: { type: "rows", rows: [
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
           ...this.#packageRows(offer),
+          { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
           { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
           { label: "Folder", value: sealedText(e.root, 4000) },
         ] },
@@ -1273,7 +1282,9 @@ export class AgentManager {
     if (!decision.allowed) {
       throw new ContractError("refused", `${e.backend.id} wasn't started: ${reason}, and the OK to run it that way was ${decision.by === "expired" ? "not given in time" : decision.by === "card" ? "refused" : "withdrawn"}`);
     }
-    this.#oks.grant(key, { ...(decision.cardId === undefined ? {} : { cardId: decision.cardId }), at: this.#o.clock.now() });
+    // A copy MOSS placed (the program is its run file): the pins it was placed under, so a fetch under them asks the download alone.
+    const placed = isAdapterBackend(e.backend) ? await e.backend.adapterStart?.().catch(() => undefined) : undefined;
+    this.#oks.grant(key, { ...(decision.cardId === undefined ? {} : { cardId: decision.cardId }), at: this.#o.clock.now(), ...(placed !== undefined && placed.path === program.path ? { pin: placed.pin } : {}) });
   }
 
   async #permission(e: Entry, raw: AgentPermissionAsk): Promise<AgentPermissionAnswer> {
