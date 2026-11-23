@@ -3,6 +3,8 @@
 export class FakeHetzner {
   readonly servers = new Map<number, { id: number; name: string; server_type: string; location: string; image: string; user_data: string; status: string; ip: string; labels: Record<string, string> }>();
   readonly requests: string[] = [];
+  /** The next create's action ends in this error (the server is made, then the create fails). */
+  failNextCreateAction: string | undefined;
   readonly #actions = new Map<number, { polls: number; error?: string }>();
   #id = 100;
   #action = 1;
@@ -37,7 +39,9 @@ export class FakeHetzner {
       const id = ++this.#id;
       const s = { id, name: String(body.name), server_type: String(body.server_type), location: String(body.location), image: String(body.image), user_data: String(body.user_data), status: "initializing", ip: `198.51.100.${id - 100}`, labels: (body.labels ?? {}) as Record<string, string> };
       this.servers.set(id, s);
-      return reply(201, { server: { id, status: s.status, public_net: { ipv4: { ip: s.ip } } }, action: this.#act() });
+      const failing = this.failNextCreateAction;
+      this.failNextCreateAction = undefined;
+      return reply(201, { server: { id, status: s.status, public_net: { ipv4: { ip: s.ip } } }, action: this.#act(failing) });
     }
     if (method === "GET" && u.pathname === "/v1/servers") {
       // label_selector: `key` (has the key) or `key==value`; one page of `per_page`.

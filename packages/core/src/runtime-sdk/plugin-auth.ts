@@ -75,14 +75,16 @@ function errorClass(err: unknown): string {
   return /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : "Error";
 }
 
-/** A plugin's sign-ins, numbered: each `models` entry's `auth`, then the manifest's own (32 at most). */
+/** A plugin's sign-ins, numbered: each `models` entry's `auth`, then the manifest's own, then each cloud computer
+ *  provider's (`computerProviders`, spec §9.2; last so the numbers of the others stay) (32 at most). */
 export function authEntriesOf(record: Pick<PluginRecord, "manifest">): NumberedEntry[] {
-  const manifest = record.manifest as { contributes?: { models?: { provider?: string; auth?: AuthEntry[] }[] }; auth?: AuthEntry[] } | undefined;
+  const manifest = record.manifest as { contributes?: { models?: { provider?: string; auth?: AuthEntry[] }[]; computerProviders?: { auth?: AuthEntry[] }[] }; auth?: AuthEntry[] } | undefined;
   const out: NumberedEntry[] = [];
   for (const m of manifest?.contributes?.models ?? []) {
     for (const entry of m.auth ?? []) out.push({ index: out.length, entry, ...(m.provider !== undefined ? { provider: m.provider } : {}) });
   }
   for (const entry of manifest?.auth ?? []) out.push({ index: out.length, entry });
+  for (const p of manifest?.contributes?.computerProviders ?? []) for (const entry of p.auth ?? []) out.push({ index: out.length, entry });
   return out.slice(0, 32);
 }
 

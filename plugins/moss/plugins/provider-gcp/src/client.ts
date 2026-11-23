@@ -25,6 +25,8 @@ export interface Instance {
 export const LABEL = "moss-computer";
 
 export class GcpError extends Error {
+  /** True when the cloud had accepted the request (an operation was started) before this failed. */
+  accepted = false;
   constructor(readonly status: number, readonly code: string, message: string) {
     super(message);
   }
@@ -89,7 +91,12 @@ export class ComputeClient {
       serviceAccounts: [],
       labels: { [LABEL]: o.label },
     });
-    await this.#wait(o.zone, op);
+    try {
+      await this.#wait(o.zone, op);
+    } catch (e) {
+      if (e instanceof GcpError) e.accepted = true;
+      throw e;
+    }
   }
 
   async get(zone: string, name: string): Promise<Instance | null> {
@@ -114,6 +121,16 @@ export class ComputeClient {
       token = r.nextPageToken;
     } while (token);
     return out;
+  }
+
+  /** After a create that failed: deletes the instance named `name` when it carries this create's `label` (it is the one
+   *  that create made). `none`: nothing of this create is there; `removed`: it was deleted; `left`: it is there and
+   *  could not be removed. An instance with another label, or none, is never touched. */
+  async undoCreate(zone: string, name: string, label: string): Promise<"none" | "removed" | "left"> {
+    const i = await this.get(zone, name).catch(() => undefined);
+    if (i === undefined) return "left";
+    if (i === null || i.labels?.[LABEL] !== label) return "none";
+    return this.delete(zone, name).then(() => "removed" as const, () => "left" as const);
   }
 
   /** The instance in `zone` with that numeric id; null when there is none. */

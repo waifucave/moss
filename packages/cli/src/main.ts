@@ -2760,7 +2760,17 @@ if (import.meta.main) {
     try {
       // The one-time copy of an old install's home is staged: stop, and start again at once (the supervisor and the app
       // start a daemon that exits with UPDATE_RESTART_EXIT_CODE again), so the next start swaps it in.
+      // A cloud computer's own first start (spec §9.2, the image's systemd unit): `--cloud-join-dir /etc/moss` holds its name
+      // and the ticket to join its main computer with. The device is named from that file before anything else.
+      const joinAt = process.argv.indexOf("--cloud-join-dir");
+      const cloudJoinDir = joinAt >= 0 ? process.argv[joinAt + 1] : undefined;
+      if (joinAt >= 0 && (cloudJoinDir === undefined || cloudJoinDir.startsWith("--"))) throw new Error("--cloud-join-dir needs a folder");
+      const { readCloudJoinFiles } = await import("@waifucave/moss-core");
+      const cloudJoin = cloudJoinDir === undefined ? undefined : readCloudJoinFiles(cloudJoinDir);
       daemon = await startDaemon({
+        ...(cloudJoinDir !== undefined && cloudJoin !== null && cloudJoin !== undefined
+          ? { cloudJoin: { dir: cloudJoinDir }, links: { self: { name: cloudJoin.name, kind: "server" as const, os: "linux" as const } } }
+          : {}),
         requestRestart: () => {
           console.error("old home: restarting to swap the copy in");
           void (async () => { try { await stopWithin(daemon, undefined, { keepApp: true }); bootWasGood(bootHome, serverBin ?? process.execPath); } finally { process.exit(UPDATE_RESTART_EXIT_CODE); } })();

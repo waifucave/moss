@@ -183,15 +183,17 @@ export class PairingService {
     return p ? this.#state(p) : undefined;
   }
 
-  /** Shows a code and QR for another device to join (`device.pair.begin`). */
-  async begin(): Promise<PairingView> {
+  /** Shows a code and QR for another device to join (`device.pair.begin`). `ttlMs`: how long this one waits (a cloud
+   *  computer's takes as long as the VM needs to boot, `computers/cloud-join.ts`); the service's own by default.
+   *  `qrOnly`: no short code and no rendezvous slot, only the QR's text (nobody types it). */
+  async begin(opts: { ttlMs?: number; qrOnly?: boolean } = {}): Promise<PairingView> {
     const id = toBase64Url(randomBytes(16));
-    const expiresAt = this.#o.clock.now() + (this.#o.ttlMs ?? PAIRING_TTL_MS);
+    const expiresAt = this.#o.clock.now() + (opts.ttlMs ?? this.#o.ttlMs ?? PAIRING_TTL_MS);
     const target = this.#o.selfTarget();
     let secret: Bytes;
     let code: string | undefined;
     let slot: string | undefined;
-    if (this.#o.rendezvous) {
+    if (this.#o.rendezvous && opts.qrOnly !== true) {
       const raw = randomBytes(15);
       slot = toBase64Url(raw.subarray(0, 5));
       secret = codeSecret(raw.subarray(5));

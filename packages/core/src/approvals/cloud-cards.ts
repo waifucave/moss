@@ -10,6 +10,7 @@
 // to delete the duplicate only when the VM MOSS keeps ranks strictly above it (`deletable`); otherwise the card only
 // reports both VMs, with nothing to delete.
 import type { TurnOrigin } from "@waifucave/moss-protocol";
+import type { CloudAnswer } from "../computers/cloud";
 import type { ApprovalBroker, ApprovalRequest } from "../contracts/approval-broker";
 import type { MossApprovalRequest } from "./broker";
 import { plainOf } from "./strings";
@@ -226,6 +227,15 @@ export class CloudCardDesk {
   /** J's `confirm`: true only when the person approved the card. */
   async confirm(card: CloudCardRequest): Promise<boolean> {
     return (await this.ask(card)) === "approved";
+  }
+
+  /** What `CloudComputers` takes: `true` approved, `false` the person declined, `"unanswered"` the card ended with no
+   *  answer from the person (withdrawn, closed as stale, a daemon that stopped, no broker yet). Never a "no" without
+   *  the person's word: a delete card that went unanswered must not read as "keep this VM", which would hide a billed
+   *  VM for good (the controller's ruling on #290). */
+  async answer(card: CloudCardRequest): Promise<CloudAnswer> {
+    const outcome = await this.ask(card).catch((): CloudCardOutcome => "unanswered");
+    return outcome === "approved" ? true : outcome === "declined" ? false : "unanswered";
   }
 
   /** Closes, as `stale`, every open card about `subject` (`cloudCardSubject`: the server that's gone, the folder that

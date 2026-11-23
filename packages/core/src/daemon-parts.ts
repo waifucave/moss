@@ -35,6 +35,10 @@ import type { AppTabPort, BrowserEvent } from "./browser/service";
 import { createAgents, type AgentPauseGate, type AgentsOptions } from "./agents";
 import { pluginAgentDefinitions } from "./agents/rpc";
 import { MossApprovalBroker } from "./approvals/broker";
+import { CloudCardDesk } from "./approvals/cloud-cards";
+import type { CloudCard } from "./computers/cloud";
+import { CloudPairer } from "./computers/cloud-join";
+import { cloudInit, imageDownloads, type Download } from "./computers/image";
 import { realpathSync } from "node:fs";
 import { pathFolders, pathsClassOnDisk } from "./approvals/ordinary-paths";
 import { requestReviewer } from "./approvals/request-reviewer";
@@ -175,6 +179,13 @@ export interface DaemonPartsInput {
   agents?: false | DaemonAgentsInput;
   /** The MOSS Browser on this computer (its tabs live in the app; the headless shell where no display is); false for none. */
   browser?: false | DaemonBrowserInput;
+  /** Cloud computers (spec §9.2): the plugin registry's `computer` folders and its `computerProviders` handlers, run on
+   *  the lease's holder only. Their cards (create, resize, delete, pair again) go through this daemon's own approval
+   *  broker: nothing is created, resized or deleted without the person's answer. Without it no cloud computer runs. */
+  cloud?: Pick<NonNullable<ComputerNodeOptions["cloud"]>, "plugins" | "host" | "makeMain"> & {
+    /** The Linux downloads the VM's image needs (`imageDownloads`): a test's own; the pinned ones by default. */
+    downloads?: () => { daemon: Download; browser: Download };
+  };
   log?(line: string): void;
 }
 
@@ -347,6 +358,11 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
     if (input.bots) closers.push(fence.followWorkshop(input.bots.registry, input.bots.drops));
     let broker: MossApprovalBroker | undefined;
     const lateApprovals = lateBroker(() => broker);
+    const cloudCards = new CloudCardDesk(lateApprovals);
+    const cloudPairer = input.cloud && links
+      ? new CloudPairer({ pairing: links.pairing, door: () => node?.cloud?.door(), log: (line) => log(`[computers] ${line}`) })
+      : undefined;
+    if (cloudPairer) closers.push(cloudPairer.start());
     if (links && nodeLinks && input.node !== false) {
       // ── The computer node's own parts (lane J, `computers/node-parts.ts`) ──
       // Its terminals' card for a paste of several lines (through the approval broker, once there is one; until then
@@ -373,6 +389,20 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         ...(input.node ?? {}),
         // A test's own shell launcher keeps the paste card.
         terminals: { ...own.terminals, ...(input.node ? input.node.terminals ?? {} : {}) },
+        // Cloud computers: every card is the daemon's own broker's, bound late like the node's other cards. A card that
+        // ends with no answer (no broker yet, withdrawn, closed) is "unanswered", never a no: the same ask comes again.
+        // The VM joins by the ordinary pairing, begun here for it (`cloud-join.ts`): its QR is the VM's join ticket.
+        ...(input.cloud && cloudPairer ? {
+          cloud: {
+            plugins: input.cloud.plugins, host: input.cloud.host,
+            ...(input.cloud.makeMain ? { makeMain: input.cloud.makeMain } : {}),
+            confirm: (card: CloudCard) => cloudCards.answer(card),
+            userData: async (o: { name: string; token: string }) => {
+              const downloads = (input.cloud!.downloads ?? imageDownloads)();
+              return cloudInit({ name: o.name, token: o.token, join: await cloudPairer.offer(o.name, o.token), ...downloads });
+            },
+          },
+        } : {}),
         clock: input.clock,
         home: input.userHome,
         mossHome: input.mossHome,

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { isContractError } from "../../src/contracts/common";
 import {
   CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens,
-  type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
+  type CloudAnswer, type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
 } from "../../src/computers/cloud";
 import { cloudInit, readCloudJoinFiles, removeCloudJoinFiles } from "../../src/computers/image";
 
@@ -77,7 +77,7 @@ const LABEL = "computer-hetzner-1";
 const NONE = { created: [], adopted: [], resized: [], deleted: [], repaired: [], declined: [], failed: [] };
 
 interface SetupOptions {
-  answers?: (c: CloudCard) => boolean | Promise<boolean>;
+  answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>;
   home?: string;
   provider?: FakeProvider;
   authority?: FakeAuthority;
@@ -400,5 +400,48 @@ describe("on the VM after pairing (#254, should-fix 6)", () => {
     expect(existsSync(join(dir, "name"))).toBe(true);
     expect(readCloudJoinFiles(dir)).toBeNull();
     removeCloudJoinFiles(dir); // twice is fine
+  });
+});
+
+describe("a card nobody answered is never a \"no\" (the controller's ruling on #290)", () => {
+  test("an unanswered delete card keeps nothing hidden: the VM is asked about again on the next pass; only a decline keeps it", async () => {
+    let delAnswer: CloudAnswer = "unanswered";
+    const { cloud, provider, cards, home } = setup({ answers: (c) => (c.kind === "cloud-delete" ? delAnswer : true) });
+    await cloud.reconcile([folder()]);
+    expect(provider.vms.size).toBe(1);
+    // The folder is gone and the card ends unanswered (withdrawn, the daemon stopped): the VM stays, and is not "kept".
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"], deleted: [] });
+    expect(JSON.parse(readFileSync(join(home, "computers", "cloud.json"), "utf8")).kept).toEqual([]);
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"] });
+    expect(cards.filter((c) => c.kind === "cloud-delete")).toHaveLength(2);
+    expect(provider.vms.size).toBe(1);
+    // The person says no: kept, and not asked again.
+    delAnswer = false;
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"] });
+    expect(await cloud.reconcile([])).toEqual(NONE);
+    expect(cards.filter((c) => c.kind === "cloud-delete")).toHaveLength(3);
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("an unanswered create, resize or repair card does nothing; a create card is the only way a VM is made", async () => {
+    const { cloud, provider } = setup({ answers: () => "unanswered" });
+    expect(await cloud.reconcile([folder()])).toMatchObject({ declined: ["Cloud1"], created: [] });
+    expect(provider.calls.filter((c) => !c.startsWith("list"))).toEqual([]);
+    expect(cloud.list()).toEqual([]);
+  });
+
+  test("when the image can't be made (no pinned download), nothing is made, no entry and no token is left, and it is said plainly", async () => {
+    const home = mkdtempSync(join(tmpdir(), "lane-cc-image-"));
+    const provider = new FakeProvider();
+    const cloud = new CloudComputers({
+      clock: { now: () => 1_000_000 }, store: new FileCloudStateStore(home), provider: () => provider, providerIds: () => ["hetzner"],
+      authority: new FakeAuthority(), confirm: async () => true, userData: async () => { throw new Error("the image has no daemon build to download"); },
+    });
+    const r = await cloud.reconcile([folder()]);
+    expect(r.failed).toEqual([{ name: "Cloud1", reason: "the image has no daemon build to download" }]);
+    expect(provider.vms.size).toBe(0);
+    expect(provider.calls.filter((c) => c.startsWith("create"))).toEqual([]);
+    expect(cloud.list()).toEqual([]);
+    expect(JSON.parse(readFileSync(join(home, "computers", "cloud.json"), "utf8")).tokens).toEqual([]);
   });
 });

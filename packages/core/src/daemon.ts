@@ -103,6 +103,8 @@ import { agentDefinitionOf, GLOSSARY_TOOL_NAME } from "./runtime-sdk/turn-loop/g
 import { partsServe } from "./runtime-sdk/turn-loop/only-backends";
 import { AgentStarts, agentStartPolicy } from "./agents/start-policy";
 import { computerNameFor } from "./devices/registry";
+import { joinCloudComputer } from "./computers/cloud-join";
+import { readCloudJoinFiles } from "./computers/image";
 import { startPluginHost, type DaemonPluginHost, type MainHere } from "./plugin-host/daemon-host";
 import { pluginBotSettings } from "./bots/plugin-bot-settings";
 import { pluginUi } from "./plugin-host/ui";
@@ -657,6 +659,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   /** C-M2: false starts no links to this device's other devices (tests; a daemon with no sidecar runs them local-only, and says so).
    *  An object is a test's seams (the daemon integration): the in-memory wire, a local handshake (`null` for none), no
    *  public time, the lease's timings. Production passes nothing: the sidecar beside the daemon, waifucave's handshake. */
+  /** A cloud computer's own first start (spec §9.2): the folder `/etc/moss` holds its name, its join ticket and its single-use
+   *  pairing token (`computers/image.ts`). The daemon names this device that, joins the main computer with the ticket
+   *  (`computers/cloud-join.ts`), and deletes the ticket and the token once paired. `moss-core daemon run --cloud-join-dir`. */
+  cloudJoin?: { dir: string };
   links?: false | Pick<DaemonLinksInput, "wire" | "directory" | "handshake" | "account" | "publicTime" | "mainComputer" | "driver" | "watch" | "binary" | "sidecar" | "self" | "openCard">;
   /** The daemon integration: this computer's node and bot side, started over the links once they're up. `node: false`
    *  and `bots: false` start none; a `bots` object replaces the daemon's own registry and drivers (a test's fakes);
@@ -5039,6 +5045,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       return void (await pluginsStarted);
     }
     const links = started.links;
+    if (opts.cloudJoin !== undefined) startCloudJoin(links, opts.cloudJoin.dir);
     const pluginRegistry = await pluginsStarted;
     if (partsStopping) return void (await closeStarted());
     // A node or bot side that can't start leaves the links up (their methods answer), and says why.
@@ -5073,6 +5080,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           ),
           ...(p.browser ?? {}),
         },
+        // Cloud computers (§9.2): the folders and providers of the plugin registry, through the one plugin host.
+        ...(pluginHost !== undefined && p.node !== false ? { cloud: { plugins: pluginHost.registry, host: pluginHost.host } } : {}),
         // The computer node judges another computer's calls at "ask for risky actions" with the daemon's safety
         // reviewer (lane J's `nodeParts`; it fails closed without one).
         ...((p.reviewer ?? bashReviewer) !== undefined ? { reviewer: (p.reviewer ?? bashReviewer)! } : {}),
@@ -5396,6 +5405,18 @@ if (import.meta.main) {
 
 
 /** A folder's real path, or the path as given when it can't be read. */
+/** A cloud computer's first start: join the main computer with the ticket the image left in `dir`, once. Nothing is
+ *  waited on (the links and the plugins start as they do on any computer); a failure is logged and the next start tries
+ *  again while the files are still there, and they are deleted only once paired. A computer with no ticket (already
+ *  paired, or not a cloud computer) does nothing. */
+function startCloudJoin(links: DeviceLinks, dir: string): void {
+  const files = readCloudJoinFiles(dir);
+  if (files === null) return;
+  void joinCloudComputer({ pairing: links.pairing, ticket: files.join, dir, log: (line) => console.error(`[cloud-join] ${line}`) }).catch((err: unknown) => {
+    console.error(`[cloud-join] this computer did not pair with its main computer: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
 function realOrSelfPath(folder: string): string {
   try {
     return realpathSync.native(folder);

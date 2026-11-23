@@ -126,7 +126,9 @@ interface AuthLike {
   placement?: KeyPlacement;
 }
 
-/** Every `auth` entry of a plugin, top-level and each model's, by the name a fetch names it with. */
+/** Every `auth` entry of a plugin, top-level, each model's and each cloud computer provider's (`computerProviders`,
+ *  spec §9.2: the provider's API key or sign-in is its own entry, asked and kept like a model's), by the name a fetch
+ *  names it with. */
 export function authEntriesOf(record: Pick<PluginRecord, "manifest">): Map<string, AuthLike> {
   const out = new Map<string, AuthLike>();
   const m = record.manifest;
@@ -138,6 +140,7 @@ export function authEntriesOf(record: Pick<PluginRecord, "manifest">): Map<strin
   };
   add(m?.auth as unknown[] | undefined);
   for (const model of m?.contributes?.models ?? []) add(model.auth as unknown[]);
+  for (const provider of m?.contributes?.computerProviders ?? []) add(provider.auth as unknown[]);
   return out;
 }
 

@@ -15,6 +15,8 @@ export interface FakeInstance {
 export class FakeCompute {
   readonly instances = new Map<string, FakeInstance>();
   readonly requests: string[] = [];
+  /** The next insert's operation ends in this error (the instance is made, then the operation fails). */
+  failNextInsert: string | undefined;
   #op = 1;
   #id = 7_000_000_000_000_000_000n;
   #fp = 1;
@@ -86,7 +88,9 @@ export class FakeCompute {
       i.machineType = String(body.machineType);
       i.metadata.items = ((body.metadata as { items?: { key: string; value: string }[] })?.items ?? []).map((x) => ({ ...x }));
       i.body = body;
-      return reply(200, this.#operation());
+      const failing = this.failNextInsert;
+      this.failNextInsert = undefined;
+      return reply(200, this.#operation(failing));
     }
     const i = this.instances.get(name ?? "");
     if (!i || i.zone !== zone) return fail(404, "NOT_FOUND", `The resource '${name}' was not found`);

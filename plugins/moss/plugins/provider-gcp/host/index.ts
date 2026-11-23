@@ -54,11 +54,23 @@ export const provider = {
     try {
       const c = await client(ctx);
       const name = instanceName(a.name);
-      await c.insert({ name, zone: a.region, machineType: a.size, ...(a.image ? { image: a.image } : {}), userData: a.userData, label: a.label });
-      const i = await c.get(a.region, name);
-      if (!i?.id) throw new Error(`Google Cloud: the instance ${name} wasn't there after it was made`);
-      const ip = ipOf(i);
-      return { serverId: i.id, ...(ip ? { address: ip } : {}) };
+      let accepted = false;
+      try {
+        await c.insert({ name, zone: a.region, machineType: a.size, ...(a.image ? { image: a.image } : {}), userData: a.userData, label: a.label });
+        accepted = true;
+        const i = await c.get(a.region, name);
+        if (!i?.id) throw new Error(`Google Cloud: the instance ${name} wasn't there after it was made`);
+        const ip = ipOf(i);
+        return { serverId: i.id, ...(ip ? { address: ip } : {}) };
+      } catch (e) {
+        // A create that failed half-way leaves nothing billing: the instance THIS call made (the user approved this
+        // create) is deleted again, but only when it carries this create's label, so an instance that was already
+        // there under the same name is never touched. It rolls back the one approved operation; it deletes nothing else.
+        // Only when the cloud accepted the create: a request it refused made nothing, so there is nothing to look for.
+        const removed = accepted || (e instanceof GcpError && e.accepted) ? await c.undoCreate(a.region, name, a.label).catch(() => "left" as const) : "none";
+        const e2 = plain(e);
+        throw removed === "left" ? new Error(`${e2.message}. The half-made instance ${name} could not be removed: delete it in your Google Cloud project`) : e2;
+      }
     } catch (e) {
       throw plain(e);
     }

@@ -81,6 +81,12 @@ export interface CloudAuthority {
   tenure(): string | undefined;
 }
 
+/** How a card ended: `true` the user approved, `false` the user declined, `"unanswered"` nobody answered (the card was
+ *  withdrawn, closed as stale, or the daemon stopped). Only a decline is the user's "no": a card that was never
+ *  answered is asked again on a later pass and never read as "keep this VM", which would leave a billed VM hidden for
+ *  good (the controller's ruling on #290; `approvals/cloud-cards.ts`). */
+export type CloudAnswer = boolean | "unanswered";
+
 /** The cards the user answers (lane C's broker shows them; any of the user's devices). */
 export type CloudCard =
   | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string }
@@ -173,6 +179,13 @@ export class PairingTokens {
     return token;
   }
 
+  /** Takes back every token for `computer` (the VM it was for was never made). */
+  revoke(computer: string): void {
+    const s = this.#state();
+    s.tokens = s.tokens.filter((t) => t.computer !== computer);
+    this.#save();
+  }
+
   /** The computer a token was made for, once, under the same tenure; null for an unknown, used, expired or another
    *  tenure's token. */
   consume(token: string, tenure = ""): string | null {
@@ -183,13 +196,17 @@ export class PairingTokens {
     if (i < 0) return null;
     const [t] = s.tokens.splice(i, 1);
     this.#save();
-    return t!.expiresAt >= this.#clock.now() && t!.tenure === tenure ? t!.computer : null;
+    // The tenure is the lease's scope and epoch. A token made while this computer was alone (no scope, `-:<epoch>`) is
+    // still this main's after the VM's own pairing founded the group (the scope appears and the epochs start again): the
+    // door runs under the lease this computer holds now, which `door()` checked. Any other change of tenure is another
+    // lease: the token is refused.
+    return t!.expiresAt >= this.#clock.now() && (t!.tenure === tenure || t!.tenure.startsWith("-:")) ? t!.computer : null;
   }
 
-  /** Whether `computer` has a token still good under `tenure`. */
+  /** Whether `computer` has a token still good under `tenure` (the same rule as `consume`). */
   waiting(computer: string, tenure = ""): boolean {
     const now = this.#clock.now();
-    return this.#state().tokens.some((t) => t.computer === computer && t.expiresAt >= now && t.tenure === tenure);
+    return this.#state().tokens.some((t) => t.computer === computer && t.expiresAt >= now && (t.tenure === tenure || t.tenure.startsWith("-:")));
   }
 }
 
@@ -208,10 +225,11 @@ export interface CloudComputersOptions {
   providerIds: () => string[];
   /** The lease: only the main computer acts (lane H). */
   authority: CloudAuthority;
-  /** Shows the user a card and gives back whether they approved (lane C's broker). */
-  confirm: (card: CloudCard) => Promise<boolean>;
-  /** The official image's cloud-init for a VM (`image.ts`): its name and its pairing token. */
-  userData: (o: { name: string; token: string }) => string;
+  /** Shows the user a card and gives back how it ended (lane C's broker). A plain boolean is the user's answer. */
+  confirm: (card: CloudCard) => Promise<CloudAnswer>;
+  /** The official image's cloud-init for a VM (`image.ts`): its name and its pairing token. It may refuse (throw)
+   *  when the image can't be made yet (no pinned download); then nothing is created and nothing is billed. */
+  userData: (o: { name: string; token: string }) => string | Promise<string>;
   /** Whether a computer of that name is in the tree, paired (lane H's device list). */
   isPaired?: (name: string) => boolean;
   /** Makes a computer the main one (lane H's main election). */
@@ -334,9 +352,11 @@ export class CloudComputers {
       if (held.has(cached?.folder ?? "") || [...held].some((h) => cloudLabelOf(h) === label)) continue;
       const name = cached?.name ?? label;
       await attempt(name, async () => {
-        if (await this.#delete({ name, label, provider, serverId: vm.serverId, region: vm.region }, "folder-removed", tenure)) out.deleted.push(name);
+        const answer = await this.#delete({ name, label, provider, serverId: vm.serverId, region: vm.region }, "folder-removed", tenure);
+        if (answer === "yes") out.deleted.push(name);
         else {
-          this.#keep(label);
+          // Only the user's "keep it" is remembered; a card nobody answered is asked again on the next pass.
+          if (answer === "no") this.#keep(label);
           out.declined.push(name);
         }
       });
@@ -362,7 +382,7 @@ export class CloudComputers {
       this.#save();
       return true;
     }
-    return this.#delete({ name, label: vm.label, provider: vm.provider, serverId: there.serverId, region: there.region }, why, tenure);
+    return (await this.#delete({ name, label: vm.label, provider: vm.provider, serverId: there.serverId, region: there.region }, why, tenure)) === "yes";
   }
 
   /** Lane H's pairing door, when a device presents a VM's token: the computer it was made for, once, under this main's
@@ -385,7 +405,7 @@ export class CloudComputers {
           await p.paired({ serverId: vm.serverId, label: vm.label, region: vm.region }).catch((e: Error) => this.#o.log?.(`cloud computer ${name}: its user-data wasn't cleared (${e.message})`));
         }
         const folder = folders().find((f) => f.name === name);
-        if (folder?.makeMain !== "no" && this.#o.makeMain && (await this.#o.confirm({ kind: "cloud-make-main", name })) && this.#stillMain(tenure)) {
+        if (folder?.makeMain !== "no" && this.#o.makeMain && (await this.#o.confirm({ kind: "cloud-make-main", name })) === true && this.#stillMain(tenure)) {
           await this.#o.makeMain(name);
         }
         return { computer: name };
@@ -418,18 +438,32 @@ export class CloudComputers {
   async #create(f: CloudFolder, label: string, tenure: string): Promise<"created" | "declined" | "exists"> {
     return this.#one(f.name, async () => {
       const p = this.#provider(f.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-create", name: f.name, provider: f.provider, size: f.size, region: f.region, folder: f.folder }))) return "declined";
+      // THE OK BEFORE ANYTHING IS MADE OR BILLED: no provider call that creates happens unless the user approved this card.
+      if ((await this.#o.confirm({ kind: "cloud-create", name: f.name, provider: f.provider, size: f.size, region: f.region, folder: f.folder })) !== true) return "declined";
       this.#guard(tenure);
       if ((await p.list({ label })).some((x) => x.label === label && x.state !== "gone")) return "exists";
+      // The VM's image first: when it can't be made (no pinned download yet), nothing is written and nothing is made.
+      const userData = await this.#image(f.name, tenure);
+      this.#guard(tenure);
       // Written before the provider is asked, with its label, so a crash in between is settled from the cloud.
       const vm: CloudVm = { name: f.name, folder: f.folder, provider: f.provider, label, region: f.region, size: f.size, state: "creating", createdAt: this.#o.clock.now() };
       this.#state.vms.push(vm);
-      const token = this.pairing.mint(f.name, tenure);
       this.#save();
-      this.#guard(tenure);
-      await this.#made(p, vm, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData: this.#o.userData({ name: f.name, token }), label }));
+      await this.#made(p, vm, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData, label }));
       return "created";
     });
+  }
+
+  /** The VM's cloud-init with a new single-use pairing token in it. When the image can't be made the token is revoked
+   *  again, so none is left that no VM carries. */
+  async #image(name: string, tenure: string): Promise<string> {
+    const token = this.pairing.mint(name, tenure);
+    try {
+      return await this.#o.userData({ name, token });
+    } catch (e) {
+      this.pairing.revoke(name);
+      throw e;
+    }
   }
 
   /** Settles a `creating` entry from the provider's answer. When the create throws, the cloud is asked by label at
@@ -455,7 +489,7 @@ export class CloudComputers {
 
   async #resize(vm: CloudVm, size: string, tenure: string): Promise<boolean> {
     return this.#one(vm.name, async () => {
-      if (!(await this.#o.confirm({ kind: "cloud-resize", name: vm.name, provider: vm.provider, from: vm.size, to: size }))) return false;
+      if ((await this.#o.confirm({ kind: "cloud-resize", name: vm.name, provider: vm.provider, from: vm.size, to: size })) !== true) return false;
       this.#guard(tenure);
       await this.#provider(vm.provider).resize({ serverId: vm.serverId!, label: vm.label, region: vm.region, size });
       vm.size = size;
@@ -469,7 +503,10 @@ export class CloudComputers {
   async #repair(f: CloudFolder, vm: CloudVm, why: "token-expired" | "main-changed", tenure: string): Promise<boolean> {
     return this.#one(f.name, async () => {
       const p = this.#provider(f.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-repair", name: f.name, provider: f.provider, why }))) return false;
+      if ((await this.#o.confirm({ kind: "cloud-repair", name: f.name, provider: f.provider, why })) !== true) return false;
+      this.#guard(tenure);
+      // Made before the empty VM goes: if the image can't be made, the old VM is left as it was.
+      const userData = await this.#image(f.name, tenure);
       this.#guard(tenure);
       vm.state = "deleting";
       this.#save();
@@ -477,18 +514,21 @@ export class CloudComputers {
       this.#drop(f.name);
       const fresh: CloudVm = { name: f.name, folder: f.folder, provider: f.provider, label: vm.label, region: f.region, size: f.size, state: "creating", createdAt: this.#o.clock.now() };
       this.#state.vms.push(fresh);
-      const token = this.pairing.mint(f.name, tenure);
       this.#save();
       this.#guard(tenure);
-      await this.#made(p, fresh, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData: this.#o.userData({ name: f.name, token }), label: vm.label }));
+      await this.#made(p, fresh, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData, label: vm.label }));
       return true;
     });
   }
 
-  async #delete(t: { name: string; label: string; provider: string; serverId: string; region: string }, why: "folder-removed" | "asked", tenure: string): Promise<boolean> {
+  /** `yes`: deleted. `no`: the user declined (the VM is kept, and not asked about again). `later`: the card was never
+   *  answered, so nothing is decided: the next pass asks again. */
+  async #delete(t: { name: string; label: string; provider: string; serverId: string; region: string }, why: "folder-removed" | "asked", tenure: string): Promise<"yes" | "no" | "later"> {
     return this.#one(t.name, async () => {
       const p = this.#provider(t.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-delete", name: t.name, provider: t.provider, why }))) return false;
+      const answer = await this.#o.confirm({ kind: "cloud-delete", name: t.name, provider: t.provider, why });
+      if (answer === "unanswered") return "later";
+      if (answer !== true) return "no";
       this.#guard(tenure);
       const vm = this.#state.vms.find((v) => v.label === t.label);
       if (vm) vm.state = "deleting";
@@ -498,7 +538,7 @@ export class CloudComputers {
       this.#state.vms = this.#state.vms.filter((v) => v.label !== t.label);
       this.#unkeep(t.label);
       this.#save();
-      return true;
+      return "yes";
     });
   }
 

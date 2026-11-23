@@ -12,6 +12,7 @@
 // (`removeCloudJoinFiles`).
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import headlessPins from "../../../../plugins/moss/plugins/browser/headless-shell.pins.json" with { type: "json" };
 import { CLOUD_METADATA_ADDRESSES } from "../contracts/fence";
 import { ContractError } from "../contracts/common";
 
@@ -114,7 +115,7 @@ export function cloudInit(o: CloudInitOptions): string {
       // The daemon starts at boot, as the moss user, with no login.
       "loginctl enable-linger moss",
       "install -d -o moss -g moss /home/moss/.config/systemd/user",
-      `printf '%s\\n' ${json("[Unit]")} ${json("Description=MOSS")} ${json("[Service]")} ${json("ExecStart=/opt/moss/moss-core daemon run --headless --name-file /etc/moss/name --pairing-token-file /etc/moss/pairing-token --join-file /etc/moss/join")} ${json("Restart=always")} ${json("[Install]")} ${json("WantedBy=default.target")} > /home/moss/.config/systemd/user/moss-core.service`,
+      `printf '%s\\n' ${json("[Unit]")} ${json("Description=MOSS")} ${json("[Service]")} ${json("ExecStart=/opt/moss/moss-core daemon run --cloud-join-dir /etc/moss")} ${json("Restart=always")} ${json("[Install]")} ${json("WantedBy=default.target")} > /home/moss/.config/systemd/user/moss-core.service`,
       "chown moss:moss /home/moss/.config/systemd/user/moss-core.service",
       "runuser -l moss -c 'XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user daemon-reload && XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user enable --now moss-core'",
     ].map((c) => `  - ${json(c)}`),
@@ -125,7 +126,7 @@ export function cloudInit(o: CloudInitOptions): string {
 /** Where the official image puts a cloud computer's name, join ticket and pairing token. */
 export const CLOUD_JOIN_DIR = "/etc/moss";
 
-/** What a cloud computer's daemon reads at first start (`--name-file`, `--join-file`, `--pairing-token-file`); null
+/** What a cloud computer's daemon reads at first start (`daemon run --cloud-join-dir`); null
  *  once paired (the join ticket and the token are gone). */
 export function readCloudJoinFiles(dir = CLOUD_JOIN_DIR): { name: string; join: string; token: string } | null {
   try {
@@ -140,4 +141,20 @@ export function readCloudJoinFiles(dir = CLOUD_JOIN_DIR): { name: string; join: 
  *  on the VM's disk still carries them. The name stays. Lane H's pairing calls it once the main accepted the token. */
 export function removeCloudJoinFiles(dir = CLOUD_JOIN_DIR): void {
   for (const f of ["join", "pairing-token"]) rmSync(join(dir, f), { force: true });
+}
+
+/** The MOSS daemon for Linux x64 that a new VM downloads: an https URL of a `.tar.gz` with `moss-core` at its root, and
+ *  its SHA-256. NOT SET until the release pipeline publishes that archive and records it here (the owner's list says
+ *  how): until then no cloud computer is created, because a VM that downloads nothing can never pair and would only
+ *  bill. The provider plugins stay `availability: not-yet` for the same reason. */
+export const IMAGE_DAEMON_PIN: Download | undefined = undefined;
+
+/** The two downloads the official image's cloud-init needs: the daemon (above) and Chrome for Testing's headless shell
+ *  (the same pin the daemon's own browser install uses, `plugins/moss/plugins/browser/headless-shell.pins.json`).
+ *  Refuses, plainly, when either isn't pinned: nothing is created then. */
+export function imageDownloads(daemon: Download | undefined = IMAGE_DAEMON_PIN): { daemon: Download; browser: Download } {
+  const browser = headlessPins.assets.find((a) => a.platform === "linux64");
+  if (browser === undefined) throw new ContractError("not_installed", "the cloud computer image has no pinned headless browser for Linux; nothing was created");
+  if (daemon === undefined) throw new ContractError("not_installed", "this version of MOSS has no Linux build of its engine for a cloud computer to download yet; nothing was created");
+  return { daemon, browser: { url: browser.url, sha256: browser.sha256 } };
 }

@@ -26,7 +26,7 @@ import type { Lease } from "../contracts/lease";
 import { leaseFence } from "../tree/fencing";
 import type { PluginHost } from "../contracts/plugin-host";
 import type { PluginRegistry } from "../contracts/plugin-registry";
-import { CloudComputers, FileCloudStateStore, type CloudCard } from "./cloud";
+import { CloudComputers, FileCloudStateStore, type CloudAnswer, type CloudCard } from "./cloud";
 import { CloudPoint, leaseAuthority, pluginProviders, providerIds } from "./cloud-point";
 import { HoldRouter, serveHolds } from "./holds";
 import { McpRouter, mirror, placementFields, serveMirror, type McpCaller, type McpFields, type McpInstaller, type McpServerPlacement } from "./mcp";
@@ -112,8 +112,8 @@ export interface ComputerNodeOptions {
   cloud?: {
     plugins: PluginRegistry;
     host: PluginHost;
-    confirm: (card: CloudCard) => Promise<boolean>;
-    userData: (o: { name: string; token: string }) => string;
+    confirm: (card: CloudCard) => Promise<CloudAnswer>;
+    userData: (o: { name: string; token: string }) => string | Promise<string>;
     makeMain?: (name: string) => Promise<void>;
   };
   log?: (line: string) => void;

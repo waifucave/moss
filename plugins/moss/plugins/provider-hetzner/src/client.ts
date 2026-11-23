@@ -51,7 +51,8 @@ export class HetznerClient {
     if (!action) return;
     const until = Date.now() + this.#actionWaitMs;
     let a = action;
-    for (let delay = 500; a.status === "running"; delay = Math.min(delay * 2, 5000)) {
+    // The first poll is at once (most actions are done by then); later ones back off from half a second.
+    for (let delay = 0; a.status === "running"; delay = Math.min(Math.max(delay * 2, 500), 5000)) {
       if (Date.now() > until) throw new HetznerError(504, "timeout", `Hetzner's action ${a.id} didn't finish`);
       await this.#sleep(delay);
       a = (await this.#call<{ action: Action }>("GET", `/actions/${a.id}`)).action;
@@ -66,8 +67,19 @@ export class HetznerClient {
       public_net: { enable_ipv4: true, enable_ipv6: true },
       labels: { [LABEL]: o.label },
     });
+    const id = String(r.server.id);
+    // The create action must finish. When it fails, the server THIS call made (its id came back in this response, and
+    // the user approved this create) is deleted again, so a half-made server is never left billing. This rolls back the
+    // one operation the person approved; it is not a delete of anything else (spec §9.2: "deleting a VM always asks").
+    try {
+      await this.waitFor(r.action);
+    } catch (e) {
+      const why = e instanceof HetznerError ? e.message : String(e);
+      const removed = await this.deleteServer(id).then(() => true, () => false);
+      throw new HetznerError(e instanceof HetznerError ? e.status : 500, e instanceof HetznerError ? e.code : "create_failed", removed ? why : `${why}. The half-made server ${id} could not be removed: delete it in your Hetzner project`);
+    }
     const ip = r.server.public_net?.ipv4?.ip;
-    return { id: String(r.server.id), ...(ip ? { ipv4: ip } : {}) };
+    return { id, ...(ip ? { ipv4: ip } : {}) };
   }
 
   /** The servers with the label: with that value, or any. Every page. */
