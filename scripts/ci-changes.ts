@@ -11,7 +11,7 @@ import { appendFileSync } from "node:fs";
 
 export type CiArea =
   | "workspaces" | "daemon" | "app" | "packages" | "installers" | "gallery" | "typecheck" | "lockfiles"
-  | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo";
+  | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo" | "adapters";
 
 /** A path pattern: `dir/` is a prefix, a `*` matches within one segment, `**` across segments, else an exact path. */
 type Pattern = string;
@@ -76,6 +76,9 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
     "packages/core/src/contracts/", "packages/core/src/clock/", "packages/protocol/"],
   // the Linux repositories' signatures, checked with gpgv and sqv
   linuxrepo: ["scripts/release/linux-repo.ts", "scripts/release/linux-repo-verify.ts"],
+  // the real pinned agent adapters, fetched from the public registry and started on Bun (the `agent adapters` job, and a
+  // step of the macOS job): the agent plugins that declare one, the agents' code, and the lock generator
+  adapters: ["plugins/moss/plugins/agent-*/**/*", "packages/core/src/agents/", "scripts/agent-adapter-lock.ts"],
 };
 
 /** The CI_GLOBAL changes that still run the Swift kits: CI's own definition, not the toolchain or the lockfiles. */

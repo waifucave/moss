@@ -90,6 +90,7 @@ jobs:
       tree: ${{ steps.areas.outputs.tree }}
       link: ${{ steps.areas.outputs.link }}
       linuxrepo: ${{ steps.areas.outputs.linuxrepo }}
+      adapters: ${{ steps.areas.outputs.adapters }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -864,6 +865,42 @@ jobs:
       - name: The signatures verify with gpgv and sqv, and apt-get update takes the signed repository
         run: bun scripts/release/linux-repo-verify.ts
 
+  # The REAL pinned agent adapters (plugins' `launch.adapter`: Claude Code's and Codex's), the proof nothing on a person's
+  # machine runs: each is fetched from the public npm registry through the same code the card's yes takes (every hash checked
+  # before unpacking), started on the pinned Bun with the flags and environment the engine uses (`--no-install`, so a module
+  # the lock lacks fails here, not for a person who said yes), and spoken to over ACP: `initialize` must come back. The
+  # person's `claude` and `codex` are stand-ins that record they were reached. GitHub only (the switch is set here, and a
+  # person's machine downloads nothing without a yes); the macOS leg is a step of the `macos` job. Not on a pull request.
+  agent-adapters:
+    name: agent adapters · ${{ matrix.runner }}
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.adapters == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: The real adapters start on Bun and answer initialize
+        working-directory: packages/core
+        env:
+          MOSS_REAL_ADAPTERS: "1"
+        run: bun test ./src/agents/tests/adapter-real.proof.ts --timeout 600000
+
   # P8b-9: `bun test` does not typecheck — bun strips types and runs, so a compile error in a project nobody
   # compiles is not a tripwire (the protocol checklist's step 4 trap, `satisfies Record<SessionEvent["type"],
   # boolean>`, fails core's tsc when a `SessionEvent` variant is added). `bun run typecheck` is every workspace
@@ -976,7 +1013,7 @@ jobs:
     name: macOS (core, cli, scripts, verify, link) ${{ matrix.shard }}/3
     needs: changes
     # Not on a pull request: the lane runs it on its own Mac (the local gate); the merge queue runs it here.
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.scriptsmac == 'true' || needs.changes.outputs.verify == 'true' || needs.changes.outputs.link == 'true')
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.scriptsmac == 'true' || needs.changes.outputs.verify == 'true' || needs.changes.outputs.link == 'true' || needs.changes.outputs.adapters == 'true')
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
@@ -992,6 +1029,7 @@ jobs:
       SCRIPTS: ${{ needs.changes.outputs.scriptsmac == 'true' && contains(matrix.parts, 'scripts') }}
       VERIFY: ${{ needs.changes.outputs.verify == 'true' && contains(matrix.parts, 'verify') }}
       LINK: ${{ needs.changes.outputs.link == 'true' && contains(matrix.parts, 'link') }}
+      ADAPTERS: ${{ needs.changes.outputs.adapters == 'true' && matrix.shard == 3 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -1072,6 +1110,15 @@ jobs:
         # 20 s a test, as the core's jobs: a cold runner's first `clang` took one of these past bun's 5 s default (the
         # embed-cowork-native test, which then read the killed child's null status as a failed build).
         run: bun scripts/platform-tests.ts --root scripts --darwin --timeout 20000
+
+      # The real pinned agent adapters on this arm64 Mac (the `agent adapters` job's proof; an optional platform package is
+      # what differs per platform): fetched from the public registry, started on Bun with --no-install, initialize answered.
+      - name: Agent adapters · the real ones start on Bun and answer initialize
+        if: ${{ !cancelled() && env.ADAPTERS == 'true' }}
+        working-directory: packages/core
+        env:
+          MOSS_REAL_ADAPTERS: "1"
+        run: bun test ./src/agents/tests/adapter-real.proof.ts --timeout 600000
 
       - name: Link · the link tests over the sidecar
         if: ${{ !cancelled() && env.LINK == 'true' }}
@@ -1305,7 +1352,7 @@ jobs:
   lane-gate:
     name: lane gate
     if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-    needs: [changes, names, machine, sealed-core, workspaces-pr, packages, installers, tree, link, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, acceptance]
+    needs: [changes, names, machine, sealed-core, workspaces-pr, packages, installers, tree, link, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, acceptance, agent-adapters]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1422,7 +1469,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, windows-fence]
+    needs: [changes, names, machine, machine-windows, sealed-core, sealed-core-windows, workspaces-pr, packages, installers, installers-windows, tree, tree-windows, link, link-windows, linux-repo-signatures, gallery, typecheck, lockfiles, test-extension, macos, core-linux, scripts, protocol-codegen, swift, windows-fence, agent-adapters]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

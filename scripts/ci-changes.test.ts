@@ -329,4 +329,20 @@ describe("CI for the lanes", () => {
     const run = JSON.stringify(ci.jobs.macos);
     expect(run).toContain("--darwin --shard ${{ matrix.shard }}/3");
   });
+  test("the real agent adapters' proof runs for the agent plugins and the agents' code, on Linux x64 and arm64 and in the macOS job, on GitHub only (never a pull request), and both gates wait for it", () => {
+    expect(on(["plugins/moss/plugins/agent-codex/quirks.json"])).toContain("adapters");
+    expect(on(["packages/core/src/agents/backend.ts"])).toContain("adapters");
+    expect(on(["plugins/moss/plugins/shell/src/a.tsx"])).not.toContain("adapters");
+    type Job = { if?: string; needs?: string | string[]; strategy?: { matrix?: { runner?: string[] } }; steps?: Array<{ run?: string; env?: Record<string, string> }> };
+    const jobs = (Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8")) as { jobs: Record<string, Job> }).jobs;
+    const job = jobs["agent-adapters"]!;
+    expect(job.if).toContain("github.event_name != 'pull_request'");
+    expect(job.strategy?.matrix?.runner).toEqual(["ubuntu-24.04", "ubuntu-24.04-arm"]);
+    // The switch the proof refuses to run without is set by these two places only.
+    const proofSteps = (j: Job) => (j.steps ?? []).filter((x) => (x.run ?? "").includes("adapter-real.proof.ts"));
+    expect(proofSteps(job).map((x) => x.env?.MOSS_REAL_ADAPTERS)).toEqual(["1"]);
+    expect(proofSteps(jobs.macos!).map((x) => x.env?.MOSS_REAL_ADAPTERS)).toEqual(["1"]);
+    expect(Object.entries(jobs).filter(([, j]) => proofSteps(j).length > 0).map(([id]) => id).sort()).toEqual(["agent-adapters", "macos"]);
+    for (const gate of ["lane-gate", "gate"]) expect([gate, (jobs[gate]!.needs as string[]).includes("agent-adapters")]).toEqual([gate, true]);
+  });
 });
