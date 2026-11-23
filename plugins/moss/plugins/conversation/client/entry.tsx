@@ -291,7 +291,11 @@ function useNames(api: ReturnType<typeof usePluginApi>, backendName: (backend: s
     ]).then(([sessions, devices]) => {
       if (!live) return;
       const out: Record<string, string> = {};
-      for (const s of sessions) out[`agent:${s.id}`] = backendName(s.backend) ?? s.title ?? s.id;
+      for (const s of sessions) {
+        out[`agent:${s.id}`] = backendName(s.backend) ?? s.title ?? s.id;
+        // A sending session reads by its title, its agent's name when it has none.
+        out[`session:${s.id}`] = s.title ?? backendName(s.backend) ?? s.id;
+      }
       for (const d of devices) out[`device:${d.id}`] = d.name;
       const here = devices.find((d) => d.isThis);
       setNames({ names: out, ...(here ? { here: { id: here.id, name: here.name } } : {}) });

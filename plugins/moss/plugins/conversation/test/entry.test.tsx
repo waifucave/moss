@@ -106,6 +106,20 @@ describe("project", () => {
     expect(project(events).items[0]).toMatchObject({ task: { backend: "moss-code" } });
   });
 
+  test("another session's message is a report row naming the sender, before the answer it caused, never the user's bubble", () => {
+    const events = [
+      ev("session_message", { fromSession: "agent_Mw", text: "PING" }),
+      ev("turn_started"),
+      ev("assistant_message", { text: "OK" }),
+      ev("turn_completed", { stopReason: "end_turn" }),
+    ];
+    const p = project(events, { name: (kind, id) => (kind === "session" && id === "agent_Mw" ? "Claude Code" : undefined) });
+    expect(p.items.map((i) => i.kind)).toEqual(["agent-report", "bot"]);
+    expect(p.items[0]).toMatchObject({ kind: "agent-report", text: "PING", folded: false, from: { kind: "session", id: "agent_Mw", name: "Claude Code" } });
+    // No name known: the id, as for the other senders.
+    expect(project(events).items[0]).toMatchObject({ from: { name: "agent_Mw" } });
+  });
+
   test("questions, reports from bots, agents and plugins, finished agents, routines and notes", () => {
     const p = project([
       ev("question_asked", { callId: "q1", questions: [{ question: "Which?", header: "Pick", options: [{ label: "A" }, { label: "B", description: "the second" }], multiSelect: false }] }),

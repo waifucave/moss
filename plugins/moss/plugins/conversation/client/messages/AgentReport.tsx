@@ -22,7 +22,7 @@ export function AgentReport({ item, ctx }: { item: AgentReportItem; ctx: Message
   facts.push(formatTime(item.at, ctx.format));
   if (item.folded) facts.push(S.reportFolded);
   if (item.app) facts.push(S.reportFromApp);
-  const openAgent = from.kind === "agent" ? ctx.actions.onOpenAgent : undefined;
+  const openAgent = from.kind === "agent" || from.kind === "session" ? ctx.actions.onOpenAgent : undefined;
   return (
     <section className="cl-conv-event" data-kind="agent-report" data-from={from.kind}>
       <header className="cl-conv-event__head">

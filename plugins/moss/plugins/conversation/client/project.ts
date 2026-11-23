@@ -4,7 +4,7 @@
 //   assistant_message, thinking_delta and thinking_block, tool_call and tool_result, question_asked and
 //   question_resolved, turn_completed, session_titled; and approval_requested and approval_resolved, which only old
 //   sessions from the app MOSS replaces hold (the archive), drawn as notes since no sealed card exists for them;
-// - MOSS's session events (`sessions.ts`): bot_message, agent_message, agent_finished, routine_result, note,
+// - MOSS's session events (`sessions.ts`): bot_message, agent_message, session_message, agent_finished, routine_result, note,
 //   plugin_message;
 // - the cards (`approvals.ts`): card_pending and card_resolved, for this session's cards. A card carries no text; the
 //   view places its sealed frames.
@@ -24,7 +24,7 @@ export interface Projection {
 
 export interface ProjectOptions {
   /** A display name for a bot, an agent or a plugin by id; the id when absent. */
-  name?: (kind: "bot" | "agent" | "plugin" | "device", id: string) => string | undefined;
+  name?: (kind: "bot" | "agent" | "plugin" | "device" | "session", id: string) => string | undefined;
   /** An agent backend's display name by id; the id when absent. */
   backend?: (id: string) => string | undefined;
 }
@@ -74,7 +74,7 @@ export function readDisplay(v: unknown): ToolCall["display"] | undefined {
 }
 
 export function project(events: readonly CoreEvent[], options: ProjectOptions = {}): Projection {
-  const name = (kind: "bot" | "agent" | "plugin" | "device", id: string) => options.name?.(kind, id) ?? id;
+  const name = (kind: "bot" | "agent" | "plugin" | "device" | "session", id: string) => options.name?.(kind, id) ?? id;
   const items: ConversationItem[] = [];
   const byId = new Map<string, ConversationItem>();
   const add = <T extends ConversationItem>(item: T): T => {
@@ -280,6 +280,12 @@ export function project(events: readonly CoreEvent[], options: ProjectOptions = 
       case "agent_message": {
         const agent = str(e.agent) ?? "agent";
         add({ id: `r${key}`, kind: "agent-report", at, from: { kind: "agent", id: agent, name: name("agent", agent) }, text: str(e.text) ?? "", folded: turn.running });
+        break;
+      }
+      case "session_message": {
+        // Another session's message (spec §9.5), drawn like a report, never as the person's words.
+        const from = str(e.fromSession) ?? "session";
+        add({ id: `r${key}`, kind: "agent-report", at, from: { kind: "session", id: from, name: name("session", from) }, text: str(e.text) ?? "", folded: turn.running });
         break;
       }
       case "plugin_message": {
