@@ -359,7 +359,10 @@ function whereOf(err: RpcError): string {
 }
 
 // ── the temp world ───────────────────────────────────────────────────────────────────────────────────────────────
-const root = mkdtempSync(join(tmpdir(), "clv-acc-"));
+// Linux's fence lets an agent a bot started write only temp (/tmp), and drops any write root that holds the agent's folder
+// (agents/manager.ts botChildPolicy): a user home under /tmp is held by it, so the agent could write nowhere and never started. A
+// real user's home is not under /tmp, so the run's world is under the runner's own temp folder there (`RUNNER_TEMP`), not /tmp.
+const root = mkdtempSync(join(process.platform === "linux" && process.env.RUNNER_TEMP !== undefined && process.env.RUNNER_TEMP !== "" ? process.env.RUNNER_TEMP : tmpdir(), "clv-acc-"));
 // A --keep-state or --upgrade-from run keeps the home, the user home and the keychain file in its state dir; the rest
 // (logs, TMPDIR, the stub, a packaged core's copy) stays in the temp folder and goes.
 const kept_ = stateDir === undefined ? undefined : statePaths(stateDir);
