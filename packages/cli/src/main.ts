@@ -1959,6 +1959,33 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         const commonStartup = await knownFolder("CommonStartup");
         let failed = false;
         const fail = (msg: string) => { console.error(`sandbox remove: ${msg}`); process.exitCode = 1; failed = true; };
+        // The background rebuild first (the WS4 race: an account whose profile the reset task was remaking kept its
+        // profile folder and ProfileList entry). Its task is unregistered before anything is removed, so no new run
+        // starts; a run already going is waited for member by member under the lock the reset takes (`<p>.lock`),
+        // and the reset remakes no account that is gone (`sandbox reset`); what a late rebuild still left is swept
+        // after the loop.
+        const task = await run([...unregisterResetTaskArgs(ownerSid)]);
+        if (task.code !== 0) {
+          console.error(`sandbox remove: the reset task couldn't be unregistered (exit ${task.code})${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
+          process.exitCode = 1;
+          return;
+        }
+        const poolDir = poolStateDir(programData, ownerSid);
+        let locks: ReturnType<typeof createWindowsLockStore> | null = null;
+        try { locks = createWindowsLockStore(poolDir, { poolState: true }); } catch { /* no pool state (removed already): no rebuild to wait for */ }
+        /** The member's lock, waited for while the reset (or a command) holds it, up to 3 minutes; null when there is
+         *  no pool state or it never came free (the sweep below still runs). */
+        const memberLock = async (principal: string) => {
+          if (locks === null) return null;
+          for (let i = 0; i < 360; i++) {
+            const g = locks.tryLock(poolStateFiles(poolDir, principal).lock);
+            if (g !== null) return g;
+            await Bun.sleep(500);
+          }
+          console.error(`sandbox remove: ${principal} stayed in use for 3 minutes; removing it anyway`);
+          return null;
+        };
+        const sids: string[] = [];
         for (const slot of pool) {
           const { principal, sublayer } = slot;
           const { exists: principalExists, sid: liveSid } = await memberSid(launcher, principal);
@@ -1969,6 +1996,10 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
               fail(`${principal} belongs to another user`); break;
             }
           }
+          if (principalSid !== null) sids.push(principalSid);
+          // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
+          const guard = await memberLock(principal);
+          try {
           // The profile for the reset below, resolved before the uninstall.
           const profileRoot = principalSid !== null ? await memberProfile(principalSid) : null;
           // Full remove (principal + filters) for this member.
@@ -1991,13 +2022,23 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
               for (const path of startups) await run([...icaclsRemoveDenyArgs(path, principalSid)]);
             }
           }
+          } finally { guard?.release(); }
         }
         if (failed) return;
-        const task = await run([...unregisterResetTaskArgs(ownerSid)]);
-        if (task.code !== 0) {
-          console.error(`sandbox remove: the reset task couldn't be unregistered (exit ${task.code})${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
-          process.exitCode = 1;
-          return;
+        // The sweep: a profile a rebuild made for a member after its account went (its ProfileList entry and folder,
+        // never a temporary profile) is deleted, so remove leaves nothing of a sandbox account behind.
+        for (const sid of sids) {
+          const root = await memberProfile(sid);
+          const listed = (await run(["reg", "query", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`])).code === 0;
+          if (root === null && !listed) continue;
+          if (root !== null && isTemporaryProfile(root)) continue;
+          const gone = await run([...deleteProfileArgs(sid)]);
+          if (gone.code !== 0) {
+            await run(["reg", "unload", `HKU\\${sid}`]);
+            await run(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`, "/f"]);
+            if (root !== null) await run([...removeDirArgs(root)]);
+          }
+          console.error(`sandbox remove: swept a profile left for ${sid} by a late rebuild`);
         }
         await unlink(markerFile).catch(() => {});
         // The pool's state goes with it (its folder is administrators', made by setup).
@@ -2088,6 +2129,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           if (guard === null) { say(`${m.principal}: in use, left for the next pass`); continue; }
           try {
             if (isFreshGeneration(await read(files.gen), await read(files.used))) continue;
+            // An account that is gone (`sandbox remove` took it, under this same lock) is never given a profile again.
+            if ((await run(["net", "user", m.principal])).code !== 0) { say(`${m.principal}: no such account, left`); continue; }
             const r = await run([...remakeProfileArgs(m.principalSid, m.principal)]);
             if (r.code === PROFILE_IN_USE_EXIT) { say(`${m.principal}: its profile is still loaded, left for the next pass`); continue; }
             if (r.code !== 0) { failed++; say(`${m.principal}: its profile couldn't be remade (exit ${r.code})${r.out.trim() ? `\n${r.out.trim().slice(0, 1000)}` : ""}`); continue; }

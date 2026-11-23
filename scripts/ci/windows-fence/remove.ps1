@@ -2,10 +2,22 @@
 # profile folder and ProfileList key, its WFP filters, the marker, and the persistent grants. Fails on any leftover.
 . "$PSScriptRoot/lib.ps1"
 $pool = Get-Pool
+# The race remove must win (lane WS4): every account marked used and the reset task started (SYSTEM remakes each
+# profile, ~20 s apiece), then remove at once, while the rebuild runs.
+$poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
+foreach ($m in $pool) {
+  $gen = Join-Path $poolState "$($m.principal).gen"; $used = Join-Path $poolState "$($m.principal).used"
+  if (Test-Path -LiteralPath $gen) { Set-Content -LiteralPath $used -Value ((Get-Content -Raw -LiteralPath $gen).Trim()) -NoNewline }
+}
+& schtasks.exe /run /tn "MOSS Sandbox Reset $Sid" | Out-Null
+Start-Sleep -Seconds 3
+Write-Output "the reset task is $((Get-ScheduledTask -TaskName "MOSS Sandbox Reset $Sid").State) when remove starts"
 foreach ($round in 1, 2) {
   $code = Invoke-Limited "remove (round $round)" $Core @("sandbox", "remove") 900
   if ($code -ne 0) { throw "remove round $round exited $code" }
 }
+# A rebuild still running after remove must not bring anything back: look again after it would have finished.
+Start-Sleep -Seconds 60
 $left = @()
 foreach ($m in $pool) {
   if (Get-LocalUser -Name $m.principal -ErrorAction SilentlyContinue) { $left += "account $($m.principal)" }
@@ -16,7 +28,6 @@ foreach ($m in $pool) {
 $profiles = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" | Where-Object { (Get-ItemProperty $_.PSPath).ProfileImagePath -like "*\moss-sb-*" }
 foreach ($k in $profiles) { $left += "ProfileList $($k.PSChildName)" }
 if (Test-Path -LiteralPath $Marker) { $left += "marker $Marker" }
-$poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
 if (Test-Path -LiteralPath $poolState) { $left += "pool state $poolState" }
 $us = & $Srt user status | ConvertFrom-Json
 if ($us.persistent_grants.state -ne "none") { $left += "persistent grants: $($us.persistent_grants | ConvertTo-Json -Compress)" }
