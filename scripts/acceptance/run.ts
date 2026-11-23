@@ -528,6 +528,15 @@ function hostAppCopy(app: { exe: string; args: string[] }): { exe: string; args:
   }
   return { exe: join(dst, app.exe.slice(i + 5)), args: app.args };
 }
+/** The engine's source seam for the host (`MOSS_HOST_COMMAND`) as JSON. On macOS the engine starts the host through Launch Services, so it is
+ *  launchd's child and never the engine's (a descendant of the engine is refused as "from inside a sandbox, or a bot's process"); the real start
+ *  on Linux is the user's service manager (`systemctl --user start`), the same: not the engine's child. The seam spawns a command directly, so
+ *  on Linux the command is a shell that starts the host in a session of its own in the background and ends at once, leaving the host a child of
+ *  init, as the service manager's is; its output goes where Launch Services' `--stdout` sends it (`<home>/logs/host.out.log`, world.ts HOST_SOURCE_LOG). */
+function hostCommandOf(argv: string[]): string {
+  if (process.platform !== "linux") return JSON.stringify(argv);
+  return JSON.stringify(["/bin/sh", "-c", 'mkdir -p "$MOSS_HOME/logs"; setsid "$@" </dev/null >>"$MOSS_HOME/logs/host.out.log" 2>&1 &', "sh", ...argv]);
+}
 /** The reviewer's B1 with a host running and MOSS Code's window focused: a card the router put in the window's conversation
  *  (Alpha's tab showing, a Browser call's tool card) and one in its strip (a plugin's OK card, no session) are each drawn in
  *  one place: by the window, never also by the host (its island or its own card), past the fallback's 2-second timer. The
@@ -4884,7 +4893,7 @@ async function browserOnlyRun(app: { exe: string; args: string[] }, o: { withHos
       browserFixture = startBrowserFixture();
       const hostPort = freePort();
       const hostApp = hostAppCopy(app);
-      const hostCommand = JSON.stringify([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${hostPort}`]);
+      const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${hostPort}`]);
       const d = await startDaemonProc({ MOSS_HOST_COMMAND: hostCommand, MOSS_TEST_BROWSER_NAMES: browserFixture.names, MOSS_TEST_SEALED_PRESS: "1", MOSS_DEV_DEBUG: "1" });
       await until("the host the engine started, ready", 120_000, () => { const p = hostLockPid(home); if (p !== undefined) startedHosts.add(p); return readyCount(readLog(d.log)) > 0 ? true : undefined; }, 500);
       hostCdp = await until("the host's DevTools port", 60_000, async () => { try { return await Cdp.connect(hostPort); } catch { return undefined; } }, 250);
@@ -5039,7 +5048,7 @@ async function hostOnlyRun(app: { exe: string; args: string[] }): Promise<void> 
     const shared = { MOSS_TEST_BROWSER_NAMES: browserFixture.names, MOSS_TEST_SEALED_PRESS: "1", MOSS_DEV_DEBUG: "1" };
     // Through the run's own LSUIElement copy (no Dock icon at any moment), unregistered at the end.
     const hostApp = hostAppCopy(app);
-    const hostCommand = JSON.stringify([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${hostPort}`]);
+    const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${hostPort}`]);
     // lane HV: the host's wait for a gone engine, shortened for step 8 (the engine passes MOSS_* on to the host it starts); still
     // far above step 5's restart, which the host must sit through.
     const daemonEnv = { MOSS_HOST_COMMAND: hostCommand, ...shared, MOSS_TEST_HOST_ENGINE_GONE_MS: String(HOST_GONE_TEST_MS) };
