@@ -90,6 +90,15 @@ Remove-Item -Recurse -Force $probeDir -ErrorAction SilentlyContinue
 # 7. The profile read grant (the daemon's first command pays it once), then once more.
 Measure-Step "profile grant (first)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile grant (again)" { & $Srt profile grant --quiet --json }
+# A per-exec read deny under the profile read grant is also stamped on every recorded allow beneath it (srt-win's
+# deny expansion): what that costs on the home's dot-folders and AppData, with the grant in place.
+foreach ($d in @("AppData", ".ssh")) {
+  $p = Join-Path $env:USERPROFILE $d; New-Item -ItemType Directory -Force -Path $p | Out-Null
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $out = & $Srt exec --user $m3 --write-restricted-token --deny-read $p -- $cmd /d /c "exit 0" 2>&1
+  $sw.Stop()
+  Write-Output ("timing: exec, one read deny on ~\{0} with the profile grant {1} ms (exit {2}); {3}" -f $d, $sw.ElapsedMilliseconds, $LASTEXITCODE, (($out | Where-Object { "$_" -like "srt-win:*" }) -join " | "))
+}
 Measure-Step "profile forget" { & $Srt profile forget }
 
 # The probe used every principal: all marked used, then the reset (elevated here; the task runs it as SYSTEM) remakes
