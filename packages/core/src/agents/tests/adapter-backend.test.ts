@@ -4,14 +4,14 @@
 // the flags that keep the person's folder out of its config, the person's program handed in its variable, and the whole
 // copy checked against what MOSS placed.
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentQuirks, AgentStartSpec } from "../../contracts/agent-backend";
+import type { AgentQuirks } from "../../contracts/agent-backend";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeFence } from "../../contracts/fakes/fence";
 import { WELL_BEHAVED_QUIRKS } from "../../contracts/fakes/agent-backend";
-import { AcpAgentBackend, ADAPTER_BUN_FLAGS } from "../backend";
+import { AcpAgentBackend, ADAPTER_BUN_FLAGS, type AcpStartSpec } from "../backend";
 import { AdapterStore } from "../adapter/store";
 import type { AdapterDecl } from "../adapter/types";
 import { FakeRegistry, publishAdapter } from "../testing/fake-npm";
@@ -177,7 +177,7 @@ describe("start, with an adapter MOSS provides", () => {
     `await import(${JSON.stringify(FAKE_AGENT)});`,
   ].join("\n");
 
-  const spec = (root: string, over: Partial<AgentStartSpec> = {}): AgentStartSpec => ({
+  const spec = (root: string, over: Partial<AcpStartSpec> = {}): AcpStartSpec => ({
     sessionId: "s_agent", root, fence: new FakeFence({ home: "/Users/me", mossHome: "/Users/me/.moss" }).policy(),
     bridge: { name: "moss-bridge", command: "/opt/moss/moss-core", args: ["bridge"], env: { MOSS_BRIDGE_TOKEN: "placeholder" }, tools: ["Glossary"] },
     ...over,
@@ -259,4 +259,3 @@ describe("start, with an adapter MOSS provides", () => {
   });
 });
 
-void mkdirSync;
