@@ -160,11 +160,18 @@ describe("startPluginHost", () => {
       expect(await ph.pluginSecrets.forPlugin("tarot").get(ref as never).catch((x: unknown) => x)).toBeInstanceOf(ContractError);
 
       // Switched off: dropped, and a call finds nothing to start.
+      // The drop is not instant: the worker is stopped first, and a call in that moment is refused as stopped (or, caught
+      // mid-flight, as closed). So wait for the drop instead of a fixed pause (5 ms was not enough on a slow runner); until
+      // then only one of those two refusals may answer.
       await opened.registry.setEnabled("tarot", false);
-      await Bun.sleep(5);
+      let off: ContractError | undefined;
+      for (const until = Date.now() + 5_000; Date.now() < until; await Bun.sleep(10)) {
+        off = (await ph.host.invoke({ pluginId: "tarot", handler: "remember", args: { card: "x" }, caller: USER }).catch((x: unknown) => x)) as ContractError;
+        if (off.code === "not_installed") break;
+        expect(["plugin_stopped", "closed"]).toContain(off.code);
+      }
       expect(hostedRecordOf(opened.registry, home, "tarot")).toBeUndefined();
-      const off = (await ph.host.invoke({ pluginId: "tarot", handler: "remember", args: { card: "x" }, caller: USER }).catch((x: unknown) => x)) as ContractError;
-      expect(off.code).toBe("not_installed");
+      expect(off?.code).toBe("not_installed");
     } finally {
       await ph.close();
       opened.close();
