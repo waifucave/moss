@@ -11,6 +11,7 @@ export const NOT_ON_LINUX_ROWS: readonly { prefix: string; reason: string }[] = 
   { prefix: "a folder-installed plugin's stdio MCP server lists and answers, fenced", reason: "its refusals are the plugin fence's, which only macOS has: plugin code on Linux and Windows runs as the user (spec §5.2, item 58)" },
   { prefix: "a plugin's own network: its granted host through its proxy", reason: "the per-plugin network proxy is the plugin fence's, which only macOS has: plugin code on Linux and Windows runs as the user (spec §5.2, item 58)" },
   { prefix: "manifest fields on the app:", reason: "its P5 clause (a program or folder named on the card as outside the plugin's sandbox) is the plugin sandbox's, which only macOS has: plugin code on Linux and Windows runs as the user (spec §5.2, item 58); the rest of the row runs" },
+  { prefix: "the window's glass:", reason: "the see-through sidebar over what is behind the window is macOS's window material, which Linux has no counterpart of; the bar's frost and tint over a panned block (CSS) are still checked" },
 ];
 
 /** Whether this run is on Linux. */

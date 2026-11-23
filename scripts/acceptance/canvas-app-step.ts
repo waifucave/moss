@@ -39,6 +39,7 @@ import type { ChildProcess } from "node:child_process";
 import { Cdp } from "./cdp";
 import type { MossClient } from "./client";
 import { Doc, type SetupUnitCtx } from "./setup-step";
+import { notOnLinux, onLinux } from "./not-on-linux";
 import { readPng } from "./ui-steps";
 import type { Status } from "./steps";
 
@@ -541,7 +542,10 @@ async function glassRow(s: Ctx, cp: CpState): Promise<string> {
   if (!u!.topElement.startsWith("bar,") || !u!.topElement.includes("block")) x.fail(`the block isn't beneath the bar where they meet (what is there, top first: ${u!.topElement})`);
   if (!/blur/.test(u!.frost)) x.fail(`the bar over the block isn't frosted (backdrop-filter: ${u!.frost})`);
   if (!/rgba\(.*, 0?\.\d+\)/.test(u!.tint)) x.fail(`the bar's tint is opaque (${u!.tint}): nothing beneath could show`);
-  // The sidebar: magenta painted on the window's root document (the layer right above macOS's material, in place of the
+  // The window's material (the see-through sidebar over the desktop) is macOS's vibrancy; Linux has none (spec: no window material off
+  // macOS), so there the row ends here, with the bar's frost and tint, which are CSS and checked above, said as what was checked.
+  if (onLinux()) return notOnLinux("the window's glass (a see-through sidebar over what is behind the window, in light and dark) is macOS's window material, which Linux has no counterpart of", `${cp.made}'s block panned ${u!.over}% under the bar ran on beneath it (the bar on top, ${u!.frost}, ${u!.tint})`);
+    // The sidebar: magenta painted on the window's root document (the layer right above macOS's material, in place of the
   // clear one), in light and dark; sampled in the sidebar's empty margin and in the main column.
   const root = rootDoc(s);
   const rootSession = await root.session();
