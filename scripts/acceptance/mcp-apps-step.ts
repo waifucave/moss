@@ -28,6 +28,18 @@ async function installUrl(ctx: ExampleCtx, url: string): Promise<string> {
   return r.id;
 }
 
+/** Takes the plugins these rows added out again and stops their servers, whatever happened: a plugin left behind with its test server
+ *  gone fails the next boot's listing of its tools (rows that claim an installed plugin's server lists at boot), and a run that
+ *  makes its old home with another build leaves it in that home. */
+async function cleanUp(ctx: ExampleCtx, plugins: readonly string[], servers: readonly McpAppFixture[]): Promise<void> {
+  for (const id of plugins) {
+    const rm = await ctx.rpc.request<{ card?: string }>("plugin.remove", { id }).catch(() => undefined);
+    if (rm?.card !== undefined) await ctx.approveCard(rm.card).catch(() => undefined);
+    await until(`${id} removed`, 30_000, async () => ((await ctx.rpc.request<{ plugin?: unknown }>("plugin.get", { id }).catch(() => ({ plugin: undefined }))).plugin === undefined ? true : undefined)).catch(() => undefined);
+  }
+  for (const f of servers) f.stop();
+}
+
 /** Everything the page said so far: what it read as `ui://acc/report/…` of its own server (a page's `ui/message` needs the person's press). */
 let reporter: McpAppFixture | undefined;
 const said = (_ctx: ExampleCtx): string => (reporter?.reports() ?? []).map((t) => `${REPORT} ${t}`).join("\n");
@@ -49,10 +61,14 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, session: string): Promise
   const other = mcpAppFixture({ name: "acc-other", tools: "other" });
   run = undefined;
   reporter = app;
+  const added: string[] = [];
   try {
     const appPlugin = await installUrl(ctx, app.url);
+    added.push(appPlugin);
     const otherPlugin = await installUrl(ctx, other.url);
-    await toSessionTab(ctx);
+    added.push(otherPlugin);
+    // THIS row's session's tab, not "the first": the first session in the sidebar is another row's when the unit holds many.
+    await toSessionTab(ctx, session);
     const turn = await callTurn(ctx, session, "Chart", {});
     if (!turn.result.text.includes(MCP_APP_MARK)) fail(`the model's call of Chart answered "${turn.result.text.slice(0, 120)}"`);
     const stamped = (await ctx.history(session)).filter((e: Ev) => e.type === "tool_result" && (e.app as { resourceUri?: string } | undefined)?.resourceUri === "ui://acc/chart");
@@ -78,8 +94,7 @@ export async function mcpAppsViewStep(ctx: ExampleCtx, session: string): Promise
     return done.join("; ");
   } catch (err) {
     run = undefined;
-    app.stop();
-    other.stop();
+    await cleanUp(ctx, added, [app, other]);
     throw err;
   }
 }
@@ -130,12 +145,7 @@ export async function mcpAppsCallStep(ctx: ExampleCtx, session: string): Promise
     done.push(`a forged call id and a 2 MB page refused ("${refused.slice(0, 60)}")`);
     return done.join("; ");
   } finally {
-    for (const id of [r.appPlugin, r.otherPlugin]) {
-      const rm = await ctx.rpc.request<{ card?: string }>("plugin.remove", { id }).catch(() => undefined);
-      if (rm?.card !== undefined) await ctx.approveCard(rm.card).catch(() => undefined);
-    }
-    r.app.stop();
-    r.other.stop();
     run = undefined;
+    await cleanUp(ctx, [r.appPlugin, r.otherPlugin], [r.app, r.other]);
   }
 }
