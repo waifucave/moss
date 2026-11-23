@@ -86,6 +86,7 @@ export function readyCount(log: string): number {
 export function startHostLauncher(): { sock: string; stop: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "clv-hl-"));
   const sock = join(dir, "l.sock");
+  let running: ReturnType<typeof spawn> | undefined;
   const server = createServer((c) => {
     const chunks: Buffer[] = [];
     c.on("data", (d: Buffer) => chunks.push(d));
@@ -97,11 +98,15 @@ export function startHostLauncher(): { sock: string; stop: () => void } {
       const env: Record<string, string> = {};
       for (const kv of parts.slice(gap + 1)) { const i = kv.indexOf("="); if (i > 0) env[kv.slice(0, i)] = kv.slice(i + 1); }
       if (argv.length === 0) return;
+      // `systemctl --user start` on a unit that is already active does nothing: a host this launcher started and that still runs is left.
+      if (running !== undefined) return;
       const logDir = join(env.MOSS_HOME ?? dir, "logs");
       mkdirSync(logDir, { recursive: true });
       const out = openSync(join(logDir, "host.out.log"), "a");
       const child = spawn(argv[0]!, argv.slice(1), { detached: true, stdio: ["ignore", out, out], env });
       child.unref();
+      running = child;
+      child.on("exit", () => { if (running === child) running = undefined; });
       // The host holds no OS lock on Linux (host-program.ts takeHostLock: macOS only), so the row's "the pid holding the lock" is what a
       // service manager knows as the unit's main pid: the manager's record of the process it started, in the lock file's place.
       if (child.pid !== undefined) { mkdirSync(join(env.MOSS_HOME ?? dir, "run"), { recursive: true }); writeFileSync(join(env.MOSS_HOME ?? dir, "run", "host.lock"), `${child.pid}\n`); }
