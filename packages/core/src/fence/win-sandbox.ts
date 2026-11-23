@@ -13,7 +13,7 @@
 // the per-session reset — runs on Windows only, driven by `moss-core sandbox setup|remove|status`.
 import { win32 } from "node:path";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dlopen, FFIType } from "bun:ffi";
 import { callerPlaces } from "./per-caller";
@@ -578,14 +578,21 @@ const SYSTEM_SID = "S-1-5-18";
  *  Administrators or SYSTEM, with allow entries for nobody else — and the store refuses to open
  *  it otherwise, so a squatted or over-shared directory fails closed instead of handing out
  *  principals nobody owns. */
-export function createWindowsLockStore(leasesDir: string): LeaseStore {
+export function createWindowsLockStore(leasesDir: string, o: { poolState?: boolean } = {}): LeaseStore {
   if (process.platform !== "win32") throw new Error("the Windows lock store runs on Windows only");
-  mkdirSync(leasesDir, { recursive: true });
-  const problem = leasesDirAccessProblem(leasesDir, {
-    profileRoot: process.env.USERPROFILE ?? null,
-    security: readLeasesDirSecurity(leasesDir),
-  });
-  if (problem !== null) throw new Error(`refusing untrusted leases dir ${leasesDir}: ${problem}`);
+  if (o.poolState === true) {
+    // The pool's state folder (`poolStateDir`): made and claimed by `sandbox setup` (administrators', inheritance cut,
+    // the owner list-and-read only), never made here; only an administrator could change that, and an administrator
+    // is trusted. Its locks are files setup made, opened, never created, by the owner (who can't create one there).
+    if (!existsSync(leasesDir)) throw new Error(`the pool's state ${leasesDir} isn't there; run \`moss-core sandbox setup\``);
+  } else {
+    mkdirSync(leasesDir, { recursive: true });
+    const problem = leasesDirAccessProblem(leasesDir, {
+      profileRoot: process.env.USERPROFILE ?? null,
+      security: readLeasesDirSecurity(leasesDir),
+    });
+    if (problem !== null) throw new Error(`refusing untrusted leases dir ${leasesDir}: ${problem}`);
+  }
   return {
     tryLock(lockPath: string): PoolLockGuard | null {
       const k = K32();

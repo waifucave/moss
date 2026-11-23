@@ -2071,7 +2071,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       let failed = 0;
       const poolDir = poolStateDir(programData, targetSid);
       let store: ReturnType<typeof createWindowsLockStore>;
-      try { store = createWindowsLockStore(poolDir); } catch (e) {
+      try { store = createWindowsLockStore(poolDir, { poolState: true }); } catch (e) {
         say(`sandbox reset: the pool's state can't be locked (${(e as Error).message}); run \`moss-core sandbox setup\` again`);
         process.exitCode = 1;
         await keepLog(); return;
