@@ -353,11 +353,16 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
 
   test("a stop reaches the command: it ends at once, with what it started, never waiting for its time limit", async () => {
     const marker = join(scratch, "late-abort.txt");
-    rmSync(marker, { force: true });
+    const began = join(scratch, "began-abort.txt");
+    for (const f of [marker, began]) rmSync(f, { force: true });
+    // The stop comes 2 s after the command has really started (it writes `began-abort.txt` first), never at a fixed
+    // time from the call: a launch that waits on a fresh account or a session grant would be stopped before it ran.
     const ac = new AbortController();
-    setTimeout(() => ac.abort(), 4_000);
-    const started = Date.now();
-    const r = await call(tools.Bash!, { command: "(sleep 10; echo late > late-abort.txt) & sleep 300", timeout: 600_000 }, { signal: ac.signal });
+    let started = 0;
+    const watch = setInterval(() => { if (existsSync(began)) { clearInterval(watch); started = Date.now(); setTimeout(() => ac.abort(), 2_000); } }, 100);
+    const r = await call(tools.Bash!, { command: "echo began > began-abort.txt; (sleep 10; echo late > late-abort.txt) & sleep 300", timeout: 600_000 }, { signal: ac.signal });
+    clearInterval(watch);
+    expect(started).toBeGreaterThan(0);
     const took = Date.now() - started;
     console.log(`[e2e] stopped after ${took} ms`);
     expect(r.isError).toBe(true);
