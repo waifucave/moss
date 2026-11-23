@@ -36,7 +36,7 @@ import { buildAgentEnv, launchContained, spawnPlan, type AgentJobLike } from "./
 import { versionSatisfies } from "./version";
 import type { ModelListDecl } from "./model-list";
 import type { AdapterStore } from "./adapter/store";
-import type { AdapterBackend, AdapterDecl, AdapterOffer, AdapterUse } from "./adapter/types";
+import { adapterDeclinedLine, adapterFailedLine, type AdapterBackend, type AdapterDecl, type AdapterOffer, type AdapterPlaced, type AdapterStartFacts, type AdapterUse } from "./adapter/types";
 
 export { versionSatisfies } from "./version";
 import type { ProcessTableReader } from "./process/table";
@@ -217,14 +217,11 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
         why = `MOSS's own runtime can't start it: ${err instanceof Error ? err.message : String(err)}`;
       }
       if (runtime !== undefined) {
-        const sandbox = this.admission(a.version);
-        const versionOk = versionSatisfies(a.version, this.quirks.launch.versions);
+        const f = this.#providedFacts(a);
         return {
           installed: true, path: st.entry, version: a.version, sha256: st.digest,
           // The identity is the integrity MOSS verified when it placed the files itself, not a `--version` line.
-          identityOk: true, versionOk,
-          sandboxed: sandbox.status === "protected",
-          reason: !versionOk ? `version ${a.version} is outside the tested range ${this.quirks.launch.versions}` : sandbox.status === "protected" ? sandbox.evidence : `no sandbox: ${sandbox.reason}`,
+          identityOk: true, versionOk: f.versionOk, sandboxed: f.sandboxed, reason: f.reason,
         };
       }
       return { installed: true, identityOk: false, versionOk: false, sandboxed: false, reason: why! };
@@ -238,9 +235,17 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       installed: true, identityOk: false, versionOk: false, sandboxed: false,
       reason: note === undefined
         ? `${label}'s adapter (${a.package} ${a.version}) isn't on this computer yet: MOSS downloads it the first time you start ${label}, after you say yes`
-        : "declined" in note
-          ? `${label}'s adapter wasn't downloaded, because you said no; MOSS asks again the next time you start ${label}`
-          : `${label}'s adapter couldn't be downloaded: ${note.failed}`,
+        : "declined" in note ? adapterDeclinedLine(label) : adapterFailedLine(label, note.failed),
+    };
+  }
+
+  /** What `detect` says of the provided adapter's version and sandbox: all of it from the declaration and this computer. */
+  #providedFacts(a: AdapterDecl): { versionOk: boolean; sandboxed: boolean; reason: string } {
+    const sandbox = this.admission(a.version);
+    const versionOk = versionSatisfies(a.version, this.quirks.launch.versions);
+    return {
+      versionOk, sandboxed: sandbox.status === "protected",
+      reason: !versionOk ? `version ${a.version} is outside the tested range ${this.quirks.launch.versions}` : sandbox.status === "protected" ? sandbox.evidence : `no sandbox: ${sandbox.reason}`,
     };
   }
 
@@ -295,11 +300,31 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
     return store.offerOf(a, st.state === "changed" ? `the copy MOSS kept ${st.why}` : undefined);
   }
 
-  async provideAdapter(): Promise<void> {
+  /** What the start will be once the adapter is placed: the same version, sandbox and run file `detect` will then say. */
+  async adapterStart(): Promise<AdapterStartFacts | undefined> {
     const a = this.#opts.adapter;
-    if (a === undefined || this.#opts.adapters === undefined) return;
-    await this.#opts.adapters.ensure(a);
+    const store = this.#opts.adapters;
+    if (a === undefined || store === undefined) return undefined;
+    try {
+      (this.#opts.runtime ?? (() => { throw new Error("MOSS has no runtime for it here"); }))();
+    } catch {
+      return undefined; // `detect` says why it can't start
+    }
+    const f = this.#providedFacts(a);
+    return { path: store.entryOf(a), version: a.version, versionOk: f.versionOk, sandboxed: f.sandboxed };
+  }
+
+  async provideAdapter(): Promise<AdapterPlaced> {
+    const a = this.#opts.adapter;
+    const store = this.#opts.adapters;
+    if (a === undefined || store === undefined) throw new ContractError("not_installed", `${this.id} has no adapter for MOSS to provide`);
+    const ready = await store.ensure(a);
     this.#usesSeen.clear();
+    // The whole copy, checked now: what a yes for the start is bound to is exactly this one.
+    const whole = store.verify(a);
+    if (!whole.ok) throw new ContractError("failed", `${a.package} ${a.version} was placed but ${whole.why}, so it won't be run`);
+    if (whole.digest !== ready.digest) throw new ContractError("failed", `${a.package} ${a.version}'s copy isn't the one that was placed, so it won't be run`);
+    return { path: ready.entry, version: a.version, digest: whole.digest };
   }
 
   noteAdapter(outcome: { declined: true } | { failed: string } | { ok: true }): void {

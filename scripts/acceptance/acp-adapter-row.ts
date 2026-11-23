@@ -5,14 +5,16 @@
 // the run's fake ACP agent (the one rows 1 to 3 use). No `claude` or `codex`, no network.
 //
 //   a. A session started on it raises ONE sealed card (kind change) that names the package, its version, where it comes
-//      from, that it is code MOSS will run, and its size; the registry's tarball is absent while it waits, and the NO that
+//      from, that it is code MOSS will run, and its size (the fixture's agent has no admitted sandbox, so this ONE card is
+//      the download and the start together, "Start <agent>?", and no second card ever comes for the same start); the
+//      registry's tarball is absent while it waits, and the NO that
 //      answers it leaves the agent unavailable with a plain line that says so: "because you said no", not "couldn't be
 //      downloaded", so nothing was asked of the registry (and nothing is in the home).
 //   b. The tarball served is another one (the registry, or something on the way, changed it): the card again, a yes, and
 //      the session says the download doesn't match the fingerprint; nothing is kept in the home (no package, no staging).
 //   c. The real tarball: the card again, pressed in the window; MOSS fetches it, checks its fingerprint, keeps it in
-//      `<home>/run/agent-adapters/<package>/<version>/`, starts it on its own runtime with the closed flags, and the
-//      turn's reply is in the session; a second session starts with no card.
+//      `<home>/run/agent-adapters/<package>/<version>/`, starts it on its own runtime with the closed flags, with no
+//      second card, and the turn's reply is in the session; a second session starts with no card.
 // Removed afterwards, whatever happened.
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -101,23 +103,25 @@ async function run(ctx: ExampleCtx): Promise<string> {
   if (existsSync(kept)) fail(`something is kept in ${kept} before any start`);
 
   const start = async () => (await rpc.request<{ session: string }>("agent.start", { backend: ADAPTER_ID, computer, root: `home/${computer}/acp-work`, prompt: ACP_PROMPT }, 60_000)).session;
-  const adapterCard = (session: string) => until("the download card", 60_000, async () => {
+  // The one card of a start that needs the adapter fetched AND the agent started without a sandbox: it names the package.
+  const adapterCard = (session: string) => until("the card for the download and the start", 60_000, async () => {
     for (const c of (await rpc.request<{ cards: Card[] }>("card.list")).cards) {
       if (c.session !== session || c.kind !== "change") continue;
       const card = (await rpc.request<{ card: { fields?: Record<string, unknown> } }>("card.get", { id: c.id })).card;
-      if (JSON.stringify(card.fields ?? {}).includes("adapter?")) return { id: c.id, text: JSON.stringify(card.fields) };
+      if (JSON.stringify(card.fields ?? {}).includes(ADAPTER_PACKAGE)) return { id: c.id, text: JSON.stringify(card.fields) };
     }
     return undefined;
   });
-  // Waits for `needle` in the session, approving its other cards (a third party's agent is unsandboxed: its own OK); a
-  // download card that comes where none may fails the row at once, unanswered.
-  const said = async (session: string, needle: string, what: string, adapterMayAsk = false) => {
-    const answered = new Set<string>();
+  // Waits for `needle` in the session. `known`: the cards already answered (they may still be listed for a moment). Another
+  // change card for the session (a second question about the same start, which the one card's yes covers, or any question
+  // at all for a start that was OK'd before) fails the row at once, unanswered; its other cards are approved.
+  const said = async (session: string, needle: string, what: string, known: string[]) => {
+    const answered = new Set<string>(known);
     return until(what, 60_000, async () => {
       for (const c of (await rpc.request<{ cards: Card[] }>("card.list")).cards) {
         if (c.session !== session || answered.has(c.id)) continue;
         answered.add(c.id);
-        if (!adapterMayAsk && JSON.stringify((await rpc.request<{ card: unknown }>("card.get", { id: c.id })).card).includes("adapter?")) fail(`a download card was raised again (${what})`);
+        if (c.kind === "change") fail(`a second card was raised for the same start (${what}): ${JSON.stringify((await rpc.request<{ card: { fields?: unknown } }>("card.get", { id: c.id })).card.fields ?? {}).slice(0, 300)}`);
         await ctx.approveCard(c.id);
       }
       const evs = await ctx.history(session).catch(() => []);
@@ -132,17 +136,20 @@ async function run(ctx: ExampleCtx): Promise<string> {
   for (const part of [ADAPTER_PACKAGE, ADAPTER_VERSION, "npm", "code from npm that MOSS will run", "under 1 MB", "Nothing is downloaded unless you say yes"]) {
     if (!card.text.includes(part)) fail(`the download card doesn't say "${part}": ${card.text.slice(0, 500)}`);
   }
+  // It is the start's card too: the one card says the agent starts without a sandbox.
+  if (!card.text.includes("without a sandbox")) fail(`the one card doesn't say the agent starts without a sandbox: ${card.text.slice(0, 500)}`);
   if (reportOf(report).length > 0 || existsSync(kept)) fail("the agent started or something was kept before the person said yes");
   await ctx.denyCard(card.id);
-  await said(a, "because you said no", "the plain line after the NO");
+  await said(a, "because you said no", "the plain line after the NO", [card.id]);
   if (existsSync(join(kept, ADAPTER_PACKAGE))) fail(`the NO left ${join(kept, ADAPTER_PACKAGE)}`);
   if (reportOf(report).length > 0) fail("the agent started after the NO");
 
   // b. Another tarball than the one the plugin pinned: refused after the yes, nothing kept.
   writeFileSync(tarball, otherTarball({ fake: FAKE_ACP_AGENT, ran: join(work, "evil.ran") }));
   const b = await start();
-  await ctx.approveCard((await adapterCard(b)).id);
-  await said(b, "doesn't match the fingerprint", "the refusal of a tampered download");
+  const tampered = await adapterCard(b);
+  await ctx.approveCard(tampered.id);
+  await said(b, "doesn't match the fingerprint", "the refusal of a tampered download", [tampered.id]);
   const left = existsSync(join(kept, ADAPTER_PACKAGE)) ? readdirSync(join(kept, ADAPTER_PACKAGE), { recursive: true }).map(String) : [];
   if (left.length > 0) fail(`a refused download left ${left.join(", ")}`);
   if (reportOf(report).length > 0 || existsSync(join(work, "evil.ran"))) fail("a tampered adapter was started");
@@ -152,7 +159,7 @@ async function run(ctx: ExampleCtx): Promise<string> {
   const c = await start();
   const pressed = await adapterCard(c);
   await ctx.pressCard("the adapter's download card", (x) => x.id === pressed.id);
-  await said(c, ACP_REPLY, "the adapter's reply in the session", true);
+  await said(c, ACP_REPLY, "the adapter's reply in the session", [pressed.id]);
   const dir = join(kept, ADAPTER_PACKAGE, ADAPTER_VERSION);
   const entry = join(dir, "node_modules", ADAPTER_PACKAGE, "dist", "index.js");
   if (!existsSync(entry)) fail(`the adapter isn't kept where MOSS keeps it (${entry})`);
@@ -163,10 +170,10 @@ async function run(ctx: ExampleCtx): Promise<string> {
   if (!r!.execArgv.some((f) => f.startsWith("--config="))) fail(`MOSS started the adapter without its own config (${r!.execArgv.join(" ")})`);
   const listing = readdirSync(join(kept, ADAPTER_PACKAGE)).sort().join(",");
   if (listing !== ADAPTER_VERSION) fail(`the package's folder holds ${listing}, not just ${ADAPTER_VERSION} (a staging folder was left)`);
-  // Placed once, never asked again: another session starts with no card.
+  // Placed once, never asked again (the start's OK is kept for this copy): another session starts with no card.
   const d = await start();
-  await said(d, ACP_REPLY, "the second session's reply");
-  return `4 adapter MOSS provides: a start raised one sealed card (${ADAPTER_PACKAGE} ${ADAPTER_VERSION}, from npm, code MOSS will run, under 1 MB) with the tarball absent, and the NO left the agent unavailable ("because you said no", nothing started, nothing kept); a tampered tarball after a yes was refused at its fingerprint and nothing was kept; the real one after a press in the window was fetched, kept in run/agent-adapters/${ADAPTER_PACKAGE}/${ADAPTER_VERSION}, started on MOSS's own runtime with --no-install --no-env-file --config, and its turn's reply is in the session; a second session started with no card`;
+  await said(d, ACP_REPLY, "the second session's reply", []);
+  return `4 adapter MOSS provides: a start raised one sealed card (${ADAPTER_PACKAGE} ${ADAPTER_VERSION}, from npm, code MOSS will run, under 1 MB, and the start without a sandbox, so one card for both) with the tarball absent, and the NO left the agent unavailable ("because you said no", nothing started, nothing kept); a tampered tarball after a yes was refused at its fingerprint and nothing was kept; the real one after a press in the window was fetched, kept in run/agent-adapters/${ADAPTER_PACKAGE}/${ADAPTER_VERSION}, started on MOSS's own runtime with --no-install --no-env-file --config, and its turn's reply is in the session with no second card after the yes; a second session started with no card`;
 }
 
 /** A tarball that isn't the one the plugin pinned: the same package with a line more. */

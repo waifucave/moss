@@ -54,7 +54,7 @@ import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessio
 import { AgentDriver } from "./driver";
 import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
-import { isAdapterBackend, type AdapterBackend, type AdapterOffer } from "./adapter/types";
+import { adapterDeclinedLine, adapterFailedLine, isAdapterBackend, type AdapterBackend, type AdapterOffer, type AdapterPlaced, type AdapterStartFacts } from "./adapter/types";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
 import { EXCHANGE_DEPTH_LIMIT, EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
@@ -189,6 +189,11 @@ export interface AgentRequest {
   definition?: { pluginId: string; id: string };
 }
 
+/** What one adapter ask came to: `stop` set, the start ends there with that line (a combined card's no). */
+interface AdapterAsk {
+  stop?: string;
+}
+
 interface Entry {
   id: string;
   /** Admitted with a sandbox MOSS counts on, at a tested version (`#admit`): its commands are held by that sandbox
@@ -301,7 +306,7 @@ export class AgentManager {
   readonly #remote = new Map<string, RemoteAgentEntry>();
   readonly #oks: AgentOks;
   /** One card and one fetch per adapter package and version, however many sessions start while it is open. */
-  readonly #adapterFlights = new Map<string, Promise<void>>();
+  readonly #adapterFlights = new Map<string, Promise<AdapterAsk>>();
   /** The one door behind `SendMessage` and `ListSessions` for every session (messenger.ts): the protocol's `reachRefusal` decides. */
   readonly #messenger: EngineSessionMessenger;
   #peers: AgentPeers | undefined;
@@ -962,26 +967,92 @@ export class AgentManager {
 
   /** An agent whose adapter MOSS provides, with none in place: one card (the package and version, where from, that it is
    *  code MOSS will run, its size), shared by every session that starts while it is open; then, on the yes, the fetch.
-   *  Nothing is fetched without the yes. Never throws: what came of it is noted on the backend, and `detect` then says
-   *  plainly why the agent isn't there (or the person's own adapter, where there is one, is what starts). */
+   *  Nothing is fetched without the yes. A fetch's failure never throws: what came of it is noted on the backend, and
+   *  `detect` then says plainly why the agent isn't there (or the person's own adapter, where there is one, is what
+   *  starts). The one thing that throws is the NO of a combined card (`#askAdapter`): nothing is then started. */
   async #provideAdapter(e: Entry): Promise<void> {
     const b = e.backend;
     if (!isAdapterBackend(b)) return;
     const offer = await b.adapterOffer().catch(() => undefined);
     if (offer === undefined) return;
+    // The start's own facts, where the start will need the person's OK too: then ONE card asks for both.
+    const facts = await this.#startNeedsOk(e, b);
     const key = `${offer.package}@${offer.version}`;
     let flight = this.#adapterFlights.get(key);
     if (flight === undefined) {
-      flight = this.#askAdapter(e, b, offer).finally(() => this.#adapterFlights.delete(key));
+      flight = this.#askAdapter(e, b, offer, facts).finally(() => this.#adapterFlights.delete(key));
       this.#adapterFlights.set(key, flight);
     }
-    await flight;
+    const asked = await flight;
+    if (asked.stop !== undefined) throw new ContractError("refused", asked.stop);
   }
 
-  async #askAdapter(e: Entry, b: AdapterBackend, offer: AdapterOffer): Promise<void> {
+  /** The facts of the start that follows this download, when that start asks the person's OK too (no admitted sandbox, or a
+   *  version outside the tested range) and none is remembered for this program: the download and the start are then ONE
+   *  act and get ONE card. Undefined when only the download is asked (the sandbox is admitted, or the OK is already
+   *  kept for this program, or the facts can't be told). */
+  async #startNeedsOk(e: Entry, b: AdapterBackend): Promise<AdapterStartFacts | undefined> {
+    if (this.#o.startUnsandboxedForTests === true || b.adapterStart === undefined) return undefined;
+    const facts = await b.adapterStart().catch(() => undefined);
+    if (facts === undefined || (facts.sandboxed && facts.versionOk)) return undefined;
+    // An OK given for this program (a copy fetched again, say) is the start's answer already: the download is asked alone.
+    if (this.#oks.knows({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path })) return undefined;
+    return facts;
+  }
+
+  /** One card for one act. `facts` set (the start needs the OK too): the combined card, "Start <Agent>?", which says both
+   *  halves plainly and whose yes covers both; its no does neither (nothing fetched, nothing started: the plain refusal
+   *  line ends the start, even where the person has an adapter of their own). Without `facts`: the download card, as
+   *  ever, and its no leaves an adapter of the person's own to start the agent. */
+  async #askAdapter(e: Entry, b: AdapterBackend, offer: AdapterOffer, facts: AdapterStartFacts | undefined): Promise<AdapterAsk> {
     const name = (b as { name?: string }).name ?? e.backend.id;
-    const mb = (n: number) => (n < 1024 * 1024 ? "under 1 MB" : `about ${Math.round(n / (1024 * 1024))} MB`);
-    const decision = await this.#o.approvals.request({
+    const decision = await this.#o.approvals.request(
+      facts === undefined ? this.#downloadCard(e, name, offer) : this.#oneCard(e, name, offer, facts),
+      (e.driver.currentSignal() === undefined ? {} : { signal: e.driver.currentSignal()! }),
+    ).catch(() => undefined);
+    if (decision === undefined || !decision.allowed) {
+      const declined = decision?.by === "card";
+      b.noteAdapter(declined ? { declined: true } : { failed: "the question about it wasn't answered" });
+      return facts === undefined ? {} : { stop: declined ? adapterDeclinedLine(name) : adapterFailedLine(name, "the question about it wasn't answered") };
+    }
+    let placed: AdapterPlaced;
+    try {
+      placed = await b.provideAdapter();
+      b.noteAdapter({ ok: true });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      b.noteAdapter({ failed: why });
+      this.#o.log?.(`agents: ${e.backend.id}'s adapter ${offer.package} ${offer.version} wasn't placed: ${why}`);
+      return {};
+    }
+    if (facts !== undefined) await this.#bindStartOk(e, facts, placed, decision.cardId);
+    return {};
+  }
+
+  /** THE RULE of the combined card (the owner's, 2026-11-23: one act, one card). Its yes is for exactly what it showed:
+   *  the download of the pinned package (its fingerprints are checked before anything is unpacked, as ever) and the start
+   *  of the agent from THAT copy. So the start's OK is kept here, once the copy is placed and checked whole, for the
+   *  digest of the copy this yes fetched, under the key a start card's OK has (agent, version, computer, run file,
+   *  digest), and for nothing else:
+   *  - the copy `detect` now finds must be that same one (same run file, version, sandbox facts and digest as placed),
+   *    else no OK is kept and the start asks on its own card, as it would for any copy it hasn't been told of;
+   *  - a copy changed after this (a file, or the record) isn't this digest: `start` checks the whole copy again and
+   *    refuses it, and a different digest finds no OK;
+   *  - the OK is remembered as a start card's is (never an "always" for the download, which is never kept). */
+  async #bindStartOk(e: Entry, facts: AdapterStartFacts, placed: AdapterPlaced, cardId: string | undefined): Promise<void> {
+    const d = await e.backend.detect().catch(() => undefined);
+    const same = d !== undefined && d.installed && d.identityOk
+      && d.path === facts.path && placed.path === facts.path
+      && d.version === facts.version && placed.version === facts.version
+      && d.versionOk === facts.versionOk && d.sandboxed === facts.sandboxed
+      && d.sha256 === placed.digest;
+    if (!same) return;
+    this.#oks.grant({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path, sha256: placed.digest }, { ...(cardId === undefined ? {} : { cardId }), at: this.#o.clock.now() });
+  }
+
+  /** What a download card says (the start needs nothing of the person here). */
+  #downloadCard(e: Entry, name: string, offer: AdapterOffer): ApprovalRequest {
+    return {
       kind: "change",
       change: "agent-adapter",
       session: e.id,
@@ -995,9 +1066,7 @@ export class AgentManager {
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
-          { label: "Package", value: sealedText(`${offer.package} ${offer.version}`, 4000) },
-          { label: "Downloaded from", value: sealedText(offer.registry, 4000) },
-          { label: "Size", value: sealedText(`${offer.bytes === undefined ? "size not known" : mb(offer.bytes)}, ${offer.packages} package${offer.packages === 1 ? "" : "s"}`, 4000) },
+          ...this.#packageRows(offer),
           { label: "Kept in", value: sealedText(offer.folder, 4000) },
           { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
           { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
@@ -1008,19 +1077,55 @@ export class AgentManager {
           ...(offer.again === undefined ? [] : [{ label: "Why again", value: sealedText(offer.again, 4000) }]),
         ] },
       },
-    }, (e.driver.currentSignal() === undefined ? {} : { signal: e.driver.currentSignal()! })).catch(() => undefined);
-    if (decision === undefined || !decision.allowed) {
-      b.noteAdapter(decision?.by === "card" ? { declined: true } : { failed: "the question about it wasn't answered" });
-      return;
-    }
-    try {
-      await b.provideAdapter();
-      b.noteAdapter({ ok: true });
-    } catch (err) {
-      const why = err instanceof Error ? err.message : String(err);
-      b.noteAdapter({ failed: why });
-      this.#o.log?.(`agents: ${e.backend.id}'s adapter ${offer.package} ${offer.version} wasn't placed: ${why}`);
-    }
+    };
+  }
+
+  #packageRows(offer: AdapterOffer): { label: string; value: string }[] {
+    const mb = (n: number) => (n < 1024 * 1024 ? "under 1 MB" : `about ${Math.round(n / (1024 * 1024))} MB`);
+    return [
+      { label: "Package", value: sealedText(`${offer.package} ${offer.version}`, 4000) },
+      { label: "Downloaded from", value: sealedText(offer.registry, 4000) },
+      { label: "Size", value: sealedText(`${offer.bytes === undefined ? "size not known" : mb(offer.bytes)}, ${offer.packages} package${offer.packages === 1 ? "" : "s"}`, 4000) },
+    ];
+  }
+
+  /** The combined card: the download's facts (the package, its version, from where, its size, that it is code MOSS will
+   *  run) and the start's (the agent, who started it, the folder, why it needs the OK: no sandbox, or a version outside
+   *  the tested ones, and what it gets from the environment), as short as both allow. It is a change card for the start
+   *  (`agent-unsandboxed`: always shown, never an "always"), which is the stronger of the two. */
+  #oneCard(e: Entry, name: string, offer: AdapterOffer, facts: AdapterStartFacts): ApprovalRequest {
+    const label = sealedText(name, 200);
+    const outside = `Its version ${sealedText(facts.version, 64)} is outside the versions MOSS was tested with`;
+    const risk = facts.sandboxed
+      ? `${outside}, so its sandbox may not hold.`
+      : `It has no sandbox MOSS can count on here.${facts.versionOk ? "" : ` ${outside}.`}`;
+    return {
+      kind: "change",
+      change: "agent-unsandboxed",
+      session: e.id,
+      ...(e.bot === undefined ? {} : { bot: e.bot }),
+      origin: e.driver.currentOrigin() ?? "agent",
+      computers: [e.computer],
+      effect: "other",
+      fields: {
+        title: { type: "text", text: `Start ${label}?` },
+        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk} While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
+        computer: { type: "text", text: e.computer },
+        source: { type: "rows", rows: [
+          { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          ...this.#packageRows(offer),
+          { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
+          { label: "Folder", value: sealedText(e.root, 4000) },
+        ] },
+        detail: { type: "rows", rows: [
+          { label: "Runs on", value: "MOSS's own runtime, never your own node" },
+          ...(offer.uses.length === 0 ? [] : [{ label: "Drives, from your computer", value: sealedText(offer.uses.join(", "), 4000) }]),
+          { label: "Gets from your environment", value: sealedText(e.backend.quirks.launch.envAllow.join(", ") || "nothing", 4000) },
+          { label: "Sets in its environment", value: sealedText(Object.keys(e.backend.quirks.launch.envSet).join(", ") || "nothing", 4000) },
+          ...(offer.again === undefined ? [] : [{ label: "Why again", value: sealedText(offer.again, 4000) }]),
+        ] },
+      },
+    };
   }
 
   /** Before an agent launches: an agent that isn't sandboxed, or is outside its tested versions, needs the user's OK. */

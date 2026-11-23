@@ -23,6 +23,9 @@ export interface AgentOkKey {
 
 export interface AgentOks {
   has(key: AgentOkKey): boolean;
+  /** Whether an OK was ever given for this program at this path and version, whatever its file hash: a copy that is fetched
+   *  again may be the one that was OK'd, and then the download is asked alone. Never a yes by itself (`has` is). */
+  knows(key: Omit<AgentOkKey, "sha256">): boolean;
   grant(key: AgentOkKey, by: { cardId?: string; at: number }): void;
 }
 
@@ -32,6 +35,11 @@ export class MemoryAgentOks implements AgentOks {
   readonly #set = new Set<string>();
   has(key: AgentOkKey): boolean {
     return this.#set.has(keyOf(key));
+  }
+  knows(key: Omit<AgentOkKey, "sha256">): boolean {
+    const prefix = [key.computer, key.backend, key.version, key.path ?? ""].join("\u0000") + "\u0000";
+    for (const k of this.#set) if (k.startsWith(prefix)) return true;
+    return false;
   }
   grant(key: AgentOkKey): void {
     this.#set.add(keyOf(key));
@@ -65,6 +73,10 @@ export class FileAgentOks implements AgentOks {
 
   has(key: AgentOkKey): boolean {
     return this.#read().oks.some((o) => keyOf(o) === keyOf(key));
+  }
+
+  knows(key: Omit<AgentOkKey, "sha256">): boolean {
+    return this.#read().oks.some((o) => o.computer === key.computer && o.backend === key.backend && o.version === key.version && o.path === key.path);
   }
 
   grant(key: AgentOkKey, by: { cardId?: string; at: number }): void {

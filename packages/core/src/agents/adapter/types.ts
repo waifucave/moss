@@ -95,15 +95,46 @@ export interface AdapterOffer {
   again?: string;
 }
 
+/** What a start of the agent will be, once the adapter is in place (the facts a start card shows, known before the
+ *  download: all of them come from the plugin's declaration and this computer, none from the files). */
+export interface AdapterStartFacts {
+  /** The run file the agent will be started from, in MOSS's own folder. */
+  path: string;
+  /** The version the start is judged by: the adapter's own. */
+  version: string;
+  /** Its version is in the range MOSS was tested with. */
+  versionOk: boolean;
+  /** MOSS admitted a sandbox for it here. */
+  sandboxed: boolean;
+}
+
+/** The copy a fetch placed and checked whole: what the person's yes for the start may be bound to. */
+export interface AdapterPlaced {
+  path: string;
+  version: string;
+  /** The digest of every file of the copy, as MOSS recorded and re-checked it (what an OK for the start names). */
+  digest: string;
+}
+
 /** An agent backend that can have its adapter provided (`AcpAgentBackend` with a declaration). */
 export interface AdapterBackend {
   /** What a card would say, or undefined when no download is needed (a copy is in place, or it can't be used anyway). */
   adapterOffer(): Promise<AdapterOffer | undefined>;
-  /** Fetches and places the adapter (after the person's yes); throws a `ContractError` saying plainly why not. */
-  provideAdapter(): Promise<void>;
+  /** What the start will be once the adapter is in place, or undefined where it can't be told (no runtime to run it).
+   *  With `adapterOffer` it lets ONE card ask for the download and the start together. */
+  adapterStart?(): Promise<AdapterStartFacts | undefined>;
+  /** Fetches and places the adapter (after the person's yes), checks the whole copy, and says what it placed; throws a
+   *  `ContractError` saying plainly why not. */
+  provideAdapter(): Promise<AdapterPlaced>;
   /** The outcome of the last offer, kept so `detect` can say why the agent isn't there. */
   noteAdapter(outcome: { declined: true } | { failed: string } | { ok: true }): void;
 }
+
+/** The plain lines for an adapter that wasn't downloaded: `detect`'s reason, and what a start that was refused by a
+ *  combined card's no or failure says. One place, so the two never differ. */
+export const adapterDeclinedLine = (label: string): string =>
+  `${label}'s adapter wasn't downloaded, because you said no; MOSS asks again the next time you start ${label}`;
+export const adapterFailedLine = (label: string, why: string): string => `${label}'s adapter couldn't be downloaded: ${why}`;
 
 export const isAdapterBackend = (b: unknown): b is AdapterBackend =>
   typeof b === "object" && b !== null && typeof (b as AdapterBackend).adapterOffer === "function" && typeof (b as AdapterBackend).provideAdapter === "function";

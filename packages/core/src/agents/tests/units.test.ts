@@ -32,7 +32,7 @@ import { AgentTranscript, REDACTED_TOKEN, botSegment, redactDeep, transcriptPath
 import { effectOf, promptOf, ruleKeyOf } from "../manager";
 import { ruleShapeOf } from "../../approvals/bot-check";
 import { ADMISSIONS, admissionFor } from "../sandbox/admission";
-import { FileAgentOks, agentOksPath } from "../sandbox/oks";
+import { FileAgentOks, MemoryAgentOks, agentOksPath } from "../sandbox/oks";
 import { fileToolDenials, homeReach, realPathOf, withHomeDenied } from "../memory";
 
 function pair(opts: { stringIds?: boolean } = {}) {
@@ -585,6 +585,26 @@ describe("sandbox admissions and OKs", () => {
       expect(oks.has({ ...key, path: "/tmp/cursor-agent" })).toBe(false);
       expect(oks.has({ ...key, sha256: "b".repeat(64) })).toBe(false);
       expect(agentOksPath(home)).toBe(join(home, "trust", "agent-oks.json"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("`knows` says an OK was given for a program at a path and version, whatever its hash, and is never a yes by itself", () => {
+    const home = mkdtempSync(join(tmpdir(), "moss-oks-knows-"));
+    try {
+      const key = { backend: "claude-code", version: "0.100.0", computer: "Studio", path: "/h/run/agent-adapters/a/0.100.0/index.js", sha256: "a".repeat(64) };
+      const { sha256: _hash, ...program } = key;
+      for (const oks of [new FileAgentOks(home), new MemoryAgentOks()]) {
+        expect(oks.knows(program)).toBe(false);
+        oks.grant(key, { at: 1 });
+        expect(oks.knows(program)).toBe(true);
+        expect(oks.has({ ...key, sha256: "b".repeat(64) })).toBe(false);
+        expect(oks.knows({ ...program, version: "0.101.0" })).toBe(false);
+        expect(oks.knows({ ...program, computer: "Desk" })).toBe(false);
+        expect(oks.knows({ ...program, path: "/elsewhere/index.js" })).toBe(false);
+        expect(oks.knows({ ...program, backend: "codex" })).toBe(false);
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
