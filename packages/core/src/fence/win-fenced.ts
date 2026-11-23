@@ -497,8 +497,17 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     if (had !== undefined) return had;
     const p = (async () => {
       const started = Date.now();
-      const excludes = profileExcludes();
-      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...excludes.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      const grant = (ex: readonly string[]) => deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...ex.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      let excludes = profileExcludes();
+      let r = await grant(excludes);
+      // srt-win makes each protected folder of its own list that is missing (`.aws`, `.kube`, `.gnupg`…) to carry its
+      // deny: they exist now, so the list is read again and, when it grew, granted again (a later run writes only what
+      // changed). Then no per-exec deny is left on a path the grant denies already, and a launch with no per-exec read
+      // deny never loads the grant's record (srt-win reads it whole for the first read deny: 15–25 s on the runner).
+      if (r.code === 0) {
+        const again = profileExcludes();
+        if (again.some((p) => !excludes.some((e) => fold(e) === fold(p)))) { const r2 = await grant(again); if (r2.code === 0) excludes = again; else r = r2; }
+      }
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
       if (r.code === 0) { excludedReads.set(deps.launcher, excludes); return null; }
       excludedReads.delete(deps.launcher);
@@ -644,7 +653,9 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
    *  a profile another command wrote. The reset's own work (delete and `CreateProfile`, ~10 s a member) is off every
    *  command's path: the task is started when a command ends. */
   async function leaseFresh(leases: LeaseStore, marker: InstallMarker, ownerSid: string): Promise<{ ok: true; principal: string; release: () => void } | { ok: false; reason: string }> {
-    const deadline = Date.now() + (deps.leaseTimeoutMs ?? 30_000);
+    // Up to two minutes: when more commands come at once than the pool has principals, the later ones wait for the
+    // reset to remake one (~10–30 s each on the runner, one at a time) rather than being refused.
+    const deadline = Date.now() + (deps.leaseTimeoutMs ?? 120_000);
     let asked = 0;
     let stale = 0;
     for (;;) {
