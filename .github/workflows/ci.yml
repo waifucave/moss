@@ -1345,6 +1345,68 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # The acceptance run on Linux (lane LX): the same harness and the same units as `acceptance` above, from source, on ubuntu-24.04
+  # under xvfb, with the private Secret Service the Linux tests use (scripts/with-private-secret-service.sh). NOT a part of the
+  # lane gate or the gate (neither needs it: a unit that is red here does not turn another lane's run red), and never on a pull
+  # request, a merge group or a push: a manual run only. Each unit's rows are PASS, or say "not on Linux: <reason>"
+  # (scripts/acceptance/linux.ts), or the unit is red, which is the list of what a person on Linux would meet.
+  acceptance-linux:
+    name: acceptance-linux · ${{ matrix.unit }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: [chain, window-1, window-2, window-3, workshop, plugin-app, browser, bundled-tools, examples, reopen, host, cards, moss, setup, arrivals, addons, archive, acp, workshop-points, models, builder-examples, browser-host, surface-copy-host, canvas, canvas-app]
+    env:
+      MOSS_PINNED_BUN: "0"
+      MOSS_ACCEPT_TICK_MIN: "10"
+      MOSS_ACCEPT_TIME_SCALE: "3"
+      MOSS_ACCEPT_MEASURE: "mac-only"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: The private Secret Service's tools and the display
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends dbus gnome-keyring libsecret-1-0 xvfb xauth
+
+      # Chromium's sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor turns off by default (as the machine job does).
+      - name: Chromium's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        id: electron
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: electron-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Acceptance on Linux · ${{ matrix.unit }}
+        run: xvfb-run -a scripts/with-private-secret-service.sh bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-linux-${{ matrix.unit }}"
+
+      - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        if: ${{ !cancelled() && steps.electron.outputs.cache-hit != 'true' }}
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: acceptance-linux-${{ matrix.unit }}
+          path: ${{ runner.temp }}/acceptance-linux-${{ matrix.unit }}
+          retention-days: 7
+          if-no-files-found: warn
+
   # The lane gate: what a lane's run has to pass. The same check as `gate`, over every job but the Windows ones (a lane's
   # known Windows break must not hide a green macOS and Linux), plus the acceptance run. It runs on a push to an
   # integration branch and on a manual run; `gate` (below) keeps needing every job, Windows included, for pull requests
