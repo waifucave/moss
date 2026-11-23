@@ -9,6 +9,8 @@ body { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: v
 #moss-banner, #moss-release { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 16px 8px 96px; background: var(--moss-color-attention, #C27C00); color: #111; font-weight: 600; }
 #moss-drag { position: fixed; top: 0; left: 0; right: 0; height: 45px; z-index: 20; -webkit-app-region: drag; }
 #moss-drag[hidden] { display: none; }
+/* The root's focus stop (root.ts syncFocusStop): rendered, so a Tab can land on it, and never seen or pressed. */
+#moss-focus-stop { position: fixed; top: 0; left: 0; width: 0; height: 0; overflow: hidden; outline: none; pointer-events: none; }
 #moss-banner, #moss-release { position: relative; z-index: 30; -webkit-app-region: drag; }
 #moss-banner button, #moss-banner a, #moss-release button, .moss-page button, .moss-page input, .moss-page a, .moss-page select, .moss-page textarea, .moss-core-note button, .moss-core-note a { -webkit-app-region: no-drag; }
 #moss-banner[hidden], #moss-release[hidden] { display: none; }

@@ -208,10 +208,25 @@ async function render(): Promise<void> {
   syncDrag();
 }
 
+/** A window in which nothing can take the keyboard's focus never ends a Tab: Chromium's sequential focus walks this document and
+ *  each frame in it, finds nothing, hands the focus to the window, and the window (macOS: WebContentsViewMac::TakeFocus) walks the
+ *  page again at once, for ever, between the processes and drawing nothing (lane HC: the background host's island spun about 55% of
+ *  a core in its main process and 35% in each of two renderers for 37 minutes; one Tab into such a window does it). The root's own
+ *  stop, last in its order, ends every walk: in a surface window always (an overlay such as the island's strip often holds nothing
+ *  to focus) and in any window while no plugin frame fills it (a note); a window the shell fills has its own stops, so it gains none.
+ *  The stop is invisible and takes no pointer; the person's Tab lands on it once per round in a surface window. */
+function syncFocusStop(): void {
+  const stop = document.getElementById("moss-focus-stop");
+  if (stop === null) return;
+  const needed = info?.context.surface !== undefined || stage.querySelector("iframe") === null;
+  stop.tabIndex = needed ? 0 : -1;
+}
+
 /** The core's own drawing (the note, a page) is in this main frame, which is where Chromium honors a drag region: a strip
  *  over the title area drags the window. With the shell's frame showing, the strip is off (the shell's own drag goes through
  *  the main process, which checks it). The banner's buttons stay clickable (they sit above the strip). */
 function syncDrag(): void {
+  syncFocusStop();
   const drag = document.getElementById("moss-drag");
   if (drag === null) return;
   drag.hidden = info?.context.surface !== undefined || (stage.querySelector("iframe") !== null && page === null);
