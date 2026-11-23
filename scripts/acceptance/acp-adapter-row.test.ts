@@ -11,7 +11,7 @@ import { validatePluginFolder } from "../../packages/core/src/registry/validate"
 import { tarballUrl } from "../../packages/core/src/agents/adapter/types";
 import { FULL_STEPS } from "./steps";
 import { ACP_BACKEND_STEP, FAKE_ACP_AGENT, fixtureWith } from "./acp-backend-step";
-import { ADAPTER_ID, ADAPTER_PACKAGE, ADAPTER_VERSION, adapterFiles, sriOf } from "./acp-adapter-row";
+import { ADAPTER_ID, ADAPTER_PACKAGE, ADAPTER_VERSION, adapterFiles, sriOf, withAdapter } from "./acp-adapter-row";
 import { FAKE_NPM_HOST } from "./fake-exa";
 import { publishNpm } from "./plugin-world";
 
@@ -36,12 +36,12 @@ test("with the run's values in, the fixture validates, its declaration reads, an
   cpSync(FIXTURE, folder, { recursive: true });
   const written = fixtureWith({ "moss.json": readFileSync(join(folder, "moss.json"), "utf8"), "quirks.json": readFileSync(join(folder, "quirks.json"), "utf8") }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config: join(root, "agent.json") });
   writeFileSync(join(folder, "moss.json"), written["moss.json"]!);
-  writeFileSync(join(folder, "quirks.json"), written["quirks.json"]!.replaceAll("__INTEGRITY__", sriOf(bytes)));
+  writeFileSync(join(folder, "quirks.json"), withAdapter(written["quirks.json"]!, { integrity: sriOf(bytes), size: bytes.byteLength }));
   const v = await validatePluginFolder(folder, { os: "macos" });
   expect(v.issues.filter((i) => i.severity === "error")).toEqual([]);
   const file = readQuirksFile(folder, "quirks.json");
   const decl = readAdapter(folder, file.adapter!);
-  expect(decl).toMatchObject({ package: ADAPTER_PACKAGE, version: ADAPTER_VERSION, integrity: sriOf(bytes), run: "dist/index.js", runtime: "moss-bun", packages: [] });
+  expect(decl).toMatchObject({ package: ADAPTER_PACKAGE, version: ADAPTER_VERSION, integrity: sriOf(bytes), size: bytes.byteLength, run: "dist/index.js", runtime: "moss-bun", packages: [] });
   // MOSS's store places exactly these bytes, and the run file is the one that starts the fake agent.
   const store = new AdapterStore({ home: join(root, "home"), download: async (url) => { expect(url).toBe(tarballUrl(`https://${FAKE_NPM_HOST}`, ADAPTER_PACKAGE, ADAPTER_VERSION)); return bytes; } });
   const ready = await store.ensure(decl);
