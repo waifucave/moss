@@ -37,8 +37,10 @@ export interface AdapterProofInput {
   runtime: string;
   /** The tarball fetch: the pinned public fetch by default (the real registry). */
   download?: IndexFetch;
-  /** One `--version` line per `uses` program, matching its identity pattern. */
-  standIns?: Readonly<Record<string, string>>;
+  /** One `--version` line per `uses` program, matching its identity pattern; `jsonRpc: true` makes the stand-in answer every
+   *  JSON-RPC request it is sent on stdin with an empty result (an adapter that drives a CLI over JSON-RPC, as Codex's does
+   *  `codex app-server`, can then get as far as its own `initialize`) and record the methods it was asked. */
+  standIns?: Readonly<Record<string, string | { version: string; jsonRpc: true }>>;
   /** The program and arguments, where the quirks hold none (a test's). */
   command?: { program: string; acpArgs: readonly string[] };
   /** How long `initialize` and `session/new` may each take (and the whole start). */
@@ -53,7 +55,7 @@ export interface AdapterProof {
   initialize: { ms: number; protocolVersion: number; agent: string };
   session: { ok: true } | { ok: false; error: string };
   /** The stand-in programs: how many times each was started to print its version and to run, and the run's argument counts. */
-  standIns: Record<string, { versionChecks: number; runs: number[] }>;
+  standIns: Record<string, { versionChecks: number; runs: number[]; methods: string[] }>;
   stderrTail: string;
 }
 
@@ -73,20 +75,40 @@ export async function proveAdapter(i: AdapterProofInput): Promise<AdapterProof> 
   // The person's own programs the adapter drives, as stand-ins that record how they were started.
   const records: Record<string, string> = {};
   for (const u of i.adapter.uses ?? []) {
-    const line = i.standIns?.[u.program];
-    if (line === undefined) throw new AdapterProofError(`${i.id}: the declaration says the adapter drives ${u.program}, and the proof has no stand-in version line for it`);
+    const spec = i.standIns?.[u.program];
+    if (spec === undefined) throw new AdapterProofError(`${i.id}: the declaration says the adapter drives ${u.program}, and the proof has no stand-in version line for it`);
+    const line = typeof spec === "string" ? spec : spec.version;
     const record = join(i.work, `${u.program}.record`);
     records[u.program] = record;
     writeFileSync(record, "");
     const path = join(bin, u.program);
-    writeFileSync(path, [
-      "#!/bin/sh",
-      `if [ "$1" = "--version" ]; then echo ${JSON.stringify(line)}; echo version >> ${JSON.stringify(record)}; exit 0; fi`,
-      `echo "run $#" >> ${JSON.stringify(record)}`,
-      `echo "stand-in for ${u.program}: not the real program" >&2`,
-      "exit 1",
-      "",
-    ].join("\n"));
+    if (typeof spec === "string") {
+      writeFileSync(path, [
+        "#!/bin/sh",
+        `if [ "$1" = "--version" ]; then echo ${JSON.stringify(line)}; echo version >> ${JSON.stringify(record)}; exit 0; fi`,
+        `echo "run $#" >> ${JSON.stringify(record)}`,
+        `echo "stand-in for ${u.program}: not the real program" >&2`,
+        "exit 1",
+        "",
+      ].join("\n"));
+    } else {
+      // A JSON-RPC responder on the proof's own runtime (never the network: --no-install): one line in, one line out.
+      const script = join(i.work, `${u.program}.standin.js`);
+      writeFileSync(script, [
+        `const fs = require("node:fs");`,
+        `const REC = ${JSON.stringify(record)};`,
+        `const args = process.argv.slice(2);`,
+        `if (args[0] === "--version") { fs.appendFileSync(REC, "version\\n"); console.log(${JSON.stringify(line)}); process.exit(0); }`,
+        `fs.appendFileSync(REC, "run " + args.length + "\\n");`,
+        `let buf = "";`,
+        `process.stdin.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (!l.trim()) continue; let m; try { m = JSON.parse(l); } catch { fs.appendFileSync(REC, "unparsed\\n"); continue; }`,
+        `  if (typeof m.method === "string") fs.appendFileSync(REC, "method " + m.method.slice(0, 64) + "\\n");`,
+        `  if (m.id !== undefined && typeof m.method === "string") process.stdout.write(JSON.stringify({ id: m.id, result: m.method === "initialize" ? { userAgent: "stand-in" } : {} }) + "\\n"); } });`,
+        `process.stdin.on("end", () => process.exit(0));`,
+        "",
+      ].join("\n"));
+      writeFileSync(path, `#!/bin/sh\nexec ${JSON.stringify(i.runtime)} --no-install --no-env-file ${JSON.stringify(script)} "$@"\n`);
+    }
     chmodSync(path, 0o755);
   }
 
@@ -168,7 +190,7 @@ export async function proveAdapter(i: AdapterProofInput): Promise<AdapterProof> 
   const standIns: AdapterProof["standIns"] = {};
   for (const [program, record] of Object.entries(records)) {
     const lines = readFileSync(record, "utf8").split("\n").filter(Boolean);
-    standIns[program] = { versionChecks: lines.filter((l) => l === "version").length, runs: lines.filter((l) => l.startsWith("run ")).map((l) => Number(l.slice(4))) };
+    standIns[program] = { versionChecks: lines.filter((l) => l === "version").length, runs: lines.filter((l) => l.startsWith("run ")).map((l) => Number(l.slice(4))), methods: lines.filter((l) => l.startsWith("method ")).map((l) => l.slice(7)) };
   }
   return {
     version: d.version!, digest: d.sha256, fetchMs, packages: 1 + i.adapter.packages.length,

@@ -38,7 +38,7 @@ describe("proveAdapter", () => {
     expect(p.initialize.protocolVersion).toBeGreaterThan(0);
     expect(reg.asked.length).toBe(1);
     // The person's program was identity-checked; the fake agent never runs it.
-    expect(p.standIns["stand"]).toMatchObject({ runs: [] });
+    expect(p.standIns["stand"]).toMatchObject({ runs: [], methods: [] });
     expect(p.standIns["stand"]!.versionChecks).toBeGreaterThan(0);
   });
 
@@ -68,5 +68,21 @@ describe("proveAdapter", () => {
     const { i } = input(`await import(${JSON.stringify(FAKE_AGENT_PATH)});\n`, { uses: true });
     const err = await proveAdapter({ ...i, standIns: {} }).catch((e: unknown) => e as Error);
     expect((err as Error).message).toContain("the proof has no stand-in version line for it");
+  });
+  test("a JSON-RPC stand-in answers the adapter's requests with an empty result and records the method names it was asked", async () => {
+    const entry = [
+      `import { spawn } from "node:child_process";`,
+      `const p = spawn(process.env.STAND_PATH, ["app-server"], { stdio: ["pipe", "pipe", "inherit"] });`,
+      `p.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: {} }) + "\\n");`,
+      `const answer = await new Promise((r) => p.stdout.once("data", (d) => r(String(d))));`,
+      `if (!answer.includes('"id":1') || !answer.includes("stand-in")) throw new Error("the stand-in answered " + answer);`,
+      `p.kill();`,
+      `await import(${JSON.stringify(FAKE_AGENT_PATH)});`,
+      "",
+    ].join("\n");
+    const { i } = input(entry, { uses: true });
+    const p = await proveAdapter({ ...i, standIns: { stand: { version: "stand 1", jsonRpc: true } } });
+    expect(p.session).toEqual({ ok: true });
+    expect(p.standIns["stand"]).toMatchObject({ runs: [1], methods: ["initialize"] });
   });
 });

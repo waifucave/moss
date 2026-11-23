@@ -19,7 +19,11 @@ if (process.env["MOSS_REAL_ADAPTERS"] !== "1") throw new Error("this proof downl
 setDefaultTimeout(600_000);
 
 /** What each person's program prints for `--version` (matching the plugin's identity pattern). */
-const STAND_IN_VERSIONS: Record<string, string> = { claude: "2.1.316 (Claude Code)", codex: "codex-cli 0.100.0" };
+const STAND_IN_VERSIONS: Record<string, string | { version: string; jsonRpc: true }> = {
+  claude: "2.1.316 (Claude Code)",
+  // Codex's adapter drives `codex app-server` and answers no `initialize` of its own before that server is up: its stand-in speaks JSON-RPC.
+  codex: { version: "codex-cli 0.100.0", jsonRpc: true },
+};
 
 const adapters = Object.values(bundledBackends()).filter((b) => b.file.adapter !== undefined);
 
