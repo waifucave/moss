@@ -36,12 +36,32 @@ export async function backgroundPart(cdp: Cdp, id: string): Promise<Record<strin
   return undefined;
 }
 
-/** The on-screen windows (macOS's window server, `onscreen-windows.swift`): owner pid, opacity and size; never titles. */
+/** The on-screen windows: owner pid, opacity and size; never titles. macOS reads the window server (`onscreen-windows.swift`);
+ *  Linux reads the X server the run draws on (xvfb, with no window manager): each top-level window that is mapped (viewable),
+ *  its pid from `_NET_WM_PID`, its opacity from `_NET_WM_WINDOW_OPACITY` (none means opaque). Needs `xwininfo` and `xprop` (x11-utils). */
 export function onscreenWindows(swiftScript: string): { pid: number; alpha: number; w: number; h: number }[] | undefined {
+  if (process.platform === "linux") return onscreenWindowsX11();
   if (process.platform !== "darwin") return undefined;
   const r = spawnSync("swift", [swiftScript], { encoding: "utf8", timeout: 120_000 });
   if (r.status !== 0) return undefined;
   return (r.stdout ?? "").split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l) as { pid: number; alpha: number; w: number; h: number });
+}
+
+function onscreenWindowsX11(): { pid: number; alpha: number; w: number; h: number }[] | undefined {
+  const tree = spawnSync("xwininfo", ["-root", "-children"], { encoding: "utf8", timeout: 20_000 });
+  if (tree.status !== 0) return undefined;
+  const out: { pid: number; alpha: number; w: number; h: number }[] = [];
+  for (const id of [...(tree.stdout ?? "").matchAll(/^\s+(0x[0-9a-f]+)\s/gm)].map((m) => m[1]!)) {
+    const info = spawnSync("xwininfo", ["-id", id], { encoding: "utf8", timeout: 10_000 }).stdout ?? "";
+    if (!/Map State: IsViewable/.test(info)) continue;
+    const w = Number(/Width: (\d+)/.exec(info)?.[1] ?? 0);
+    const h = Number(/Height: (\d+)/.exec(info)?.[1] ?? 0);
+    const props = spawnSync("xprop", ["-id", id, "_NET_WM_PID", "_NET_WM_WINDOW_OPACITY"], { encoding: "utf8", timeout: 10_000 }).stdout ?? "";
+    const pid = Number(/_NET_WM_PID\(CARDINAL\) = (\d+)/.exec(props)?.[1] ?? 0);
+    const op = /_NET_WM_WINDOW_OPACITY\(CARDINAL\) = (\d+)/.exec(props)?.[1];
+    out.push({ pid, alpha: op === undefined ? 1 : Number(op) / 0xffffffff, w, h });
+  }
+  return out;
 }
 
 /** The browser rows again with the background host running (the controller's ruling): the same row, its pages in the host. */

@@ -1371,8 +1371,10 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      - name: The private Secret Service's tools and the display
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends dbus gnome-keyring libsecret-1-0 xvfb xauth
+      # bubblewrap and socat: the Bash fence of a bot's turn on Linux (fence/linux-bwrap.ts); x11-utils: the harness's list of the windows
+      # on the display (host-step.ts), where macOS reads the window server.
+      - name: The private Secret Service's tools, the fence's, and the display
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends dbus gnome-keyring libsecret-1-0 xvfb xauth x11-utils bubblewrap socat
 
       # Chromium's sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor turns off by default (as the machine job does).
       - name: Chromium's sandbox
