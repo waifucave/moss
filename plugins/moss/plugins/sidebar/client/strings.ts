@@ -7,6 +7,8 @@ export const S = {
   app: "MOSS",
   nav: "MOSS",
   newSession: "New session",
+  /** A session with no title yet (the canvas's and the archive's wording): never its raw id. */
+  untitled: "Untitled session",
   newSessionIn: (project: string) => `New session in ${project}`,
   search: "Search",
   outputs: "Outputs",

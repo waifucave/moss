@@ -10,6 +10,7 @@ import { fieldText } from "./local";
 import { Spot, useCore, useSpotEntries, usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
+import { S } from "./strings";
 import type { AgentStatus, AppGlyph, SidebarApp, SidebarProject, SidebarRoute } from "./types";
 
 /** `main`'s route, as the shell holds it. */
@@ -133,7 +134,7 @@ export function SidebarEntry({ props }: { props: SidebarEntryProps }) {
     if (!project) projects.push((project = { id: path, name: folderName(path), path, sessions: [] }));
     project.sessions.push({
       id: s.id,
-      title: s.title ?? s.id,
+      title: s.title !== undefined && s.title.trim() !== "" ? s.title : S.untitled,
       status: s.status === "idle" && s.failure === undefined ? "idle" : agentStatus(s),
       ...(s.needsYou ? { needsYou: s.needsYou } : {}),
       ...(s.backend ? { backend: s.backend } : {}),

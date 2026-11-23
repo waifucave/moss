@@ -169,7 +169,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
     if (!shown) return "";
     const own = barOwn !== undefined ? fieldText(barOwn.fields?.title) : undefined;
     if (own !== undefined) return own;
-    if (shown.route === "agent") return session?.title ?? S.views.agent!;
+    if (shown.route === "agent") return session?.title?.trim() ? session.title : S.untitled;
     if (shown.route === "start") return S.newSession;
     if (shown.route === "plugins") return S.plugins;
     const app = appButtons.find((e) => e.fields?.opens === shown.route);
@@ -222,7 +222,7 @@ export function Shell({ props }: EntryProps<ShellProps>) {
               ),
             };
           }
-          const base = id === "agent" ? (agentSession?.title ?? S.views.agent!) : (S.views[id] ?? id);
+          const base = id === "agent" ? (agentSession?.title?.trim() ? agentSession.title : S.untitled) : (S.views[id] ?? id);
           const empty = <PanelEmpty id={id} title={S.views[id] ?? id} onFindPlugin={(k) => navigate({ route: "plugins", params: { spot: "panel", key: k } })} />;
           return {
             id,

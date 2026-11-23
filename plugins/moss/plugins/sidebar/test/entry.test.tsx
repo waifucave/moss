@@ -61,6 +61,16 @@ describe("the sidebar entry", () => {
     expect(agentStatus(s("x", { status: "idle" }))).toBe("completed");
   });
 
+  test("a session with no title yet reads as the canvas's \"Untitled session\", never its raw id", async () => {
+    let emit: ((v: SessionView) => void) | undefined;
+    await mount(undefined, { onWatch: (l) => (emit = l) });
+    await act(async () => emit!(s("agent_s-kkvGA5qkM9", { kind: "coding", root: "home/Studio/projects/cli", status: "ready" })));
+    expect(screen.getByText("Untitled session")).toBeTruthy();
+    expect(screen.queryByText("agent_s-kkvGA5qkM9")).toBeNull();
+    await act(async () => emit!(s("agent_s-kkvGA5qkM9", { kind: "coding", root: "home/Studio/projects/cli", title: "Titled now", status: "ready" })));
+    expect(screen.getByText("Titled now")).toBeTruthy();
+  });
+
   test("a coding session started outside the window shows without a remount, and a change to it is followed", async () => {
     let emit: ((v: SessionView) => void) | undefined;
     await mount(undefined, { onWatch: (l) => (emit = l) });

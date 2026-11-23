@@ -1,5 +1,7 @@
 // Every string the window frame shows, in one place, for the move to `moss.` keys (plan, F-M3).
 export const S = {
+  /** A session with no title yet (the canvas's wording, as the sidebar shows it). */
+  untitled: "Untitled session",
   sessionMenu: (title: string) => `${title}: options`,
   panelToggles: "Panels",
   showSidebar: "Show the sidebar",
