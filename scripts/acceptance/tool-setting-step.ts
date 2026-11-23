@@ -62,8 +62,8 @@ export async function ensurePlugin(ctx: ExampleCtx): Promise<boolean> {
   mkdirSync(parent, { recursive: true });
   cpSync(join(import.meta.dir, "fixtures", PLUGIN), folder, { recursive: true });
   // The hook's and the stdio server's targets, which nothing here uses: a port nothing listens on, a path of the run's own.
-  writeFileSync(join(folder, "hooks", "targets"), `9\n${join(ctx.root, "tool-setting-hook-escape")}\n`);
-  writeFileSync(join(folder, "stdio", "targets"), `9\n${join(ctx.root, "tool-setting-stdio-escape")}\n`);
+  writeFileSync(join(folder, "hooks", "targets"), `9\n${join(ctx.root, "tool-setting-hook-escape")}\n${process.platform === "darwin" ? "" : "unfenced\n"}`);
+  writeFileSync(join(folder, "stdio", "targets"), `9\n${join(ctx.root, "tool-setting-stdio-escape")}\n${process.platform === "darwin" ? "" : "unfenced\n"}`);
   const r = await ctx.rpc.request<{ id: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
   const card = await until("the fixture plugin's OK card", 30_000, async () => {
     const all = await ctx.rpc.request<{ cards: { id: string; pluginId?: string }[] }>("card.list");
