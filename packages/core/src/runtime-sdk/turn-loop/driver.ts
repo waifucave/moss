@@ -1399,8 +1399,8 @@ export class BotSessionDriver implements SessionDriver {
   #endTurnAware(t: CoreToolDef): CoreToolDef {
     return {
       ...t,
-      run: async (input) => {
-        const r = await t.run(input);
+      run: async (input, extra) => {
+        const r = await t.run(input, extra);
         if (r.endTurn !== undefined && this.#turn !== undefined && !this.#turn.ended) this.#continueWith = r.endTurn.note;
         return r;
       },

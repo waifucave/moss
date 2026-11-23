@@ -129,48 +129,124 @@ export function windowsRoots(roots: readonly string[], o: { home: string; temp: 
 
 const GLOB = /[*?[\]{}]/;
 
+/** One glob segment as a case-insensitive regular expression (`*` any run of a name, `?` one character, `[..]` a
+ *  class, as the deny lists write case folding: `.[vV][sS]…`). */
+function segmentRe(seg: string): RegExp {
+  return new RegExp(`^${seg.replace(/[.+^$()|\\{}]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
+}
+
+/** How many folder entries the walk of one root may read before it stops (rule 4's budget), and how many unwalked
+ *  folders it may deny whole when it stops. */
+export const WALK_BUDGET_PER_ROOT = 200_000;
+export const UNWALKED_DENY_LIMIT = 256;
+
 /** The paths a deny list names that exist now: literal paths as they are, a glob expanded over what exists (its `*`
- *  one whole name, `**` any depth, bounded). A path that doesn't exist isn't stamped (srt-win fails an exec on one). */
-export function existingDenies(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; isDir?: (p: string) => boolean; budget?: number } = {}): string[] {
+ *  one whole name, `**` any depth). A path that doesn't exist isn't stamped (srt-win fails an exec on one). */
+export function existingDenies(paths: readonly string[], o: WalkOptions = {}): string[] {
   return existingDeniesOf(paths, o).paths;
 }
 
-/** `existingDenies`, and whether the walk ran out of its budget before every glob was expanded; when it did, each
- *  glob's fixed folder is in `paths` whole, so a glob left unexpanded is never a deny not stamped. */
-export function existingDeniesOf(paths: readonly string[], o: { exists?: (p: string) => boolean; list?: (dir: string) => readonly string[]; isDir?: (p: string) => boolean; budget?: number } = {}): { paths: string[]; exhausted: boolean } {
+export interface WalkOptions {
+  exists?: (p: string) => boolean;
+  list?: (dir: string) => readonly string[];
+  isDir?: (p: string) => boolean;
+  /** Entries one root's walk may read (`WALK_BUDGET_PER_ROOT`). */
+  budget?: number;
+}
+
+/** `existingDenies`, and the roots whose walk stopped at its budget. Rule 4's walk:
+ *  - A glob with no `**` matches at fixed depths only: it is expanded segment by segment, never walking a tree.
+ *  - The `**` globs under one folder (the deny lists' `<root>\**\.vscode` and the rest, ~40 of them) share ONE walk of
+ *    that folder, each entry tested against every pattern, with a budget of its own per folder: one large root never
+ *    starves another's patterns.
+ *  - Past a folder's budget it fails closed without losing the root: the folders the walk had queued but not read are
+ *    denied whole (collapsed to their parents until at most `UNWALKED_DENY_LIMIT` remain), so what wasn't looked at
+ *    can't be written, and what was looked at stays writable. Never through a link (`isDir` is lstat's). */
+export function existingDeniesOf(paths: readonly string[], o: WalkOptions = {}): { paths: string[]; exhausted: boolean; unwalked: string[] } {
   const exists = o.exists ?? ((p: string) => { try { lstatSync(p); return true; } catch { return false; } });
-  const list = o.list ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } });
-  // A folder the walk enters: never through a link.
-  const isDir = o.isDir ?? ((p: string) => { try { return lstatSync(p).isDirectory(); } catch { return false; } });
-  let budget = o.budget ?? 20_000;
+  // On the disk, one listing gives each entry's kind (a link or junction is not a folder: never walked through), so
+  // the walk makes no stat call per entry.
+  const kinds = new Map<string, boolean>();
+  const list = o.list ?? ((d: string) => {
+    try { return readdirSync(d, { withFileTypes: true }).map((e) => { kinds.set(fold(win32.join(d, e.name)), e.isDirectory() && !e.isSymbolicLink()); return e.name; }); }
+    catch { return []; }
+  });
+  const isDir = o.isDir ?? ((p: string) => { const k = kinds.get(fold(p)); if (k !== undefined) return k; try { return lstatSync(p).isDirectory(); } catch { return false; } });
+  const perRoot = o.budget ?? WALK_BUDGET_PER_ROOT;
   const out: string[] = [];
-  const expand = (base: string, segs: readonly string[]): void => {
-    if (budget-- <= 0) return;
+  const unwalked: string[] = [];
+  // Fixed-depth globs: expanded one segment at a time (bounded by the pattern's own depth).
+  const fixed = (base: string, segs: readonly string[]): void => {
     if (segs.length === 0) { if (exists(base)) out.push(base); return; }
     const [seg, ...rest] = segs as [string, ...string[]];
-    if (seg === "**") {
-      expand(base, rest);
-      for (const n of list(base)) { const c = win32.join(base, n); if (isDir(c)) expand(c, segs); }
-      return;
-    }
-    if (!GLOB.test(seg)) { expand(win32.join(base, seg), rest); return; }
-    const re = new RegExp(`^${seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
-    for (const n of list(base)) if (re.test(n)) expand(win32.join(base, n), rest);
+    if (!GLOB.test(seg)) { fixed(win32.join(base, seg), rest); return; }
+    const re = segmentRe(seg);
+    for (const n of list(base)) if (re.test(n)) fixed(win32.join(base, n), rest);
   };
-  const prefixes: string[] = [];
+  // `**` globs, grouped by the folder they start under.
+  const deep = new Map<string, { key: string; tail: RegExp[] }[]>();
   for (const p of paths) {
     if (!GLOB.test(p)) { if (exists(p)) out.push(p); continue; }
-    const norm = win32.normalize(p);
-    const parts = norm.split("\\");
-    const first = parts.findIndex((s) => GLOB.test(s));
+    const parts = win32.normalize(p).split("\\");
+    const first = parts.findIndex((x) => GLOB.test(x));
     const prefix = parts.slice(0, first).join("\\") || "\\";
-    prefixes.push(prefix);
-    expand(prefix, parts.slice(first));
+    const rest = parts.slice(first);
+    const star = rest.indexOf("**");
+    if (star < 0) { fixed(prefix, rest); continue; }
+    // Segments before `**` are fixed-depth: expand them, then each folder they reach starts a shared walk.
+    // After a second `**` (none in MOSS's lists) only the names after the last one are matched: a wider deny, never
+    // a narrower one.
+    const before = rest.slice(0, star), after = rest.slice(rest.lastIndexOf("**") + 1);
+    const starts: string[] = [];
+    const reach = (base: string, segs: readonly string[]): void => {
+      if (segs.length === 0) { if (isDir(base)) starts.push(base); return; }
+      const [seg, ...more] = segs as [string, ...string[]];
+      if (!GLOB.test(seg)) { reach(win32.join(base, seg), more); return; }
+      const re = segmentRe(seg);
+      for (const n of list(base)) if (re.test(n)) reach(win32.join(base, n), more);
+    };
+    reach(prefix, before);
+    for (const s of starts) {
+      const k = fold(s);
+      const group = deep.get(k) ?? [];
+      group.push({ key: s, tail: after.map(segmentRe) });
+      deep.set(k, group);
+    }
   }
-  // Past the budget, fail closed: every glob's fixed folder is denied whole (stricter than the glob, never looser).
-  const exhausted = budget < 0;
-  if (exhausted) for (const p of prefixes) if (exists(p)) out.push(p);
-  return { paths: uniq(out), exhausted };
+  for (const group of deep.values()) {
+    const root = group[0]!.key;
+    // A path relative to the root matches `**\<tail>` when its last `tail.length` names match the tail.
+    const matches = (names: readonly string[]): boolean => group.some((g) => {
+      if (names.length < g.tail.length) return false;
+      const end = names.slice(names.length - g.tail.length);
+      return g.tail.every((re, i) => re.test(end[i]!));
+    });
+    if (matches([])) out.push(root);
+    let budget = perRoot;
+    const queue: { dir: string; names: string[] }[] = [{ dir: root, names: [] }];
+    let head = 0;
+    while (head < queue.length) {
+      if (budget <= 0) break;
+      const { dir, names } = queue[head++]!;
+      for (const n of list(dir)) {
+        budget--;
+        const c = win32.join(dir, n), cn = [...names, n];
+        if (matches(cn)) out.push(c);
+        if (isDir(c)) queue.push({ dir: c, names: cn });
+      }
+    }
+    if (head < queue.length) {
+      // Fail closed: what the walk didn't read is denied whole, collapsed to parents within the limit.
+      let left = queue.slice(head).map((q) => q.dir);
+      while (left.length > UNWALKED_DENY_LIMIT) {
+        const up = uniq(left.map((d) => (fold(d) === fold(root) ? d : win32.dirname(d))));
+        if (up.length === left.length) break;
+        left = up;
+      }
+      unwalked.push(...left);
+    }
+  }
+  return { paths: uniq([...out, ...unwalked]), exhausted: unwalked.length > 0, unwalked: uniq(unwalked) };
 }
 
 /** CreateProcessW's command line holds 32 767 characters; past ~30 000 (with quoting) the command isn't run. */
@@ -234,6 +310,8 @@ export interface WinFencedDeps {
   readonly leasePollMs?: number;
 }
 
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
+
 /** The real machine's deps. */
 export function windowsDeps(mossHome: string, o: { ownerSid: string | null; programData: string | null }): WinFencedDeps {
   const env = minimalChildEnv();
@@ -241,9 +319,12 @@ export function windowsDeps(mossHome: string, o: { ownerSid: string | null; prog
   let store: LeaseStore | undefined;
   // The launcher is the protected copy's (`%ProgramFiles%\MOSS Sandbox\<SID>\srt-win.exe`, written by the installer
   // elevated, admin-write only), never the one beside the daemon in its user-writable install folder: nothing can
-  // swap it between the digest check and the spawn. `MOSS_SRT_WIN` still names one in dev (the digest is checked).
+  // swap it between the digest check and the spawn. `MOSS_SRT_WIN` names another only in a dev or test build (run
+  // from source, or `__MOSS_TEST_BUILD__` a label); a release build (`false`) never reads it. The digest is checked
+  // at every launch either way.
   const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-  const launcher = process.env.MOSS_SRT_WIN ?? (o.ownerSid === null ? srtWinPath() : win32.join(programFiles, "MOSS Sandbox", o.ownerSid, "srt-win.exe"));
+  const override = typeof __MOSS_TEST_BUILD__ === "boolean" ? undefined : process.env.MOSS_SRT_WIN;
+  const launcher = override ?? (o.ownerSid === null ? srtWinPath() : win32.join(programFiles, "MOSS Sandbox", o.ownerSid, "srt-win.exe"));
   return {
     launcher,
     launcherProblem() { return launcherProblem(this.launcher, srtWinArch()); },
@@ -297,6 +378,34 @@ function quarantineHooks(before: Map<string, boolean>, dirs: readonly string[], 
   return quarantinePlanted(planted, mossHome);
 }
 
+/** Rule 7 for the run-later names (the reviewer's "runs later" finding 1): a deny pattern (`<root>\**\.vscode`,
+ *  `.envrc`, `.mcp.json`, `.claude`, `.husky`, `.git`…) is stamped only on what exists when the command starts, so a
+ *  name the command MAKES under a write root carries no deny. After the run the patterns whose folder is under a write
+ *  root are walked again; a match that wasn't there before is moved aside into the MOSS home's quarantine (the
+ *  shallowest first, so a planted folder goes whole) and named in the result, as Linux's sandbox puts away what a
+ *  command made at a held place. The Mac refuses the write itself (Seatbelt matches the pattern as the path opens);
+ *  here the name exists until the command ends, so something the command itself starts could use it before then:
+ *  that is the residual. `before` is the pre-run walk's result. */
+export function quarantinePatternMatches(patterns: readonly string[], roots: readonly string[], before: readonly string[], mossHome: string, o: WalkOptions = {}): string | null {
+  const under = patterns.filter((p) => GLOB.test(p) && roots.some((r) => winUnder(p.split(/[*?[]/)[0]!.replace(/[\\/]+$/, ""), r)));
+  if (under.length === 0) return null;
+  const had = new Set(before.map(fold));
+  const now = existingDeniesOf(under, o);
+  const unwalked = new Set(now.unwalked.map(fold));
+  const fresh = now.paths.filter((p) => !had.has(fold(p)) && !unwalked.has(fold(p))).sort((a, b) => a.length - b.length);
+  const planted = new Map<string, boolean>();
+  for (const p of fresh) if (![...planted.keys()].some((q) => winUnder(p, q))) planted.set(p, false);
+  return quarantinePlanted(planted, mossHome);
+}
+
+/** The session grants this process holds (`acl grant --holder-pid <this pid>`), counted across every spawner in it
+ *  (the daemon has more than one: the bot shell's and the computer node's). srt-win's `acl revoke --holder-pid`
+ *  releases ALL of a holder's grants and its holds on the kept roots, so a command that ended revoking while another
+ *  ran would take that one's read grants from under it (the reviewer's finding 5). The revoke runs only when the last
+ *  command of this process ends; until then a root granted by an ended command stays granted, as a persistent root
+ *  does anyway (only a token carrying the root's capability SID writes there). */
+const heldGrants = { inFlight: 0 };
+
 /** The Windows leg of the fenced spawner. */
 export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bots?: () => readonly string[] }): FencedSpawner {
   const { fence, deps } = o;
@@ -326,12 +435,16 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     const m = /SandboxUserSid\s+REG_SZ\s+(S-1-[0-9-]+)/i.exec(r.stdout);
     return m ? m[1]! : null;
   };
+  // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
+  // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
   let profileGrant: Promise<string | null> | undefined;
   const grantProfile = (): Promise<string | null> => (profileGrant ??= (async () => {
     const started = Date.now();
     const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json"], { timeoutMs: 1_800_000 });
     const took = `${Math.round((Date.now() - started) / 1000)} s`;
-    return r.code === 0 ? null : `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
+    if (r.code === 0) return null;
+    profileGrant = undefined;
+    return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
   })());
   return {
     get available() { return !("why" in install()); },
@@ -384,15 +497,18 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         const installed = await installedSandboxSid();
         if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
         const grantSid = installed;
+        heldGrants.inFlight++;
+        try {
         const grant = await deps.exec(sessionGrantArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), {
           stdin: sessionGrantInput({ read: grantPlan.readGrants.filter((g) => !roots.some((x) => winUnder(g, x))), write: roots }), timeoutMs: 600_000,
         });
         mark("grant");
         if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
-        try {
-          // Rule 4: what exists of the fenced set, stamped for this command.
-          // Rule 4, and past the walk's budget its fail-closed form (`existingDeniesOf`: each glob's folder whole).
-          const denyRead = existingDeniesOf(plan.denyRead).paths, denyWrite = existingDeniesOf(plan.denyWrite).paths;
+          // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
+          // didn't read are denied whole (`existingDeniesOf`).
+          const denyRead = existingDeniesOf(plan.denyRead).paths;
+          const writeWalk = existingDeniesOf(plan.denyWrite);
+          const denyWrite = writeWalk.paths;
           mark("denies");
           // Rule 4's belt: a fenced path that doesn't exist yet but could be made inside a write root (a PowerShell
           // profile under Documents when the home's folders are written) can't carry a deny; if the command makes it,
@@ -419,13 +535,14 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (result.kind === "refused") return result;
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
-          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome)].filter((n): n is string => n !== null);
+          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome),
+            quarantinePatternMatches(plan.denyWrite, roots, writeWalk.paths, fence.mossHome)].filter((n): n is string => n !== null);
           mark("belt");
           return notes.length === 0 ? result : { ...result, stderr: result.stderr + notes.join("") };
         } finally {
-          // The command's per-session claims end with it; the persistent roots stay (only a token carrying a root's
-          // capability SID writes there, and only a command whose sandbox names the root gets it).
-          await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
+          // The per-session claims end with the last command of this process (`heldGrants`); the persistent roots stay
+          // (only a token carrying a root's capability SID writes there, and only a command whose sandbox names it).
+          if (--heldGrants.inFlight === 0) await deps.exec(sessionRevokeArgs({ launcher: deps.launcher, sid: grantSid, holderPid: process.pid }), { timeoutMs: 120_000 });
           mark("revoke");
           if (process.env.MOSS_WIN_FENCE_TIMING === "1") console.error(`[win-fence] ${lease.principal}: ${phases.join(", ")}`);
         }

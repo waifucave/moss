@@ -53,7 +53,43 @@ Write-Output ("timing: CreateProfile ahead {0} ms (hr 0x{1:X8}, {2})" -f $sw.Ela
 Measure-Exec "exec cmd, profile made ahead by CreateProfile" $m2 @($cmd, "/d", "/c", "exit 0")
 Measure-Exec "exec cmd, after that" $m2 @($cmd, "/d", "/c", "exit 0")
 
-# 5. The profile read grant (the daemon's first command pays it once), then once more.
+# 5. The daemon's own exec, piece by piece, on a principal whose profile is there: the write-restricted token, a
+#    write root held by a session (`acl grant --persistent --holder-pid`, then `--held-by`), and per-exec denies (each
+#    one an ACE stamped before the logon and taken off after) at 20 and 200 paths.
+$m3 = $pool[2].principal
+Measure-Exec "exec cmd (warm-up for the rows below)" $m3 @($cmd, "/d", "/c", "exit 0")
+$base = @("--quiet", "--user", $m3)
+function Measure-Args([string]$Label, [string[]]$Extra) {
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $out = & $Srt exec @base @Extra -- $cmd /d /c "exit 0" 2>&1
+  $code = $LASTEXITCODE; $sw.Stop()
+  Write-Output ("timing: {0} {1} ms (exit {2})" -f $Label, $sw.ElapsedMilliseconds, $code)
+  if ($code -ne 0) { $out | Select-Object -First 5 | ForEach-Object { Write-Output "  $_" } }
+}
+Measure-Args "exec, write-restricted token" @("--write-restricted-token")
+$probeDir = Join-Path $env:USERPROFILE "ws-timing"
+New-Item -ItemType Directory -Force -Path (Join-Path $probeDir "root"), (Join-Path $probeDir "denied") | Out-Null
+$files = 1..200 | ForEach-Object { $f = Join-Path $probeDir "denied\f$_.txt"; Set-Content -LiteralPath $f -Value x; $f }
+$installed = (Get-ItemProperty "HKLM:\SOFTWARE\sandbox-runtime").SandboxUserSid
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$doc = @{ read = @(); write = @((Join-Path $probeDir "root")) } | ConvertTo-Json -Compress
+$doc | & $Srt acl grant --holder-pid $PID --sandbox-user-sid $installed --persistent 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Output "  $_" }
+$sw.Stop(); Write-Output ("timing: acl grant --persistent, one root {0} ms (exit {1})" -f $sw.ElapsedMilliseconds, $LASTEXITCODE)
+Measure-Args "exec, write root held by the session" @("--write-restricted-token", "--write-root", (Join-Path $probeDir "root"), "--held-by", "$PID")
+foreach ($n in 20, 200) {
+  $deny = @(); foreach ($f in ($files | Select-Object -First $n)) { $deny += "--deny-read"; $deny += $f }
+  Measure-Args "exec, $n per-exec read denies" (@("--write-restricted-token", "--write-root", (Join-Path $probeDir "root"), "--held-by", "$PID") + $deny)
+}
+$sw = [Diagnostics.Stopwatch]::StartNew(); & $Srt acl revoke --holder-pid $PID --sandbox-user-sid $installed 2>&1 | Out-Null; $sw.Stop()
+Write-Output ("timing: acl revoke {0} ms" -f $sw.ElapsedMilliseconds)
+& $Srt acl forget --all 2>&1 | Out-Null
+Remove-Item -Recurse -Force $probeDir -ErrorAction SilentlyContinue
+
+# 6. The reset's delete for all four in ONE PowerShell process (the reset today starts one per member).
+$sids = @($pool | ForEach-Object { (Get-LocalUser -Name $_.principal).SID.Value })
+Measure-Step "delete all present profiles in one process" { foreach ($s in $sids) { Get-CimInstance Win32_UserProfile -Filter "SID='$s'" | Remove-CimInstance } }
+
+# 7. The profile read grant (the daemon's first command pays it once), then once more.
 Measure-Step "profile grant (first)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile grant (again)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile forget" { & $Srt profile forget }

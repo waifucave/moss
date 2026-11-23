@@ -83,7 +83,7 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     name,
     description,
     inputSchema: INPUT_SCHEMA,
-    async run(input: unknown): Promise<CoreToolResult> {
+    async run(input: unknown, extra?: { signal?: AbortSignal }): Promise<CoreToolResult> {
       const i = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
       if (typeof i.command !== "string" || i.command.trim() === "") return { text: `${name}: no command`, isError: true };
       if (i.run_in_background === true) return { text: `${name}: a background command isn't available on Windows yet; run it in the foreground`, isError: true };
@@ -98,8 +98,12 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       const r = await o.spawner.run({
         command: i.command, cwd, env: { TMPDIR: win32.normalize(cwd) }, timeoutMs: Math.min(asked, WIN_SHELL_MAX_TIMEOUT_MS),
         who: { caller: o.caller }, shell, sandbox,
+        // The runtime's abort of this call (a stop, a pause): it ends the command and everything it started at once
+        // (`runCommand` kills the broker, whose kill-on-close job takes the rest), never waiting for the time limit.
+        ...(extra?.signal === undefined ? {} : { signal: extra.signal }),
       });
       if (r.kind === "refused") return { text: `${name} was refused: ${r.reason}`, isError: true };
+      if (extra?.signal?.aborted === true) return { text: `${name}: stopped`, isError: true };
       if (r.kind === "timeout") return { text: resultText({ ...r, timedOut: true }), isError: true };
       return { text: resultText(r), isError: r.code !== 0 };
     },

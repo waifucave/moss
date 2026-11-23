@@ -8,7 +8,7 @@
 // copy's, as the daemon finds it, with no override). It writes a throwaway MOSS home in the runner's own profile (`.moss-e2e`) and a few
 // files beside it, and prints only dummy values (`PROBE_SECRET=dummy123`).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -42,9 +42,9 @@ const sandboxFor = () => {
 };
 /** One call; a launch refusal (`was refused:`) fails the test there, so no refusal of the fence's own launch can pass
  *  as the fence refusing what the command did. `refusal: true` for the one call that must be refused by the tool. */
-const call = async (t: CoreToolDef, input: Record<string, unknown>, o: { refusal?: boolean } = {}) => {
+const call = async (t: CoreToolDef, input: Record<string, unknown>, o: { refusal?: boolean; signal?: AbortSignal } = {}) => {
   const started = Date.now();
-  const r = await t.run(input);
+  const r = await t.run(input, o.signal === undefined ? undefined : { signal: o.signal });
   console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${r.isError ? "error" : "ok"} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
   if (o.refusal !== true) expect(r.text).not.toContain("was refused:");
   return r;
@@ -205,12 +205,87 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(existsSync(join(dir, "Microsoft.PowerShell_profile.ps1"))).toBe(false);
   }, 900_000);
 
-  test("nothing runs later: a risky git key is reverted and a planted hook is moved aside", async () => {
-    const r = await call(tools.Bash!, { command: "rm -rf repo && git init -q repo && git -C repo config core.hooksPath /c/elsewhere && mkdir -p repo/.git/hooks && printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout && echo done" });
+  test("nothing runs later: in a repo that was there, a risky git key is reverted and a planted hook moved aside; a .git made by the command goes whole", async () => {
+    // A repo the user made (the command can't write its .git: a held name), with its hooks folder.
+    rmSync(join(scratch, "repo"), { recursive: true, force: true });
+    mkdirSync(join(scratch, "repo", ".git", "hooks"), { recursive: true });
+    writeFileSync(join(scratch, "repo", ".git", "config"), "[core]\n\tbare = false\n");
+    const r = await call(tools.Bash!, { command: "git -C repo config core.hooksPath /c/elsewhere; printf '#!/bin/sh\\necho planted\\n' > repo/.git/hooks/post-checkout; echo done" });
     expect(r.text).toContain("done");
-    const config = readFileSync(join(scratch, "repo", ".git", "config"), "utf8");
-    expect(config).not.toContain("hooksPath");
+    expect(readFileSync(join(scratch, "repo", ".git", "config"), "utf8")).not.toContain("hooksPath");
     expect(existsSync(join(scratch, "repo", ".git", "hooks", "post-checkout"))).toBe(false);
+    // A repo the command makes: its .git is a held name made under a root, moved aside after the run (Linux's way;
+    // the Mac refuses the write).
+    rmSync(join(scratch, "repo2"), { recursive: true, force: true });
+    const m = await call(tools.Bash!, { command: "git init -q repo2; echo made" });
+    expect(m.text).toContain("made");
+    expect(existsSync(join(scratch, "repo2", ".git"))).toBe(false);
+    expect(m.text).toContain("quarantined");
+  }, 900_000);
+
+  test("nothing runs later: the run-later names a command makes under its roots are moved aside and named; a plain file stays", async () => {
+    const names = [".vscode/tasks.json", ".envrc", ".mcp.json", ".claude/settings.json", ".husky/pre-commit", "deep/er/.vscode/settings.json"];
+    for (const n of [".vscode", ".envrc", ".mcp.json", ".claude", ".husky", "deep", "notes.txt"]) rmSync(join(scratch, n), { recursive: true, force: true });
+    const make = names.map((n) => `mkdir -p "$(dirname '${n}')" && echo planted > '${n}'`).join(" && ");
+    const r = await call(tools.Bash!, { command: `${make} && echo kept > notes.txt && echo made` });
+    expect(r.text).toContain("made");
+    for (const n of names) expect(existsSync(join(scratch, ...n.split("/")))).toBe(false);
+    for (const n of [".vscode", ".envrc", ".mcp.json", ".claude", ".husky"]) expect(r.text).toContain(join(scratch, n));
+    // The positive control: an ordinary file the command wrote is still there.
+    expect(readFileSync(join(scratch, "notes.txt"), "utf8").trim()).toBe("kept");
+  }, 900_000);
+
+  test("a fenced command can't register a scheduled task as its account (something that would run later, outside a command)", async () => {
+    const r = await call(tools.PowerShell!, { command: "schtasks /create /tn moss-e2e-planted /tr 'cmd /c echo planted' /sc onlogon /f 2>&1; 'exit=' + $LASTEXITCODE" });
+    const made = Bun.spawnSync(["schtasks", "/query", "/tn", "moss-e2e-planted"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+    console.log(`[e2e] schtasks /create as the account: ${r.text.trim().slice(0, 200)}; task exists: ${made}`);
+    if (made) Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-planted", "/f"]);
+    expect(made).toBe(false);
+    expect(r.text).not.toContain("exit=0");
+  }, 900_000);
+
+  test("two commands at once: when one ends, the one still running still can't read a denied file, and its own grants hold", async () => {
+    // B reads the run token every half second for 20 s, starting before A and ending well after A's end (and A's
+    // end-of-command revoke, before the fix).
+    const loop = `for i in $(seq 1 40); do cat '${join(moss, "run", "token").replace(/\\/g, "/")}' 2>/dev/null; echo tick > /dev/null; sleep 0.5; done; echo b-done > b.txt; echo finished`;
+    const b = call(tools.Bash!, { command: loop, timeout: 120_000 });
+    await Bun.sleep(1_000);
+    const a = await call(tools.Bash!, { command: "whoami" });
+    expect(a.text).toContain("moss-sb-");
+    const bb = await b;
+    expect(bb.text).toContain("finished");
+    expect(bb.text).not.toContain("dummy123");
+    expect(readFileSync(join(scratch, "b.txt"), "utf8").trim()).toBe("b-done"); // B's write root held to its end
+  }, 900_000);
+
+  test("a stop reaches the command: it ends at once, with what it started, never waiting for its time limit", async () => {
+    const marker = join(scratch, "late-abort.txt");
+    rmSync(marker, { force: true });
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 4_000);
+    const started = Date.now();
+    const r = await call(tools.Bash!, { command: "(sleep 10; echo late > late-abort.txt) & sleep 300", timeout: 600_000 }, { signal: ac.signal });
+    const took = Date.now() - started;
+    console.log(`[e2e] stopped after ${took} ms`);
+    expect(r.isError).toBe(true);
+    expect(took).toBeLessThan(120_000);
+    await Bun.sleep(12_000);
+    expect(existsSync(marker)).toBe(false);
+  }, 900_000);
+
+  test("a fenced file the user's daemon replaces while a command runs stays unreadable to it (a new file in the MOSS home mid-run)", async () => {
+    const secret = join(moss, "secrets.enc");
+    const loop = `for i in $(seq 1 30); do cat '${secret.replace(/\\/g, "/")}' 2>/dev/null; cat '${join(moss, "fresh-mid-run.enc").replace(/\\/g, "/")}' 2>/dev/null; sleep 0.5; done; echo finished`;
+    const b = call(tools.Bash!, { command: loop, timeout: 120_000 });
+    await Bun.sleep(4_000);
+    // The daemon's way of writing: a temporary file in the same folder, renamed over the old one; and a new file.
+    writeFileSync(join(moss, "secrets.enc.tmp"), `${SECRET}\n`);
+    renameSync(join(moss, "secrets.enc.tmp"), secret);
+    writeFileSync(join(moss, "fresh-mid-run.enc"), `${SECRET}\n`);
+    const bb = await b;
+    console.log(`[e2e] mid-run replace: dummy visible = ${bb.text.includes("dummy123")}`);
+    expect(bb.text).toContain("finished");
+    expect(bb.text).not.toContain("dummy123");
   }, 900_000);
 
   test("the escape: a bot's own conversation's approved command writes the home, never MOSS's settings, and has no network", async () => {
