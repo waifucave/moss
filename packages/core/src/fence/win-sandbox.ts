@@ -1180,7 +1180,10 @@ export function winCallerRules(o: {
       grantRead.push(folder);
       continue;
     }
-    denyRead.push(folder);
+    // The memory folder by name too, beneath its bot's folder: the bot's own command grants read on it (group-wide,
+    // srt-win's session entries), and an explicit allow there would beat the deny this plan inherits from the folder
+    // above while both run; a deny on the very folder comes first (win-fenced rule 3b, `grantsConflict`).
+    denyRead.push(folder, memory);
     denyWrite.push(folder);
   }
   // Every other session's outputs and every other bot's scratch: denied explicitly, so a grant another

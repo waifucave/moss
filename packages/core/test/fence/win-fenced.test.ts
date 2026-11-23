@@ -386,6 +386,15 @@ describe("read grants of two commands at once (rule 3b, the reviewer's WS2 findi
     expect(grantsConflict(bot, { caller: "session:c", readGrants: [], denyRead: [moss] })).toBe(false);
     expect(grantsConflict(node("a", []), { ...node("a", []) })).toBe(false);
   });
+  test("a bot's grant on its memory beside a coding session's plan (which denies that memory folder by name) is not", async () => {
+    const { winLaunchPlan } = await import("../../src/fence/win-sandbox");
+    const { MossFence } = await import("../../src/fence/fence");
+    const fence = new MossFence({ os: "windows", home: "C:\\h", mossHome: moss, canonical: (p: string) => p });
+    const coding = { kind: "session", sessionId: "c", sessionKind: "coding" } as Caller;
+    const plan = winLaunchPlan({ policy: fence.forCaller(coding).policy(), mossHome: fence.mossHome, caller: coding, bots: ["alpha"], entries: () => [] });
+    const bot = { caller: "session:bot", readGrants: [fence.mossHome, win32.join(fence.mossHome, "bots", "alpha", "memory")], denyRead: [] };
+    expect(grantsConflict(bot, { caller: "session:c", readGrants: plan.grantRead, denyRead: plan.denyRead })).toBe(false);
+  });
 });
 
 describe("rule 7's move aside on Windows (the reviewer's WS2 finding 4)", () => {
