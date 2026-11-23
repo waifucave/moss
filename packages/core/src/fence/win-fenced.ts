@@ -563,9 +563,19 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           const hooksBefore = hookFiles(places.hooks);
           mark("snapshot");
           const runShell: RunShell = shell === "powershell" ? "none" : "git-bash";
-          const result = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv: built.argv });
+          // MOSS_WIN_FENCE_TIMING=1 (the windows-fence workflow): the broker says what it stamped (no `--quiet`), and
+          // its own lines go to the timing line, never into the command's output.
+          const timing = process.env.MOSS_WIN_FENCE_TIMING === "1";
+          const argv = timing ? built.argv.filter((a, i) => !(a === "--quiet" && i < built.argv.indexOf("--"))) : built.argv;
+          const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv });
           mark("exec");
-          if (result.kind === "refused") return result;
+          if (ran.kind === "refused") return ran;
+          let result = ran;
+          if (timing) {
+            const said = ran.stderr.split(/\r?\n/).filter((l) => l.startsWith("srt-win:"));
+            phases.push(`denies ${denyRead.length}r/${denyWrite.length}w, except ${grantPlan.denyReadExcept.length}, roots ${roots.length}; ${said.join(" | ").slice(0, 1500)}`);
+            result = { ...ran, stderr: ran.stderr.split(/\r?\n/).filter((l) => !l.startsWith("srt-win:")).join("\n") };
+          }
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
           const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome),
