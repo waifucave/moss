@@ -103,6 +103,33 @@ export function guardShim(o: { bun: string; guard: string; agent: string; budget
   return `#!/bin/sh\nexec ${q(o.bun)} ${q(o.guard)} --agent ${q(o.agent)} --budget ${q(o.budget)} --real ${q(o.real)} --home ${q(o.env.HOME)} --path ${q(o.env.PATH)} -- "$@"\n`;
 }
 
+/** The person's own programs that an adapter MOSS provides drives (the agent plugins' `launch.adapter.uses`): the engine must find
+ *  them on its PATH to offer the adapter at all, so a real-agents preview gives each a pass-through below. */
+export const USES_PROGRAMS: readonly string[] = ["claude", "codex"];
+
+/** The most launches of one such program in a run that are not a lone `--version` (an adapter starts its program a few times per session). */
+export const USES_LAUNCHES = 40;
+
+/** A pass-through for one of the person's programs an adapter drives: the real program with the same two names a guarded agent gets
+ *  (HOME and PATH) plus the account name, a lone `--version` always answered, every other launch counted in the budget folder and refused past the cap.
+ *  It is NOT the ACP guard: an adapter MOSS runs itself speaks ACP to the engine directly, so the one-line and turn limits do not
+ *  apply to its sessions; the cap only stops a loop. */
+export function usesShim(o: { real: string; counter: string; max: number; env: { HOME: string; PATH: string }; user: string }): string {
+  // USER and LOGNAME too: Claude Code finds its login by the account name (with only HOME and PATH its own `auth status` says it
+  // is not signed in; measured 2026-11-23). The engine itself passes both to an agent (BASE_ENV_ALLOW); the preview's engine has neither.
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(o.user)) throw new Error("the account name must be a plain name");
+  const names = `HOME=${q(o.env.HOME)} PATH=${q(o.env.PATH)} USER=${q(o.user)} LOGNAME=${q(o.user)}`;
+  return [
+    "#!/bin/sh",
+    `if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then ${names} exec ${q(o.real)} --version; fi`,
+    `n=0; [ -f ${q(o.counter)} ] && n=$(( $(/usr/bin/wc -l < ${q(o.counter)}) + 0 ))`,
+    `if [ "$n" -ge ${Math.trunc(o.max)} ]; then echo 'preview budget: this program was started too many times in this run' >&2; exit 70; fi`,
+    `echo x >> ${q(o.counter)}`,
+    `${names} exec ${q(o.real)} "$@"`,
+    "",
+  ].join("\n");
+}
+
 // ── the prompt rule ──────────────────────────────────────────────────────────────────────────────────────────────────────
 const FRAME = /^Message from (agent|the plugin) [^\n:]{1,200}:$/;
 /** MOSS's wrapper around a message that is not the person's: `<message from-session="…" title="…">` (attributes only, no markup inside). */

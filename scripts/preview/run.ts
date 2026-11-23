@@ -23,7 +23,7 @@ import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_pr
 import { randomBytes } from "node:crypto";
 import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, watch, writeFileSync, chmodSync, type FSWatcher } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
@@ -36,7 +36,7 @@ import { listProcesses, nameLeftovers, reap, runProcesses } from "../acceptance/
 import { AGENT_SHIMS, PREVIEW_PREFIX, USAGE, UsageError, WATCHED, appArgs, appEnv, baseEnv, daemonEnv, isolationProblems, layoutFor, ownRoot, parseOptions, parseRecord, reloads, sameProcess, shimScript, type Options, type Record_, type Started } from "./lib";
 import { quirksOf, seed, titleFor } from "./seed";
 import { startControl, type RunningControl } from "./control";
-import { diffSnapshots, guardShim, readSpent, realAgentEnv, renderSpent, resolveReal, snapshot } from "./real-lib";
+import { USES_LAUNCHES, USES_PROGRAMS, diffSnapshots, guardShim, readSpent, realAgentEnv, renderSpent, resolveReal, snapshot, usesShim } from "./real-lib";
 import { newToken } from "./control-lib";
 
 const REPO = resolve(import.meta.dir, "..", "..");
@@ -285,7 +285,20 @@ async function main(o: Options): Promise<void> {
       writeFileSync(join(layout.bin, f.command), guardShim({ bun: process.execPath, guard: join(REPO, "scripts", "preview", "real-guard.ts"), agent: f.command, budget: budgetDir, real: f.path, env }), { mode: 0o755 });
       chmodSync(join(layout.bin, f.command), 0o755);
     }
+    // The person's own `claude` and `codex`, which an adapter MOSS provides drives (the plugins' `launch.adapter.uses`): without them on
+    // the engine's PATH the engine reports the agent as not installed and never offers the adapter (found on the first real run after
+    // the adapters lane). A pass-through each: the same HOME and PATH, a launch cap, NOT the ACP guard (see usesShim).
+    const usesFound: string[] = [];
+    for (const program of USES_PROGRAMS) {
+      const real = Bun.which(program, { PATH: searchPath }) ?? undefined;
+      if (real === undefined) continue;
+      const usesEnv = realAgentEnv(homedir(), [...new Set([dirname(real), ...resolved.folders])]);
+      writeFileSync(join(layout.bin, program), usesShim({ real, counter: join(budgetDir, `uses-${program}.launches`), max: USES_LAUNCHES, env: usesEnv, user: userInfo().username }), { mode: 0o755 });
+      chmodSync(join(layout.bin, program), 0o755);
+      usesFound.push(`${program} (${real})`);
+    }
     say(`real agents: ${resolved.found.map((f) => `${f.backend} (${f.path})`).join(", ") || "none found"}`);
+    if (usesFound.length > 0) say(`real agents: an adapter MOSS provides drives ${usesFound.join(", ")} through a pass-through (at most ${USES_LAUNCHES} launches each); those sessions are NOT behind the ACP guard, so the one-line and turn limits are the driver's own`);
     for (const m of resolved.missing) say(`real agents: ${m.backend} is not offered: ${m.why}`);
     say(`real agents: each real program gets only HOME=${env.HOME} and PATH=${env.PATH}; the engine keeps its own throwaway HOME and PATH. Budget: ${"2 sessions per agent, 3 turns per session, one-line prompts"}`);
   }
@@ -325,7 +338,9 @@ async function main(o: Options): Promise<void> {
   const exe = electronExe();
 
   say("starting the engine");
-  startChild("engine", process.execPath, [join(REPO, "scripts", "acceptance", "daemon.ts")], daemonEnv({ ...input, runPid: process.pid, usageInert: USAGE_INERT_ENV }), join(layout.logs, "engine.log"));
+  // A real-agents preview lets the engine reach the public npm registry for what its own fake registry lacks (the pinned adapters an
+  // agent plugin declares, fetched only after the yes on their card): scripts/acceptance/daemon.ts reads the switch.
+  startChild("engine", process.execPath, [join(REPO, "scripts", "acceptance", "daemon.ts")], { ...daemonEnv({ ...input, runPid: process.pid, usageInert: USAGE_INERT_ENV }), ...(o.realAgents ? { MOSS_PREVIEW_REAL_NPM: "1" } : {}) }, join(layout.logs, "engine.log"));
   const engine = children[0]!.proc;
   const sock = join(layout.home, "run", "core.sock");
   const token = join(layout.home, "run", "app.token");

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUDGET, REAL_AGENTS, claimSession, classifyLine, diffSnapshots, isProbe, noteLaunch, snapshot, guardShim, minimalPath, noteTurn, promptProblem, readSpent, realAgentEnv, renderSpent, resolveReal } from "./real-lib";
+import { BUDGET, REAL_AGENTS, claimSession, classifyLine, diffSnapshots, isProbe, noteLaunch, snapshot, guardShim, minimalPath, noteTurn, promptProblem, readSpent, realAgentEnv, renderSpent, resolveReal, usesShim } from "./real-lib";
 import { approvable, seedRefusal } from "./seed";
 import { baseEnv, daemonEnv, isolationProblems, layoutFor, parseOptions, UsageError } from "./lib";
 
@@ -238,5 +238,31 @@ describe("the seeding poller in a real-agents preview", () => {
     expect(seedRefusal([{ id: "a", backend: "moss-code" }, { id: "b", backend: "gemini" }])).toBeUndefined();
     expect(seedRefusal([{ id: "a", backend: "moss-code" }, { id: "b", backend: "codex" }])).toContain("seed is refused");
     expect(seedRefusal([{ id: "x" }])).toBeUndefined();
+  });
+});
+
+
+describe("the pass-through for a program an adapter drives", () => {
+  test("a lone --version is always answered, every other launch is counted and refused past the cap, and the program gets only HOME and PATH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mprev-uses-"));
+    try {
+      const real = join(dir, "real");
+      writeFileSync(real, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '1.2.3 (Stand-in)'; exit 0; fi\necho \"home=$HOME path=$PATH user=$USER logname=$LOGNAME args=$#\"\n", { mode: 0o755 });
+      const shim = join(dir, "shim");
+      const counter = join(dir, "uses.launches");
+      writeFileSync(shim, usesShim({ real, counter, max: 2, env: { HOME: "/Users/someone", PATH: "/usr/bin:/bin" }, user: "someone" }), { mode: 0o755 });
+      const run = (...args: string[]) => Bun.spawnSync([shim, ...args], { env: { PATH: "/usr/bin:/bin", HOME: "/nowhere" } });
+      for (let i = 0; i < 5; i++) expect(run("--version").stdout.toString().trim()).toBe("1.2.3 (Stand-in)");
+      expect(existsSync(counter)).toBe(false);
+      expect(run("a", "b").stdout.toString().trim()).toBe("home=/Users/someone path=/usr/bin:/bin user=someone logname=someone args=2");
+      expect(() => usesShim({ real, counter, max: 2, env: { HOME: "/Users/someone", PATH: "/usr/bin:/bin" }, user: "a b'c" })).toThrow("plain name");
+      expect(run("--version", "x").exitCode).toBe(0);
+      const third = run("a");
+      expect(third.exitCode).toBe(70);
+      expect(third.stderr.toString()).toContain("too many times");
+      expect(readFileSync(counter, "utf8").split("\n").filter((l) => l !== "").length).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
