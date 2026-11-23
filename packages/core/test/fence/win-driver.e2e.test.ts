@@ -49,10 +49,10 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
     const spawner: FencedSpawner = { available: true, run: async (r) => { runs.push(r); return { kind: "exited", code: 0, stdout: `fenced ${r.shell}\n`, stderr: "", shell: "git-bash" }; } };
     const SANDBOX = { filesystem: { allowWrite: [paths.scratch], denyWrite: [join(home, "settings.json")], denyRead: [join(home, "run")] } };
     const core = windowsShellTools({ spawner, caller: ctx.caller, kind: "bot", cwd: () => paths.scratch, sandbox: () => SANDBOX, userHome: home, temp: tmpdir(), mossHome: home });
-    const asked: { name: string; input: Record<string, unknown> }[] = [];
+    const asked: { name: string; input: Record<string, unknown>; agentID?: string }[] = [];
     const deps: BotDriverDeps = {
       home, spawn,
-      canUseTool: () => async (name, input) => { asked.push({ name, input: input as Record<string, unknown> }); return { behavior: "allow", updatedInput: input as Record<string, unknown> }; },
+      canUseTool: () => async (name, input, opts) => { asked.push({ name, input: input as Record<string, unknown>, ...(opts?.agentID === undefined ? {} : { agentID: opts.agentID }) }); return { behavior: "allow", updatedInput: input as Record<string, unknown> }; },
       sandbox: () => ({ enabled: false }),
       stopGraceMs: 5_000,
       coreTools: () => core,
@@ -78,18 +78,18 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
       // The escape was asked about under the plain name, with the flag, before it ran.
       const escape = asked.find((a) => a.input.dangerouslyDisableSandbox === true);
       expect(escape?.name).toBe("Bash");
-      // Lane WS4: a bot's subagent on Windows. The runtime's own subagent tools are not offered to a bot's session
-      // (`BOT_BUILTIN_TOOLS`), so a call of either is no tool at all and runs nothing; and the in-process agent backend,
-      // the only runner of a bot's in-process subagent, reports itself not available on Windows (its sandbox is
-      // macOS's). So no subagent of a bot is given the core's Bash or PowerShell here; were one ever to call them with
-      // the flag, the driver's hook (its `agent_id`) and the approval check (`agentID`) refuse it with no card.
+      // Lane WS4: a bot's subagent on Windows. `Agent` is not offered to a bot's session (`BOT_BUILTIN_TOOLS`); the
+      // runtime's legacy name `Task` is tried too, with a prompt whose own call asks to leave the sandbox. Whatever the
+      // runtime does with it, nothing a subagent asks runs outside the sandbox: no further command reaches the spawner,
+      // and no flagged call reaches the permission check from a subagent (the driver's hook refuses one by its
+      // `agent_id`, with no card).
       const sub = await driver.turn(user([
         'CALL Agent {"description":"sub","prompt":"CALL Bash {\\"command\\":\\"echo sub\\",\\"dangerouslyDisableSandbox\\":true}","subagent_type":"general-purpose"}',
-        'CALL Task {"description":"sub","prompt":"echo sub","subagent_type":"general-purpose"}',
+        'CALL Task {"description":"sub","prompt":"CALL Bash {\\"command\\":\\"echo sub\\",\\"dangerouslyDisableSandbox\\":true}","subagent_type":"general-purpose"}',
       ].join("\n")), control());
       const sr = results(sub);
-      console.log(`[driver] subagent tools: ${JSON.stringify(sr)}; runs ${runs.length}; asked ${asked.length}`);
-      for (const x of sr) expect(x.isError).toBe(true);
+      console.log(`[driver] subagent tools: ${JSON.stringify(sr)}; runs ${JSON.stringify(runs.map((x) => [x.command, x.network ?? false]))}; asked ${JSON.stringify(asked.map((a) => [a.name, a.input.dangerouslyDisableSandbox ?? false, a.agentID ?? null]))}`);
+      expect(sr.find((x) => x.name === "Agent")?.isError).toBe(true);
       expect(runs).toHaveLength(3);
       expect(asked.filter((a) => a.input.dangerouslyDisableSandbox === true)).toHaveLength(1);
       const detection = await inProcessAgentBackend({ spawn } as unknown as Parameters<typeof inProcessAgentBackend>[0]).detect();
