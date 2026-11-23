@@ -463,7 +463,7 @@ function baseEnv(): Record<string, string> {
     // Linux: the display the run's apps draw on (xvfb) and the private Secret Service's bus (the env is a whitelist, so named).
     // The bus is the run's own (scripts/with-private-secret-service.sh); the engine takes the OS store only while the two
     // addresses are one (test-isolation.ts `privateBus`), so a developer's own session bus never counts.
-    ...(process.platform === "linux" ? Object.fromEntries(["DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "MOSS_PRIVATE_SECRET_SERVICE", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!])) : {}),
+    ...(process.platform === "linux" ? Object.fromEntries(["SHELL", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "MOSS_PRIVATE_SECRET_SERVICE", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!])) : {}),
     // A CI runner: the daemon says when its own loop ran late (daemon.ts), beside the stall watch on each app (stall-watch.ts).
     ...(diagnosing() ? { MOSS_ACCEPT_DIAGNOSE: "1" } : {}),
     // The test app's answer key, kept beside the keychain file (a test-marked or unpackaged headless app only): every
@@ -1437,7 +1437,8 @@ async function turn(c: MossClient, session: string, text: string, timeoutMs = 12
   }
   return { events: [], cards: [], changes: [] };
 }
-const errorsOf = (events: Ev[]): string[] => events.filter((e) => e.type === "agent_error" || e.type === "error").map((e) => String(e.message ?? e.error ?? JSON.stringify(e)).slice(0, 300));
+// A hook's notice is why a turn that a hook stopped has no reply (events.ts HookNoticeEvent): a failure line names it.
+const errorsOf = (events: Ev[]): string[] => events.filter((e) => e.type === "agent_error" || e.type === "error" || (e.type === "hook_notice" && e.stopsTurn === true)).map((e) => (e.type === "hook_notice" ? `hook notice: ${String(e.text)}` : String(e.message ?? e.error ?? JSON.stringify(e))).slice(0, 300));
 const stopOf = (events: Ev[]): string => String(events.find((e) => e.type === "turn_completed")?.stopReason ?? "?");
 
 // ── the cards ────────────────────────────────────────────────────────────────────────────────────────────────────

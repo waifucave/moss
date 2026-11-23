@@ -153,7 +153,8 @@ export function startRunnerLog(logs: string): () => void {
   mkdirSync(logs, { recursive: true });
   const file = join(logs, "runner.log");
   const line = (): void => {
-    const busiest = run("ps", ["-A", "-r", "-o", "pcpu=,comm="], 3_000).split("\n").slice(0, 3).map((l) => l.trim().replace(/\/[^\s]*\//g, "")).join(" | ");
+    // macOS's ps sorts with -r; procps (Linux) with --sort.
+    const busiest = run("ps", process.platform === "darwin" ? ["-A", "-r", "-o", "pcpu=,comm="] : ["-A", "--sort=-pcpu", "-o", "pcpu=,comm="], 3_000).split("\n").slice(0, 3).map((l) => l.trim().replace(/\/[^\s]*\//g, "")).join(" | ");
     // Free memory and the pages read from disk since boot (a jump in it between two lines: the machine was paging programs in).
     const vm = process.platform === "darwin" ? run("vm_stat", [], 2_000) : "";
     const free = /Pages free:\s+(\d+)/.exec(vm)?.[1];
