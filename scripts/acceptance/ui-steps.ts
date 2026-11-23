@@ -1089,7 +1089,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     await until("its status line, drawn by its own layer", 30_000, async () => ((await cdp.documents()).some((d) => d.url.startsWith(`moss-plugin://${pick!.id}/`)) ? true : undefined), () => dumpFrames(cdp));
     const kept = await until("the Plugins page in the document loaded again", 15_000, () => inTree<string>(cdp,
       "window.__acceptanceServedBefore === true || !document.querySelector('.cl-plugin-index__tabs') ? null : (document.querySelector('.cl-plugin-index [role=tab][aria-selected=true]')?.textContent ?? '(none)')"), () => dumpFrames(cdp));
-    if (kept.value.trim() !== "Add") fail(`after the reload the Plugins page shows the ${kept.value} tab, not the Add tab the user was on`);
+    // The page's own state comes back a moment after its first tabs are drawn (the first look can catch the default tab on a slow runner,
+    // as run 45227287282's Linux window-2 did): the Add tab must be there within 10 s, and a tab that never comes back still fails.
+    let tab = kept.value.trim();
+    for (const end = Date.now() + 10_000; tab !== "Add" && Date.now() < end; ) {
+      await sleep(250);
+      tab = (await inTree<string>(cdp, "document.querySelector('.cl-plugin-index [role=tab][aria-selected=true]')?.textContent ?? null").catch(() => undefined))?.value?.trim() ?? tab;
+    }
+    if (tab !== "Add") fail(`after the reload the Plugins page shows the ${tab} tab, not the Add tab the user was on`);
     const stale = await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true");
     if (stale !== undefined) await until("the document served before out of the window", 10_000, async () => ((await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true")) === undefined ? true : undefined), () => dumpFrames(cdp));
     page = { session: kept.session, value: true };
