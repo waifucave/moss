@@ -59,11 +59,56 @@ describe("the plan", () => {
     expect(got).toEqual(["C:\\h\\.moss\\run", "C:\\h\\.moss\\projects\\a\\x.provider-state.jsonl", "C:\\h\\.moss\\projects\\a\\b\\Y.PROVIDER-STATE.JSONL"]);
   });
 
-  test("past the walk's budget, each glob's folder is denied whole: stricter, never a deny left out", () => {
-    const dirs: Record<string, string[]> = { "C:\\h\\p": Array.from({ length: 50 }, (_, i) => `d${i}`) };
-    const got = existingDeniesOf(["C:\\h\\p\\**\\*.key"], { exists: (p) => p === "C:\\h\\p" || dirs[p] !== undefined, list: (d) => dirs[d] ?? [], isDir: (p) => p.startsWith("C:\\h\\p\\d"), budget: 10 });
+  // A synthetic home: `roots` write roots, each `width` folders wide and `depth` deep, a `.vscode` and an `.envrc` in
+  // some of them. Listed from a map (no disk), so a test sees the walk's own bounds.
+  function bigTree(o: { roots: number; width: number; depth: number }) {
+    const dirs = new Map<string, string[]>();
+    const files = new Set<string>();
+    const make = (dir: string, d: number) => {
+      const names: string[] = [];
+      if (d < o.depth) for (let i = 0; i < o.width; i++) { const n = `d${i}`; names.push(n); make(`${dir}\\${n}`, d + 1); }
+      if (d === o.depth) { names.push(".vscode", ".envrc"); dirs.set(`${dir}\\.vscode`, ["tasks.json"]); files.add(`${dir}\\.envrc`); files.add(`${dir}\\.vscode\\tasks.json`); }
+      dirs.set(dir, names);
+    };
+    const roots = Array.from({ length: o.roots }, (_, i) => `C:\\h\\r${i}`);
+    for (const r of roots) make(r, 0);
+    const exists = (p: string) => dirs.has(p) || files.has(p);
+    return { roots, dirs, exists, list: (d: string) => dirs.get(d) ?? [], isDir: (p: string) => dirs.has(p) };
+  }
+  const PATTERNS = (roots: readonly string[]) => roots.flatMap((r) => [`${r}\\**\\.[vV][sS][cC][oO][dD][eE]`, `${r}\\**\\.[eE][nN][vV][rR][cC]`, `${r}\\**\\*.[gG][iI][tT]\\hooks`]);
+
+  test("every ** pattern of a root shares one walk with a budget of its own: a big root never starves another", () => {
+    // Two roots of ~41 000 entries each (10^4 deep folders, each with a `.vscode` and an `.envrc`). A 45 000-entry
+    // budget holds one root, not both: shared by every glob (before), the second root's patterns were never walked
+    // and that root was denied whole, so nothing could be written there.
+    const t = bigTree({ roots: 2, width: 10, depth: 4 });
+    const got = existingDeniesOf(PATTERNS(t.roots), { exists: t.exists, list: t.list, isDir: t.isDir, budget: 45_000 });
+    expect(got.exhausted).toBe(false);
+    expect(got.paths.filter((p) => p.startsWith("C:\\h\\r1\\")).length).toBe(2 * 10 ** 4);
+    expect(got.paths).not.toContain("C:\\h\\r1");
+    expect(got.paths).not.toContain("C:\\h\\r0");
+  });
+
+  test("past a root's budget, only the folders the walk didn't read are denied whole; the root stays writable", () => {
+    const t = bigTree({ roots: 1, width: 12, depth: 4 }); // 22 620 folders, more than the budget below
+    const got = existingDeniesOf(PATTERNS(t.roots), { exists: t.exists, list: t.list, isDir: t.isDir, budget: 2_000 });
     expect(got.exhausted).toBe(true);
-    expect(got.paths).toContain("C:\\h\\p");
+    expect(got.paths).not.toContain("C:\\h\\r0");
+    expect(got.unwalked.length).toBeGreaterThan(0);
+    expect(got.unwalked.length).toBeLessThanOrEqual(256);
+    // Every deep match is covered: stamped itself, or under a folder denied whole.
+    const deep = [...t.dirs.keys()].filter((d) => d.endsWith("\\.vscode"));
+    for (const d of deep) expect(got.paths.some((p) => d === p || d.startsWith(`${p}\\`))).toBe(true);
+  });
+
+  test("the real budget walks a home of 200 000 entries in one pass per root, every match found", () => {
+    const t = bigTree({ roots: 3, width: 8, depth: 4 }); // 3 × (4 681 folders + 2 × 4 096 matches)
+    const started = performance.now();
+    const got = existingDeniesOf(PATTERNS(t.roots), { exists: t.exists, list: t.list, isDir: t.isDir });
+    const ms = performance.now() - started;
+    expect(got.exhausted).toBe(false);
+    expect(got.paths.length).toBe(3 * 2 * 8 ** 4);
+    console.log(`[walk] ${t.dirs.size} folders, ${got.paths.length} matches, ${ms.toFixed(0)} ms (in memory)`);
   });
 
   test("the broker's argv: the principal, the write-restricted token, the roots and denies, then `--` and the shell; too long is refused", () => {

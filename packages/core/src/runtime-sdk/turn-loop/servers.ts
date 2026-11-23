@@ -21,7 +21,9 @@ export interface CoreToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  run(input: unknown): Promise<CoreToolResult>;
+  /** `signal`: the runtime's abort of this call (the user's stop, a pause, the turn's end), for a tool whose work can
+   *  be stopped part way (the Windows Bash and PowerShell). A tool may ignore it. */
+  run(input: unknown, extra?: { signal?: AbortSignal }): Promise<CoreToolResult>;
 }
 
 /** A core tool's result. `endTurn`: the runtime's turn ends once this call's result is in, and the driver goes on at
@@ -86,11 +88,11 @@ export function coreToolsServer(tools: () => readonly CoreToolDef[]): McpSdkServ
   for (const t of initial) toolNames[t.name] = t.name;
   const instance: WinterMcpServerInstance = {
     listTools: () => tools().map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { "anthropic/alwaysLoad": true } })),
-    async callTool(name, args) {
+    async callTool(name, args, extra) {
       const def = tools().find((t) => t.name === name);
       if (def === undefined) return text(`unknown tool: ${name}`, true);
       try {
-        const r = await def.run(args);
+        const r = await def.run(args, extra?.signal === undefined ? undefined : { signal: extra.signal });
         const images = (r.images ?? []).filter((i) => /^image\/[a-z0-9.+-]+$/i.test(i.mimeType) && /^[A-Za-z0-9+/=]+$/.test(i.data)).map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType.toLowerCase() }));
         const out = text(r.text, r.isError);
         return { content: [...out.content, ...images], isError: out.isError, ...(r.meta === undefined ? {} : { _meta: r.meta }) };
