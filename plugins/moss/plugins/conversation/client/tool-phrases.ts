@@ -71,6 +71,9 @@ export function toolWords(name: string): string {
 function phraseFor(name: string): Phrase {
   const known = PHRASES[name];
   if (known) return known;
+  // A core tool an agent session reaches through its bridge arrives as `mcp__<Tool>` (no server part): the core tool's phrase.
+  const bridged = /^mcp__([A-Z][A-Za-z]*)$/.exec(name);
+  if (bridged && PHRASES[bridged[1] ?? ""]) return PHRASES[bridged[1] ?? ""]!;
   const plugin = splitPluginTool(name);
   const thing = plugin ? `${plugin.tool.replace(/_+/g, " ")} (${plugin.namespace})` : name;
   return p("used", "using", "use", thing, `${thing} # times`);
