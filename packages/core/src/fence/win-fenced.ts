@@ -426,7 +426,7 @@ function grantsInTurn<T>(f: () => Promise<T>): Promise<T> {
 }
 
 /** The Windows leg of the fenced spawner. */
-export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bots?: () => readonly string[] }): FencedSpawner {
+export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bots?: () => readonly string[]; grantAhead?: boolean }): FencedSpawner {
   const { fence, deps } = o;
   const refuse = (reason: string): FencedRunResult => ({ kind: "refused", reason: `a fenced process can't be started here: ${reason}` });
   /** Rule 1's first half: the pinned launcher and this owner's install. */
@@ -465,6 +465,9 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
     profileGrant = undefined;
     return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
   })());
+  // The read grant is made when the spawner is, off any command's path (its first run walks the profile: ~18 s on the
+  // runner); a command that comes before it ends waits for it, as before.
+  if (o.grantAhead !== false) setTimeout(() => { if (!("why" in install())) void grantProfile(); }, 0);
   return {
     get available() { return !("why" in install()); },
     run: async (r: FencedRun): Promise<FencedRunResult> => {
