@@ -194,7 +194,7 @@ describe("a subagent's escape (lane WS4: a rule about subagents, whatever tool o
     for (const tool of ["Bash", "PowerShell"]) {
       const w = world();
       const requests: MossApprovalRequest[] = [];
-      const recorder = { request: async (r: ApprovalRequest) => { requests.push(structuredClone(r) as MossApprovalRequest); return { allowed: false, by: "user" as const }; } };
+      const recorder = { request: async (r: ApprovalRequest) => { requests.push(structuredClone(r) as MossApprovalRequest); return { allowed: true, by: "level" as const }; } };
       const check = botApprovalCheck(recorder, { commandsSandboxed: true });
       const sub = await check(w.ctx, () => "user")(tool, flagged("git push"), { ...callOpts, agentID: "agent-1" });
       expect(sub).toMatchObject({ behavior: "deny", message: expect.stringContaining("a subagent's commands always run in the sandbox") });

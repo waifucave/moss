@@ -17,6 +17,7 @@ import type { BotSessionContext, EffectiveBot } from "../../src/bots/service";
 import { botPaths } from "../../src/bots/paths";
 import { BotSessionDriver, type BotDriverDeps } from "../../src/runtime-sdk/turn-loop/driver";
 import { windowsShellTools } from "../../src/fence/win-shell-tools";
+import { inProcessAgentBackend } from "../../src/runtime-sdk/turn-loop/subagent-backend";
 import type { FencedRun, FencedSpawner } from "../../src/fence/spawn";
 import { describeWithEmbeddedRuntime } from "../helpers/embedded-runtime";
 
@@ -77,6 +78,23 @@ const results = (end: { text?: string }) => JSON.parse(end.text ?? "[]") as { na
       // The escape was asked about under the plain name, with the flag, before it ran.
       const escape = asked.find((a) => a.input.dangerouslyDisableSandbox === true);
       expect(escape?.name).toBe("Bash");
+      // Lane WS4: a bot's subagent on Windows. The runtime's own subagent tools are not offered to a bot's session
+      // (`BOT_BUILTIN_TOOLS`), so a call of either is no tool at all and runs nothing; and the in-process agent backend,
+      // the only runner of a bot's in-process subagent, reports itself not available on Windows (its sandbox is
+      // macOS's). So no subagent of a bot is given the core's Bash or PowerShell here; were one ever to call them with
+      // the flag, the driver's hook (its `agent_id`) and the approval check (`agentID`) refuse it with no card.
+      const sub = await driver.turn(user([
+        'CALL Agent {"description":"sub","prompt":"CALL Bash {\\"command\\":\\"echo sub\\",\\"dangerouslyDisableSandbox\\":true}","subagent_type":"general-purpose"}',
+        'CALL Task {"description":"sub","prompt":"echo sub","subagent_type":"general-purpose"}',
+      ].join("\n")), control());
+      const sr = results(sub);
+      console.log(`[driver] subagent tools: ${JSON.stringify(sr)}; runs ${runs.length}; asked ${asked.length}`);
+      for (const x of sr) expect(x.isError).toBe(true);
+      expect(runs).toHaveLength(3);
+      expect(asked.filter((a) => a.input.dangerouslyDisableSandbox === true)).toHaveLength(1);
+      const detection = await inProcessAgentBackend({ spawn } as unknown as Parameters<typeof inProcessAgentBackend>[0]).detect();
+      console.log(`[driver] in-process agents on Windows: ${JSON.stringify(detection)}`);
+      expect(detection.installed).toBe(false);
     } finally {
       await driver.stop();
     }
