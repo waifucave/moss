@@ -123,7 +123,11 @@ export class Doc {
       await this.x.until(`${this.name} in the ${scheme} scheme`, 10_000, async () => ((await this.eval<boolean>(`matchMedia('(prefers-color-scheme: dark)').matches === ${scheme === "dark"}`).catch(() => false)) ? true : undefined), 100).catch(() => undefined);
       await this.eval("(() => { const b = document.body; b.style.outline = '1px solid transparent'; return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => { b.style.outline = ''; r(true); }))); })()").catch(() => undefined);
       await sleep(1_200);
-      const shot = await this.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, s);
+      // A picture is a render for the owner, never a check: a window that paints no frame (an offscreen one on a runner with no
+      // GPU may not) gives no picture, which is said, and the row's own checks go on.
+      await this.cdp.send("Page.bringToFront", {}, s).catch(() => undefined);
+      const shot = await this.cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, s).catch((e: unknown) => { console.error(`acceptance: setup pictures: no picture of ${name} in the ${scheme} scheme (${e instanceof Error ? e.message : String(e)})`); return undefined; });
+      if (shot === undefined) continue;
       const file = join(dir, `${name}-${scheme}.png`);
       writeFileSync(file, Buffer.from(shot.data, "base64"));
       out.push(file);

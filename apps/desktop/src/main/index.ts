@@ -3024,8 +3024,15 @@ function dragEnd(windowId: number): void {
   const from = windowDrags.end(windowId);
   const win = BrowserWindow.fromId(windowId);
   if (from === undefined || win === null || win.isDestroyed()) return;
-  const [x, y] = win.getPosition();
-  if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+  // X11 moves a window by asking the window manager, which answers a moment later: getPosition at the release still
+  // holds the place before the last moves, so on Linux the place is read once the manager has answered.
+  const report = () => {
+    if (win.isDestroyed()) return;
+    const [x, y] = win.getPosition();
+    if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+  };
+  if (process.platform === "linux") setTimeout(report, 300).unref?.();
+  else report();
 }
 
 /** The person's mouse-downs, by window (the view-frame gate). */

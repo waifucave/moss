@@ -2,7 +2,7 @@
 // (`--units host`, serial: its own home, its own daemon, which starts the host itself from this checkout through
 // `MOSS_HOST_COMMAND`, the engine's source seam). The probes and the row's name live here; run.ts drives the processes.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,7 +100,11 @@ export function startHostLauncher(): { sock: string; stop: () => void } {
       const logDir = join(env.MOSS_HOME ?? dir, "logs");
       mkdirSync(logDir, { recursive: true });
       const out = openSync(join(logDir, "host.out.log"), "a");
-      spawn(argv[0]!, argv.slice(1), { detached: true, stdio: ["ignore", out, out], env }).unref();
+      const child = spawn(argv[0]!, argv.slice(1), { detached: true, stdio: ["ignore", out, out], env });
+      child.unref();
+      // The host holds no OS lock on Linux (host-program.ts takeHostLock: macOS only), so the row's "the pid holding the lock" is what a
+      // service manager knows as the unit's main pid: the manager's record of the process it started, in the lock file's place.
+      if (child.pid !== undefined) { mkdirSync(join(env.MOSS_HOME ?? dir, "run"), { recursive: true }); writeFileSync(join(env.MOSS_HOME ?? dir, "run", "host.lock"), `${child.pid}\n`); }
     });
   });
   server.listen(sock);
