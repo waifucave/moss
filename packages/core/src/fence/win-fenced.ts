@@ -16,7 +16,9 @@
 //     The session's grants are revoked only when this process's last command ends (`heldGrants`). Outside the
 //     roots (a folder on the system drive that Users may modify, `C:\Users\Public`) the token alone refuses the write:
 //     the e2e asserts it. 3b: two commands of different callers never run at once when one's read grant lies strictly
-//     under the other's read deny (`grantsConflict`).
+//     under the other's read deny (`grantsConflict`); a write root counts as a read grant (its group entry includes
+//     read). 3c: a root this process granted before, strictly under a later command's read deny, is denied by name for
+//     that command (`strayRoots`): a root's entries outlive the command.
 //  4. Denies: every fenced path of the run's sandbox that exists is stamped `--deny-write` / `--deny-read` for this
 //     command; a glob is expanded over what exists, one walk per folder with its own budget, and past it the folders
 //     not read are denied whole (`existingDeniesOf`); a deny wins over every allow (an explicit deny ACE comes first).
@@ -34,7 +36,8 @@
 //     planted in such a repo's `.git/hooks` is moved aside, and a fenced path or run-later name (`.vscode`, `.envrc`,
 //     `.git`…) it made under a root is moved aside and named in the result (`revertPlantedGitKeys`,
 //     `quarantineHooks`, `quarantineWin`, `quarantinePatternMatches`): Linux's way, where the Mac refuses the write.
-//     What can't be moved (a folder on its way is a link, or the move failed) is left and named in the result.
+//     What can't be moved (a folder on its way is a link, the move failed, or a tree on another drive is over
+//     `QUARANTINE_COPY_LIMITS` to copy) is left and named in the result.
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`. The
 //     grant's exclusions are added to the ones in force, never replacing another engine's (another MOSS home of the
 //     same Windows user); a per-command read deny is dropped only when the grant IN FORCE, read back at that command
@@ -408,7 +411,29 @@ export function winChainIsClean(path: string, lstat: (p: string) => { isDirector
  *  quarantine. Across drives (a write root on another volume: a rename can't) it is copied there, links kept as
  *  links, and then deleted. Left where it is, and NAMED in the result, when a folder on its way is a link
  *  (`winChainIsClean`: the move would act through it) or the move fails (the reviewer's WS2 finding 4). */
-export function quarantineWin(before: Map<string, boolean>, mossHome: string): string | null {
+/** The most a move across drives copies of one planted tree into the MOSS home (the WS3 reviewer's finding 4): past
+ *  either it is left where it is and named. Counted before anything is copied, never following a link. */
+export const QUARANTINE_COPY_LIMITS = { bytes: 64 * 1024 * 1024, entries: 10_000 } as const;
+
+/** Whether the tree at `p` (itself included) fits `limits`, walked without following links; stops at the first
+ *  excess, so a huge tree costs no more than the limit to measure. */
+export function treeWithin(p: string, limits: { bytes: number; entries: number }): boolean {
+  let bytes = 0, entries = 0;
+  const stack = [p];
+  while (stack.length > 0) {
+    const at = stack.pop()!;
+    const st = lstatSync(at);
+    entries++;
+    bytes += st.isFile() ? st.size : 0;
+    if (entries > limits.entries || bytes > limits.bytes) return false;
+    if (st.isDirectory() && !st.isSymbolicLink()) for (const n of readdirSync(at)) stack.push(join(at, n));
+  }
+  return true;
+}
+
+export function quarantineWin(before: Map<string, boolean>, mossHome: string, o: { rename?: (from: string, to: string) => void; limits?: { bytes: number; entries: number } } = {}): string | null {
+  const rename = o.rename ?? renameSync;
+  const limits = o.limits ?? QUARANTINE_COPY_LIMITS;
   const moved: string[] = [];
   const left: string[] = [];
   for (const [p, wasThere] of before) {
@@ -419,8 +444,10 @@ export function quarantineWin(before: Map<string, boolean>, mossHome: string): s
     const q = join(qdir, `${win32.basename(p)}.quarantined-${randomBytes(4).toString("hex")}`);
     try {
       mkdirSync(qdir, { recursive: true });
-      try { renameSync(p, q); } catch (e) {
+      try { rename(p, q); } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+        // Across drives it is copied: never more than `limits` (counted first), or it stays and is named.
+        if (!treeWithin(p, limits)) { left.push(`${p} (more than ${limits.entries} entries or ${Math.round(limits.bytes / 1048576)} MB to copy across drives)`); continue; }
         cpSync(p, q, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
         rmSync(p, { recursive: true, force: true });
       }
@@ -491,9 +518,21 @@ export function parseProfileExclusions(stdout: string): string[] {
   } catch { return []; }
 }
 
-/** A command's plan while it runs (rule 3b): its caller, its read grants, its literal read denies. */
-interface PlanInFlight { readonly caller: string; readonly readGrants: readonly string[]; readonly denyRead: readonly string[] }
+/** A command's plan while it runs (rule 3b): its caller, every folder its grants open to the sandbox group (its read
+ *  grants AND its write roots: a root's group entry is srt-win's `MODIFY_NO_FDC`, read included), its literal read
+ *  denies. */
+interface PlanInFlight { readonly caller: string; readonly opens: readonly string[]; readonly denyRead: readonly string[] }
 const plansInFlight = new Set<PlanInFlight>();
+/** Rule 3c: every write root this process has granted, by its folded path. A root is PERSISTENT (`acl grant
+ *  --persistent`): its group entry, read included, stays after the command and the daemon, so a later command of
+ *  another caller whose plan denies a folder above it stamps that root by name (`strayRoots`). */
+const grantedRoots = new Map<string, string>();
+/** The roots this process granted that lie strictly under one of `denyRead` without being denied by name there, and
+ *  under none of the command's own folders (`own`): each gets a read deny of its own for the command. */
+export function strayRoots(granted: Iterable<string>, denyRead: readonly string[], own: readonly string[]): string[] {
+  const same = (a: string, b: string) => win32.normalize(a).toUpperCase() === win32.normalize(b).toUpperCase();
+  return [...granted].filter((g) => !own.some((o) => winUnder(g, o)) && !denyRead.some((d) => same(d, g)) && denyRead.some((d) => winUnder(g, d)));
+}
 const callerKey = (c: Caller): string => c.kind === "session" ? `session:${c.sessionId}` : c.kind === "plugin" ? `plugin:${c.pluginId}` : c.kind;
 /** Two commands of different callers where one's read grant lies STRICTLY under the other's read deny and the other
  *  doesn't deny that very folder too. Windows orders an object's explicit deny before its explicit allow, and a
@@ -504,7 +543,7 @@ const callerKey = (c: Caller): string => c.kind === "session" ? `session:${c.ses
 export function grantsConflict(x: PlanInFlight, y: PlanInFlight): boolean {
   if (x.caller === y.caller) return false;
   const same = (a: string, b: string) => win32.normalize(a).toUpperCase() === win32.normalize(b).toUpperCase();
-  const opens = (a: PlanInFlight, b: PlanInFlight) => a.readGrants.some((g) =>
+  const opens = (a: PlanInFlight, b: PlanInFlight) => a.opens.some((g) =>
     !b.denyRead.some((d) => same(d, g)) && b.denyRead.some((d) => winUnder(g, d)));
   return opens(x, y) || opens(y, x);
 }
@@ -666,8 +705,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // on a folder made AFTER the other started carries an explicit allow that beats the farther deny the other
         // has above it. So a command waits while one of another caller runs whose read grant lies strictly under its
         // own read deny, or the reverse (`grantsConflict`): never both at once. Anything else a running command can
-        // read through another's grant, its own plan allows too.
-        flight = { caller: callerKey(r.who.caller), readGrants: plan.readGrants, denyRead: plan.denyRead.filter((d) => !GLOB.test(d)) };
+        // read through another's grant, its own plan allows too. A write root opens as a read grant does (its group
+        // entry includes read, the WS3 reviewer's finding 1): a coding session's first command makes its outputs
+        // folder a root while another's runs, so both count. Rule 3c: a root this process granted earlier, strictly
+        // under one of this plan's read denies, is denied by name for this command (`strayRoots`).
+        const own = uniq([...plan.writeRoots, ...plan.readGrants]);
+        const literalDenies = plan.denyRead.filter((d) => !GLOB.test(d));
+        const stray = strayRoots(grantedRoots.values(), literalDenies, own);
+        // Only what is granted opens anything: the roots that exist (a missing one isn't granted) and the read grants.
+        flight = { caller: callerKey(r.who.caller), opens: uniq([...roots, ...plan.readGrants]), denyRead: [...literalDenies, ...stray] };
         const waitUntil = Date.now() + (deps.leaseTimeoutMs ?? 120_000);
         while ([...plansInFlight].some((y) => grantsConflict(flight!, y))) {
           if (Date.now() >= waitUntil) return refuse("another session's command holds read grants this one may not share; try again when it ends");
@@ -686,9 +732,10 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         try {
           mark("grant");
           if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
+          for (const x of roots) grantedRoots.set(fold(x), x);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
-          // didn't read are denied whole (`existingDeniesOf`).
-          const denyRead = await perExecReadDenies(existingDeniesOf(plan.denyRead).paths);
+          // didn't read are denied whole (`existingDeniesOf`). And rule 3c's stray roots, by name.
+          const denyRead = await perExecReadDenies(uniq([...existingDeniesOf(plan.denyRead).paths, ...stray.filter((x) => existsSync(x))]));
           const writeWalk = existingDeniesOf(plan.denyWrite);
           // Only a write deny at or under a write root is stamped: nothing outside the roots is writable with the
           // write-restricted token (rule 3), and each stamp on a folder is a DACL write Windows carries down its whole

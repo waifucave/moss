@@ -1,14 +1,14 @@
 // The Windows leg of the fenced spawner, its pure half and its refusals, on every OS (lane WS). The real launches run
 // in win-fenced.e2e.test.ts on windows-latest.
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parseProfileExclusions, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -375,15 +375,15 @@ describe("the grant in force, read back (the reviewer's WS2 finding 1)", () => {
 
 describe("read grants of two commands at once (rule 3b, the reviewer's WS2 finding 6)", () => {
   const moss = "C:\\h\\.moss";
-  const node = (id: string, others: string[]) => ({ caller: `session:${id}`, readGrants: [`${moss}\\outputs\\${id}`], denyRead: [moss, ...others.map((o) => `${moss}\\outputs\\${o}`)] });
+  const node = (id: string, others: string[]) => ({ caller: `session:${id}`, opens: [`${moss}\\outputs\\${id}`], denyRead: [moss, ...others.map((o) => `${moss}\\outputs\\${o}`)] });
   test("a session's folder made after the other started (not denied by name) is a conflict; one denied by name is not", () => {
     expect(grantsConflict(node("a", []), node("b", []))).toBe(true);
     expect(grantsConflict(node("a", ["b"]), node("b", ["a"]))).toBe(false);
     expect(grantsConflict(node("a", ["b"]), node("b", []))).toBe(true);
   });
   test("a bot's grant on the MOSS home beside a coding session's deny of the same folder is not; the same caller never is", () => {
-    const bot = { caller: "session:bot", readGrants: [moss], denyRead: [`${moss}\\run`] };
-    expect(grantsConflict(bot, { caller: "session:c", readGrants: [], denyRead: [moss] })).toBe(false);
+    const bot = { caller: "session:bot", opens: [moss], denyRead: [`${moss}\\run`] };
+    expect(grantsConflict(bot, { caller: "session:c", opens: [], denyRead: [moss] })).toBe(false);
     expect(grantsConflict(node("a", []), { ...node("a", []) })).toBe(false);
   });
   test("a bot's grant on its memory beside a coding session's plan (which denies that memory folder by name) is not", async () => {
@@ -392,8 +392,8 @@ describe("read grants of two commands at once (rule 3b, the reviewer's WS2 findi
     const fence = new MossFence({ os: "windows", home: "C:\\h", mossHome: moss, canonical: (p: string) => p });
     const coding = { kind: "session", sessionId: "c", sessionKind: "coding" } as Caller;
     const plan = winLaunchPlan({ policy: fence.forCaller(coding).policy(), mossHome: fence.mossHome, caller: coding, bots: ["alpha"], entries: () => [] });
-    const bot = { caller: "session:bot", readGrants: [fence.mossHome, win32.join(fence.mossHome, "bots", "alpha", "memory")], denyRead: [] };
-    expect(grantsConflict(bot, { caller: "session:c", readGrants: plan.grantRead, denyRead: plan.denyRead })).toBe(false);
+    const bot = { caller: "session:bot", opens: [fence.mossHome, win32.join(fence.mossHome, "bots", "alpha", "memory")], denyRead: [] };
+    expect(grantsConflict(bot, { caller: "session:c", opens: plan.grantRead, denyRead: plan.denyRead })).toBe(false);
   });
 });
 
@@ -406,5 +406,51 @@ describe("rule 7's move aside on Windows (the reviewer's WS2 finding 4)", () => 
   });
   test("nothing made: no line", () => {
     expect(quarantineWin(new Map([["C:\\nowhere\\x", false]]), "C:\\h\\.moss")).toBeNull();
+  });
+});
+
+describe("write roots in the wait and after it (rule 3c, the WS3 reviewer's finding 1)", () => {
+  const moss = "C:\\h\\.moss";
+  test("a coding session's new outputs root (a write root, read included) beside another's command is a conflict", () => {
+    const a = { caller: "session:a", opens: [`${moss}\\outputs\\a`, "C:\\h\\AppData\\Local\\Temp\\moss-a"], denyRead: [moss] };
+    const b = { caller: "session:b", opens: [`${moss}\\outputs\\b`], denyRead: [moss] };
+    expect(grantsConflict(a, b)).toBe(true);
+    expect(grantsConflict(a, { ...b, denyRead: [moss, `${moss}\\outputs\\a`] })).toBe(true); // b's own folder is still open to a
+    expect(grantsConflict(a, { ...b, opens: [], denyRead: [moss, `${moss}\\outputs\\a`] })).toBe(false);
+  });
+  test("a root granted earlier under a later command's read deny is denied by name for it, never its own nor one denied already", () => {
+    const granted = [`${moss}\\outputs\\a`, `${moss}\\outputs\\b`, `${moss}\\outputs\\c`, "D:\\proj"];
+    expect(strayRoots(granted, [moss, `${moss}\\outputs\\c`], [`${moss}\\outputs\\b`])).toEqual([`${moss}\\outputs\\a`]);
+    expect(strayRoots(granted, [], [])).toEqual([]);
+  });
+});
+
+describe("the move across drives is capped (the WS3 reviewer's finding 4)", () => {
+  const exdev = () => { const e = new Error("cross-device") as NodeJS.ErrnoException; e.code = "EXDEV"; throw e; };
+  test("a tree over the entries or bytes cap stays where it is and is named; one within it is copied and removed", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ws4-q-")));
+    try {
+      const mossHome = join(root, "moss");
+      const big = join(root, "big");
+      mkdirSync(join(big, "deep"), { recursive: true });
+      for (let i = 0; i < 300; i++) writeFileSync(join(big, "deep", `f${i}`), "x");
+      const heavy = join(root, "heavy");
+      writeFileSync(heavy, Buffer.alloc(4096));
+      const small = join(root, "small");
+      mkdirSync(small);
+      writeFileSync(join(small, "a"), "x");
+      const limits = { entries: 100, bytes: 2048 };
+      expect(treeWithin(big, limits)).toBe(false);
+      expect(treeWithin(heavy, limits)).toBe(false);
+      expect(treeWithin(small, limits)).toBe(true);
+      const line = quarantineWin(new Map([[big, false], [heavy, false], [small, false]]), mossHome, { rename: exdev, limits });
+      expect(line).toContain(`${big} (more than 100 entries or 0 MB to copy across drives)`);
+      expect(line).toContain(heavy);
+      expect(line).toContain("could NOT be moved aside");
+      expect(existsSync(join(big, "deep", "f299"))).toBe(true);
+      expect(existsSync(heavy)).toBe(true);
+      expect(existsSync(small)).toBe(false);
+      expect(readdirSync(join(mossHome, "quarantine")).some((n) => n.startsWith("small.quarantined-"))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
