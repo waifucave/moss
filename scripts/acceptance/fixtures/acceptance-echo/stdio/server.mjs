@@ -15,7 +15,10 @@ import { join } from "node:path";
 
 const root = process.argv[2] ?? "";
 const data = process.argv[3] ?? process.cwd();
-const [portLine, outside] = (() => { try { return readFileSync(join(root, "stdio", "targets"), "utf8").split("\n"); } catch { return ["0", ""]; } })();
+const [portLine, outside, mode] = (() => { try { return readFileSync(join(root, "stdio", "targets"), "utf8").split("\n"); } catch { return ["0", ""]; } })();
+// Line 3 `unfenced` (written by the run where no fence holds the plugin: Linux, spec item 58, plugin code runs as the user): a write outside
+// its folders or into its own tree would succeed and change the tree the person's OK covers, so those two are not tried, only said.
+const unfenced = mode === "unfenced";
 const port = Number(portLine) || 0;
 
 const tryWrite = (path) => { try { writeFileSync(path, "escaped\n"); return "written"; } catch { return "denied"; } };
@@ -61,8 +64,8 @@ const tryBorrow = () => new Promise((resolve) => {
 async function probe() {
   const seen = {
     data: tryWrite(join(data, "stdio-probe-data.txt")),
-    outside: outside ? tryWrite(outside) : "denied",
-    tree: tryWrite(join(root, "escaped-stdio")),
+    outside: unfenced ? "skipped" : outside ? tryWrite(outside) : "denied",
+    tree: unfenced ? "skipped" : tryWrite(join(root, "escaped-stdio")),
     direct: await tryConnect(),
     proxied: await tryProxy(),
     borrowed: await tryBorrow(),

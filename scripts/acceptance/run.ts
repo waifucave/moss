@@ -74,6 +74,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
+import { notOnLinux, onLinux } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
 import { USAGE_INERT_ENV } from "../../packages/core/src/usage/wiring";
@@ -1008,6 +1009,9 @@ const INDEX_PREFIX = "plugins from an index the user added and from npm";
 let hookTarget: { port: number; connections: number; stop(): void } | undefined;
 /** Where the fixture's hook tries to write outside its allowed folders: in the run's user home. */
 const hookEscape = (): string => join(userHome, "acceptance-hook-escape");
+/** The third line of the fixture's `targets` files: where no fence holds a plugin (Linux: plugin code runs as the user, spec item 58) the
+ *  probes do not try the two writes a fence refuses, which would succeed and change the tree the person's OK covers. */
+const UNFENCED_LINE = process.platform === "darwin" ? "" : "unfenced\n";
 /** Where the fixture's stdio server tries to write outside its allowed folders. */
 const stdioEscape = (): string => join(userHome, "acceptance-stdio-escape");
 /** The stdio server step's outcome, from its turn on the first daemon. */
@@ -2292,9 +2296,9 @@ async function main(): Promise<void> {
       t.stop = () => l.stop(true);
       hookTarget = t;
     }
-    writeFileSync(join(folder, "hooks", "targets"), `${hookTarget.port}\n${hookEscape()}\n`);
+    writeFileSync(join(folder, "hooks", "targets"), `${hookTarget.port}\n${hookEscape()}\n${UNFENCED_LINE}`);
     // The stdio server's: the same listener, and a path of its own outside its folders.
-    writeFileSync(join(folder, "stdio", "targets"), `${hookTarget.port}\n${stdioEscape()}\n`);
+    writeFileSync(join(folder, "stdio", "targets"), `${hookTarget.port}\n${stdioEscape()}\n${UNFENCED_LINE}`);
     const installed = await c.request<{ id: string; state: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
     pluginId = installed.id;
     say(`plugin.install → ${installed.id} ${installed.state}${installed.card ? ` card ${installed.card}` : " (no card named)"}`);
@@ -2496,7 +2500,8 @@ async function main(): Promise<void> {
 
       // P5 (the owner, 2026-11-15: "Yes, named on the card"): programs and folders of the user's outside the sandbox
       // (outside-step.ts).
-      {
+      // Linux: a plugin there runs as the user with no sandbox to be outside of (spec §5.2, item 58), so there is no "outside" to name or refuse.
+      if (!onLinux()) {
         const o = writeOutside(src, join(root, "outside-bin"), userHome);
         const named = await install({ from: "folder", path: o.named });
         const plain = await install({ from: "folder", path: o.plain });
@@ -2742,7 +2747,7 @@ async function main(): Promise<void> {
       }
 
       if (wrong.length > 0) fail(`${wrong.join(" | ")} (passed: ${done.map((d) => d.split(" ")[0]).join(", ") || "none"})`);
-      manifestOutcome = { status: "PASS", detail: done.join("; ") };
+      manifestOutcome = { status: "PASS", detail: onLinux() ? notOnLinux("P5 (a program or folder of the user's named on the card as outside the plugin's sandbox, refused to a plugin that doesn't name it) is the plugin sandbox's, which only macOS has: on Linux plugin code runs as the user (spec §5.2, item 58)", done.join("; ")) : done.join("; ") };
     } catch (err) {
       manifestOutcome = { status: statusOf(err), detail: why(err) };
     } finally {
@@ -2864,13 +2869,18 @@ async function main(): Promise<void> {
       });
       const seen = Object.fromEntries(probe.text.trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
       if (seen.event !== "turn.start") fail(`the hook ran, but on ${JSON.stringify(seen.event)}, not turn.start (${probe.text.trim()})`);
-      if (seen.outside !== "denied" || existsSync(hookEscape())) fail(`the hook wrote outside its folders (${hookEscape()}): ${probe.text.trim()}`);
-      const tree = join(stateDir !== undefined ? userHome : root, "plugin-src", "acceptance-echo", "escaped");
-      if (seen.tree !== "denied" || existsSync(tree)) fail(`the hook wrote into its plugin's folder: ${probe.text.trim()}`);
-      if (seen.direct !== "denied") fail(`the hook reached 127.0.0.1:${hookTarget?.port} directly: ${probe.text.trim()}`);
-      if (seen.proxied === "200") fail(`the hook's proxy let it reach an undeclared host: ${probe.text.trim()}`);
-      if ((hookTarget?.connections ?? 0) > 0) fail(`the run's listener was reached ${hookTarget!.connections} time(s) from the hook`);
-      hookOutcome = { status: "PASS", detail: `acceptance-echo's probe hook fired on turn.start (its note in ${probe.file.slice(home.length + 1)}); a write outside its folders and into its tree was refused, 127.0.0.1:${hookTarget?.port} wasn't reached directly, and its proxy answered ${seen.proxied} for the undeclared host; the listener saw 0 connections` };
+      if (onLinux()) {
+        // Plugin code on Linux runs as the user (spec §5.2, item 58): no fence refuses its writes or its sockets, so the refusals this row proves are macOS's.
+        hookOutcome = { status: "PASS", detail: notOnLinux("the plugin's fence (a write outside its folders and into its tree refused, no direct socket, the proxy's refusal) is macOS's: on Linux plugin code runs as the user (spec §5.2, item 58)", `acceptance-echo's probe hook fired on turn.start (its note in ${probe.file.slice(home.length + 1)}) and, unfenced, left its tree alone`) };
+      } else {
+        if (seen.outside !== "denied" || existsSync(hookEscape())) fail(`the hook wrote outside its folders (${hookEscape()}): ${probe.text.trim()}`);
+        const tree = join(stateDir !== undefined ? userHome : root, "plugin-src", "acceptance-echo", "escaped");
+        if (seen.tree !== "denied" || existsSync(tree)) fail(`the hook wrote into its plugin's folder: ${probe.text.trim()}`);
+        if (seen.direct !== "denied") fail(`the hook reached 127.0.0.1:${hookTarget?.port} directly: ${probe.text.trim()}`);
+        if (seen.proxied === "200") fail(`the hook's proxy let it reach an undeclared host: ${probe.text.trim()}`);
+        if ((hookTarget?.connections ?? 0) > 0) fail(`the run's listener was reached ${hookTarget!.connections} time(s) from the hook`);
+        hookOutcome = { status: "PASS", detail: `acceptance-echo's probe hook fired on turn.start (its note in ${probe.file.slice(home.length + 1)}); a write outside its folders and into its tree was refused, 127.0.0.1:${hookTarget?.port} wasn't reached directly, and its proxy answered ${seen.proxied} for the undeclared host; the listener saw 0 connections` };
+      }
     } catch (err) {
       hookOutcome = { status: statusOf(err), detail: why(err) };
     }
@@ -3141,14 +3151,19 @@ async function main(): Promise<void> {
       if (result === undefined) fail(`the bot called ${called} but no tool result came back (stop ${stopOf(events)}${errorsOf(events).length ? `: ${errorsOf(events)[0]}` : ""})`);
       if (result!.isError || !result!.text.includes("acceptance-stdio-pong")) fail(`${called} answered with an error: ${result!.text.slice(0, 300)}`);
       const said = Object.fromEntries(result!.text.slice(result!.text.indexOf("acceptance-stdio-pong")).split(/\s+/).slice(1).map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
-      const tree = join(stateDir !== undefined ? userHome : root, "plugin-src", "acceptance-echo", "escaped-stdio");
-      if (said.outside !== "denied" || existsSync(stdioEscape())) fail(`the stdio server wrote outside its folders (${stdioEscape()}): ${result!.text.slice(0, 300)}`);
-      if (said.tree !== "denied" || existsSync(tree)) fail(`the stdio server wrote into its plugin's folder: ${result!.text.slice(0, 300)}`);
-      if (said.direct !== "denied") fail(`the stdio server reached 127.0.0.1:${hookTarget?.port} directly: ${result!.text.slice(0, 300)}`);
-      if (said.proxied === "200") fail(`the stdio server's proxy let it reach an undeclared host: ${result!.text.slice(0, 300)}`);
-      if ((hookTarget?.connections ?? 0) > listeners) fail(`the run's listener was reached ${(hookTarget?.connections ?? 0) - listeners} time(s) from the stdio server`);
       if (said.data !== "written") fail(`the stdio server couldn't write its own data folder (the fence refuses everything?): ${result!.text.slice(0, 300)}`);
-      stdioOutcome = { status: "PASS", detail: `the bot was offered and called ${called} (acceptance-echo's stdio server, run here); it wrote its data folder, a write outside its folders and into its tree was refused, 127.0.0.1:${hookTarget?.port} wasn't reached directly, and its proxy answered ${said.proxied} for the undeclared host; the listener saw 0 connections${carded.length ? ` (${carded.join("; ")})` : ""}` };
+      if (onLinux()) {
+        // Plugin code on Linux runs as the user (spec §5.2, item 58): no fence refuses its writes or its sockets, so the refusals this row proves are macOS's.
+        stdioOutcome = { status: "PASS", detail: notOnLinux("the plugin's fence (a write outside its folders and into its tree refused, no direct socket, the proxy's refusal) is macOS's: on Linux plugin code runs as the user (spec §5.2, item 58)", `the bot was offered and called ${called} (acceptance-echo's stdio server, run here) and it wrote its data folder`) };
+      } else {
+        const tree = join(stateDir !== undefined ? userHome : root, "plugin-src", "acceptance-echo", "escaped-stdio");
+        if (said.outside !== "denied" || existsSync(stdioEscape())) fail(`the stdio server wrote outside its folders (${stdioEscape()}): ${result!.text.slice(0, 300)}`);
+        if (said.tree !== "denied" || existsSync(tree)) fail(`the stdio server wrote into its plugin's folder: ${result!.text.slice(0, 300)}`);
+        if (said.direct !== "denied") fail(`the stdio server reached 127.0.0.1:${hookTarget?.port} directly: ${result!.text.slice(0, 300)}`);
+        if (said.proxied === "200") fail(`the stdio server's proxy let it reach an undeclared host: ${result!.text.slice(0, 300)}`);
+        if ((hookTarget?.connections ?? 0) > listeners) fail(`the run's listener was reached ${(hookTarget?.connections ?? 0) - listeners} time(s) from the stdio server`);
+        stdioOutcome = { status: "PASS", detail: `the bot was offered and called ${called} (acceptance-echo's stdio server, run here); it wrote its data folder, a write outside its folders and into its tree was refused, 127.0.0.1:${hookTarget?.port} wasn't reached directly, and its proxy answered ${said.proxied} for the undeclared host; the listener saw 0 connections${carded.length ? ` (${carded.join("; ")})` : ""}` };
+      }
     } catch (err) {
       stdioOutcome = { status: statusOf(err), detail: why(err) };
     }
@@ -3161,6 +3176,7 @@ async function main(): Promise<void> {
   // owner's ruling: a server the user added reaches any host, said on its card) reaches the site straight.
   if (session === undefined || !turnsWork) netOutcome = { status: "BLOCKED", detail: "no bot turn reaches the fake provider (step 3)" };
   else if (pluginId === undefined || !pluginOk) netOutcome = { status: "BLOCKED", detail: "the first plugin isn't installed and approved (step 4): no stdio server to borrow with" };
+  else if (onLinux()) netOutcome = { status: "PASS", detail: notOnLinux("a plugin's own network proxy (its granted host through the proxy and nothing else, no direct socket, no borrowed proxy) is the macOS fence's: on Linux plugin code runs as the user and reaches the network directly (spec §5.2, item 58)") };
   else {
     try {
       netSite = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => (new URL(req.url).pathname === "/net-page" ? new Response(NET_BODY) : new Response("not here", { status: 404 })) });
@@ -3194,7 +3210,7 @@ async function main(): Promise<void> {
       const folder = join(stateDir !== undefined ? userHome : root, "plugin-src", "acceptance-net");
       cpSync(join(import.meta.dir, "fixtures", "acceptance-net"), folder, { recursive: true });
       writeFileSync(join(folder, "moss.json"), readFileSync(join(folder, "moss.json"), "utf8").replace("ACCEPTANCE_NET_PORT", String(port)));
-      writeFileSync(join(folder, "stdio", "targets"), `${port}\n${hookTarget?.port ?? 9}\n`);
+      writeFileSync(join(folder, "stdio", "targets"), `${port}\n${hookTarget?.port ?? 9}\n${UNFENCED_LINE}`);
       const net = await install({ from: "folder", path: folder });
       if (!net.text.includes(`localhost:${port}`)) fail(`${net.id}'s OK card doesn't name the host it's granted (localhost:${port}): ${net.text.slice(0, 300)}`);
       // Every part runs and is said, the wrong ones together at the end (one run shows all of them).
@@ -3942,8 +3958,8 @@ async function installEcho(c: MossClient): Promise<void> {
   const folder = join(root, "plugin-src", "acceptance-echo");
   cpSync(join(import.meta.dir, "fixtures", "acceptance-echo"), folder, { recursive: true });
   // Its hook's and stdio server's targets (nothing listens on port 9; the paths are the run's own), as step 4 writes them.
-  writeFileSync(join(folder, "hooks", "targets"), `9\n${hookEscape()}\n`);
-  writeFileSync(join(folder, "stdio", "targets"), `9\n${stdioEscape()}\n`);
+  writeFileSync(join(folder, "hooks", "targets"), `9\n${hookEscape()}\n${UNFENCED_LINE}`);
+  writeFileSync(join(folder, "stdio", "targets"), `9\n${stdioEscape()}\n${UNFENCED_LINE}`);
   const installed = await c.request<{ id: string; state: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
   const card = await until("the plugin's OK card", 30_000, async () => (await cards(c)).find((k) => (installed.card !== undefined && k.id === installed.card) || k.pluginId === installed.id));
   // Answered as `approve` answers, without its check that an app was told of the card: no app runs yet in this shard,

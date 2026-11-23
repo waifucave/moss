@@ -297,17 +297,25 @@ async function notesSteps(ctx: ExampleCtx, session: string): Promise<string> {
 
   // 1. Installed the user's way; its OK card read before it is pressed.
   const ok = await installFromPage(ctx, folder, id);
-  const wantLines = [
+  // Where the plugin's host is fenced (macOS) the card says its two tools run without asking and its code reaches no host. Where it
+  // is not (Linux and Windows: plugin code runs as the user, spec §5.2 item 58) the card says its host code can reach any host and
+  // says nothing of cardless tools: a forecast of "contained" would be false there, so the tools ask.
+  const fenced = process.platform === "darwin";
+  const wantLines = fenced ? [
     "this tool only reads, so at the default approval level it runs without asking: list_notes",
     "this tool only changes its own display, so at the default level it runs without asking: add_note",
     "Its code reaches no host.",
     "Its hooks see your conversations: what each tool returns.",
+  ] : [
+    "Its components reach no host; its host code can reach any host.",
+    "Its hooks see your conversations: what each tool returns.",
   ];
   const missing = wantLines.filter((l) => !ok.text.includes(l));
   if (missing.length > 0) fail(`its OK card lacks: ${missing.join(" | ")} (card: ${ok.text.slice(0, 600)})`);
-  const extra = /network|still asks|notifications|any host/i.exec(ok.text);
+  if (!fenced && /runs without asking/.test(ok.text)) fail("its OK card promises a tool that runs without asking, where its host code is not fenced");
+  const extra = fenced ? /network|still asks|notifications|any host/i.exec(ok.text) : null;
   if (extra !== null) fail(`its OK card says "${ok.text.slice(Math.max(0, extra.index - 60), extra.index + 60)}", but the plugin stays inside`);
-  done.push(`installed from its folder on the Plugins page; its OK card ${ok.card} named its cardless tools and no network, pressed`);
+  done.push(`installed from its folder on the Plugins page; its OK card ${ok.card} ${fenced ? "named its cardless tools and no network" : "said its host code can reach any host and promised no cardless tool"}, pressed`);
 
   // 2. It brings no bot (G8): its tools reach the code session the window shows, already running before the install.
   const bots = (await rpc.request<{ bots: { id: string; name?: string }[] }>("bot.list", {})).bots;
@@ -317,13 +325,16 @@ async function notesSteps(ctx: ExampleCtx, session: string): Promise<string> {
 
   // 3. Its tools, in the code session: contained and readOnly with no card, the third with a card; the tool rows' titles
   //    and a result's display (the core's display seam).
+  // (Unfenced, the two tools are not contained or read-only by the registry's own predicates, so each asks.)
   const added = await callTurn(ctx, session, "add_note", { text: "Buy oat milk" });
-  if (added.cards.length > 0) fail(`add_note (contained) raised ${added.cards.join("; ")} at the default level`);
+  if (fenced && added.cards.length > 0) fail(`add_note (contained) raised ${added.cards.join("; ")} at the default level`);
+  if (!fenced && added.cards.length === 0) fail("add_note ran with no card, where its host code is not fenced");
   if (added.result.isError || !added.result.text.includes("Noted: Buy oat milk")) fail(`add_note answered "${added.result.text.slice(0, 120)}"`);
   const second = await callTurn(ctx, session, "add_note", { text: "Water the plants" });
-  if (second.cards.length > 0) fail(`the second add_note raised ${second.cards.join("; ")}`);
+  if (fenced && second.cards.length > 0) fail(`the second add_note raised ${second.cards.join("; ")}`);
   const listed = await callTurn(ctx, session, "list_notes", {});
-  if (listed.cards.length > 0) fail(`list_notes (readOnly) raised ${listed.cards.join("; ")} at the default level`);
+  if (fenced && listed.cards.length > 0) fail(`list_notes (readOnly) raised ${listed.cards.join("; ")} at the default level`);
+  if (!fenced && listed.cards.length === 0) fail("list_notes ran with no card, where its host code is not fenced");
   if (!listed.result.text.includes("Buy oat milk") || !listed.result.text.includes("Water the plants")) fail(`list_notes answered "${listed.result.text.slice(0, 200)}"`);
   const deleted = await callTurn(ctx, session, "delete_note", { handle: "n2" });
   if (deleted.cards.length === 0) fail("delete_note (on neither list) ran with no card");
@@ -335,7 +346,7 @@ async function notesSteps(ctx: ExampleCtx, session: string): Promise<string> {
   const res = evs.find((e) => e.type === "tool_result" && e.callId === call?.callId);
   if (call?.displayTitle !== "Add a note") fail(`add_note's tool_call carries displayTitle ${JSON.stringify(call?.displayTitle)}, not "Add a note"`);
   if (JSON.stringify(res?.display) !== JSON.stringify({ kind: "note", label: "Noted", value: "Buy oat milk" })) fail(`add_note's tool_result carries display ${JSON.stringify(res?.display)}`);
-  done.push(`add_note and list_notes ran with no card, delete_note on its card (${deleted.cards[0]}); the store holds the one note left; the row's title "Add a note" and its display {note, Noted, Buy oat milk}`);
+  done.push(`add_note and list_notes ran ${fenced ? "with no card" : "on a card each (unfenced)"}, delete_note on its card (${deleted.cards[0]}); the store holds the one note left; the row's title "Add a note" and its display {note, Noted, Buy oat milk}`);
   const ownCalls = 4;
 
   // 4. Its skill, through Glossary; its agent definition, on MOSS's own agent with no card, its report back.
