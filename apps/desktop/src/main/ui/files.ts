@@ -117,6 +117,12 @@ export function dataFile(plugin: Pick<UiPlugin, "assetBase" | "dataFiles">, file
   return undefined;
 }
 
+/** A picture a plugin's own entry names as its `icon` (a message action's button, a composer action's): that exact path, as
+ *  `/_t/` serves it to the layers that draw the entry, though the plugin has no theme, bot or list icon. */
+export function entryIcon(plugin: Pick<UiPlugin, "entries">, path: string): boolean {
+  return plugin.entries.some((e) => e.fields.icon === path);
+}
+
 /** The media type a plugin file is served with; anything else is refused (no HTML from a plugin's folder: the only
  *  documents in a layer are the core's). */
 export function mediaType(path: string): string | undefined {

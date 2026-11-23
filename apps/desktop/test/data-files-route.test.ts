@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { declaredKind, ownDataRequest } from "../src/main/ui/files";
+import { declaredKind, entryIcon, ownDataRequest } from "../src/main/ui/files";
 
 mock.module("electron", () => ({ app: {}, ipcMain: {}, protocol: {}, webFrameMain: {}, BrowserWindow: class {} }));
 
@@ -123,5 +123,15 @@ describe("what a plugin shares with its own pages, on /_d/<id>/", () => {
     expect((await own("wholelink", "wholelink/stolen.json")).status).toBe(403);
     expect((await own("other", "other/theirs.json")).status).toBe(200);
     expect((await own("wordgame", "..%2Fx/x.json")).status).toBe(403);
+  });
+});
+
+describe("a picture an entry names as its icon, on /_t/", () => {
+  test("only that exact path of a plugin whose entry names it (the voice plugin's Speak button), no other file", () => {
+    const plugin = { entries: [{ fields: { title: "Speak", icon: "assets/speak.svg" } }] } as never;
+    expect(entryIcon(plugin, "assets/speak.svg")).toBe(true);
+    expect(entryIcon(plugin, "assets/other.svg")).toBe(false);
+    expect(entryIcon(plugin, "assets/../moss.json")).toBe(false);
+    expect(entryIcon({ entries: [] } as never, "assets/speak.svg")).toBe(false);
   });
 });

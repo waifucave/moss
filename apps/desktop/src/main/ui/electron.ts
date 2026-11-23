@@ -11,7 +11,7 @@ import type { ShellApp, ShellState } from "@waifucave/moss-plugin-sdk";
 import { type LayerMessage, type OpenTarget, type SurfaceEnvironment } from "@waifucave/moss-plugin-sdk/ui/bridge";
 import { APP_SCHEME, CORE_CSP, CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, commonHeaders, layerDocument, layerHeaders, layerMicrophone, withMicrophone } from "./documents";
 import { checkMenu, frameGesture, openRefusal, mayPlaceView, menuPoint, openTarget, viewRect, type MenuItem, type Rect } from "./brokers";
-import { builtClientFile, dataFile, isInside, mediaType, modelResponse, ownDataFile, ownDataPlugin, ownDataRequest, pluginFile } from "./files";
+import { builtClientFile, dataFile, entryIcon, isInside, mediaType, modelResponse, ownDataFile, ownDataPlugin, ownDataRequest, pluginFile } from "./files";
 import { SEALED_PRESS_WORDS } from "../sealed-pages";
 import { LayerError, isInstanceId, type FrameRef, type UiRuntime } from "./runtime";
 import { FileGrants, PICK_METHODS, grantResponse, routeDrop, routePick, type DialogRequest, type Grant } from "./file-grants";
@@ -263,7 +263,7 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       }
       // A plugin's own picture (its view's `icon`) too, by that exact path: the Plugins page's lists; and a plugin whose point
       // entries bring files (`dataFiles`).
-      const looks = (p: (typeof runtime.registry)[number]) => p.isBot || p.themes.length > 0 || p.entries.some((e) => e.style !== undefined) || (p.icon !== undefined && p.icon === path);
+      const looks = (p: (typeof runtime.registry)[number]) => p.isBot || p.themes.length > 0 || p.entries.some((e) => e.style !== undefined) || (p.icon !== undefined && p.icon === path) || entryIcon(p, path);
       const plugin = runtime.registry.find((p) => p.id === id && (looks(p) || p.dataFiles.length > 0));
       if (plugin === undefined) return forbidden();
       let file: string;
