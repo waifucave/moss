@@ -1,8 +1,10 @@
 // The background host's row (lane HS; spec revision 19 §3.1, §3.4, §12.1, items 98, 111, 116, 121): run.ts's `host` unit
 // (`--units host`, serial: its own home, its own daemon, which starts the host itself from this checkout through
 // `MOSS_HOST_COMMAND`, the engine's source seam). The probes and the row's name live here; run.ts drives the processes.
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Cdp } from "./cdp";
 
@@ -74,4 +76,39 @@ export const SURFACE_COPY_HOST_STEP = "the island and pill copies' row again wit
 /** How many times a daemon log says the host was ready. */
 export function readyCount(log: string): number {
   return (log.match(/\[host\] ready: /g) ?? []).length;
+}
+
+/** Linux's stand-in for the service manager that starts the real host (`systemctl --user start moss-host`): the engine is a child
+ *  subreaper there (claimDaemonChildren), so anything it spawns, however double-forked, stays its descendant and is refused as "from
+ *  inside a sandbox, or a bot's process" when it says hello as the app. The harness is outside the engine's tree, so it plays the
+ *  manager: it listens on a socket, and the command the engine runs (`hostCommandViaLauncher`) hands it argv and environment, from
+ *  which it starts the host detached, with its output in `<home>/logs/host.out.log` as Launch Services' `--stdout` has on macOS. */
+export function startHostLauncher(): { sock: string; stop: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "clv-hl-"));
+  const sock = join(dir, "l.sock");
+  const server = createServer((c) => {
+    const chunks: Buffer[] = [];
+    c.on("data", (d: Buffer) => chunks.push(d));
+    c.on("end", () => {
+      // argv, each ended by NUL, then one more NUL, then `env -0`'s output (neither an argument nor a variable is empty).
+      const parts = Buffer.concat(chunks).toString("utf8").split("\0");
+      const gap = parts.indexOf("");
+      const argv = parts.slice(0, gap);
+      const env: Record<string, string> = {};
+      for (const kv of parts.slice(gap + 1)) { const i = kv.indexOf("="); if (i > 0) env[kv.slice(0, i)] = kv.slice(i + 1); }
+      if (argv.length === 0) return;
+      const logDir = join(env.MOSS_HOME ?? dir, "logs");
+      mkdirSync(logDir, { recursive: true });
+      const out = openSync(join(logDir, "host.out.log"), "a");
+      spawn(argv[0]!, argv.slice(1), { detached: true, stdio: ["ignore", out, out], env }).unref();
+    });
+  });
+  server.listen(sock);
+  return { sock, stop: () => { try { server.close(); } catch { /* closed */ } } };
+}
+
+/** The `MOSS_HOST_COMMAND` JSON for Linux: a shell that sends its argv and environment to `startHostLauncher`'s socket. */
+export function hostCommandViaLauncher(sock: string, argv: string[]): string {
+  const script = '{ for a in "$@"; do printf \'%s\\0\' "$a"; done; printf \'\\0\'; env -0; } | socat - "UNIX-CONNECT:$0"';
+  return JSON.stringify(["/bin/sh", "-c", script, sock, ...argv]);
 }

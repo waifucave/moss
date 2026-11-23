@@ -84,7 +84,7 @@ import { BRIDGE_ECHO, CHILD_REPORT, netCommand, newestDirective as newestDirecti
 import { Cdp } from "./cdp";
 import { diagnosing, runnerState, stallReportsDone, startRunnerLog, watchAppStall, watchPingLines } from "./stall-watch";
 // lane HS
-import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostLockPid, islandTarget, onscreenWindows, processAlive, readyCount } from "./host-step";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
 import { BACKGROUND_IDS, writeBackground } from "./manifest-fields-step";
 import { checkPageReport } from "./layer-page-step";
 import { shellDoc, dumpFrames, failureShot, renderNewUser, treeDocs, treeText, UI_STEPS, uiSteps } from "./ui-steps";
@@ -528,14 +528,13 @@ function hostAppCopy(app: { exe: string; args: string[] }): { exe: string; args:
   }
   return { exe: join(dst, app.exe.slice(i + 5)), args: app.args };
 }
-/** The engine's source seam for the host (`MOSS_HOST_COMMAND`) as JSON. On macOS the engine starts the host through Launch Services, so it is
- *  launchd's child and never the engine's (a descendant of the engine is refused as "from inside a sandbox, or a bot's process"); the real start
- *  on Linux is the user's service manager (`systemctl --user start`), the same: not the engine's child. The seam spawns a command directly, so
- *  on Linux the command is a shell that starts the host in a session of its own in the background and ends at once, leaving the host a child of
- *  init, as the service manager's is; its output goes where Launch Services' `--stdout` sends it (`<home>/logs/host.out.log`, world.ts HOST_SOURCE_LOG). */
+/** The engine's source seam for the host (`MOSS_HOST_COMMAND`) as JSON. On Linux the host must start outside the engine's process tree
+ *  (host-step.ts `startHostLauncher`: the harness plays the service manager), so the command hands argv to the launcher's socket. */
+let hostLauncher: { sock: string; stop: () => void } | undefined;
 function hostCommandOf(argv: string[]): string {
   if (process.platform !== "linux") return JSON.stringify(argv);
-  return JSON.stringify(["/bin/sh", "-c", 'mkdir -p "$MOSS_HOME/logs"; setsid "$@" </dev/null >>"$MOSS_HOME/logs/host.out.log" 2>&1 &', "sh", ...argv]);
+  hostLauncher ??= startHostLauncher();
+  return hostCommandViaLauncher(hostLauncher.sock, argv);
 }
 /** The reviewer's B1 with a host running and MOSS Code's window focused: a card the router put in the window's conversation
  *  (Alpha's tab showing, a Browser call's tool card) and one in its strip (a plugin's OK card, no session) are each drawn in
