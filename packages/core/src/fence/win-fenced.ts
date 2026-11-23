@@ -18,8 +18,11 @@
 //     command; a glob is expanded over what exists, one walk per folder with its own budget, and past it the folders
 //     not read are denied whole (`existingDeniesOf`); a deny wins over every allow (an explicit deny ACE comes first).
 //     A fenced path that doesn't exist yet can only be made inside a write root; rule 7 puts it away after the run.
-//  5. Network: the principal's WFP filters (installed by setup, loopback closed) refuse every connection but the
-//     loopback proxy range 60080–60089, as `srt-win install` sets them; no `--allow-loopback` is ever passed.
+//  5. Network: a pool principal's WFP filters (installed by setup, loopback closed) refuse every connection but the
+//     loopback proxy range 60080–60089, as `srt-win install` sets them; no `--allow-loopback` is ever passed. A
+//     command the person approved to leave the sandbox runs as the escape account instead (`FencedRun.network`,
+//     `escapeMember`), whose filter blocks only the cloud metadata address (srt-win patch 0003); no other command
+//     ever runs as it.
 //  6. Environment: built here, whole. The broker gets a fixed system environment; the child gets a home folder of its
 //     own, made for the command inside its temp folder and removed after it, as HOME/USERPROFILE/APPDATA (never the
 //     user's: the controller's ruling 2, and the M1 floor's "HOME and TEMP in the session's own temp"), its run's temp
@@ -27,14 +30,15 @@
 //  7. Run later: after the run, a git config key a command set in a repo under its write roots is reverted, a hook it
 //     planted in such a repo's `.git/hooks` is moved aside, and a fenced path or run-later name (`.vscode`, `.envrc`,
 //     `.git`…) it made under a root is moved aside and named in the result (`revertPlantedGitKeys`,
-//     `quarantineHooks`, `quarantinePlanted`, `quarantinePatternMatches`): Linux's way, where the Mac refuses the write.
+//     `quarantineHooks`, `quarantineWin`, `quarantinePatternMatches`): Linux's way, where the Mac refuses the write.
+//     What can't be moved (a folder on its way is a link, or the move failed) is left and named in the result.
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`.
 //  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
 //     before it starts. The reset is off the command's path; checked at every launch; failing closed.
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, cpSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { join, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -42,7 +46,7 @@ import { BOT_READ_DENIED, fenceContextFor, secretReadPlaces } from "../contracts
 import type { MossFence } from "./fence";
 import { gitTemplateDir } from "./layout";
 import { ordinaryTopFolders } from "./sandbox-settings";
-import { quarantinePlanted, reposUnder, revertPlantedGitKeys, snapshotFiles } from "./fenced-process";
+import { reposUnder, revertPlantedGitKeys, snapshotFiles } from "./fenced-process";
 import { runCommand, type FencedRun, type FencedRunResult, type FencedSpawner, type RunShell } from "./spawn";
 import {
   createWindowsLockStore, execArgs, isFreshGeneration, poolStateDir, poolStateFiles, runResetTaskArgs, installMarkerPath, launcherProblem, minimalChildEnv, parseInstallMarker,
@@ -382,12 +386,52 @@ function hookFiles(dirs: readonly string[]): Map<string, boolean> {
   return m;
 }
 
+/** Whether every folder holding `path` is a plain folder, read without following links (a junction or symbolic
+ *  link reads as a link): the move below never goes through one (the git cleanup's `chainIsClean`, for Windows). */
+export function winChainIsClean(path: string, lstat: (p: string) => { isDirectory(): boolean; isSymbolicLink(): boolean } = lstatSync): boolean {
+  let at = win32.dirname(path);
+  for (;;) {
+    try { const st = lstat(at); if (st.isSymbolicLink() || !st.isDirectory()) return false; } catch { return false; }
+    const up = win32.dirname(at);
+    if (up === at) return true;
+    at = up;
+  }
+}
+
+/** Rule 7's move aside: each path a command made (`false` in `before`: it wasn't there) goes into the MOSS home's
+ *  quarantine. Across drives (a write root on another volume: a rename can't) it is copied there, links kept as
+ *  links, and then deleted. Left where it is, and NAMED in the result, when a folder on its way is a link
+ *  (`winChainIsClean`: the move would act through it) or the move fails (the reviewer's WS2 finding 4). */
+export function quarantineWin(before: Map<string, boolean>, mossHome: string): string | null {
+  const moved: string[] = [];
+  const left: string[] = [];
+  for (const [p, wasThere] of before) {
+    if (wasThere) continue;
+    try { lstatSync(p); } catch { continue; } // not made
+    if (!winChainIsClean(p)) { left.push(`${p} (a folder on its way is a link)`); continue; }
+    const qdir = join(mossHome, "quarantine");
+    const q = join(qdir, `${win32.basename(p)}.quarantined-${randomBytes(4).toString("hex")}`);
+    try {
+      mkdirSync(qdir, { recursive: true });
+      try { renameSync(p, q); } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+        cpSync(p, q, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+        rmSync(p, { recursive: true, force: true });
+      }
+      moved.push(p);
+    } catch (e) { left.push(`${p} (${(e as Error).message.slice(0, 120)})`); }
+  }
+  const lines = [moved.length === 0 ? null : `moss: the run planted ${moved.join(", ")}; quarantined\n`,
+    left.length === 0 ? null : `moss: the run planted ${left.join(", ")}; it could NOT be moved aside, and is still there\n`].filter((l): l is string => l !== null);
+  return lines.length === 0 ? null : lines.join("");
+}
+
 /** A hook a command planted under its write roots is moved aside (rule 7); the report line, or null. */
 function quarantineHooks(before: Map<string, boolean>, dirs: readonly string[], mossHome: string): string | null {
   const after = hookFiles(dirs);
   const planted = new Map<string, boolean>();
   for (const p of after.keys()) planted.set(p, before.has(p));
-  return quarantinePlanted(planted, mossHome);
+  return quarantineWin(planted, mossHome);
 }
 
 /** Rule 7 for the run-later names (the reviewer's "runs later" finding 1): a deny pattern (`<root>\**\.vscode`,
@@ -407,7 +451,7 @@ export function quarantinePatternMatches(patterns: readonly string[], roots: rea
   const fresh = now.paths.filter((p) => !had.has(fold(p)) && !unwalked.has(fold(p))).sort((a, b) => a.length - b.length);
   const planted = new Map<string, boolean>();
   for (const p of fresh) if (![...planted.keys()].some((q) => winUnder(p, q))) planted.set(p, false);
-  return quarantinePlanted(planted, mossHome);
+  return quarantineWin(planted, mossHome);
 }
 
 /** What the profile read grant may exclude (rule 8's floor, `grantProfile`): every literal read deny a bot's shell
@@ -426,10 +470,31 @@ export function profileExcludeCandidates(fence: Pick<MossFence, "policy" | "cont
   } catch { return []; }
 }
 
-/** The profile read grant, by launcher: made once per process (`grantProfile`), again after one that failed; and the
- *  paths the grant in force excludes (`perExecReadDenies`). */
+/** The profile read grant, by launcher and MOSS home: made once per process for each home (`grantProfile`), again
+ *  after one that failed. */
 const profileGrants = new Map<string, Promise<string | null>>();
-const excludedReads = new Map<string, string[]>();
+
+/** The literal paths the profile read grant in force excludes, from `srt-win profile status` (its `exclusions`: every
+ *  protected path, built-in and added, of whichever run made the grant last), or [] when it can't be read or a grant
+ *  is half-written (`in_progress`): then no per-exec deny is dropped. */
+export function parseProfileExclusions(stdout: string): string[] {
+  try {
+    const o = JSON.parse(stdout) as { exclusions?: unknown; state?: unknown };
+    if (o.state === "in_progress" || !Array.isArray(o.exclusions)) return [];
+    return o.exclusions.filter((e): e is string => typeof e === "string" && !GLOB.test(e)).map((e) => e.replace(/^\\\\\?\\/, ""));
+  } catch { return []; }
+}
+
+/** A command's plan while it runs (rule 3b): its caller, its read grants, its literal read denies. */
+interface PlanInFlight { readonly caller: string; readonly readGrants: readonly string[]; readonly denyRead: readonly string[] }
+const plansInFlight = new Set<PlanInFlight>();
+const callerKey = (c: Caller): string => c.kind === "session" ? `session:${c.sessionId}` : c.kind === "plugin" ? `plugin:${c.pluginId}` : c.kind;
+/** Two commands of different callers where one's read grant lies under the other's read deny. */
+export function grantsConflict(x: PlanInFlight, y: PlanInFlight): boolean {
+  if (x.caller === y.caller) return false;
+  const opens = (a: PlanInFlight, b: PlanInFlight) => a.readGrants.some((g) => b.denyRead.some((d) => winUnder(g, d)));
+  return opens(x, y) || opens(y, x);
+}
 
 /** The session grants this process holds (`acl grant --holder-pid <this pid>`), counted across every spawner in it
  *  (the daemon has more than one: the bot shell's and the computer node's). srt-win's `acl revoke --holder-pid`
@@ -487,20 +552,27 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   //    it, then taken off after (srt-win's deny expansion: seconds a command); what is excluded here needs no per-exec
   //    deny at all (`perExecReadDenies`).
   const profileExcludes = (): string[] => profileExcludeCandidates(fence).filter((p) => existsSync(p)).slice(0, 400);
-  /** A command's read denies less what the profile grant in force excludes already (a path at or under one). */
-  const perExecReadDenies = (denies: readonly string[]): string[] => {
-    const ex = excludedReads.get(deps.launcher) ?? [];
+  /** A command's read denies less what the profile grant IN FORCE excludes (a path at or under one), read back at
+   *  each command (the reviewer's WS2 finding 1): another engine of the same Windows user, with another home, makes
+   *  the grant too, so what this process asked for is never assumed to hold. Unreadable: nothing is dropped. */
+  const perExecReadDenies = async (denies: readonly string[]): Promise<string[]> => {
+    if (denies.length === 0) return [];
+    const st = await deps.exec([deps.launcher, "profile", "status"], { timeoutMs: 30_000 });
+    const ex = st.code === 0 ? parseProfileExclusions(st.stdout) : [];
     return ex.length === 0 ? [...denies] : denies.filter((d) => !ex.some((e) => winUnder(d, e)));
   };
   // A grant that failed is not kept: the next command tries again (the reviewer's finding 5), so one failure (a
   // command of another daemon running, srt-win's exit 24) doesn't leave the home unreadable until a restart.
-  // One grant per process, whichever spawner asks first (the daemon has two).
+  // One grant per process and home, whichever spawner asks first (the daemon has two). The exclusions are ADDED to
+  // what earlier runs recorded (no `--replace-excludes`): another engine's home keeps its own (srt-win keeps every
+  // added exclusion until `profile forget`, which `sandbox forget` runs at uninstall).
+  const grantKey = `${deps.launcher}\u0000${fold(fence.mossHome)}`;
   const grantProfile = (): Promise<string | null> => {
-    const had = profileGrants.get(deps.launcher);
+    const had = profileGrants.get(grantKey);
     if (had !== undefined) return had;
     const p = (async () => {
       const started = Date.now();
-      const grant = (ex: readonly string[]) => deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes", ...ex.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      const grant = (ex: readonly string[]) => deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", ...ex.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
       let excludes = profileExcludes();
       let r = await grant(excludes);
       // srt-win makes each protected folder of its own list that is missing (`.aws`, `.kube`, `.gnupg`…) to carry its
@@ -512,12 +584,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         if (again.some((p) => !excludes.some((e) => fold(e) === fold(p)))) { const r2 = await grant(again); if (r2.code === 0) excludes = again; else r = r2; }
       }
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
-      if (r.code === 0) { excludedReads.set(deps.launcher, excludes); return null; }
-      excludedReads.delete(deps.launcher);
-      profileGrants.delete(deps.launcher);
+      if (r.code === 0) return null;
+      profileGrants.delete(grantKey);
       return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
     })();
-    profileGrants.set(deps.launcher, p);
+    profileGrants.set(grantKey, p);
     return p;
   };
   // The read grant is made when the spawner is, off any command's path (its first run walks the profile: ~18 s on the
@@ -540,10 +611,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       const phases: string[] = [];
       let at = Date.now();
       const mark = (name: string) => { const now = Date.now(); phases.push(`${name} ${now - at} ms`); at = now; };
-      const lease = await leaseFresh(leases, got.marker, deps.ownerSid!);
+      // Rule 5: an approved escape runs only as the escape account (the network but the metadata address), every other
+      // command only as a pool account (no network); an install without the escape account refuses the escape.
+      const members = got.marker.members.filter((m) => (m.network === true) === (r.network === true));
+      if (members.length === 0) return refuse(r.network === true ? "the escape account isn't set up; run `moss-core sandbox setup` again" : setupBashRefusal(null));
+      const lease = await leaseFresh(leases, { ...got.marker, members }, deps.ownerSid!);
       mark("lease");
       if (!lease.ok) return refuse(lease.reason);
       let runHome: string | null = null;
+      let flight: PlanInFlight | null = null;
       try {
         const drawn = r.sandbox !== undefined ? planFromSettings(r.sandbox) : planFromPolicy(fence, r.who.caller, r.cwd, { ...(o.bots ? { bots: o.bots() } : {}) });
         const session = r.who.caller.kind === "session" ? r.who.caller.sessionId : "shared";
@@ -571,6 +647,19 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // srt-win records them against the installed sandbox user, the install record's own (`marker_user_sid`):
         // so they are granted as that user, whichever member runs this command.
         mark("plan");
+        // Rule 3b (the reviewer's WS2 finding 6): read grants are the sandbox group's, so while two commands run, each
+        // can read what the other's grant opens. Only the computer node's plans carry read grants (a session's own
+        // folders in the MOSS home), and every plan denies the others' folders that exist when it starts; but a grant
+        // made AFTER a command started (a folder another session made since) carries an explicit allow that beats the
+        // inherited deny it has there. So a command waits while one of another caller runs whose read grants its own
+        // plan denies, or whose plan denies its read grants (`grantsConflict`): never both at once.
+        flight = { caller: callerKey(r.who.caller), readGrants: plan.readGrants, denyRead: plan.denyRead.filter((d) => !GLOB.test(d)) };
+        const waitUntil = Date.now() + (deps.leaseTimeoutMs ?? 120_000);
+        while ([...plansInFlight].some((y) => grantsConflict(flight!, y))) {
+          if (Date.now() >= waitUntil) return refuse("another session's command holds read grants this one may not share; try again when it ends");
+          await Bun.sleep(deps.leasePollMs ?? 250);
+        }
+        plansInFlight.add(flight);
         const installed = await installedSandboxSid();
         if (installed === null) return refuse("the launcher reports no installed sandbox user; run `moss-core sandbox setup` again");
         const grantSid = installed;
@@ -585,7 +674,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (grant.code !== 0) return refuse(`srt-win acl grant exited ${grant.code}: ${(grant.stderr || grant.stdout).trim().slice(0, 400)}`);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
           // didn't read are denied whole (`existingDeniesOf`).
-          const denyRead = perExecReadDenies(existingDeniesOf(plan.denyRead).paths);
+          const denyRead = await perExecReadDenies(existingDeniesOf(plan.denyRead).paths);
           const writeWalk = existingDeniesOf(plan.denyWrite);
           // Only a write deny at or under a write root is stamped: nothing outside the roots is writable with the
           // write-restricted token (rule 3), and each stamp on a folder is a DACL write Windows carries down its whole
@@ -594,7 +683,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           mark("denies");
           // Rule 4's belt: a fenced path that doesn't exist yet but could be made inside a write root (a PowerShell
           // profile under Documents when the home's folders are written) can't carry a deny; if the command makes it,
-          // it is moved aside after the run, as on Linux (`quarantinePlanted`).
+          // it is moved aside after the run, as on Linux (`quarantineWin`).
           const missingFenced = new Map<string, boolean>();
           for (const d of plan.denyWrite) {
             if (GLOB.test(d) || !roots.some((x) => winUnder(d, x) && fold(d) !== fold(x))) continue;
@@ -627,7 +716,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           }
           const after = gitPlaces(roots);
           for (const p of after.configs) if (!configBefore.has(p)) configBefore.set(p, null);
-          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantinePlanted(missingFenced, fence.mossHome),
+          const notes = [readNote === null ? null : `moss: ${readNote}\n`, revertPlantedGitKeys(configBefore), quarantineHooks(hooksBefore, after.hooks, fence.mossHome), quarantineWin(missingFenced, fence.mossHome),
             quarantinePatternMatches(plan.denyWrite, roots, writeWalk.paths, fence.mossHome)].filter((n): n is string => n !== null);
           mark("belt");
           return notes.length === 0 ? result : { ...result, stderr: result.stderr + notes.join("") };
@@ -641,6 +730,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           if (process.env.MOSS_WIN_FENCE_TIMING === "1") console.error(`[win-fence] ${lease.principal}: ${phases.join(", ")}`);
         }
       } finally {
+        if (flight !== null) plansInFlight.delete(flight);
         lease.release();
         if (runHome !== null) { try { rmSync(runHome, { recursive: true, force: true }); } catch { /* best effort: it is in the command's own temp */ } }
         // Rule 9: the principal's profile and hive go now, before another command takes it (the reset task, SYSTEM).

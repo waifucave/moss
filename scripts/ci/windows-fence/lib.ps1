@@ -10,7 +10,7 @@ $Marker = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOS
 
 # The owner's pool (names and per-slot WFP sublayers), from core itself.
 function Get-Pool {
-  $js = "import{sandboxPool}from'./packages/core/src/fence/win-sandbox.ts';console.log(JSON.stringify(sandboxPool(process.argv[1])))"
+  $js = "import{installedPool}from'./packages/core/src/fence/win-sandbox.ts';console.log(JSON.stringify(installedPool(process.argv[1])))"
   Push-Location $Root
   try { return (& bun -e $js $Sid | ConvertFrom-Json) } finally { Pop-Location }
 }

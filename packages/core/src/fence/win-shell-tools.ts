@@ -98,6 +98,8 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       const r = await o.spawner.run({
         command: i.command, cwd, env: { TMPDIR: win32.normalize(cwd) }, timeoutMs: Math.min(asked, WIN_SHELL_MAX_TIMEOUT_MS),
         who: { caller: o.caller }, shell, sandbox,
+        // Rule E: the approved escape runs as the escape account, with the network (the controller's ruling).
+        ...(escape ? { network: true } : {}),
         // The runtime's abort of this call (a stop, a pause): it ends the command and everything it started at once
         // (`runCommand` kills the broker, whose kill-on-close job takes the rest), never waiting for the time limit.
         ...(extra?.signal === undefined ? {} : { signal: extra.signal }),

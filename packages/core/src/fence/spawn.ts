@@ -34,6 +34,10 @@ export interface FencedRun {
    *  the very settings its runtime's Seatbelt or bubblewrap get on macOS and Linux, `botSandboxSettings`). Without
    *  them the run's sandbox is drawn from the fence's policy for `who`. macOS and Linux ignore it. */
   readonly sandbox?: import("@waifucave/clover-agent-sdk").SandboxSettingsConfig;
+  /** Windows: a command the person approved to leave the sandbox (a bot's escape, past its card): it runs as the
+   *  escape account, which reaches the network but the cloud metadata address (`escapeMember`). macOS and Linux
+   *  ignore it (their escape is the runtime's own). */
+  readonly network?: boolean;
   /** Whose run it is: the fence's set, the home default-deny's allows, and the network rule are this caller's. */
   readonly who: {
     readonly caller: Caller; readonly hook?: string;

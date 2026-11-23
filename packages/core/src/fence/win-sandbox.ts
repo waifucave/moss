@@ -70,7 +70,7 @@ export const SANDBOX_POOL_SIZE = 4;
 
 /** Pool principal `n` (1-based) for an owner SID: `moss-sb-<6hex>-<n>`, 16 chars, leased
  *  exclusively — two bots never share a principal while they run. */
-export function poolPrincipalName(ownerSid: string, slot: number): string {
+export function poolPrincipalName(ownerSid: string, slot: number | "e"): string {
   const hash = createHash("sha256").update(ownerSid).digest("hex").slice(0, 6);
   return `${SANDBOX_PRINCIPAL_PREFIX}${hash}-${slot}`;
 }
@@ -87,10 +87,25 @@ export function poolSublayerGuid(ownerSid: string, principal: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** One leased pool member. */
+/** One leased pool member. `network`: the escape account (`escapeMember`). */
 export interface PoolMember {
   readonly principal: string;
   readonly sublayer: string;
+  readonly network?: boolean;
+}
+
+/** The escape account, beside the pool (the controller's ruling: an approved escape gets the network, as the spec and
+ *  the Mac give it): `moss-sb-<6hex>-e`, installed `--network-open` (srt-win patch 0003: its filter blocks only the
+ *  cloud metadata address). Only a command the person approved to leave the sandbox runs as it (`FencedRun.network`);
+ *  every other control of the sandbox is the same as the pool's. */
+export function escapeMember(ownerSid: string): PoolMember {
+  const principal = poolPrincipalName(ownerSid, "e");
+  return { principal, sublayer: poolSublayerGuid(ownerSid, principal), network: true };
+}
+
+/** What `sandbox setup` installs and `remove` removes: the pool and the escape account. */
+export function installedPool(ownerSid: string): readonly PoolMember[] {
+  return [...sandboxPool(ownerSid), escapeMember(ownerSid)];
 }
 
 /** The pool for an owner: 4 exclusive principals with their sublayers. */
@@ -137,8 +152,8 @@ export const SANDBOX_EXIT = { OK: 0, FAILED: 1, NOT_ELEVATED: 2, HASH_MISMATCH: 
  *  Loopback stays closed (the default): Bash gets no network, as on macOS and Linux.
  *  The principal is required: the bare prefix is not an account. `ownerSid` is recorded on the
  *  install (`--owner-sid`) and gates later use to that owner (admins/SYSTEM excepted). */
-export function setupArgs(launcher: string, sublayer: string, principal: string, ownerSid: string): readonly string[] {
-  return [launcher, "install", "--sandbox-user", principal, "--sublayer-guid", sublayer, "--owner-sid", ownerSid];
+export function setupArgs(launcher: string, sublayer: string, principal: string, ownerSid: string, o: { networkOpen?: boolean } = {}): readonly string[] {
+  return [launcher, "install", "--sandbox-user", principal, "--sublayer-guid", sublayer, "--owner-sid", ownerSid, ...(o.networkOpen === true ? ["--network-open"] : [])];
 }
 
 /** `srt-win uninstall`: undoes everything (`--keep-user` is never passed: remove removes all of it).
@@ -374,6 +389,8 @@ export interface PoolMemberRecord {
   readonly principal: string;
   readonly principalSid: string | null;
   readonly sublayer: string;
+  /** The escape account (`escapeMember`), installed `--network-open`. */
+  readonly network?: boolean;
 }
 
 export interface InstallMarker {
@@ -392,7 +409,7 @@ export function formatInstallMarker(m: InstallMarker): string {
   return JSON.stringify({
     version: 2,
     ownerSid: m.ownerSid,
-    members: m.members.map((x) => ({ principal: x.principal, principalSid: x.principalSid, sublayer: x.sublayer })),
+    members: m.members.map((x) => ({ principal: x.principal, principalSid: x.principalSid, sublayer: x.sublayer, ...(x.network === true ? { network: true } : {}) })),
   });
 }
 
@@ -408,7 +425,7 @@ export function parseInstallMarker(text: string | null): InstallMarker | null {
       for (const e of o.members as Record<string, unknown>[]) {
         if (typeof e !== "object" || e === null || typeof e.principal !== "string" || typeof e.sublayer !== "string" ||
           (e.principalSid !== null && typeof e.principalSid !== "string")) return null;
-        members.push({ principal: e.principal, principalSid: e.principalSid, sublayer: e.sublayer });
+        members.push({ principal: e.principal, principalSid: e.principalSid, sublayer: e.sublayer, ...(e.network === true ? { network: true } : {}) });
       }
       return { version: 2, ownerSid: o.ownerSid, members };
     }
