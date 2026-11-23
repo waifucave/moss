@@ -262,11 +262,18 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(control.exitCode).toBe(0);
     Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-control", "/f"]);
     const ps = await call(tools.PowerShell!, { command: `schtasks /create /tn moss-e2e-planted /tr '${tr}' /sc once /st 23:59 /f 2>&1 | Out-String; 'exit=' + $LASTEXITCODE` });
-    const cim = await call(tools.PowerShell!, { command: `try { Register-ScheduledTask -TaskName moss-e2e-planted2 -Action (New-ScheduledTaskAction -Execute '${tr}') -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(6)) -ErrorAction Stop | Out-Null; 'REGISTERED' } catch { 'REFUSED ' + $_.Exception.Message }` });
+    // The Task Scheduler's own COM door, step by step, so a refusal names the step that refused (and its HRESULT):
+    // the same script registers as the user first (the control), then is deleted.
+    const com = (name: string) => `$step='create'; try { $s = New-Object -ComObject Schedule.Service; $step='Connect'; $s.Connect(); $step='GetFolder'; $f = $s.GetFolder('\\'); $step='NewTask'; $d = $s.NewTask(0); $t = $d.Triggers.Create(1); $t.StartBoundary = (Get-Date).AddHours(6).ToString('s'); $a = $d.Actions.Create(0); $a.Path = '${tr}'; $step='RegisterTaskDefinition'; $f.RegisterTaskDefinition('${name}', $d, 6, $null, $null, 3) | Out-Null; 'REGISTERED' } catch { 'REFUSED at ' + $step + ': 0x' + ('{0:X8}' -f $_.Exception.HResult) + ' ' + $_.Exception.Message }`;
+    const comControl = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", com("moss-e2e-control2")], { stdout: "pipe", stderr: "pipe" });
+    console.log(`[e2e] COM RegisterTaskDefinition as the user (control): ${comControl.stdout.toString().trim()} ${comControl.stderr.toString().trim().slice(0, 300)}`);
+    expect(comControl.stdout.toString()).toContain("REGISTERED");
+    Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-control2", "/f"]);
+    const cim = await call(tools.PowerShell!, { command: com("moss-e2e-planted2") });
     const exists = (n: string) => Bun.spawnSync(["schtasks", "/query", "/tn", n], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
     const made = exists("moss-e2e-planted"), made2 = exists("moss-e2e-planted2");
     console.log(`[e2e] schtasks /create as the account: ${ps.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made}`);
-    console.log(`[e2e] Register-ScheduledTask as the account: ${cim.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made2}`);
+    console.log(`[e2e] COM RegisterTaskDefinition as the account: ${cim.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made2}`);
     for (const [n, m] of [["moss-e2e-planted", made], ["moss-e2e-planted2", made2]] as const) if (m) Bun.spawnSync(["schtasks", "/delete", "/tn", n, "/f"]);
     expect(made).toBe(false);
     expect(made2).toBe(false);
@@ -459,6 +466,13 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       const replaced = Bun.spawnSync([launcher, "profile", "grant", "--quiet", "--json", "--replace-excludes"], { stdout: "pipe", stderr: "pipe" });
       console.log(`[e2e] a replacing grant with no added exclusions: exit ${replaced.exitCode}`);
       expect(replaced.exitCode).toBe(0);
+      // The precondition: the grant in force no longer excludes this home's secrets (so the pass below is the
+      // per-command stamps', not the grant's).
+      const st = Bun.spawnSync([launcher, "profile", "status"], { stdout: "pipe", stderr: "pipe" }).stdout.toString();
+      const listed = (JSON.parse(st) as { exclusions?: string[] }).exclusions ?? [];
+      const has = (p: string) => listed.some((e) => e.replace(/^\\\\\?\\/, "").toLowerCase() === p.toLowerCase());
+      console.log(`[e2e] after the replacing grant, excluded: run ${has(join(moss, "run"))}, secrets.enc ${has(join(moss, "secrets.enc"))}`);
+      expect(has(join(moss, "run")) || has(join(moss, "secrets.enc"))).toBe(false);
       // (This home's own secrets: the other home's exclusions are gone with the replacing run, and this engine's plan
       // knows nothing of that home; no run of this version replaces.)
       const c = await call(tools.Bash!, { command: `cat '${u(join(moss, "secrets.enc"))}' '${u(join(moss, "run", "token"))}' 2>/dev/null; echo done` });
