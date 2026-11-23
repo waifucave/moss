@@ -1349,7 +1349,7 @@ jobs:
   # under xvfb, with the private Secret Service the Linux tests use (scripts/with-private-secret-service.sh). NOT a part of the
   # lane gate or the gate (neither needs it: a unit that is red here does not turn another lane's run red), and never on a pull
   # request, a merge group or a push: a manual run only. Each unit's rows are PASS, or say "not on Linux: <reason>"
-  # (scripts/acceptance/linux.ts), or the unit is red, which is the list of what a person on Linux would meet.
+  # (scripts/acceptance/not-on-linux.ts), or the unit is red, which is the list of what a person on Linux would meet.
   acceptance-linux:
     name: acceptance-linux · ${{ matrix.unit }}
     if: github.event_name == 'workflow_dispatch'
