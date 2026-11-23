@@ -8,7 +8,7 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, planFromSettings, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, planFromSettings, profileExcludeCandidates, shellArgv, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -305,3 +305,28 @@ describe("a bot's Bash and PowerShell on Windows (the core's tools)", () => {
   });
 });
 
+
+describe("the profile read grant's exclusions (rule 8's floor)", () => {
+  test("are a subset of a bot's shell read denies: excluding them takes no read a bot has, from any caller", async () => {
+    const { botSandboxSettings } = await import("../../src/fence/sandbox-settings");
+    const { botSandbox, withBotKeyReads, withSecretReads } = await import("../../src/runtime-sdk/turn-loop/driver");
+    const home = "C:\\Users\\u", moss = "C:\\Users\\u\\.moss";
+    const fence = new MossFence({ os: "windows", home, mossHome: moss, temp: "C:\\Users\\u\\AppData\\Local\\Temp" });
+    const caller = { kind: "session", sessionId: "x", sessionKind: "bot", bot: "alpha" } as Caller;
+    // The fence's own home and MOSS home (as it resolved them: off Windows a drive path resolves under the cwd).
+    const h = fence.home, m = fence.mossHome;
+    const shell = botSandbox(withBotKeyReads(withSecretReads(botSandboxSettings(fence.forCaller(caller).policy(), {
+      mossHome: m, userHome: h, level: undefined, windows: true, ownFolders: [], pathFolders: [], list: () => [],
+    }), { userHome: h, os: "windows" }), { home: m }), { userHome: h, os: "windows" }).filesystem!.denyRead!;
+    const fold = (p: string) => win32.normalize(p).toLowerCase();
+    const candidates = profileExcludeCandidates(fence);
+    expect(candidates.length).toBeGreaterThan(10);
+    const missing = candidates.filter((c) => !shell.some((d) => fold(d) === fold(c) || fold(c).startsWith(`${fold(d)}\\`)));
+    expect(missing).toEqual([]);
+    // Never the MOSS home, a folder above it, or a session's own folders.
+    for (const c of candidates) {
+      expect(fold(m) === fold(c) || fold(m).startsWith(`${fold(c)}\\`)).toBe(false);
+      for (const d of ["bots", "scratch", "outputs"]) expect(fold(c).startsWith(fold(win32.join(m, d)))).toBe(false);
+    }
+  });
+});

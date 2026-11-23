@@ -65,6 +65,11 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     // named list (profile_plan.rs), unlike macOS, where a bot reads an ordinary file at the home's top.
     mkdirSync(join(home, "ws-e2e-plain"), { recursive: true });
     writeFileSync(join(home, "ws-e2e-plain", "plain.txt"), "an ordinary file in the home\n");
+    // What a real MOSS home holds that the profile grant can't exclude by name (glob denies): a transcript's
+    // provider-state and auto-state sidecars.
+    mkdirSync(join(moss, "projects", "e2e-project"), { recursive: true });
+    writeFileSync(join(moss, "projects", "e2e-project", "s1.provider-state.jsonl"), `${SECRET}\n`);
+    writeFileSync(join(moss, "projects", "e2e-project", "s1.auto-state.json"), "{}\n");
     fence = new MossFence({ home, mossHome: moss });
     const spawner = fencedSpawner({ fence });
     const mk = (kind: "bot" | "side-thread") => Object.fromEntries(windowsShellTools({
@@ -74,6 +79,17 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     sideTools = mk("side-thread");
   });
   afterAll(() => { for (const d of [moss, join(home, "ws-e2e-plain"), join(home, "ws-escape-dir")]) rmSync(d, { recursive: true, force: true }); });
+
+  test("a sidecar the grant can't exclude by name is still never read; a secret folder made after the daemon started too", async () => {
+    // `~/.oci` (a secret place) made after the spawner made its grant: a per-exec read deny then, not an exclusion.
+    rmSync(join(home, ".oci"), { recursive: true, force: true });
+    mkdirSync(join(home, ".oci"), { recursive: true });
+    writeFileSync(join(home, ".oci", "config"), `${SECRET}\n`);
+    const r = await call(tools.Bash!, { command: `cat '${join(moss, "projects", "e2e-project", "s1.provider-state.jsonl").replace(/\\/g, "/")}' '${join(home, ".oci", "config").replace(/\\/g, "/")}'; echo done` });
+    expect(r.text).toContain("done");
+    expect(r.text).not.toContain("dummy123");
+    rmSync(join(home, ".oci"), { recursive: true, force: true });
+  }, 900_000);
 
   test("Bash and PowerShell run as a pool principal, never as the user", async () => {
     const b = await call(tools.Bash!, { command: "whoami" });
@@ -236,9 +252,11 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
   }, 900_000);
 
   test("a fenced command can't register a scheduled task as its account (something that would run later, outside a command)", async () => {
-    const r = await call(tools.PowerShell!, { command: "schtasks /create /tn moss-e2e-planted /tr 'cmd /c echo planted' /sc onlogon /f 2>&1; 'exit=' + $LASTEXITCODE" });
+    // A trigger any account may register for itself (`/sc once`), so a refusal is the fence's, not schtasks' own
+    // need for an administrator; its message is printed.
+    const r = await call(tools.PowerShell!, { command: "schtasks /create /tn moss-e2e-planted /tr 'cmd /c echo planted' /sc once /st 23:59 /f 2>&1 | Out-String; 'exit=' + $LASTEXITCODE" });
     const made = Bun.spawnSync(["schtasks", "/query", "/tn", "moss-e2e-planted"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-    console.log(`[e2e] schtasks /create as the account: ${r.text.trim().slice(0, 200)}; task exists: ${made}`);
+    console.log(`[e2e] schtasks /create as the account: ${r.text.trim().replace(/\s+/g, " ").slice(0, 400)}; task exists: ${made}`);
     if (made) Bun.spawnSync(["schtasks", "/delete", "/tn", "moss-e2e-planted", "/f"]);
     expect(made).toBe(false);
     expect(r.text).not.toContain("exit=0");

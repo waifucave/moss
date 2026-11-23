@@ -410,6 +410,22 @@ export function quarantinePatternMatches(patterns: readonly string[], roots: rea
   return quarantinePlanted(planted, mossHome);
 }
 
+/** What the profile read grant may exclude (rule 8's floor, `grantProfile`): every literal read deny a bot's shell
+ *  carries (the fence's own, the secret places of `SECRET_READ_PLACES`, the MOSS home's key places of
+ *  `BOT_READ_DENIED`; `withSecretReads`, `withBotKeyReads`) inside the home. Bots read the most, so what a bot may not
+ *  read, no caller may (win-fenced.test.ts checks the list against a bot's shell denies). Never the MOSS home or a
+ *  folder above it, nor anything in the folders sessions are given (a bot's folder, its scratch, an agent's outputs):
+ *  srt-win refuses every session grant that lies inside an exclusion, or reaches one. */
+export function profileExcludeCandidates(fence: Pick<MossFence, "policy" | "contextFor" | "home" | "mossHome">): string[] {
+  try {
+    const bot = { kind: "session", sessionId: "profile-read-grant", sessionKind: "bot", bot: "profile-read-grant" } as Caller;
+    const denied = [...fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead,
+      ...secretReadPlaces("windows", fence.home).map((x) => x.path), ...BOT_READ_DENIED.map((rel) => win32.join(fence.mossHome, ...rel))];
+    const sessionFolders = ["bots", "scratch", "outputs"].map((d) => win32.join(fence.mossHome, d));
+    return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.home) && !winUnder(fence.mossHome, p) && !sessionFolders.some((f) => winUnder(p, f))));
+  } catch { return []; }
+}
+
 /** The profile read grant, by launcher: made once per process (`grantProfile`), again after one that failed; and the
  *  paths the grant in force excludes (`perExecReadDenies`). */
 const profileGrants = new Map<string, Promise<string | null>>();
@@ -470,20 +486,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   //  - Speed: a per-exec read deny under the profile grant is also stamped on every allow the grant recorded beneath
   //    it, then taken off after (srt-win's deny expansion: seconds a command); what is excluded here needs no per-exec
   //    deny at all (`perExecReadDenies`).
-  const profileExcludes = (): string[] => {
-    try {
-      const bot: Caller = { kind: "session", sessionId: "profile-read-grant", sessionKind: "bot", bot: "profile-read-grant" } as Caller;
-      // The fence's own read denies, the secret places (`SECRET_READ_PLACES`) and the MOSS home's key places
-      // (`BOT_READ_DENIED`): every literal read deny a bot's shell carries (`withSecretReads`, `withBotKeyReads`).
-      const denied = [...fence.policy(fence.contextFor?.(bot) ?? fenceContextFor(bot)).denyRead,
-        ...secretReadPlaces("windows", fence.home).map((x) => x.path), ...BOT_READ_DENIED.map((rel) => win32.join(fence.mossHome, ...rel))];
-      // Never the MOSS home or a folder above it, nor anything in the folders sessions are given (a bot's folder, its
-      // scratch, an agent's outputs): srt-win refuses every session grant that lies inside an exclusion, or reaches one.
-      const sessionFolders = ["bots", "scratch", "outputs"].map((d) => win32.join(fence.mossHome, d));
-      return uniq(denied.filter((p) => !GLOB.test(p) && winUnder(p, fence.home) && !winUnder(fence.mossHome, p)
-        && !sessionFolders.some((f) => winUnder(p, f)) && existsSync(p))).slice(0, 400);
-    } catch { return []; }
-  };
+  const profileExcludes = (): string[] => profileExcludeCandidates(fence).filter((p) => existsSync(p)).slice(0, 400);
   /** A command's read denies less what the profile grant in force excludes already (a path at or under one). */
   const perExecReadDenies = (denies: readonly string[]): string[] => {
     const ex = excludedReads.get(deps.launcher) ?? [];
