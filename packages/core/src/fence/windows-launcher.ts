@@ -32,7 +32,7 @@ export type SrtWinArch = "x64" | "arm64";
  * rebuilt by any job here, and lacks patch 0002 (it must be rebuilt on an arm64 toolchain). A release must ship the launcher built on the toolchain that measured its pin.
  */
 export const SRT_WIN_PINS = Object.freeze({
-  x64: "aa26db783c277a3cb2433c1fe1e698728c2aa1ea3a97efa907b7e36f7c8dc361",
+  x64: "64068333097946441a0ec11b0d7ef81dac0d95d0115458d296742743051377ab",
   arm64: "bcd117665fe9f64494bd535b9508e4808ae99ad0ff6118fb410a7f60bb47abb9",
 });
 
