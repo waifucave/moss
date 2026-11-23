@@ -806,6 +806,9 @@ async function buildBundledPlugins(): Promise<void> {
   if (r.status !== 0) throw new Error(`building the dev bundled plugins failed (logs/bundled-build.log): ${(r.stderr ?? "").trim().split("\n").pop()?.slice(0, 300)}`);
 }
 
+/** A runner has no GPU: on Linux Chromium draws in software (as apps/desktop/test/ui-smoke.test.ts does), or its GPU process fails to
+ *  start, the screenshots of a hidden window get no answer and a WebGL page (the 3D renderer) never draws. */
+const SOFTWARE_GL = process.platform === "linux" ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] : [];
 /** The desktop app built from this checkout, and its Electron binary. Always rebuilt: an apps/desktop/out left from an
  *  earlier build would test stale code (a run after a source change once "passed" on the old app). */
 function sourceApp(): { exe: string; args: string[] } {
@@ -828,10 +831,7 @@ function sourceApp(): { exe: string; args: string[] } {
     if (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))) throw new Error(`electron's install.js failed: ${(r.stderr ?? "").trim().slice(0, 300)}`);
   }
   const exe = join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim());
-  // A runner has no GPU: on Linux Chromium draws in software (as apps/desktop/test/ui-smoke.test.ts does), or its GPU process fails to
-  // start, the screenshots of a hidden window get no answer and a WebGL page (the 3D renderer) never draws.
-  const software = process.platform === "linux" ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] : [];
-  return { exe, args: [DESKTOP, "--mute-audio", ...software] };
+  return { exe, args: [DESKTOP, "--mute-audio", ...SOFTWARE_GL] };
 }
 
 function packagedApp(bundle: string): { exe: string; args: string[] } {
@@ -3575,7 +3575,7 @@ function mossApp(): { exe: string; args: string[] } {
     const r = spawnSync(process.execPath, [join(pkgDir, "install.js")], { cwd: pkgDir, encoding: "utf8", timeout: 600_000 });
     if (r.status !== 0 || !existsSync(join(pkgDir, "path.txt"))) throw new Error(`electron's install.js failed: ${(r.stderr ?? "").trim().slice(0, 300)}`);
   }
-  return { exe: join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim()), args: [MOSS_APP] };
+  return { exe: join(pkgDir, "dist", readFileSync(join(pkgDir, "path.txt"), "utf8").trim()), args: [MOSS_APP, ...SOFTWARE_GL] };
 }
 
 /** A connection in the `app` role (from source, the daemon's test seam lets the run in), with these hello fields; the
