@@ -89,6 +89,8 @@ export interface AdapterOffer {
   bytes?: number;
   /** Where MOSS keeps them. */
   folder: string;
+  /** The person's programs it drives (`claude`, `codex`), for the card. */
+  uses: string[];
   /** Why it is asked again, where a copy was found changed. */
   again?: string;
 }

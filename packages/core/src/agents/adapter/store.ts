@@ -110,7 +110,7 @@ export class AdapterStore {
     return {
       package: d.package, version: d.version, registry: this.#registry, packages: 1 + d.packages.length,
       ...(sizes.every((s) => s !== undefined) ? { bytes: sizes.reduce<number>((n, s) => n + (s as number), 0) } : {}),
-      folder: this.dirOf(d),
+      folder: this.dirOf(d), uses: (d.uses ?? []).map((u) => u.program),
       ...(again === undefined ? {} : { again }),
     };
   }

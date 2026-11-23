@@ -1738,6 +1738,7 @@
                       "agent-unsandboxed",
                       "core-setting",
                       "answer-key-rotate",
+                      "agent-adapter",
                       "bot-provider",
                       "plugin-remove",
                       "plugin-setting-host",
