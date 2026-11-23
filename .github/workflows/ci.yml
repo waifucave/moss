@@ -1287,7 +1287,7 @@ jobs:
   # under the lockfile. scripts/heavy's exclusive lock is free on a fresh runner and is taken as on a Mac.
   acceptance:
     name: acceptance · ${{ matrix.unit }}
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-linux')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux'
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
