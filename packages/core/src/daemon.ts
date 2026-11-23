@@ -5070,6 +5070,12 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           // The same provider fill as the bots': an agent's turn gets its provider and credential as a bot's does.
           fillProvider: p.agents?.fillProvider ?? ((model, options) => partsProviderFill(model, options)),
           ...(p.agents?.backends ? { backends: p.agents.backends } : {}),
+          // An adapter MOSS provides is downloaded through the same pinned fetch as a plugin's npm download: a test build's
+          // seam (the acceptance run's fake registry) reaches only its own names; a real build uses the plain pinned fetch.
+          ...(() => {
+            const seam = opts.pluginFetch ?? (typeof __MOSS_TEST_BUILD__ === "string" ? mappedNamesSeam(process.env.MOSS_TEST_OUTSIDE_WORLD) : undefined);
+            return seam === undefined ? {} : { adapterDownload: httpsFetch(DOWNLOAD_LIMITS, pinnedFetch(seam)) };
+          })(),
           // A bot's agent's commands run with no card only in a root its bot holds: a grant, or inside the bot's own shell
           // write roots as drawn now at its level (agents/bot-child.ts, the coordinator's rulings on stage 2's review);
           // every other command of a bot's agent asks on a card.

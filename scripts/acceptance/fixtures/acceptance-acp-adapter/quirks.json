@@ -1,0 +1,86 @@
+{
+  "notes": "The acceptance run's adapter fixture: the backend's program is an npm adapter MOSS provides (launch.adapter), published by the run on its fake registry (registry.npmjs.org, by name) as acceptance-adapter-pkg 1.0.0, whose run file starts the run's fake ACP agent. The run writes the adapter's real integrity in before it installs the plugin.",
+  "source": "the acceptance run's fake adapter package",
+  "quirks": {
+    "capabilities": {
+      "snakeCaseDuplicates": false,
+      "httpMcpUnadvertised": false
+    },
+    "turns": {
+      "refusal": "ends-turn",
+      "cancelLeavesToolCallsOpen": false,
+      "reportsUsage": false,
+      "quotaErrorsAsText": false
+    },
+    "progress": {
+      "countsChildProcesses": false
+    },
+    "placement": "local",
+    "marks": [],
+    "launch": {
+      "identity": {
+        "versionArgs": [
+          "--version"
+        ],
+        "versionPattern": "^fake-agent (\\d+\\.\\d+\\.\\d+)$"
+      },
+      "envAllow": [
+        "PATH",
+        "HOME",
+        "TMPDIR"
+      ],
+      "envSet": {},
+      "versions": ">=1.0.0 <2.0.0",
+      "adapter": {
+        "package": "acceptance-adapter-pkg",
+        "version": "1.0.0",
+        "integrity": "__INTEGRITY__",
+        "run": "dist/index.js",
+        "runtime": "moss-bun"
+      }
+    },
+    "mcp": {
+      "transports": [
+        "stdio"
+      ],
+      "storesPlainText": false,
+      "passesEnvironment": false,
+      "instructionsReachPrompt": "unknown",
+      "systemPromptChannel": null,
+      "tellsConversationId": false
+    },
+    "sessions": {
+      "load": {
+        "supported": false,
+        "replays": false
+      },
+      "resume": {
+        "supported": false,
+        "replays": false
+      },
+      "replayKeepsToolCallIds": true,
+      "listFiltersHonestly": false,
+      "close": false
+    },
+    "permissions": {
+      "optionKinds": [
+        "allow_once",
+        "reject_once"
+      ],
+      "neverAsks": [],
+      "mcpNames": null
+    },
+    "config": {
+      "modelOption": "model",
+      "effortOption": "thought_level",
+      "effortInModel": false,
+      "choicePersists": false
+    },
+    "auth": {
+      "methods": [],
+      "requiredError": {
+        "code": -32000
+      }
+    }
+  }
+}

@@ -14,8 +14,9 @@
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, until, type ExampleCtx } from "./example-steps";
+import { adapterRow } from "./acp-adapter-row";
 
-export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, the agent's third option is a picker of the session that session.setConfig sets and the agent hears (MOSS's own options refused), and agent.recent keeps that agent's own last choice";
+export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, the agent's third option is a picker of the session that session.setConfig sets and the agent hears (MOSS's own options refused), and agent.recent keeps that agent's own last choice; and a plugin whose backend declares an adapter MOSS provides (an npm package on the run's fake registry): a start raises one sealed card naming it, the NO leaves the agent unavailable with a plain line and nothing asked of the registry, a tampered tarball is refused at its fingerprint with nothing kept, and the real one, after a press in the window, is fetched, verified, kept under the home, started on MOSS's own runtime with its closed flags and its turn runs, a second start asking nothing";
 
 export const ACP_ID = "acceptance-acp";
 export const ACP_NAME = "Acceptance ACP";
@@ -63,7 +64,7 @@ export function agentConfig(quirksFile: string, o: { report: string; selection: 
   });
 }
 
-const reportOf = (file: string): { type: string; [k: string]: unknown }[] => {
+export const reportOf = (file: string): { type: string; [k: string]: unknown }[] => {
   try {
     return readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type: string });
   } catch {
@@ -161,6 +162,8 @@ async function run(ctx: ExampleCtx): Promise<string> {
   const step2 = `2 agent.start on it (session ${session}): the fake agent's reply "${ACP_REPLY.slice(0, 40)}…" is in the conversation; its report shows the prompt, the server "${moss}" given at session/new, started, and its Glossary call answered ("${text.replace(/\s+/g, " ").slice(0, 120)}")`;
   done.push(step2);
   done.push(await modelsRow(ctx, { computer: computer!, report }));
+  // 4. An agent whose program is an adapter MOSS provides (acp-adapter-row.ts).
+  done.push(await adapterRow(ctx));
   return done.join("; ");
 }
 
