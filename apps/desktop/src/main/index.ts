@@ -2744,8 +2744,8 @@ function syncSurfaces(): void {
   }
 }
 
-/** The display the surfaces sit on: the primary one, or the host idle row's stand-in for it (`MOSS_TEST_SCREEN_FILE`, a headless
- *  test-marked or acceptance build only; undefined on every other run). */
+/** The display the surfaces sit on: the primary one, or the host idle row's stand-in for it (its screen seam, set only in a headless
+ *  test-marked or acceptance build; undefined on every other run). */
 let testDisplay: { bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch: Rect | null } | undefined;
 function surfaceDisplay(): { id: number; bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch?: Rect | null } {
   const d = screen.getPrimaryDisplay();

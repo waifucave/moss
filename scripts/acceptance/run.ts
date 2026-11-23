@@ -4999,6 +4999,7 @@ async function browserOnlyRun(app: { exe: string; args: string[] }, o: { withHos
 async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> {
   const n = stepNumber(FULL_STEPS, HOST_IDLE_STEP);
   const lines: string[] = [];
+  let hostCdp: Cdp | undefined;
   try {
     if (target !== "source") fail("the host idle row needs the engine's source seam (MOSS_HOST_COMMAND)");
     // Linux's windows have no opacity (an invisible window there would be a shown one): its host draws its surfaces offscreen, as
@@ -5011,7 +5012,8 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
     const screenFile = join(root, "host-idle-screen");
     writeFileSync(screenFile, "");
     const hostApp = hostAppCopy(app);
-    const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain"]);
+    const hostPort = freePort();
+    const hostCommand = hostCommandOf([hostApp.exe, ...hostApp.args, "--moss-program=host", "--moss-headless", "--use-mock-keychain", `--remote-debugging-port=${hostPort}`]);
     const d = await startDaemonProc({ MOSS_HOST_COMMAND: hostCommand, ...(invisible ? { MOSS_TEST_INVISIBLE: "1" } : {}), MOSS_IPC_STATS: "1", MOSS_TEST_SCREEN_FILE: screenFile, MOSS_DEV_DEBUG: "1" });
     const hostPid = await until("the host the engine started, ready", 120_000, () => { const p = hostLockPid(home); if (p !== undefined) startedHosts.add(p); return readyCount(readLog(d.log)) > 0 ? p : undefined; }, 500);
     await until("the host placing its island", 60_000, () => (/surface: island bounds/.test(hostText()) ? true : undefined), 500);
@@ -5070,10 +5072,24 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
     if (shown !== undefined) fail(`the host showed a window while headless: ${shown.slice(0, 200)}`);
     if (a.msgs > HOST_IDLE_MESSAGES_PER_S) fail(`the host and its pages kept talking after the sequence: ${a.msgs.toFixed(1)} messages/s (budget ${HOST_IDLE_MESSAGES_PER_S}); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
     if (a.cpu > HOST_IDLE_CPU_PERCENT) fail(`the host stayed busy after the sequence: ${a.cpu.toFixed(1)}% of a core (budget ${HOST_IDLE_CPU_PERCENT}%); by window: ${after.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
+    // The owner's spin, as the symbolized samples named it: one Tab into the island while its strip holds nothing to focus made
+    // Chromium pass the focus between the island's root, its frame and the window for ever (Browser ~60%, two renderers ~55%; the
+    // root's focus stop ends it, apps/desktop/src/core/root.ts syncFocusStop). A real key event into the island's own page.
+    hostCdp = await until("the host's DevTools port", 60_000, async () => { try { return await Cdp.connect(hostPort); } catch { return undefined; } }, 250);
+    const island = await until("the island's page in the host", 60_000, () => [...hostCdp!.frames.values()].find((f) => f.type === "page" && f.url.startsWith("moss-core://app/?surface=island")), 300);
+    for (const type of ["rawKeyDown", "keyUp"]) await hostCdp.send("Input.dispatchKeyEvent", { type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 48 }, island.session);
+    await sleep(1_000);
+    const landed = await hostCdp.evaluate(island.session, "document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : ''").catch((err: unknown) => `unread (${String(err).slice(0, 80)})`);
+    await next(1, "a counted window after the Tab");
+    const tabbed = await next(2, "two counted windows after the Tab");
+    const tb = summary(tabbed);
+    lines.push(`a Tab into the island: the focus on ${String(landed) || "nothing"}, then ${tb.text}`);
+    if (tb.cpu > HOST_IDLE_CPU_PERCENT) fail(`one Tab into the island kept the host busy: ${tb.cpu.toFixed(1)}% of a core (budget ${HOST_IDLE_CPU_PERCENT}%), the focus on ${String(landed) || "nothing"}; by window: ${tabbed.map((w) => w.raw.slice(0, 160)).join(" | ")}`);
     record(n, "PASS", `host pid ${hostPid}, its surfaces ${invisible ? "shown invisible" : "drawn offscreen"}; ${lines.join("; ")}`);
   } catch (err) {
     record(n, statusOf(err), `${why(err)}${lines.length > 0 ? ` (after: ${lines.join("; ").slice(0, 900)})` : ""}`);
   } finally {
+    hostCdp?.close();
     await endStartedHosts();
   }
 }
