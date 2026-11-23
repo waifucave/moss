@@ -17,7 +17,7 @@ import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
 import { windowsShellTools } from "../../src/fence/win-shell-tools";
-import { profileExcludeCandidates, quarantineWin } from "../../src/fence/win-fenced";
+import { profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
@@ -411,6 +411,21 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const md = await call(tools.Bash!, { command: probe("169.254.169.254", 80), dangerouslyDisableSandbox: true });
     console.log(`[e2e] escape network: public ${n.text.includes("CONNECTED")}, metadata from the user ${metadata}, from the escape ${md.text.includes("CONNECTED")}`);
     if (metadata) expect(md.text).toContain("REFUSED");
+    // Every other metadata address patch 0003 blocks (lane WS4): another in the link-local /16, Azure's WireServer,
+    // Alibaba's, Oracle's; each asserted where the user reaches it (the WireServer answers on GitHub's Azure runners).
+    for (const [host, port] of [["168.63.129.16", 80], ["169.254.169.253", 53], ["100.100.100.200", 80], ["192.0.0.192", 80]] as const) {
+      const ctl = await reach(host, port);
+      const got = await call(tools.Bash!, { command: probe(host, port), dangerouslyDisableSandbox: true });
+      console.log(`[e2e] escape to ${host}:${port}: from the user ${ctl}, from the escape ${got.text.includes("CONNECTED")}`);
+      if (ctl) expect(got.text).toContain("REFUSED");
+    }
+    // The IPv4-mapped IPv6 spelling of the main one, from a dual-mode socket: the same script as the user (the control)
+    // and as the escape.
+    const mapped = "try { $s = New-Object Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetworkV6, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp); $s.DualMode = $true; $r = $s.BeginConnect([Net.IPAddress]::Parse('::ffff:169.254.169.254'), 80, $null, $null); if ($r.AsyncWaitHandle.WaitOne(6000) -and $s.Connected) { 'CONNECTED' } else { 'REFUSED' } } catch { 'REFUSED' }";
+    const mappedCtl = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", mapped], { stdout: "pipe", stderr: "pipe" }).stdout.toString();
+    const mappedEsc = await call(tools.PowerShell!, { command: mapped, dangerouslyDisableSandbox: true });
+    console.log(`[e2e] escape to ::ffff:169.254.169.254: from the user ${mappedCtl.includes("CONNECTED")}, from the escape ${mappedEsc.text.includes("CONNECTED")}`);
+    if (mappedCtl.includes("CONNECTED")) expect(mappedEsc.text).toContain("REFUSED");
     // The same bot's next command in the sandbox has no network again.
     const back = await call(tools.Bash!, { command: probe("1.1.1.1", 443) });
     expect(back.text).toContain("REFUSED");
@@ -418,6 +433,66 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const side = await call(sideTools.Bash!, { command: "echo hi", dangerouslyDisableSandbox: true }, { refusal: true });
     expect(side.isError).toBe(true);
     expect(side.text).toContain("never leave the sandbox");
+  }, 900_000);
+
+  test("two coding sessions at once: a session's new outputs folder (a write root, read included) never opens to the other's running command", async () => {
+    // B's command runs first and reads A's outputs folder in a loop; A's folder is made only after B started (B's plan
+    // can't deny it by name), and then A's first command makes it a write root. The wait keeps them apart (rule 3b with
+    // write roots, lane WS4): A starts only after B ends, and B never reads A's file.
+    const exec = fencedExecutor({ spawner: fencedSpawner({ fence }), home, temp: fence.temp, mossHome: moss, os: "windows" });
+    const ctxOf = (id: string, cwd: string) => ({ as: { kind: "session", sessionId: id, sessionKind: "coding" } as Caller, cwd, signal: new AbortController().signal, output: () => {} }) as unknown as Parameters<ReturnType<typeof fencedExecutor>["run"]>[2];
+    const outA = join(moss, "outputs", "e2e-ov-a"), outB = join(moss, "outputs", "e2e-ov-b");
+    for (const d of [outA, outB]) rmSync(d, { recursive: true, force: true });
+    mkdirSync(outB, { recursive: true });
+    const secretA = join(outA, "secret.txt").replace(/\\/g, "/");
+    const bRun = exec.run("Bash", { command: `echo began > began.txt; for i in $(seq 1 40); do cat '${secretA}' 2>/dev/null; sleep 0.5; done; echo b-finished` }, ctxOf("e2e-ov-b", outB)).then((r) => ({ r, at: Date.now() }));
+    for (let i = 0; i < 1200 && !existsSync(join(outB, "began.txt")); i++) await Bun.sleep(100);
+    expect(existsSync(join(outB, "began.txt"))).toBe(true);
+    mkdirSync(outA, { recursive: true });
+    writeFileSync(join(outA, "secret.txt"), `${SECRET}\n`);
+    expect(readFileSync(join(outA, "secret.txt"), "utf8")).toContain("dummy123"); // the control: the file is there
+    const aStarted = Date.now();
+    const a = await exec.run("Bash", { command: "echo mine > own.txt && echo a-done" }, ctxOf("e2e-ov-a", outA));
+    const aEnded = Date.now();
+    const b = await bRun;
+    const bText = JSON.stringify(b.r.output);
+    console.log(`[e2e] overlap: A waited ${aEnded - aStarted} ms, B ended ${b.at <= aEnded ? "before" : "after"} A; B saw the dummy: ${bText.includes("dummy123")}`);
+    expect(JSON.stringify(a.output)).toContain("a-done");
+    expect(bText).toContain("b-finished");
+    expect(bText).not.toContain("dummy123");
+    expect(b.at).toBeLessThanOrEqual(aEnded);
+    // The reviewer's open question, on the runner: A's write root carries a group entry that includes read, and it
+    // outlives A's command.
+    const acl = Bun.spawnSync(["icacls", outA], { stdout: "pipe", stderr: "pipe" }).stdout.toString();
+    const line = acl.split(/\r?\n/).find((l) => /sandbox-runtime-users/i.test(l));
+    console.log(`[e2e] A's outputs folder after A's command: ${line?.trim()}`);
+    expect(line).toBeDefined();
+    expect(/\((?:[A-Z]+,)*(?:RX|R|M|F|GR)(?:,[A-Z]+)*\)/.test(line!)).toBe(true);
+    // B's later command: A's folder exists now, so B's plan denies it by name (and rule 3c by the root this process
+    // granted): still unread.
+    const again = await exec.run("Bash", { command: `cat '${secretA}' 2>&1; echo b2` }, ctxOf("e2e-ov-b", outB));
+    console.log(`[e2e] B's later read of A's folder: dummy visible = ${JSON.stringify(again.output).includes("dummy123")}`);
+    expect(JSON.stringify(again.output)).toContain("b2");
+    expect(JSON.stringify(again.output)).not.toContain("dummy123");
+  }, 1_800_000);
+
+  test("the move across drives is capped: a planted tree over the entries cap on another drive stays and is named", async () => {
+    const other = ["D:\\", "E:\\"].find((d) => { try { return lstatSync(d).isDirectory() && d.toUpperCase()[0] !== moss.toUpperCase()[0]; } catch { return false; } });
+    console.log(`[e2e] another drive for the cap: ${other ?? "none"}`);
+    if (other === undefined) return;
+    const root = join(other, `moss-e2e-cap-${process.pid}`);
+    rmSync(root, { recursive: true, force: true });
+    const tree = join(root, ".husky");
+    mkdirSync(tree, { recursive: true });
+    try {
+      for (let i = 0; i <= QUARANTINE_COPY_LIMITS.entries; i++) writeFileSync(join(tree, `h${i}`), "x");
+      const started = Date.now();
+      const line = quarantineWin(new Map([[tree, false]]), moss);
+      console.log(`[e2e] over the cap (${QUARANTINE_COPY_LIMITS.entries + 2} entries) in ${Date.now() - started} ms: ${line?.trim()}`);
+      expect(line).toContain("could NOT be moved aside");
+      expect(line).toContain(tree);
+      expect(existsSync(join(tree, `h${QUARANTINE_COPY_LIMITS.entries}`))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   }, 900_000);
 
   test("the computer node's Bash (no runtime settings): a coding session writes its own outputs and nothing of the MOSS home", async () => {
