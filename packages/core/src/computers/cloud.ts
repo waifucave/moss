@@ -230,6 +230,9 @@ export interface CloudComputersOptions {
   /** The official image's cloud-init for a VM (`image.ts`): its name and its pairing token. It may refuse (throw)
    *  when the image can't be made yet (no pinned download); then nothing is created and nothing is billed. */
   userData: (o: { name: string; token: string }) => string | Promise<string>;
+  /** Throws, with a plain reason, when the image can't be made at all in this build (no pinned download): asked BEFORE
+   *  the create card, so the person is never asked to approve a VM that cannot be made. Nothing is billed or begun. */
+  imageReady?: () => void;
   /** Whether a computer of that name is in the tree, paired (lane H's device list). */
   isPaired?: (name: string) => boolean;
   /** Makes a computer the main one (lane H's main election). */
@@ -438,6 +441,7 @@ export class CloudComputers {
   async #create(f: CloudFolder, label: string, tenure: string): Promise<"created" | "declined" | "exists"> {
     return this.#one(f.name, async () => {
       const p = this.#provider(f.provider);
+      this.#o.imageReady?.();
       // THE OK BEFORE ANYTHING IS MADE OR BILLED: no provider call that creates happens unless the user approved this card.
       if ((await this.#o.confirm({ kind: "cloud-create", name: f.name, provider: f.provider, size: f.size, region: f.region, folder: f.folder })) !== true) return "declined";
       this.#guard(tenure);

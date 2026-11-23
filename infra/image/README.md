@@ -26,9 +26,15 @@ without the block there is nothing to lift.
 
 To see what a VM gets: `scripts/pinned-bun infra/image/print.ts`. It prints the cloud-init with placeholder values.
 
-Open before the live gate:
+How the VM joins (built, proven on a stand-in; `packages/core/src/computers/cloud-join.ts`): the main computer begins one
+ordinary pairing for the VM and writes its QR text to `/etc/moss/join`; the unit starts
+`moss-core daemon run --cloud-join-dir /etc/moss`, which names the device from `/etc/moss/name`, joins with the ticket,
+confirms its own end, and deletes the ticket and the token once paired. The main confirms its end by itself only for a
+pairing it began for a VM, and only when the device that joined calls itself that VM's computer.
 
-- the daemon's flags `--headless`, `--name-file`, `--pairing-token-file` and `--join-file` are lane J's proposal (lanes
-  A, H and M);
-- the release URLs and hashes come from lane M's Linux build;
+Open before the live gate (the owner's list is in the lane's report):
+
+- `IMAGE_DAEMON_PIN` in `packages/core/src/computers/image.ts` is not set: no Linux build of the engine is published for
+  a VM to download, so no cloud computer is created (and the two providers stay `availability: not-yet`);
+- the browser pin is the one the daemon's own headless install uses (`plugins/moss/plugins/browser/headless-shell.pins.json`);
 - a desktop session for computer use comes with opensky, not here.

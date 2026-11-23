@@ -114,6 +114,8 @@ export interface ComputerNodeOptions {
     host: PluginHost;
     confirm: (card: CloudCard) => Promise<CloudAnswer>;
     userData: (o: { name: string; token: string }) => string | Promise<string>;
+    /** Throws a plain reason when no VM can be made in this build, before any card (`CloudComputersOptions.imageReady`). */
+    imageReady?: () => void;
     makeMain?: (name: string) => Promise<void>;
   };
   log?: (line: string) => void;
@@ -441,7 +443,7 @@ export function startComputerNode(o: ComputerNodeOptions): ComputerNode {
     const authority = leaseAuthority(o.lease);
     const vms = new CloudComputers({
       clock: o.clock, store: new FileCloudStateStore(o.mossHome), provider: pluginProviders(c.plugins, c.host), providerIds: () => providerIds(c.plugins),
-      authority, confirm: c.confirm, userData: c.userData, isPaired: (name) => registry.get(name) !== undefined,
+      authority, confirm: c.confirm, userData: c.userData, ...(c.imageReady ? { imageReady: c.imageReady } : {}), isPaired: (name) => registry.get(name) !== undefined,
       ...(c.makeMain ? { makeMain: c.makeMain } : {}), ...(o.log ? { log: o.log } : {}),
     });
     const active = () => authority.canAct() && authority.tenure() !== undefined;

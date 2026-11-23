@@ -358,7 +358,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
     if (input.bots) closers.push(fence.followWorkshop(input.bots.registry, input.bots.drops));
     let broker: MossApprovalBroker | undefined;
     const lateApprovals = lateBroker(() => broker);
-    const cloudCards = new CloudCardDesk(lateApprovals);
+    const cloudCards = new CloudCardDesk(input.approvals ?? lateApprovals);
     const cloudPairer = input.cloud && links
       ? new CloudPairer({ pairing: links.pairing, door: () => node?.cloud?.door(), log: (line) => log(`[computers] ${line}`) })
       : undefined;
@@ -397,6 +397,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
             plugins: input.cloud.plugins, host: input.cloud.host,
             ...(input.cloud.makeMain ? { makeMain: input.cloud.makeMain } : {}),
             confirm: (card: CloudCard) => cloudCards.answer(card),
+            imageReady: () => void (input.cloud!.downloads ?? imageDownloads)(),
             userData: async (o: { name: string; token: string }) => {
               const downloads = (input.cloud!.downloads ?? imageDownloads)();
               return cloudInit({ name: o.name, token: o.token, join: await cloudPairer.offer(o.name, o.token), ...downloads });
