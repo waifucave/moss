@@ -508,7 +508,7 @@ describe("agent.backends", () => {
     watch(s.backend, slow);
     watch(s.w.backend, async () => { throw new Error("it can't be looked at"); });
     const methods = agentMethods({ manager: s.w.manager, backends: () => [s.w.backend, s.backend], computer: "Studio", localDevice: () => "a".repeat(32) });
-    const r = await methods["agent.backends"]!({}, { caller: { kind: "user" } as never }) as { backends: { id: string; name: string; computers: { installed: boolean }[] }[] };
+    const r = await methods["agent.backends"]!({}, { caller: { kind: "user", client: "app" } as never }) as { backends: { id: string; name: string; computers: { installed: boolean }[] }[] };
     expect(most).toBe(2);
     expect(r.backends.map((b) => [b.id, b.name, b.computers[0]!.installed])).toEqual([["fake", "fake", false], ["claude-code", "Claude Code", true]]);
   });
