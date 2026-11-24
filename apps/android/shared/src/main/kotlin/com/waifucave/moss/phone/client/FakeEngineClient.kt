@@ -82,7 +82,7 @@ class FakeEngineClient(
         when (scenario) {
             Scenario.quiet -> cardList = mutableListOf()
             Scenario.idle, Scenario.loading, Scenario.sendFails -> {}
-            Scenario.botLimit -> cardList = mutableListOf()
+            Scenario.botLimit, Scenario.tallQuestion -> cardList = mutableListOf()
             Scenario.midTurn -> {
                 statusLines["s_alpha"] = "Alpha is working"
                 statusLines["c1"] = "Working"
