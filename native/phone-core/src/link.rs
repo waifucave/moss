@@ -58,6 +58,14 @@ const MAX_SEQ_JUMP: u64 = 1_000_000;
 pub const LANE_FRAME_MAX: usize = 1024 * 1024;
 /// One JSON-RPC message from the engine (a history page, a card list): 4 MiB. Larger answers are refused.
 pub const RPC_FRAME_MAX: usize = 4 * 1024 * 1024;
+/// The largest message the phone sends: the engine's link drops a frame over `IROH_MAX_FRAME_BYTES` (1 MiB) without an
+/// error, so a call that big is refused here in plain words instead.
+pub const SEND_FRAME_MAX: usize = 1 << 20;
+/// What may wait to be written at once, in bytes; a call that would overfill it fails at once.
+pub const SEND_QUEUE_BYTES: usize = 4 << 20;
+/// Cards still waiting that a connection tracks, and the resolutions it keeps for cards it hasn't issued (yet).
+const CARDS_LIVE_MAX: usize = 512;
+const CARDS_RESOLVED_MAX: usize = 512;
 /// Events queued and not yet read: at most this many, and this many bytes of their JSON; the oldest go first.
 const MAX_EVENTS: usize = 4096;
 const MAX_EVENT_BYTES: usize = 32 * 1024 * 1024;
@@ -148,6 +156,18 @@ pub struct StagedFile {
 pub const STAGE_FILE_CHUNK_BYTES: usize = 512 * 1024;
 /// One file at most (`STAGE_FILE_MAX_BYTES`).
 pub const STAGE_FILE_MAX_BYTES: usize = 50 * 1024 * 1024;
+/// One picture at most (`STAGE_IMAGE_MAX_BYTES`: the desktop's line cap less its headroom, as bytes).
+pub const STAGE_PICTURE_MAX_BYTES: usize = 6_094_848;
+
+/// A path the computer gave that the phone will name, and sign, as it came: never rewritten. One the phone couldn't
+/// name exactly (a hidden character, too long) is refused.
+fn protocol_path(v: Option<&Value>) -> Result<String, CoreError> {
+    let p = v.and_then(Value::as_str).ok_or_else(|| CoreError::protocol("the computer gave no path for it"))?;
+    if p.is_empty() || p.encode_utf16().count() > 4096 || p.chars().any(crate::visible::unshown) {
+        return Err(CoreError::protocol("the computer gave a path the phone can't name exactly"));
+    }
+    Ok(p.to_string())
+}
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct AnswerOutcome {
@@ -223,6 +243,11 @@ struct Session {
     /// The control lane's receive half, held so QUIC doesn't stop it (the computer answers on its own lanes).
     _control_recv: RecvStream,
     rpc: Mutex<SendStream>,
+    /// Frames for `rpc`, written in order by one writer task (`writer`), never aborted once begun.
+    queue: tokio::sync::mpsc::UnboundedSender<Job>,
+    queue_rx: StdMutex<Option<tokio::sync::mpsc::UnboundedReceiver<Job>>>,
+    /// The queue's bytes, in KiB permits.
+    queue_room: Arc<tokio::sync::Semaphore>,
     pending: Pending,
     next_id: AtomicU64,
     started: Instant,
@@ -230,6 +255,32 @@ struct Session {
     last_out: AtomicU64,
     /// Why this side closed it, in the core's own words, for `Down`.
     failure: StdMutex<Option<&'static str>>,
+}
+
+/// One frame waiting for the writer, holding its room in the queue until written or dropped.
+struct Job {
+    frame: Vec<u8>,
+    done: Option<oneshot::Sender<Result<(), CoreError>>>,
+    _room: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// The one writer of a session's client stream: frames in order, each written whole once begun (no caller's
+/// cancellation reaches it), and a frame whose caller has gone before its turn dropped unsent.
+async fn writer(s: std::sync::Weak<Session>, mut rx: tokio::sync::mpsc::UnboundedReceiver<Job>) {
+    while let Some(job) = rx.recv().await {
+        if job.done.as_ref().is_some_and(|d| d.is_closed()) {
+            continue;
+        }
+        let Some(s) = s.upgrade() else { return };
+        let r = s.rpc_send_bytes(&job.frame).await;
+        let failed = r.is_err();
+        if let Some(d) = job.done {
+            let _ = d.send(r);
+        }
+        if failed {
+            return;
+        }
+    }
 }
 
 impl Session {
@@ -250,18 +301,19 @@ impl Session {
         self.last_out.store(self.now(), Ordering::Relaxed);
         net::write_frame(&mut *self.control.lock().await, &encode(m)).await
     }
-    async fn rpc_send(&self, v: &Value) -> Result<(), CoreError> {
+    async fn rpc_send_bytes(&self, frame: &[u8]) -> Result<(), CoreError> {
         self.last_out.store(self.now(), Ordering::Relaxed);
-        net::write_frame(&mut *self.rpc.lock().await, &serde_json::to_vec(v).expect("JSON")).await
+        net::write_frame(&mut *self.rpc.lock().await, frame).await
     }
-    /// A frame written in a task of its own, which no cancelled call aborts: a frame is never left half written on the
-    /// stream (the next message, a signed answer perhaps, would be lost behind it).
-    async fn rpc_send_whole(self: &Arc<Self>, v: Value) -> Result<(), CoreError> {
-        let me = self.clone();
-        match tokio::spawn(async move { me.rpc_send(&v).await }).await {
-            Ok(r) => r,
-            Err(_) => Err(CoreError::offline("the write stopped")),
+    /// Puts a frame in the writer's queue. `done` hears how its write went; a job whose `done` is gone before the
+    /// writer reaches it (its caller stopped waiting) is dropped unsent. Refused when the queue has no room for it.
+    fn enqueue(&self, frame: Vec<u8>, done: Option<oneshot::Sender<Result<(), CoreError>>>) -> Result<(), CoreError> {
+        if frame.len() > SEND_FRAME_MAX {
+            return Err(CoreError::refused("that is more than the link carries in one message (1 MiB)"));
         }
+        let permits = frame.len().div_ceil(1024).max(1) as u32;
+        let permit = self.queue_room.clone().try_acquire_many_owned(permits).map_err(|_| CoreError::refused("too much is waiting to be sent to the computer; try again in a moment"))?;
+        self.queue.send(Job { frame, done, _room: permit }).map_err(|_| CoreError::offline("the link is closed"))
     }
     fn fail_all(&self, why: &str) {
         for (_, tx) in self.pending.lock().unwrap().drain() {
@@ -269,6 +321,16 @@ impl Session {
         }
     }
     async fn request(self: &Arc<Self>, method: &str, params: Value, timeout: Option<Duration>) -> Result<Value, CoreError> {
+        // The timeout covers the whole call: its wait in the queue, its write and the answer.
+        match timeout {
+            Some(t) => tokio::time::timeout(t, self.request_untimed(method, params))
+                .await
+                .unwrap_or_else(|_| Err(CoreError::Timeout { reason: format!("`{method}` got no answer in time") })),
+            None => self.request_untimed(method, params).await,
+        }
+    }
+
+    async fn request_untimed(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, CoreError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -281,15 +343,10 @@ impl Session {
         }
         let _unregister = Unregister(self, id);
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        self.rpc_send_whole(msg).await?;
-        let answer = async { rx.await.unwrap_or_else(|_| Err(CoreError::offline("the link dropped"))) };
-        match timeout {
-            Some(t) => match tokio::time::timeout(t, answer).await {
-                Ok(r) => r,
-                Err(_) => Err(CoreError::Timeout { reason: format!("`{method}` got no answer in time") }),
-            },
-            None => answer.await,
-        }
+        let (done_tx, done_rx) = oneshot::channel();
+        self.enqueue(serde_json::to_vec(&msg).expect("JSON"), Some(done_tx))?;
+        done_rx.await.unwrap_or_else(|_| Err(CoreError::offline("the link dropped")))?;
+        rx.await.unwrap_or_else(|_| Err(CoreError::offline("the link dropped")))
     }
     async fn rpc_send_header(&self) -> Result<(), CoreError> {
         let header = Cbor::Array(vec![Cbor::text("S"), Cbor::text(REMOTE_RPC_LABEL), Cbor::text("control"), Cbor::Null]);
@@ -311,14 +368,22 @@ struct Inner {
     state: StdMutex<LinkState>,
     /// This connection's own number: a `CardView` it issued names it, and only its own are answered here.
     serial: u64,
-    /// Each card issued here, by id: its state, shared by every view of it.
-    cards: StdMutex<HashMap<String, CardState>>,
+    /// The cards issued here and still waiting, and the resolutions heard: both bounded.
+    cards: StdMutex<CardTable>,
 }
 
 /// A paired computer's link and client connection, kept up by the core until `disconnect`.
 #[derive(uniffi::Object)]
 pub struct Connection {
     inner: Arc<Inner>,
+}
+
+/// For the core's own tests, never exported.
+impl Connection {
+    #[doc(hidden)]
+    pub fn tracked_cards(&self) -> usize {
+        self.inner.tracked_cards()
+    }
 }
 
 impl std::fmt::Debug for Connection {
@@ -337,6 +402,54 @@ enum End {
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 
+/// A connection's cards: those it issued that still wait (their state shared with every view of them), and the ids
+/// resolved lately, so a resolution heard before its card is listed still counts. Both capped, oldest dropped first: a
+/// computer streaming ids costs a fixed amount, and a card dropped from it only stops hearing its resolution (its
+/// answer is then refused by the computer, never wrongly signed).
+#[derive(Default)]
+struct CardTable {
+    live: HashMap<String, CardState>,
+    live_order: std::collections::VecDeque<String>,
+    resolved: HashMap<String, String>,
+    resolved_order: std::collections::VecDeque<String>,
+}
+
+impl CardTable {
+    fn len(&self) -> usize {
+        self.live.len() + self.resolved.len()
+    }
+    /// The state a view of card `id` shares.
+    fn state_for(&mut self, id: &str) -> CardState {
+        if let Some(outcome) = self.resolved.get(id) {
+            return Arc::new(StdMutex::new(Some(outcome.clone())));
+        }
+        if let Some(s) = self.live.get(id) {
+            return s.clone();
+        }
+        let s: CardState = Arc::default();
+        self.live.insert(id.to_string(), s.clone());
+        self.live_order.push_back(id.to_string());
+        while self.live.len() > CARDS_LIVE_MAX {
+            let Some(old) = self.live_order.pop_front() else { break };
+            self.live.remove(&old);
+        }
+        s
+    }
+    fn resolve(&mut self, id: &str, outcome: &str) {
+        if let Some(s) = self.live.remove(id) {
+            *s.lock().unwrap() = Some(outcome.to_string());
+            self.live_order.retain(|x| x != id);
+        }
+        if self.resolved.insert(id.to_string(), outcome.to_string()).is_none() {
+            self.resolved_order.push_back(id.to_string());
+        }
+        while self.resolved.len() > CARDS_RESOLVED_MAX {
+            let Some(old) = self.resolved_order.pop_front() else { break };
+            self.resolved.remove(&old);
+        }
+    }
+}
+
 pub fn start(ep: iroh::Endpoint, identity: Arc<Identity>, computer: PairedComputer, options: ConnectOptions) -> Result<Arc<Connection>, CoreError> {
     let key: [u8; 32] = bytes::from_b64(&computer.public_key).and_then(|k| k.try_into().ok()).ok_or_else(|| CoreError::storage("the computer's key isn't 32 bytes"))?;
     let inner = Arc::new(Inner {
@@ -352,7 +465,7 @@ pub fn start(ep: iroh::Endpoint, identity: Arc<Identity>, computer: PairedComput
         last_seq: AtomicU64::new(0),
         state: StdMutex::new(LinkState::Connecting),
         serial: SERIAL.fetch_add(1, Ordering::Relaxed),
-        cards: StdMutex::new(HashMap::new()),
+        cards: StdMutex::new(CardTable::default()),
     });
     let me = inner.clone();
     crate::runtime::handle().spawn(async move { me.run().await });
@@ -371,12 +484,19 @@ fn close_words(code: u32) -> &'static str {
 }
 
 impl Inner {
+    fn tracked_cards(&self) -> usize {
+        self.cards.lock().unwrap().len()
+    }
+
     /// A checked card, issued for display from this connection.
     fn issue(&self, c: Checked, outcome: Option<String>) -> Arc<CardView> {
-        let state = self.cards.lock().unwrap().entry(c.id.clone()).or_default().clone();
-        if outcome.is_some() {
-            *state.lock().unwrap() = outcome;
-        }
+        let state = {
+            let mut t = self.cards.lock().unwrap();
+            if let Some(o) = &outcome {
+                t.resolve(&c.id, o);
+            }
+            t.state_for(&c.id)
+        };
         Arc::new(CardView { id: c.id, hash: c.hash, card_json: c.card_json, options: c.options, state, issuer: self.serial })
     }
 
@@ -482,11 +602,15 @@ impl Inner {
         let _ = control.set_priority(3);
         let (rpc, rpc_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no client stream: {e}")))?;
         let _ = rpc.set_priority(3);
+        let (queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
         let s = Arc::new(Session {
             conn: conn.clone(),
             control: Mutex::new(control),
             _control_recv: control_recv,
             rpc: Mutex::new(rpc),
+            queue,
+            queue_rx: StdMutex::new(Some(queue_rx)),
+            queue_room: Arc::new(tokio::sync::Semaphore::new(SEND_QUEUE_BYTES / 1024)),
             pending: StdMutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             started: Instant::now(),
@@ -537,6 +661,8 @@ impl Inner {
             self.last_seq.fetch_max(seq.unwrap() as u64, Ordering::AcqRel);
             // The client stream: its header, then JSON-RPC.
             s.rpc_send_header().await?;
+            let rx = s.queue_rx.lock().unwrap().take().expect("one writer");
+            tokio::spawn(writer(Arc::downgrade(&s), rx));
             tokio::spawn(self.clone().rpc_reader(s.clone(), rpc_recv));
             tokio::spawn(keepalive(s.clone()));
             let timeout = Some(Duration::from_secs(30));
@@ -667,7 +793,7 @@ impl Inner {
                 (Some(_), Some(_)) => {
                     // The daemon sends a `remote` client no requests of its own; answered so it isn't left waiting.
                     let reply = json!({ "jsonrpc": "2.0", "id": msg["id"], "error": { "code": -32601, "message": "not handled by this phone" } });
-                    let _ = s.rpc_send(&reply).await;
+                    let _ = s.enqueue(serde_json::to_vec(&reply).expect("JSON"), None);
                 }
                 (None, None) => {}
             }
@@ -695,9 +821,8 @@ impl Inner {
             let id = params.get("id").and_then(Value::as_str).filter(|i| cards::is_card_id(i));
             let outcome = params.get("outcome").and_then(Value::as_str).map(|o| computers_words(o, 32));
             if let (Some(id), Some(outcome)) = (id, outcome) {
-                // Kept even for a card not issued yet (its event can come before the list that brings it).
-                let state = self.cards.lock().unwrap().entry(id.to_string()).or_default().clone();
-                *state.lock().unwrap() = Some(outcome.clone());
+                // Kept for a card not issued yet too (its event can come before the list that brings it), within bounds.
+                self.cards.lock().unwrap().resolve(id, &outcome);
                 self.emit(ConnEvent::CardResolved { id: id.to_string(), outcome });
             }
             return;
@@ -771,6 +896,7 @@ impl Inner {
         let accepted = r.get("accepted").and_then(Value::as_bool).unwrap_or(false);
         if accepted {
             *shown.state.lock().unwrap() = Some("answered".into());
+            self.cards.lock().unwrap().resolve(&shown.id, "answered");
         }
         Ok(AnswerOutcome { accepted, computers_reason: r.get("reason").and_then(Value::as_str).map(|s| computers_words(s, 200)) })
     }
@@ -791,37 +917,83 @@ impl Inner {
         r.get("seq").and_then(Value::as_u64).ok_or_else(|| CoreError::protocol("session.send answered no seq"))
     }
 
-    /// Sends a file for a session's next message in chunks (`session.stageFile`), each request well under the link's
-    /// frame limit. A failure part way drops the upload at the computer.
-    async fn stage_file(&self, session: &str, name: &str, data: &[u8]) -> Result<StagedFile, CoreError> {
+    /// Sends `data` in chunks through `method` (`session.stageFile` or `session.stagePicture`): `first` holds the first
+    /// request's own fields (a file's name, a picture's type). Each answer must hold strictly more bytes than the last
+    /// and no more than were sent, in no more rounds than there are chunks; otherwise, or when the caller stops waiting,
+    /// the upload is dropped at the computer.
+    async fn upload(self: &Arc<Self>, method: &'static str, session: &str, mut first: serde_json::Map<String, Value>, data: &[u8], max: usize) -> Result<Value, CoreError> {
         use base64::Engine;
-        if data.is_empty() || data.len() > STAGE_FILE_MAX_BYTES {
-            return Err(CoreError::refused("a file is 1 byte to 50 MiB"));
+        if data.is_empty() || data.len() > max {
+            return Err(CoreError::refused(format!("that is more than the computer takes ({} MiB at most)", max >> 20)));
         }
         let b64 = |c: &[u8]| base64::engine::general_purpose::STANDARD.encode(c);
-        let first = &data[..data.len().min(STAGE_FILE_CHUNK_BYTES)];
-        let mut r = self.call("session.stageFile", json!({ "id": session, "name": name, "size": data.len(), "dataBase64": b64(first) })).await?;
-        let upload = r.get("upload").and_then(Value::as_str).ok_or_else(|| CoreError::protocol("session.stageFile answered no upload"))?.to_string();
-        loop {
-            if r.get("done").and_then(Value::as_bool) == Some(true) {
-                let path = r.get("path").and_then(Value::as_str).ok_or_else(|| CoreError::protocol("a staged file has no path"))?;
-                let given = r.get("name").and_then(Value::as_str).unwrap_or(name);
-                return Ok(StagedFile { computers_name: computers_words(given, 256), path: computers_words(path, 4096) });
-            }
-            let at = r.get("received").and_then(Value::as_u64).map(|n| n as usize).filter(|n| *n < data.len());
-            let Some(at) = at else {
-                let _ = self.call("session.stageFile", json!({ "id": session, "upload": upload, "cancel": true })).await;
-                return Err(CoreError::protocol("the computer's upload went off its offset"));
-            };
-            let chunk = &data[at..data.len().min(at + STAGE_FILE_CHUNK_BYTES)];
-            r = match self.call("session.stageFile", json!({ "id": session, "upload": upload, "offset": at, "dataBase64": b64(chunk) })).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = self.call("session.stageFile", json!({ "id": session, "upload": upload, "cancel": true })).await;
-                    return Err(e);
-                }
-            };
+        // Dropped unless disarmed: tells the computer to drop the upload, whatever ended this call.
+        struct Drop_ {
+            inner: Arc<Inner>,
+            method: &'static str,
+            session: String,
+            upload: Option<String>,
         }
+        impl Drop for Drop_ {
+            fn drop(&mut self) {
+                if let Some(upload) = self.upload.take() {
+                    let (inner, method, session) = (self.inner.clone(), self.method, self.session.clone());
+                    crate::runtime::handle().spawn(async move {
+                        let _ = inner.call(method, json!({ "id": session, "upload": upload, "cancel": true })).await;
+                    });
+                }
+            }
+        }
+        let mut guard = Drop_ { inner: self.clone(), method, session: session.to_string(), upload: None };
+        let chunk_of = |at: usize| &data[at..data.len().min(at + STAGE_FILE_CHUNK_BYTES)];
+        first.insert("id".into(), json!(session));
+        first.insert("size".into(), json!(data.len()));
+        first.insert("dataBase64".into(), json!(b64(chunk_of(0))));
+        let mut r = self.call(method, Value::Object(first)).await?;
+        let upload = r.get("upload").and_then(Value::as_str).filter(|u| !u.is_empty() && u.len() <= 64).ok_or_else(|| CoreError::protocol("the computer's upload has no id"))?.to_string();
+        guard.upload = Some(upload.clone());
+        let mut sent = chunk_of(0).len();
+        let mut held = 0usize;
+        let rounds = data.len().div_ceil(STAGE_FILE_CHUNK_BYTES);
+        for _ in 0..rounds {
+            let got = r.get("received").and_then(Value::as_u64).map(|n| n as usize);
+            if !got.is_some_and(|g| g > held && g <= sent) {
+                return Err(CoreError::protocol("the computer's upload didn't move forward"));
+            }
+            held = got.unwrap();
+            if r.get("done").and_then(Value::as_bool) == Some(true) {
+                if held != data.len() {
+                    return Err(CoreError::protocol("the computer says the upload is done before it has every byte"));
+                }
+                guard.upload = None;
+                return Ok(r);
+            }
+            if held == data.len() {
+                return Err(CoreError::protocol("the computer holds every byte but doesn't say the upload is done"));
+            }
+            let chunk = chunk_of(held);
+            sent = held + chunk.len();
+            r = self.call(method, json!({ "id": session, "upload": upload, "offset": held, "dataBase64": b64(chunk) })).await?;
+        }
+        Err(CoreError::protocol("the computer's upload took more rounds than it has chunks"))
+    }
+
+    /// Sends a file for a session's next message in chunks (`session.stageFile`).
+    async fn stage_file(self: &Arc<Self>, session: &str, name: &str, data: &[u8]) -> Result<StagedFile, CoreError> {
+        let mut first = serde_json::Map::new();
+        first.insert("name".into(), json!(name));
+        let r = self.upload("session.stageFile", session, first, data, STAGE_FILE_MAX_BYTES).await?;
+        let path = protocol_path(r.get("path"))?;
+        let given = r.get("name").and_then(Value::as_str).unwrap_or(name);
+        Ok(StagedFile { computers_name: computers_words(given, 256), path })
+    }
+
+    /// Sends a picture for a session's next message in chunks (`session.stagePicture`).
+    async fn stage_picture(self: &Arc<Self>, session: &str, media_type: &str, data: &[u8]) -> Result<String, CoreError> {
+        let mut first = serde_json::Map::new();
+        first.insert("mediaType".into(), json!(media_type));
+        let r = self.upload("session.stagePicture", session, first, data, STAGE_PICTURE_MAX_BYTES).await?;
+        protocol_path(r.get("path"))
     }
 
     fn close(&self) {
@@ -910,22 +1082,17 @@ impl Connection {
     }
 
     /// Sends a file for the session's next message (`session.stageFile`, in 512 KiB chunks); name it in
-    /// `send_message`'s `files` by the returned `path`.
+    /// `send_message`'s `files` by the returned `path`. A call stopped part way drops the upload at the computer.
     pub async fn stage_file(&self, session: String, name: String, data: Vec<u8>) -> Result<StagedFile, CoreError> {
         let inner = self.inner.clone();
         crate::runtime::spawn(async move { inner.stage_file(&session, &name, &data).await }).await
     }
 
-    /// Stages a picture for the session's next message (`session.stageImage`; `media_type` as `image/png`); name it in
-    /// `send_message`'s `images` by the returned path.
+    /// Sends a picture for the session's next message (`session.stagePicture`, in 512 KiB chunks; `media_type` as
+    /// `image/png`); name it in `send_message`'s `images` by the returned path.
     pub async fn stage_image(&self, session: String, media_type: String, data: Vec<u8>) -> Result<String, CoreError> {
-        use base64::Engine;
         let inner = self.inner.clone();
-        crate::runtime::spawn(async move {
-            let r = inner.call("session.stageImage", json!({ "id": session, "mediaType": media_type, "dataBase64": base64::engine::general_purpose::STANDARD.encode(&data) })).await?;
-            r.get("path").and_then(Value::as_str).map(|p| computers_words(p, 4096)).ok_or_else(|| CoreError::protocol("session.stageImage answered no path"))
-        })
-        .await
+        crate::runtime::spawn(async move { inner.stage_picture(&session, &media_type, &data).await }).await
     }
 
     /// The link's state now (`next_event` tells each change).

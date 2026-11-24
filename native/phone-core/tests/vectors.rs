@@ -111,6 +111,19 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(cards::user_message_hash("Hi \"there\"\n😀", &["bots/a/staged/1.png".into()], &["home/notes.md".into(), "bots/a/x.txt".into()]), s("userMessageHash"));
     assert_eq!(cards::user_message_signing_input("s_alpha", "m-1", "ab", 1781270000123), s("userMessageInput"));
 
+    // The visible-text rule, from the engine's own function when this tree has it (protocol `visible-text.ts`).
+    match v["visible"].as_array() {
+        Some(cases) => {
+            for c in cases {
+                let t = c["text"].as_str().unwrap();
+                assert_eq!(moss_phone_core::visible::sealed_escape(t, false), c["plain"].as_str().unwrap(), "escape of {t:?}");
+                assert_eq!(moss_phone_core::visible::sealed_escape(t, true), c["name"].as_str().unwrap(), "name escape of {t:?}");
+                assert_eq!(moss_phone_core::names::clean_name(t), c["nameOk"].as_bool().unwrap(), "name verdict on {t:?}");
+            }
+        }
+        None => eprintln!("the engine's tree has no visible-text.ts yet: checked against tests/visible_vectors.json only"),
+    }
+
     // The device-name rule (devices/names.ts): the same verdict on every edge case, and the same cleaned name.
     for n in v["names"].as_array().unwrap() {
         let name = n["name"].as_str().unwrap();
@@ -123,5 +136,17 @@ fn the_phone_core_builds_the_engines_bytes() {
     // Strict points: the same verdict on each.
     for (name, p) in v["points"].as_object().unwrap() {
         assert_eq!(is_strict_point(&unhex(p["hex"].as_str().unwrap())), p["strict"].as_bool().unwrap(), "point {name}");
+    }
+}
+
+/// The visible-text rule against vectors the protocol's own `visible-text.ts` produced (`tests/visible_vectors.json`,
+/// from `lane/bk-2-cards` at d3b2cb20f over `tests/harness/visible-cases.json`): runs without the engine.
+#[test]
+fn the_visible_text_rule_matches_the_protocols() {
+    let v: Value = serde_json::from_str(include_str!("visible_vectors.json")).unwrap();
+    for c in v.as_array().unwrap() {
+        let t = c["text"].as_str().unwrap();
+        assert_eq!(moss_phone_core::visible::sealed_escape(t, false), c["plain"].as_str().unwrap(), "escape of {t:?}");
+        assert_eq!(moss_phone_core::visible::sealed_escape(t, true), c["name"].as_str().unwrap(), "name escape of {t:?}");
     }
 }

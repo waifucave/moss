@@ -6,51 +6,10 @@
 //! The character tables are `unicode-properties` 0.1.5 (Unicode 18); the engine's are its Bun's (Unicode 17), so the
 //! two can differ only on characters Unicode 18 added.
 
-use unicode_properties::general_category::{GeneralCategory as G, UnicodeGeneralCategory};
 
 pub const NAME_MAX: usize = 63;
 pub const MARKS_MAX: usize = 4;
-const ZWNJ: char = '\u{200C}';
-const ZWJ: char = '\u{200D}';
-
-/// `UNSAFE`: controls, format characters (the joiners among them), surrogates, line and paragraph separators, and the
-/// fillers that draw as blanks.
-fn unsafe_char(c: char) -> bool {
-    matches!(c.general_category(), G::Control | G::Format | G::Surrogate | G::LineSeparator | G::ParagraphSeparator)
-        || matches!(c, '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{17B4}' | '\u{17B5}' | '\u{2800}')
-}
-
-fn is_mark(c: char) -> bool {
-    matches!(c.general_category(), G::NonspacingMark | G::SpacingMark | G::EnclosingMark)
-}
-
-/// `\p{White_Space}`.
-fn is_blank(c: char) -> bool {
-    c.is_whitespace()
-}
-
-fn is_joiner(c: char) -> bool {
-    c == ZWJ || c == ZWNJ
-}
-
-fn is_tone_modifier(c: char) -> bool {
-    ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
-}
-
-fn is_visible(c: char) -> bool {
-    !unsafe_char(c) && !is_mark(c) && !is_blank(c)
-}
-
-fn joiner_ok(chars: &[char], i: usize) -> bool {
-    let mut j = i as isize - 1;
-    while j >= 0 && (is_mark(chars[j as usize]) || is_tone_modifier(chars[j as usize])) {
-        j -= 1;
-    }
-    if j < 0 || !is_visible(chars[j as usize]) {
-        return false;
-    }
-    chars.get(i + 1).is_some_and(|&n| is_visible(n))
-}
+use crate::visible::{is_blank, is_joiner, is_mark, joiner_in_name, sealed_escape, unshown as unsafe_char};
 
 /// Why `name` can't be a device's name; None when it can (`nameProblem`, the same verdicts; the words are the core's).
 pub fn name_problem(name: &str) -> Option<&'static str> {
@@ -74,8 +33,8 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
     let mut prev = Prev::Start;
     for (i, &c) in chars.iter().enumerate() {
         if is_joiner(c) {
-            if !joiner_ok(&chars, i) {
-                return Some("a device's name can't hold a joiner that isn't between two visible characters");
+            if !joiner_in_name(&chars, i) {
+                return Some("a device's name can't hold a joiner that isn't between two visible, non-ASCII characters");
             }
             prev = Prev::Joiner;
             marks = 0;
@@ -157,31 +116,12 @@ pub fn safe_device_name(raw: &str, fallback: &str) -> String {
     }
 }
 
-/// Text a computer wrote, made safe to show as its words: control, format (the bidi marks, overrides and isolates,
-/// zero-width characters), separator and filler characters left out, every run of blanks one space, at most `max`
-/// characters. What crosses the FFI from a computer's own text goes through this, in a field named as the computer's.
+/// Text a computer wrote, as the app may show it as the computer's words: the one visible-text rule
+/// (`visible::sealed_escape`: a hidden character drawn as its escape, never deleted), at most `max` characters. What
+/// crosses the FFI from a computer's own text goes through this, in a field named as the computer's. Never for a
+/// protocol value the phone names or signs (a path, an id): those are refused when unclean, not rewritten.
 pub fn computers_words(raw: &str, max: usize) -> String {
-    let mut out = String::new();
-    let mut n = 0;
-    for c in raw.chars() {
-        if n >= max {
-            break;
-        }
-        // Blanks first: a newline or tab is a control character too, but reads as a space between words.
-        if is_blank(c) {
-            if !out.is_empty() && !out.ends_with(' ') {
-                out.push(' ');
-                n += 1;
-            }
-            continue;
-        }
-        if unsafe_char(c) {
-            continue;
-        }
-        out.push(c);
-        n += 1;
-    }
-    out.trim_end().to_string()
+    sealed_escape(raw, false).chars().take(max).collect()
 }
 
 #[cfg(test)]
@@ -199,7 +139,8 @@ mod tests {
         assert!(!clean_name("   "));
         assert_eq!(safe_device_name("  My\u{0007}  Phone  ", "Phone"), "My Phone");
         assert_eq!(safe_device_name("\u{202E}", "Phone"), "Phone");
-        assert_eq!(computers_words("Bad\u{202E}\u{200B} news\n\n\u{7}here", 200), "Bad news here");
+        assert_eq!(computers_words("Bad\u{202E} news\u{7}", 200), "BadU+202E newsU+0007");
+        assert!(!clean_name("Stu\u{200C}dio"));
         assert_eq!(computers_words(&"x".repeat(500), 200).len(), 200);
     }
 }

@@ -14,6 +14,9 @@ const { answerKeyStatement } = await import(join(core, "devices/registry"));
 const { canonicalJson, cardHashInput, cardAnswerSigningInput, userMessageHashInput, userMessageSigningInput } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 const { createHash } = await import("node:crypto");
 const { nameProblem, safeDeviceName } = await import(join(core, "devices/names"));
+// The visible-text rule (protocol's visible-text.ts), once this tree has it: the same escapes over visible-cases.json.
+const protocol = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
+const VISIBLE_CASES: string[] = await Bun.file(join(import.meta.dir, "visible-cases.json")).json();
 
 // The device-name rule's edge cases (devices/names.ts): every class it refuses, the joiners' places, the lengths.
 const NAMES = [
@@ -98,6 +101,9 @@ console.log(JSON.stringify({
   userMessageInput: userMessageSigningInput({ session: "s_alpha", clientMessageId: "m-1", hash: "ab", sentAt: 1781270000123 }),
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
   names: NAMES.map((n) => ({ name: n, ok: nameProblem(n) === null })),
+  visible: typeof protocol.sealedEscape === "function"
+    ? VISIBLE_CASES.map((t) => ({ text: t, plain: protocol.sealedEscape(t), name: protocol.sealedEscape(t, true), nameOk: nameProblem(t) === null }))
+    : null,
   safeNames: RAW_NAMES.map((n) => ({ raw: n, safe: safeDeviceName(n, "Phone") })),
   points: Object.fromEntries(Object.entries(points).map(([k, v]) => [k, { hex: v, strict: isStrictEd25519Point(Uint8Array.from(Buffer.from(v, "hex"))) }])),
 }));
