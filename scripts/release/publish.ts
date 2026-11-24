@@ -41,7 +41,7 @@ import { nameScan } from "./name-scan";
 import { APP_KEYS, appArtifacts, appOfInstaller, engineArtifacts, RELEASE_OSES, type AppKey } from "./artifacts";
 import { renderPackageManagers, CASKS } from "./package-managers";
 import { WINGET_PACKAGE } from "../winget";
-import { REPO_BASE_URL, REPO_BUCKET } from "./linux-repo";
+import { keyringProblem, REPO_BASE_URL, REPO_BUCKET } from "./linux-repo";
 import { TAP_REPO } from "../publish-tap";
 import { buildCommitFile, checkCoreFeed, checkPluginBunFeed, checkPluginsFeed, isPluginsFeed, checkUpdateInfo, CORE_TARGET, expectedArtifacts, isCoreFeed, isPluginBunFeed, parseChannel, parseCodesignDisplay, parseUpdateInfo, signOnlyCommitProblem, testBuildCommitProblem, type Channel, type ReleaseOs } from "./lib";
 import { coreBinaryFile, parseCoreFeed, parsePluginBunFeed, parsePluginsFeed, pluginBunBinaryFile, pluginsTarballFile } from "../../packages/update-feed/src/index";
@@ -355,6 +355,8 @@ function dryRun(a: Extract<PublishArgs, { mode: "draft" }>, version: string, pla
   for (const line of planListing(plan)) console.log(`  ${line}`);
   console.log("release/publish: it would put, where:");
   for (const line of uploadListing(plan)) console.log(`  ${line}`);
+  const keyring = keyringProblem(root);
+  if (keyring !== undefined) console.log(`release/publish: NOTE (a real run would stop here): ${keyring}`);
   for (const s of DRY_RUN_SKIPS) console.log(`release/publish: dry run skips: ${s}`);
   if (a.renderTo !== undefined) {
     const sums = new Map(plan.assets.map((x) => [x.name, createHash("sha256").update(readFileSync(join(x.dir, x.name))).digest("hex")] as const));
@@ -426,6 +428,8 @@ export async function main(argv: readonly string[], root: string, deps: { proveS
   // A dry run (`--dry-run`) reads the folders and checks what the files alone can show: the table's files, every update file against the
   // files it names, one commit across the systems. It never calls gh, git, codesign or the Keychain; each check it skips is named.
   if (a.dryRun) return dryRun(a, version, plan, root);
+  // A release with Linux packages needs the repositories' public key committed: it fails closed, with the reason, until the owner has made it.
+  if (plan.assets.some((x) => /\.(deb|rpm)$/.test(x.name))) { const k = keyringProblem(root); if (k !== undefined) plan.problems.push(k); }
   if (plan.commit !== undefined) {
     // The builds' commit must be main's: a release never comes from a branch.
     spawnSync("git", ["fetch", "--quiet", "origin", "main"], { cwd: root });

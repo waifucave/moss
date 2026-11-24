@@ -1,30 +1,26 @@
 /**
- * Publishes both casks to the Homebrew tap `waifucave/homebrew-moss` (Winter Phase 9c, P9c-5):
- *   - Casks/moss-code.rb   <- out/release/<version>/moss-code.rb  (this repo's own release, already
- *                          rendered by release.ts's `caskFrom` call — read verbatim, never
- *                          re-interpolated here)
- *   - Casks/norma.rb    <- packaging/norma-deprecated.rb    (the deprecated cask, filled in by
- *                          hand by the CONTROLLER with the norma-final 0.2.015 release's real
- *                          version/sha256 before a real `--publish` run — see that file's own
- *                          header for the exact slots)
+ * Publishes MOSS's two Homebrew casks to the tap `waifucave/homebrew-moss`, the owner's own step:
+ *   - Casks/moss-code.rb   <- <from>/casks/moss-code.rb
+ *   - Casks/moss.rb        <- <from>/casks/moss.rb
+ * `<from>` is the folder `release/publish.ts --dry-run --render-to <from>` wrote from the release's own checksums
+ * (scripts/release/package-managers.ts): read verbatim here, never re-interpolated.
  *
- * Usage: bun run scripts/publish-tap.ts --dry-run | --publish
+ * Usage: bun run scripts/publish-tap.ts --from <dir> [--publish]
  *
- * `--dry-run` prints both files' final content and the target repo paths; makes NO network calls
- * (no `gh` invocation at all — not even a read).
+ * With no `--publish` it is a DRY RUN and the default: it prints each file's final content and the path it would commit
+ * to, checks that each cask names the version in VERSION and has no unfilled slot, and makes NO network call (not even a
+ * read). Only `--publish` (the owner's, on their Mac) fetches each target path's current blob `sha` through
+ * `gh api repos/<repo>/contents/<path>` (absent -> a new file, present -> an update: the Contents API wants the sha on
+ * an update) and PUTs the content, base64-encoded. Nothing else here ever pushes. The underlying logic
+ * (`tapPlan`/`currentSha`/`putArgsFor`/`publishFile`) is unit-tested with a FAKE `GhRunner`.
  *
- * `--publish` is CONTROLLER-ONLY: it fetches each target path's current blob `sha` via
- * `gh api repos/<repo>/contents/<path>` (absent -> creating a new file, present -> updating one —
- * the GitHub Contents API requires the current `sha` on an update, or it 409s) and PUTs the new
- * content with a commit message ending in the Claude-Session trailer, base64-encoded per the
- * Contents API's own contract. This lane never runs `--publish` itself — the underlying logic
- * (`tapPlan`/`currentSha`/`putArgsFor`/`publishFile`) is unit-tested with a FAKE `GhRunner` in
- * scripts/publish-tap.test.ts instead of a real `gh` process.
+ * Still HELD (scripts/held-scripts.ts, CLAUDE.md): `refuseHeldScript("tap:publish")` stops every run until the owner lifts the
+ * hold, which is his call alone.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, readCanonical } from "./version-lib";
+import { readCanonical } from "./version-lib";
 import { refuseHeldScript } from "./held-scripts";
 
 export const TAP_REPO = "waifucave/homebrew-moss";
@@ -36,17 +32,25 @@ export interface TapFile {
   localPath: string;
 }
 
-/** The two files this release always publishes, for the given VERSION. Pure — no filesystem
- *  reads — so it's unit-testable without a real release build on disk. */
-export function tapPlan(version: string): TapFile[] {
-  return [
-    { repoPath: "Casks/moss-code.rb", localPath: join(ROOT, "out", "release", version, "moss-code.rb") },
-    { repoPath: "Casks/norma.rb", localPath: join(ROOT, "packaging", "norma-deprecated.rb") },
-  ];
+/** The two casks a release publishes, from `from` (publish.ts's `--render-to` folder). Pure: no filesystem reads. */
+export function tapPlan(from: string): TapFile[] {
+  return CASK_TOKENS.map((token) => ({ repoPath: `Casks/${token}.rb`, localPath: join(from, "casks", `${token}.rb`) }));
+}
+
+/** The cask tokens, MOSS Code's first (the same as scripts/release/package-managers.ts's CASKS). */
+export const CASK_TOKENS = ["moss-code", "moss"] as const;
+
+/** What is wrong with a cask's text for `version`: it must say that version and have no unfilled slot. */
+export function caskProblems(repoPath: string, text: string, version: string): string[] {
+  const out: string[] = [];
+  const slot = findUnfilledTemplateSlot(text);
+  if (slot) out.push(`${repoPath} still contains an unfilled template slot ${slot}`);
+  if (!text.includes(`version "${version}"`)) out.push(`${repoPath} does not say version "${version}" (VERSION): render it again from this release`);
+  return out;
 }
 
 /** Matches an un-substituted `{{slot_name}}` template placeholder — the exact shape
- *  `packaging/norma-deprecated.rb`'s own header names (`{{version}}`, `{{sha256}}`) for the
+ *  a template's own header names (`{{version}}`, `{{sha256}}`) for the
  *  controller to hand-fill before a real handoff-release publish. */
 const TEMPLATE_SLOT_RE = /\{\{[a-z0-9_]+\}\}/;
 
@@ -89,10 +93,9 @@ export function currentSha(runner: GhRunner, repoPath: string): string | undefin
 }
 
 /** The commit message every tap publish uses — one per file, so each cask's history on the tap
- *  names exactly what changed. Ends with the Claude-Session trailer (global constraints: tap
- *  commits carry it, same as this repo's own). */
+ *  names exactly what changed. */
 export function commitMessageFor(repoPath: string): string {
-  return `chore(tap): publish ${repoPath}\n\nClaude-Session: https://claude.ai/code/session_01YbJpkZBchtYViXeXfsXbDe`;
+  return `chore(tap): publish ${repoPath}`;
 }
 
 /** The exact `gh api` argv for one PUT — base64 content per the Contents API's contract, `sha`
@@ -152,51 +155,43 @@ export function renderDryRunEntry(file: TapFile): string {
   return `${header}\n${content}`;
 }
 
-if (import.meta.main) {
-  refuseHeldScript("tap:publish"); // C0 review S6: until C7 (`held-scripts.ts`)
-  const argv = process.argv.slice(2);
-  const dryRun = argv.includes("--dry-run");
+/** The script's whole behaviour, for a given argv, VERSION and `gh` runner: returns the exit code. A dry run (the default) never
+ *  calls `runner`; only `--publish` does. Exported so a test can drive it with a fake runner, as the script itself is held. */
+export function tapRun(argv: readonly string[], version: string, runner: GhRunner, log: (line: string) => void, err: (line: string) => void): number {
   const publish = argv.includes("--publish");
-  if (dryRun === publish) {
-    console.error("usage: bun run scripts/publish-tap.ts --dry-run | --publish");
-    process.exit(1);
+  const fromAt = argv.indexOf("--from");
+  const from = fromAt >= 0 ? argv[fromAt + 1] : undefined;
+  if (from === undefined || from.startsWith("--") || argv.some((a) => a !== "--publish" && a !== "--dry-run" && a !== "--from" && a !== from)) {
+    err("usage: bun run scripts/publish-tap.ts --from <the --render-to folder> [--dry-run | --publish]   (a dry run is the default)");
+    return 1;
   }
-
-  const version = readCanonical();
-  const files = tapPlan(version);
-
-  if (dryRun) {
-    console.log(`Tap: ${TAP_REPO}\n`);
-    let refused = false;
-    for (const f of files) {
-      const entry = renderDryRunEntry(f);
-      console.log(entry);
-      if (entry.includes("REFUSED:")) refused = true;
-    }
-    console.log(`DRY RUN: would PUT the above to ${TAP_REPO}. No network calls made.`);
-    // Fix wave M3: a dry run that found an unfilled slot exits nonzero too — it is a refusal, not a
-    // clean preview, even though (per this mode's own contract) it never makes a network call.
-    process.exit(refused ? 1 : 0);
+  if (publish && argv.includes("--dry-run")) {
+    err("--publish and --dry-run together: pick one");
+    return 1;
   }
-
-  // --publish: CONTROLLER-ONLY (this lane never runs this branch — see the file header and
-  // scripts/publish-tap.test.ts, which exercises this exact logic with a fake GhRunner instead).
-  // Fix wave M3: preflight the WHOLE plan (existence AND template-slot completeness) before
-  // touching either file — so a bad second file is caught before a good first one is published.
-  for (const f of files) {
-    if (!existsSync(f.localPath)) {
-      console.error(`FAIL: ${f.localPath} does not exist — nothing to publish for ${f.repoPath}`);
-      process.exit(1);
-    }
-    const slot = findUnfilledTemplateSlot(readFileSync(f.localPath, "utf8"));
-    if (slot) {
-      console.error(`FAIL: ${f.localPath} (for ${f.repoPath}) still contains an unfilled template slot ${slot} — fill it in before publishing.`);
-      process.exit(1);
-    }
+  const files = tapPlan(from);
+  const problems = files.flatMap((f) => (existsSync(f.localPath) ? caskProblems(f.repoPath, readFileSync(f.localPath, "utf8"), version) : [`${f.localPath} does not exist: run release/publish.ts --dry-run --from <builds> --render-to ${from} first`]));
+  if (!publish) {
+    log(`Tap: ${TAP_REPO}\n`);
+    for (const f of files) log(renderDryRunEntry(f));
+    for (const p of problems) err(`REFUSED: ${p}`);
+    log(`DRY RUN: would PUT the above to ${TAP_REPO}, one commit each. No network calls made; add --publish to publish.`);
+    return problems.length > 0 ? 1 : 0;
+  }
+  // --publish: the owner's. The whole plan is checked before either file is touched, so a bad second file never lands after a good first.
+  if (problems.length > 0) {
+    for (const p of problems) err(`FAIL: ${p}`);
+    return 1;
   }
   for (const f of files) {
-    console.log(`Publishing ${f.repoPath}...`);
-    publishFile(realGhRunner, f);
+    log(`Publishing ${f.repoPath}...`);
+    publishFile(runner, f);
   }
-  console.log(`Published Casks/moss-code.rb + Casks/norma.rb to ${TAP_REPO}.`);
+  log(`Published ${files.map((f) => f.repoPath).join(" + ")} to ${TAP_REPO}.`);
+  return 0;
+}
+
+if (import.meta.main) {
+  refuseHeldScript("tap:publish"); // C0 review S6: until C7 (`held-scripts.ts`); the owner lifts the hold
+  process.exit(tapRun(process.argv.slice(2), readCanonical(), realGhRunner, console.log, console.error));
 }

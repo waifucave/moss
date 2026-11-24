@@ -37,6 +37,18 @@ export const REPO_BUCKET = "moss-packages";
 export const KEYRING_FILE = "packaging/linux/moss-archive-keyring.asc";
 export const REPO_KEY_ITEM = { service: "com.waifucave.moss.core.release", name: "linux-repo-openpgp" } as const;
 
+/**
+ * What is wrong with the committed public key of the repositories, or undefined: the file `packaging/linux/moss-archive-keyring.asc`
+ * cannot exist until the owner makes the key (`linux-repo.ts key --generate` on their Mac, which writes it: commit it). Without it a
+ * person has nothing to verify the apt and dnf repositories against, and the owner's `sign` and `upload` refuse. The message says that.
+ */
+export function keyringProblem(root: string): string | undefined {
+  const file = join(root, KEYRING_FILE);
+  if (!existsSync(file)) return `${KEYRING_FILE} does not exist: the Linux repositories' public key has not been made. The owner makes it once, on their Mac: \`bun scripts/release/linux-repo.ts key --generate\` (the private half goes to the login Keychain, the public half to this file), then commits the file. Until then no Linux package may be released: nothing could verify the repositories they update from`;
+  if (!readFileSync(file, "utf8").includes("-----BEGIN PGP PUBLIC KEY BLOCK-----")) return `${KEYRING_FILE} is not an armored OpenPGP public key: remake it with \`linux-repo.ts key --generate\` (a rotation) or restore the committed file`;
+  return undefined;
+}
+
 export function suiteFor(channel: Channel): "stable" | "beta" {
   return channel === "latest" ? "stable" : "beta";
 }

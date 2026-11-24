@@ -194,6 +194,27 @@ describe("publish.ts --dry-run", () => {
   });
 });
 
+describe("a release with Linux packages needs the repositories' keyring (lane RL)", () => {
+  test("the real plan refuses, with the reason, while packaging/linux/moss-archive-keyring.asc is not committed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "moss-no-keyring-root-"));
+    const dir = folder();
+    try {
+      mkdirSync(join(root, "apps", "desktop"), { recursive: true });
+      writeFileSync(join(root, "apps", "desktop", "package.json"), JSON.stringify({ version }));
+      const lines: string[] = [];
+      const err = console.error, log = console.log;
+      console.error = (l: string) => lines.push(String(l)); console.log = () => {};
+      let code: number;
+      try { code = await publish.main(["--from", dir], root); } finally { console.error = err; console.log = log; }
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toContain("the Linux repositories' public key has not been made");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the control: the shims do catch the real thing", () => {
   test("the plain plan (no --dry-run) calls git, which the shim records, so an empty log above means something", async () => {
     const dir = folder();

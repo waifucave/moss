@@ -24,7 +24,7 @@ signed and notarized; the Linux packages are unsigned and their repositories' me
 | Developer ID Application certificate of MOSS's team | the login Keychain; `MOSS_MAC_IDENTITY` names it ("Developer ID Application: name (TEAMID)") | owner's |
 | Notarization profile | `xcrun notarytool store-credentials`; `APPLE_KEYCHAIN_PROFILE` names it | owner's |
 | The update feed's Ed25519 key | the login Keychain, item `com.waifucave.moss.core.release` / `update-feed-ed25519`; the public half in `packages/update-feed/src/key.ts` | NOT made: `UPDATE_FEED_PUBLIC_KEY` is `null`. Run `bun scripts/release/feed-key.ts --generate` once and commit `key.ts` BEFORE the build the first release is made from (the apps carry the public half; `--create-draft` refuses without the key) |
-| The Linux repositories' OpenPGP key | the login Keychain, item `com.waifucave.moss.core.release` / `linux-repo-openpgp`; the public half in `packaging/linux/moss-archive-keyring.asc` | NOT made: no keyring file. `bun scripts/release/linux-repo.ts key --generate`, commit the keyring, before the first release |
+| The Linux repositories' OpenPGP key | the login Keychain, item `com.waifucave.moss.core.release` / `linux-repo-openpgp`; the public half in `packaging/linux/moss-archive-keyring.asc` | NOT made: no keyring file. See "The Linux repositories' key" below. The release workflow's Linux build (`build-packages.ts --require-keyring`) and the real `publish.ts` plan both refuse, with the reason, until the file is committed |
 | Where the Linux repositories are hosted | `REPO_BASE_URL` and `REPO_BUCKET` in `scripts/release/linux-repo.ts` (R2 bucket, `wrangler` signed in on the Mac) | placeholders pending the owner's choice |
 | The hosted OAuth client document | the Worker in `infra/winter-oauth-client/`, served at the URL the SDK names as the client id; `bun scripts/check-cimd-live.ts` compares the live document with the committed one | deployed under its old name (live infrastructure keeps its name); the owner confirms it is live before a release |
 | The production sign-in project's values | the public `authUrl` and `anonKey` in `PRODUCTION_ACCOUNT_SETTINGS` (`packages/core/src/identity/account-config.ts`): a release build ignores the environment | unset: a build without them runs signed out and says a sign-in is not set up |
@@ -51,8 +51,28 @@ signed and notarized; the Linux packages are unsigned and their repositories' me
    sealed core's proof); add `--create-draft` to sign each update file with the feed key and create the draft release `v<version>`. Read it,
    publish it on GitHub: that is the moment it reaches anyone.
 6. Linux repositories: `scripts/release/linux-repo.ts sign`, then `upload` (see its header); re-sign with `refresh` inside 30 days.
-7. Casks into the tap, manifests into winget's repository, by hand, from step 4's folder (the dry run's output is the same for the real files).
+7. Casks into the tap: `bun scripts/publish-tap.ts --from <out>` (step 4's `--render-to` folder) is a DRY RUN by default: it prints each cask and the
+   path it would commit to in `waifucave/homebrew-moss` (`Casks/moss-code.rb`, `Casks/moss.rb`), checks each says VERSION's version, and calls
+   nothing. Only `--publish`, run by the owner on their Mac with `gh` signed in, commits them. The script is still on the held list
+   (`scripts/held-scripts.ts`, and CLAUDE.md says never to run it before C7): the owner lifts that hold himself, by removing its `tap:publish`
+   entry and call, when he is ready for the first tap commit. The winget manifests go into a pull request to `microsoft/winget-pkgs` by hand.
 8. A beta is promoted with `publish.ts --promote <version>`.
+
+## The Linux repositories' key
+
+`packaging/linux/moss-archive-keyring.asc` is the repositories' PUBLIC key; it cannot exist until the owner makes the key pair, so it is not in
+the repository today. Nothing may ship Linux packages without it (people verify the apt and dnf repositories against it, and `sign` and `upload`
+refuse without it). To make it, once, on the owner's Mac (login Keychain unlocked, never in CI):
+
+1. `bun scripts/release/linux-repo.ts key --generate`: makes an OpenPGP Ed25519 key, keeps the private half in the login Keychain item above, and
+   writes the public half to `packaging/linux/moss-archive-keyring.asc` (it refuses if that file already exists: replacing it is a key rotation).
+2. Commit that one file and merge it to `main` BEFORE the release's build. `bun scripts/release/linux-repo.ts key --check` confirms the Keychain's
+   key is the committed one.
+3. The file is served at `<REPO_BASE_URL>/moss-archive-keyring.asc` (`packaging/linux/README.md` has the install lines); upload it with the
+   repositories.
+
+Where the build says so: `build-packages.ts` prints a NOTE that the key is missing, and with `--require-keyring` (the release workflow passes it)
+it stops before building; `publish.ts` (the real plan) refuses a release holding a deb or an rpm; its dry run prints the same reason as a note.
 
 ## What the dry run proves, and what only a real release can
 
