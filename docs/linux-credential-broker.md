@@ -138,10 +138,14 @@ which can start host containers.
 - A relay that stops reading: the engine's end of the pipe is non-blocking. What the pipe hasn't taken waits in a
   queue counted in bytes, and past 4 MiB the run's broker closes. Bun's own file sink was not usable here: it accepts
   writes with no reader and keeps them in the engine.
-- The relay's pipes through `/proc`: the relay makes itself not dumpable (`PR_SET_DUMPABLE 0`). The command, the same
-  user in the same pid namespace, can't open `/proc/<relay>/fd` or trace it, and the e2e checks that. bwrap's own
-  pid 1 in the sandbox also holds the pipe ends; the e2e records whether its fds are reachable. Either way, the
-  bounds above hold for anything that writes to them.
+- The relay's pipes through `/proc`: a broker run starts the relay as the sandbox's pid 1 (bwrap `--as-pid-1`), so
+  bwrap's own init, an ordinary dumpable process holding both pipe ends, isn't in the sandbox at all. bwrap's monitor
+  outside the sandbox still holds them, but it is in the parent pid namespace and has no `/proc` entry inside. The
+  relay makes itself not dumpable (`PR_SET_DUMPABLE 0`), so the command, the same user in the same pid namespace,
+  can't open its `/proc/1/fd`, `task/*/fd`, `fdinfo` or `map_files`, or trace it. The e2e walks every process in the
+  sandbox and every one of those routes. It asserts that no pipe other than the command's own stdio is reachable,
+  with a child of the command as the control that the routes work. Without `--as-pid-1`, bwrap's init exposes both
+  ends. The bounds above hold either way, for anything that writes to them.
 - A relay that can't start: the run gets the broker only when the engine's executable and the relay's file are real
   files outside the MOSS home's view. A compiled engine (`/$bunfs`) has no relay file yet, so it serves no broker. The
   run then behaves as before.
