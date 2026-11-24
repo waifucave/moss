@@ -346,6 +346,28 @@ export const SetupState = z.object({
 });
 export type SetupState = z.infer<typeof SetupState>;
 
+/** At most this many open questions are answered by `session.openQuestions` (a session asks one at a time; more is a bug, and the answer fits a phone link's frame). */
+export const OPEN_QUESTIONS_MAX = 4;
+/** One question of an open `AskUserQuestion`, as `question_asked` carries it, with its text bounded. */
+export const OpenQuestionItem = z.object({
+  question: utf16(2000, 1),
+  header: utf16(12, 1).optional(),
+  /** Empty for a free-text question; otherwise 2-4 options with a free-text box under them. */
+  options: z.array(z.object({ label: utf16(200, 1), description: utf16(1000).optional(), preview: utf16(4000).optional() })).max(4),
+  multiSelect: z.boolean(),
+  placeholder: utf16(80, 1).optional(),
+});
+/** An `AskUserQuestion` asked and not answered. */
+export const OpenQuestion = z.object({
+  /** What `session.answer` names it by. */
+  callId: utf16(128, 1),
+  /** The log record that asked it. */
+  seq: z.number().int().nonnegative(),
+  askedAt: Timestamp,
+  questions: z.array(OpenQuestionItem).min(1).max(4),
+});
+export type OpenQuestion = z.infer<typeof OpenQuestion>;
+
 export const SESSIONS_METHODS = {
   botList: defineMethod({
     name: "bot.list", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "bots.read",
@@ -535,6 +557,16 @@ export const SESSIONS_METHODS = {
       path: utf16(4096, 1).optional(),
     }),
     doc: "A paired phone sends a picture to a bot's conversation or a coding session on the computer it is linked to, in chunks of at most `STAGE_FILE_CHUNK_BYTES` (a phone's link drops a frame over 1 MiB, which a photo exceeds, so `session.stageImage`'s single request can't carry one from a phone), and names it in the next `session.send` (`images`, with `[Image #n]` in the text). The desktop's `session.stageImage` is unchanged. A picture is at most `STAGE_IMAGE_MAX_BYTES`, its first bytes must be the type it says, and once whole it is staged by the same checks and into the same folder as `session.stageImage`'s; it counts in the same per-device limits as a file (`STAGE_FILE_OPEN_MAX` open, `STAGE_FILE_DAY_MAX_BYTES` and `STAGE_FILE_DAY_MAX_FILES` a day, `STAGE_FILE_PARTIAL_TTL_MS` idle). Only a phone paired with an answer key, only to a session this computer runs.",
+  }),
+  sessionOpenQuestions: defineMethod({
+    name: "session.openQuestions", owner: "D", roles: ["remote"], userOnly: true,
+    params: z.object({ id: SessionId }),
+    result: z.object({
+      /** The `AskUserQuestion`s this session has asked and not had answered, in the order they were asked; empty when none is open. Never more than `OPEN_QUESTIONS_MAX`
+       *  (the newest if more are). Each one is answered by `session.answer` with its `callId`. */
+      open: z.array(OpenQuestion).max(OPEN_QUESTIONS_MAX),
+    }),
+    doc: "The open question(s) of a session or a bot's conversation, as the desktop draws them: each one's call id, its questions with their options (a menu of 2-4 with a free-text box under it, or no options for a free-text question) and when it was asked, or nothing. `needsYou.questions` only counts them. Text is bounded (a question 2000 UTF-16 units, an option's label 200, its description 1000, its preview 4000); a longer one is cut with an ellipsis. A question whose call id is too long for `session.answer` is left out. Changes nothing.",
   }),
   sessionComposerOffers: defineMethod({
     name: "session.composerOffers", owner: "D", roles: ["remote"], userOnly: true,

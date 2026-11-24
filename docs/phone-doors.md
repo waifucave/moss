@@ -1,7 +1,7 @@
 # What a paired phone can do, and what a lost one can
 
 Owner: lane PH. Written with PH3's follow-up (2026-11-24). The facts here come from the remote role's list
-(`packages/protocol/generated/moss/allowlists.json`, pinned by `packages/protocol/test/remote-start.test.ts`: 55 calls) and from the
+(`packages/protocol/generated/moss/allowlists.json`, pinned by `packages/protocol/test/remote-start.test.ts`: 56 calls) and from the
 doors named below.
 
 A phone is the role `remote`. Every call it makes arrives as the person's own (`{ kind: "user", client: "ios" | "android", device }`, the
@@ -50,6 +50,12 @@ These are open to a paired phone today and were not changed by PH2 or PH3:
   no message named after 24 hours; both on a timer, not only at the next call. A phone may name in `session.send` only files and pictures
   that same device staged for that same session.
 - Read what a conversation's composer offers (`session.composerOffers`): changes nothing.
+- Read a conversation's open question (`session.openQuestions`, PH4): for a session or a bot's conversation, the `AskUserQuestion`s it has asked
+  and not had answered, in the order asked, each with its call id, its questions and their options and when it was asked, or nothing.
+  Before, only a count was on the session (`needsYou.questions`), so a phone had to scan the newest events of the log, and a busy session
+  hid its question. Text is bounded (a question 2,000 UTF-16 units, an option's label 200, its description 1,000, its preview 4,000; cut
+  with an ellipsis), at most the newest 4 open questions are given, and a question whose call id `session.answer` can't take is left out.
+  It changes nothing, is the phone's alone (role `remote`), and reads the conversation the phone could already read with `session.history`.
 
 Where a phone's file goes: for a bot, the bot's own scratch folder (`<home>/scratch/<bot>/attachments/`, where a file dropped on the
 desktop is copied; it is the bot's, moves with the bot into the archive and comes back with it). For a coding session, a folder of its own

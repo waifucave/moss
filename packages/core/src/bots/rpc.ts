@@ -18,6 +18,7 @@ import {
   type BotView, type Caller, type ChangeResult, type MemoryEntry, type MethodSpec, type SessionView, type UserMessageImageRef,
 } from "@waifucave/moss-protocol";
 import type { DeviceRegistry } from "../contracts/device-registry";
+import { openQuestionsOf } from "./open-questions";
 import { verifyUserMessage } from "../contracts/session-host";
 import { StageImageRefusal, stageSessionImage, validateImageRefs, type StageImageMediaType } from "../agent/stage-image";
 import type { Clock } from "../contracts/clock";
@@ -249,6 +250,13 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       ctx.caller.kind === "user" ? { kind: "user" } : { kind: "plugin", capabilities: ctx.caller.kind === "plugin" ? deps.capabilitiesOf?.(ctx.caller.pluginId) ?? [] : [] },
       since,
     )),
+
+    // The open `AskUserQuestion`s of a session or a bot's conversation, for a phone (which would otherwise scan the newest events of a
+    // busy log for one). The same session check as the other reads; the answer is `session.answer`'s.
+    [M.sessionOpenQuestions.name]: handler(M.sessionOpenQuestions, async ({ id }) => {
+      view(id);
+      return { open: openQuestionsOf(host.openQuestions(id)) };
+    }),
 
     [M.sessionHistory.name]: handler(M.sessionHistory, async ({ id, before, limit }, ctx) => {
       const v = view(id);

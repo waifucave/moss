@@ -22,14 +22,14 @@ const BEFORE = [
 ];
 
 describe("the remote role's calls", () => {
-  test("are the 47 they were, plus agent.start and the three reads of its sheet, bot.create, session.stageFile, session.stagePicture and session.composerOffers", () => {
+  test("are the 47 they were, plus agent.start and the three reads of its sheet, bot.create, session.stageFile, session.stagePicture, session.composerOffers and session.openQuestions", () => {
     expect(BEFORE).toHaveLength(47);
-    expect([...allowedMethods("remote")].sort()).toEqual([...BEFORE, "agent.backends", "agent.options", "agent.recent", "agent.start", "bot.create", "session.stageFile", "session.stagePicture", "session.composerOffers"].sort());
-    expect(allowedMethods("remote").size).toBe(55);
+    expect([...allowedMethods("remote")].sort()).toEqual([...BEFORE, "agent.backends", "agent.options", "agent.recent", "agent.start", "bot.create", "session.stageFile", "session.stagePicture", "session.composerOffers", "session.openQuestions"].sort());
+    expect(allowedMethods("remote").size).toBe(56);
   });
 
   test("bot.create, session.stageFile, session.stagePicture and session.composerOffers are the person's own calls (userOnly) with no `change` class; the file and picture doors and the offers are the phone's alone", () => {
-    for (const spec of [BOTS_METHODS.botCreate, SESSIONS_METHODS.sessionStageFile, SESSIONS_METHODS.sessionStagePicture, SESSIONS_METHODS.sessionComposerOffers]) {
+    for (const spec of [BOTS_METHODS.botCreate, SESSIONS_METHODS.sessionStageFile, SESSIONS_METHODS.sessionStagePicture, SESSIONS_METHODS.sessionComposerOffers, SESSIONS_METHODS.sessionOpenQuestions]) {
       expect([spec.name, spec.userOnly]).toEqual([spec.name, true]);
       expect([spec.name, (spec as { change?: unknown }).change]).toEqual([spec.name, undefined]);
     }
@@ -37,12 +37,14 @@ describe("the remote role's calls", () => {
     expect([...SESSIONS_METHODS.sessionStageFile.roles]).toEqual(["remote"]);
     expect([...SESSIONS_METHODS.sessionStagePicture.roles]).toEqual(["remote"]);
     expect([...SESSIONS_METHODS.sessionComposerOffers.roles]).toEqual(["remote"]);
+    expect([...SESSIONS_METHODS.sessionOpenQuestions.roles]).toEqual(["remote"]);
     // The desktop's picture door is the one it was.
     expect([...SESSIONS_METHODS.sessionStageImage.roles]).toEqual(["app", "cli", "remote"]);
     for (const role of ["layer", "plugin-host", "bridge", "web", "peer", "app", "cli"] as const) {
       expect([role, allowedMethods(role).has("session.stageFile")]).toEqual([role, false]);
       expect([role, allowedMethods(role).has("session.stagePicture")]).toEqual([role, false]);
       expect([role, allowedMethods(role).has("session.composerOffers")]).toEqual([role, false]);
+      expect([role, allowedMethods(role).has("session.openQuestions")]).toEqual([role, false]);
     }
   });
 

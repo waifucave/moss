@@ -399,6 +399,31 @@ describe("DurableSessionHost on disk", () => {
     expect(host.get("b_alpha")?.needsYou).toEqual({ cards: 0, questions: 0 });
   });
 
+  test("the open questions keep what was asked (the call, the record, the time, the questions), across a restart, until the answer", async () => {
+    const { home, clock, host } = durable();
+    const d = new FakeSessionDriver();
+    host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, d);
+    await host.sendUser("b_alpha", user("clean up"));
+    await flush();
+    expect(host.openQuestions("b_alpha")).toEqual([]);
+    expect(host.openQuestions("b_none")).toEqual([]);
+    const asked = [{ question: "Which folder?", header: "Folder", options: [{ label: "a" }, { label: "b" }], multiSelect: false }];
+    d.emit({ type: "question_asked", callId: "q1", questions: asked });
+    clock.advance(1000);
+    d.emit({ type: "question_asked", callId: "q2", questions: [{ question: "Name?", options: [], multiSelect: false }] });
+    const open = host.openQuestions("b_alpha");
+    expect(open.map((q) => q.callId)).toEqual(["q1", "q2"]);
+    expect(open[0]).toMatchObject({ callId: "q1", questions: asked });
+    expect(open[1]!.askedAt - open[0]!.askedAt).toBe(1000);
+    expect(open[1]!.seq).toBeGreaterThan(open[0]!.seq);
+    d.emit({ type: "question_resolved", callId: "q1", answers: { "Which folder?": "a" }, by: "user" });
+    expect(host.openQuestions("b_alpha").map((q) => q.callId)).toEqual(["q2"]);
+    // A restart rebuilds it from the log, with its questions and time.
+    const again = durable(home, clock).host;
+    expect(again.openQuestions("b_alpha")).toEqual(open.slice(1));
+    expect(again.get("b_alpha")?.needsYou?.questions).toBe(1);
+  });
+
   test("streaming events reach onTransient listeners and never the log", async () => {
     const { host } = durable();
     const d = new FakeSessionDriver();

@@ -2746,6 +2746,131 @@
         "additionalProperties": false
       }
     },
+    "session.openQuestions": {
+      "doc": "The open question(s) of a session or a bot's conversation, as the desktop draws them: each one's call id, its questions with their options (a menu of 2-4 with a free-text box under it, or no options for a free-text question) and when it was asked, or nothing. `needsYou.questions` only counts them. Text is bounded (a question 2000 UTF-16 units, an option's label 200, its description 1000, its preview 4000); a longer one is cut with an ellipsis. A question whose call id is too long for `session.answer` is left out. Changes nothing.",
+      "owner": "D",
+      "direction": "to-daemon",
+      "roles": [
+        "remote"
+      ],
+      "userOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "open": {
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "callId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "askedAt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "questions": {
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "header": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 12
+                      },
+                      "options": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "description": {
+                              "type": "string",
+                              "maxLength": 1000
+                            },
+                            "preview": {
+                              "type": "string",
+                              "maxLength": 4000
+                            }
+                          },
+                          "required": [
+                            "label"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "multiSelect": {
+                        "type": "boolean"
+                      },
+                      "placeholder": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      }
+                    },
+                    "required": [
+                      "question",
+                      "options",
+                      "multiSelect"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "callId",
+                "seq",
+                "askedAt",
+                "questions"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "additionalProperties": false
+      }
+    },
     "session.composerOffers": {
       "doc": "What the composer of one conversation offers the phone, in one read: for a bot's conversation or a coding session, whether it takes pictures and files (and the files' limits), the plugins' commands, and for a coding session the models and effort levels it may be switched to. Changes nothing. A bot has no model or effort row: its model is its user layer, which a phone does not set.",
       "owner": "D",

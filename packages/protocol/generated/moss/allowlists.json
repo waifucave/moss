@@ -632,6 +632,7 @@
       "session.interrupt",
       "session.links",
       "session.list",
+      "session.openQuestions",
       "session.outputs",
       "session.send",
       "session.setModel",
