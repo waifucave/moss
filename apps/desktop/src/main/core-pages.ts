@@ -8,7 +8,7 @@
 // daemon's credential store and nowhere else: never into a log line or an error message here.
 // The plugin manager lists every plugin but the app's own and turns one off or removes it; turning plugins on waits
 // for a normal start, where its OK is a sealed card.
-import type { PluginAuthView, PluginSummary, PointView } from "@waifucave/clover-protocol";
+import type { ModelListing, PluginAuthView, PluginSummary, PointView, SetupState } from "@waifucave/moss-protocol";
 import { SAFE_MODE_PLUGINS } from "./ui/model";
 import type { KeyTarget } from "./ui/tree-calls";
 import { textIn } from "./ui/strings";
@@ -58,9 +58,47 @@ export async function listProviders(client: PageClient, lang: string): Promise<P
   return out;
 }
 
-/** Whether a provider is signed in already (then the guide doesn't open by itself). */
+/** Whether a provider is signed in already: the guide's rule against an older engine that doesn't answer `setup.state`. */
 export function anyReady(providers: readonly ProviderView[]): boolean {
   return providers.some((p) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing"));
+}
+
+/** A model the guide's picker offers: one of a provider the person added (signed in). */
+export interface PickView {
+  id: string;
+  name: string;
+  provider: string;
+  providerName: string;
+}
+
+/** The models of the providers the person added, as the guide's picker lists them. */
+export async function signedInModels(client: PageClient, lang: string): Promise<PickView[]> {
+  const { models } = await client.request<{ models: ModelListing[] }>("models.list", {});
+  return models.filter((m) => m.signedIn).map((m) => ({ id: m.id, name: textIn(m.name, lang) || m.id, provider: m.provider, providerName: textIn(m.providerName, lang) || m.provider }));
+}
+
+/** Whether the guide opens by itself on this start: the engine's setup isn't ready and the person hasn't skipped it. */
+export function guideOpens(state: Pick<SetupState, "ready" | "dismissed">): boolean {
+  return !state.ready && !state.dismissed;
+}
+
+/** Whether the core's page (the setup guide) steps aside: a pending card the engine's router placed in this program's main
+ *  window (its conversation or its strip), or the old home's copy card waiting. A card placed elsewhere (the island,
+ *  another app) leaves it where it is. */
+export function guideStepsAside(o: {
+  places: Iterable<readonly [string, { kind: string; program?: string; window?: string } | undefined]>;
+  pending(cardId: string): boolean;
+  program: string;
+  window?: string;
+  copyWaits: boolean;
+}): boolean {
+  if (o.copyWaits) return true;
+  const window = o.window ?? "main";
+  for (const [id, p] of o.places) {
+    if (p === undefined || (p.kind !== "conversation" && p.kind !== "strip")) continue;
+    if (p.program === o.program && p.window === window && o.pending(id)) return true;
+  }
+  return false;
 }
 
 export interface ManagedPlugin {
@@ -75,7 +113,7 @@ export interface ManagedPlugin {
   child: boolean;
 }
 
-/** Every plugin but the app's own (`clover`, `alpha`, which safe mode runs), for the plugin manager. */
+/** Every plugin but the app's own (`moss`, `alpha`, which safe mode runs), for the plugin manager. */
 export async function listManaged(client: PageClient, lang: string): Promise<ManagedPlugin[]> {
   const { plugins } = await client.request<{ plugins: PluginSummary[] }>("plugin.list");
   return plugins
@@ -98,7 +136,7 @@ export interface PageDeps {
   lang(): string;
   /** Opens a page in the user's own browser (a provider's sign-in or terms). */
   openExternal(url: string): Promise<void>;
-  /** The guide is done (or skipped): it doesn't open by itself again. */
+  /** The guide is finished: the window lands on a new code session (the coding side). */
   welcomeDone(): void;
   /** The page the root should show now, and closing it. */
   page(): CorePage | null;
@@ -108,12 +146,18 @@ export interface PageDeps {
   keyTarget?(): { target: KeyTarget; session: string; shown?: boolean } | undefined;
   /** Whether the daemon has answered with its registry open (its plugin list is not the empty one it gives while opening). */
   registryReady(): boolean;
-  /** Set when the app has had no daemon for a long time (the pair's `stuck`): the root says Clover can't start. */
+  /** Set when the app has had no daemon for a long time (the pair's `stuck`): the root says MOSS can't start. */
   daemonDown?(): boolean;
+  /** What the app says about its release (release.ts): updating before it connects, offline, or waiting for work to finish. */
+  releaseNotice?(): unknown;
+  /** The person's "Switch now" while a newer app waits to bring its engine in. */
+  switchNow?(): void;
+  /** "Try again" after the new engine of a release switch did not answer. */
+  retryEngine?(): void;
 }
 
 /** The calls the root's pages make, by name. Anything else is refused. */
-export const PAGE_CALLS = ["page.current", "registry.state", "page.close", "welcome.providers", "welcome.signIn", "welcome.openTerms", "welcome.done", "plugins.list", "plugins.turnOff", "plugins.remove", "key.view", "key.save", "key.remove"] as const;
+export const PAGE_CALLS = ["page.current", "registry.state", "page.close", "welcome.providers", "welcome.signIn", "welcome.openTerms", "welcome.done", "welcome.skip", "welcome.setup", "welcome.models", "welcome.setDefault", "welcome.relay", "welcome.setRelay", "plugins.list", "plugins.turnOff", "plugins.remove", "key.view", "key.save", "key.remove", "release.switchNow", "release.retry"] as const;
 export type PageCall = (typeof PAGE_CALLS)[number];
 
 const ID_RE = /^[a-z][a-z0-9-]*(\/[a-z][a-z0-9-]*)?$/;
@@ -139,18 +183,56 @@ export async function pageCall(name: string, params: unknown, deps: PageDeps): P
     }
     return { page: deps.page() };
   }
-  if (name === "registry.state") return { ready: deps.registryReady(), ...(deps.daemonDown?.() === true ? { down: true } : {}) };
+  if (name === "registry.state") {
+    const release = deps.releaseNotice?.();
+    return { ready: deps.registryReady(), ...(deps.daemonDown?.() === true ? { down: true } : {}), ...(release !== undefined ? { release } : {}) };
+  }
+  if (name === "release.switchNow") {
+    deps.switchNow?.();
+    return { ok: true };
+  }
+  if (name === "release.retry") {
+    deps.retryEngine?.();
+    return { ok: true };
+  }
   if (name === "page.close") {
     deps.closePage();
     return { ok: true };
   }
   if (name === "welcome.done") {
-    deps.welcomeDone();
     deps.closePage();
+    deps.welcomeDone();
     return { ok: true };
   }
   const client = deps.client();
-  if (client === undefined) throw new Error("Clover isn't running");
+  if (client === undefined) throw new Error("MOSS Code isn't running");
+  if (name === "welcome.skip") {
+    // The engine's: it doesn't open by itself again in either app (Settings opens it again).
+    await client.request("setup.dismiss", { dismissed: true });
+    deps.closePage();
+    return { ok: true };
+  }
+  if (name === "welcome.setup") {
+    const state = await client.request<SetupState>("setup.state", {});
+    if (state.signedOut === undefined) return state;
+    // The default model's provider is signed out: the guide says so, in the provider's and the model's own names (any provider).
+    const row = await client.request<{ models: ModelListing[] }>("models.list", {}).then((r) => r.models.find((m) => m.id === state.signedOut), () => undefined);
+    const lang = deps.lang();
+    return { ...state, signedOutAs: { model: row === undefined ? state.signedOut : textIn(row.name, lang) || state.signedOut, provider: row === undefined ? (state.signedOut.split("/")[0] ?? state.signedOut) : textIn(row.providerName, lang) || row.provider } };
+  }
+  if (name === "welcome.models") return { models: await signedInModels(client, deps.lang()) };
+  if (name === "welcome.relay") return client.request("device.relay.get", {});
+  if (name === "welcome.setRelay") {
+    const mode = p.mode === "n0" || p.mode === "off" || p.mode === "custom" ? p.mode : undefined;
+    const url = typeof p.url === "string" && p.url.length > 0 && p.url.length <= 2048 ? p.url : undefined;
+    if (mode === undefined) throw new Error("which relay?");
+    return client.request("device.relay.set", { mode, ...(mode === "custom" && url !== undefined ? { url } : {}) });
+  }
+  if (name === "welcome.setDefault") {
+    const model = typeof p.model === "string" && p.model.length > 0 && p.model.length <= 200 ? p.model : undefined;
+    if (model === undefined) throw new Error("which model?");
+    return (await client.request<{ setup: SetupState }>("models.setDefault", { model })).setup;
+  }
   const id = typeof p.id === "string" && ID_RE.test(p.id) ? p.id : undefined;
   switch (name as PageCall) {
     case "welcome.providers":

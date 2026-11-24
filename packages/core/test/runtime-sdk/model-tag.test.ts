@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canonicalizeModelTag, runtimeModelId, facingNameOf, facingNameToTag, isModelTag, modelTagIsKnown, parseModelTag, splitTag, tagsForSlot, UNSTATED_TAG, CLOVER_TEST_PREFIX, type ModelTag } from "../../src/runtime-sdk/model-tag";
+import { canonicalizeModelTag, runtimeModelId, facingNameOf, facingNameToTag, isModelTag, modelTagIsKnown, parseModelTag, splitTag, tagsForSlot, UNSTATED_TAG, MOSS_TEST_PREFIX, type ModelTag } from "../../src/runtime-sdk/model-tag";
 
 /** A plain test literal known to be tag-shaped, asserted as `ModelTag` for `toBe`/`toEqual` against
  *  a branded return value — a type assertion only, never a runtime validation. */
@@ -58,7 +58,7 @@ describe("modelTagIsKnown", () => {
     expect(modelTagIsKnown("openai/my-finetune", { providers: { openai: { baseUrl: "" } } })).toBe(false);
   });
   test("winter-test/* and the unstated sentinel are accepted exactly as isModelTag accepts them", () => {
-    expect(modelTagIsKnown(`${CLOVER_TEST_PREFIX}echo`)).toBe(true);
+    expect(modelTagIsKnown(`${MOSS_TEST_PREFIX}echo`)).toBe(true);
     expect(modelTagIsKnown(UNSTATED_TAG)).toBe(true);
   });
   test("shape-invalid and unrecognized-provider tags are refused, same as isModelTag", () => {
@@ -74,7 +74,7 @@ describe("modelTagIsKnown", () => {
 describe("canonicalizeModelTag", () => {
   test("a facing-name request resolves to its provider's real catalog row key", () => {
     expect(canonicalizeModelTag("anthropic/sonnet")).toBe(tag("anthropic/claude-sonnet-5-5"));
-    expect(canonicalizeModelTag("codex-oauth/terra")).toBe(tag("codex-oauth/gpt-5.6-terra"));
+    expect(canonicalizeModelTag("codex-oauth/terra")).toBe(tag("codex-oauth/gpt-6.1-terra"));
   });
   test("case-insensitive slot-name matching", () => {
     expect(canonicalizeModelTag("anthropic/Sonnet")).toBe(tag("anthropic/claude-sonnet-5-5"));
@@ -96,7 +96,7 @@ describe("canonicalizeModelTag", () => {
   });
   test("sentinel and winter-test/* pass through unchanged, never treated as a facing name", () => {
     expect(canonicalizeModelTag(UNSTATED_TAG)).toBe(UNSTATED_TAG);
-    expect(canonicalizeModelTag(`${CLOVER_TEST_PREFIX}echo`)).toBe(tag(`${CLOVER_TEST_PREFIX}echo`));
+    expect(canonicalizeModelTag(`${MOSS_TEST_PREFIX}echo`)).toBe(tag(`${MOSS_TEST_PREFIX}echo`));
   });
   test("modelTagIsKnown agrees with canonicalizeModelTag's defined/undefined split", () => {
     expect(modelTagIsKnown("anthropic/sonnet")).toBe(true);
@@ -105,11 +105,12 @@ describe("canonicalizeModelTag", () => {
 });
 describe("slots", () => {
   test("terra maps to one tag per serving provider; a provider that does not serve it yields undefined", () => {
-    expect(tagsForSlot("terra")).toContain(tag("codex-oauth/gpt-5.6-terra"));
-    expect(tagsForSlot("terra")).toContain(tag("openai/gpt-5.6-terra"));
-    expect(facingNameToTag("codex-oauth", "terra")).toBe(tag("codex-oauth/gpt-5.6-terra"));
+    expect(tagsForSlot("terra")).toContain(tag("codex-oauth/gpt-6.1-terra"));
+    expect(tagsForSlot("terra")).toContain(tag("openai/gpt-6.1-terra"));
+    expect(facingNameToTag("codex-oauth", "terra")).toBe(tag("codex-oauth/gpt-6.1-terra"));
     expect(facingNameToTag("deepseek", "terra")).toBeUndefined();
-    expect(facingNameOf("codex-oauth/gpt-5.6-terra" as never)).toBe("terra");
+    expect(facingNameOf("codex-oauth/gpt-6.1-terra" as never)).toBe("terra");
+    expect(facingNameOf("codex-oauth/gpt-5.6-terra" as never)).toBeUndefined(); // SDK 0.0.83: the slot moved off it (still a catalog row)
     expect(facingNameOf("openai/gpt-5.6" as never)).toBeUndefined();
   });
   test("console serves the claude slots", () => {

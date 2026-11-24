@@ -10,13 +10,13 @@ import type { AddressInfo } from "node:net";
 import { BROWSER_WEBRTC_POLICY, createBrowserHost, isBrowserContents, isBrowserTab, PERSON_POLICY, type BrowserHost, type TabView } from "../../src/main/browser/index";
 import type { AppTabEvent } from "../../src/main/browser/contract";
 
-const out = process.env.CLOVER_BROWSER_TEST_OUT ?? "";
-const preload = process.env.CLOVER_BROWSER_TEST_PRELOAD ?? "";
-const html = process.env.CLOVER_BROWSER_TEST_HTML ?? "";
+const out = process.env.MOSS_BROWSER_TEST_OUT ?? "";
+const preload = process.env.MOSS_BROWSER_TEST_PRELOAD ?? "";
+const html = process.env.MOSS_BROWSER_TEST_HTML ?? "";
 /** Set by the Windows scaling runs (`--force-device-scale-factor=<n>`): the fixture then checks what scale does. */
-const wantScale = Number(process.env.CLOVER_BROWSER_TEST_SCALE ?? "") || undefined;
+const wantScale = Number(process.env.MOSS_BROWSER_TEST_SCALE ?? "") || undefined;
 /** Set by the Wayland run: the session must really be Wayland, with no X server to fall back on. */
-const wantWayland = process.env.CLOVER_BROWSER_TEST_WAYLAND === "1";
+const wantWayland = process.env.MOSS_BROWSER_TEST_WAYLAND === "1";
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Fixture page</title>
 <style>body{margin:0;font:16px sans-serif} #p{position:fixed;left:20px;top:200px;margin:0;white-space:nowrap}</style></head><body>
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     // macOS: the system's spellchecker.
   }
   const appWindow = new BrowserWindow({ width: 1100, height: 760, show: true, webPreferences: { sandbox: true, contextIsolation: true, spellcheck: false } });
-  await appWindow.loadURL("data:text/html,<title>Clover</title><body style='margin:0;background:%23eee'></body>");
+  await appWindow.loadURL("data:text/html,<title>MOSS Code</title><body style='margin:0;background:%23eee'></body>");
   const viewTarget = { window: appWindow, bounds: { x: 20, y: 40, width: 900, height: 600 } };
   let n = 0;
   const hostOpts = {
@@ -134,7 +134,9 @@ async function main(): Promise<void> {
 
   await step("a bot's tab opens offscreen, in its own partition, and puts no window on screen", async () => {
     tab = await host.open({ id: "tab_main", owner: alpha, url: `${origin}/page`, place: "headless" });
-    token = (await until(() => evalIn(host, tab.id, "window.__t && window.__t.token"), 10_000)) ?? "";
+    // The first page of a fresh partition: a loaded Windows runner takes more than 10 s to draw it (the step ran 13.7 s
+    // and every later step then failed for want of the page). It returns the moment the token is there.
+    token = (await until(() => evalIn(host, tab.id, "window.__t && window.__t.token"), 45_000)) ?? "";
     const size = await evalIn(host, tab.id, "innerWidth + 'x' + innerHeight");
     return { ok: token !== "" && tab.partition === "persist:bot-alpha" && size === "1280x800" && visibleWindows([appWindow]) === 0, detail: { partition: tab.partition, size, visible: visibleWindows([appWindow]) } };
   });

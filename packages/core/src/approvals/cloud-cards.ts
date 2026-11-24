@@ -2,16 +2,17 @@
 // (C-M3, the controller's ruling of November 7). Each is a `change` card (`computer-create`, `computer-resize`,
 // `computer-delete`, `device-add` for pairing again, `main-computer`), so it is never remembered: no "always" (rule 1), answered on its own each time.
 //
-// What the card says: its title, question and buttons are Clover's own table strings (`text`). Every name and id comes
+// What the card says: its title, question and buttons are MOSS's own table strings (`text`). Every name and id comes
 // from the user's settings or a provider plugin (a folder, a provider, a server id, a region, a size), so they go in a
 // `code` field, the hiding characters out (`plainOf`), never in a sentence (#267's review, item 5).
 //
 // A second VM with a folder's label (`cloud-duplicate`, J's #284) says whether each VM's device is paired, and offers
-// to delete the duplicate only when the VM Clover keeps ranks strictly above it (`deletable`); otherwise the card only
+// to delete the duplicate only when the VM MOSS keeps ranks strictly above it (`deletable`); otherwise the card only
 // reports both VMs, with nothing to delete.
-import type { TurnOrigin } from "@waifucave/clover-protocol";
+import type { TurnOrigin } from "@waifucave/moss-protocol";
+import type { CloudAnswer } from "../computers/cloud";
 import type { ApprovalBroker, ApprovalRequest } from "../contracts/approval-broker";
-import type { CloverApprovalRequest } from "./broker";
+import type { MossApprovalRequest } from "./broker";
 import { plainOf } from "./strings";
 
 /** One VM a duplicate card names. */
@@ -24,31 +25,44 @@ export interface CloudVmRef {
 
 /** J's cloud cards (`CloudCard`), with what J's #284 fix round adds to the duplicate. */
 export type CloudCardRequest =
-  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string }
-  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string }
+  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string; image?: string }
+  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string; image?: string }
   | { kind: "cloud-delete"; name: string; provider: string; why: "folder-removed" | "asked" }
   | {
     kind: "cloud-duplicate"; name: string; provider: string; serverId: string; region: string;
     /** Whether this VM's device is paired. */
     paired?: boolean;
-    /** The VM Clover keeps. */
+    /** The VM MOSS keeps. */
     keeper?: CloudVmRef;
     /** True only when the keeper ranks strictly above this one: then, and only then, the card offers to delete it. */
     deletable?: boolean;
   }
-  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed" }
-  | { kind: "cloud-make-main"; name: string };
+  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed"; image?: string }
+  | { kind: "cloud-make-main"; name: string }
+  /** A computer provider plugin is being removed while it still has machines: delete them, or keep them (and keep
+   *  paying; MOSS can no longer manage them). */
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
 
-/** Clover's own words for each card. */
+/** MOSS's own words for each card. */
 export const CLOUD_CARD_TEXT = {
   "cloud-create": { title: "Create a cloud computer", what: "Create a cloud computer for this folder? It costs money while it exists.", yes: "Create", no: "Not now" },
+  "cloud-create-custom": {
+    title: "Create a cloud computer from a custom image",
+    what: "Create a cloud computer from the image shown, which is not MOSS's own? It costs money while it exists. MOSS will not pair it by itself: whatever that image runs is not MOSS's, so you pair it yourself afterwards, with the four words.",
+    yes: "Create", no: "Not now",
+  },
+  "cloud-provider-removal": {
+    title: "This provider still has cloud computers",
+    what: "Removing this provider leaves its cloud computers running and billing, and MOSS can no longer manage them. Delete them first, or keep them and keep paying until you delete them in the provider's own console?",
+    yes: "Delete them", no: "Keep them and keep paying",
+  },
   "cloud-resize": { title: "Resize a cloud computer", what: "Change this cloud computer's size? Its price changes with it.", yes: "Resize", no: "Not now" },
   "cloud-delete-folder-removed": { title: "Delete a cloud computer", what: "Its folder was removed. Delete this cloud computer and its disk?", yes: "Delete", no: "Keep it" },
   "cloud-delete-asked": { title: "Delete a cloud computer", what: "Delete this cloud computer and its disk?", yes: "Delete", no: "Keep it" },
   "cloud-duplicate": { title: "A second cloud computer", what: "A second cloud computer for this folder exists. Delete it?", yes: "Delete it", no: "Keep both" },
   "cloud-duplicate-report": {
     title: "A second cloud computer",
-    what: "A second cloud computer for this folder exists. Clover can't tell which one to keep, so it deletes neither; check both with the provider.",
+    what: "A second cloud computer for this folder exists. MOSS can't tell which one to keep, so it deletes neither; check both with the provider.",
     ok: "OK",
   },
   "cloud-repair-token-expired": { title: "Pair a cloud computer again", what: "This cloud computer didn't pair before its code expired. Pair it again?", yes: "Pair again", no: "Not now" },
@@ -74,7 +88,10 @@ function details(lines: readonly (readonly [string, string | undefined])[]): { t
   return { type: "code", code: lines.filter(([, v]) => v !== undefined).map(([k, v]) => `${k}: ${value(v!)}`).join("\n") };
 }
 
-/** Whether each VM's device is paired: Clover's own fact, in a text field from this table, never next to a
+/** The card's image line: MOSS's own image, or a custom one in words a person can judge, with its name. */
+const imageLine = (image: string | undefined): readonly [string, string] => ["image", image === undefined ? "MOSS's own image" : `a custom image: ${image}`];
+
+/** Whether each VM's device is paired: MOSS's own fact, in a text field from this table, never next to a
  *  provider's string. */
 export const CLOUD_PAIRED_TEXT: Record<string, string> = {
   "yes-yes": "This one's device is paired, and so is the one kept.",
@@ -83,27 +100,30 @@ export const CLOUD_PAIRED_TEXT: Record<string, string> = {
   "no-no": "Neither one's device is paired.",
 };
 const pairedKey = (p: boolean | undefined) => (p === undefined ? "unknown" : p ? "yes" : "no");
-const PAIRED_UNKNOWN = "Clover doesn't know whether these devices are paired.";
+const PAIRED_UNKNOWN = "MOSS doesn't know whether these devices are paired.";
 
 /** The broker's request for one cloud card. `origin`: what started it (the reconcile is the daemon's own by default).
  *  It waits for the person whatever started it (`waitsForUser`): a cloud card is never denied by a timeout, since a
  *  timeout read as "keep" would bill a duplicate forever (the controller's ruling on #290). */
-export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "routine"): CloverApprovalRequest {
+export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "routine"): MossApprovalRequest {
   const base = { kind: "change" as const, origin, computers: [] as string[], effect: "other" as const, waitsForUser: true };
   const title = (t: string) => ({ type: "text" as const, text: t });
   switch (card.kind) {
     case "cloud-create": {
-      const t = CLOUD_CARD_TEXT["cloud-create"];
+      // THE IMAGE IS WHAT THE YES IS BOUND TO: it is on the card in words a person can judge, and the broker seals the
+      // card's fields, so a folder that names another image (a bot can write a folder, §9.2) never rides on a card that
+      // doesn't show it. A custom image is also never paired automatically (computers/cloud.ts, cloud-join.ts).
+      const t = CLOUD_CARD_TEXT[card.image === undefined ? "cloud-create" : "cloud-create-custom"];
       return { ...base, change: "computer-create", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), computer: details([["name", card.name]]),
-        detail: details([["folder", card.folder], ["provider", card.provider], ["size", card.size], ["region", card.region]]),
+        detail: details([["folder", card.folder], ["provider", card.provider], ["size", card.size], ["region", card.region], imageLine(card.image)]),
       } };
     }
     case "cloud-resize": {
       const t = CLOUD_CARD_TEXT["cloud-resize"];
       return { ...base, change: "computer-resize", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), computer: details([["name", card.name]]),
-        detail: details([["provider", card.provider], ["from", card.from], ["to", card.to]]),
+        detail: details([["provider", card.provider], ["from", card.from], ["to", card.to], imageLine(card.image)]),
       } };
     }
     case "cloud-delete": {
@@ -113,7 +133,7 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
       } };
     }
     case "cloud-duplicate": {
-      // Each provider string on its own line; whether each device is paired is Clover's, in its own text field.
+      // Each provider string on its own line; whether each device is paired is MOSS's, in its own text field.
       const vms = details([
         ["folder", card.name], ["provider", card.provider],
         ["this one", card.serverId], ["this one's region", card.region || undefined],
@@ -132,7 +152,13 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
     case "cloud-repair": {
       const t = CLOUD_CARD_TEXT[card.why === "token-expired" ? "cloud-repair-token-expired" : "cloud-repair-main-changed"];
       return { ...base, change: "device-add", options: yesNo(t), fields: {
-        title: title(t.title), what: title(t.what), computer: details([["name", card.name]]), detail: details([["provider", card.provider]]),
+        title: title(t.title), what: title(t.what), computer: details([["name", card.name]]), detail: details([["provider", card.provider], imageLine(card.image)]),
+      } };
+    }
+    case "cloud-provider-removal": {
+      const t = CLOUD_CARD_TEXT["cloud-provider-removal"];
+      return { ...base, change: "computer-delete", options: yesNo(t), fields: {
+        title: title(t.title), what: title(t.what), detail: details([["provider", card.provider], ["cloud computers", card.machines.join(", ")]]),
       } };
     }
     case "cloud-make-main": {
@@ -158,6 +184,7 @@ export function cloudCardSubject(card: CloudCardRequest): string {
     case "cloud-duplicate": return JSON.stringify(["server", card.provider, card.serverId]);
     case "cloud-create": return JSON.stringify(["folder", card.folder]);
     case "cloud-make-main": return JSON.stringify(["folder", card.name]);
+    case "cloud-provider-removal": return JSON.stringify(["provider", card.provider]);
     default: return JSON.stringify(["computer", card.provider, card.name]);
   }
 }
@@ -226,6 +253,15 @@ export class CloudCardDesk {
   /** J's `confirm`: true only when the person approved the card. */
   async confirm(card: CloudCardRequest): Promise<boolean> {
     return (await this.ask(card)) === "approved";
+  }
+
+  /** What `CloudComputers` takes: `true` approved, `false` the person declined, `"unanswered"` the card ended with no
+   *  answer from the person (withdrawn, closed as stale, a daemon that stopped, no broker yet). Never a "no" without
+   *  the person's word: a delete card that went unanswered must not read as "keep this VM", which would hide a billed
+   *  VM for good (the controller's ruling on #290). */
+  async answer(card: CloudCardRequest): Promise<CloudAnswer> {
+    const outcome = await this.ask(card).catch((): CloudCardOutcome => "unanswered");
+    return outcome === "approved" ? true : outcome === "declined" ? false : "unanswered";
   }
 
   /** Closes, as `stale`, every open card about `subject` (`cloudCardSubject`: the server that's gone, the folder that

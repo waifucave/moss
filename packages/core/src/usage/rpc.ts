@@ -1,11 +1,11 @@
-// Lane D's methods of the protocol's usage area (packages/protocol/src/usage.ts): Clover's own rows, per bot and per
+// Lane D's methods of the protocol's usage area (packages/protocol/src/usage.ts): MOSS's own rows, per bot and per
 // session (`usageMethods`), and the user's own apps' plan readings (`usagePlansMethods`, over the inherited usage
 // service's readers). Owner: lane D.
-import { USAGE_METHODS } from "@waifucave/clover-protocol";
+import { USAGE_METHODS } from "@waifucave/moss-protocol";
 import { handler, type MethodHandler } from "../bots/rpc";
 import type { UsageLedger } from "./ledger";
 import { planWindowKey, staleness, type PlanReading as ServicePlanReading } from "./plan";
-import type { PlanReading as WirePlanReading } from "@waifucave/clover-protocol";
+import type { PlanReading as WirePlanReading } from "@waifucave/moss-protocol";
 
 export function usageMethods(deps: { ledger: UsageLedger }): Record<string, MethodHandler> {
   const M = USAGE_METHODS;
@@ -30,18 +30,18 @@ export function usageMethods(deps: { ledger: UsageLedger }): Record<string, Meth
   };
 }
 
-/** The plan readers `usage.plans` reads (the usage service's: each the user's own app, by its own install). */
+/** The plan readers `usage.plans` reads (the usage service's: each a `usage.sources` entry, the user's own app by its own
+ *  install). Whichever sources give a plan; none is named here. */
 export interface PlanReaders {
-  codexPlan(): Promise<ServicePlanReading>;
-  claudeCodePlan(): Promise<ServicePlanReading>;
-  antigravityPlan(): Promise<ServicePlanReading>;
+  planSources(): string[];
+  sourcePlan(id: string): Promise<ServicePlanReading>;
 }
 
 /** The sources that read nothing (the app isn't here, or the user turned it off). */
 const NO_READING = new Set(["none", "disabled", "not-installed"]);
 
 /** `usage.plans` (§12 "Usage"): the latest reading of each of the user's apps' plan windows on this computer, as the
- *  Usage tab and the island show them. A source that can't answer is left out, never an error.
+ *  Usage tab shows them. A source that can't answer is left out, never an error.
  *
  *  It covers THIS computer only: the readers read the apps installed here, and `computer` names this one. Another
  *  computer's plans are that computer's own `usage.plans`; nothing here asks a peer or merges its readings. */
@@ -55,12 +55,8 @@ export function usagePlansMethods(deps: { readers: PlanReaders; computer(): stri
 export async function planReadings(deps: { readers: PlanReaders; computer(): string; now?(): number }): Promise<WirePlanReading[]> {
   const now = deps.now ?? (() => Date.now());
   const computer = deps.computer();
-  const read = await Promise.all([
-    // Each at the service's own pace (its throttle and its kept readings): asking never spawns an app every time.
-    deps.readers.codexPlan().catch(() => undefined),
-    deps.readers.claudeCodePlan().catch(() => undefined),
-    deps.readers.antigravityPlan().catch(() => undefined),
-  ]);
+  // Each at the service's own pace (its throttle and its kept readings): asking never runs an app every time.
+  const read = await Promise.all(deps.readers.planSources().map((id) => deps.readers.sourcePlan(id).catch(() => undefined)));
   const out: WirePlanReading[] = [];
   for (const r of read) {
     if (r === undefined || NO_READING.has(r.source)) continue;

@@ -1,6 +1,6 @@
-// A-M2: every provider a plugin. The bundled `clover` tree holds one model plugin per provider of the SDK's catalog,
+// A-M2: every provider a plugin. The bundled `moss` tree holds one model plugin per provider of the SDK's catalog,
 // generated and committed; this is the check that they match (CI fails while they don't), and that each one is a
-// valid child of `clover` that the plugin SDK classifies as it should: data for an endpoint, code for an adapter.
+// valid child of `moss` that the plugin SDK classifies as it should: data for an endpoint, code for an adapter.
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -16,9 +16,9 @@ describe("the bundled model plugins", () => {
     expect(checkModelPlugins()).toEqual([]);
   });
 
-  test("one plugin per provider: 218 of them, 6 with code, the rest data on a generic adapter", () => {
+  test("one plugin per provider: 220 of them, 6 with code, the rest data on a generic adapter", () => {
     expect(generateModelPlugins().size).toBe(sdk.providers.length);
-    expect(sdk.providers.length).toBe(218);
+    expect(sdk.providers.length).toBe(220);
     const code = sdk.providers.filter((p) => !GENERIC_ADAPTER_IDS.has(p.adapterId)).map((p) => p.id).sort();
     expect(code).toEqual(Object.keys(CODE_PLUGINS).sort());
     for (const id of code) {
@@ -27,10 +27,10 @@ describe("the bundled model plugins", () => {
     }
   });
 
-  test("each is a valid child of `clover`: data with its endpoint and key placement, or code with its adapter", async () => {
+  test("each is a valid child of `moss`: data with its endpoint and key placement, or code with its adapter", async () => {
     const { report } = await pluginFromFolder(join(BUNDLED_CHILDREN_DIR, ".."), { bundled: true });
     const models = report.children.filter((c) => c.folder.startsWith("model-"));
-    expect(models.length).toBe(218);
+    expect(models.length).toBe(220);
     const bad = models.filter((c) => !c.ok || c.report.manifest === undefined).map((c) => c.folder);
     expect(bad).toEqual([]);
     for (const c of models) {

@@ -1,0 +1,46 @@
+{
+  "manifest": 1,
+  "name": "VRM avatar",
+  "description": "Draws the avatar plugin's figure when it is a VRM model, breathing and blinking, its mouth moving with what MOSS Voice says (loudness and brightness on the audio clock). It hears nothing itself.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx"
+  },
+  "contributes": {
+    "locales": [
+      {
+        "lang": "en",
+        "file": "locales/en.json"
+      }
+    ],
+    "ui": [
+      {
+        "spot": "moss.character.renderer",
+        "id": "vrm",
+        "key": "vrm",
+        "component": "VrmAvatarEntry"
+      }
+    ],
+    "moss.character.formats": [
+      {
+        "id": "vrm",
+        "format": "vrm",
+        "name": "VRM",
+        "capabilities": [
+          "lipsync",
+          "expressions",
+          "lookat",
+          "pace",
+          "outfits"
+        ], "entry": [".vrm", ".glb"]
+      }
+    ],
+    "moss.voice.speech": [
+      {
+        "id": "mouth"
+      }
+    ]
+  }
+}

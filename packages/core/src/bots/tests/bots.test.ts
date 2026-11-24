@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BotView, CLOVER_ERR, RoutineRunView, SESSIONS_EVENTS, SessionView } from "@waifucave/clover-protocol";
+import { BotView, MOSS_ERR, RoutineRunView, SESSIONS_EVENTS, SessionView } from "@waifucave/moss-protocol";
 import { isContractError } from "../../contracts/common";
 import { FakeClock, flush } from "../../contracts/fakes/clock";
 import { FakeFence } from "../../contracts/fakes/fence";
@@ -25,44 +25,40 @@ async function alphaInputs(): Promise<FakePluginInput[]> {
 /** A pack of two bots in child plugins (`pack/luna`, `pack/nova`), each in its own folder. */
 function packFolder(root: string): string {
   const child = (name: string) => ({
-    [`plugins/${name}/clover.json`]: botManifest(undefined, name[0]!.toUpperCase() + name.slice(1)),
+    [`plugins/${name}/moss.json`]: botManifest(undefined, name[0]!.toUpperCase() + name.slice(1)),
     [`plugins/${name}/bot/instructions.md`]: `You are ${name}.`,
   });
-  return writePlugin(root, "pack", { "clover.json": { manifest: 1, id: "pack", name: "A pack of bots" }, ...child("luna"), ...child("nova") });
+  return writePlugin(root, "pack", { "moss.json": { manifest: 1, id: "pack", name: "A pack of bots" }, ...child("luna"), ...child("nova") });
 }
 
 describe("Alpha", () => {
-  test("Alpha's folder is a valid plugin with one bot, and nothing outside its own tab", async () => {
-    // Alpha is the reference plugin (her stage server and hooks are host code), so her class is `code`; her extras
-    // child is off by default.
+  test("the plugin-era Alpha fixture is a valid plugin with one bot and nothing else", async () => {
+    // Alpha as the bundled plugin bot she was (a fixture since lane MC: she is the default bot now, default-bot.ts).
     const { report } = await pluginFromFolder(ALPHA_FOLDER, { bundled: true });
     expect(report.issues.filter((i) => i.severity === "error")).toEqual([]);
     expect(report.top.issues.filter((i) => i.severity === "error")).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.top.bot).toBe(true);
-    expect(report.top.class).toBe("code");
-    expect(report.children.map((c) => c.folder)).toEqual(["extras"]);
+    expect(report.top.class).toBe("data");
+    expect(report.children).toEqual([]);
   });
 
   test("Alpha's manifest names lane G's look as soon as it is in the folder", () => {
     // Lane G ships Alpha's tab look and assets (plan §4 G): `tab/theme.json`, `tab/layout.json`, `assets/alpha.vrm`
     // and the portrait. Alpha's manifest is D's and must name each one that exists, as spec §5.9's example does.
-    const manifest = JSON.parse(readFileSync(join(ALPHA_FOLDER, "clover.json"), "utf8")) as {
+    const manifest = JSON.parse(readFileSync(join(ALPHA_FOLDER, "moss.json"), "utf8")) as {
       icon?: string; contributes: { bot: Record<string, unknown>; themes?: { id: string; file: string }[] };
     };
     const has = (p: string) => existsSync(join(ALPHA_FOLDER, ...p.split("/")));
-    const bot = manifest.contributes.bot as { theme?: string; layout?: string; avatar?: { file: string; format: string; portrait?: string } };
+    const bot = manifest.contributes.bot as { theme?: string; layout?: string; avatar?: unknown };
     if (has("tab/theme.json")) {
       expect(manifest.contributes.themes).toContainEqual({ id: "alpha", file: "tab/theme.json" });
       expect(bot.theme).toBe("alpha");
     } else expect(bot.theme).toBeUndefined();
     if (has("tab/layout.json")) expect(bot.layout).toBe("tab/layout.json");
     else expect(bot.layout).toBeUndefined();
-    if (has("assets/alpha.vrm")) expect(bot.avatar).toMatchObject({ file: "assets/alpha.vrm", format: "vrm" });
-    else expect(bot.avatar).toBeUndefined();
-    for (const portrait of ["assets/portrait.webp", "assets/portrait.svg", "assets/portrait.png"]) {
-      if (has(portrait)) expect(bot.avatar?.portrait).toBe(portrait);
-    }
+    // Her figure is an avatar pack now (the avatar plugin's `moss.character.packs`): her bot names none.
+    expect(bot.avatar).toBeUndefined();
   });
 
   test("the core loads Alpha and lists it with its state; its one conversation opens with its greeting", async () => {
@@ -72,8 +68,8 @@ describe("Alpha", () => {
     expect(views).toHaveLength(1);
     const alpha = BotView.parse(views[0]);
     expect(alpha).toEqual({
-      id: "alpha", name: "Alpha", portrait: "clover-asset://alpha/assets/portrait.svg", avatar: { src: "clover-asset://alpha/assets/alpha.vrm", format: "vrm" }, model: "anthropic/claude-sonnet-5-5", effort: "medium",
-      theme: "alpha", userLayer: [], state: "idle", computer: "Studio", mainSession: "b_alpha",
+      id: "alpha", name: "Alpha", model: "anthropic/claude-sonnet-5-5", effort: "medium",
+      userLayer: [], state: "idle", computer: "Studio", mainSession: "b_alpha",
     });
     expect(b.host.get("b_alpha")).toMatchObject({ kind: "bot", bot: "alpha", title: "Alpha", model: "anthropic/claude-sonnet-5-5", effort: "medium" });
     const events = projectRecords(b.host.history("b_alpha"), { kind: "bot" });
@@ -163,7 +159,7 @@ describe("bots from plugins", () => {
   test("a manifest can't hold two bots: `bot` is one entry", async () => {
     const root = tempDir();
     const dir = writePlugin(root, "twins", {
-      "clover.json": { manifest: 1, id: "twins", name: "Twins", contributes: { bot: [{ name: "A", instructions: "a.md" }, { name: "B", instructions: "b.md" }] } },
+      "moss.json": { manifest: 1, id: "twins", name: "Twins", contributes: { bot: [{ name: "A", instructions: "a.md" }, { name: "B", instructions: "b.md" }] } },
       "a.md": "You are A.",
       "b.md": "You are B.",
     });
@@ -206,7 +202,7 @@ describe("bots from plugins", () => {
 
   test("a bot whose instructions can't be read isn't loaded, and says why", async () => {
     const root = tempDir();
-    const dir = writePlugin(root, "ghost", { "clover.json": botManifest("ghost", "Ghost"), "bot/instructions.md": "You are Ghost." });
+    const dir = writePlugin(root, "ghost", { "moss.json": botManifest("ghost", "Ghost"), "bot/instructions.md": "You are Ghost." });
     const { inputs } = await pluginFromFolder(dir);
     rmSync(join(dir, "bot", "instructions.md"));
     const b = await boot({ home: tempDir(), plugins: inputs });
@@ -217,13 +213,13 @@ describe("bots from plugins", () => {
 
   test("a plugin's change applies live: new instructions reach the driver, and the view follows", async () => {
     const root = tempDir();
-    const dir = writePlugin(root, "luna", { "clover.json": botManifest("luna", "Luna"), "bot/instructions.md": "You are Luna." });
+    const dir = writePlugin(root, "luna", { "moss.json": botManifest("luna", "Luna"), "bot/instructions.md": "You are Luna." });
     const first = await pluginFromFolder(dir);
     const b = await boot({ home: tempDir(), plugins: first.inputs });
     const ctx = b.drivers.made[0]!.ctx;
     expect(ctx.current().instructions).toBe("You are Luna.");
     writeFileSync(join(dir, "bot", "instructions.md"), "You are Luna, and you love the night sky.");
-    writeFileSync(join(dir, "clover.json"), JSON.stringify(botManifest("luna", "Luna Moon")));
+    writeFileSync(join(dir, "moss.json"), JSON.stringify(botManifest("luna", "Luna Moon")));
     const changed = await pluginFromFolder(dir);
     // A data edit applies at once (§5.6); a change to what runs would wait for the user's OK.
     b.registry.put({ ...changed.inputs[0]!, change: "applies" });
@@ -235,15 +231,30 @@ describe("bots from plugins", () => {
     await b.shutdown();
   });
 
+  test("an edit of only its instructions file (the manifest the same, its tree changed) reaches the driver", async () => {
+    const root = tempDir();
+    const dir = writePlugin(root, "luna", { "moss.json": botManifest("luna", "Luna"), "bot/instructions.md": "You are Luna." });
+    const first = await pluginFromFolder(dir);
+    const b = await boot({ home: tempDir(), plugins: first.inputs.map((i) => ({ ...i, treeHash: "sha256:one" })) });
+    const ctx = b.drivers.made[0]!.ctx;
+    writeFileSync(join(dir, "bot", "instructions.md"), "You are Luna, and you keep a herb journal.");
+    // The registry core reports this through `watchTrees` alone: the record's state and manifest are as they were.
+    b.registry.put({ ...first.inputs[0]!, treeHash: "sha256:two", change: "applies" });
+    await b.bots.settled();
+    expect(ctx.current().instructions).toBe("You are Luna, and you keep a herb journal.");
+    expect(b.drivers.made).toHaveLength(1);
+    await b.shutdown();
+  });
+
   test("a bot that breaks its own instructions keeps its last good version, so it can fix them", async () => {
     const root = tempDir();
-    const dir = writePlugin(root, "luna", { "clover.json": botManifest("luna", "Luna"), "bot/instructions.md": "You are Luna." });
+    const dir = writePlugin(root, "luna", { "moss.json": botManifest("luna", "Luna"), "bot/instructions.md": "You are Luna." });
     const b = await boot({ home: tempDir(), plugins: (await pluginFromFolder(dir)).inputs });
     await b.host.sendUser("b_luna", user("hello"));
     await flush();
     // The fake registry tells of a change when the manifest changes (B-M1's hashes the files).
     writeFileSync(join(dir, "bot", "instructions.md"), "   ");
-    writeFileSync(join(dir, "clover.json"), JSON.stringify(botManifest("luna", "Luna II")));
+    writeFileSync(join(dir, "moss.json"), JSON.stringify(botManifest("luna", "Luna II")));
     b.registry.put({ ...(await pluginFromFolder(dir)).inputs[0]!, change: "applies" });
     await b.bots.settled();
     expect(b.bots.get("luna")).toBeDefined();
@@ -252,7 +263,7 @@ describe("bots from plugins", () => {
     expect(b.warnings.join("\n")).toContain("keeps its last good version");
     // Fixed, the new version applies.
     writeFileSync(join(dir, "bot", "instructions.md"), "You are Luna, mended.");
-    writeFileSync(join(dir, "clover.json"), JSON.stringify(botManifest("luna", "Luna III")));
+    writeFileSync(join(dir, "moss.json"), JSON.stringify(botManifest("luna", "Luna III")));
     b.registry.put({ ...(await pluginFromFolder(dir)).inputs[0]!, change: "applies" });
     await b.bots.settled();
     expect(b.drivers.made[0]!.ctx.current().instructions).toBe("You are Luna, mended.");
@@ -289,7 +300,7 @@ describe("the user layer", () => {
   async function luna(opts: { hasKeyFor?: (m: string) => boolean; modelOffer?: (m: string) => "offered" | "starting" | "absent" } = {}) {
     const root = tempDir();
     const dir = writePlugin(root, "luna", {
-      "clover.json": botManifest("luna", "Luna", { model: { default: "anthropic/claude-sonnet-5-5", effort: "high" }, voice: { provider: "fish-audio", voice: "v1", model: "s2.1-pro-free" } }),
+      "moss.json": botManifest("luna", "Luna", { model: { default: "anthropic/claude-sonnet-5-5", effort: "high" } }),
       "bot/instructions.md": "You are Luna.",
     });
     const home = tempDir();
@@ -313,26 +324,6 @@ describe("the user layer", () => {
     await b.shutdown();
   });
 
-  test("a layer stored by an earlier build (the user's own Live2D model over a plugin that ships a VRM) is the avatar after the upgrade", async () => {
-    const root = tempDir();
-    const dir = writePlugin(root, "luna", {
-      "clover.json": botManifest("luna", "Luna", { avatar: { file: "assets/luna.vrm", format: "vrm", portrait: "assets/portrait.svg" } }),
-      "bot/instructions.md": "You are Luna.",
-      "assets/luna.vrm": "glTF",
-      "assets/portrait.svg": "<svg/>",
-    });
-    const home = tempDir();
-    const inputs = (await pluginFromFolder(dir)).inputs;
-    // The file as the picker's import wrote it on 0.x-12b: the whole layer under `fields`, the avatar as `user:<folder>/<entry>`.
-    mkdirSync(join(home, "user-layers"), { recursive: true });
-    writeFileSync(userLayerFile(home, "luna"), JSON.stringify({ userLayer: 1, bot: "luna", fields: { avatar: { file: "user:k3x9q2/hero.model3.json", format: "live2d", credit: "Model by someone; free for personal use" } } }));
-    const b = await boot({ home, plugins: inputs });
-    expect(b.bots.get("luna")).toMatchObject({ userLayer: ["avatar"], avatar: { src: "/_a/luna/k3x9q2/hero.model3.json", format: "live2d", credit: "Model by someone; free for personal use" } });
-    expect(b.bots.list().find((x) => x.id === "luna")?.avatar?.format).toBe("live2d");
-    // The user's model has no portrait of its own: the dock and lists keep the plugin's face, not a letter.
-    expect(b.bots.get("luna")?.portrait).toBeTruthy();
-    await b.shutdown();
-  });
 
   test("a model no plugin that is on offers is refused in words the picker shows; one whose plugin is still starting is taken; clearing it is never checked", async () => {
     const asked: string[] = [];
@@ -355,13 +346,13 @@ describe("the user layer", () => {
     const { b } = await luna();
     const asBot = await b.bots.setUserLayer("luna", { model: "openai/gpt-6.1-sol" }, { kind: "session", sessionId: "b_luna", sessionKind: "bot", bot: "luna" }).catch((e: unknown) => e);
     expect(isContractError(asBot, "refused")).toBe(true);
-    expect((asBot as { detail?: { rpc?: number } }).detail?.rpc).toBe(CLOVER_ERR.NOT_THE_USER);
+    expect((asBot as { detail?: { rpc?: number } }).detail?.rpc).toBe(MOSS_ERR.NOT_THE_USER);
     expect(isContractError(await b.bots.setUserLayer("luna", { name: "X" }, { kind: "plugin", pluginId: "weather" }).catch((e: unknown) => e), "refused")).toBe(true);
     // Only the user: not even the core's own caller.
     expect(isContractError(await b.bots.setUserLayer("luna", { name: "X" }, { kind: "core" }).catch((e: unknown) => e), "refused")).toBe(true);
     expect(b.bots.get("luna")?.userLayer).toEqual([]);
     await b.bots.setUserLayer("luna", { theme: "night" }, theUser);
-    const fence = new FakeFence({ home: "/home/sam", cloverHome: b.home });
+    const fence = new FakeFence({ home: "/home/sam", mossHome: b.home });
     expect(fence.check({ op: "write", path: userLayerFile(b.home, "luna") })).toMatchObject({ allowed: false, reason: "user-layers" });
     await b.shutdown();
   });
@@ -377,7 +368,7 @@ describe("the user layer", () => {
     // Through the method too: the bot's own `bot.setUserLayer` call is refused as not the user's.
     const methods = b.side.methods({ localDevice: "studio" });
     const viaRpc = await methods["bot.setUserLayer"]!({ id: "luna", patch: { lan: true } }, { caller: asBot }).catch((e: unknown) => e);
-    expect((viaRpc as { code?: number }).code).toBe(CLOVER_ERR.NOT_THE_USER);
+    expect((viaRpc as { code?: number }).code).toBe(MOSS_ERR.NOT_THE_USER);
     expect(b.bots.lanBots()).toEqual([]);
     expect(b.bots.get("luna")?.lan).toBeUndefined();
     // The person, from their app or terminal: on, then off again.
@@ -389,7 +380,7 @@ describe("the user layer", () => {
     expect(isContractError(await b.bots.setUserLayer("luna", { lan: "yes" }, theUser).catch((e: unknown) => e), "invalid")).toBe(true);
     await b.shutdown();
     // A plugin can't give its bot the setting: its `bot` entry has no such field.
-    const dir = writePlugin(tempDir(), "sly", { "clover.json": botManifest("sly", "Sly", { lan: true }), "bot/instructions.md": "Sly." });
+    const dir = writePlugin(tempDir(), "sly", { "moss.json": botManifest("sly", "Sly", { lan: true }), "bot/instructions.md": "Sly." });
     const { report, inputs } = await pluginFromFolder(dir);
     expect(report.top.issues.some((i) => i.severity === "error")).toBe(true);
     const sly = await boot({ home: tempDir(), plugins: inputs });
@@ -412,7 +403,7 @@ describe("the user layer", () => {
     await flush();
     const stored = (h: string) => (existsSync(userLayerFile(h, "luna")) ? JSON.parse(readFileSync(userLayerFile(h, "luna"), "utf8")).fields : {});
     expect(stored(b.home)).toEqual({ theme: "night" });
-    const dir = writePlugin(tempDir(), "luna", { "clover.json": botManifest("luna", "Not Luna"), "bot/instructions.md": "Someone else." });
+    const dir = writePlugin(tempDir(), "luna", { "moss.json": botManifest("luna", "Not Luna"), "bot/instructions.md": "Someone else." });
     // Another plugin under the same id: new to the registry, so it runs once the user OKs it.
     b.registry.put({ ...(await pluginFromFolder(dir)).inputs[0]!, approved: true });
     await flush();
@@ -444,10 +435,10 @@ describe("the user layer", () => {
 
   test("the layer survives a restart", async () => {
     const { home, inputs, b } = await luna();
-    await b.bots.setUserLayer("luna", { voice: { provider: "fish-audio", voice: "v2" } }, theUser);
+    await b.bots.setUserLayer("luna", { name: "Moon" }, theUser);
     await b.shutdown();
     const again = await boot({ home, plugins: inputs });
-    expect(again.bots.get("luna")).toMatchObject({ voice: { provider: "fish-audio", voice: "v2" }, userLayer: ["voice"] });
+    expect(again.bots.get("luna")).toMatchObject({ name: "Moon", userLayer: ["name"] });
     await again.shutdown();
   });
 

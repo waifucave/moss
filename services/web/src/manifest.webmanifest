@@ -1,12 +1,12 @@
 {
-  "name": "Clover",
-  "short_name": "Clover",
-  "description": "Your Clover computers, from the browser.",
+  "name": "MOSS",
+  "short_name": "MOSS",
+  "description": "Your MOSS computers, from the browser.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#3D7655",
-  "theme_color": "#3D7655",
+  "background_color": "#161A33",
+  "theme_color": "#161A33",
   "icons": [
     { "src": "/icons/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },

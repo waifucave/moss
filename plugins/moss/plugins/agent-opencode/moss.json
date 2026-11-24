@@ -1,0 +1,23 @@
+{
+  "manifest": 1,
+  "name": "OpenCode",
+  "description": "OpenCode CLI (`opencode acp`) as an agent bots can delegate to.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "contributes": {
+    "agentBackends": [
+      {
+        "id": "opencode",
+        "name": "OpenCode",
+        "protocol": "acp",
+        "command": "opencode",
+        "args": [
+          "acp"
+        ],
+        "quirks": "quirks.json",
+        "icon": "opencode.svg"
+      }
+    ]
+  }
+}

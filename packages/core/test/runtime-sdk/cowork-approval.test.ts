@@ -1,16 +1,15 @@
 // Cowork approvals projected into the real approval bridge, behind the refusal, with fakes: the six policies x the guest tool
 // classes, the shared-instruction-edit column, unknown classes, the separate connector row, narrowing, the cards the clients
-// already understand, the island and pending surfaces, unattended turns, and the proofs that nothing else is touched.
+// already understand, the pending surface, unattended turns, and the proofs that nothing else is touched.
 import { afterEach, expect, jest, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { CanUseTool, PermissionResult } from "@waifucave/clover-agent-sdk";
-import { ApprovalRequestedEvent, type ApprovalPolicy, type NewSessionEvent } from "@waifucave/clover-protocol";
+import { ApprovalRequestedEvent, type ApprovalPolicy, type NewSessionEvent } from "@waifucave/moss-protocol";
 import { ApprovalBroker } from "../../src/agent/approvals";
 import { PermissionGate } from "../../src/agent/gate";
 import type { ConnectorPermissionSource, ConnectorPermissionTable } from "../../src/agent/mcp/connector-permissions";
 import { QuestionBroker } from "../../src/agent/questions";
-import { IslandRegistry } from "../../src/island/registry";
 import { canUseToolFor, DISPATCH_CHILD_APPROVAL_TIMEOUT_MS, NO_PARK_TIMEOUT_MS, type BridgeLogger } from "../../src/runtime-sdk/approval-bridge";
 import { coworkDeniedMessage, projectCoworkCall, type CoworkApprovalPorts } from "../../src/runtime-sdk/cowork-approval";
 import { CoworkPolicyTransitionMachine, type CoworkPolicyState, type CoworkTransitionPorts } from "../../src/cowork/policy-transition";
@@ -31,7 +30,7 @@ function classifyPath(path: string): string {
   // Roots and every conversation's folder are "outputs"/"scratch" to the host; the projection narrows them to the OWN folder.
   if (path === "/workspace/.winter/scratch" || path.startsWith("/workspace/.winter/scratch/")) return "scratch";
   if (path === "/workspace/outputs" || path.startsWith("/workspace/outputs/")) return "outputs";
-  // The epoch-scoped plan scratch lives OUTSIDE `.clover`; the host calls the root and everything under it planScratch.
+  // The epoch-scoped plan scratch lives OUTSIDE `.moss`; the host calls the root and everything under it planScratch.
   if (path === "/workspace/plan" || path.startsWith("/workspace/plan/")) return "planScratch";
   if (path.startsWith("/workspace/.winter/") || path === "/workspace/.winter" || path.startsWith("/proc")) return "protected";
   if (path.startsWith("/workspace/repos/")) return "admitted";
@@ -160,10 +159,10 @@ test("an explicit allow the host resolved lifts dont-ask and ask but never plan;
 });
 
 const OWN_OUT = "/workspace/outputs/cowork-1", OWN_SCRATCH = "/workspace/.winter/scratch/cowork-1";
-test("the conversation's own outputs and `.clover` scratch: read everywhere, write like an admitted root (plan denies); others' folders and the roots are denied", async () => {
+test("the conversation's own outputs and `.moss` scratch: read everywhere, write like an admitted root (plan denies); others' folders and the roots are denied", async () => {
   for (const policy of POLICIES) {
     for (const [name, own, other, root] of [["outputs", OWN_OUT, "/workspace/outputs/someone-else", "/workspace/outputs"], ["scratch", OWN_SCRATCH, "/workspace/.winter/scratch/someone-else", "/workspace/.winter/scratch"]] as const) {
-      const writeKind: Outcome = GRID[policy].Write;   // plan x `.clover` scratch is a plain deny: the plan scratch lives elsewhere
+      const writeKind: Outcome = GRID[policy].Write;   // plan x `.moss` scratch is a plain deny: the plan scratch lives elsewhere
       const editKind: Outcome = GRID[policy].Edit;
       const row = (dir: string) => ({
         Read: ["Read", { file_path: `${dir}/a.txt` }], Write: ["Write", { file_path: `${dir}/a.txt`, content: "x" }], Edit: ["Edit", { file_path: `${dir}/a.txt`, old_string: "a", new_string: "b" }],
@@ -411,7 +410,7 @@ test("a card is the existing approval_requested: it names the workspace, source 
   expect(summary).toContain("Cowork workspace ws-7"); expect(summary).toContain("source revision 12"); expect(summary).toContain("agent sub-agent-3");
   expect(summary).toContain("write");
   expect((requested as { options?: unknown }).options).toBeUndefined();   // no rule-bearing option: a saved rule is never host authority
-  // The pending surface (what `approval.list` and the island read) holds it.
+  // The pending surface (what `approval.list` reads) holds it.
   expect(h.approvals.list(SESSION)).toHaveLength(1);
   expect(h.approvals.list(SESSION)[0]).toMatchObject({ toolName: "write" });
   h.approvals.resolve(SESSION, "tu1", true, "mac");
@@ -437,22 +436,6 @@ test("a human denial of a Cowork card interrupts like Code's; nobody answering i
   const pending = h.canUse(...WRITE, ctx()); await tick();
   h.approvals.resolve(SESSION, "tu1", false, "mac");
   expect(await pending).toMatchObject({ behavior: "deny", interrupt: true, decisionClassification: "user_reject" });
-});
-
-test("the island and pending surfaces list the Cowork card and drop it when answered", async () => {
-  const h = build(state("ask"));
-  const registry = new IslandRegistry({
-    pending: { approval: (s, id) => h.approvals.pendingMeta(s, id) !== undefined, question: () => false, elicitation: () => false },
-    facts: () => ({ mode: "cowork" } as never), hosts: () => [],
-  });
-  const pending = h.canUse(...BASH, ctx()); await tick();
-  for (const e of h.events) registry.observe({ ...e, seq: 1, ts: 1 } as never);
-  const items = registry.list();
-  expect(items.map(i => [i.kind, i.sessionId, i.answerSessionId])).toEqual([["approval", SESSION, SESSION]]);
-  expect((items[0]!.event as { summary: string }).summary).toContain("Cowork workspace ws-7");
-  h.approvals.resolve(SESSION, "tu1", true, "island"); await pending;
-  for (const e of h.events.slice(1)) registry.observe({ ...e, seq: 2, ts: 2 } as never);
-  expect(registry.list()).toEqual([]);
 });
 
 test("AskUserQuestion and ExitPlanMode keep their own bridges in a Cowork session", async () => {
@@ -591,8 +574,11 @@ test("a reviewer that cannot reach a verdict asks (a card, never an allow); no r
     h.approvals.resolve(SESSION, "tu1", true, "mac");
     expect(await pending).toMatchObject({ behavior: "allow", decisionClassification: "user_temporary" });
   }
-  const noModel = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("none", "x"); }).review });
+  const noModel = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("no-internal-credential", "x"); }).review });
   expect((await outcome(noModel, "Bash", { ...RISKY })).kind).toBe("allow");
+  // 2026-11-22: a home that HAS a credentialed provider the default's own can't reach is not structural: it asks (was: allowed).
+  const someProvider = build(state("auto"), { review: fakeReviewer(async () => { throw new ReviewerNoRunnableModel("no-default-model", "x"); }).review });
+  expect((await outcome(someProvider, "Bash", { ...RISKY })).kind).toBe("card");
   // And a refusal of that card is a refusal.
   const h = build(state("auto"), { review: fakeReviewer(async () => { throw new Error("down"); }).review, turnOrigin: () => "mac" });
   const pending = h.canUse("Bash", { ...RISKY }, ctx()); await tick(); h.approvals.resolve(SESSION, "tu1", false, "mac");

@@ -1,20 +1,18 @@
-// The user layer (spec §6.1): the user's changes to a bot's name, instructions, model, effort, voice, avatar, theme
-// and layout. A field it sets wins over the plugin's, and Reset clears it. Bots can't write it (§9.1): its folder is
+// The user layer (spec §6.1): the user's changes to a bot's name, instructions, model, effort, theme and layout.
+// A field it sets wins over the plugin's, and Reset clears it. Bots can't write it (§9.1): its folder is
 // in the fenced set (`userLayersDir`), and the core changes it only for the user (`bot.setUserLayer` is `userOnly`).
 // A bot changes itself by editing its plugin folder, which sits under the layer. Owner: lane D.
 //
 // One file per bot, `<home>/user-layers/<bot>.json`, rewritten whole (atomic-file.ts). The layer syncs with the
 // account's settings once lane H's sync exists (§8.5 "bots' user layers … sync").
-import { UserLayerPatch, type Text } from "@waifucave/clover-protocol";
+import { UserLayerPatch, type Text } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { readJson, removeFileDurably, writeJsonAtomic } from "../sessions/atomic-file";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { displayText } from "@waifucave/clover-plugin-sdk/plain";
-import { LayoutFileSchema } from "@waifucave/clover-plugin-sdk";
 import { userLayerFile, userLayersDir } from "./paths";
 
-export const USER_LAYER_FIELDS = ["name", "instructions", "model", "effort", "voice", "avatar", "theme", "layout", "lan"] as const;
+export const USER_LAYER_FIELDS = ["name", "instructions", "model", "effort", "theme", "layout", "lan"] as const;
 export type UserLayerField = (typeof USER_LAYER_FIELDS)[number];
 
 export interface UserLayer {
@@ -22,8 +20,6 @@ export interface UserLayer {
   instructions?: string;
   model?: string;
   effort?: string;
-  voice?: { provider: string; voice: string; model?: string };
-  avatar?: { file: string; format: string; portrait?: string; credit?: string };
   theme?: string;
   layout?: string;
   /** The bot's browser tabs may reach the LAN (lane L's `lanBots`). The person's alone: in the user layer, which only
@@ -52,57 +48,28 @@ export function applyUserLayerPatch(layer: UserLayer, patch: UserLayerPatch): Us
     if (value === null) delete next[field];
     else next[field] = structuredClone(value);
   }
-  // The user's own words for the avatar's credit note: only on an avatar the layer already holds.
-  if (patch.avatarCredit !== undefined && next.avatar !== undefined) {
-    const avatar = { ...(next.avatar as NonNullable<UserLayer["avatar"]>) };
-    if (patch.avatarCredit === null || patch.avatarCredit === "") delete avatar.credit;
-    else avatar.credit = patch.avatarCredit;
-    next.avatar = avatar;
-  }
   return next as UserLayer;
 }
-
-/** A credit note a person or a model's own file wrote, as plain text a page may show: the shared cleaner
- *  (`@waifucave/clover-plugin-sdk/plain`), the first 300 characters. */
-export const neutralNote = (text: string): string => displayText(text, 300) ?? "";
 
 export function userLayerFields(layer: UserLayer): UserLayerField[] {
   return USER_LAYER_FIELDS.filter((f) => layer[f] !== undefined);
 }
 
-/** The user's own layout for a bot's tab is a layout file's JSON (layout format 1): a whole layout, or a patch that
- *  extends the bot's own (`"bot"`) or the stock tab (`"default"`). The app makes it last, over the bot's layout and any
- *  plugin's patches; its `css` and `background` are not drawn (the user layer has no folder). */
-export function userLayoutProblem(text: string): string | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return "a bot's layout is a layout file's JSON, and this isn't JSON";
-  }
-  const parsed = LayoutFileSchema.safeParse(value);
-  if (!parsed.success) return `not a layout: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "layout"}: ${i.message}`).join("; ")}`;
-  return undefined;
-}
-
-/** Checks a patch as the protocol's schema does, plus the shapes of a model id, an effort and a layout. */
+/** Checks a patch as the protocol's schema does, plus the shapes of a model id and an effort. A bot's tab layout is retired
+ *  with the bot tab (G8): a new one is refused; one stored before stays in its file (`layout` in `USER_LAYER_FIELDS`, so an
+ *  upgrade drops nothing), unread, and clearing it (`null`) still works. */
 export function parseUserLayerPatch(value: unknown): UserLayerPatch {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const unknown = Object.keys(value).filter((k) => !(USER_LAYER_FIELDS as readonly string[]).includes(k) && k !== "avatarCredit");
+    const unknown = Object.keys(value).filter((k) => !(USER_LAYER_FIELDS as readonly string[]).includes(k));
     if (unknown.length > 0) throw new ContractError("invalid", `a user layer has no ${unknown.map((k) => `"${k}"`).join(", ")}; its fields are ${USER_LAYER_FIELDS.join(", ")}`);
   }
   const parsed = UserLayerPatch.safeParse(value);
   if (!parsed.success) throw new ContractError("invalid", `not a user-layer change: ${parsed.error.issues.map((i) => `${i.path.join(".") || "patch"}: ${i.message}`).join("; ")}`);
   const patch = parsed.data;
-  if (typeof patch.avatarCredit === "string") patch.avatarCredit = neutralNote(patch.avatarCredit);
-  if (patch.avatar !== undefined && patch.avatar !== null && patch.avatar.credit !== undefined) patch.avatar = { ...patch.avatar, credit: neutralNote(patch.avatar.credit) };
   if (typeof patch.model === "string" && !MODEL_ID_RE.test(patch.model)) throw new ContractError("invalid", `"${patch.model}" is not a qualified model id (<provider>/<model>)`);
   if (typeof patch.effort === "string" && !EFFORT_RE.test(patch.effort)) throw new ContractError("invalid", `"${patch.effort}" is not an effort`);
   if (typeof patch.instructions === "string" && patch.instructions.trim() === "") throw new ContractError("invalid", "a bot's instructions can't be empty; clear the field to use the plugin's");
-  if (typeof patch.layout === "string") {
-    const why = userLayoutProblem(patch.layout);
-    if (why !== undefined) throw new ContractError("invalid", why);
-  }
+  if (typeof patch.layout === "string") throw new ContractError("invalid", "a bot's tab layout is retired with the bot tab: MOSS Code's window has no bot tab, and MOSS draws its bots in its own window");
   return patch;
 }
 

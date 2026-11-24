@@ -2,7 +2,7 @@
 // hand. Pair the host with a FakeApprovalBroker (or anything with `withdrawSession` and `cancelSession`) to see cards
 // withdrawn on an interrupt and cancelled on a stop.
 import { randomBytes } from "node:crypto";
-import { clampSentAt, type SessionStatus, type SessionView, type TurnOrigin } from "@waifucave/clover-protocol";
+import { clampSentAt, type SessionStatus, type SessionView, type TurnOrigin } from "@waifucave/moss-protocol";
 import type { ApprovalBroker } from "../approval-broker";
 import { compareStamps, type Clock } from "../clock";
 import { ContractError, Listeners, type Unsubscribe } from "../common";
@@ -26,6 +26,8 @@ interface Hosted {
   queue: TurnInput[];
   running?: Running;
   asleep: boolean;
+  /** The bots whose conversation or side thread delivered to it. */
+  wrote: Set<string>;
 }
 
 export class FakeSessionHost implements SessionHost {
@@ -57,7 +59,7 @@ export class FakeSessionHost implements SessionHost {
       ...(spec.routine === undefined ? {} : { routine: spec.routine }),
       ...(spec.definition === undefined ? {} : { definition: spec.definition }),
     };
-    const s: Hosted = { view, driver, log: [], subscribers: new Listeners(), queue: [], asleep: false };
+    const s: Hosted = { view, driver, log: [], subscribers: new Listeners(), queue: [], asleep: false, wrote: new Set() };
     this.#sessions.set(id, s);
     this.#record(s, { type: "status", status: "ready" });
     this.#watchers.emit({ ...view });
@@ -106,7 +108,16 @@ export class FakeSessionHost implements SessionHost {
       this.#record(s, { type: "input", input, disposition: "note" });
       return { disposition: "note" };
     }
-    return this.#accept(s, input);
+    const accepted = this.#accept(s, input);
+    // A bot's own conversation or side thread delivering to it: remembered (the real host's record, `botsThatWrote`).
+    const from = input.from === "session" ? input.session : input.from === "bot" ? input.session : undefined;
+    const sender = from === undefined ? undefined : this.#sessions.get(from)?.view;
+    if (sender?.bot !== undefined && (sender.kind === "bot" || sender.kind === "side-thread")) s.wrote.add(sender.bot);
+    return accepted;
+  }
+
+  botsThatWrote(id: string): readonly string[] {
+    return [...(this.#sessions.get(id)?.wrote ?? [])];
   }
 
   async interrupt(id: string): Promise<void> {
@@ -213,11 +224,13 @@ export class FakeSessionHost implements SessionHost {
     if (s.view.status === "stopped") return;
     if (end.reason === "failed") {
       s.queue = [];
-      this.#setStatus(s, "failed", end.failure ?? "error");
+      // A coding session or an agent stays open when its turn fails (idle, the failure on its view); the rest end.
+      const open = s.view.kind === "agent" || s.view.kind === "coding";
+      this.#setStatus(s, open ? "idle" : "failed", end.failure ?? "error");
       if (s.view.kind === "agent") this.#notifyParent(s, stopReasonOf(end), end);
       return;
     }
-    this.#setStatus(s, "idle");
+    this.#setStatus(s, "idle", s.view.failure === undefined ? undefined : null);
     if (s.queue.length > 0) {
       this.#pump(s);
       return;
@@ -242,10 +255,12 @@ export class FakeSessionHost implements SessionHost {
     });
   }
 
-  #setStatus(s: Hosted, status: SessionStatus, failure?: SessionView["failure"]): void {
+  /** `null` clears the failure (a turn that ended well after a failed one). */
+  #setStatus(s: Hosted, status: SessionStatus, failure?: SessionView["failure"] | null): void {
     if (s.view.status === status && failure === undefined) return;
-    s.view = { ...s.view, status, updatedAt: this.#clock.now(), ...(failure === undefined ? {} : { failure }) };
-    this.#record(s, { type: "status", status, ...(failure === undefined ? {} : { failure }) });
+    const { failure: _was, ...rest } = s.view;
+    s.view = { ...(failure === null ? rest : s.view), status, updatedAt: this.#clock.now(), ...(failure === undefined || failure === null ? {} : { failure }) };
+    this.#record(s, { type: "status", status, ...(failure === undefined || failure === null ? {} : { failure }) });
     this.#watchers.emit({ ...s.view });
   }
 

@@ -1,4 +1,4 @@
-// The Clover Browser in the app's main process (spec §12.1, lane L; the owner's decisions 92–94). The daemon drives
+// The MOSS Browser in the app's main process (spec §12.1, lane L; the owner's decisions 92–94). The daemon drives
 // it (`app.tab.open`, `app.tab.command`, `app.tab.list`) and it reports back (`browser.report`, `browser.hold`); the
 // transport is lane E's always-on pair. Lane E's runtime also tells it where each browser view's frame is
 // (`setView`), so the person sees a tab there without it reloading.
@@ -24,6 +24,8 @@ import { guardPage, isSessionReady, prepareTabSession, resetViewportSession } fr
 import { TabStreamer, type StreamPageAssets, type StreamStats } from "./stream";
 import { BrowserTab, HostTab, OffscreenTab, tabWebPreferences, type TabEnv } from "./tab";
 import { Viewport, type ViewportAssets } from "./viewport";
+import { electronInput } from "./tab-input";
+import type { TabInputEvent } from "@waifucave/moss-protocol";
 
 export { BROWSER_ASSETS } from "./assets";
 export { BROWSER_WEBRTC_POLICY, isBrowserContents, isBrowserTab } from "./session";
@@ -186,6 +188,19 @@ export class BrowserHost {
         if (this.streamer === undefined) throw new Error("this app doesn't stream tabs");
         this.streamer.control(command);
         return null;
+    }
+  }
+
+  /** `host.tab.input` (lane HS): the person's input, forwarded from MOSS Code's panel, into one tab's page. Their input
+   *  takes the tab from the agent, as the panel's own viewport does. */
+  input(id: string, events: readonly TabInputEvent[]): void {
+    const tab = this.tabs.get(id);
+    if (tab === undefined || tab.closed) throw new Error(`there's no tab ${id}`);
+    this.took(id);
+    for (const ev of events) {
+      const e = electronInput(ev);
+      if (e.type === "insertText") void tab.contents.insertText(e.text);
+      else tab.contents.sendInputEvent(e as Parameters<typeof tab.contents.sendInputEvent>[0]);
     }
   }
 

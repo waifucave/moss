@@ -1,7 +1,7 @@
 // `plugin.auth.*` (runtime-sdk/plugin-auth.ts): a plugin's sign-ins, where each key lands, the OAuth and device flows
 // in the background, signing out, and the user-only gate. Every store here is in memory; no flow touches the network.
 import { describe, expect, test } from "bun:test";
-import type { PluginAuthView } from "@waifucave/clover-protocol";
+import type { PluginAuthView } from "@waifucave/moss-protocol";
 import type { SecretStore } from "../../src/auth/secret-store";
 import { readCredentialMaterial } from "../../src/auth/credential-material";
 import { MemorySecretStore } from "../../src/contracts/fakes/secret-store";
@@ -18,9 +18,9 @@ class DaemonStore implements SecretStore {
 }
 
 const rec = (id: string, source: string, manifest: unknown): PluginRecord => ({ id, source, manifest } as unknown as PluginRecord);
-const GROQ = rec("clover/model-groq", "bundled", { contributes: { models: [{ provider: "groq", auth: [{ method: "api-key", secret: "api-key" }] }] } });
-const CODEX = rec("clover/model-codex-oauth", "bundled", { contributes: { models: [{ provider: "codex-oauth", auth: [{ method: "oauth-pkce", authorizeUrl: "https://auth.example/authorize", tokenUrl: "https://auth.example/token", clientId: "c", scopes: ["a", "b"], secret: "chatgpt" }] }] } });
-const XAI = rec("clover/model-xai-oauth", "bundled", { contributes: { models: [{ provider: "xai-oauth", auth: [{ method: "custom", handler: "signIn" }] }] } });
+const GROQ = rec("moss/model-groq", "bundled", { contributes: { models: [{ provider: "groq", auth: [{ method: "api-key", secret: "api-key" }] }] } });
+const CODEX = rec("moss/model-codex-oauth", "bundled", { contributes: { models: [{ provider: "codex-oauth", auth: [{ method: "oauth-pkce", authorizeUrl: "https://auth.example/authorize", tokenUrl: "https://auth.example/token", clientId: "c", scopes: ["a", "b"], secret: "chatgpt" }] }] } });
+const XAI = rec("moss/model-xai-oauth", "bundled", { contributes: { models: [{ provider: "xai-oauth", auth: [{ method: "custom", handler: "signIn" }] }] } });
 const THIRD = rec("acme/models", "folder", { contributes: { models: [{ provider: "acme", auth: [{ method: "api-key", secret: "key" }] }] }, auth: [{ method: "api-key", secret: "extra" }] });
 
 const LOCAL = rec("acme/local", "folder", { contributes: { models: [{ provider: "acme-local" }] } });
@@ -96,6 +96,23 @@ describe("plugin.auth", () => {
     // The manifest's own sign-in covers the provider too.
     await w.auth.signIn(THIRD.id, 1, "extra");
     expect([...await w.auth.signedInProviders()].sort()).toEqual(["acme", "acme-local"]);
+  });
+
+  test("a cloud computer provider's sign-in covers no model provider: it neither signs a model in nor makes it need a key", async () => {
+    const BOTH = rec("acme/both", "folder", { contributes: { models: [{ provider: "acme-both" }], computerProviders: [{ id: "acme-cloud", handler: "h", auth: [{ method: "api-key", secret: "cloud-token" }] }] } });
+    const auth = createPluginAuth({
+      registry: { get: (id) => (id === BOTH.id ? BOTH : undefined) }, host: { invoke: async () => undefined as never },
+      secrets: new DaemonStore(), pluginSecrets: new MemorySecretStore(), changed: () => {}, credentialChanged: () => {},
+      modelProviders: () => [{ provider: "acme-both", pluginId: BOTH.id }],
+    });
+    // The entry is there for the sign-in listing and the keyed fetch, numbered after the models' own, and marked.
+    expect(authEntriesOf(BOTH).map((e) => [e.index, e.computer ?? false, (e.entry as { secret: string }).secret])).toEqual([[0, true, "cloud-token"]]);
+    // The model "acme-both" takes no key of its own, so it is usable with nothing; the cloud token neither is needed nor counts.
+    expect([...await auth.signedInProviders()]).toEqual(["acme-both"]);
+    await auth.signIn(BOTH.id, 0, "the-cloud-token");
+    expect([...await auth.signedInProviders()]).toEqual(["acme-both"]);
+    await auth.signOut(BOTH.id, 0);
+    expect([...await auth.signedInProviders()]).toEqual(["acme-both"]);
   });
 
   test("signedInProviders: a plugin whose only sign-in is the manifest's own needs that key for every provider it serves (never \"takes no key\")", async () => {

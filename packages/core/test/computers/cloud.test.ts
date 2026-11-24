@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { isContractError } from "../../src/contracts/common";
 import {
   CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens,
-  type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
+  type CloudAnswer, type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
 } from "../../src/computers/cloud";
 import { cloudInit, readCloudJoinFiles, removeCloudJoinFiles } from "../../src/computers/image";
 
@@ -35,7 +35,7 @@ class FakeProvider implements CloudProviderHandler {
   }
   #mine(a: { serverId: string; label: string }) {
     const v = this.vms.get(a.serverId);
-    if (v && v.label !== a.label) throw new Error(`${a.serverId} isn't the Clover computer ${a.label}`);
+    if (v && v.label !== a.label) throw new Error(`${a.serverId} isn't the MOSS computer ${a.label}`);
     return v;
   }
   async resize(a: { serverId: string; label: string; size: string }) {
@@ -59,25 +59,29 @@ class FakeProvider implements CloudProviderHandler {
 class FakeAuthority implements CloudAuthority {
   holding = true;
   epoch = 1;
+  /** How many times the lease was handed over (`lose`). */
+  count = 0;
+  handovers() { return this.count; }
   canAct() { return this.holding; }
   tenure() { return this.holding ? `group-1:${this.epoch}` : undefined; }
   /** Another computer took the lease; this one got it back later under a new epoch, or never. */
-  lose() { this.holding = false; }
+  lose() { this.holding = false; this.count++; }
   regain() { this.holding = true; this.epoch++; }
 }
 
 const SHA = "a".repeat(64);
 const userData = ({ name, token }: { name: string; token: string }) => cloudInit({
-  name, token, join: "join-ticket-for-tests",
-  daemon: { url: "https://example.invalid/clover-core-linux-x64.tar.gz", sha256: SHA },
+  // The unit tests read the main's token from the ticket; the real ticket is a pairing QR and never carries it.
+  name, join: `ticket-${token}`,
+  daemon: { url: "https://example.invalid/moss-core-linux-x64.tar.gz", sha256: SHA },
   browser: { url: "https://example.invalid/chrome-headless-shell-linux64.zip", sha256: SHA },
 });
-const tokenIn = (y: string) => /pairing-token"?\n[^\n]*\n[^\n]*\n[^\n]*\n\s*content: "([A-Za-z0-9_-]+)"/.exec(y)?.[1];
+const tokenIn = (y: string) => /content: "ticket-([A-Za-z0-9_-]+)"/.exec(y)?.[1];
 const LABEL = "computer-hetzner-1";
 const NONE = { created: [], adopted: [], resized: [], deleted: [], repaired: [], declined: [], failed: [] };
 
 interface SetupOptions {
-  answers?: (c: CloudCard) => boolean | Promise<boolean>;
+  answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>;
   home?: string;
   provider?: FakeProvider;
   authority?: FakeAuthority;
@@ -112,7 +116,7 @@ describe("cloud computers", () => {
     expect(await cloud.reconcile([folder()])).toMatchObject({ created: ["Cloud1"] });
     expect(cards[0]).toEqual({ kind: "cloud-create", name: "Cloud1", provider: "hetzner", size: "cx22", region: "fsn1", folder: "computer-hetzner-1" });
     expect(provider.calls.filter((c) => !c.startsWith("list"))).toEqual([`create Cloud1 cx22 fsn1 ${LABEL}`]);
-    // The token travels in the VM's cloud-init only; the main's home keeps its hash and expiry, 0600, never the token.
+    // The main's home keeps the token's hash and expiry, 0600, never the token (the test ticket carries it; the real one does not).
     const token = tokenIn(provider.userData[0]!)!;
     expect(token).toBeDefined();
     const file = join(home, "computers", "cloud.json");
@@ -120,7 +124,7 @@ describe("cloud computers", () => {
     expect(saved).toContain("srv-1");
     expect(saved).not.toContain(token);
     expect(JSON.parse(saved).tokens).toMatchObject([{ computer: "Cloud1", tenure: "group-1:1" }]);
-    // 0600 where the disk has POSIX modes. Windows has none: the file is in the Clover home, which the per-user ACL
+    // 0600 where the disk has POSIX modes. Windows has none: the file is in the MOSS home, which the per-user ACL
     // already keeps to this user, and it holds only the tokens' hashes.
     if (process.platform === "win32") expect(file.startsWith(home)).toBe(true);
     else expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -177,7 +181,10 @@ describe("cloud computers", () => {
     });
     expect(isContractError(await orphan.delete("Cloud1").catch((e) => e), "not_installed")).toBe(true);
     // Nor does a reconcile without the provider delete anything: its VMs can't be seen, so they are left alone.
-    expect(await orphan.reconcile([])).toEqual(NONE);
+    // (CC2: it now says so plainly, and names the machine MOSS can no longer manage: it never stays silent while billing.)
+    const lost = await orphan.reconcile([]);
+    expect({ ...lost, failed: [] }).toEqual(NONE);
+    expect(lost.failed).toEqual([{ name: "Cloud1", reason: expect.stringContaining("can no longer manage Cloud1") }]);
     expect(cards.map((c) => c.kind)).toEqual(["cloud-create"]);
     expect(orphan.get("Cloud1")).toBeDefined();
   });
@@ -365,7 +372,7 @@ describe("the official image", () => {
     const y = userData({ name: "Cloud1", token: "t".repeat(43) });
     expect(y.startsWith("#cloud-config\n")).toBe(true);
     expect(y).toContain(`sha256sum -c -`);
-    expect(y).toContain("loginctl enable-linger clover");
+    expect(y).toContain("loginctl enable-linger moss");
     for (const a of ["169.254.169.254", "fd00:ec2::254", "fd20:ce::254"]) expect(y).toContain(a);
     const lines = y.split("\n");
     const at = (s: string) => lines.findIndex((l) => l.includes(s));
@@ -375,30 +382,163 @@ describe("the official image", () => {
     expect(lines[at("bootcmd:") + 1]).toContain("nft -f -");
     // The first runcmd lines load it, keep it across boots and enable nftables, before any curl or systemctl --user.
     const run = at("runcmd:");
-    expect(lines.slice(run + 1, run + 5).join("\n")).toContain("nft -f /etc/nftables.d/clover-metadata.nft");
+    expect(lines.slice(run + 1, run + 5).join("\n")).toContain("nft -f /etc/nftables.d/moss-metadata.nft");
     expect(at("systemctl enable nftables")).toBeLessThan(at("curl "));
     expect(at("systemctl enable nftables")).toBeLessThan(at("systemctl --user"));
-    expect(at("nft -f /etc/nftables.d/clover-metadata.nft")).toBeLessThan(at("curl "));
+    expect(at("nft -f /etc/nftables.d/moss-metadata.nft")).toBeLessThan(at("curl "));
     // Reloading it is idempotent (no rule twice after a reboot).
-    expect(y).toContain("delete table inet clover_metadata");
+    expect(y).toContain("delete table inet moss_metadata");
     // Nothing a value carries can break out of its quoting.
     expect(() => userData({ name: "Cloud1\nruncmd:", token: "t".repeat(43) })).toThrow();
-    expect(() => cloudInit({ name: "Cloud1", token: "t".repeat(43), join: "a\nb", daemon: { url: "https://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
-    expect(() => cloudInit({ name: "Cloud1", token: "t".repeat(43), join: "j", daemon: { url: "http://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
+    expect(() => cloudInit({ name: "Cloud1", join: "a\nb", daemon: { url: "https://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
+    expect(() => cloudInit({ name: "Cloud1", join: "j", daemon: { url: "http://x.invalid/a", sha256: SHA }, browser: { url: "https://x.invalid/b", sha256: SHA } })).toThrow();
   });
 });
 
 describe("on the VM after pairing (#254, should-fix 6)", () => {
-  test("the join ticket and the spent token are deleted; the name stays", () => {
-    const dir = mkdtempSync(join(tmpdir(), "lane-j-etc-clover-"));
+  test("the join ticket is deleted; the name stays", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lane-j-etc-moss-"));
     writeFileSync(join(dir, "name"), "Cloud1\n");
     writeFileSync(join(dir, "join"), "join-ticket-for-tests\n");
-    writeFileSync(join(dir, "pairing-token"), `${"t".repeat(43)}\n`);
-    expect(readCloudJoinFiles(dir)).toEqual({ name: "Cloud1", join: "join-ticket-for-tests", token: "t".repeat(43) });
+    expect(readCloudJoinFiles(dir)).toEqual({ name: "Cloud1", join: "join-ticket-for-tests" });
     removeCloudJoinFiles(dir);
-    expect(existsSync(join(dir, "join")) || existsSync(join(dir, "pairing-token"))).toBe(false);
+    expect(existsSync(join(dir, "join"))).toBe(false);
     expect(existsSync(join(dir, "name"))).toBe(true);
     expect(readCloudJoinFiles(dir)).toBeNull();
     removeCloudJoinFiles(dir); // twice is fine
+  });
+});
+
+describe("a token made while this computer was alone (tenure `-:<epoch>`)", () => {
+  async function made(authority: FakeAuthority) {
+    authority.tenure = () => (authority.holding ? "-:1" : undefined);
+    const s = setup({ authority });
+    await s.cloud.reconcile([folder()]);
+    const token = tokenIn(s.provider.userData[0]!)!;
+    // The VM's own pairing founded the group: the scope appears and the epochs start again, on the same computer.
+    authority.tenure = () => (authority.holding ? "group-1:1" : undefined);
+    return { ...s, token };
+  }
+
+  test("still works under the group's tenure while this computer holds the lease", async () => {
+    const { cloud, token } = await made(new FakeAuthority());
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toEqual({ computer: "Cloud1" });
+  });
+
+  test("never works after a hand-over and a return, though the same computer holds the lease again", async () => {
+    const authority = new FakeAuthority();
+    const { cloud, token } = await made(authority);
+    authority.lose();
+    authority.regain();
+    authority.tenure = () => (authority.holding ? "group-1:2" : undefined);
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toBeNull();
+  });
+
+  test("never works once this computer has lost the lease", async () => {
+    const authority = new FakeAuthority();
+    const { cloud, token } = await made(authority);
+    authority.lose();
+    expect(await cloud.door(() => [folder()]).consume(token, "device-vm-1")).toBeNull();
+  });
+});
+
+describe("what the person is told and asked about a provider that goes (CC2)", () => {
+  test("removing a provider that still has machines asks first, with a card naming them: yes deletes them, no keeps them and says so", async () => {
+    for (const answer of [true, false] as const) {
+      const { cloud, provider, cards } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? answer : true) });
+      await cloud.reconcile([folder()]);
+      expect(provider.vms.size).toBe(1);
+      expect(await cloud.retireProvider(["hetzner"])).toBe(answer ? "deleted" : "kept");
+      expect(cards.at(-1)).toEqual({ kind: "cloud-provider-removal", provider: "hetzner", machines: ["Cloud1"] });
+      expect(provider.vms.size).toBe(answer ? 0 : 1);
+      expect(cloud.get("Cloud1") !== undefined).toBe(!answer);
+    }
+  });
+
+  test("a card nobody answered refuses the removal: machines are never left billing without the person's word", async () => {
+    const { cloud, provider } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? "unanswered" : true) });
+    await cloud.reconcile([folder()]);
+    const e = await cloud.retireProvider(["hetzner"]).catch((x) => x);
+    expect(isContractError(e, "refused")).toBe(true);
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("a provider with no machines goes at once, and not the main's computers' business: nothing is asked", async () => {
+    const { cloud, cards } = setup();
+    expect(await cloud.retireProvider(["hetzner"])).toBe("none");
+    expect(cards).toEqual([]);
+  });
+
+  test("machines whose provider vanished without a removal (its folder deleted, switched off) are named on every pass", async () => {
+    const { cloud, home, provider } = setup();
+    await cloud.reconcile([folder()]);
+    const orphan = new CloudComputers({
+      clock: { now: () => 0 }, store: new FileCloudStateStore(home), provider: () => undefined, providerIds: () => [],
+      authority: new FakeAuthority(), confirm: async () => true, userData,
+    });
+    for (let i = 0; i < 2; i++) {
+      const r = await orphan.reconcile([]);
+      expect(r.failed).toEqual([{ name: "Cloud1", reason: expect.stringMatching(/hetzner isn't installed or is off.*can no longer manage Cloud1.*billing/) }]);
+    }
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("a person with no cloud computer gets no cloud.json at all", async () => {
+    const { cloud, home } = setup();
+    await cloud.reconcile([]);
+    expect(existsSync(join(home, "computers", "cloud.json"))).toBe(false);
+  });
+
+  test("a resize and a repair card carry the folder's image too, so the yes shows what it applies to", async () => {
+    const { cloud, cards, advance } = setup();
+    const img = "projects/x/global/images/y";
+    await cloud.reconcile([folder({ image: img })]);
+    await cloud.reconcile([folder({ image: img, size: "cx32" })]);
+    expect(cards.map((c) => c.kind)).toEqual(["cloud-create", "cloud-resize"]);
+    expect(cards.every((c) => (c as { image?: string }).image === img)).toBe(true);
+    advance(0);
+  });
+});
+
+describe("a card nobody answered is never a \"no\" (the controller's ruling on #290)", () => {
+  test("an unanswered delete card keeps nothing hidden: the VM is asked about again on the next pass; only a decline keeps it", async () => {
+    let delAnswer: CloudAnswer = "unanswered";
+    const { cloud, provider, cards, home } = setup({ answers: (c) => (c.kind === "cloud-delete" ? delAnswer : true) });
+    await cloud.reconcile([folder()]);
+    expect(provider.vms.size).toBe(1);
+    // The folder is gone and the card ends unanswered (withdrawn, the daemon stopped): the VM stays, and is not "kept".
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"], deleted: [] });
+    expect(JSON.parse(readFileSync(join(home, "computers", "cloud.json"), "utf8")).kept).toEqual([]);
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"] });
+    expect(cards.filter((c) => c.kind === "cloud-delete")).toHaveLength(2);
+    expect(provider.vms.size).toBe(1);
+    // The person says no: kept, and not asked again.
+    delAnswer = false;
+    expect(await cloud.reconcile([])).toMatchObject({ declined: ["Cloud1"] });
+    expect(await cloud.reconcile([])).toEqual(NONE);
+    expect(cards.filter((c) => c.kind === "cloud-delete")).toHaveLength(3);
+    expect(provider.vms.size).toBe(1);
+  });
+
+  test("an unanswered create, resize or repair card does nothing; a create card is the only way a VM is made", async () => {
+    const { cloud, provider } = setup({ answers: () => "unanswered" });
+    expect(await cloud.reconcile([folder()])).toMatchObject({ declined: ["Cloud1"], created: [] });
+    expect(provider.calls.filter((c) => !c.startsWith("list"))).toEqual([]);
+    expect(cloud.list()).toEqual([]);
+  });
+
+  test("when the image can't be made (no pinned download), nothing is made, no entry and no token is left, and it is said plainly", async () => {
+    const home = mkdtempSync(join(tmpdir(), "lane-cc-image-"));
+    const provider = new FakeProvider();
+    const cloud = new CloudComputers({
+      clock: { now: () => 1_000_000 }, store: new FileCloudStateStore(home), provider: () => provider, providerIds: () => ["hetzner"],
+      authority: new FakeAuthority(), confirm: async () => true, userData: async () => { throw new Error("the image has no daemon build to download"); },
+    });
+    const r = await cloud.reconcile([folder()]);
+    expect(r.failed).toEqual([{ name: "Cloud1", reason: "the image has no daemon build to download" }]);
+    expect(provider.vms.size).toBe(0);
+    expect(provider.calls.filter((c) => c.startsWith("create"))).toEqual([]);
+    expect(cloud.list()).toEqual([]);
+    expect(JSON.parse(readFileSync(join(home, "computers", "cloud.json"), "utf8")).tokens).toEqual([]);
   });
 });

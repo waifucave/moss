@@ -1,0 +1,1088 @@
+/* The session canvas (spec revision 20, §9.5), after the owner's mock-up and his corrections of 2026-11-21: a bare mark,
+   and ONE colour per agent for its mark and everything that moves, the real colour(s) of its icon at full hue, never
+   mixed toward grey. Every colour is a theme token (`--moss-*`, listed in tokens.ts) but the agent's own, data from its
+   plugin (`agent.backends`): `--brand`, and `--brand2` for a two-colour mark (a gradient). A black-and-white brand has
+   none and wears the theme's text colour. What must be quieter is made clearer (more transparent), never darker: only
+   the bright part of the running light and the wave's crest carry the full colour.
+
+   What moves, and only then: the light round a running block (a rotating layer, the compositor's), the marching dashes
+   round a waiting one, the wave on a line a message is crossing and the receiving point lighting. A still canvas runs no
+   animation at all; a hidden window pauses them all; reduced motion turns each into a steady state. */
+
+.cv {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--moss-color-canvas);
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-label);
+  line-height: var(--moss-font-line-body);
+  --cv-line: var(--moss-color-hairline-raised);
+}
+
+.cv button,
+.cv textarea,
+.cv select {
+  font: inherit;
+  color: inherit;
+}
+
+.cv :focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 2px;
+}
+
+/* ---- Its line on the window's bar (`page.bar`): the count, ended sessions, and + at the right end ---- */
+
+.cv-barline {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--moss-space-s);
+  min-width: 0;
+  height: 100%;
+  padding-left: 7px;
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-control);
+  line-height: var(--moss-font-line-tight);
+}
+
+.cv-barline button {
+  font: inherit;
+  color: inherit;
+  -webkit-app-region: no-drag;
+}
+
+.cv-barline :focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 1px;
+}
+
+.cv-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--moss-color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv-folded {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-round);
+  background: transparent;
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-folded:hover {
+  background: var(--moss-color-hover);
+}
+
+/* + : a plain icon button, the size of the window's own toggles. */
+.cv-plus {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-plus:hover,
+.cv-plus[aria-expanded="true"] {
+  background: var(--moss-color-hover);
+  color: var(--moss-color-text);
+}
+
+/* The + panel's close button. */
+.cv-icon {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--moss-radius-medium);
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-icon:hover {
+  background: var(--moss-color-hover);
+}
+
+/* ---- The stage: the whole page, up under the window's bar (its frost shows what passes beneath); the panel over the
+   viewport, which clips everything drawn in the world ---- */
+
+.cv-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cv-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  background-image: radial-gradient(var(--cv-line) 1px, transparent 1px);
+}
+
+.cv-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.cv-lines,
+.cv-over {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.cv-over {
+  z-index: 8;
+}
+
+.cv-blocks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---- Lines ---- */
+
+.cv-line {
+  fill: none;
+  stroke: var(--cv-line);
+  stroke-width: 1.6;
+}
+
+/* What crossed while the canvas was away (the engine's record): the line brightens once, quietly, as it opens. */
+.cv-line[data-away] {
+  animation: cv-away calc(2.4s * var(--cv-slow, 1)) ease-in-out 0.3s 1 both;
+}
+
+@keyframes cv-away {
+  0%,
+  100% {
+    stroke: var(--cv-line);
+  }
+  45% {
+    stroke: var(--moss-color-text-secondary);
+  }
+}
+
+.cv-line[data-kind="peer"] {
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+}
+
+/* ---- A block ---- */
+
+.cv-node {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  cursor: default;
+  --c1: var(--brand, var(--moss-color-text));
+  --c2: var(--brand2, var(--c1));
+}
+
+/* The cursor is "near" a block within 30px of it: the unjoined points show then. */
+.cv-node::before {
+  position: absolute;
+  inset: -30px;
+  content: "";
+}
+
+.cv-node[data-open] {
+  z-index: 6;
+}
+
+.cv-node[data-dragging] {
+  z-index: 7;
+}
+
+.cv-card {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  min-height: var(--bh);
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-large);
+  background: var(--moss-color-surface);
+}
+
+.cv-node[data-type="bot"] .cv-card {
+  border-radius: 14px;
+}
+
+.cv-node[data-open] .cv-card {
+  box-shadow: var(--moss-shadow-float);
+}
+
+.cv-node[data-motion="ended"] .cv-card {
+  opacity: 0.62;
+}
+
+.cv-head {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(var(--bh) - 2px);
+  padding: 10px 12px;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cv-node[data-dragging] .cv-head {
+  cursor: grabbing;
+}
+
+.cv-row,
+.cv-bothead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.cv-bothead {
+  gap: 10px;
+}
+
+.cv-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cv-title {
+  overflow: hidden;
+  font-size: var(--moss-font-size-label);
+  font-weight: var(--moss-font-weight-semibold);
+  line-height: var(--moss-font-line-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  line-height: var(--moss-font-line-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-markwrap {
+  display: flex;
+  flex: none;
+}
+
+.cv-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 5px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-tiny);
+  font-weight: var(--moss-font-weight-medium);
+}
+
+.cv-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+  color: var(--moss-color-text-secondary);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-node[data-type="sub"] .cv-status {
+  margin-top: 5px;
+}
+
+.cv-status__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-dot {
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cv-line);
+}
+
+
+/* Running: light going round the block. A square layer a little larger than an open block's diagonal turns behind it,
+   clipped to a ring just outside the card (a transform: the compositor's, no repaint). */
+.cv-node[data-motion="running"] .cv-card {
+  border-color: color-mix(in srgb, var(--c1) 34%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--c1) 18%, transparent);
+}
+
+.cv-ring {
+  position: absolute;
+  inset: -2px;
+  overflow: hidden;
+  border-radius: calc(var(--moss-radius-large) + 2px);
+  background: color-mix(in srgb, var(--c1) 14%, transparent);
+  pointer-events: none;
+}
+
+.cv-ring::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 440px;
+  height: 440px;
+  margin: -220px 0 0 -220px;
+  background: conic-gradient(transparent 0 50%, color-mix(in srgb, var(--c1) 35%, transparent) 66%, var(--c1) 80%, var(--c2) 92%, transparent 100%);
+  content: "";
+  transform: rotate(var(--a0, 0deg));
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite;
+}
+
+/* Taking over from an arriving message: hidden until the light arrives at its point, then turning on from there. */
+.cv-ring[data-handover]::before {
+  animation: cv-spin calc(2.6s * var(--cv-slow, 1)) linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) infinite, cv-ring-in 0.15s linear calc(var(--ring-delay, 0s) * var(--cv-slow, 1)) both;
+}
+
+.cv-node[data-motion="running"] .cv-dot {
+  background: linear-gradient(135deg, var(--c1), var(--c2));
+  animation: cv-beat 1.3s ease-in-out infinite;
+}
+
+/* Waiting for background jobs: slow marching dashes round the block. */
+.cv-node[data-motion="waiting"] .cv-card {
+  border-color: transparent;
+}
+
+.cv-march {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.cv-march__rect {
+  x: 0.75px;
+  y: 0.75px;
+  width: calc(100% - 1.5px);
+  height: calc(100% - 1.5px);
+  rx: var(--moss-radius-large);
+  fill: none;
+  stroke: color-mix(in srgb, var(--c1) 70%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 7 6;
+  animation: cv-march 1.8s linear infinite;
+}
+
+.cv-node[data-motion="waiting"] .cv-dot {
+  border: 2px solid color-mix(in srgb, var(--c1) 70%, transparent);
+  background: transparent;
+  animation: cv-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes cv-spin {
+  from {
+    transform: rotate(var(--a0, 0deg));
+  }
+  to {
+    transform: rotate(calc(var(--a0, 0deg) + 1turn));
+  }
+}
+
+@keyframes cv-ring-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes cv-beat {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--c1) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+@keyframes cv-march {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+@keyframes cv-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- Connection points ---- */
+
+.cv-port {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border: 1.6px solid var(--cv-line);
+  border-radius: 50%;
+  background: var(--moss-color-canvas);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--moss-motion-fast);
+}
+
+.cv-port[data-port="l"] {
+  top: calc(var(--bh) / 2 - 5px);
+  left: -5px;
+}
+
+.cv-port[data-port="r"] {
+  top: calc(var(--bh) / 2 - 5px);
+  left: calc(var(--bw) - 5px);
+}
+
+.cv-port[data-port="t"] {
+  top: -5px;
+  left: calc(var(--bw) / 2 - 5px);
+}
+
+.cv-port[data-port="b"] {
+  top: calc(var(--bh) - 5px);
+  left: calc(var(--bw) / 2 - 5px);
+}
+
+.cv-node:hover .cv-port,
+.cv-node:focus-within .cv-port,
+.cv-port[data-on] {
+  opacity: 1;
+}
+
+/* A joined point is the line's own end on the block's edge: the line's stroke and colour, quiet with no traffic. */
+.cv-port[data-on] {
+  border-color: var(--cv-line);
+  background: var(--moss-color-canvas);
+}
+
+/* Open, the card covers where its right and bottom points were: they hide under it with their lines. */
+.cv-node[data-open] .cv-port[data-port="b"],
+.cv-node[data-open] .cv-port[data-port="r"] {
+  display: none;
+}
+
+/* ---- A message crossing (message.ts; the owner's pick, style A): over each block's own running light. A soft stretch
+   with the running light's look (its colour, its glow) runs the line; at each end the block's own ring swells
+   (`.cv-react`). Each part has its time (`--delay`, `--dur`); `--cv-slow` (the gallery's slow
+   motion) stretches every time alike. ---- */
+
+.cv-msg {
+  --c1: var(--brand, var(--moss-color-text));
+  --c2: var(--brand2, var(--c1));
+}
+
+.cv-mlight {
+  fill: none;
+  stroke: var(--pc, var(--c1));
+  stroke-width: 2.4;
+  stroke-opacity: var(--a);
+  stroke-dasharray: var(--pl) var(--gap);
+  stroke-dashoffset: var(--o0);
+  animation: cv-mrun calc(var(--dur) * var(--cv-slow, 1)) linear calc(var(--delay) * var(--cv-slow, 1)) backwards;
+}
+
+.cv-mlight--glow {
+  stroke: var(--c1);
+  stroke-width: 8;
+  filter: blur(4px);
+}
+
+/* A point the light passes through fills with it, no brighter than the light beside it. */
+.cv-dotflash {
+  fill: var(--c2);
+  opacity: 0;
+  animation: cv-dot calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
+}
+
+/* Reduced motion's highlight of the line (no travel). */
+.cv-part {
+  display: none;
+  fill: none;
+  stroke: var(--c1);
+  stroke-width: 2.4;
+}
+
+/* Ends the wave once all its parts are over (it draws nothing). */
+.cv-msg__timer {
+  animation: cv-timer calc(var(--dur) * var(--cv-slow, 1)) linear both;
+}
+
+/* A block's own effect reacting: behind the card, around its outline. It starts in the sender's colour (`--from`) and
+   settles into the block's own where the message lands (two layers crossing over); in the block's own on sending. */
+.cv-react {
+  position: absolute;
+  inset: -2px;
+  border-radius: calc(var(--moss-radius-large) + 2px);
+  pointer-events: none;
+  --f: var(--from, var(--c1));
+}
+
+.cv-node[data-type="bot"] .cv-react {
+  border-radius: 16px;
+}
+
+.cv-react__from,
+.cv-react__to {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  animation: cv-react-one calc(var(--dur) * var(--cv-slow, 1)) ease-in-out calc(var(--delay) * var(--cv-slow, 1)) both;
+}
+
+.cv-react[data-morph] .cv-react__from {
+  animation-name: cv-react-from;
+}
+
+.cv-react[data-morph] .cv-react__to {
+  animation-name: cv-react-to;
+}
+
+/* The ring swells (brighter, a wider glow) and settles. */
+.cv-react[data-kind="swell"] .cv-react__from {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--f) 75%, transparent), 0 0 26px color-mix(in srgb, var(--f) 45%, transparent);
+}
+
+.cv-react[data-kind="swell"] .cv-react__to {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c1) 75%, transparent), 0 0 26px color-mix(in srgb, var(--c1) 45%, transparent);
+}
+
+@keyframes cv-mrun {
+  from {
+    stroke-dashoffset: var(--o0);
+  }
+  to {
+    stroke-dashoffset: var(--o1);
+  }
+}
+
+@keyframes cv-dot {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes cv-timer {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-one {
+  0% {
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-from {
+  0% {
+    opacity: 0;
+  }
+  22% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-react-to {
+  0%,
+  15% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cv-flash-line {
+  0%,
+  100% {
+    stroke: var(--cv-line);
+  }
+  20% {
+    stroke: var(--moss-color-text-secondary);
+  }
+}
+
+@keyframes cv-flash {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A hidden window: everything holds still. */
+.cv[data-hidden] .cv-line,
+.cv[data-hidden] .cv-ring::before,
+.cv[data-hidden] .cv-dot,
+.cv[data-hidden] .cv-march__rect,
+.cv[data-hidden] .cv-mlight,
+.cv[data-hidden] .cv-dotflash,
+.cv[data-hidden] .cv-part,
+.cv[data-hidden] .cv-msg__timer,
+.cv[data-hidden] .cv-react__from,
+.cv[data-hidden] .cv-react__to {
+  animation-play-state: paused;
+}
+
+/* ---- An open block: the last line, the composer, Open tab / Open in MOSS ---- */
+
+.cv-more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moss-space-s);
+  padding: 0 12px 12px;
+}
+
+.cv-node[data-type="bot"] .cv-more {
+  padding-top: 0;
+}
+
+.cv-last {
+  margin: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--moss-color-raised);
+  color: var(--moss-color-text-secondary);
+  font-family: var(--moss-font-mono);
+  font-size: 11px;
+  line-height: var(--moss-font-line-code);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-composer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 9px;
+  background: var(--moss-color-surface);
+}
+
+.cv-composer:focus-within {
+  border-color: var(--moss-color-focus);
+}
+
+.cv .cv-composer__field {
+  flex: 1 1 120px;
+  min-height: 20px;
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: var(--moss-font-size-caption);
+  resize: none;
+}
+
+.cv-composer__field::placeholder {
+  color: var(--moss-color-text-placeholder);
+}
+
+.cv-send {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--moss-color-text);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv .cv-send {
+  color: var(--moss-color-surface);
+}
+
+.cv-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cv-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cv-button {
+  padding: 3px 9px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 7px;
+  background: var(--moss-color-surface);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-button:hover {
+  background: var(--moss-color-hover);
+}
+
+.cv-error {
+  margin: 0;
+  color: var(--moss-color-danger);
+  font-size: var(--moss-font-size-caption);
+}
+
+/* ---- The + panel ---- */
+
+/* Under the bar's + (its right end), clear of the bar. */
+.cv-panel {
+  position: absolute;
+  top: calc(var(--cv-bar-inset, 0px) + var(--moss-space-s));
+  right: var(--moss-space-s);
+  z-index: 10;
+  box-sizing: border-box;
+  width: min(440px, calc(100% - 2 * var(--moss-space-l)));
+  max-height: calc(100% - var(--cv-bar-inset, 0px) - 2 * var(--moss-space-s));
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 14px;
+  background: var(--moss-color-float);
+  box-shadow: var(--moss-shadow-float);
+  cursor: default;
+}
+
+.cv-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cv-panel__title {
+  margin: 0;
+  font-size: var(--moss-font-size-control);
+  font-weight: var(--moss-font-weight-semibold);
+}
+
+.cv-panel__label {
+  margin: 12px 0 6px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  font-weight: var(--moss-font-weight-regular);
+}
+
+.cv-panel__note {
+  margin: 8px 0 0;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cv-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 4px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 9px;
+  background: var(--moss-color-surface);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-chip {
+  --c1: var(--brand, var(--moss-color-text));
+  --c2: var(--brand2, var(--c1));
+}
+
+.cv-chip[aria-checked="true"] {
+  border-color: var(--c1);
+  box-shadow: 0 0 0 1px var(--c1);
+}
+
+.cv-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cv-chip__note {
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-tiny);
+}
+
+.cv-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--moss-space-s);
+  padding: 8px 11px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 10px;
+}
+
+.cv-step__value {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--moss-font-weight-semibold);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cv-step__value[data-none] {
+  color: var(--moss-color-text-muted);
+  font-weight: var(--moss-font-weight-regular);
+}
+
+.cv-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+  cursor: pointer;
+}
+
+.cv-link:hover {
+  color: var(--moss-color-text);
+}
+
+.cv-step__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--moss-space-s);
+  padding: var(--moss-space-s) 2px 0;
+}
+
+.cv-field {
+  display: flex;
+  flex: 1 1 140px;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--moss-color-text-muted);
+  font-size: var(--moss-font-size-caption);
+}
+
+.cv-field select {
+  padding: 5px 6px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 7px;
+  background: var(--moss-color-surface);
+}
+
+.cv .cv-field select {
+  color: var(--moss-color-text);
+}
+
+.cv-folder {
+  padding: 4px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: var(--moss-radius-medium);
+  background: var(--moss-color-surface);
+  cursor: pointer;
+}
+
+.cv-folder[aria-checked="true"] {
+  border-color: var(--moss-color-text);
+  box-shadow: inset 0 0 0 1px var(--moss-color-text);
+}
+
+.cv-folder__other {
+  align-self: center;
+}
+
+.cv-create {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--moss-color-text);
+  font-weight: var(--moss-font-weight-semibold);
+  cursor: pointer;
+}
+
+.cv .cv-create {
+  color: var(--moss-color-surface);
+}
+
+.cv-create:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- Nothing yet ---- */
+
+.cv-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  padding: calc(var(--cv-bar-inset, 0px) + var(--moss-space-xl)) var(--moss-space-xl) var(--moss-space-xl);
+  text-align: center;
+  pointer-events: none;
+}
+
+.cv-empty__title {
+  margin: 0 0 6px;
+  font-size: var(--moss-font-size-heading);
+  font-weight: var(--moss-font-weight-semibold);
+}
+
+.cv-empty__detail {
+  max-width: 360px;
+  margin: 0;
+  color: var(--moss-color-text-muted);
+}
+
+/* ---- The tab's corner switch ---- */
+
+.cv-corner {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--moss-color-text-secondary);
+  cursor: pointer;
+}
+
+.cv-corner:hover {
+  background: var(--moss-color-hover);
+}
+
+.cv-corner:focus-visible {
+  outline: 2px solid var(--moss-color-focus);
+  outline-offset: 1px;
+}
+
+/* ---- A narrow window ---- */
+
+@media (max-width: 640px) {
+  .cv-panel {
+    width: calc(100% - 2 * var(--moss-space-s));
+  }
+}
+
+/* ---- Reduced motion: each motion a steady state ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-ring::before {
+    background: linear-gradient(135deg, var(--c1), var(--c2));
+    animation: none;
+  }
+
+  .cv-node[data-motion="running"] .cv-dot,
+  .cv-node[data-motion="waiting"] .cv-dot,
+  .cv-march__rect {
+    animation: none;
+  }
+
+  /* A message: the sender's effect, the line, the receiver's effect, each a brief highlight in turn, no travel. */
+  .cv-mlight {
+    display: none;
+  }
+
+  .cv-part {
+    display: inline;
+    opacity: 0;
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
+  }
+
+  .cv-react__from,
+  .cv-react__to,
+  .cv-react[data-morph] .cv-react__from,
+  .cv-react[data-morph] .cv-react__to {
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
+  }
+
+  .cv-dotflash {
+    animation: cv-flash calc(0.6s * var(--cv-slow, 1)) ease-out calc(var(--delay) * var(--cv-slow, 1)) both;
+  }
+
+  .cv-port {
+    transition: none;
+  }
+
+  .cv-line[data-away] {
+    animation: cv-flash-line calc(0.8s * var(--cv-slow, 1)) ease-out 0.3s 1 both;
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "name": "@waifucave/clover-service-web",
+  "name": "@waifucave/moss-service-web",
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json"
   },
   "dependencies": {
-    "@waifucave/clover-service-handshake": "workspace:*"
+    "@waifucave/moss-service-handshake": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261023.1",

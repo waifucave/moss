@@ -14,13 +14,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
-declare const __CLOVER_TEST_BUILD__: string | false | undefined;
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
 /** A test-marked build: whether the harness has answered a card as the app's origin yet (logged once per run). */
 let harnessAnswered = false;
 import {
   type Card, type CardMeta, type CardOption, type CardOutcome, type Level, type Text,
   DEFAULT_LEVEL, UNATTENDED_CARD_TIMEOUT_MS, answerTimeOk, cardHashInput,
-} from "@waifucave/clover-protocol";
+} from "@waifucave/moss-protocol";
 import {
   ALWAYS_CARD_KINDS, bindsOutsideRequest, callBindingOf, cardExpires, cardMetaOf, isBridgeCall, levelDecision, strictestLevel, writesRunLater,
   type AnswerOrigin, type AnswerResult, type ApprovalBroker, type ApprovalDecision, type ApprovalEvent,
@@ -32,6 +32,8 @@ import type { Fence } from "../contracts/fence";
 import type { PathClass } from "./ordinary-paths";
 import { looksCredentialBearing, plainOf, ruleDisplay, ruleKeyHash } from "./strings";
 import { ruleShapeOf } from "./bot-check";
+import { botOwnerPlugin } from "../runtime-sdk/turn-loop/only-backends";
+import { isAnyPluginId, topPluginIdOf } from "@waifucave/moss-protocol";
 
 /** A saved rule as it sits on disk: its key's hash (what a request matches on) and a scrubbed display string. */
 export interface StoredRule {
@@ -51,9 +53,9 @@ export interface RuleStore {
   save(rules: readonly StoredRule[]): void;
 }
 
-/** A request as Clover's own requesters build it: B's request, plus whether its paths are unresolved (made on a
+/** A request as MOSS's own requesters build it: B's request, plus whether its paths are unresolved (made on a
  *  computer other than the session's, so not real paths). */
-export interface CloverApprovalRequest extends ApprovalRequest {
+export interface MossApprovalRequest extends ApprovalRequest {
   pathsUnresolved?: boolean;
   /** The card waits for the person however its turn started: no 10-minute deny (rule 6). Its requester closes it when
    *  what it asks about is gone (the cloud cards: approvals/cloud-cards.ts, the controller's ruling on #290). */
@@ -67,7 +69,7 @@ export interface CloverApprovalRequest extends ApprovalRequest {
   /** With `pathsUnresolved`: an agent's move or delete whose input names files its listing doesn't read
    *  (`namesUnlistedPaths`), so its card says that instead. */
   pathsUnlisted?: boolean;
-  /** A headline that names the bot: Clover's own words after its name ("wants to run a command outside the sandbox").
+  /** A headline that names the bot: MOSS's own words after its name ("wants to run a command outside the sandbox").
    *  The broker writes the card's `what` from them, the bot's name first as the user sees it (`botDisplayName`, from
    *  the bot side: the user layer's name over the plugin's), never from the request; the request's own `what` is not
    *  shown. */
@@ -81,16 +83,16 @@ export function botDisplayName(name: Text | undefined, id: string, lang = "en"):
   return picked === undefined || picked.trim() === "" ? id : picked;
 }
 
-/** The card's reason for a request whose paths are unresolved, from Clover's own table. */
+/** The card's reason for a request whose paths are unresolved, from MOSS's own table. */
 export const UNRESOLVED_PATHS_REASON = "These paths weren't checked on the computer that runs this session, so this asks every time.";
 /** The card's reason for an agent's request that names files its listing doesn't show. */
-export const UNLISTED_PATHS_REASON = "The agent's request names files Clover couldn't list, so this asks every time. Check its input.";
+export const UNLISTED_PATHS_REASON = "The agent's request names files MOSS couldn't list, so this asks every time. Check its input.";
 
 /** A saved rule in memory: the raw key only for a rule saved in this run, which `rules()` lists; one read back from
  *  disk lists its display string. */
 interface HeldRule extends StoredRule { ruleKey?: string }
 
-export interface CloverApprovalBrokerOptions {
+export interface MossApprovalBrokerOptions {
   clock: Clock;
   /** Each computer's level (§9.1); default "ask for risky actions". */
   levels?: (computer: string) => Level;
@@ -131,10 +133,10 @@ const DEFAULT_OPTIONS: CardOption[] = [
 export const RESOLVED_KEEP_MS = 24 * 60 * 60 * 1000;
 export const RESOLVED_KEEP_MAX = 2_000;
 
-export class CloverApprovalBroker implements ApprovalBroker {
+export class MossApprovalBroker implements ApprovalBroker {
   readonly #clock: Clock;
   readonly #levels: (computer: string) => Level;
-  readonly #fence: CloverApprovalBrokerOptions["fence"];
+  readonly #fence: MossApprovalBrokerOptions["fence"];
   readonly #reviewer: Reviewer;
   readonly #verify: ProofVerifier;
   readonly #store: RuleStore | undefined;
@@ -142,13 +144,13 @@ export class CloverApprovalBroker implements ApprovalBroker {
   /** The bot side's names (`setBotNames`), for a headline that names the bot. */
   #botNames: ((id: string) => Text | undefined) | undefined;
   readonly #localComputer: string | undefined;
-  readonly #pathClass: CloverApprovalBrokerOptions["pathClass"];
+  readonly #pathClass: MossApprovalBrokerOptions["pathClass"];
   readonly #pending = new Map<string, Pending>();
   readonly #resolved = new Map<string, CardRecord>();
   readonly #rules: HeldRule[];
   readonly #listeners = new Listeners<ApprovalEvent>();
 
-  constructor(opts: CloverApprovalBrokerOptions) {
+  constructor(opts: MossApprovalBrokerOptions) {
     this.#clock = opts.clock;
     this.#levels = opts.levels ?? (() => DEFAULT_LEVEL);
     this.#fence = opts.fence;
@@ -217,8 +219,8 @@ export class CloverApprovalBroker implements ApprovalBroker {
       // harness's own `cli` connection (card-methods.ts's `testHarness`) counts as the app's origin, so the acceptance
       // run answers with no window. The minted channel, the hash, the option and this pending record still hold.
       // (The define is tested in each condition itself, never through a variable, so a real build folds it away.)
-      if ((from.role !== "app" && !(typeof __CLOVER_TEST_BUILD__ === "string" && from.role === "cli" && from.testHarness === true)) || p.channel === undefined || a.proof.frame !== p.channel) return "bad-origin";
-      if (typeof __CLOVER_TEST_BUILD__ === "string" && from.role !== "app" && !harnessAnswered) {
+      if ((from.role !== "app" && !(typeof __MOSS_TEST_BUILD__ === "string" && from.role === "cli" && from.testHarness === true)) || p.channel === undefined || a.proof.frame !== p.channel) return "bad-origin";
+      if (typeof __MOSS_TEST_BUILD__ === "string" && from.role !== "app" && !harnessAnswered) {
         harnessAnswered = true;
         this.#log(`[approvals] a test-marked build: the acceptance harness answered card ${cardId} as the app's origin (logged once per run)`);
       }
@@ -241,7 +243,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
     const binds = allowed && p.card.binds !== undefined ? { binds: structuredClone(p.card.binds) } : {};
     // ...and, answered by a device's signature, that proof, for the binding's computer (a `SignedCardAnswer`).
     const signed = allowed && p.card.binds !== undefined && a.proof.via === "device"
-      ? { signed: { device: a.proof.device, at: a.proof.at, signature: a.proof.signature, ...(children.length > 0 ? { children: [...children] } : {}) } }
+      ? { signed: { device: a.proof.device, at: a.proof.at, signature: a.proof.signature, ...(children.length > 0 ? { children: [...children] } : {}), ...(a.proof.program !== undefined ? { program: a.proof.program } : {}) } }
       : {};
     this.#settle(p, allowed ? "approved" : "denied", { allowed, by: "card", cardId, optionId: option.id, ...(remembered ? { remembered } : {}), ...binds, ...signed }, option.id, device, children);
     return "accepted";
@@ -290,8 +292,8 @@ export class CloverApprovalBroker implements ApprovalBroker {
     return () => { if (this.#botNames === fn) this.#botNames = undefined; };
   }
 
-  /** The card's headline for a request with `headlineByBot`: the bot's name as the user sees it, then Clover's words. */
-  #headlineOf(req: CloverApprovalRequest): string {
+  /** The card's headline for a request with `headlineByBot`: the bot's name as the user sees it, then MOSS's words. */
+  #headlineOf(req: MossApprovalRequest): string {
     const id = req.bot ?? "";
     let name: Text | undefined;
     try { name = id === "" ? undefined : this.#botNames?.(id); } catch { name = undefined; }
@@ -314,7 +316,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
     // read-only is absolute: only reads run, and no fenced-path card, saved rule or reviewer changes that.
     if (level === "read-only" && levelDecision(level, req.effect) !== "allow") return { allowed: false, by: "level", level };
     if (this.#unresolved(req)) return undefined; // paths no one resolved: a card every time, whatever rule or level
-    if ((req as CloverApprovalRequest).cardAlways === true) return undefined; // a card every time (#353's S3)
+    if ((req as MossApprovalRequest).cardAlways === true) return undefined; // a card every time (#353's S3)
     if (level === "read-only" && !bound) return { allowed: true, by: "level", level };
     if (writesRunLater(req, this.#fence)) return { allowed: false, by: "fence" }; // rule 3: no bot or agent writes there
     if (bound) return undefined; // rule 9: the card is the proof, whatever a rule, the level or the reviewer would say
@@ -340,7 +342,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
   #showCard(req: ApprovalRequest, signal: AbortSignal | undefined, onCard?: (cardId: string) => void): Promise<ApprovalDecision> {
     const issuedAt = this.#clock.now();
     // rule 6; `waitsForUser` holds only for a sensitive change (the cloud cards): a plugin's `confirm` always expires.
-    const expires = req.kind === "change" && (req as CloverApprovalRequest).waitsForUser === true ? false : cardExpires(req.kind, req.origin);
+    const expires = req.kind === "change" && (req as MossApprovalRequest).waitsForUser === true ? false : cardExpires(req.kind, req.origin);
     const once = ALWAYS_CARD_KINDS.includes(req.kind) || req.binds !== undefined || req.boundCard !== undefined; // rules 1 and 9
     const options = once || !this.#rememberable(req)
       ? (req.options ?? DEFAULT_OPTIONS).filter((o) => o.remember === undefined)
@@ -354,6 +356,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
       ...(req.session === undefined ? {} : { session: req.session }),
       ...(req.bot === undefined ? {} : { bot: req.bot }),
       ...(req.pluginId === undefined ? {} : { pluginId: req.pluginId }),
+      ...ownedByOf(req),
       origin: req.origin,
       issuedAt,
       expiresAt: expires ? issuedAt + UNATTENDED_CARD_TIMEOUT_MS : null,
@@ -361,10 +364,10 @@ export class CloverApprovalBroker implements ApprovalBroker {
       ...(req.binds === undefined ? {} : { binds: callBindingOf(req.binds, (t) => createHash("sha256").update(t).digest("hex")) }),
       fields: {
         ...(this.#unresolved(req)
-          ? { ...withoutRule(req.fields), reason: { type: "text" as const, text: (req as CloverApprovalRequest).pathsUnlisted === true ? UNLISTED_PATHS_REASON : UNRESOLVED_PATHS_REASON } }
+          ? { ...withoutRule(req.fields), reason: { type: "text" as const, text: (req as MossApprovalRequest).pathsUnlisted === true ? UNLISTED_PATHS_REASON : UNRESOLVED_PATHS_REASON } }
           : withoutRule(req.fields)),
         // A headline that names the bot: written here, from the bot side's name, never from the requester.
-        ...((req as CloverApprovalRequest).headlineByBot === undefined ? {} : { what: { type: "code" as const, code: this.#headlineOf(req as CloverApprovalRequest) } }),
+        ...((req as MossApprovalRequest).headlineByBot === undefined ? {} : { what: { type: "code" as const, code: this.#headlineOf(req as MossApprovalRequest) } }),
         // The reach of an "always" on this card, from the same key, bot and computers `#saveRule` would store and the match in
         // `#decide` compares (the app words it; it never guesses it). Written here, never taken from the requester.
         ...(options.some((o) => o.remember === "always") && req.ruleKey !== undefined ? { rule: ruleFieldOf(req) } : {}),
@@ -385,6 +388,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
     return new Promise<ApprovalDecision>((resolve) => {
       const p: Pending = { card, req, resolve, done: false };
       this.#pending.set(card.id, p);
+      this.#log(`[approvals] card ${card.id} (${card.kind}${card.session === undefined ? "" : `, session ${card.session}`}) raised`);
       if (card.expiresAt !== null) {
         p.timer = this.#clock.setTimeout(() => this.#settle(p, "expired", { allowed: false, by: "expired", cardId: card.id }), UNATTENDED_CARD_TIMEOUT_MS);
       }
@@ -397,7 +401,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
 
   /** Whether a request's paths weren't resolved where its session runs. */
   #unresolved(req: ApprovalRequest): boolean {
-    if ((req as CloverApprovalRequest).pathsUnresolved === true) return true;
+    if ((req as MossApprovalRequest).pathsUnresolved === true) return true;
     if (!req.paths?.length || this.#localComputer === undefined) return false;
     return req.computers.some((c) => c !== this.#localComputer);
   }
@@ -416,9 +420,9 @@ export class CloverApprovalBroker implements ApprovalBroker {
 
   /** Whether a request stays inside what the fence and the sandbox confine (`ApprovalRequest.contained`): for an edit,
    *  a bot's own edit of ordinary files only (`#editClass`), whatever the requester said; a move, never; for a fetch or
-   *  another tool, the requester's word (Clover's own requesters only). */
+   *  another tool, the requester's word (MOSS's own requesters only). */
   #contained(req: ApprovalRequest, paths: PathClass | undefined): boolean {
-    if ((req as CloverApprovalRequest).notContained === true) return false;
+    if ((req as MossApprovalRequest).notContained === true) return false;
     if (req.effect === "edit") return paths === "ordinary";
     if (req.effect === "move") return false;
     return req.contained === true && (req.effect === "fetch" || req.effect === "other" || req.effect === "execute");
@@ -428,7 +432,7 @@ export class CloverApprovalBroker implements ApprovalBroker {
    *  one computer, paths that were resolved, and no bound call (rule 9). */
   #rememberable(req: ApprovalRequest): boolean {
     return req.binds === undefined && req.boundCard === undefined && req.ruleKey !== undefined && req.ruleKey !== "" && !looksCredentialBearing(req.ruleKey) && req.computers.length > 0 && !this.#unresolved(req)
-      && (req as CloverApprovalRequest).cardAlways !== true && this.#editClass(req) !== "card";
+      && (req as MossApprovalRequest).cardAlways !== true && this.#editClass(req) !== "card";
   }
 
   #expiredNow(p: Pending): boolean {
@@ -456,6 +460,8 @@ export class CloverApprovalBroker implements ApprovalBroker {
     p.done = true;
     if (p.timer) this.#clock.clearTimeout(p.timer);
     this.#pending.delete(p.card.id);
+    // One line a card, so a call that waited on it is told by whether and how it ended (a tool call that timed out after 120 s with its card gone).
+    this.#log(`[approvals] card ${p.card.id} (${p.card.kind}${p.card.session === undefined ? "" : `, session ${p.card.session}`}) settled: ${outcome}`);
     const how = {
       ...(optionId === undefined ? {} : { optionId }), ...(device === undefined ? {} : { device }),
       ...(children === undefined || children.length === 0 ? {} : { children }),
@@ -493,4 +499,19 @@ function ruleFieldOf(req: ApprovalRequest): { type: "rows"; rows: { label: strin
 function withoutRule<T extends Record<string, unknown>>(fields: T): Omit<T, "rule"> {
   const { rule: _dropped, ...rest } = structuredClone(fields) as Record<string, unknown>;
   return rest as Omit<T, "rule">;
+}
+
+/** A card's `ownedBy` (who hears it with plain `approvals`): the plugin whose tool's call raised it (`toolPlugin`, which
+ *  the core's approval check sets from the router's binding), and the plugin its bot was moved from (`botOwnerPlugin`),
+ *  by top-level id, each once. Written here from the request's core-set fields, never from a requester's words. */
+export function ownedByOf(req: Pick<ApprovalRequest, "toolPlugin" | "bot">): { ownedBy?: string[] } {
+  const out: string[] = [];
+  const add = (id: string | undefined) => {
+    if (id === undefined || !isAnyPluginId(id)) return;
+    const top = topPluginIdOf(id);
+    if (!out.includes(top)) out.push(top);
+  };
+  add(req.toolPlugin);
+  if (req.bot !== undefined) add(botOwnerPlugin(req.bot));
+  return out.length === 0 ? {} : { ownedBy: out };
 }

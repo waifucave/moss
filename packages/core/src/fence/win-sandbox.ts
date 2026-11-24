@@ -1,57 +1,63 @@
-// Windows Bash under Clover's fence (lane C, C-M2 part 2; spec §4, §9.1, items 76 and 1116, §14.1 item 2).
+// Windows Bash under MOSS's fence (lane C, C-M2 part 2; spec §4, §9.1, items 76 and 1116, §14.1 item 2).
 //
-// Bots' Bash and PowerShell run as the dedicated sandbox principal `clover-sb-<8hex>` through the
+// Bots' Bash and PowerShell run as the dedicated sandbox principal `moss-sb-<8hex>` through the
 // hash-pinned srt-win launcher (Apache-2.0, `anthropics/sandbox-runtime` tag `v0.0.81`, commit
 // `c40cf14…`; source in `vendor/srt-win-src`, built with a static CRT by `scripts/build-srt-win.ps1`).
 // Never as the user, never AppContainer, and never a network-open or unsandboxed fallback.
-// Per Addendum 9: the principal name is `clover-sb-` + first 8 hex chars of SHA-256(user SID), 18 chars total.
+// Per Addendum 9: the principal name is `moss-sb-` + first 8 hex chars of SHA-256(user SID), 16 chars total.
 // The full SID is stored in the principal's description field and checked on status/remove to prevent collisions.
 //
 // This module is the pure half: constants, the launcher's argument shapes, its status parsing, the
 // per-launch allow/deny plan and the setup/reset command lists. It runs on every OS (the unit tests
 // run on macOS); the live half — elevation, the install/remove/status spawns, the profile work and
-// the per-session reset — runs on Windows only, driven by `clover-core sandbox setup|remove|status`.
+// the per-session reset — runs on Windows only, driven by `moss-core sandbox setup|remove|status`.
 import { win32 } from "node:path";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dlopen, FFIType } from "bun:ffi";
 import { callerPlaces } from "./per-caller";
 import type { CallerPlaces } from "./per-caller";
 import type { SandboxPolicy } from "../contracts/fence";
-import type { Caller } from "@waifucave/clover-protocol";
+import type { Caller } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, fenceContextFor } from "../contracts/fence";
 import { SRT_WIN_PINS, launcherDigest, launcherProblem, srtWinArch, srtWinPath, type SrtWinArch } from "./windows-launcher";
 
 /** The protected copy location for elevated sandbox commands, per user SID.
  *  Uses `[Environment]::GetFolderPath("ProgramFiles")` to find Program Files.
- *  Path: `%ProgramFiles%\Clover Sandbox\<user SID>\clover-core.exe` */
+ *  Path: `%ProgramFiles%\MOSS Sandbox\<user SID>\moss-core.exe` */
 export async function protectedCopyPath(): Promise<string> {
   const { execFileSync } = await import("node:child_process");
   const ps = `
     $ProgressPreference = 'SilentlyContinue'
     $pf = [Environment]::GetFolderPath("ProgramFiles")
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    Write-Output "$pf\\Clover Sandbox\\$sid\\clover-core.exe"
+    Write-Output "$pf\\MOSS Sandbox\\$sid\\moss-core.exe"
   `.trim();
   const out = execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", ps], { encoding: "utf8", windowsHide: true });
   return String(out).trim();
 }
 
-/** Whether the current process is running from the protected copy location. */
+/** Whether the current process is running from a protected copy: `%ProgramFiles%\MOSS Sandbox\<SID>\moss-core.exe`
+ *  for the SID its own path names (`installerTargetSid`). Not the running token's SID: an installer elevates a standard
+ *  user's setup as another account (an administrator's), and the copy is the user's all the same (lane WS: a standard
+ *  user's setup run elevated by an administrator was refused). */
 export async function isProtectedCopy(execPath: string = process.execPath): Promise<boolean> {
-  const protectedPath = await protectedCopyPath();
-  return win32.normalize(execPath).toUpperCase() === win32.normalize(protectedPath).toUpperCase();
+  const sid = installerTargetSid(execPath);
+  if (sid === null) return false;
+  const { execFileSync } = await import("node:child_process");
+  const pf = String(execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "[Environment]::GetFolderPath('ProgramFiles')"], { encoding: "utf8", windowsHide: true, env: minimalChildEnv() })).trim();
+  return win32.normalize(execPath).toUpperCase() === win32.join(pf, "MOSS Sandbox", sid, "moss-core.exe").toUpperCase();
 }
 
 export { SRT_WIN_PINS, launcherPinned, authenticodeDigest, srtWinArch, srtWinPath, launcherProblem, launcherDigest, type SrtWinArch } from "./windows-launcher";
 
 /** The base prefix for the sandbox principal (Addendum 9). Windows account names are capped at 20
- *  characters, so we use `clover-sb-` (10 chars) + 8 hex chars = 18 chars total. */
-export const SANDBOX_PRINCIPAL_PREFIX = "clover-sb-";
+ *  characters, so we use `moss-sb-` (8 chars) + 8 hex chars = 16 chars total. */
+export const SANDBOX_PRINCIPAL_PREFIX = "moss-sb-";
 
 /** Compute the per-user principal name from a Windows SID (Addendum 9).
- *  Returns `clover-sb-` + first 8 hex characters of SHA-256(SID).
+ *  Returns `moss-sb-` + first 8 hex characters of SHA-256(SID).
  *  Kept for single-principal contexts and tests; the pool uses
  *  [`poolPrincipalName`] so concurrent sessions never share a SID. */
 export function principalNameFromSid(sid: string): string {
@@ -62,9 +68,9 @@ export function principalNameFromSid(sid: string): string {
 /** Pool size: concurrent sessions per user (controller ruling 2). */
 export const SANDBOX_POOL_SIZE = 4;
 
-/** Pool principal `n` (1-based) for an owner SID: `clover-sb-<6hex>-<n>`, 18 chars, leased
+/** Pool principal `n` (1-based) for an owner SID: `moss-sb-<6hex>-<n>`, 16 chars, leased
  *  exclusively — two bots never share a principal while they run. */
-export function poolPrincipalName(ownerSid: string, slot: number): string {
+export function poolPrincipalName(ownerSid: string, slot: number | "e"): string {
   const hash = createHash("sha256").update(ownerSid).digest("hex").slice(0, 6);
   return `${SANDBOX_PRINCIPAL_PREFIX}${hash}-${slot}`;
 }
@@ -73,7 +79,7 @@ export function poolPrincipalName(ownerSid: string, slot: number): string {
  *  owner SID and principal name (controller ruling 3: the sublayer derives per user; each pool
  *  slot gets its own so one install never replaces another's filters). */
 export function poolSublayerGuid(ownerSid: string, principal: string): string {
-  const ns = Buffer.from(CLOVER_WFP_SUBLAYER.replace(/-/g, ""), "hex");
+  const ns = Buffer.from(MOSS_WFP_SUBLAYER.replace(/-/g, ""), "hex");
   const digest = createHash("sha1").update(ns).update(ownerSid, "utf8").update(principal, "utf8").digest();
   digest[6] = (digest[6]! & 0x0f) | 0x50;
   digest[8] = (digest[8]! & 0x3f) | 0x80;
@@ -81,10 +87,25 @@ export function poolSublayerGuid(ownerSid: string, principal: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** One leased pool member. */
+/** One leased pool member. `network`: the escape account (`escapeMember`). */
 export interface PoolMember {
   readonly principal: string;
   readonly sublayer: string;
+  readonly network?: boolean;
+}
+
+/** The escape account, beside the pool (the controller's ruling: an approved escape gets the network, as the spec and
+ *  the Mac give it): `moss-sb-<6hex>-e`, installed `--network-open` (srt-win patch 0003: its filter blocks only the
+ *  cloud metadata address). Only a command the person approved to leave the sandbox runs as it (`FencedRun.network`);
+ *  every other control of the sandbox is the same as the pool's. */
+export function escapeMember(ownerSid: string): PoolMember {
+  const principal = poolPrincipalName(ownerSid, "e");
+  return { principal, sublayer: poolSublayerGuid(ownerSid, principal), network: true };
+}
+
+/** What `sandbox setup` installs and `remove` removes: the pool and the escape account. */
+export function installedPool(ownerSid: string): readonly PoolMember[] {
+  return [...sandboxPool(ownerSid), escapeMember(ownerSid)];
 }
 
 /** The pool for an owner: 4 exclusive principals with their sublayers. */
@@ -96,11 +117,11 @@ export function sandboxPool(ownerSid: string, size: number = SANDBOX_POOL_SIZE):
 }
 
 /** The installer's target user SID, read off our own path (should-fix: never the elevated token or env).
- *  The installer copies us to `%ProgramFiles%\Clover Sandbox\<user SID>\clover-core.exe`, so when we run
+ *  The installer copies us to `%ProgramFiles%\MOSS Sandbox\<user SID>\moss-core.exe`, so when we run
  *  from there our path names the user we serve — even when elevation runs as a different account. Null
  *  when we are not running from a protected copy (dev layouts, per-user installs). */
 export function installerTargetSid(execPath: string = process.execPath): string | null {
-  const m = /Clover Sandbox[\\/](S-1-[0-9-]+)(?:[\\/]|$)/i.exec(execPath);
+  const m = /MOSS Sandbox[\\/](S-1-[0-9-]+)(?:[\\/]|$)/i.exec(execPath);
   return m ? m[1]! : null;
 }
 
@@ -114,8 +135,8 @@ export function psEncodedArgs(script: string): readonly string[] {
   return ["powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-EncodedCommand", b64];
 }
 
-/** Clover's WFP sublayer: the launcher's network filters live under this GUID, not its default. */
-export const CLOVER_WFP_SUBLAYER = "F6D7C8CF-13C0-4547-8835-F14E27345468";
+/** MOSS's WFP sublayer: the launcher's network filters live under this GUID, not its default. */
+export const MOSS_WFP_SUBLAYER = "F6D7C8CF-13C0-4547-8835-F14E27345468";
 
 /** The pinned launcher: tag and commit. The digest itself is `SRT_WIN_PINS` in `windows-launcher.ts`. */
 export const SRT_WIN_TAG = "v0.0.81";
@@ -131,8 +152,8 @@ export const SANDBOX_EXIT = { OK: 0, FAILED: 1, NOT_ELEVATED: 2, HASH_MISMATCH: 
  *  Loopback stays closed (the default): Bash gets no network, as on macOS and Linux.
  *  The principal is required: the bare prefix is not an account. `ownerSid` is recorded on the
  *  install (`--owner-sid`) and gates later use to that owner (admins/SYSTEM excepted). */
-export function setupArgs(launcher: string, sublayer: string, principal: string, ownerSid: string): readonly string[] {
-  return [launcher, "install", "--sandbox-user", principal, "--sublayer-guid", sublayer, "--owner-sid", ownerSid];
+export function setupArgs(launcher: string, sublayer: string, principal: string, ownerSid: string, o: { networkOpen?: boolean } = {}): readonly string[] {
+  return [launcher, "install", "--sandbox-user", principal, "--sublayer-guid", sublayer, "--owner-sid", ownerSid, ...(o.networkOpen === true ? ["--network-open"] : [])];
 }
 
 /** `srt-win uninstall`: undoes everything (`--keep-user` is never passed: remove removes all of it).
@@ -245,8 +266,10 @@ export function sessionRestoreArgs(launcher: string): readonly string[] {
 }
 
 /** A warm-up launch: the principal's first logon creates its profile. Nothing is written. */
-export function warmUpArgs(o: { launcher: string; systemRoot: string }): readonly string[] {
-  return [o.launcher, "exec", "--quiet", "--", win32.join(o.systemRoot, "System32", "cmd.exe"), "/d", "/c", "exit 0"];
+export function warmUpArgs(o: { launcher: string; systemRoot: string; user?: string }): readonly string[] {
+  // `--user`: the principal just installed. Without it the machine-wide record's user logs on, which is the last
+  // install's, so a setup run again (each install then changes nothing) would warm only the last pool member up.
+  return [o.launcher, "exec", "--quiet", ...(o.user === undefined ? [] : ["--user", o.user]), "--", win32.join(o.systemRoot, "System32", "cmd.exe"), "/d", "/c", "exit 0"];
 }
 
 /** `reg query HKLM\…\ProfileList\<sid> /v ProfileImagePath`: the principal's profile, resolved by SID. */
@@ -359,13 +382,15 @@ export function startupFolders(o: { profileRoot: string; realUserProfile: string
 }
 
 /** The install marker: our own per-user record of a completed `setup` (ruling 3). One pool of
- *  principals per owner: `%ProgramData%\Clover Sandbox\markers\<owner SID>.json`, written elevated
+ *  principals per owner: `%ProgramData%\MOSS Sandbox\markers\<owner SID>.json`, written elevated
  *  by setup, readable by everyone. `setup --force` across owners and `remove` against another
  *  owner's marker are refused off this record — never off the live token alone. */
 export interface PoolMemberRecord {
   readonly principal: string;
   readonly principalSid: string | null;
   readonly sublayer: string;
+  /** The escape account (`escapeMember`), installed `--network-open`. */
+  readonly network?: boolean;
 }
 
 export interface InstallMarker {
@@ -376,7 +401,7 @@ export interface InstallMarker {
 
 /** Where the install marker for this owner lives. */
 export function installMarkerPath(programData: string, ownerSid: string): string {
-  return win32.join(programData, "Clover Sandbox", "markers", `${ownerSid}.json`);
+  return win32.join(programData, "MOSS Sandbox", "markers", `${ownerSid}.json`);
 }
 
 /** Serialize a completed setup's marker. */
@@ -384,7 +409,7 @@ export function formatInstallMarker(m: InstallMarker): string {
   return JSON.stringify({
     version: 2,
     ownerSid: m.ownerSid,
-    members: m.members.map((x) => ({ principal: x.principal, principalSid: x.principalSid, sublayer: x.sublayer })),
+    members: m.members.map((x) => ({ principal: x.principal, principalSid: x.principalSid, sublayer: x.sublayer, ...(x.network === true ? { network: true } : {}) })),
   });
 }
 
@@ -400,7 +425,7 @@ export function parseInstallMarker(text: string | null): InstallMarker | null {
       for (const e of o.members as Record<string, unknown>[]) {
         if (typeof e !== "object" || e === null || typeof e.principal !== "string" || typeof e.sublayer !== "string" ||
           (e.principalSid !== null && typeof e.principalSid !== "string")) return null;
-        members.push({ principal: e.principal, principalSid: e.principalSid, sublayer: e.sublayer });
+        members.push({ principal: e.principal, principalSid: e.principalSid, sublayer: e.sublayer, ...(e.network === true ? { network: true } : {}) });
       }
       return { version: 2, ownerSid: o.ownerSid, members };
     }
@@ -418,7 +443,7 @@ export function parseInstallMarker(text: string | null): InstallMarker | null {
  *  A missing or corrupt marker never blocks a fresh setup. */
 export function markerAllowsSetup(marker: InstallMarker | null, ownerSid: string): { ok: true } | { ok: false; reason: string } {
   if (marker === null) return { ok: true };
-  if (marker.ownerSid !== ownerSid) return { ok: false, reason: "Bash is set up for another user; that user must run `clover-core sandbox remove` first" };
+  if (marker.ownerSid !== ownerSid) return { ok: false, reason: "Bash is set up for another user; that user must run `moss-core sandbox remove` first" };
   return { ok: true };
 }
 
@@ -440,8 +465,8 @@ export function poolLockPath(leasesDir: string, principal: string): string {
 }
 
 /** Where pool leases live: `<home>\sandbox\leases\`, writable by the daemon's user. */
-export function sandboxLeasesDir(cloverHome: string): string {
-  return win32.join(cloverHome, "sandbox", "leases");
+export function sandboxLeasesDir(mossHome: string): string {
+  return win32.join(mossHome, "sandbox", "leases");
 }
 
 /** An OS lock guard: the open HANDLE whose kernel lock is the lease. `release()` unlocks and
@@ -470,7 +495,7 @@ export interface LeaseStore {
  *  are built and unit-tested here but no production caller passes them to a child process), so no
  *  production `LeaseStore` is constructed yet either. The first daemon caller — the lane that
  *  introduces the Windows Bash tool spawn — builds one `createWindowsLockStore` over
- *  `sandboxLeasesDir(cloverHome)`, acquires per launch, and holds `release` for the session.
+ *  `sandboxLeasesDir(mossHome)`, acquires per launch, and holds `release` for the session.
  *  Until then the lease is measured by unit tests (in-memory fake with OS semantics) plus a
  *  `bun:ffi` kernel32 race on the VM. */
 export async function acquirePoolLease(o: {
@@ -570,14 +595,21 @@ const SYSTEM_SID = "S-1-5-18";
  *  Administrators or SYSTEM, with allow entries for nobody else — and the store refuses to open
  *  it otherwise, so a squatted or over-shared directory fails closed instead of handing out
  *  principals nobody owns. */
-export function createWindowsLockStore(leasesDir: string): LeaseStore {
+export function createWindowsLockStore(leasesDir: string, o: { poolState?: boolean } = {}): LeaseStore {
   if (process.platform !== "win32") throw new Error("the Windows lock store runs on Windows only");
-  mkdirSync(leasesDir, { recursive: true });
-  const problem = leasesDirAccessProblem(leasesDir, {
-    profileRoot: process.env.USERPROFILE ?? null,
-    security: readLeasesDirSecurity(leasesDir),
-  });
-  if (problem !== null) throw new Error(`refusing untrusted leases dir ${leasesDir}: ${problem}`);
+  if (o.poolState === true) {
+    // The pool's state folder (`poolStateDir`): made and claimed by `sandbox setup` (administrators', inheritance cut,
+    // the owner list-and-read only), never made here; only an administrator could change that, and an administrator
+    // is trusted. Its locks are files setup made, opened, never created, by the owner (who can't create one there).
+    if (!existsSync(leasesDir)) throw new Error(`the pool's state ${leasesDir} isn't there; run \`moss-core sandbox setup\``);
+  } else {
+    mkdirSync(leasesDir, { recursive: true });
+    const problem = leasesDirAccessProblem(leasesDir, {
+      profileRoot: process.env.USERPROFILE ?? null,
+      security: readLeasesDirSecurity(leasesDir),
+    });
+    if (problem !== null) throw new Error(`refusing untrusted leases dir ${leasesDir}: ${problem}`);
+  }
   return {
     tryLock(lockPath: string): PoolLockGuard | null {
       const k = K32();
@@ -637,10 +669,12 @@ export function readLeasesDirSecurity(leasesDir: string): LeasesDirSecurity | nu
       "$allows=@($a.Access | ForEach-Object { @{ sid=(& $toSid $_.IdentityReference.Value); allow=($_.AccessControlType.ToString() -eq 'Allow') } })",
       "@{ userSid=$user; ownerSid=$owner; allows=$allows } | ConvertTo-Json -Compress -Depth 4",
     ].join("; ");
+    // The minimal environment: a PowerShell 7 parent's PSModulePath would hide Windows PowerShell's own Get-Acl.
     const out = execFileSync("powershell", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 5000,
+      timeout: 15_000,
+      env: minimalChildEnv(),
     }) as string;
     const o = JSON.parse(out) as { userSid?: unknown; ownerSid?: unknown; allows?: unknown };
     if (typeof o.userSid !== "string" || typeof o.ownerSid !== "string" || !Array.isArray(o.allows)) return null;
@@ -731,6 +765,110 @@ export function removeDirArgs(path: string): readonly string[] {
   return psEncodedArgs(`Remove-Item -Recurse -Force -Path "${path}"`);
 }
 
+/** A SID as Windows writes one (`S-1-5-21-…`): the only shape the profile and task scripts below put in a script. */
+export const SID_RE = /^S-1-\d+(?:-\d+)+$/;
+
+/** Delete a principal's whole profile the way Windows does (`Win32_UserProfile`, userenv's DeleteProfile): its hive,
+ *  its ProfileList key and its folder, junctions included, never followed (PowerShell 5.1's `Remove-Item -Recurse`
+ *  follows the profile's legacy junctions). Exits 0 when there is no profile (or it is deleted), 3 when it is loaded
+ *  (a command runs as the principal now: it is left alone), anything else when it can't be deleted. Elevated only. */
+export const PROFILE_IN_USE_EXIT = 3;
+export function deleteProfileArgs(sid: string): readonly string[] {
+  if (!SID_RE.test(sid)) throw new Error(`not a SID: ${sid}`);
+  return psEncodedArgs(`$ErrorActionPreference='Stop'; $p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"; if (-not $p) { exit 0 }; if ($p.Loaded) { exit ${PROFILE_IN_USE_EXIT} }; $p | Remove-CimInstance; exit 0`);
+}
+
+/** A principal's profile made new: the old one deleted (as `deleteProfileArgs`) and a fresh one made from the default
+ *  profile at once by userenv's `CreateProfile`, with no logon, so the next command's logon finds it there (on the
+ *  runner a logon that has to make the profile costs ~7.5 s, one that finds it ~1.3 s; CreateProfile itself ~5 s, off
+ *  the command's path). Exits 0 when done, `PROFILE_IN_USE_EXIT` when the profile is loaded (left alone), anything
+ *  else when it fails. Elevated only (the reset task, SYSTEM; setup). */
+export function remakeProfileArgs(sid: string, name: string): readonly string[] {
+  if (!SID_RE.test(sid)) throw new Error(`not a SID: ${sid}`);
+  if (!/^[A-Za-z0-9._-]{1,20}$/.test(name)) throw new Error(`not a principal name: ${name}`);
+  return psEncodedArgs([
+    "$ErrorActionPreference='Stop'",
+    `$p = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='${sid}'"`,
+    `if ($p -and $p.Loaded) { exit ${PROFILE_IN_USE_EXIT} }`,
+    "if ($p) { $p | Remove-CimInstance }",
+    "Add-Type -Namespace MossReset -Name UserEnv -MemberDefinition '[DllImport(\"userenv.dll\", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);'",
+    "$sb = New-Object System.Text.StringBuilder 260",
+    `$hr = [MossReset.UserEnv]::CreateProfile('${sid}', '${name}', $sb, 260)`,
+    "if ($hr -ne 0) { Write-Output ('CreateProfile 0x{0:X8}' -f $hr); exit 4 }",
+    "exit 0",
+  ].join("; "));
+}
+
+/** The pool's state, per owner, where only SYSTEM and administrators write (`%ProgramData%\MOSS Sandbox\pool\<owner
+ *  SID>`, claimed by `sandbox setup`): per principal, `<name>.lock` (the lease, an OS lock the daemon and the reset
+ *  both take; the owner may read and write the file, never make or delete one), `<name>.gen` (the generation of its
+ *  profile, a random value the reset writes each time it remakes it; the owner reads it) and `<name>.used` (the
+ *  generation the owner's daemon last ran a command on; the owner writes it). A principal is fresh for a command when
+ *  its generation is not the one last used (`isFreshGeneration`): its profile was remade since its last command, and
+ *  nothing but the reset can make a new generation. SYSTEM opens only these files, in a folder the owner can't add a
+ *  link to. */
+export function poolStateDir(programData: string, ownerSid: string): string {
+  return win32.join(programData, "MOSS Sandbox", "pool", ownerSid);
+}
+export function poolStateFiles(dir: string, principal: string): { lock: string; gen: string; used: string } {
+  return { lock: win32.join(dir, `${principal}.lock`), gen: win32.join(dir, `${principal}.gen`), used: win32.join(dir, `${principal}.used`) };
+}
+/** Whether a principal's profile was remade since its last command: a generation exists and isn't the one used. */
+export function isFreshGeneration(gen: string | null, used: string | null): boolean {
+  const g = (gen ?? "").trim();
+  return /^[0-9a-f]{32}$/.test(g) && g !== (used ?? "").trim();
+}
+/** `icacls` for the pool's state folder: inheritance cut, SYSTEM and administrators full, the owner list-and-read on
+ *  the folder alone (no create, no delete: no link can be planted where SYSTEM opens files). */
+export function poolDirAclArgs(dir: string, ownerSid: string): readonly string[] {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return ["icacls", dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${ownerSid}:(RX)`];
+}
+/** `icacls` for one pool file: the owner reads it, and writes it when `write` (the lock and the used record). */
+export function poolFileAclArgs(file: string, ownerSid: string, write: boolean): readonly string[] {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return ["icacls", file, "/grant:r", `*${ownerSid}:${write ? "(R,W)" : "(R)"}`];
+}
+
+/** The scheduled task `sandbox setup` registers for the per-session reset (spec §9.1: the principal's profile and
+ *  hive reset for each session): it runs the protected copy's `moss-core sandbox reset` as SYSTEM, and its owner (only)
+ *  may start it, so the unelevated daemon asks for a reset without elevation. One per owner. */
+export function resetTaskName(ownerSid: string): string {
+  if (!SID_RE.test(ownerSid)) throw new Error(`not a SID: ${ownerSid}`);
+  return `MOSS Sandbox Reset ${ownerSid}`;
+}
+
+/** Register (or replace) the reset task: SYSTEM, highest privileges, on demand only (no trigger), one instance at a time,
+ *  ten minutes at most; its security descriptor adds read and run for the owner alone. */
+export function registerResetTaskArgs(o: { exe: string; ownerSid: string }): readonly string[] {
+  const name = resetTaskName(o.ownerSid);
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$exe='${o.exe.replace(/'/g, "''")}'`,
+    `$name='${name}'`,
+    "$action = New-ScheduledTaskAction -Execute $exe -Argument 'sandbox reset'",
+    "$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest",
+    "$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+    "Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force | Out-Null",
+    "$svc = New-Object -ComObject Schedule.Service; $svc.Connect()",
+    "$task = $svc.GetFolder('\\').GetTask($name)",
+    "$sd = $task.GetSecurityDescriptor(0xF)",
+    `if ($sd -notmatch '\(A;;GRGX;;;${o.ownerSid}\)') { $task.SetSecurityDescriptor($sd + '(A;;GRGX;;;${o.ownerSid})', 0) }`,
+  ].join("; ");
+  if (!SID_RE.test(o.ownerSid)) throw new Error(`not a SID: ${o.ownerSid}`);
+  return psEncodedArgs(script);
+}
+
+/** Unregister the reset task (`sandbox remove`); exits 0 when it isn't there. */
+export function unregisterResetTaskArgs(ownerSid: string): readonly string[] {
+  return psEncodedArgs(`$t = Get-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -ErrorAction SilentlyContinue; if ($t) { Unregister-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -Confirm:$false -ErrorAction Stop }; exit 0`);
+}
+
+/** Start the reset task (the daemon, unelevated, as its owner). */
+export function runResetTaskArgs(ownerSid: string): readonly string[] {
+  return ["schtasks", "/run", "/tn", resetTaskName(ownerSid)];
+}
+
 /** A step of setup/remove: its argv, optional stdin, and whether its failure fails the whole run. */
 export interface SandboxStep {
   readonly name: string;
@@ -741,7 +879,7 @@ export interface SandboxStep {
 }
 
 /** Removing the principal's profile and hive (spec item 1116): unload the hive, remove the ProfileList key
- *  and the profile folder, and any leftover `C:\Users\clover-sandbox*` folder. Every step that matters is
+ *  and the profile folder, and any leftover `C:\Users\moss-sandbox*` folder. Every step that matters is
  *  Required: anything left behind fails the next launch closed. */
 export function principalResetPlan(o: {
   sid: string;
@@ -751,7 +889,7 @@ export function principalResetPlan(o: {
 }): readonly SandboxStep[] {
   const profileKey = `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${o.sid}`;
   const users = o.usersRoot ?? "C:\\Users";
-  // Scoped to the caller's own prefix (ruling 3): never match another user's `clover-sb-*` folder.
+  // Scoped to the caller's own prefix (ruling 3): never match another user's `moss-sb-*` folder.
   // Callers pass their own `principalNameFromSid(ownerSid)`; the bare prefix is not a valid scope.
   const prefix = o.principalPrefix ?? SANDBOX_PRINCIPAL_PREFIX;
   return [
@@ -815,7 +953,7 @@ export interface SrtUserStatus {
   readonly inSandboxGroup?: boolean;
 }
 
-/** The WFP filters under Clover's sublayer, as `srt-win status` reports them. */
+/** The WFP filters under MOSS's sublayer, as `srt-win status` reports them. */
 export interface SrtWfpStatus {
   readonly state: string;
   readonly filters: number;
@@ -921,17 +1059,17 @@ export function parseSrtStatus(
   if (wfp.allowLoopback) return no("the network filters open loopback; set it up again", SANDBOX_EXIT.FAILED);
   if (user.sid !== undefined && wfp.userSid !== undefined && wfp.userSid !== user.sid)
     return no("the network filters belong to another principal; set it up again", SANDBOX_EXIT.FAILED);
-  if (o.profileChecked === true) {
-    if (profile === null) return no("the principal's profile isn't resolved by its SID", SANDBOX_EXIT.FAILED);
-    if (profile.temporary) return no("the principal is running on a temporary profile; set it up again", SANDBOX_EXIT.FAILED);
-  }
+  // No profile is the ready state: each command logs on to a principal whose profile the reset deleted (a fresh one
+  // is made at that logon). Only a temporary one is wrong.
+  if (o.profileChecked === true && profile !== null && profile.temporary)
+    return no("the principal is running on a temporary profile; set it up again", SANDBOX_EXIT.FAILED);
   return { ...base, ready: true, reason: null, exit: SANDBOX_EXIT.OK };
 }
 
 /** The refusal when the principal or its filters are missing: Bash never runs without the fence. */
 export function setupBashRefusal(reason: string | null): string {
   const why = reason ? `${reason}. ` : "";
-  return `${why}Bash isn't set up under Clover's fence on this computer yet. Set up Bash: run \`clover-core sandbox setup\` as administrator.`;
+  return `${why}Bash isn't set up under MOSS's fence on this computer yet. Set up Bash: run \`moss-core sandbox setup\` as administrator.`;
 }
 
 /** Whether `net session` (admin-only) succeeded: the elevation check for `setup` and `remove`. */
@@ -946,14 +1084,14 @@ export const NET_SESSION_PROBE: readonly string[] = ["net", "session"];
 export function setupExitMessage(code: number): string | null {
   switch (code) {
     case 0: return null;
-    case 10: return "the elevation prompt was cancelled; run `clover-core sandbox setup` as administrator";
-    case 13: return "Bash is set up differently (another port range, loopback mode or principal); run `clover-core sandbox remove` first, or pass `--force`";
+    case 10: return "the elevation prompt was cancelled; run `moss-core sandbox setup` as administrator";
+    case 13: return "Bash is set up differently (another port range, loopback mode or principal); run `moss-core sandbox remove` first, or pass `--force`";
     case 14: return "the sandbox principal couldn't be provisioned";
     default: return `setup failed (exit ${code})`;
   }
 }
 
-/** The caller's own places, under the Clover home, that Addendum 3 opens: `outputs\<session>`,
+/** The caller's own places, under the MOSS home, that Addendum 3 opens: `outputs\<session>`,
  *  `scratch\<bot>`, `routines\<bot>` and `plugin-data\<id>` (read and write), the owning bot's
  *  `bots\<x>` (read) and its `bots\<x>\memory` (read and write). Matches `ownFoldersOf` exactly as
  *  the macOS and Linux sandboxes do; the sessions-runtime store stays denied, even the caller's own
@@ -968,20 +1106,20 @@ export interface WinCallerRules {
   readonly ownMemory: string | null;
 }
 
-/** What a caller may reach in the Clover home. The home is default-deny for reads and writes (Addendum 3);
+/** What a caller may reach in the MOSS home. The home is default-deny for reads and writes (Addendum 3);
  *  the only allows are the caller's own session output, its bot's scratch and routines, its own plugin
  *  data, its bot's folder (read) and its bot's memory (read and write). Every other session's and bot's
  *  folder is denied explicitly, so a grant another session holds can't be read from this one. `entries`
  *  is the disk (tests pass a fake). The grants mirror `ownFoldersOf` exactly, so `policyAllows` over a
  *  policy built from them agrees with the fence's `check` (see the equivalence test). */
 export function winCallerRules(o: {
-  cloverHome: string;
+  mossHome: string;
   caller: Caller;
   bots: readonly string[];
   entries?: (dir: string) => readonly string[];
 }): WinCallerRules {
   const ctx = fenceContextFor(o.caller);
-  const raw: CallerPlaces = callerPlaces(o.cloverHome, "windows", ctx);
+  const raw: CallerPlaces = callerPlaces(o.mossHome, "windows", ctx);
   // `callerPlaces` joins POSIX-style; the Windows fence compares and emits win32 paths.
   const N = (p: string | null): string | null => (p === null ? null : win32.normalize(p));
   const botsDir = win32.normalize(raw.bots);
@@ -995,17 +1133,17 @@ export function winCallerRules(o: {
   const ownPlugins = (raw.ownPlugins ?? []).map((p) => win32.normalize(p));
   const entries = o.entries ?? (() => []);
   const fold = (s: string) => s.toUpperCase();
-  const outputs = win32.join(o.cloverHome, "outputs");
-  const scratch = win32.join(o.cloverHome, "scratch");
+  const outputs = win32.join(o.mossHome, "outputs");
+  const scratch = win32.join(o.mossHome, "scratch");
 
   // A bot's own conversation and side threads have open access (the owner's ruling of November 9 and its amendment):
   // the home reads, every bot's scratch folder and memory write inside; `BOT_READ_DENIED` stays
   // stay hidden (the bot driver's state reads: a transcript id). The fenced set's own deny ACEs (secrets, `run`, settings…) apply on top, as for every caller.
   const open = raw.botAccess !== null;
   // The home itself: default-deny, both ways (a bot reads it).
-  const denyRead: string[] = open ? BOT_READ_DENIED.map((rel) => win32.join(o.cloverHome, ...rel)) : [o.cloverHome];
-  const denyWrite: string[] = [o.cloverHome];
-  const grantRead: string[] = open ? [o.cloverHome] : [];
+  const denyRead: string[] = open ? BOT_READ_DENIED.map((rel) => win32.join(o.mossHome, ...rel)) : [o.mossHome];
+  const denyWrite: string[] = [o.mossHome];
+  const grantRead: string[] = open ? [o.mossHome] : [];
   const grantWrite: string[] = [];
   // Unlinking or renaming an own read-write folder itself, or any folder that holds one, is refused
   // (policyAllows' rule 2). The ACE writer enforces this list with object-only DELETE denies: closing
@@ -1018,7 +1156,7 @@ export function winCallerRules(o: {
   const hold = (p: string | null) => {
     if (p === null) return;
     let cur: string | null = p;
-    while (cur !== null && fold(cur) !== fold(o.cloverHome)) {
+    while (cur !== null && fold(cur) !== fold(o.mossHome)) {
       protect.add(cur);
       const parent = win32.dirname(cur);
       cur = parent === cur ? null : parent;
@@ -1042,7 +1180,10 @@ export function winCallerRules(o: {
       grantRead.push(folder);
       continue;
     }
-    denyRead.push(folder);
+    // The memory folder by name too, beneath its bot's folder: the bot's own command grants read on it (group-wide,
+    // srt-win's session entries), and an explicit allow there would beat the deny this plan inherits from the folder
+    // above while both run; a deny on the very folder comes first (win-fenced rule 3b, `grantsConflict`).
+    denyRead.push(folder, memory);
     denyWrite.push(folder);
   }
   // Every other session's outputs and every other bot's scratch: denied explicitly, so a grant another
@@ -1075,7 +1216,7 @@ export function winCallerRules(o: {
  *  fenced set) plus Addendum 3's home default-deny and the caller's own allows. */
 export function winLaunchPlan(o: {
   policy: SandboxPolicy;
-  cloverHome: string;
+  mossHome: string;
   caller: Caller;
   bots: readonly string[];
   entries?: (dir: string) => readonly string[];

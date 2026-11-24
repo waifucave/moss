@@ -1,9 +1,9 @@
-// The window's core root (`clover-core://app/`, spec §5.5): core code, no plugin's. It mounts the entry that fills
+// The window's core root (`moss-core://app/`, spec §5.5): core code, no plugin's. It mounts the entry that fills
 // `app.root` (a surface window: its one `app.surface` entry) as a frame from that plugin's own layer, and owns what
 // the core draws around it: the safe-mode banner (§5.8), the note when nothing fills the window, and the placeholder
 // with a reload when the shell's layer stops (S9: detected by the main process's census).
-import { showKey, showPlugins, showWelcome } from "./pages";
-import { EMPTY_STRINGS, translate, type LayerBridge, type LayerMessage, type MountInfo, type SpotView, type StringTable } from "@waifucave/clover-plugin-sdk/ui/bridge";
+import { showKey, showPlugins, showWelcome, stepAside } from "./pages";
+import { EMPTY_STRINGS, translate, type LayerBridge, type LayerMessage, type MountInfo, type SpotView, type StringTable } from "@waifucave/moss-plugin-sdk/ui/bridge";
 
 interface RootBridge {
   frameMetrics(m: { top: number; start: number; end: number }): void;
@@ -13,21 +13,21 @@ interface RootBridge {
 
 declare global {
   interface Window {
-    cloverRoot?: RootBridge;
+    mossRoot?: RootBridge;
   }
   interface Navigator {
     windowControlsOverlay?: EventTarget & { visible: boolean; getTitlebarAreaRect(): DOMRect };
   }
 }
 
-const bridge = window.cloverLayer as LayerBridge;
-const root = window.cloverRoot as RootBridge;
-const stage = document.getElementById("clover-stage")!;
-const banner = document.getElementById("clover-banner")!;
-const pageHost = document.getElementById("clover-page")!;
+const bridge = window.mossLayer as LayerBridge;
+const root = window.mossRoot as RootBridge;
+const stage = document.getElementById("moss-stage")!;
+const banner = document.getElementById("moss-banner")!;
+const pageHost = document.getElementById("moss-page")!;
 
 function cssName(token: string): string {
-  return `--clover-${token.replace(/-/g, "_").replace(/\./g, "-")}`;
+  return `--moss-${token.replace(/-/g, "_").replace(/\./g, "-")}`;
 }
 
 function applyTokens(tokens: Readonly<Record<string, string | number>>): void {
@@ -37,7 +37,7 @@ function applyTokens(tokens: Readonly<Record<string, string | number>>): void {
 function note(lines: string[], action?: { label: string; run: () => void }): void {
   stage.replaceChildren();
   const box = document.createElement("div");
-  box.className = "clover-core-note";
+  box.className = "moss-core-note";
   box.setAttribute("role", "status");
   for (const line of lines) {
     const p = document.createElement("p");
@@ -54,25 +54,61 @@ function note(lines: string[], action?: { label: string; run: () => void }): voi
   stage.append(box);
 }
 
+/** What the app says of its release (the main process's `ReleaseNotice`, release.ts): the words, and "Switch now" while a newer app waits. */
+interface ReleaseNoticeView { kind: string; phase?: string; needs?: string; incoming?: string; turns?: number; agents?: number; command?: string }
+function releaseWords(n: ReleaseNoticeView): { text: string; action?: { label: string; run: () => void } } {
+  const p = { needs: n.needs ?? "", incoming: n.incoming ?? "", turns: n.turns ?? 0, agents: n.agents ?? 0, command: n.command ?? "" };
+  if (n.kind === "cannot" && n.command !== undefined) return { text: t("release.cannot-reset", p) };
+  if (n.kind === "updating") return { text: t(`release.${n.phase ?? "checking"}`, p) };
+  if (n.kind === "waiting") {
+    return { text: t(p.turns + p.agents > 0 ? "release.waiting-for" : "release.waiting", p), action: { label: t("release.switch-now"), run: () => void root.call("release.switchNow") } };
+  }
+  if (n.kind === "engine-down") return { text: t("release.engine-down", p), action: { label: t("release.retry"), run: () => void root.call("release.retry") } };
+  return { text: t(`release.${n.kind}`, p) };
+}
+const releaseBanner = document.getElementById("moss-release")!;
+/** The release notice as a banner over a shell that is showing (the older app that is already open, updating itself). */
+async function drawRelease(): Promise<void> {
+  const state = await root.call("registry.state").catch(() => undefined) as { release?: ReleaseNoticeView } | undefined;
+  releaseBanner.replaceChildren();
+  // With no shell mounted the stage's note says it (renderOrNote); the banner is for a shell that is showing.
+  if (state?.release === undefined || shown === undefined) { releaseBanner.hidden = true; return; }
+  const w = releaseWords(state.release);
+  releaseBanner.hidden = false;
+  releaseBanner.append(w.text);
+  if (w.action !== undefined) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = w.action.label;
+    b.addEventListener("click", w.action.run);
+    releaseBanner.append(b);
+  }
+}
+
 let info: MountInfo;
 let shown: { mount: string; url: string } | undefined;
 let strings: StringTable = EMPTY_STRINGS;
-/** The core's own text, in the app's language (`clover.core.…`, core-strings.ts). */
-const t = (key: string, params?: Record<string, string | number>) => translate(strings, `clover.core.${key}`, params);
+/** The core's own text, in the app's language (`moss.core.…`, core-strings.ts). */
+const t = (key: string, params?: Record<string, string | number>) => translate(strings, `moss.core.${key}`, params);
 
-function frameFor(item: { mount: string; url: string; ref: string; layer: string; isolated?: true }): HTMLIFrameElement {
+function frameFor(item: { mount: string; url: string; ref: string; layer: string; isolated?: true; autoplay?: true; microphone?: true }): HTMLIFrameElement {
   const frame = document.createElement("iframe");
   frame.src = item.url;
   frame.title = item.ref;
-  frame.dataset.cloverEntry = item.ref;
-  frame.dataset.cloverLayer = item.layer;
-  frame.dataset.cloverMount = item.mount;
+  frame.dataset.mossEntry = item.ref;
+  frame.dataset.mossLayer = item.layer;
+  frame.dataset.mossMount = item.mount;
   // Only a plugin whose manifest asks (`client.isolated`) gets a cross-origin isolated frame. A plugin's page is placed inside
-  // the `clover` layer's frames (the shell, the main spot), and a frame is isolated only when every frame above it passes the
-  // permission down: so the `clover` layer's frames carry it too (the delegation only; they isolate no plugin).
-  // The `clover` layer's frame alone may record (push-to-talk: the app's shell records, never a plugin; main's permission handler
-  // answers only while the user's press has a recording open).
-  frame.setAttribute("allow", [item.isolated === true || item.layer === "clover" ? "cross-origin-isolated" : "", item.layer === "clover" ? "microphone" : ""].filter((a) => a !== "").join("; "));
+  // the `moss` layer's frames (the shell, the main spot), and a frame is isolated only when every frame above it passes the
+  // permission down: so the `moss` layer's frames carry it too (the delegation only; they isolate no plugin).
+  // A frame may open the microphone when a plugin of its own layer holds `microphone` (the runtime's `microphone` flag; main's
+  // permission handler answers by the same layer).
+  const allow = [
+    item.isolated === true || item.layer === "moss" ? "cross-origin-isolated" : "",
+    item.microphone === true ? "microphone" : "",
+    item.autoplay === true ? "autoplay" : "",
+  ];
+  frame.setAttribute("allow", allow.filter((a) => a !== "").join("; "));
   frame.referrerPolicy = "no-referrer";
   return frame;
 }
@@ -86,17 +122,20 @@ const rendered = new Map<string, () => void>();
  *  sends after its first render), so the window never shows an empty stage or a first page that isn't the user's (the
  *  parts keep their place with `useKept`). The old one is inert meanwhile: main let it go already. After 5 s the new
  *  one takes the place anyway, but never before it has loaded (a document that hasn't is the blank one). */
-function reloadIn(item: { mount: string; url: string; ref: string; layer: string }): void {
-  const frames = Array.from(stage.querySelectorAll("iframe")).filter((f) => f.dataset.cloverMount === item.mount);
+function reloadIn(item: { mount: string; url: string; ref: string; layer: string; isolated?: true; autoplay?: true; microphone?: true }): void {
+  const frames = Array.from(stage.querySelectorAll("iframe")).filter((f) => f.dataset.mossMount === item.mount);
   // A load still pending from an earlier reload is for a token main has spent: it goes, and the frame showing stays.
-  for (const f of frames) if (f.dataset.cloverPending !== undefined) f.remove();
+  for (const f of frames) if (f.dataset.mossPending !== undefined) f.remove();
   const old = frames.filter((f) => f.isConnected);
   if (old.length === 0) return mount(item);
   for (const f of old) f.inert = true;
+  // The old document takes no press meanwhile (it is let go in main): the pointer says it is not ready, over the window as a whole
+  // (nothing is faded or covered, so a sealed card frame inside it is drawn as it was).
+  stage.style.cursor = "progress";
   const frame = frameFor(item);
   frame.style.visibility = "hidden";
   frame.inert = true;
-  frame.dataset.cloverPending = "";
+  frame.dataset.mossPending = "";
   let swapped = false;
   let loaded = false;
   let capped = false;
@@ -106,7 +145,8 @@ function reloadIn(item: { mount: string; url: string; ref: string; layer: string
     if (rendered.get(item.mount) === swap) rendered.delete(item.mount);
     frame.style.visibility = "";
     frame.inert = false;
-    delete frame.dataset.cloverPending;
+    delete frame.dataset.mossPending;
+    if (stage.querySelector("iframe[data-moss-pending]") === null) stage.style.cursor = "";
     for (const f of old) f.remove();
   };
   rendered.set(item.mount, swap);
@@ -122,7 +162,7 @@ function reloadIn(item: { mount: string; url: string; ref: string; layer: string
   shown = { mount: item.mount, url: item.url };
 }
 
-function mount(item: { mount: string; url: string; ref: string; layer: string }): void {
+function mount(item: { mount: string; url: string; ref: string; layer: string; isolated?: true; autoplay?: true; microphone?: true }): void {
   if (shown?.mount === item.mount && shown.url === item.url && stage.querySelector("iframe") !== null) return;
   stage.replaceChildren(frameFor(item));
   shown = { mount: item.mount, url: item.url };
@@ -144,8 +184,16 @@ async function render(): Promise<void> {
     // a daemon that answered with its registry open and nothing to fill the window.
     if (!info.context.safeMode && info.context.surface === undefined) {
       const state = await root.call("registry.state").catch(() => undefined);
+      const release = (state as { release?: ReleaseNoticeView } | undefined)?.release;
+      if (release !== undefined) {
+        // Behind or ahead of the engine's release: that, and not "Starting MOSS…", is what the window is waiting for.
+        const w = releaseWords(release);
+        note([w.text], w.action);
+        syncDrag();
+        return;
+      }
       if ((state as { ready?: unknown } | undefined)?.ready !== true) {
-        // "Starting Clover…" is never the end: after a long time with no daemon the root says so, and what to do (the
+        // "Starting MOSS…" is never the end: after a long time with no daemon the root says so, and what to do (the
         // app keeps trying, and draws the shell as soon as a daemon answers).
         note([(state as { down?: unknown } | undefined)?.down === true ? t("root.down") : t("root.starting")]);
         syncDrag();
@@ -160,20 +208,35 @@ async function render(): Promise<void> {
   syncDrag();
 }
 
+/** A window in which nothing can take the keyboard's focus never ends a Tab: Chromium's sequential focus walks this document and
+ *  each frame in it, finds nothing, hands the focus to the window, and the window (macOS: WebContentsViewMac::TakeFocus) walks the
+ *  page again at once, for ever, between the processes and drawing nothing (lane HC: the background host's island spun about 55% of
+ *  a core in its main process and 35% in each of two renderers for 37 minutes; one Tab into such a window does it). The root's own
+ *  stop, last in its order, ends every walk: in a surface window always (an overlay such as the island's strip often holds nothing
+ *  to focus) and in any window while no plugin frame fills it (a note); a window the shell fills has its own stops, so it gains none.
+ *  The stop is invisible and takes no pointer; the person's Tab lands on it once per round in a surface window. */
+function syncFocusStop(): void {
+  const stop = document.getElementById("moss-focus-stop");
+  if (stop === null) return;
+  const needed = info?.context.surface !== undefined || stage.querySelector("iframe") === null;
+  stop.tabIndex = needed ? 0 : -1;
+}
+
 /** The core's own drawing (the note, a page) is in this main frame, which is where Chromium honors a drag region: a strip
  *  over the title area drags the window. With the shell's frame showing, the strip is off (the shell's own drag goes through
  *  the main process, which checks it). The banner's buttons stay clickable (they sit above the strip). */
 function syncDrag(): void {
-  const drag = document.getElementById("clover-drag");
+  syncFocusStop();
+  const drag = document.getElementById("moss-drag");
   if (drag === null) return;
   drag.hidden = info?.context.surface !== undefined || (stage.querySelector("iframe") !== null && page === null);
 }
 
 function onMessage(m: LayerMessage): void {
-  if (m.type === "respot") void render();
+  if (m.type === "respot") { void render(); void drawRelease(); }
   if (m.type === "rect-query") {
     // The menu broker asks where the frame is in the window.
-    const el = Array.from(stage.querySelectorAll("iframe")).find((f) => f.dataset.cloverMount === m.child);
+    const el = Array.from(stage.querySelectorAll("iframe")).find((f) => f.dataset.mossMount === m.child);
     const b = el?.getBoundingClientRect();
     bridge.rectReply(m.id, b === undefined ? null : { x: b.x, y: b.y, width: b.width, height: b.height });
   }
@@ -186,11 +249,14 @@ function onMessage(m: LayerMessage): void {
     if (page !== null) void showPage(page);
   }
   if (m.type === "core-page") void showPage(m.page);
+  // A card waits in this window: the page steps aside (kept, at its step) and is back once none waits.
+  if (m.type === "core-page-aside") { stepAside(pageHost, m.aside); syncDrag(); }
   // A reload's new document drew: it takes the old one's place (the old one is let go in main, so this is the new one's).
   if (m.type === "child-size") rendered.get(m.child)?.();
   if (m.type === "child-reload" && m.child === shown?.mount) {
     const frame = stage.querySelector("iframe");
-    reloadIn({ mount: m.child, url: m.url, ref: frame?.dataset.cloverEntry ?? "", layer: frame?.dataset.cloverLayer ?? "" });
+    // The new frame gets the flags main sends with the reload: its `allow` as main has it now, as a first load's item gives it.
+    reloadIn({ mount: m.child, url: m.url, ref: frame?.dataset.mossEntry ?? "", layer: frame?.dataset.mossLayer ?? "", ...(m.isolated === true ? { isolated: true as const } : {}), ...(m.autoplay === true ? { autoplay: true as const } : {}), ...(m.microphone === true ? { microphone: true as const } : {}) });
   }
   if (m.type === "child-gone" && m.child === shown?.mount) {
     const child = m.child;

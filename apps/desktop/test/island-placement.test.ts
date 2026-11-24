@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { surfaceWindowPlan, webPreferences } from "../src/main/window";
 
-const localElectron = process.env.CLOVER_UI_LOCAL_ELECTRON;
+const localElectron = process.env.MOSS_UI_LOCAL_ELECTRON;
 const enabled = process.platform === "darwin" && localElectron !== undefined && localElectron !== "";
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -16,7 +16,7 @@ afterAll(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, fo
 function refuseForegroundElectron(): void {
   const plist = join(dirname(dirname(localElectron!)), "Info.plist");
   const value = spawnSync("plutil", ["-extract", "LSBackgroundOnly", "raw", plist], { encoding: "utf8" });
-  if (value.status !== 0 || value.stdout.trim() !== "true") throw new Error("CLOVER_UI_LOCAL_ELECTRON is not a background-only Electron");
+  if (value.status !== 0 || value.stdout.trim() !== "true") throw new Error("MOSS_UI_LOCAL_ELECTRON is not a background-only Electron");
 }
 
 function readBack(withOption: boolean): { focusable: boolean; canBeKey: boolean; display: { bounds: { y: number; height: number }; workArea: { y: number } }; y: number; height: number } {
@@ -62,7 +62,10 @@ describe.if(enabled)("the island's window on macOS", () => {
     console.log(`island window read back: ${JSON.stringify(r)}`);
     expect(r.y, JSON.stringify(r)).toBe(r.display.bounds.y);
   }, 90_000);
-  test("the panel plan can become the key window (to type in), as the app's overlays are made", () => {
+  // A background-only Electron (the only one a local run may use: no window, no Dock icon, no focus taken) is never the active
+  // application, so no window of it can be focused: `isFocused()` is false whatever the plan says. The test runs where the run
+  // is CI's (a session that can give a window the key); a local run skips it for that reason.
+  test.skipIf(process.env.CI === undefined || process.env.CI === "")("the panel plan can become the key window (to type in), as the app's overlays are made", () => {
     const r = readBack(true);
     expect(r.focusable).toBe(true);
     expect(r.canBeKey, JSON.stringify(r)).toBe(true);

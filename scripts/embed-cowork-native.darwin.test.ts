@@ -1,5 +1,5 @@
 // N2 S2 — the STANDALONE proof of `embed-cowork-native.sh` (the body of the build phase S7 adds), run the way Xcode runs the CU one:
-// BUILT_PRODUCTS_DIR=<mkdtemp>, CONTENTS_FOLDER_PATH=Clover.app/Contents, CONFIGURATION=Release, EXPANDED_CODE_SIGN_IDENTITY=- (ad-hoc:
+// BUILT_PRODUCTS_DIR=<mkdtemp>, CONTENTS_FOLDER_PATH=MOSS Code.app/Contents, CONFIGURATION=Release, EXPANDED_CODE_SIGN_IDENTITY=- (ad-hoc:
 // this proves the build phase; release.ts, wired by S7, checks the Developer ID team, the timestamp and that the stated requirements
 // are satisfied). Every input and output lives in a mkdtemp directory; no real identity, no Keychain, no notarization, no VM.
 import { afterEach, describe, expect, test } from "bun:test";
@@ -49,7 +49,7 @@ function embed(r: Rig, over: Record<string, string> = {}, configuration = "Relea
       ...process.env,
       CONFIGURATION: configuration,
       BUILT_PRODUCTS_DIR: join(r.dir, "built"),
-      CONTENTS_FOLDER_PATH: "Clover.app/Contents",
+      CONTENTS_FOLDER_PATH: "MOSS Code.app/Contents",
       EXPANDED_CODE_SIGN_IDENTITY: "-",
       DEVELOPMENT_TEAM: COWORK_NATIVE_TEAM,
       COWORK_LAUNCHER_BINARY: r.launcher,
@@ -59,7 +59,7 @@ function embed(r: Rig, over: Record<string, string> = {}, configuration = "Relea
     },
   });
 }
-const dest = (r: Rig) => join(r.dir, "built", "Clover.app", COWORK_NATIVE_EMBED_RELATIVE);
+const dest = (r: Rig) => join(r.dir, "built", "MOSS Code.app", COWORK_NATIVE_EMBED_RELATIVE);
 
 function facts(path: string): SignedNativeFacts {
   const run = (cmd: string, args: string[]) => spawnSync(cmd, args, { encoding: "utf8" });
@@ -139,7 +139,7 @@ describe("embed-cowork-native.sh (the Cowork native pair's build phase, standalo
   test("COWORK_NATIVE=omit removes a stale pair and a stale pins file, embeds nothing and succeeds", () => {
     const r = rig();
     expect(embed(r).status).toBe(0); // a previous build left the pair behind
-    const pins = join(r.dir, "built", "Clover.app", "Contents", "Resources", "cowork-native-pins.json");
+    const pins = join(r.dir, "built", "MOSS Code.app", "Contents", "Resources", "cowork-native-pins.json");
     mkdirSync(join(pins, ".."), { recursive: true });
     writeFileSync(pins, "{}");
     expect(existsSync(dest(r))).toBe(true);
@@ -305,19 +305,18 @@ describe("the pair is wired only where S7B says, and agrees with the Swift launc
     expect(statSync(SCRIPT).mode & 0o111).not.toBe(0);
   });
 
-  test("only the app project, the release gate and the daemon's host-env refer to the pair; the daemon has no other reference and the feature stays off", () => {
+  test("only the release gate and the daemon's host-env refer to the pair; the daemon has no other reference and the feature stays off", () => {
     const needles = ["embed-cowork-native", "cowork-native-lib", "winter-cowork-launcher", "winter-cowork-worker", "WinterCoworkLauncher"];
     const files = [
-      join("apple", "Winter", "project.yml"), join("scripts", "release.ts"), join("scripts", "release-lib.ts"), join("package.json"),
+      join("scripts", "release.ts"), join("scripts", "release-lib.ts"), join("package.json"),
       ...walk(join(REPO, "packages", "core", "src")).map((p) => p.slice(REPO.length + 1)),
       ...walk(join(REPO, "packages", "cli", "src")).map((p) => p.slice(REPO.length + 1)),
     ];
     const hits = files.filter((file) => existsSync(join(REPO, file)) && needles.some((needle) => read(file).includes(needle)));
     expect(hits.sort()).toEqual([
-      join("apple", "Winter", "project.yml"), join("packages", "core", "src", "cowork", "host-env", "environment.ts"), join("packages", "core", "src", "cowork", "host-env", "launcher-port.ts"), join("scripts", "release.ts"),
+      join("packages", "core", "src", "cowork", "host-env", "environment.ts"), join("packages", "core", "src", "cowork", "host-env", "launcher-port.ts"), join("scripts", "release.ts"),
     ]);
-    // The phase runs the script, and the release gate runs the same checks the verify gate does.
-    expect(read("apple", "Winter", "project.yml")).toContain('"${SRCROOT}/../../scripts/embed-cowork-native.sh"');
+    // The release gate runs the same checks the verify gate does (the old app's project phase that ran the script left the repo).
     const release = read("scripts", "release.ts");
     for (const call of ["checkCoworkNativeBundle(readCoworkBundleFacts(", "checkSignedNative(role, TEAM_ID,", "buildCoworkNative({ out: join(ROOT", "coworkNativeReleasePlan(process.env)", "if (nativePlan.mode === \"refuse\") fail(nativePlan.message)", "checkCoworkNativeOmitted({", "if (omitted.length > 0) fail(`the release omits the Cowork native pair but the bundle carries it", "nativePlan.mode === \"omit\""]) expect(release).toContain(call);
     // Every other script that runs a Release xcodebuild says what it does about the pair (the sparkle feed rig omits it explicitly).

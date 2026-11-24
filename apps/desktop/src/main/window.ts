@@ -16,7 +16,7 @@ export const TITLE_BAR_HEIGHT = 45;
 /** Every window's page: sandboxed and isolated, no Node, no `<webview>`, and the preload in every frame (S9: with
  *  `nodeIntegrationInSubFrames`, a sandboxed preload reaches out-of-process frames; it exposes only the layer bridge,
  *  and only to the core's and the layers' own origins). */
-export function webPreferences(input: { preload: string; partition: string; headless: boolean; offscreen: boolean }): NonNullable<BrowserWindowConstructorOptions["webPreferences"]> {
+export function webPreferences(input: { preload: string; partition: string; headless: boolean; offscreen: boolean; /** A part kept in the background (`app.background`): never slowed while hidden. */ background?: boolean; /** Sound with no press from the user (a background part of a plugin holding `audio`); every other window still wants one. */ autoplay?: boolean }): NonNullable<BrowserWindowConstructorOptions["webPreferences"]> {
   return {
     preload: input.preload,
     partition: input.partition,
@@ -32,11 +32,26 @@ export function webPreferences(input: { preload: string; partition: string; head
     navigateOnDragDrop: false,
     safeDialogs: true,
     enableWebSQL: false,
-    autoplayPolicy: "user-gesture-required",
+    autoplayPolicy: input.autoplay === true ? "no-user-gesture-required" : "user-gesture-required",
     // Headless runs (the tests, the smoke run) paint without a window on screen.
-    backgroundThrottling: !input.headless,
+    backgroundThrottling: !input.headless && input.background !== true,
     ...(input.offscreen ? { offscreen: true } : {}),
   };
+}
+
+/** Whether a surface's window (the island, the pill, a drawer, a plugin's on-screen part) draws offscreen: in a headless run
+ *  that captures (`--moss-capture`, as before) and in the background host's headless run, never in a measuring one
+ *  (`MOSS_TEST_INVISIBLE`, whose windows are shown at opacity 0 and composited as a person's are). The host's headless
+ *  surfaces are never shown, and a never-shown window is not a sure place to draw: on every GitHub macOS runner (and on a
+ *  loaded Mac) the host's never-shown island stopped producing frames for 10 s and more after it was resized while holding a
+ *  plugin's frames, while two never-shown windows of the same process (one made with the island's own options) drew at 60 fps
+ *  throughout (lane HV, run 44377956545); a press on its card then read nothing in time. An offscreen window paints from its
+ *  own frame clock, whatever the window server says of it: what every window a headless run presses in already was (a capture
+ *  run's main window and surfaces, the fallback card drawn for a test's press). MOSS Code's other headless runs (the UI tests)
+ *  keep real windows: their surfaces take a dropped file and play media, which an offscreen window does not do the same way.
+ *  A real build, never headless, is not changed. */
+export function surfaceDrawsOffscreen(input: { headless: boolean; measuring: boolean; capture: boolean; host: boolean }): boolean {
+  return input.headless && !input.measuring && (input.capture || input.host);
 }
 
 /** The main window: hidden until its page is ready, never shown in a headless run. */
@@ -137,16 +152,16 @@ export function surfaceWindowPlan(input: { surface: SurfaceWindow; webPreference
     transparent: input.surface.transparent === true,
     backgroundColor: input.surface.transparent === true ? "#00000000" : undefined,
     alwaysOnTop: input.surface.alwaysOnTop === true,
-    // On macOS a floating overlay is a non-activating panel: a click on the island or the pill never activates Clover or brings
+    // On macOS a floating overlay is a non-activating panel: a click on the island or the pill never activates MOSS or brings
     // its main window forward, and (with the all-Spaces setting the app gives it) it stands over another app's full-screen
     // Space, which an ordinary window of an app with a Dock icon can't. The main window is never one.
     ...(panel ? { type: "panel" as const } : {}),
     // macOS pushes every window's frame down below the menu bar (and the notch) whatever its level, so the island, which
     // hangs from the very top edge of the screen, came up 33 px low with a gap above it. This option turns that frame
-    // constraint off; only a floating overlay (the `clover` tree's surfaces) asks for it, and the app keeps its bounds on its display.
+    // constraint off; only a floating overlay (the `moss` tree's surfaces) asks for it, and the app keeps its bounds on its display.
     ...(overlay && input.surface.alwaysOnTop === true && (input.platform ?? process.platform) === "darwin" ? { enableLargerThanScreen: true } : {}),
     // A panel may become the key window (a click on the pill's field or an island question's field types into it) without
-    // making Clover the active app, so the person keeps typing in it while staying in the other app; any other overlay never
+    // making MOSS the active app, so the person keeps typing in it while staying in the other app; any other overlay never
     // takes the keyboard.
     focusable: !overlay || panel,
     // The click that finds the panel not yet key (the app is not the active one) is the click on its button: it reaches the page

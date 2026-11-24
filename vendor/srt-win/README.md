@@ -1,7 +1,7 @@
-# `vendor/srt-win`: Clover's Windows launcher (lane C, C-M2 part 2)
+# `vendor/srt-win`: MOSS's Windows launcher (lane C, C-M2 part 2)
 
 The Bash fence on Windows runs bots' commands as a dedicated per-user sandbox principal
-(`clover-sb-` + 8 hex chars of the owner's SID) through the `srt-win` launcher, vendored from
+(`moss-sb-` + 8 hex chars of the owner's SID) through the `srt-win` launcher, vendored from
 `anthropics/sandbox-runtime` (Apache-2.0) at the pinned tag/commit in
 `packages/core/src/fence/win-sandbox.ts` (`SRT_WIN_TAG`, `SRT_WIN_COMMIT`).
 
@@ -9,12 +9,20 @@ The Bash fence on Windows runs bots' commands as a dedicated per-user sandbox pr
   committed**: `scripts/build-srt-win.ps1` clones it at the pinned commit,
   applies `vendor/srt-win/patches/*.patch`, and verifies `HEAD` before building.
   (Same pattern as `.clover-sdk/`.)
-- `vendor/srt-win/patches/` is Clover's patch set on the vendored launcher.
+- `vendor/srt-win/patches/` is MOSS's patch set on the vendored launcher.
   `0001-per-principal-setup-records.patch` keys the install record and credential
   per principal (`HKLM\SOFTWARE\sandbox-runtime\Users\<name>`, `Cred\<name>`)
   and adds a `--user` selector to `exec`, `user status` and `uninstall`, so one
   install no longer orphans another's launch path. The global record keeps its
   exact semantics (last install wins); everything new is opt-in behind `--user`.
+  `0002-session-0-named-objects.patch` lets a broker in session 0 (a password
+  scheduled task) launch: there the named-object grant isn't made (no
+  `\Sessions\0\...` directory exists, and the global one must not be changed).
+  `0003-network-open-principal.patch` adds `install --network-open`: the account's
+  user-keyed filter blocks only the cloud metadata addresses (169.254.0.0/16,
+  168.63.129.16, 100.100.100.200, 192.0.0.192, fd00:ec2::254, and the IPv4 ones
+  IPv4-mapped), for the account that runs a command the person approved to leave
+  the sandbox.
 - `vendor/srt-win/srt-win.exe` is the static-CRT build lane M's CI makes and
   signs (with the patches applied); the Authenticode digest check in
   `packages/core/src/fence/windows-launcher.ts` (`SRT_WIN_PINS`) fails closed

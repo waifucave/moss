@@ -11,8 +11,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLUGIN_API_VERSION } from "@waifucave/clover-plugin-sdk";
-import type { Caller } from "@waifucave/clover-protocol";
+import { PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sdk";
+import type { Caller } from "@waifucave/moss-protocol";
 import { FakeApprovalBroker } from "../../contracts/fakes/approval-broker";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
@@ -74,18 +74,18 @@ async function until<T>(what: string, ms: number, f: () => T | undefined | Promi
 }
 
 async function world(servers: Record<string, unknown>) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "clover-b-http-mcp-")));
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "moss-b-http-mcp-")));
   temps.push(home);
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
   const secrets = new MemorySecretStore();
   const folder = join(home, "plugins", "remote-tools");
   mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "clover.json"), JSON.stringify({
-    manifest: 1, id: "remote-tools", name: "Remote tools", version: "1.0.0", engines: { clover: `^${PLUGIN_API_VERSION}` },
+  writeFileSync(join(folder, "moss.json"), JSON.stringify({
+    manifest: 1, id: "remote-tools", name: "Remote tools", version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` },
     settings: { token: { type: "secret", title: "Token" } },
     contributes: { mcpServers: servers },
   }));
-  const opened = await openPluginRegistry({ cloverHome: home, os: "macos", broker, secrets, settleMs: 50 });
+  const opened = await openPluginRegistry({ mossHome: home, os: "macos", broker, secrets, settleMs: 50 });
   const ph = await startPluginHost({ home, computer: "Studio", registry: opened.registry, secrets });
   // The user's OK (the card itself is the registry's own tests').
   await opened.registry.approve("remote-tools", opened.registry.get("remote-tools")!.treeHash!);
@@ -113,6 +113,9 @@ describe("a plugin's http MCP server", () => {
       const listed = await until("its tool listed", 20_000, () => w.mcp.servers("bot").find((s) => s.server === "remote-tools-remote")?.tools.find((t) => t.name === "echo"))
         .catch((err) => { throw new Error(`${(err as Error).message}; log ${w.lines.join(" | ")}`); });
       expect(listed.description).toBe("Says it back.");
+      // And to a code session on MOSS's own agent (the bridge lists what `servers` gives a coding session).
+      const coding = w.mcp.servers("coding", "moss-code").find((s) => s.server === "remote-tools-remote");
+      expect(coding?.tools.map((t) => t.name)).toEqual(["echo"]);
       // A call answers, carrying the key.
       const out = await w.mcp.call({ server: "remote-tools-remote", tool: "echo", input: { text: "hello" }, as: BOT, session: "b_alpha" } as never);
       expect(out.isError ?? false).toBe(false);

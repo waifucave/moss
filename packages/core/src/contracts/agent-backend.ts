@@ -8,17 +8,17 @@
 // (the SessionHost, the ApprovalBroker, the bridge, Settings) relies on.
 //
 // What the contract promises:
-// * `detect` resolves the binary to its real path and checks it is that vendor's before anything starts it: Clover
+// * `detect` resolves the binary to its real path and checks it is that vendor's before anything starts it: MOSS
 //   never trusts a command name on PATH (`agent` is both Cursor's and Grok's; S5 edit 1).
 // * `start` launches one agent process for one delegation, contained as a group, in the translated root, with the
 //   environment from an allow-list, the bridge MCP server, and the fence as the backend's own deny rules (§9.3).
-//   A signed-out agent fails `sign_in`: the user signs in to that agent themselves; Clover never runs a browser login.
+//   A signed-out agent fails `sign_in`: the user signs in to that agent themselves; MOSS never runs a browser login.
 // * Permission requests go to the handler the host sets (the ApprovalBroker); the session answers the agent with
 //   `allow_once` or `reject_once`, never an "always" (S5 edit 5), and answers pending requests `cancelled` on cancel.
 // * Replays (updates between a `load` or `resume` request and its response) are dropped, never shown again (S5 edit 8).
 // * When a cancel leaves tool calls open, the session closes them itself; refused calls are recorded as refused
 //   whatever the agent reports (S5 edit 5).
-import type { BackendMark, Os } from "@waifucave/clover-protocol";
+import type { BackendMark, Os } from "@waifucave/moss-protocol";
 import type { AgentPermissionOption } from "./approval-broker";
 import type { Unsubscribe } from "./common";
 import type { SandboxPolicy } from "./fence";
@@ -55,6 +55,17 @@ export interface AgentQuirks {
     systemPromptChannel: "_meta.antigravity.systemPrompt.append" | "acp.systemPrompt" | "_meta.systemPrompt" | null;
     /** It tells MCP servers its conversation id (Antigravity's `_meta`). */
     tellsConversationId: boolean;
+    /** What it does when MOSS says the bridge's tool list changed in a running session: `live` (it asks the server for
+     *  the list again, as MCP's `tools/list_changed` says), `next-turn` (it can't, but MOSS opens it again before the
+     *  next turn with the list as it is now, on a `session/resume`), `next-session` (neither: the change reaches its
+     *  next session, and the person is told). Left out: `next-session`, since nothing says it does better. */
+    toolListChanges?: "live" | "next-turn" | "next-session";
+    /** Whether the agent has a search for tools of its own, which holds back the tools MOSS's list leaves unflagged and loads
+     *  one when the model asks: `own` (Claude Code's Tool Search, which keeps a tool carrying `anthropic/alwaysLoad` up front),
+     *  `host` (MOSS's own agent: its runtime defers every tool but the flagged ones and the bridge's `Glossary` loads them,
+     *  `hostToolSearch`). Left out: none, so on demand is the bridge's `Glossary` only where the list can change in a session
+     *  (`toolListChanges`), and nothing holds a tool back otherwise (`agents/exposure.ts`). */
+    toolSearch?: "own" | "host";
   };
   sessions: {
     load: { supported: boolean; replays: boolean };
@@ -62,7 +73,7 @@ export interface AgentQuirks {
     resume: { supported: boolean; replays: boolean };
     /** Cursor renames replayed tool calls `replay-0-N`; Antigravity keeps the live ids. */
     replayKeepsToolCallIds: boolean;
-    /** Cursor lists only the caller's session; Antigravity ignores the folder filter. Clover keeps its own record. */
+    /** Cursor lists only the caller's session; Antigravity ignores the folder filter. MOSS keeps its own record. */
     listFiltersHonestly: boolean;
     close: boolean;
   };
@@ -87,7 +98,7 @@ export interface AgentQuirks {
     effortOption: string | null;
     /** Cursor folds effort into its model values. */
     effortInModel: boolean;
-    /** A delegation's choice becomes the user's own selection (Cursor), so Clover restores it after. */
+    /** A delegation's choice becomes the user's own selection (Cursor), so MOSS restores it after. */
     choicePersists: boolean;
   };
   auth: {
@@ -102,6 +113,24 @@ export interface AgentQuirks {
   placement: "local" | "cloud";
   /** What Settings marks for this backend (§9.3). */
   marks: readonly BackendMark[];
+  /** How the agent reports a subagent of its own through its tool calls (spec revision 20, §9.5 "Subagents"), so its
+   *  session's view lists it as a row; `null` or left out: none known. */
+  subagents?: SubagentQuirk | null;
+}
+
+/** Which of an agent's tool calls starts a subagent of its own, and where its name and model are. The call's own end is
+ *  the subagent's end (its report back). Read from what the agent sends, never from its name. */
+export interface SubagentQuirk {
+  /** Where the call's tool name is: a dotted path in the update's `_meta` (Claude Code's adapter: `claudeCode.toolName`),
+   *  or `title` (the call's title's first word) or `kind`. */
+  toolNameAt: string;
+  /** The tool names that start a subagent (Claude Code: `Task`, `Agent`). */
+  tools: readonly string[];
+  /** Keys of the call's input tried in order for the row's name (its description, its type); the call's title, then
+   *  the tool's name, when none is there. */
+  name: readonly string[];
+  /** The key of the call's input that names its model, when it has one. */
+  model?: string;
 }
 
 export interface AgentDetection {
@@ -109,6 +138,9 @@ export interface AgentDetection {
   /** The resolved real path. */
   path?: string;
   version?: string;
+  /** The digest MOSS recorded when it placed the program itself (an adapter it provides): the user's OK names this in
+   *  place of the hash of `path`'s file alone, so a change to any file of the copy asks again. */
+  sha256?: string;
   /** The binary is the vendor's (version output, signer). */
   identityOk: boolean;
   /** The version is in the tested range. */
@@ -130,12 +162,12 @@ export interface BridgeServer {
 }
 
 export interface AgentStartSpec {
-  /** Clover's session id for this delegation. */
+  /** MOSS's session id for this delegation. */
   sessionId: string;
   /** The bot whose delegation this is (a nested one carries the bot that started the first), for the plugins' hooks'
    *  scope: a hook scoped to bots covers its delegations too. None for a coding session the user drives. */
   bot?: string;
-  /** The root folder's real path on this computer; `Agent` already refused one holding the Clover home. */
+  /** The root folder's real path on this computer; `Agent` already refused one holding the MOSS home. */
   root: string;
   model?: string;
   effort?: string;
@@ -171,8 +203,11 @@ export type AgentEvent =
   | { type: "text"; text: string }
   | { type: "thought"; text: string }
   | { type: "tool_call"; id: string; kind: string; title: string; status: "pending" | "in_progress" | "completed" | "failed"; rawInput?: unknown }
-  | { type: "tool_call_update"; id: string; status: "pending" | "in_progress" | "completed" | "failed"; refused?: boolean; closedByClover?: boolean }
+  | { type: "tool_call_update"; id: string; status: "pending" | "in_progress" | "completed" | "failed"; refused?: boolean; closedByMoss?: boolean; /** The call's text output, once it has ended (its `content`'s text, cut at `AGENT_TOOL_OUTPUT_MAX`). */ output?: string }
   | { type: "usage"; inputTokens: number; outputTokens: number }
+  /** The call `id` started a subagent of the agent's own (its `subagents` quirk); said again when its name or model
+   *  becomes known. Its end is the call's end. */
+  | { type: "subagent"; id: string; name: string; model?: string }
   | { type: "progress" };
 
 export interface AgentTurnEnd {
@@ -180,6 +215,9 @@ export interface AgentTurnEnd {
   /** The turn's final text, unchanged. */
   text: string;
   usage?: { inputTokens: number; outputTokens: number };
+  /** How much of its context window the agent says it uses after the turn, in tokens (ACP's `usage_update` `used`, its
+   *  last in the turn): what the session's context reads. Absent when the agent reports none. */
+  contextTokens?: number;
 }
 
 export interface AgentSession {
@@ -189,6 +227,13 @@ export interface AgentSession {
   /** ACP's `session/cancel`: waits up to 5 seconds for the turn to end `cancelled`. */
   cancel(): Promise<void>;
   setConfig(option: "model" | "effort", value: string): Promise<void>;
+  /** The config options the agent reported (ACP `configOptions`): its models and efforts, for a picker. Not every session has them. */
+  configOptions?(): readonly { id: string; category?: string; currentValue?: string; values: readonly string[] }[];
+  /** The agent's own names for those options and their values, where it gives them. */
+  optionLabels?(): ReadonlyMap<string, { name?: string; values: ReadonlyMap<string, string> }>;
+  /** The person's pick of one of those options (not the model, the effort or the approval level's mode, which have their
+   *  own controls): refused for an option the agent doesn't report or a value it doesn't list. */
+  setOption?(id: string, value: string): Promise<void>;
   /** Cancel, then end the process group (§9.3 "Stopping"). */
   stop(): Promise<void>;
   /** The host's permission handler; until one is set, requests are answered `cancelled`. */
@@ -202,6 +247,8 @@ export interface AgentBackend {
   /** Its `agentBackends` entry's id. */
   readonly id: string;
   readonly pluginId: string;
+  /** False for a backend only a turn or a bot uses (its own subagents): `agent.backends` says so, a person's `agent.start` is refused, and the New session list leaves it out. Absent means true. */
+  readonly userStartable?: boolean;
   readonly quirks: AgentQuirks;
   detect(): Promise<AgentDetection>;
   start(spec: AgentStartSpec): Promise<AgentSession>;

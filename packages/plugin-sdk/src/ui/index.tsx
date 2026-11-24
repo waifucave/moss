@@ -1,4 +1,4 @@
-// `@waifucave/clover-plugin-sdk/ui`: the UI API that a plugin's React components use (spec §5.5), implementing lane
+// `@waifucave/moss-plugin-sdk/ui`: the UI API that a plugin's React components use (spec §5.5), implementing lane
 // B's declarations (`../api/ui-api.ts`). Each layer loads one copy, shared by every component in it: the app maps the
 // bare specifier to the layer's own copy, beside React's.
 //
@@ -7,29 +7,34 @@
 // E-M3), MCP Apps (`<AppView>`, E-M3) and the plugin API in layers (`usePluginApi`, with lane B's host side) are
 // placeholders that draw nothing and never fail, so components written against the declarations already run.
 import { EVENT_AREAS } from "./event-areas";
+import { BackendNamesReader } from "./backend-names";
 import {
   Component, createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type CSSProperties, type ErrorInfo, type ReactNode,
 } from "react";
-import type { CardMeta } from "@waifucave/clover-protocol";
+import type { CardMeta } from "@waifucave/moss-protocol";
 import type { TokenValue } from "../catalogs/tokens";
 import { cssProperty } from "../catalogs/tokens";
 import { COMPONENT_CALLS, fromLayerWire, listenerArgOf, toLayerWire } from "../catalogs/layer-calls";
-import type { PluginApi, ShellAccount, ShellApp, ShellState, Unsubscribe } from "../api/plugin-api";
+import type { HostMessageCall, PluginApi, ShellAccount, ShellApp, ShellState, Unsubscribe } from "../api/plugin-api";
+import type { StreamMeta, StreamOpenEvent, StreamOpenOptions, StreamReadEvent } from "../api/plugin-api";
+import { acceptStreams, openPicture, openStream, pointStream, type StreamsTransport } from "../api/streams";
 import type {
-  AppViewProps, CardButtonProps, CardComponents, CardElementProps, CardFieldProps, EntryProps, SpeechFeed, SpotElementProps, UiApi, UiComponent,
+  AppViewProps, CardButtonProps, CardComponents, CardElementProps, CardFieldProps, EntryProps, SpotElementProps, UiApi, UiComponent,
 } from "../api/ui-api";
 import { CALLBACK_KEY, type DragOffer, type LayerBridge, type LayerMessage, type MenuItem, type MountContext, type MountInfo, type OpenTarget, type SpotItem, type SpotView, type SurfaceEnvironment, type SurfaceRequest, type ThemeSheet, type StringTable, type SpotEntryView, type PendingQuestion, type UserSendTarget, type ShellMethod } from "./bridge";
 import { EMPTY_STRINGS, translate } from "./strings";
-import { LayoutRoot } from "./layout";
-import { ReceivedSpeech, SpeechForwarder, cleanSpeechMessage } from "./speech";
-import { AvatarControlHub, cleanAvatarDown, cleanAvatarUp, type AvatarState } from "./avatar-control";
-import type { AvatarBox, AvatarCatalogueNames, AvatarCue } from "../catalogs/avatar-cues";
+import { agentMark, type AgentMarkProps, type BotFaceProps } from "./marks";
+import { FaceCanvas, makeBot } from "./faces";
 
 export * from "./bridge";
-export { AvatarControlHub, cleanAvatarCue, type AvatarState } from "./avatar-control";
+export { agentMark, AGENT_MARK_NEUTRAL, isChromatic, type AgentMarkLook, type AgentMarkProps, type BotFaceProps } from "./marks";
+// Mouth levels from speech (./mouth), for any part that moves a mouth: the five vowel weights from a speech feed, and
+// `TimedSpeech` (./speech), a feed made from mouth levels stamped in epoch milliseconds.
+export { TimedSpeech, type TimedSpeechClock, type TimedSpeechStats } from "./speech";
+export { LipSync, SpeechRing, frameSource, ringSource, analyserSource, bufferSource, speechFrames, PushedSpeech, MAX_FRAME_SECONDS, visemeWeights, MouthSmoother, VISEMES, SHUT, SILENCE_RMS, FULL_RMS, DARK_HZ, BRIGHT_HZ, clamp01, rmsOf, spectralCentroidOf, FFT_SIZE, type LipSyncSource, type SpeechFeatureSource, type SpeechFeatures, type AnalyserLike, type VisemeWeights } from "./mouth";
 // What a component needs of React, from the layer's own copy: a plugin that writes its components with these ships no
-// React of its own (`clover plugin new`'s UI and point templates do).
+// React of its own (`moss plugin new`'s UI and point templates do).
 export { createElement, Fragment, useEffect, useMemo, useRef, useState } from "react";
 export type { AppViewProps, CardButtonProps, CardElementProps, CardFieldProps, EntryProps, SpeechFeed, SpeechFrame, UiApi, UiComponent, UiNode } from "../api/ui-api";
 
@@ -46,6 +51,14 @@ interface Runtime {
   modules: Map<string, ClientModule>;
   /** Loads a plugin's module on demand (a third-party layer's own). */
   load?: (pluginId: string) => Promise<ClientModule | undefined>;
+  /** A test layer's plugin API (`ui/testing`): `usePluginApi` hands a part this object as it is. Never set in the app. */
+  testApi?: (pluginId: string, mount?: string) => PluginApi | undefined;
+  /** A test layer's own room in the window's session storage (`useKept`), so several layers in one document (a gallery)
+   *  keep apart. Never set in the app. */
+  testKeptScope?: (mount: string) => string;
+  /** Whether a pending card is a test layer's own, for a part of it (several layers in one document hold their own
+   *  cards). Never set in the app. */
+  testOwnsCard?: (mount: string, cardId: string) => boolean;
   listeners: Set<(m: LayerMessage) => void>;
   /** The callbacks each child frame was handed, by child mount. */
   callbacks: Map<string, Map<string, (...args: unknown[]) => unknown>>;
@@ -64,16 +77,20 @@ export const SLEEP_AFTER_MS = 60_000;
 let runtime: Runtime | undefined;
 
 function rt(): Runtime {
-  if (runtime === undefined) throw new Error("the Clover UI runtime isn't set up in this document");
+  if (runtime === undefined) throw new Error("the MOSS UI runtime isn't set up in this document");
   return runtime;
 }
 
 /** Sets the layer up (the app's layer boot calls it once, before rendering). Not for plugins. */
-export function configureLayer(input: { bridge: LayerBridge; modules?: Record<string, ClientModule>; load?: Runtime["load"]; sleepAfterMs?: number }): void {
+export function configureLayer(input: { bridge: LayerBridge; modules?: Record<string, ClientModule> | Map<string, ClientModule>; load?: Runtime["load"]; sleepAfterMs?: number; testApi?: Runtime["testApi"]; testKeptScope?: Runtime["testKeptScope"]; testOwnsCard?: Runtime["testOwnsCard"] }): void {
   const r: Runtime = {
     bridge: input.bridge,
-    modules: new Map(Object.entries(input.modules ?? {})),
+    // A map is kept as given (a test layer adds the modules of the layers it sets up later).
+    modules: input.modules instanceof Map ? input.modules : new Map(Object.entries(input.modules ?? {})),
     ...(input.load ? { load: input.load } : {}),
+    ...(input.testApi ? { testApi: input.testApi } : {}),
+    ...(input.testKeptScope ? { testKeptScope: input.testKeptScope } : {}),
+    ...(input.testOwnsCard ? { testOwnsCard: input.testOwnsCard } : {}),
     listeners: new Set(),
     callbacks: new Map(),
     tokens: new Map(),
@@ -94,14 +111,6 @@ export function configureLayer(input: { bridge: LayerBridge; modules?: Record<st
       }
     }
     if (m.type === "focus-returned") restoreFocus();
-    if (m.type === "speech") {
-      const speech = cleanSpeechMessage(m.speech);
-      if (speech !== undefined) receivedSpeech.get(m.mount)?.accept(speech);
-    }
-    if (m.type === "avatar") {
-      const down = cleanAvatarDown(m.message);
-      if (down !== undefined) framedAvatars.get(m.mount)?.cue(down.cue);
-    }
     if (m.type === "questions") r.questions = m.questions;
     if (m.type === "api-event") {
       const e = m.params as { type?: unknown; card?: CardMeta; id?: unknown; outcome?: unknown } | undefined;
@@ -116,7 +125,7 @@ export function configureLayer(input: { bridge: LayerBridge; modules?: Record<st
     }
     if (m.type === "rect-query") {
       // The menu broker asks where a child frame is in this document's viewport.
-      const el = typeof document === "undefined" ? undefined : Array.from(document.querySelectorAll("iframe[data-clover-mount]")).find((f) => f.getAttribute("data-clover-mount") === m.child);
+      const el = typeof document === "undefined" ? undefined : Array.from(document.querySelectorAll("iframe[data-moss-mount]")).find((f) => f.getAttribute("data-moss-mount") === m.child);
       const b = el?.getBoundingClientRect();
       r.bridge.rectReply(m.id, b === undefined ? null : { x: b.x, y: b.y, width: b.width, height: b.height });
     }
@@ -125,7 +134,7 @@ export function configureLayer(input: { bridge: LayerBridge; modules?: Record<st
   trackFocus();
 }
 
-/** Hears the core's messages to this document (app commands such as `open-settings`). For the `clover` layer's own
+/** Hears the core's messages to this document (app commands such as `open-settings`). For the `moss` layer's own
  *  parts; not in lane B's declarations. */
 export function useLayerMessage(listener: (m: LayerMessage) => void): void {
   const ref = useRef(listener);
@@ -189,7 +198,7 @@ export function decodeProps(props: unknown, call: (id: string, args: unknown[]) 
   return out;
 }
 
-/** CSS custom properties for a set of tokens (`color.text` → `--clover-color-text`). */
+/** CSS custom properties for a set of tokens (`color.text` → `--moss-color-text`). */
 export function tokenStyle(tokens: Readonly<Record<string, TokenValue>>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(tokens)) {
@@ -215,130 +224,20 @@ interface Part {
 
 const PartContext = createContext<Part | null>(null);
 
-/** The speech an `avatar` renderer lip-syncs to (`useAvatarSpeech`): the stage's own feed for a renderer in its
- *  document, or what its parent sends a renderer in a frame of its own. */
-export interface AvatarSpeech {
-  /** The feed: frames on the audio clock, and the clock. Undefined where the app isn't describing speech to this part. */
-  readonly feed: SpeechFeed | undefined;
-  /** Whether the bot is speaking now. */
-  readonly speaking: boolean;
-}
-const NO_SPEECH: AvatarSpeech = { feed: undefined, speaking: false };
-const AvatarSpeechContext = createContext<AvatarSpeech>(NO_SPEECH);
-
-/** The receivers of this document's framed `avatar` renderers, by mount (`LayerRoot`). */
-const receivedSpeech = new Map<string, ReceivedSpeech>();
-
-/** For the stage (the `clover` layer's character part, or whatever plays the bot's speech): the feed the `avatar`
- *  spot's renderers under it lip-sync to. A renderer in this document reads it with `useAvatarSpeech`; a renderer in a
- *  frame of its own gets its frames sent on, numbers only, while the frame can be seen. Not for plugins. */
-export function AvatarSpeechProvider({ feed, speaking, children }: { feed: SpeechFeed | undefined; speaking: boolean; children?: ReactNode }) {
-  const value = useMemo<AvatarSpeech>(() => ({ feed, speaking }), [feed, speaking]);
-  return <AvatarSpeechContext.Provider value={value}>{children}</AvatarSpeechContext.Provider>;
-}
-
-/** In an `avatar` renderer: the speech of the bot it draws, to move its mouth by. The same in the `clover` layer and in
- *  a plugin's own frame: `feed.subscribe` hands frames `{ t, rms, centroid }` (loudness 0–1 and brightness in Hz, on the
- *  audio clock, a little ahead of when they play), `feed.now()` is that clock now, and `speaking` says whether the bot
- *  speaks. Only numbers reach a plugin's frame: no audio, no text. */
-export function useAvatarSpeech(): AvatarSpeech {
-  return useContext(AvatarSpeechContext);
-}
-
-/** What an `avatar` renderer uses to take cues and publish its model's names and the figure's box (`useAvatarControl`). */
-const AvatarControlContext = createContext<AvatarControlHub | undefined>(undefined);
-/** The hubs of this document's framed `avatar` renderers, by mount (`LayerRoot`). */
-const framedAvatars = new Map<string, AvatarControlHub>();
-
-/** For the stage: the hub its `avatar` renderers take cues from and publish to. A renderer in this document reads it
- *  with `useAvatarControl`; a renderer in a frame of its own gets each cue sent on and its state read back, as plain
- *  data through main, while the frame can be seen. Not for plugins. */
-export function AvatarControlProvider({ hub, children }: { hub: AvatarControlHub | undefined; children?: ReactNode }) {
-  useEffect(() => {
-    if (hub === undefined || typeof document === "undefined") return;
-    const sync = () => hub.setVisible(!document.hidden);
-    sync();
-    document.addEventListener("visibilitychange", sync);
-    return () => document.removeEventListener("visibilitychange", sync);
-  }, [hub]);
-  return <AvatarControlContext.Provider value={hub}>{children}</AvatarControlContext.Provider>;
-}
-
-/** What `useAvatarControl` gives a renderer. */
-export interface AvatarControl {
-  /** Takes the cues for this figure (an expression, a motion, an outfit part, the pace, a look-at point). A renderer
-   *  plays what its `avatar.formats` `capabilities` list; a cue it doesn't list never reaches it (the core answers the
-   *  caller plainly). Returns the unsubscribe, for an effect's cleanup. */
-  onCue(listener: (cue: AvatarCue) => void): () => void;
-  /** Tells the app what the loaded model has, by its own names (and where each outfit part stands); undefined when
-   *  nothing is loaded. Call it when a model loads or changes. */
-  setCatalogue(names: AvatarCatalogueNames | undefined): void;
-  /** Tells the app where the figure stands on the stage, in the stage's own pixels from its top left: its box and
-   *  the anchors it knows (`headTop`, `face`, `mouth`, `chest`). Say it when a model loads and when it moves
-   *  materially: it is throttled here, and nothing goes while the window is hidden. Only the canvas is enough. */
-  setBox(box: AvatarBox | undefined): void;
-}
-const NO_CONTROL: AvatarControl = { onCue: () => () => undefined, setCatalogue: () => undefined, setBox: () => undefined };
-
-/** In an `avatar` renderer: receive the bot plugin's cues and publish the model's catalogue and the figure's box. The
- *  same in the `clover` layer and in a plugin's own frame. Outside the stage it does nothing. */
-export function useAvatarControl(): AvatarControl {
-  const hub = useContext(AvatarControlContext);
-  return useMemo<AvatarControl>(() => (hub === undefined ? NO_CONTROL : {
-    onCue: (l) => hub.onCue(l),
-    setCatalogue: (n) => hub.setNames(n),
-    setBox: (b) => hub.setBox(b),
-  }), [hub]);
-}
-
-/** A framed `avatar` renderer's own control: cues from its parent, its state up to it. */
-function FramedAvatar({ mount, children }: { mount: string; children: ReactNode }) {
-  const hub = useMemo(() => new AvatarControlHub((state: AvatarState) => {
-    rt().bridge.avatarUp?.({ kind: "state", names: state.names ?? null, box: state.box ?? null });
-  }), [mount]);
-  useEffect(() => {
-    framedAvatars.set(mount, hub);
-    return () => {
-      hub.close();
-      if (framedAvatars.get(mount) === hub) framedAvatars.delete(mount);
-    };
-  }, [mount, hub]);
-  return <AvatarControlProvider hub={hub}>{children}</AvatarControlProvider>;
-}
-
-/** A framed `avatar` renderer's own speech: what its parent sends, as a feed. */
-function FramedSpeech({ mount, children }: { mount: string; children: ReactNode }) {
-  const feed = useMemo(() => {
-    const received = new ReceivedSpeech();
-    receivedSpeech.set(mount, received);
-    return received;
-  }, [mount]);
-  const [speaking, setSpeaking] = useState(false);
-  useEffect(() => {
-    receivedSpeech.set(mount, feed);
-    const off = feed.onSpeaking(setSpeaking);
-    return () => {
-      off();
-      if (receivedSpeech.get(mount) === feed) receivedSpeech.delete(mount);
-    };
-  }, [mount, feed]);
-  return <AvatarSpeechProvider feed={feed} speaking={speaking}>{children}</AvatarSpeechProvider>;
-}
-
 /** The document's strings, as the core last sent them. */
 const StringsContext = createContext<StringTable>(EMPTY_STRINGS);
 
-/** What the `clover` layer tells the core about the parts under it: the kind of session they show (`when.session`).
- *  Heard from the `clover` layer only. Not for plugins. */
+/** What the `moss` layer tells the core about the parts under it: the kind of session they show (`when.session`).
+ *  Heard from the `moss` layer only. Not for plugins. */
 export const SpotHints = createContext<{ session?: string }>({});
 
 function usePart(): Part {
   const part = useContext(PartContext);
-  if (part === null) throw new Error("a Clover UI hook ran outside a mounted entry");
+  if (part === null) throw new Error("a MOSS UI hook ran outside a mounted entry");
   return part;
 }
 
-class PartBoundary extends Component<{ name: string; children: ReactNode }, { failed: boolean }> {
+class PartBoundary extends Component<{ name: string; stopped?: ReactNode; children: ReactNode }, { failed: boolean }> {
   override state = { failed: false };
   static getDerivedStateFromError(): { failed: boolean } {
     return { failed: true };
@@ -347,7 +246,11 @@ class PartBoundary extends Component<{ name: string; children: ReactNode }, { fa
     console.error(`the part ${this.props.name} stopped`, error, info.componentStack);
   }
   override render(): ReactNode {
-    if (this.state.failed) return <div className="clover-part-stopped" role="status" data-clover-stopped={this.props.name}>This part stopped.</div>;
+    if (this.state.failed) {
+      return this.props.stopped !== undefined
+        ? <div data-moss-stopped={this.props.name} style={{ display: "contents" }}>{this.props.stopped}</div>
+        : <div className="moss-part-stopped" role="status" data-moss-stopped={this.props.name}>This part stopped.</div>;
+    }
     return this.props.children;
   }
 }
@@ -358,11 +261,11 @@ function findComponent(mod: ClientModule | undefined, name: string): UiComponent
 }
 
 /** Renders one entry's component in its part. */
-function EntryView({ part, component, props }: { part: Part; component: UiComponent<EntryProps<any>>; props: unknown }) {
+function EntryView({ part, component, props, stopped }: { part: Part; component: UiComponent<EntryProps<any>>; props: unknown; stopped?: ReactNode }) {
   const C = component as (p: EntryProps<any>) => ReactNode;
   return (
     <PartContext.Provider value={part}>
-      <PartBoundary name={`${part.entry.pluginId}#${part.entry.id}`}>
+      <PartBoundary name={`${part.entry.pluginId}#${part.entry.id}`} {...(stopped !== undefined ? { stopped } : {})}>
         <C props={(props ?? {}) as Record<string, unknown>} tokens={part.tokens} entry={part.entry} />
       </PartBoundary>
     </PartContext.Provider>
@@ -392,9 +295,9 @@ export function LayerRoot({ info }: { info: MountInfo }) {
   useLayoutEffect(() => {
     // The document is the part: its themes' sheets are scoped to it by these marks.
     const root = document.documentElement;
-    root.setAttribute("data-clover-part", info.mount);
-    if (info.tab !== undefined) root.setAttribute("data-clover-tab", info.tab);
-    if (info.styled === true) root.setAttribute("data-clover-styled", "");
+    root.setAttribute("data-moss-part", info.mount);
+    if (info.tab !== undefined) root.setAttribute("data-moss-tab", info.tab);
+    if (info.styled === true) root.setAttribute("data-moss-styled", "");
   }, [info.mount, info.tab, info.styled]);
   useLayoutEffect(() => applySheets(sheets), [sheets]);
   useEffect(() => {
@@ -412,12 +315,12 @@ export function LayerRoot({ info }: { info: MountInfo }) {
   }, [tokens]);
   // The spot this document fills, for the base sheet: a page in `main` or `panel` fills the column it is given and scrolls in itself.
   useLayoutEffect(() => {
-    document.documentElement.setAttribute("data-clover-spot", info.spot);
+    document.documentElement.setAttribute("data-moss-spot", info.spot);
   }, [info.spot]);
   useEffect(() => {
     // The core sizes the frame: report the content's height as it changes (the bottom of the part's own elements, so
     // a part that fills its frame reports the frame, and a small one its own size).
-    const host = document.getElementById("clover-root") ?? document.body;
+    const host = document.getElementById("moss-root") ?? document.body;
     let frame = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let last = -1;
@@ -466,12 +369,12 @@ export function LayerRoot({ info }: { info: MountInfo }) {
   }), [info, tokens]);
   const component = info.component === undefined ? undefined : findComponent(mod, info.component);
   if (component === undefined) {
-    return mod === undefined && r.load !== undefined ? null : <div className="clover-part-missing" role="status">This part has no component {info.component}.</div>;
+    return mod === undefined && r.load !== undefined ? null : <div className="moss-part-missing" role="status">This part has no component {info.component}.</div>;
   }
   const view = <EntryView part={part} component={component} props={props} />;
   return (
     <StringsContext.Provider value={strings}>
-      {info.spot === "avatar" ? <FramedSpeech mount={info.mount}><FramedAvatar mount={info.mount}>{view}</FramedAvatar></FramedSpeech> : view}
+      {view}
     </StringsContext.Provider>
   );
 }
@@ -481,13 +384,13 @@ export function LayerRoot({ info }: { info: MountInfo }) {
 export function applySheets(sheets: readonly ThemeSheet[], doc: Document = document): void {
   const head = doc.head;
   const old = new Map<string, HTMLStyleElement>();
-  for (const el of Array.from(head.querySelectorAll<HTMLStyleElement>("style[data-clover-sheet]"))) old.set(el.getAttribute("data-clover-sheet") ?? "", el);
+  for (const el of Array.from(head.querySelectorAll<HTMLStyleElement>("style[data-moss-sheet]"))) old.set(el.getAttribute("data-moss-sheet") ?? "", el);
   for (const s of sheets) {
     let el = old.get(s.id);
     old.delete(s.id);
     if (el === undefined) {
       el = doc.createElement("style");
-      el.setAttribute("data-clover-sheet", s.id);
+      el.setAttribute("data-moss-sheet", s.id);
     }
     if (el.textContent !== s.css) el.textContent = s.css;
     head.appendChild(el);
@@ -512,25 +415,56 @@ export type SpotProps = Omit<SpotElementProps, "key" | "spotKey" | "entry"> & {
   only?: string;
   /** What shows where nothing fills the spot (lane F's: a panel's placeholder). */
   fallback?: ReactNode;
-  /** The bot whose tab shows, for the spots that offer `when.bot` outside a bot's tab (`sidebar`, `bar`): heard from the `clover` layer only. */
+  /** The bot whose tab shows, for the spots that offer `when.bot` outside a bot's tab (`sidebar`, `bar`): heard from the `moss` layer only. */
   forBot?: string;
+  /** An entry in a frame of its own fills the room this part gives the spot (and scrolls inside itself), instead of
+   *  taking the height its content reports: a drawing that is as big as its box, say. */
+  fill?: boolean;
+  /** What shows in place of an entry of this spot that stopped (its component threw, at its first drawing or later, or
+   *  its frame is gone); without it, "This part stopped." The host's own way on when the part it relies on is broken
+   *  (the shell's start page: its own new-session page). */
+  stopped?: ReactNode;
 };
 
+/** A `<Spot>` instance's name: random, made once when the instance mounts and kept for its life (§5.5: one frame for each place a
+ *  part appears). The core keys the places an instance gets on it, so two drawings of one spot and key (a message's add-on under
+ *  each message) never share a mount. 1 to 64 of `A-Z a-z 0-9 _ -` (the core refuses any other). */
+function newInstanceId(): string {
+  const bytes = new Uint8Array(12);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return `s${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
 /** `<Spot name spotKey props>`: shows a spot this part declares (§5.5). */
-export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, forBot }: SpotProps) {
+export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, forBot, fill, stopped }: SpotProps) {
   const entry = entryRef ?? only;
   const part = usePart();
   const hints = useContext(SpotHints);
   const r = rt();
   const [view, setView] = useState<SpotView | undefined>(undefined);
-  // A panel's `when.session` is the kind of session the shell shows it for: the `clover` layer says so in the props it gives the spot (the main process heeds it from that layer only).
-  const propKind = name === "panel" ? (props as { sessionKind?: unknown } | undefined)?.sessionKind : undefined;
+  const [instance] = useState(newInstanceId);
+  /** False once this instance unmounted: an answer that lands after it holds mounts nobody shows, and nobody else would release. */
+  const mounted = useRef(true);
+  /** The mounts of the latest answer taken while mounted: the unmount lets them go too, as the effect that records what is shown
+   *  (`shown`, below) may not have run for it yet (the page went in the batch that took the answer). */
+  const answered = useRef<string[]>([]);
+  // A panel's `when.session` (and what a conversation's spots need to read: a code session is read with `sessions.read`) is the kind of session the shell shows it for: the `moss` layer says so in the props it gives the spot (the main process heeds it from that layer only).
+  const propKind = name === "panel" || name === "conversation" || name === "session.corner" ? (props as { sessionKind?: unknown } | undefined)?.sessionKind : undefined;
   const session = hints.session ?? (typeof propKind === "string" ? propKind : undefined);
   const resolve = useCallback(() => {
-    const h = { ...(session !== undefined ? { session } : {}), ...(entry !== undefined ? { entry } : {}), ...(forBot !== undefined ? { bot: forBot } : {}) };
-    void r.bridge.resolve(part.mount, name, spotKey, Object.keys(h).length > 0 ? h : undefined)
-      .then((v) => setView((old) => (sameView(old, v) ? old : v)), () => setView(undefined));
-  }, [r, part.mount, name, spotKey, session, entry, forBot]);
+    const h = { instance, ...(session !== undefined ? { session } : {}), ...(entry !== undefined ? { entry } : {}), ...(forBot !== undefined ? { bot: forBot } : {}) };
+    void r.bridge.resolve(part.mount, name, spotKey, h)
+      .then((v) => {
+        // Answered after this instance unmounted (its unmount released what it showed, not what was still being made): let these go.
+        if (!mounted.current) {
+          if (v.items.length > 0) r.bridge.release(v.items.map((i) => i.mount));
+          return;
+        }
+        answered.current = v.items.map((i) => i.mount);
+        setView((old) => (sameView(old, v) ? old : v));
+      }, () => { if (mounted.current) setView(undefined); });
+  }, [r, part.mount, name, spotKey, session, entry, forBot, instance]);
   useEffect(() => {
     resolve();
     return onLayerMessage((m) => {
@@ -545,24 +479,30 @@ export function Spot({ name, spotKey, entry: entryRef, only, props, fallback, fo
     if (gone.length > 0) r.bridge.release(gone);
     shown.current = now;
   }, [view, r]);
-  useEffect(() => () => {
-    if (shown.current.length > 0) r.bridge.release(shown.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // What it showed and what it was last answered with (each mount once).
+      const all = [...new Set([...shown.current, ...answered.current])];
+      if (all.length > 0) r.bridge.release(all);
+    };
   }, [r]);
   if (view === undefined || view.hidden || view.items.length === 0) {
-    // `data-clover-pending`: not resolved yet (a host that holds a tab until it is drawn reads it, the shell's KeptTab).
-    return <div data-clover-spot={name} data-clover-key={spotKey} data-clover-empty={view?.hidden ? "hidden" : view?.undeclared ? "waiting" : ""} data-clover-pending={view === undefined ? "" : undefined} style={{ display: "contents" }}>{view !== undefined && !view.hidden ? fallback : null}</div>;
+    // `data-moss-pending`: not resolved yet (a host that holds a tab until it is drawn reads it, the shell's KeptTab).
+    return <div data-moss-spot={name} data-moss-key={spotKey} data-moss-empty={view?.hidden ? "hidden" : view?.undeclared ? "waiting" : ""} data-moss-pending={view === undefined ? "" : undefined} style={{ display: "contents" }}>{view !== undefined && !view.hidden ? fallback : null}</div>;
   }
   return (
-    <div data-clover-spot={name} data-clover-key={spotKey} data-clover-conflict={view.conflict ? "" : undefined} style={{ display: "contents" }}>
-      {view.items.map((item) => <SpotItemView key={item.mount} item={item} parent={part} spot={name} spotKey={view.key} props={props} />)}
+    <div data-moss-spot={name} data-moss-key={spotKey} data-moss-conflict={view.conflict ? "" : undefined} style={{ display: "contents" }}>
+      {view.items.map((item) => <SpotItemView key={item.mount} item={item} parent={part} spot={name} spotKey={view.key} props={props} fill={fill} stopped={stopped} />)}
     </div>
   );
 }
 
-function SpotItemView({ item, parent, spot, spotKey, props }: { item: SpotItem; parent: Part; spot: string; spotKey: string | undefined; props: unknown }) {
-  if (item.kind === "frame") return <LayerFrame item={item} props={props} spot={spot} />;
+function SpotItemView({ item, parent, spot, spotKey, props, fill, stopped }: { item: SpotItem; parent: Part; spot: string; spotKey: string | undefined; props: unknown; fill?: boolean | undefined; stopped?: ReactNode }) {
+  if (item.kind === "frame") return <LayerFrame item={item} props={props} spot={spot} {...(fill === true ? { fill: true } : {})} {...(stopped !== undefined ? { stopped } : {})} />;
   if (item.kind === "web") return <WebPart item={item} />;
-  return <InlineItem item={item} parent={parent} spot={spot} spotKey={spotKey} props={props} />;
+  return <InlineItem item={item} parent={parent} spot={spot} spotKey={spotKey} props={props} {...(stopped !== undefined ? { stopped } : {})} />;
 }
 
 /** A web page part: the core draws the page's own view over this element, in the page's own session (§5.5). */
@@ -583,7 +523,7 @@ function WebPart({ item }: { item: Extract<SpotItem, { kind: "web" }> }) {
     };
     return trackRect(el, measure, () => bridge.webFrame(item.mount, null));
   }, [el, item.mount]);
-  return <div ref={setEl} className="clover-web-part" data-clover-entry={item.ref} data-clover-web={item.mount} style={{ display: "block", width: "100%", height: "100%", minHeight: 120 }} />;
+  return <div ref={setEl} className="moss-web-part" data-moss-entry={item.ref} data-moss-web={item.mount} style={{ display: "block", width: "100%", height: "100%", minHeight: 120 }} />;
 }
 
 /** Calls `measure` whenever an element may have moved or changed size (its resizes, the window's, any scroll, the
@@ -615,7 +555,7 @@ function trackRect(el: HTMLElement, measure: () => void, gone: () => void, extra
   };
 }
 
-function InlineItem({ item, parent, spot, spotKey, props }: { item: Extract<SpotItem, { kind: "inline" }>; parent: Part; spot: string; spotKey: string | undefined; props: unknown }) {
+function InlineItem({ item, parent, spot, spotKey, props, stopped }: { item: Extract<SpotItem, { kind: "inline" }>; parent: Part; spot: string; spotKey: string | undefined; props: unknown; stopped?: ReactNode }) {
   const r = rt();
   // Its own tokens: the descriptor's, then each update the core sends for this mount; none, its parent's. A change of
   // the parent's tokens never puts the descriptor's back (a light/dark switch updates both in one message, and the
@@ -646,42 +586,20 @@ function InlineItem({ item, parent, spot, spotKey, props }: { item: Extract<Spot
     r.bridge.setProps(item.mount, encoded);
   }, [spot, props, item.mount, r]);
   const own = tokens !== parent.tokens ? tokenStyle(tokens) : undefined;
-  const marks = { "data-clover-entry": item.ref, "data-clover-part": item.mount, "data-clover-tab": item.tab, "data-clover-styled": item.styled === true ? "" : undefined };
+  const marks = { "data-moss-entry": item.ref, "data-moss-part": item.mount, "data-moss-tab": item.tab, "data-moss-styled": item.styled === true ? "" : undefined };
   if (item.layout !== undefined) {
-    // A bot's layout: data the runtime draws as the tab's part, its spots the part's own. A layout's root fills the
-    // place it is in, so it gets a box of its own (the theme's `contain` reaches it). Its spots get the tab's own props (the
-    // bot and the session): the conversation and the composer in it are the tab's, and read them.
-    const layout = item.layout;
-    return (
-      <div {...marks} data-clover-layout-part="" style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, height: "100%", ...own }}>
-        <PartContext.Provider value={part}>
-          <PartBoundary name={item.ref}>
-            <LayoutRoot layout={layout} renderSpot={(spot, key) => <Spot name={spot} props={props as Record<string, unknown> | undefined} {...(key !== undefined ? { spotKey: key } : {})} />} />
-          </PartBoundary>
-        </PartContext.Provider>
-      </div>
-    );
+    // A bot's tab layout is retired with the bot tab (G8): the runtime sends none, and one that still comes draws only this.
+    return <div {...marks} className="moss-part-missing" role="status">A bot's tab layout is retired with the bot tab: nothing draws it.</div>;
   }
   const component = findComponent(r.modules.get(item.pluginId), item.component);
-  if (component === undefined) return <div className="clover-part-missing" role="status" data-clover-entry={item.ref}>This part has no component {item.component}.</div>;
+  if (component === undefined) return <div className="moss-part-missing" role="status" data-moss-entry={item.ref}>This part has no component {item.component}.</div>;
   return (
     <div {...marks} style={{ display: "contents", ...own }}>
-      <EntryView part={part} component={component} props={props} />
+      <EntryView part={part} component={component} props={props} {...(stopped !== undefined ? { stopped } : {})} />
     </div>
   );
 }
 
-/** Whether this document shows (its window not hidden or minimized). */
-function useDocumentShown(): boolean {
-  const [shown, setShown] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const onVisibility = () => setShown(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, []);
-  return shown;
-}
 
 /** Whether an element is near the screen: in its document's viewport or within one viewport of it, while the
  *  document itself shows (a hidden or minimized window counts as away). */
@@ -709,12 +627,12 @@ function useNear(el: Element | null): boolean {
  *  for a while, it sleeps: the core drops its document (and the layer's process with its last frame), and it wakes
  *  rebuilt from the core's state when it comes near again (§5.5). */
 /** The spots whose frames fill the room they are given and scroll inside themselves, instead of taking the height their
- *  content reports: the window's `main` and `panel` columns, and the stage's `avatar`. */
-const FILL_SPOTS: readonly string[] = ["main", "panel", "avatar"];
+ *  content reports: the window's `main` and `panel` columns, and any spot whose declaring part asks it (`<Spot fill>`). */
+const FILL_SPOTS: readonly string[] = ["main", "panel"];
 /** In a flex column it takes what is left (and may shrink under it); anywhere else, the whole height of its container. */
 const FILL_STYLE: CSSProperties = { height: "100%", flex: "1 1 0", minHeight: 0 };
 
-function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "frame" }>; props: unknown; spot: string }) {
+function LayerFrame({ item, props, spot, fill: fillAsked, stopped }: { item: Extract<SpotItem, { kind: "frame" }>; props: unknown; spot: string; fill?: boolean; stopped?: ReactNode }) {
   const r = rt();
   const [url, setUrl] = useState(item.url);
   const [asleep, setAsleep] = useState(item.asleep === true);
@@ -726,42 +644,7 @@ function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "fr
   const toldProps = useRef<string | undefined>(undefined);
   const [el, setEl] = useState<Element | null>(null);
   const near = useNear(el);
-  const fill = FILL_SPOTS.includes(spot);
-  // An `avatar` renderer in a frame of its own: the stage's speech, sent on as numbers while the frame can be seen.
-  const speech = useContext(AvatarSpeechContext);
-  const shown = useDocumentShown();
-  const forwarder = useRef<SpeechForwarder | undefined>(undefined);
-  useEffect(() => {
-    if (spot !== "avatar" || speech.feed === undefined || r.bridge.speech === undefined) return;
-    const send = r.bridge.speech.bind(r.bridge);
-    const f = new SpeechForwarder(speech.feed, (message) => send(item.mount, message));
-    forwarder.current = f;
-    return () => {
-      f.close();
-      if (forwarder.current === f) forwarder.current = undefined;
-    };
-  }, [spot, speech.feed, item.mount, r]);
-  useEffect(() => forwarder.current?.setOpen(shown && !asleep && gone === undefined), [shown, asleep, gone, speech.feed, item.mount]);
-  useEffect(() => forwarder.current?.setSpeaking(speech.speaking), [speech.speaking, speech.feed, item.mount]);
-  // The same frame's cues, sent on while it can be seen, and what it says about its model and figure, read into the stage's hub.
-  const avatarHub = useContext(AvatarControlContext);
-  const seen = shown && !asleep && gone === undefined;
-  useEffect(() => {
-    if (spot !== "avatar" || avatarHub === undefined || !seen || r.bridge.avatar === undefined) return;
-    const send = r.bridge.avatar.bind(r.bridge);
-    return avatarHub.onCue((cue) => send(item.mount, { kind: "cue", cue }));
-  }, [spot, avatarHub, seen, item.mount, r]);
-  useEffect(() => {
-    if (spot !== "avatar" || avatarHub === undefined) return;
-    const off = onLayerMessage((m) => {
-      if (m.type !== "avatar-up" || m.child !== item.mount) return;
-      const up = cleanAvatarUp(m.message);
-      if (up === undefined) return;
-      if (up.names !== undefined) avatarHub.setNames(up.names ?? undefined);
-      if (up.box !== undefined) avatarHub.setBox(up.box ?? undefined);
-    });
-    return () => { off(); avatarHub.setNames(undefined); avatarHub.setBox(undefined); };
-  }, [spot, avatarHub, item.mount]);
+  const fill = fillAsked === true || FILL_SPOTS.includes(spot);
   useEffect(() => {
     if (item.url !== "") setUrl(item.url);
   }, [item.url]);
@@ -819,9 +702,10 @@ function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "fr
   useEffect(() => () => {
     r.callbacks.delete(item.mount);
   }, [item.mount, r]);
+  if (gone !== undefined && stopped !== undefined) return <div data-moss-entry={item.ref} data-moss-gone={gone} style={{ display: "contents" }}>{stopped}</div>;
   if (gone !== undefined) {
     return (
-      <div className="clover-part-stopped" role="status" data-clover-entry={item.ref} data-clover-gone={gone}>
+      <div className="moss-part-stopped" role="status" data-moss-entry={item.ref} data-moss-gone={gone}>
         This part stopped.{" "}
         <button type="button" onClick={() => void r.bridge.reload(item.mount).then((next) => {
           if (next !== undefined) {
@@ -835,7 +719,7 @@ function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "fr
   }
   if (asleep) {
     // Keeps its place while it sleeps, so nothing around it moves.
-    return <div ref={setEl} data-clover-entry={item.ref} data-clover-asleep="" style={{ display: "block", width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }) }} />;
+    return <div ref={setEl} data-moss-entry={item.ref} data-moss-mount={item.mount} data-moss-asleep="" style={{ display: "block", width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }) }} />;
   }
   return (
     <iframe
@@ -843,15 +727,15 @@ function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "fr
       key={url}
       src={url}
       title={item.ref}
-      data-clover-entry={item.ref}
-      data-clover-layer={item.layer}
-      data-clover-mount={item.mount}
+      data-moss-entry={item.ref}
+      data-moss-layer={item.layer}
+      data-moss-mount={item.mount}
       // Its document has drawn (its first size report since this URL loaded): a host holding a tab until it is drawn reads it.
-      data-clover-drawn={drawnUrl === url ? "" : undefined}
-      // A plugin's own isolated frame, and the `clover` layer's frames, which pass the permission down to a plugin page placed inside them.
-      allow={item.isolated === true || item.layer === "clover" ? "cross-origin-isolated" : ""}
+      data-moss-drawn={drawnUrl === url ? "" : undefined}
+      // A plugin's own isolated frame, and the `moss` layer's frames, which pass the permission down to a plugin page placed inside them.
+      allow={[item.isolated === true || item.layer === "moss" ? "cross-origin-isolated" : "", item.microphone === true ? "microphone" : ""].filter((a) => a !== "").join("; ")}
       referrerPolicy="no-referrer"
-      data-clover-fill={fill ? "" : undefined}
+      data-moss-fill={fill ? "" : undefined}
       style={{ display: "block", border: 0, width: "100%", ...(fill ? FILL_STYLE : { height: height === undefined ? undefined : `${height}px` }), colorScheme: "light dark", background: "transparent" }}
     />
   );
@@ -861,7 +745,7 @@ function LayerFrame({ item, props, spot }: { item: Extract<SpotItem, { kind: "fr
 // Hooks and the later parts
 // -------------------------------------------------------------------------------------------------
 
-/** Where the part is (its tab's bot, the surface, the OS, the window's material, safe mode). For the `clover` layer's
+/** Where the part is (its tab's bot, the surface, the OS, the window's material, safe mode). For the `moss` layer's
  *  own parts; not in lane B's declarations. */
 export function useMountContext(): MountContext {
   const context = usePart().context;
@@ -906,7 +790,7 @@ function subscribe(mount: string, pluginId: string, area: string): void {
   void rt().bridge.api(mount, "events.subscribe", { areas: [area] }).catch(() => areas.delete(area));
 }
 
-/** `terminal` (components of the bundled `clover` tree): what reaches a terminal the core derives from the trusted
+/** `terminal` (components of the bundled `moss` tree): what reaches a terminal the core derives from the trusted
  *  key press or paste the part hands over; output comes as `terminal_output` on the plugin's own connection. */
 function terminalApi(mount: string, pluginId: string): NonNullable<PluginApi["terminal"]> {
   const api = <T,>(method: string, params: unknown) => rt().bridge.api(mount, method, params) as Promise<T>;
@@ -943,12 +827,27 @@ function watcher<T>(mount: string, pluginId: string, area: string, type: string,
   };
 }
 
+/** How often, and how long apart, a call or watch refused for the page's calls-per-second cap is sent again. */
+const WATCH_BUSY_TRIES = 5;
+const WATCH_BUSY_RETRY_MS = 1_000;
+const BUSY = /calls this second/;
+const BUSY_CALL_RETRY_MS = 400;
+/** A call the core refused only for the page's calls-per-second cap (it ran nothing) is sent again a moment later, a few
+ *  times, so a read made in a busy first second (many parts mounting at once) isn't lost: a page that never hears the
+ *  value draws as if it had none. Any other refusal or failure is the caller's at once. */
+export function untilNotBusy<T>(send: () => Promise<T>, tries = 0): Promise<T> {
+  return send().catch((err: unknown) => {
+    if (tries < WATCH_BUSY_TRIES && BUSY.test(String((err as { message?: unknown } | null)?.message ?? err))) return new Promise<T>((resolve, reject) => setTimeout(() => untilNotBusy(send, tries + 1).then(resolve, reject), BUSY_CALL_RETRY_MS));
+    throw err;
+  });
+}
+
 /** A member called on the part's own plugin's connection (`plugin.layer.call`), its args and answer as the wire
  *  carries them (bytes as `{ $bytes }`, a `net.fetch` response as `{ $response }`). */
 function layerCall(mount: string, path: string, args: readonly unknown[]): Promise<unknown> {
   const sent = [...args];
   while (sent.length > 0 && sent[sent.length - 1] === undefined) sent.pop();
-  return (rt().bridge.api(mount, "plugin.layer.call", { call: path, args: toLayerWire(sent) }) as Promise<{ result: unknown }>).then((r) => fromLayerWire(r.result));
+  return untilNotBusy(() => rt().bridge.api(mount, "plugin.layer.call", { call: path, args: toLayerWire(sent) }) as Promise<{ result: unknown }>).then((r) => fromLayerWire(r.result));
 }
 
 /** What a component's watch returns: its unsubscribe, with `opened`, which settles once the core opened the watch (or
@@ -990,16 +889,21 @@ function layerWatch(mount: string, pluginId: string, path: string, args: readonl
     if (e.watch === id) deliver(e);
   });
   const unwatch = (watch: string) => void rt().bridge.api(mount, "plugin.layer.unwatch", { watch }).catch(() => undefined);
-  const opened = (rt().bridge.api(mount, "plugin.layer.watch", { call: path, args: toLayerWire(sent) }) as Promise<{ watch: string }>).then((r) => {
+  // A watch refused only for the page's calls-per-second cap (many parts mounting at once) is opened again a moment
+  // later, a few times, so a listener isn't lost to a busy second.
+  const open = (tries: number): Promise<void> => (rt().bridge.api(mount, "plugin.layer.watch", { call: path, args: toLayerWire(sent) }) as Promise<{ watch: string }>).then((r) => {
     id = r.watch;
     if (stopped) return unwatch(r.watch);
     for (const e of early.splice(0)) if (e.watch === id) deliver(e);
   }, (err: unknown) => {
+    const why = err instanceof Error ? err.message : String(err);
+    if (!stopped && tries < WATCH_BUSY_TRIES && BUSY.test(why)) return new Promise<void>((resolve, reject) => setTimeout(() => open(tries + 1).then(resolve, reject), WATCH_BUSY_RETRY_MS));
     off();
     early.length = 0;
-    endedWith(err instanceof Error ? err.message : String(err));
+    endedWith(why);
     throw err;
   });
+  const opened = open(0);
   const stop = Object.assign(() => {
     if (stopped) return;
     stopped = true;
@@ -1062,51 +966,129 @@ function fetchInit(init: RequestInit | undefined): Record<string, unknown> | und
   return out;
 }
 
-/** `audio.play` from a component, as a host half's: a whole clip in one call, or an async iterable a piece at a time
- *  under one utterance, the last `final`; `{ stop, done }` once the first piece is taken. */
-async function layerAudioPlay(mount: string, audio: { format: string; data: Uint8Array | AsyncIterable<Uint8Array> }, opts?: { bot?: string }): Promise<{ stop(): void; done: Promise<void> }> {
-  const data = audio?.data;
-  if (data instanceof Uint8Array) {
-    await layerCall(mount, "audio.play", [{ format: audio.format, data }, opts ?? {}]);
-    return { stop: () => {}, done: Promise.resolve() };
-  }
-  if (data === null || typeof data !== "object" || typeof (data as AsyncIterable<unknown>)[Symbol.asyncIterator] !== "function") throw new Error("audio.play's data is bytes (a Uint8Array) or an async iterable of them");
-  const utterance = `pa_${crypto.randomUUID()}`;
-  const piece = (bytes: Uint8Array, final: boolean) => layerCall(mount, "audio.play", [{ format: audio.format, data: bytes }, opts ?? {}, { utterance, final }]).then(() => undefined);
-  const it = (data as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-  const first = await it.next();
-  if (first.done) {
-    await piece(new Uint8Array(0), true);
-    return { stop: () => {}, done: Promise.resolve() };
-  }
-  if (!(first.value instanceof Uint8Array)) throw new Error("audio.play's stream gives Uint8Array pieces");
-  await piece(first.value, false);
-  let stopped = false;
-  const done = (async () => {
-    for (;;) {
-      if (stopped) break;
-      const next = await it.next();
-      if (next.done || stopped) break;
-      if (!(next.value instanceof Uint8Array)) throw new Error("audio.play's stream gives Uint8Array pieces");
-      await piece(next.value, false);
-    }
-    await piece(new Uint8Array(0), true);
-  })();
-  done.catch(() => {});
-  return { stop: () => { stopped = true; void it.return?.(); }, done };
+/** `turns.take` from a component (§5.4 "Turns"): the take is a watch on the part's own plugin's connection (its events
+ *  the listener's), and the `Turn` is made from its grant. `done` says so to the core, then ends the watch; the watch
+ *  ending without it (this frame gone, the app quit) is the core's "gone". A refusal, or the take ended before its turn,
+ *  rejects. */
+function layerTurnTake(mount: string, pluginId: string, name: string, given?: { limitMs?: number; note?: string; signal?: AbortSignal }, onEvent?: (e: unknown) => void): Promise<unknown> {
+  const opts = { ...(given?.limitMs !== undefined ? { limitMs: given.limitMs } : {}), ...(given?.note !== undefined ? { note: given.note } : {}) };
+  const signal = given?.signal;
+  return new Promise((resolve, reject) => {
+    let over = false;
+    let granted: { id: string; until: number } | undefined;
+    let lostWith: (loss: "limit" | "stopped") => void = () => {};
+    const lost = new Promise<"limit" | "stopped">((r) => { lostWith = r; });
+    let stop: (() => void) | undefined;
+    const finish = () => {
+      over = true;
+      signal?.removeEventListener("abort", abort);
+      stop?.();
+    };
+    const turn = {
+      get id() { return granted!.id; },
+      get until() { return granted!.until; },
+      lost,
+      done: async () => {
+        if (over || granted === undefined) return;
+        const id = granted.id;
+        over = true;
+        signal?.removeEventListener("abort", abort);
+        // Done first, then the watch's end: the other way round the core would hear the holder go, not finish.
+        try {
+          await layerCall(mount, "turns.done", [id]);
+        } finally {
+          stop?.();
+        }
+      },
+      extend: async (ms: number) => {
+        if (granted === undefined) throw new Error("the take is still waiting");
+        const until = (await layerCall(mount, "turns.extend", [granted.id, ms])) as number;
+        granted.until = until;
+        return until;
+      },
+    };
+    const listener = (raw: unknown) => {
+      const e = raw as { type?: string; id?: string; until?: number; reason?: string };
+      if (e.type === "granted" && typeof e.id === "string" && typeof e.until === "number") {
+        granted = { id: e.id, until: e.until };
+        resolve(turn);
+      } else if (e.type === "extended" && granted !== undefined && typeof e.until === "number") granted.until = e.until;
+      else if (e.type === "ended") {
+        finish();
+        if (granted === undefined) reject(new Error(`${name}: the take ended before its turn`));
+        else if (e.reason === "limit" || e.reason === "stopped") lostWith(e.reason);
+      }
+      try {
+        onEvent?.(raw);
+      } catch {
+        // the plugin's own listener
+      }
+    };
+    const abort = () => {
+      if (over) return;
+      if (granted !== undefined) void turn.done().catch(() => {});
+      else {
+        finish();
+        reject(new Error(`${name}: the take was aborted before its turn`));
+      }
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener("abort", abort);
+    const w = layerWatch(mount, pluginId, "turns.take", [name, opts, listener], 2);
+    stop = w.stop;
+    if (over) w.stop();
+    w.opened.catch((err: unknown) => {
+      if (over) return;
+      over = true;
+      signal?.removeEventListener("abort", abort);
+      reject(err);
+    });
+    void w.stop.ended.then((why) => {
+      if (over) return;
+      finish();
+      if (granted === undefined) reject(new Error(`${name}: the take ended before its turn (${why})`));
+      else lostWith("stopped");
+    });
+  });
+}
+
+/** What the SDK's streams need of a component: a call and a watch on the part's own plugin's connection. */
+function layerStreams(mount: string, pluginId: string): StreamsTransport {
+  return {
+    call: (path, args) => layerCall(mount, path, args),
+    watch: (path, args, at) => {
+      const w = layerWatch(mount, pluginId, path, args, at);
+      return { stop: w.stop, opened: w.opened, ended: w.stop.ended };
+    },
+  };
 }
 
 /** The plugin API in this layer, each call on the part's own plugin's connection, where the core checks it as that
  *  plugin from the `ui` side, with the same capability, fence and limits as its host half's: every member the catalog
  *  gives components (`catalogMembers`), with these laid over them where a component's own path serves it (the pickers,
  *  `shell` and the app's own events through the app; `host.*`, `storage.synced`, `settings` and `points.watch` on its
- *  own plugin's events; `net.fetch` and `audio.play`, which carry bytes). */
+ *  own plugin's events; `net.fetch`, which carries bytes). */
 export function usePluginApi(): PluginApi {
   const part = usePart();
   const t = useT();
+  const fake = rt().testApi?.(part.entry.pluginId, part.mount);
   return useMemo(() => {
+    if (fake !== undefined) return fake;
     const call = <T,>(method: string, params: unknown) => rt().bridge.api(part.mount, method, params) as Promise<T>;
     return layOver(catalogMembers(part.mount, part.entry.pluginId), {
+      turns: {
+        take: (name: string, opts?: { limitMs?: number; note?: string; signal?: AbortSignal }, onEvent?: (e: unknown) => void) => layerTurnTake(part.mount, part.entry.pluginId, name, opts, onEvent),
+      } as unknown as Partial<PluginApi["turns"]>,
+      // `open`, `accept` and `points.stream` make Web streams from watches (the SDK's streams.ts); the rest of the area is
+      // the catalog's calls.
+      streams: {
+        open: (name: string, opts?: StreamOpenOptions, onEvent?: (e: StreamOpenEvent) => void) => openStream(layerStreams(part.mount, part.entry.pluginId), name, opts, onEvent),
+        accept: (name: string, onStream: (s: ReadableStream<Uint8Array>, meta: StreamMeta) => void) => acceptStreams(layerStreams(part.mount, part.entry.pluginId), name, onStream),
+      } as unknown as Partial<PluginApi["streams"]>,
+      // A live picture's frames a component reads are a Web stream made from a watch; publishing is a host half's.
+      pictures: {
+        open: (picture: string, opts?: { maxFps?: number; signal?: AbortSignal }) => openPicture(layerStreams(part.mount, part.entry.pluginId), picture, opts),
+      } as unknown as Partial<PluginApi["pictures"]>,
       terminal: terminalApi(part.mount, part.entry.pluginId),
       shell: shellApi(part.mount),
       conversation: {
@@ -1130,7 +1112,11 @@ export function usePluginApi(): PluginApi {
       bots: {
         list: () => call<{ bots: unknown[] }>("bot.list", {}).then((r) => r.bots),
         get: (bot: string) => call<{ bot: unknown }>("bot.get", { id: bot }).then((r) => r.bot),
-        watch: watcher(part.mount, part.entry.pluginId, "sessions", "bot_changed", "bot"),
+        watch: (listener: (bot: unknown) => void, onRemoved?: (id: string) => void): Unsubscribe => {
+          const off = watcher(part.mount, part.entry.pluginId, "sessions", "bot_changed", "bot")(listener);
+          const offRemoved = onRemoved === undefined ? undefined : watcher<string>(part.mount, part.entry.pluginId, "sessions", "bot_removed", "id")(onRemoved);
+          return () => { off(); offRemoved?.(); };
+        },
       } as unknown as PluginApi["bots"],
       computers: {
         list: () => call<{ computers: unknown[] }>("computer.list", {}).then((r) => r.computers),
@@ -1156,7 +1142,7 @@ export function usePluginApi(): PluginApi {
           return () => { live = false; off(); };
         },
       } as unknown as PluginApi["approvals"],
-      // The Clover Browser, for the bundled browser panel (the core's `browser.*` methods on this plugin's own connection,
+      // The MOSS Browser, for the bundled browser panel (the core's `browser.*` methods on this plugin's own connection,
       // which serve that one plugin and the capability gate checks): the person's tabs, placed in a view and navigated. A
       // listener can't cross a call, so `watch` hears the core's `tab_changed` and `tab_closed` events instead.
       browser: {
@@ -1190,21 +1176,6 @@ export function usePluginApi(): PluginApi {
           });
         },
       } as unknown as PluginApi["browser"],
-      // The plugin's own bot's figure (`avatar.read`, `avatar.control`), through the core, which judges each cue; the stage's
-      // own `report` (bundled `clover` tree only). The watch hears the core's `clover.avatar.changed` message for this plugin.
-      avatar: {
-        cue: (cue: unknown) => call<{ result: unknown }>("plugin.layer.call", { call: "avatar.cue", args: [cue] }).then((r) => r.result),
-        catalogue: () => call<{ result: unknown }>("plugin.layer.call", { call: "avatar.catalogue", args: [] }).then((r) => r.result),
-        box: () => call<{ result: unknown }>("plugin.layer.call", { call: "avatar.box", args: [] }).then((r) => r.result),
-        report: (bot: string, report: unknown) => call<unknown>("plugin.layer.call", { call: "avatar.report", args: [bot, report ?? null] }).then(() => undefined),
-        watch: (listener: (change: unknown) => void): Unsubscribe => {
-          subscribe(part.mount, part.entry.pluginId, "plugins");
-          return onApiEvent(part.entry.pluginId, (method, params) => {
-            const e = params as { type?: unknown; pluginId?: unknown; event?: unknown; value?: unknown } | undefined;
-            if (method === "core.event" && e?.type === "plugin_ui_message" && e.pluginId === part.entry.pluginId && e.event === "clover.avatar.changed") listener(e.value);
-          });
-        },
-      } as unknown as PluginApi["avatar"],
       // What the user hands the page (`files.pick*`, gesture-bound, served by the app's main process, which opens its own dialog):
       // tokens for the plugin's host half (`host.call`) and the media URL below. The rest of `files` (`stat`, `readText`,
       // `write`, `watch` …) is the catalog's, through the core's fence as the plugin, as its host half's.
@@ -1227,6 +1198,8 @@ export function usePluginApi(): PluginApi {
       // point's name only, which the core sends to this plugin's own connection). Calling an entry's handler is the
       // host half's (`points.call`): a component asks its host half with `host.call`.
       points: {
+        stream: (point: string, entry: unknown, field: string, args?: unknown, opts?: { method?: string; timeoutMs?: number; signal?: AbortSignal }, onEvent?: (e: StreamReadEvent) => void) =>
+          pointStream(layerStreams(part.mount, part.entry.pluginId), point, entry, field, args, opts, onEvent),
         entries: <T,>(point: string) => call<{ result: T[] }>("plugin.layer.call", { call: "points.entries", args: [point] }).then((r) => r.result),
         watch: <T,>(point: string, listener: (entries: T[]) => void): Unsubscribe => {
           subscribe(part.mount, part.entry.pluginId, "plugins");
@@ -1260,11 +1233,11 @@ export function usePluginApi(): PluginApi {
       host: {
         call: <T,>(handler: string, args?: unknown, opts?: { timeoutMs?: number }) =>
           call<{ result: T }>("plugin.layer.call", { call: "host.call", args: [handler, args ?? null, ...(opts?.timeoutMs !== undefined ? [{ timeoutMs: opts.timeoutMs }] : [])] }).then((r) => r.result),
-        on: (event: string, listener: (data: unknown) => void): Unsubscribe => {
+        on: (event: string, listener: (data: unknown, call?: HostMessageCall) => void): Unsubscribe => {
           subscribe(part.mount, part.entry.pluginId, "plugins");
           return onApiEvent(part.entry.pluginId, (method, params) => {
-            const e = params as { type?: unknown; pluginId?: unknown; event?: unknown; value?: unknown } | undefined;
-            if (method === "core.event" && e?.type === "plugin_ui_message" && e.pluginId === part.entry.pluginId && e.event === event) listener(e.value);
+            const e = params as { type?: unknown; pluginId?: unknown; event?: unknown; value?: unknown; call?: HostMessageCall } | undefined;
+            if (method === "core.event" && e?.type === "plugin_ui_message" && e.pluginId === part.entry.pluginId && e.event === event) listener(e.value, e.call);
           });
         },
       } as unknown as PluginApi["host"],
@@ -1288,34 +1261,16 @@ export function usePluginApi(): PluginApi {
       net: {
         fetch: (url: string | URL, init?: RequestInit, opts?: unknown) => layerCall(part.mount, "net.fetch", [String(url), fetchInit(init), opts]) as Promise<Response>,
       } as unknown as PluginApi["net"],
-      audio: {
-        play: (audio: { format: string; data: Uint8Array | AsyncIterable<Uint8Array> }, opts?: { bot?: string }) => layerAudioPlay(part.mount, audio, opts),
-      } as unknown as PluginApi["audio"],
       settings: {
-        // Its own plugin's settings. A third-party layer reads them on its own connection (`plugin.layer.call`'s
-        // `settings.get`: the value in effect, a `secret` field only as `{ set }`, and with no bot, so a `bot` field reads
-        // as nothing). The bundled `clover` tree's parts share the app's own connection, where the main process lets
-        // its Settings and Plugins parts read `plugin.settings.get` (tree-calls.ts).
-        get: async <T,>(key: string, opts?: { bot?: string }) => {
-          const pluginId = part.entry.pluginId;
-          if (pluginId === "clover" || pluginId.startsWith("clover/")) {
-            const r = await call<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id: pluginId, ...(opts?.bot !== undefined ? { bot: opts.bot } : {}) });
-            return r.settings.find((x) => x.key === key)?.value as T | undefined;
-          }
-          if (opts?.bot !== undefined) throw new Error("a page reads its plugin's settings with no bot: a bot's value is its host half's to read");
-          return (await call<{ result: T | undefined }>("plugin.layer.call", { call: "settings.get", args: [key] })).result;
-        },
-        // A third-party page changes its own plain settings on its own connection, with no card (`plugin.layer.call`'s
-        // `settings.set`: never a secret, a bot value or a setting written into what the plugin runs). The bundled
-        // tree's parts go through `plugin.settings.set` on the app's own connection, as before.
+        // Its own plugin's settings, every part alike on its own connection (`plugin.layer.call`'s `settings.get`): the
+        // value in effect at its scope, a `bot` field for the bot it names (F2: as the host half reads it), a `secret`
+        // field only as `{ set }`.
+        get: async <T,>(key: string, opts?: { bot?: string }) =>
+          (await untilNotBusy(() => call<{ result: T | undefined }>("plugin.layer.call", { call: "settings.get", args: opts?.bot !== undefined ? [key, { bot: opts.bot }] : [key] }))).result,
+        // Its own plain settings, with no card (`plugin.layer.call`'s `settings.set`: never a secret or a setting written
+        // into what the plugin runs), a `bot` field for the bot it names.
         set: async (key: string, value: unknown, opts?: { bot?: string }) => {
-          const pluginId = part.entry.pluginId;
-          if (pluginId === "clover" || pluginId.startsWith("clover/")) {
-            await call<unknown>("plugin.settings.set", { id: pluginId, key, value: value ?? null, ...(opts?.bot !== undefined ? { bot: opts.bot } : {}) });
-            return;
-          }
-          if (opts?.bot !== undefined) throw new Error("a page changes its plugin's settings with no bot: a bot's value is its host half's to change");
-          await call<unknown>("plugin.layer.call", { call: "settings.set", args: [key, value ?? null] });
+          await untilNotBusy(() => call<unknown>("plugin.layer.call", { call: "settings.set", args: opts?.bot !== undefined ? [key, value ?? null, { bot: opts.bot }] : [key, value ?? null] }));
         },
         // Its own plugin's settings only (`plugin_settings_changed`, which the core sends to that plugin's own layer):
         // the key that changed, never its value; `null` hears every key.
@@ -1333,14 +1288,14 @@ export function usePluginApi(): PluginApi {
       // card's id).
       confirm: (text: string) => call<{ result: boolean }>("plugin.layer.call", { call: "confirm", args: [text] }).then((r) => r.result === true),
       confirmCard: (text: string) => call<{ result: { allowed: boolean; card: string } }>("plugin.layer.call", { call: "confirmCard", args: [text] }).then((r) => r.result),
-      // `plugins.install` (capability `plugins.install`, bundled-only): an install through the user's own door; what it
+      // `plugins.install` (capability `plugins.install`, any plugin's behind its OK card): an install through the user's own door; what it
       // installs lands found, behind its sealed OK card, which says this plugin asked.
       plugins: {
         install: (source: unknown) => call<{ result: { id: string; state: string; card?: string } }>("plugin.layer.call", { call: "plugins.install", args: [source] }).then((r) => r.result),
       } as unknown as PluginApi["plugins"],
       t,
     }) as unknown as PluginApi;
-  }, [part.entry.pluginId, part.mount, t]);
+  }, [part.entry.pluginId, part.mount, t, fake]);
 }
 
 /** A menu the core shows for this part (it crosses the frame's edge, so the core draws it, natively): data only,
@@ -1377,7 +1332,7 @@ export function useSurfaceEnvironment(): SurfaceEnvironment | undefined {
   return env;
 }
 
-/** Opens a place in the main window (Settings at a section and an item, a bot's tab): for the `clover` tree's parts,
+/** Opens a place in the main window (Settings at a section and an item, a bot's tab): for the `moss` tree's parts,
  *  such as the island's Usage and Devices tabs. Not in lane B's declarations yet. */
 export function useOpen(): (target: OpenTarget) => Promise<void> {
   const part = usePart();
@@ -1387,7 +1342,7 @@ export function useOpen(): (target: OpenTarget) => Promise<void> {
 /** How often a placed native view's frame is measured again, besides its resizes (a move with no resize). */
 export const VIEW_FRAME_POLL_MS = 250;
 
-/** Places a native view the core draws over this part (the Clover Browser's live view, `name` "browser"): the ref
+/** Places a native view the core draws over this part (the MOSS Browser's live view, `name` "browser"): the ref
  *  callback goes on the element the view should cover, and the core keeps the view on it as it moves, resizes, hides
  *  or goes. The core clips the view to this part's own frame, and only a plugin with the `browser` capability places
  *  one. With two parts placing the same view, the one the person used last has it (ruling R8). Not in lane B's
@@ -1434,22 +1389,26 @@ export function useDrag(): { offer(offer: DragOffer): Promise<string | undefined
 
 /** A spot this part declares, as its entries in the spot's order, kept current (lane B's `useSpotEntries`): for a part
  *  that draws one at a time with `<Spot entry>` (the island's tabs, the pill's targets). */
-export function useSpotEntries(name: string, spotKey?: string, forProps?: string | { readonly bot?: unknown; /** The kind of session the part shows (`when.session`): the `clover` layer's say, heeded by the main process from that layer only. */ readonly forSessionKind?: unknown }): { readonly entries: readonly SpotEntryView[]; /** False until the first answer: an empty list before it is not yet the spot's answer (a window document that loads again starts so). */ readonly loaded: boolean; subscribe(listener: () => void): Unsubscribe } {
+export function useSpotEntries(name: string, spotKey?: string, forProps?: string | { readonly bot?: unknown; /** The kind of session the part shows (`when.session`): the `moss` layer's say, heeded by the main process from that layer only. */ readonly forSessionKind?: unknown }): { readonly entries: readonly SpotEntryView[]; /** False until the first answer: an empty list before it is not yet the spot's answer (a window document that loads again starts so). */ readonly loaded: boolean; subscribe(listener: () => void): Unsubscribe } {
   const part = usePart();
   // The bot whose tab shows, by id or as the props a `<Spot>` there is given (`{ bot }`, a reference or an id): the spots a bot's own entries fill.
   const b = typeof forProps === "string" ? forProps : forProps?.bot;
   const forBot = typeof b === "string" ? b : typeof (b as { id?: unknown } | undefined)?.id === "string" ? (b as { id: string }).id : undefined;
   const kind = typeof forProps === "object" && typeof forProps?.forSessionKind === "string" ? forProps.forSessionKind : undefined;
   const [entries, setEntries] = useState<readonly SpotEntryView[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  // Which question the last answer was to: an answer for other params (another bot, another session kind) is not this
+  // one's, so the list reads as not loaded in the very render the params change, until its own answer comes.
+  const asked = JSON.stringify([part.mount, name, spotKey ?? null, forBot ?? null, kind ?? null]);
+  const [answered, setAnswered] = useState<string | undefined>(undefined);
+  const loaded = answered === asked;
   const listeners = useRef(new Set<() => void>());
   useEffect(() => {
     let live = true;
     const load = () => void rt().bridge.entries(part.mount, name, spotKey, forBot, kind).then((e) => {
       if (!live) return;
       setEntries((old) => (JSON.stringify(old) === JSON.stringify(e) ? old : e));
-      setLoaded(true);
-    }, () => { if (live) setLoaded(true); });
+      setAnswered(asked);
+    }, () => { if (live) setAnswered(asked); });
     load();
     const off = onLayerMessage((m) => {
       if (m.type === "respot") load();
@@ -1458,7 +1417,7 @@ export function useSpotEntries(name: string, spotKey?: string, forProps?: string
       live = false;
       off();
     };
-  }, [part.mount, name, spotKey, forBot, kind]);
+  }, [part.mount, name, spotKey, forBot, kind, asked]);
   useEffect(() => {
     for (const l of listeners.current) l();
   }, [entries]);
@@ -1525,37 +1484,41 @@ function shellApi(mount: string): NonNullable<PluginApi["shell"]> {
   };
 }
 
-/** For the `clover` shell: tells the core where the window is, for the plugin frames that read it (`shell.state`). */
+/** For the `moss` shell: tells the core where the window is, for the plugin frames that read it (`shell.state`). */
 export function useShellReport(): (report: { state: ShellState; apps: readonly ShellApp[]; account?: ShellAccount }) => void {
   const part = usePart();
   return useCallback((report) => rt().bridge.shellReport(part.mount, report), [part.mount]);
 }
 
 /** The user's own words, sent from inside the key press or click that sends them (lane B's `useUserSend`; the
- *  Dispatch pill's). The entry in the `composer` spot has it (whichever plugin's), and the bundled `clover` tree's surfaces (the pill); elsewhere it is undefined. The runtime counts
- *  a send only within the frame's transient user activation, and the core only after it saw that input come to the
- *  window, one send for one press or click; any other is refused and sends nothing. */
+ *  Dispatch pill's). The entry in the `composer` spot has it (whichever plugin's, to its own session only); any other part
+ *  has it with the `user.send` capability (the OK card says "sends messages to your bots and sessions as you, with text it chooses"), and the app refuses the
+ *  send of a part without it. A send counts only inside a press or click (the frame's own activation, and the app saw that input
+ *  come to the window within a second: one send for one press), or after a hold: a press and its release the app itself saw in
+ *  this frame give it one send within 30 s of the release, its activation no longer needed (hold-to-talk: the words come after
+ *  the release and the transcription). A page's own events give neither; any other send is refused and sends nothing. */
 export function useUserSend(): ((to: UserSendTarget, message: string | { text: string; images?: readonly { mediaType: "image/png" | "image/jpeg" | "image/webp"; data: Uint8Array }[] }) => Promise<void>) | undefined {
   const part = usePart();
-  // The core decides again, from the mount it made: the entry in the `composer` spot (any plugin's), or a part of
-  // the bundled `clover` tree. This only hides the hook from the rest.
-  const allowed = part.entry.spot === "composer" || part.entry.pluginId.split("/")[0] === "clover";
   const send = useCallback(async (to: UserSendTarget, message: string | { text: string; images?: readonly { mediaType: "image/png" | "image/jpeg" | "image/webp"; data: Uint8Array }[] }) => {
-    const activation = (navigator as { userActivation?: { isActive: boolean } }).userActivation;
-    if (activation !== undefined && !activation.isActive) throw new Error("the user's words go only from inside their key press or click");
+    // Whether this is the user's own words is the app's to say, not the page's: a send inside a press or click (the frame's own
+    // activation, and the press seen by the app within a second), or after a hold the app saw released (once, within 30 s of the
+    // release, with no activation needed). Any other send is refused there.
     const m = typeof message === "string" ? { text: message } : message;
     await rt().bridge.userSend(part.mount, to, m);
   }, [part.mount]);
-  return allowed ? send : undefined;
+  return send;
 }
 
 /** What the `composer` spot hands the entry the core mounted there (spec §5.5, lane E): the models its session can
  *  switch to, a model switch, and interrupt and stop. Each acting call counts only inside the user's own key press or
- *  click. On a bot's main conversation a model switch changes a user layer: the `clover` layer's entry changes it
+ *  click. On a bot's main conversation a model switch changes a user layer: the `moss` layer's entry changes it
  *  directly, any other plugin's ends in the sealed card the core raises for it. Undefined outside that spot. */
 export interface ComposerHost {
-  models(): Promise<{ models: { id: string; name?: string; providerName?: string; efforts?: string[] }[]; default?: string }>;
+  models(): Promise<{ models: { id: string; name?: string; providerName?: string; efforts?: string[] }[]; default?: string; options?: ComposerHostOption[] }>;
   setModel(model: string, effort?: string): Promise<unknown>;
+  /** Sets one of the session agent's other selectable options (`models()`'s `options`) to one of its values: the person's
+   *  own press only, the engine's `session.setConfig`; the agent may refuse it. */
+  setOption(option: string, value: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
   /** The slash menu's commands: those of plugins that are on, OK'd and running, the bot's own plugin's first. The
@@ -1564,13 +1527,14 @@ export interface ComposerHost {
   /** Runs `<namespace>.<name>` as the user, with `args` for that command's plugin alone, inside the user's own key
    *  press or click; the result is the handler's. The bundled composer's only. */
   runCommand(name: string, args?: unknown): Promise<{ result: unknown }>;
-  /** Push-to-talk (spec §6.6), the bundled composer's only: the app records, never the plugin. `listenStatus` is a read: does
-   *  the bot's voice listen now (the control shows only then). `listenStart` goes inside the user's own press (a click or
-   *  key) and asks the app to record; it answers when recording began, with a `note` when it did not (no microphone, no
-   *  permission yet). `listenStop` is the release: it answers with what was heard, as text for the box, or a `note`. */
-  listenStatus(): Promise<{ listens: boolean }>;
-  listenStart(): Promise<{ note?: string }>;
-  listenStop(): Promise<{ text?: string; note?: string }>;
+}
+
+/** An option the session's agent reports and lets the person choose from a fixed list of values (`ComposerHost.models`). */
+export interface ComposerHostOption {
+  id: string;
+  name?: string;
+  current?: string;
+  values: { value: string; name?: string }[];
 }
 
 /** A command the slash menu lists (`ComposerHost.commands`). */
@@ -1593,24 +1557,22 @@ export function useComposerHost(): ComposerHost | undefined {
   const inSpot = part.entry.spot === "composer";
   return useMemo(() => {
     if (!inSpot) return undefined;
-    const ask = (op: "models" | "setModel" | "interrupt" | "stop" | "commands" | "runCommand" | "listenStatus" | "listenStart" | "listenStop", args?: unknown) => rt().bridge.composer(part.mount, op, args);
+    const ask = (op: "models" | "setModel" | "setOption" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown) => rt().bridge.composer(part.mount, op, args);
     return {
       models: () => ask("models") as ReturnType<ComposerHost["models"]>,
       setModel: (model, effort) => ask("setModel", { model, ...(effort !== undefined ? { effort } : {}) }),
+      setOption: (option, value) => ask("setOption", { option, value }),
       interrupt: () => ask("interrupt").then(() => undefined),
       stop: () => ask("stop").then(() => undefined),
       commands: () => ask("commands") as ReturnType<ComposerHost["commands"]>,
       runCommand: (name, args) => ask("runCommand", { name, ...(args !== undefined ? { args } : {}) }) as ReturnType<ComposerHost["runCommand"]>,
-      listenStatus: () => ask("listenStatus") as ReturnType<ComposerHost["listenStatus"]>,
-      listenStart: () => ask("listenStart") as ReturnType<ComposerHost["listenStart"]>,
-      listenStop: () => ask("listenStop") as ReturnType<ComposerHost["listenStop"]>,
     };
   }, [inSpot, part.mount]);
 }
 
-/** The core client of the bundled `clover` tree's parts (lane F's `useCore`; not in lane B's declarations): any call
- *  the `layer` role makes, on the part's own plugin's connection, and the core events it subscribed to. Undefined for
- *  any other plugin's part. */
+/** The core client of a part (lane F's `useCore`; not in lane B's declarations): a call of the app's door for parts
+ *  (`tree-calls.ts`: each call by a capability the part's plugin holds, F2), or of the `layer` role on the part's own
+ *  plugin's connection, and the core events it subscribed to (each by its area and capability). Any plugin's part has it. */
 export interface CoreClient {
   call(method: string, params?: unknown): Promise<any>;
   on(event: string, listener: (event: Record<string, unknown>) => void): Unsubscribe;
@@ -1620,8 +1582,7 @@ export interface CoreClient {
 export function useCore(): CoreClient | undefined {
   const part = usePart();
   const pluginId = part.entry.pluginId;
-  const tree = pluginId === "clover" || pluginId.startsWith("clover/");
-  return useMemo(() => (!tree ? undefined : {
+  return useMemo(() => ({
     call: (method: string, params?: unknown) => rt().bridge.api(part.mount, method, params ?? {}),
     on: (event: string, listener: (event: Record<string, unknown>) => void) => {
       const area = EVENT_AREAS[event];
@@ -1631,7 +1592,85 @@ export function useCore(): CoreClient | undefined {
         if (method === "core.event" && e?.type === event) listener(e);
       });
     },
-  }), [tree, part.mount, pluginId]);
+  }), [part.mount, pluginId]);
+}
+
+/** The bots as `bot.records` gives them (`bots.read`), read once per core client and shared by every face on the page for a
+ *  moment, so a canvas of many bots asks once. */
+const RECORDS = new WeakMap<CoreClient, { at: number; read: Promise<{ id?: unknown; name?: unknown; face?: unknown }[]> }>();
+function botRecords(core: CoreClient): Promise<{ id?: unknown; name?: unknown; face?: unknown }[]> {
+  const held = RECORDS.get(core);
+  if (held !== undefined && Date.now() - held.at < 2_000) return held.read;
+  const read = Promise.resolve(core.call("bot.records", {})).then((r: { bots?: { id?: unknown; name?: unknown; face?: unknown }[] } | undefined) => r?.bots ?? [], () => []);
+  RECORDS.set(core, { at: Date.now(), read });
+  return read;
+}
+
+/** A bot's living face, the same drawing MOSS's own window makes (spec revision 20, §9.5): from the bot's pins in
+ *  `bot.records` (`bots.read`; traits left out come from its name), or from the `face` and `name` a part already has (then no
+ *  read is made). `state` is the activity feed's, shown by motion; `idle` when absent. Any plugin's part may draw it. */
+export function BotFace({ bot, name, face, size = 40, state = "idle" }: BotFaceProps) {
+  const core = useCore();
+  const [rec, setRec] = useState<{ name?: string; face?: BotFaceProps["face"] } | undefined>(undefined);
+  const needs = face === undefined || name === undefined;
+  useEffect(() => {
+    if (!needs || core === undefined) return;
+    let live = true;
+    void botRecords(core).then((bots) => {
+      const mine = bots.find((b) => b.id === bot);
+      if (live && mine !== undefined) setRec({ ...(typeof mine.name === "string" ? { name: mine.name } : {}), ...(mine.face !== null && typeof mine.face === "object" ? { face: mine.face as BotFaceProps["face"] } : {}) });
+    });
+    return () => { live = false; };
+  }, [core, bot, needs]);
+  const shownName = name ?? rec?.name ?? bot;
+  const pins = face ?? rec?.face;
+  return <FaceCanvas name={shownName} face={pins} mood={state} size={size} surface="page" />;
+}
+
+/** A bot's face as MOSS's faces kit resolves it, for a part that shows something in the face's own colour beside it (the
+ *  session canvas paints a bot's light and lines this colour): from its name and its record's pins (`bot.records`), any
+ *  trait left out drawn from the name, as `BotFace` draws it. Pure: the kit's own `makeBot`, no rules of its own. */
+export function botFaceLook(name: string, face?: BotFaceProps["face"]): { shape: string; colorName: string; color: string; eyes: string; temper: string } {
+  const b = makeBot(name, (face ?? {}) as Parameters<typeof makeBot>[1]);
+  return { shape: b.shape, colorName: b.colorName, color: b.color, eyes: b.eye.kind, temper: b.temper };
+}
+
+/** An agent backend's mark (spec revision 20, §9.5): the icon its plugin ships, drawn as an image only (never markup in the
+ *  page), in its colour where it is a one-colour glyph; else ours, the name's first letter on its colour. */
+export function AgentMark({ backend, size = 24 }: AgentMarkProps) {
+  const look = agentMark(backend);
+  const box: CSSProperties = { width: size, height: size, flex: "none", display: "inline-block" };
+  if (look.kind === "icon") {
+    const img = <img src={look.src} alt="" width={size} height={size} draggable={false} style={{ ...box, objectFit: "contain" }} data-agent-mark="icon" />;
+    // A backend with a mark for each theme (the built-in one's): the dark one where the theme is dark.
+    return look.srcDark === undefined ? img : <picture style={box}><source media="(prefers-color-scheme: dark)" srcSet={look.srcDark} />{img}</picture>;
+  }
+  if (look.kind === "mask") {
+    const url = `url("${look.src}")`;
+    return <span role="img" aria-label={typeof backend.name === "string" ? backend.name : backend.id} data-agent-mark="mask" style={{ ...box, background: look.fill === undefined ? "currentColor" : look.fill2 === undefined ? look.fill : `linear-gradient(135deg, ${look.fill}, ${look.fill2})`, WebkitMask: `${url} center / contain no-repeat`, mask: `${url} center / contain no-repeat` }} />;
+  }
+  return (
+    <span role="img" aria-label={typeof backend.name === "string" ? backend.name : backend.id} data-agent-mark="letter"
+      style={{ ...box, borderRadius: Math.round(size * 0.24), background: look.background2 === undefined ? look.background : `linear-gradient(135deg, ${look.background}, ${look.background2})`, color: look.foreground, fontSize: Math.round(size * 0.56), fontWeight: 600, lineHeight: `${size}px`, textAlign: "center", fontFamily: "inherit" }}>
+      {look.letter}
+    </span>
+  );
+}
+
+/** The display names of the agent backends (`agent.backends`), for a part that shows which agent a session runs on: a
+ *  function from a backend's id to its name, or to the id itself until the names are read or when a backend has none
+ *  (never blank, never throws). The part's plugin needs the `sessions.read` capability that call takes. Any part may use it. */
+export function useBackendNames(): (backend: string | undefined) => string | undefined {
+  const core = useCore();
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // One reader per core client: it reads on the first lookup, and again on a later one when the read failed or came back empty.
+  const reader = useMemo(() => (core === undefined ? undefined : new BackendNamesReader(() => Promise.resolve(core.call("agent.backends", {})) as Promise<{ backends?: { id?: unknown; name?: unknown }[] } | undefined>, Date.now, setNames)), [core]);
+  useEffect(() => () => reader?.stop(), [reader]);
+  return useCallback((backend: string | undefined) => {
+    if (backend === undefined) return undefined;
+    if (reader !== undefined) queueMicrotask(() => reader.ask());
+    return names.get(backend) ?? backend;
+  }, [names, reader]);
 }
 
 /** State that outlives its document's reload in this window (`useState`'s shape): the user's place, a draft. A layer's
@@ -1642,16 +1681,18 @@ export function useCore(): CoreClient | undefined {
  *  can't be stored or read is plain state.
  *
  *  Where it lives: the window's session storage (never `localStorage`), per plugin and key, as JSON. Session storage is
- *  per origin, and every plugin's layer is its own origin (`clover-plugin://<layer>/`): a third-party part's `useKept`
- *  is in its layer's store and can't read the shell's or the composer's, and theirs (the clover layer's) can't be read
- *  by a third-party page. It goes when the window closes; Clover writes none of it to disk (what Chromium does with a
- *  session's storage is its own, and Clover keeps no session to restore). The `clover.kept:<plugin>:` prefix is a
+ *  per origin, and every plugin's layer is its own origin (`moss-plugin://<layer>/`): a third-party part's `useKept`
+ *  is in its layer's store and can't read the shell's or the composer's, and theirs (the moss layer's) can't be read
+ *  by a third-party page. It goes when the window closes; MOSS writes none of it to disk (what Chromium does with a
+ *  session's storage is its own, and MOSS keeps no session to restore). The `moss.kept:<plugin>:` prefix is a
  *  namespace among one layer's plugins, not a boundary: keep in it only the user's place and their own unsent words.
  *  A draft there (the composer's, keyed by its conversation's id only) may hold something pasted, a secret even: it is
  *  no more exposed than the text field it is typed in, which the same document already holds. */
 export function useKept<T>(key: string, initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void] {
-  const pluginId = useContext(PartContext)?.entry.pluginId ?? "clover";
-  const storeKey = `clover.kept:${pluginId}:${key}`;
+  const part = useContext(PartContext);
+  const pluginId = part?.entry.pluginId ?? "moss";
+  const scope = part !== null && runtime !== undefined ? runtime.testKeptScope?.(part.mount) ?? "" : "";
+  const storeKey = `moss.kept:${scope}${pluginId}:${key}`;
   const read = (k: string): T => {
     try {
       const raw = globalThis.sessionStorage?.getItem(k);
@@ -1717,7 +1758,7 @@ export function useWindowDrag(): void {
   }, [part.mount]);
 }
 
-/** The session this window shows (the `clover` layer's shell says so; the core refuses it from any other layer): a
+/** The session this window shows (the `moss` layer's shell says so; the core refuses it from any other layer): a
  *  desktop notification for it waits while the app is in front. Not in lane B's declarations. */
 export function useActiveSession(session: string | undefined): void {
   const part = usePart();
@@ -1746,16 +1787,19 @@ export function useApprovals(): { readonly cards: readonly CardMeta[]; subscribe
       if (!live || !Array.isArray(now)) return;
       const known = new Set(rt().cards.map((c) => c.id));
       const added = (now as CardMeta[]).filter((c) => typeof c?.id === "string" && !known.has(c.id) && !resolvedCards.has(c.id));
-      if (added.length === 0) return;
-      rt().cards = [...rt().cards, ...added];
-      setCards([...rt().cards]);
+      if (added.length > 0) rt().cards = [...rt().cards, ...added];
+      // Every part's list is the layer's now: one that mounted beside another (whose read added the cards first) heard
+      // nothing of them otherwise, and drew a pending card as answered.
+      setCards((old) => (old.length === rt().cards.length && old.every((c, i) => c === rt().cards[i]) ? old : [...rt().cards]));
     }, () => undefined);
     return () => { live = false; };
   }, [mount]);
   const listeners = useRef(new Set<() => void>());
   useEffect(() => onLayerMessage(() => setCards([...rt().cards])), []);
   useEffect(() => { for (const l of listeners.current) l(); }, [cards]);
-  return useMemo(() => ({ cards, subscribe: (listener: () => void) => { listeners.current.add(listener); return () => listeners.current.delete(listener); } }), [cards]);
+  const owns = rt().testOwnsCard;
+  const own = useMemo(() => (owns === undefined ? cards : cards.filter((c) => owns(mount, c.id))), [cards, owns, mount]);
+  return useMemo(() => ({ cards: own, subscribe: (listener: () => void) => { listeners.current.add(listener); return () => listeners.current.delete(listener); } }), [own]);
 }
 
 // Sealed cards (E-M3, §5.5): a part with the `approvals` capability places each card's sealed frames — its fields'
@@ -1800,7 +1844,7 @@ function SealedFrame({ mount, cardId, kind, name, look, lines, size, tokens, fon
   useEffect(() => {
     const on = (event: MessageEvent) => {
       if (frame.current === null || event.source !== frame.current.contentWindow) return;
-      const said = (event.data as { cloverSealedSize?: { width?: unknown; height?: unknown } } | null)?.cloverSealedSize;
+      const said = (event.data as { mossSealedSize?: { width?: unknown; height?: unknown } } | null)?.mossSealedSize;
       if (said === null || typeof said !== "object" || said === undefined) return;
       const n = (v: unknown, max: number) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(Math.ceil(v), max) : undefined);
       const width = n(said.width, 1200);
@@ -1840,7 +1884,7 @@ function SealedFrame({ mount, cardId, kind, name, look, lines, size, tokens, fon
     style.width = box.width ?? 0;
     style.height = box.height ?? 0;
   }
-  return <iframe ref={frame} src={src} onLoad={() => setLoaded(true)} data-clover-sealed={`${kind}:${name}`} data-clover-sealed-state={`${loaded ? "loaded" : "pending"}${box.height === undefined ? "" : byPage.current ? " said" : " fallback"}`} style={style} title={kind === "field" ? `card field ${name}` : `card button ${name}`} referrerPolicy="no-referrer" sandbox={undefined} />;
+  return <iframe ref={frame} src={src} onLoad={() => setLoaded(true)} data-moss-sealed={`${kind}:${name}`} data-moss-sealed-state={`${loaded ? "loaded" : "pending"}${box.height === undefined ? "" : byPage.current ? " said" : " fallback"}`} style={style} title={kind === "field" ? `card field ${name}` : `card button ${name}`} referrerPolicy="no-referrer" sandbox={undefined} />;
 }
 
 /** A pixel size from a `card.font.size` token ("15px"), or the stylesheet's own 14. */
@@ -1860,7 +1904,7 @@ export function Card({ id, tokens, className, children }: CardElementProps) {
     ? Object.fromEntries(Object.entries(part.tokens).filter(([name, v]) => name.startsWith("card.") && typeof v === "string"))
     : Object.fromEntries(Object.entries(tokens).filter(([name, v]) => name.startsWith("card.")));
   return (
-    <div data-clover-card={id} className={className}>
+    <div data-moss-card={id} className={className}>
       <CardOwner.Provider value={{ mount: part.mount, cardId: id, tokens: given }}>{children as never}</CardOwner.Provider>
       <CardReview mount={part.mount} cardId={id} />
     </div>
@@ -1876,9 +1920,9 @@ function CardReview({ mount, cardId }: { mount: string; cardId: string }) {
   return (
     <button
       type="button"
-      className="clover-card-review"
-      data-clover-card-review={opened}
-      title="Opens this card in Clover's own window, where a model can read the plugin's files and say what it finds"
+      className="moss-card-review"
+      data-moss-card-review={opened}
+      title="Opens this card in MOSS's own window, where a model can read the plugin's files and say what it finds"
       onClick={() => {
         setOpened("opening");
         void rt().bridge.cardPage!(mount, cardId).then((ok) => setOpened(ok ? "idle" : "no"), () => setOpened("no"));
@@ -1931,8 +1975,52 @@ export function CardDeny(props: CardButtonProps) {
 
 export const Cards = { Root: Card, Field: CardField, Approve: CardApprove, Deny: CardDeny };
 
-/** MCP Apps views (E-M3): until then the tool's result shows as text, as for a page no component places. */
-export const AppView = (_props: AppViewProps) => null;
+/** Whether any scrolling or clipping ancestor (or the window) cuts `b` off: the core's view is a native one over the window and
+ *  cannot be clipped to a scrolled list, so a page shows only while all of its place is in sight. */
+function clippedAway(el: HTMLElement, b: DOMRect): boolean {
+  for (let p = el.parentElement; p !== null; p = p.parentElement) {
+    const o = getComputedStyle(p);
+    if (/(auto|scroll|hidden|clip)/.test(`${o.overflowX} ${o.overflowY}`)) {
+      const r = p.getBoundingClientRect();
+      if (b.top < r.top - 1 || b.bottom > r.bottom + 1 || b.left < r.left - 1 || b.right > r.right + 1) return true;
+    }
+  }
+  return b.top < -1 || b.left < -1 || b.bottom > document.documentElement.clientHeight + 1 || b.right > document.documentElement.clientWidth + 1;
+}
+
+/** MCP Apps views (§5.5): the page of a tool call, drawn by the core in an isolated view of its own over this element. The
+ *  element takes the height the page says it needs (capped by the core); while the core reads the page it holds a short
+ *  placeholder, and when no page can be shown (another computer's tool, a refusal, a host with no views) it draws nothing,
+ *  so the tool's text result is what shows. */
+export function AppView({ call, className }: AppViewProps) {
+  const part = usePart();
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [view, setView] = useState<{ gone: boolean; height: number }>({ gone: false, height: 160 });
+  useEffect(() => {
+    const bridge = rt().bridge;
+    if (el === null) return;
+    if (bridge.appView === undefined) { setView((v) => (v.gone ? v : { ...v, gone: true })); return; }
+    let last = "";
+    const measure = () => {
+      const b = el.getBoundingClientRect();
+      const shown = b.width > 0 && b.height > 0 && document.visibilityState !== "hidden" && el.isConnected && !clippedAway(el, b);
+      const rect = shown ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+      const key = JSON.stringify(rect);
+      if (key === last) return;
+      last = key;
+      void bridge.appView!(part.mount, call, rect).then((r) => { if (r === undefined) setView((v) => (v.gone ? v : { ...v, gone: true })); }).catch(() => undefined);
+    };
+    const off = onLayerMessage((m) => {
+      if (m.type !== "app-view" || m.session !== call.session || m.callId !== call.callId) return;
+      if (m.unavailable === true) setView((v) => ({ ...v, gone: true }));
+      else if (typeof m.height === "number") { const h = Math.max(24, Math.ceil(m.height)); setView((v) => (v.height === h && !v.gone ? v : { gone: false, height: h })); }
+    });
+    const stop = trackRect(el, measure, () => { void bridge.appView!(part.mount, call, null).catch(() => undefined); });
+    return () => { off(); stop(); };
+  }, [el, part.mount, call.session, call.callId]);
+  if (view.gone) return null;
+  return <div ref={setEl} className={className} data-moss-app-view={call.callId} style={{ display: "block", width: "100%", height: view.height }} />;
+}
 
 /** The UI API as lane B declared it. */
 export const CardKit: CardComponents = Object.assign(Card, { Field: CardField, Approve: CardApprove, Deny: CardDeny });

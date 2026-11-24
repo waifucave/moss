@@ -1,6 +1,6 @@
-// `@waifucave/clover-plugin-sdk` (spec §5.6): JSON Schemas and TypeScript types for the manifest, theme, layout,
+// `@waifucave/moss-plugin-sdk` (spec §5.6): JSON Schemas and TypeScript types for the manifest, theme, layout,
 // locale and index formats; the catalogs of spots, points, tokens, hooks and capabilities; the plugin API (§5.4) and
-// the UI API (§5.5) as declarations; and the validation `clover plugin validate` runs. One source: the zod schemas in
+// the UI API (§5.5) as declarations; and the validation `moss plugin validate` runs. One source: the zod schemas in
 // `manifest/` and `formats/` give the types, the validation and the JSON Schemas in `generated/`.
 //
 // `src/ui/` is lane E's: the UI API's implementation. The inherited Tier-2 API (`createPlugin`) stays exported until
@@ -35,6 +35,7 @@ export * from "./formats/upgrade";
 export * from "./catalogs/index";
 
 export * from "./api/keyed-fetch";
+export * from "./api/streams";
 export type * from "./api/plugin-api";
 export {
   API_CALL_MAX_TIMEOUT_MS, API_CALL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, KEY_NAME_RE, KEYED_FETCH_ERROR_CODES, KEYS_PER_PLUGIN_MAX, ROUTINE_FIRE_PAYLOAD_MAX,
@@ -45,3 +46,6 @@ export type * from "./api/ui-api";
 export { isSealedLookAllowed } from "./api/ui-api";
 
 export * from "./legacy-tier2";
+
+// The core's views a plugin's parts read (generated from the core's schemas: scripts/views.ts).
+export type * from "./views";

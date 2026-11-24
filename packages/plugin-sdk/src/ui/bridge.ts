@@ -1,5 +1,5 @@
 // The channel between a plugin layer and the app's main process (spec §5.5), as the layer's preload exposes it on
-// `window.cloverLayer`. Lane E's runtime is both ends: the app's main process (apps/desktop/src/main/ui) answers, and
+// `window.mossLayer`. Lane E's runtime is both ends: the app's main process (apps/desktop/src/main/ui) answers, and
 // the UI API (`index.tsx`) calls. A plugin's components never see it; they use `<Spot>`, the hooks and the plugin
 // API.
 //
@@ -12,10 +12,6 @@ import type { TokenValue } from "../catalogs/tokens";
 import type { StringTable } from "./strings";
 
 export * from "./strings";
-export { cleanSpeechMessage, SPEECH_BATCH_MAX, type SpeechMessage } from "./speech";
-import type { SpeechMessage } from "./speech";
-export { cleanAvatarDown, cleanAvatarUp, type AvatarDown, type AvatarUp } from "./avatar-control";
-import type { AvatarDown, AvatarUp } from "./avatar-control";
 
 /** Where a part is, as the runtime tells it: the tab (its bot), the surface, the session's kind, the OS, the window's
  *  material, safe mode. */
@@ -47,7 +43,7 @@ export interface MountInfo {
   /** The part's resolved tokens, by name (its tab's theme, plus what dresses it). */
   tokens: Readonly<Record<string, TokenValue>>;
   context: MountContext;
-  /** The plugin's client module, served from this layer's origin; absent for the `clover` layer, whose modules come
+  /** The plugin's client module, served from this layer's origin; absent for the `moss` layer, whose modules come
    *  with the runtime. */
   module?: string;
   /** The plugin's stylesheets, served from this layer's origin. */
@@ -58,7 +54,7 @@ export interface MountInfo {
   /** The document's root is a bot's tab (its bot), or is dressed by a style entry: the sheets' scopes find it so. */
   tab?: string;
   styled?: boolean;
-  /** The document's strings: its plugin's keys (`<top-level id>.…`; `clover.…` for the `clover` layer and the core),
+  /** The document's strings: its plugin's keys (`<top-level id>.…`; `moss.…` for the `moss` layer and the core),
    *  in the user's language (§5.5). */
   strings?: StringTable;
   /** How long a frame of this document's stays away from the screen before it sleeps, when the app sets it (a test or
@@ -134,6 +130,10 @@ export type SpotItem =
     asleep?: boolean;
     /** The plugin's manifest says `client.isolated`: its frame may be cross-origin isolated (`allow="cross-origin-isolated"`). */
     isolated?: true;
+    /** The part is a background part (`app.background`) of a plugin holding `audio`: its frame may play sound with no press (`allow="autoplay"`). */
+    autoplay?: true;
+    /** A plugin of the frame's own layer holds `microphone`: the frame may open the microphone (`allow="microphone"`). */
+    microphone?: true;
   }
   /** A web page entry (§5.5 "Web pages"): an isolated view with its own session, which the core draws over the
    *  place the part reports (`webFrame`). */
@@ -198,36 +198,26 @@ export type LayerMessage =
   /** The core root only: one of the core's own pages to show over the window (the welcome guide, safe mode's plugin
    *  manager), or none. */
   | { type: "core-page"; page: "welcome" | "plugins" | "key" | null }
+  /** The core root only: a card waits in this window (or the old home's copy does): the core's page steps aside, kept as
+   *  it is, and is back when none waits. */
+  | { type: "core-page-aside"; aside: boolean }
   /** Files the user dropped on this document, as tokens (like a pick's), for a plugin that holds `files`: never paths. */
   | { type: "files-dropped"; grants: readonly { token: string; name: string; kind: "file" | "folder"; access: "read" | "write" | "readwrite"; size?: number }[]; refused?: string }
   /** A child frame's layer stopped; the parent shows a placeholder with a reload. */
   | { type: "child-gone"; child: string; reason: string }
   /** A child frame's document loads again, from this fresh single-use URL (it must frame a layer installed after it
    *  was served). */
-  | { type: "child-reload"; child: string; url: string }
+  | { type: "child-reload"; child: string; url: string; /** The frame's `allow` flags as main has them now (its item's). */ isolated?: true; autoplay?: true; microphone?: true }
   /** The window's width class changed (`MountContext.window`), to every frame of the window. */
   | { type: "window"; narrow: boolean }
   /** A child frame's content height, for the parent to size it (§5.5: the core sizes the frame). */
   | { type: "child-size"; child: string; height: number }
-  /** The speech the bot's avatar frame lip-syncs to, from its parent (the stage): numbers only (`cleanSpeechMessage`). */
-  | { type: "speech"; mount: string; speech: SpeechMessage }
-  /** A cue for the bot's avatar frame, from its parent (the stage): data only (`cleanAvatarDown`). */
-  | { type: "avatar"; mount: string; message: AvatarDown }
-  /** What an avatar frame says about its model and figure, to its parent only (`cleanAvatarUp`). */
-  | { type: "avatar-up"; child: string; message: AvatarUp }
-  /** One piece of a bot's spoken reply (`voice.play`), to the main window's `clover` shell only: its player plays it. */
-  | { type: "voice"; piece: VoicePiece }
-  /** Push-to-talk, to the main window's `clover` shell only, which records (a plugin never gets the microphone): `start` is sent
-   *  only after the user's own press reached main (the composer's `listenStart`) and carries the utterance main minted; `stop`
-   *  after their release (or the cap). The shell sends the audio back as `voice.listen` pieces, which main numbers and checks. */
-  | { type: "listen"; op: "start"; bot: string; utterance: string; maxMs: number }
-  | { type: "listen"; op: "stop"; utterance: string }
   /** An act of the window a bot's own frame asked for through `shell.*` (main checked the capability, the user's press and whose tab shows), to the main
-   *  window's `clover` shell only. */
+   *  window's `moss` shell only. */
   | { type: "shell-act"; act: ShellAct }
   /** Where the window is now (`ShellState`), to the frames of the plugin whose bot's tab shows that hold `shell.read`. */
   | { type: "shell-state"; state: ShellState }
-  /** Which essential handles the shown bot's own controls offer (`shell.provide`), to the `clover` shell only. */
+  /** Which essential handles the shown bot's own controls offer (`shell.provide`), to the `moss` shell only. */
   | { type: "shell-provides"; sidebar: boolean; drag: boolean }
   /** The window got the focus back after the core's own overlay: restore the element that had it (S9). */
   | { type: "focus-returned" }
@@ -237,17 +227,11 @@ export type LayerMessage =
   /** A surface window's display changed (resolution, arrangement, the menu bar): its environment as it is now. */
   | { type: "surface-environment"; environment: SurfaceEnvironment }
   /** The core asks where a child frame is in this document's viewport (the menu broker); answered by `rectReply`. */
-  | { type: "rect-query"; id: string; child: string };
+  | { type: "rect-query"; id: string; child: string }
+  /** An MCP Apps page's view of a tool call (`<AppView call>`): its content height as the page last said it, or that the page
+   *  can't be shown (the tool's text result is what shows then). */
+  | { type: "app-view"; session: string; callId: string; height?: number; unavailable?: true };
 
-/** A piece of speech as `voice.play` carries it (base64 pcm16-24k, the last piece `final` and empty). */
-export interface VoicePiece {
-  bot: string;
-  utterance: string;
-  seq: number;
-  audio: string;
-  format: "pcm16-24k" | "mp3" | "opus";
-  final: boolean;
-}
 
 /** An item of a menu the core shows for a part (it crosses frames, so the core draws it): data only. */
 export interface MenuItem {
@@ -269,7 +253,7 @@ export interface Rect {
 /** What a surface window (the island, the pill) asks of the core: to show or hide, its size or its whole place on
  *  the screen, and where it takes clicks (elsewhere clicks pass through to whatever is under it). `bounds` is in screen
  *  CSS pixels and wins over `width` and `height`; the core keeps it on the surface's display (a plugin outside the
- *  `clover` tree, inside the work area and 800 × 600). With neither, the core places the window by its surface (the
+ *  `moss` tree, inside the work area and 800 × 600). With neither, the core places the window by its surface (the
  *  island at the top centre, the pill at the bottom centre). */
 export interface SurfaceRequest {
   visible?: boolean;
@@ -300,21 +284,21 @@ export type OpenTarget =
  *  those alone, so the part that claims a file gets `{ path, name }` and one that claims a message `{ session, seq }`,
  *  and reads either through its own plugin API. */
 export interface DragOffer {
-  type: "text/plain" | "text/uri-list" | "application/x-clover-file" | "application/x-clover-message";
+  type: "text/plain" | "text/uri-list" | "application/x-moss-file" | "application/x-moss-message";
   data: unknown;
 }
 
 /** The drag's data type that carries a grant token from the core. */
-export const DRAG_GRANT_TYPE = "application/x-clover-grant";
+export const DRAG_GRANT_TYPE = "application/x-moss-grant";
 
 /** A value handed across a frame's edge in place of a function: the core routes calls back to the parent. */
 export interface CallbackMarker {
-  "$clover.callback": string;
+  "$moss.callback": string;
 }
 
-export const CALLBACK_KEY = "$clover.callback";
+export const CALLBACK_KEY = "$moss.callback";
 
-/** The bridge the preload puts on `window.cloverLayer`. */
+/** The bridge the preload puts on `window.mossLayer`. */
 /** What `shell.*` acts come to, as the shell applies them. */
 export type ShellAct =
   | { kind: "sidebar"; collapsed?: boolean }
@@ -334,19 +318,14 @@ export interface LayerBridge {
   /** Binds this document to its mount, once. */
   describe(): Promise<MountInfo>;
   /** Resolves a spot that the part `mount` (this document's, or an inline part in it) declares. `hints.session` (the
-   *  kind of session the part shows, for `when.session`) is heard from the `clover` layer only. */
-  resolve(mount: string, spot: string, key?: string, hints?: { session?: string; entry?: string; bot?: string }): Promise<SpotView>;
+   *  kind of session the part shows, for `when.session`) is heard from the `moss` layer only. `hints.instance` names the `<Spot>`
+   *  asking (1 to 64 of `A-Z a-z 0-9 _ -`, kept for the `<Spot>`'s life): each instance's entries get mounts of their own, so a
+   *  spot drawn once for each message has one frame for each. A caller that sends none shares one place per entry, as before. */
+  resolve(mount: string, spot: string, key?: string, hints?: { session?: string; entry?: string; bot?: string; instance?: string }): Promise<SpotView>;
   /** A spot the part declares, as its entries, in the spot's order. */
   entries(mount: string, spot: string, key?: string, bot?: string, session?: string): Promise<readonly SpotEntryView[]>;
   /** New props for a child frame. */
   setProps(child: string, props: unknown): void;
-  /** The speech an `avatar` child frame lip-syncs to: a batch of numbers (`SpeechMessage`), only to a child of this
-   *  document's (main checks, as for props). */
-  speech?(child: string, message: SpeechMessage): void;
-  /** A cue for an `avatar` child frame (`AvatarDown`), only to a child of this document's (main checks, as for speech). */
-  avatar?(child: string, message: AvatarDown): void;
-  /** An `avatar` frame's state for its parent document (`AvatarUp`): main sends it to the parent only. */
-  avatarUp?(message: AvatarUp): void;
   /** Calls a callback the parent handed this frame. */
   callback(id: string, args: unknown[]): void;
   /** This frame's content height. */
@@ -366,16 +345,16 @@ export interface LayerBridge {
   surface(request: SurfaceRequest): void;
   /** This document's surface window's environment (only the document a surface window's root placed). */
   surfaceEnvironment(): Promise<SurfaceEnvironment | undefined>;
-  /** Opens a place in the main window for the part `mount` (the `clover` tree's parts only, in 1.111.1). */
+  /** Opens a place in the main window for the part `mount` (the `moss` tree's parts only, in 1.111.1). */
   open(mount: string, target: OpenTarget): Promise<void>;
-  /** Where the part `mount`'s native view `name` goes (the Clover Browser's live view): its rect in this document's
+  /** Where the part `mount`'s native view `name` goes (the MOSS Browser's live view): its rect in this document's
    *  viewport, null when it has no place; `used` when the person just used it (ruling R8: the view the person used
    *  last gets the live view). */
   viewFrame(mount: string, name: string, rect: Rect | null, used?: boolean): void;
   /** Where a web page part's view goes, in this document's viewport (null: hidden). Only the document that placed
    *  the web part places its view. */
   webFrame(mount: string, rect: Rect | null): void;
-  /** The `clover` layer only: the session the window shows now (null: none), so a desktop notification for it is held
+  /** The `moss` layer only: the session the window shows now (null: none), so a desktop notification for it is held
    *  back while the app is in front. */
   activeSession(mount: string, session: string | null): void;
   /** The shell only: the press that just came to the window was on an element that declares `-webkit-app-region: drag`.
@@ -383,23 +362,21 @@ export interface LayerBridge {
    *  own sight of the press and the cursor, and only for the shell it mounted in `app.root`. */
   windowDrag(mount: string): void;
   /** The `composer` spot's host callbacks (spec §5.5), for the entry the core mounted there: `models` and `commands`,
-   *  and the acting `setModel`, `interrupt`, `stop` and `runCommand`, each of which counts only inside the user's own key
-   *  press or click. `commands` and `runCommand` are the bundled composer's only, and so are the push-to-talk three:
-   *  `listenStatus` (a read: does the bot's voice listen), `listenStart` (the user's press: the app records) and
-   *  `listenStop` (the release: what was heard, as text). */
-  composer(mount: string, op: "models" | "setModel" | "interrupt" | "stop" | "commands" | "runCommand" | "listenStatus" | "listenStart" | "listenStop", args?: unknown): Promise<unknown>;
+   *  and the acting `setModel`, `setOption`, `interrupt`, `stop` and `runCommand`, each of which counts only inside the user's own key
+   *  press or click. `commands` and `runCommand` are the bundled composer's only. */
+  composer(mount: string, op: "models" | "setModel" | "setOption" | "interrupt" | "stop" | "commands" | "runCommand", args?: unknown): Promise<unknown>;
   /** `PluginApi.shell` from a component: the window's state and apps, or an act of the window's own. Main checks the plugin's capability, that a bot of
    *  the plugin shows its tab, and for an act the user's own key press or click in this frame. */
   shell(mount: string, method: ShellMethod, args?: unknown): Promise<unknown>;
-  /** The `clover` shell only: where the window is now (and its sidebar's app buttons); main keeps it for the plugin frames that read it. */
+  /** The `moss` shell only: where the window is now (and its sidebar's app buttons); main keeps it for the plugin frames that read it. */
   shellReport(mount: string, report: { state: ShellState; apps: readonly ShellApp[]; account?: ShellAccount }): void;
   /** A plugin-API call to the core, on this part's own plugin's connection (the daemon checks it as that plugin). */
   api(mount: string, method: string, params?: unknown): Promise<unknown>;
   /** A key press or paste in a terminal's own element (`TerminalApi.input`): the core writes only what it derives
    *  from the input it saw come to the window (a key press's bytes; a paste through the paste door). */
   terminalInput(mount: string, terminalId: string, input: { kind: "key"; key: string } | { kind: "paste" }): Promise<void>;
-  /** The user's own words from a `clover` surface's part, inside the key press or click that sends (`useUserSend`):
-   *  the core carries them to the daemon as `pill.send` only after it saw that input come to this window. */
+  /** The user's own words from a `moss` surface's part, inside the key press or click that sends (`useUserSend`):
+   *  the core carries them to the daemon as `user.send` only after it saw that input come to this window. */
   userSend(mount: string, to: UserSendTarget, message: { text: string; images?: readonly { mediaType: string; data: Uint8Array }[] }): Promise<{ seq?: number }>;
   /** Offers data for a drag from the part `mount`: a token to put in the drag's `DRAG_GRANT_TYPE`. */
   dragOffer(mount: string, offer: DragOffer): Promise<{ token: string } | { error: string }>;
@@ -410,6 +387,10 @@ export interface LayerBridge {
    *  scheme, which the part can position and style but never read. `option` names the option a button answers;
    *  undefined for a field. */
   sealedFrame(mount: string, cardId: string, element: `field:${string}` | `button:${string}`, look?: "label" | "check" | "cross" | "open", tokens?: Readonly<Record<string, TokenValue>>): Promise<string | undefined>;
+  /** MCP Apps (`<AppView call>`): where the page of a tool call goes, in this document's viewport (null: hidden). The core
+   *  reads the page through the engine and draws it in a view of its own over that place; its answer is the state of the
+   *  view now (`pending` until the page is read), and later changes arrive as `app-view` messages. Absent: no pages. */
+  appView?(mount: string, call: { session: string; callId: string }, rect: Rect | null): Promise<{ state: "pending" | "shown" | "hidden" } | undefined>;
   /** Opens the app's own page for a plugin's OK card the part `mount` places (navigation, never an answer): the card
    *  whole, with its Review (the owner's ruling, 2026-11-13). The user's click only. True when it opened. */
   cardPage?(mount: string, cardId: string): Promise<boolean>;
@@ -418,6 +399,6 @@ export interface LayerBridge {
 
 declare global {
   interface Window {
-    cloverLayer?: LayerBridge;
+    mossLayer?: LayerBridge;
   }
 }

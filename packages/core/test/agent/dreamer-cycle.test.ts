@@ -14,7 +14,10 @@ import { RoleHealthRegistry } from "../../src/providers/role-health";
 // this is the SAME value production falls back to on a daemon with no settings loaded at all
 // (`pinsFor`'s own `DEFAULT_PROVIDER`-rooted default) — computed here rather than hand-copied so a
 // future default-rule change can't silently desync this expectation from the real one.
-const DREAM_MODEL_UNDER_TEST = splitTag(pinsFor(null).dream).modelId;
+// 2026-11-20: a home with no settings has no default model (and so no pin); the fixtures run on a home whose default
+// is a Codex model, the old fixed default.
+const CODEX_DEFAULT = Settings.parse({ schemaVersion: 3, provider: { model: "codex-oauth/gpt-5.6-sol" } });
+const DREAM_MODEL_UNDER_TEST = splitTag(pinsFor(CODEX_DEFAULT).dream).modelId;
 
 /** A real temp store with a dispatch session (the sole session `dispatchSessionId()` finds) —
  *  same fixture shape across all 8 cases; individual tests append whatever events/memory files
@@ -47,7 +50,7 @@ function firstInputContent(provider: FakeProvider): string {
 
 describe("Dreamer.tick", () => {
   test("1) event filtering: window carries only user_message/assistant_message/child_update text, never tool/reasoning/harness noise", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-filter-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-filter-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS - 3);
     store.append(dispatchId, { type: "user_message", sessionId: dispatchId, threadId: "main", text: "my name is Alex", clientName: "test" });
     store.append(dispatchId, { type: "assistant_message", sessionId: dispatchId, threadId: "main", text: "noted" });
@@ -65,7 +68,7 @@ describe("Dreamer.tick", () => {
 
     const provider = okProvider();
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "ignored" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -83,12 +86,12 @@ describe("Dreamer.tick", () => {
   });
 
   test("2) request shape: hardcoded model/effort, no tools, exact instruction text", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-shape-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-shape-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const provider = okProvider();
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "some-other-model" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -103,45 +106,45 @@ describe("Dreamer.tick", () => {
   });
 
   test("3) prompt carries state: memory file content, tombstones, and today's date (from injected now()) all appear", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-state-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-state-");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "alex.md"), "Alex builds Clover.\n");
-    writeFileSync(join(dir, "MEMORY.md"), "# Assistant memory index\n\n- [alex](alex.md) — Alex builds Clover.\n");
+    writeFileSync(join(dir, "alex.md"), "Alex builds MOSS.\n");
+    writeFileSync(join(dir, "MEMORY.md"), "# Assistant memory index\n\n- [alex](alex.md) — Alex builds MOSS.\n");
     writeFileSync(join(dir, "tombstones.md"), "- never remember the user's address\n");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const fixedNow = new Date("2026-07-18T12:00:00Z").getTime();
     const provider = okProvider();
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0, now: () => fixedNow,
     });
     await dreamer.tick();
 
     const content = firstInputContent(provider);
-    expect(content).toContain("Alex builds Clover.");
+    expect(content).toContain("Alex builds MOSS.");
     expect(content).toContain("never remember the user's address");
     expect(content).toContain("2026-07-18");
   });
 
   test("4) ops applied + watermark: write op lands on disk, MEMORY.md lists it, watermarkSeq === lastSeq, lastDreamAt === now()", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-apply-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-apply-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const opsJson = JSON.stringify({
-      ops: [{ op: "write", file: "alex.md", content: "---\nrevised: 2026-07-18\n---\nAlex builds Clover." }],
+      ops: [{ op: "write", file: "alex.md", content: "---\nrevised: 2026-07-18\n---\nAlex builds MOSS." }],
     });
     const fixedNow = 1_753_000_000_000;
     const provider = okProvider(opsJson);
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0, now: () => fixedNow,
     });
     await dreamer.tick();
 
-    expect(readFileSync(join(dir, "alex.md"), "utf8")).toBe("---\nrevised: 2026-07-18\n---\nAlex builds Clover.");
+    expect(readFileSync(join(dir, "alex.md"), "utf8")).toBe("---\nrevised: 2026-07-18\n---\nAlex builds MOSS.");
     expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain("alex.md");
     const state = JSON.parse(readFileSync(join(dir, "dream-state.json"), "utf8")) as { watermarkSeq: number; lastDreamAt: number };
     expect(state.watermarkSeq).toBe(store.lastSeq(dispatchId));
@@ -149,12 +152,12 @@ describe("Dreamer.tick", () => {
   });
 
   test("5) empty ops is a valid dream: no memory content file written, watermark still advances", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-empty-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-empty-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const provider = okProvider('{"ops":[]}');
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -167,12 +170,12 @@ describe("Dreamer.tick", () => {
   });
 
   test("6) malformed (no JSON) response: watermark not advanced, no files written, tick does not throw", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-malformed-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-malformed-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const provider = okProvider("I have nothing worth keeping today.");
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -182,13 +185,13 @@ describe("Dreamer.tick", () => {
   });
 
   test("7) invalid ops (13 ops, over MAX_OPS): watermark not advanced", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-invalidops-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-invalidops-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
 
     const tooMany = { ops: Array.from({ length: 13 }, (_, i) => ({ op: "tombstone", text: `t${i}` })) };
     const provider = okProvider(JSON.stringify(tooMany));
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -198,7 +201,7 @@ describe("Dreamer.tick", () => {
   });
 
   test("8) window cap: transcript is trimmed to DREAM_WINDOW_MAX_CHARS, marked, and drops the OLDEST content first", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-cap-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-cap-");
     const big = "x".repeat(5000);
     for (let i = 0; i < 50; i++) {
       store.append(dispatchId, { type: "user_message", sessionId: dispatchId, threadId: "main", text: `${big}-${i}`, clientName: "test" });
@@ -206,7 +209,7 @@ describe("Dreamer.tick", () => {
 
     const provider = okProvider();
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider, model: "x" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
@@ -230,7 +233,7 @@ describe("Dreamer: the pins.dream role effort", () => {
     Settings.parse({ schemaVersion: 3, provider: { model: "openai/gpt-5.6-sol" }, ...over });
 
   async function dreamOnce(settings: Settings | null) {
-    const { store, dispatchId, dir } = setup("clover-dreamer-effort-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-effort-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     const provider = okProvider();
     await new Dreamer({ settings: () => settings, provider: { provider, model: "x" }, store, dir: () => dir, enabled: () => true, activeTurnCount: () => 0 }).tick();
@@ -267,7 +270,7 @@ describe("Dreamer: the pins.dream role effort", () => {
   });
 
   test("a settings change lands on the NEXT cycle of the SAME Dreamer — no restart, no re-construction", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-effort-live-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-effort-live-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     const provider = new FakeProvider([[{ type: "text_delta", delta: '{"ops":[]}' }, { type: "done", stopReason: "end_turn" }]]);
     let live: Settings = settingsOf({});
@@ -288,19 +291,19 @@ describe("Dreamer: the pins.dream role effort", () => {
 
 describe("Dreamer role-health wiring (2026-09-18) — observation only", () => {
   test("a provider error records pins.dream under the tag that actually ran; a later success clears it; the throw/log shape is unchanged", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-rolehealth-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-rolehealth-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
-    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "clover-dreamer-rh-home-")));
+    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "moss-dreamer-rh-home-")));
     const failing = new FakeProvider([[{ type: "error", code: "rate_limit", providerCode: "usage_limit_reached", message: "429" }]]);
     const dreamer = new Dreamer({
-      settings: () => null, provider: { provider: failing, model: "ignored" }, store, dir: () => dir,
+      settings: () => CODEX_DEFAULT, provider: { provider: failing, model: "ignored" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0, roleHealth,
     });
     // Unchanged existing behaviour: tick() itself never throws (the scheduler precedent) — the
     // thrown "provider error: 429" is caught and logged inside tick, not surfaced here.
     await expect(dreamer.tick()).resolves.toBeUndefined();
 
-    const expectedTag = `${ownProviderFor(null)}/${DREAM_MODEL_UNDER_TEST}`;
+    const expectedTag = `${ownProviderFor(CODEX_DEFAULT)}/${DREAM_MODEL_UNDER_TEST}`;
     const problem = roleHealth.problemFor("pins.dream", expectedTag);
     expect(problem).not.toBeNull();
     expect(problem?.reason).toBe("usage-limit");
@@ -310,7 +313,7 @@ describe("Dreamer role-health wiring (2026-09-18) — observation only", () => {
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     const ok = new FakeProvider([[{ type: "text_delta", delta: '{"ops":[]}' }, { type: "done", stopReason: "end_turn" }]]);
     const dreamer2 = new Dreamer({
-      settings: () => null, provider: { provider: ok, model: "ignored" }, store, dir: () => dir,
+      settings: () => CODEX_DEFAULT, provider: { provider: ok, model: "ignored" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0, roleHealth, now: () => Date.now() + DREAM_MIN_SPACING_MS + 1,
     });
     await dreamer2.tick();
@@ -318,28 +321,28 @@ describe("Dreamer role-health wiring (2026-09-18) — observation only", () => {
   });
 
   test("a rate_limit error with NO retryAfterMs still gets retryAt from the provider's own subscriptionQuota report", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-quota-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-quota-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
-    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "clover-dreamer-rh-quota-")));
+    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "moss-dreamer-rh-quota-")));
     const failing = new FakeProvider([[{ type: "error", code: "rate_limit", providerCode: "usage_limit_reached", message: "429" }]]);
     const dreamer = new Dreamer({
-      settings: () => null,
+      settings: () => CODEX_DEFAULT,
       provider: { provider: failing, model: "ignored", quota: { subscriptionQuota: () => ({ info: { status: "rejected", resetsAt: 2_000_000 }, at: 1 }) } },
       store, dir: () => dir, enabled: () => true, activeTurnCount: () => 0, roleHealth,
     });
     await dreamer.tick();
-    const expectedTag = `${ownProviderFor(null)}/${DREAM_MODEL_UNDER_TEST}`;
+    const expectedTag = `${ownProviderFor(CODEX_DEFAULT)}/${DREAM_MODEL_UNDER_TEST}`;
     const problem = roleHealth.problemFor("pins.dream", expectedTag);
     expect(problem?.reason).toBe("usage-limit");
     expect(problem?.retryAt).toBe(new Date(2_000_000 * 1000).toISOString());
   });
 
   test("no roleHealth wired -> tick() behaves exactly as before (no crash, no note anywhere to check)", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-norolehealth-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-norolehealth-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     const failing = new FakeProvider([[{ type: "error", code: "rate_limit", message: "429" }]]);
     const dreamer = new Dreamer({
-      settings: () => null, provider: { provider: failing, model: "ignored" }, store, dir: () => dir,
+      settings: () => CODEX_DEFAULT, provider: { provider: failing, model: "ignored" }, store, dir: () => dir,
       enabled: () => true, activeTurnCount: () => 0,
     });
     await expect(dreamer.tick()).resolves.toBeUndefined();
@@ -349,18 +352,18 @@ describe("Dreamer role-health wiring (2026-09-18) — observation only", () => {
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // B-1 (2026-09-19 review): the scheduler's slot reconciles the internal-jobs credential snapshot.
 //
-// `clover login` and bare `clover logout` write `codex-oauth:default` IN-PROCESS — no RPC, by design —
+// `moss login` and bare `moss logout` write `codex-oauth:default` IN-PROCESS — no RPC, by design —
 // so a long-running daemon that nobody poked has to notice on its own. The dreamer's tick is where it
 // does, plus any `auth`-classified provider failure (the logout symptom: the snapshot still says the
 // credential is there, the provider says it is not).
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 describe("the dreamer reconciles the internal-jobs credential snapshot", () => {
   test("every tick asks for a re-probe, even when the dream pass itself is gated out", async () => {
-    const { store, dir } = setup("clover-dreamer-refresh-");
+    const { store, dir } = setup("moss-dreamer-refresh-");
     let asked = 0;
     const dreamer = new Dreamer({
       provider: { provider: okProvider(), model: "unused" },
-      store, dir: () => dir, settings: () => null,
+      store, dir: () => dir, settings: () => CODEX_DEFAULT,
       // `enabled: false` gates the dream pass out entirely — the reconcile must still happen, because
       // it is about the DAEMON's credentials, not about whether this particular job is going to run.
       enabled: () => false, activeTurnCount: () => 0,
@@ -371,8 +374,8 @@ describe("the dreamer reconciles the internal-jobs credential snapshot", () => {
     expect(asked).toBe(2);
   });
 
-  test("an `auth`-class provider failure asks for a re-probe (the `clover logout` symptom)", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-refresh-auth-");
+  test("an `auth`-class provider failure asks for a re-probe (the `moss logout` symptom)", async () => {
+    const { store, dispatchId, dir } = setup("moss-dreamer-refresh-auth-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     let asked = 0;
     const dreamer = new Dreamer({
@@ -380,7 +383,7 @@ describe("the dreamer reconciles the internal-jobs credential snapshot", () => {
         provider: new FakeProvider([[{ type: "error", code: "auth", message: "invalid credential" }]]),
         model: "unused",
       },
-      store, dir: () => dir, settings: () => null,
+      store, dir: () => dir, settings: () => CODEX_DEFAULT,
       enabled: () => true, activeTurnCount: () => 0,
       refreshCredentials: () => { asked += 1; },
     });
@@ -391,7 +394,7 @@ describe("the dreamer reconciles the internal-jobs credential snapshot", () => {
   });
 
   test("a NON-auth failure does not ask (a 429 says nothing about which credentials exist)", async () => {
-    const { store, dispatchId, dir } = setup("clover-dreamer-refresh-429-");
+    const { store, dispatchId, dir } = setup("moss-dreamer-refresh-429-");
     fillSubstantive(store, dispatchId, DREAM_MIN_EVENTS);
     let asked = 0;
     const dreamer = new Dreamer({
@@ -399,7 +402,7 @@ describe("the dreamer reconciles the internal-jobs credential snapshot", () => {
         provider: new FakeProvider([[{ type: "error", code: "rate_limit", message: "429" }]]),
         model: "unused",
       },
-      store, dir: () => dir, settings: () => null,
+      store, dir: () => dir, settings: () => CODEX_DEFAULT,
       enabled: () => true, activeTurnCount: () => 0,
       refreshCredentials: () => { asked += 1; },
     });

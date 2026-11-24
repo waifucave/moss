@@ -36,9 +36,9 @@
 // thinking). A session's view carries its needs-you counts (`SessionView.needsYou`): its pending cards and its
 // unanswered questions.
 import {
-  SENT_AT_WINDOW_MS, type SessionFailure, type SessionKind, type SessionStatus, type SessionView, type TurnOrigin, type UserMessageInput,
+  SENT_AT_WINDOW_MS, type SessionFailure, type SessionStarter, type SessionKind, type SessionStatus, type SessionView, type TurnOrigin, type UserMessageInput,
   userMessageHashInput, userMessageSigningInput,
-} from "@waifucave/clover-protocol";
+} from "@waifucave/moss-protocol";
 import { fromBase64, type Unsubscribe } from "./common";
 import { mayAnswerCards, type DeviceRegistry } from "./device-registry";
 
@@ -60,8 +60,15 @@ export type UserInput = {
 };
 
 export type DeliveredInput =
-  | { from: "bot"; bot: string; session: string; text: string }
-  | { from: "agent"; agent: string; text: string }
+  /** `depth` (bot, agent and session messages sent through the bridge's `SendMessage`): how many messages this exchange has
+   *  gone between sessions without the person, this one counted. The engine sets it from its own record of the sender's turn,
+   *  never from what the sender wrote (the loop brake, agents/bridge/messenger.ts). Recorded with the input, so a delivery
+   *  still queued across a restart starts its turn at the depth it was sent with. */
+  | { from: "bot"; bot: string; session: string; text: string; depth?: number }
+  | { from: "agent"; agent: string; text: string; depth?: number }
+  /** Another session's `SendMessage` to a session the person started (spec revision 20, §9.5, lane CM), from any session, a
+   *  bot's too: the sending session is recorded (`session_message`); its turn is never the person's. */
+  | { from: "session"; session: string; text: string; depth?: number }
   | { from: "task-notification"; agent: string; backend: string; stopReason: AgentStopReason; text: string; transcript: string; usage?: { inputTokens: number; outputTokens: number } }
   /** `failed`, on a result posted to the bot's conversation: the run didn't finish well (an error, a timeout, a
    *  refusal, stopped or cut off). */
@@ -69,7 +76,7 @@ export type DeliveredInput =
   /** A plugin's `conversation.send`, or an MCP Apps page's `ui/message` (`app`), which is never the user's (§5.5). */
   | { from: "plugin"; pluginId: string; text: string; app?: { callId: string } }
   | { from: "note"; label: string; text: string; by: { kind: "plugin"; pluginId: string } | { kind: "hook"; pluginId: string; hook: string } | { kind: "core" } }
-  /** Clover's own message to a bot that starts a turn, where a note waits for one: a plugin the bot built stopped
+  /** MOSS's own message to a bot that starts a turn, where a note waits for one: a plugin the bot built stopped
    *  (crash-notice.ts). Shown as the core's note (`label`); its turn's origin is `plugin`, at the bot's own level. */
   | { from: "notice"; label: string; text: string }
   /** A background task the session's own runtime ran (a Bash run in the background, a monitor) finished, failed or
@@ -91,6 +98,7 @@ export function originOf(input: TurnInput): TurnOrigin {
     case "bot":
       return "bot";
     case "agent":
+    case "session":
       return "agent";
     case "task-notification":
     case "task":
@@ -128,6 +136,8 @@ export interface SessionSpec {
   bot?: string;
   /** A side thread's or a background agent's bot's main session, which gets its results. */
   parent?: string;
+  /** Who started it (§9.5), when the opener says; otherwise the host reads it from the kind, bot, parent and routine. */
+  startedBy?: SessionStarter;
   /** The computer running it (§6.4). */
   computer: string;
   title?: string;
@@ -211,6 +221,10 @@ export interface SessionHost {
   /** The user's message. Its `sentAt` is clamped to the host's clock plus or minus `SENT_AT_WINDOW_MS` first (N5). */
   sendUser(id: string, input: Omit<UserInput, "from">): Promise<{ disposition: Disposition }>;
   deliver(id: string, input: DeliveredInput): Promise<{ disposition: Disposition }>;
+  /** The bots whose own conversation or side thread has delivered a message to this session (the engine's own record, made as the
+   *  delivery is accepted, never from anything a model wrote), for the session's life: what the reach rule reads as "that bot has
+   *  messaged it first" (§9.5). A session that is not known, or has none, answers none. */
+  botsThatWrote(id: string): readonly string[];
   /** The user's interrupt of this session's current step. */
   interrupt(id: string): Promise<void>;
   /** `TaskStop`, or the session ending. */

@@ -1,7 +1,7 @@
 // `models.list` (lane A): built from the model plugins' catalog, every key inside the protocol's limits, blocked rows
 // and blocked providers left out, signed-in state per provider, a session's own list.
 import { describe, expect, test } from "bun:test";
-import { ERR } from "@waifucave/clover-protocol";
+import { ERR } from "@waifucave/moss-protocol";
 import { loadCatalog, type WinterCatalog } from "@waifucave/clover-provider-catalog";
 import { catalogModelListings, listModels, MODELS_LIST, ModelListing, modelsMethods } from "../../src/runtime-sdk/models-list";
 import { modelPluginId } from "../../src/runtime-sdk/model-plugins/bundled";
@@ -51,7 +51,7 @@ describe("models.list", () => {
   });
 
   test("the default model rides along; a session's runtime decides its list", async () => {
-    const own = [{ id: "cursor/auto", name: "Auto", provider: "cursor", providerName: "Cursor", plugin: "clover/agent-cursor", efforts: [], images: false, signedIn: true }];
+    const own = [{ id: "cursor/auto", name: "Auto", provider: "cursor", providerName: "Cursor", plugin: "moss/agent-cursor", efforts: [], images: false, signedIn: true }];
     const deps = {
       signedIn: () => new Set<string>(),
       catalog: () => catalog,
@@ -60,6 +60,9 @@ describe("models.list", () => {
     };
     const agent = await listModels(deps, { session: "s_agent" });
     expect(agent).toEqual({ models: own, default: "anthropic/claude-opus-5-5" });
+    const withOptions = await listModels({ ...deps, sessionModels: () => ({ kind: "own" as const, models: own, options: [{ id: "verbosity", name: "Verbosity", current: "terse", values: [{ value: "terse" }, { value: "chatty", name: "Chatty" }] }] }) }, { session: "s_agent" });
+    expect(MODELS_LIST.result.safeParse(withOptions).success).toBe(true);
+    expect(withOptions.options?.[0]).toMatchObject({ id: "verbosity", current: "terse" });
     const bot = await listModels(deps, { session: "b_alpha" });
     expect(bot.models.length).toBeGreaterThan(100);
     const methods = modelsMethods(deps);

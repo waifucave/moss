@@ -1,4 +1,4 @@
-// The layout's example Worker (docs/clover-layout.md). Never deployed: it exists so `services/*` is real and
+// The layout's example Worker (docs/moss-layout.md). Never deployed: it exists so `services/*` is real and
 // the harness's emulator (packages/test-harness, `startWorker`) has a service of the repo's own to run.
 {
   "name": "clover-hello",

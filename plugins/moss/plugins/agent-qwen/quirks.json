@@ -1,0 +1,85 @@
+{
+  "notes": "Qwen Code 0.26.5 (`qwen --acp`, from `qwen --help`; the older flag was `--experimental-acp`). Measured by `initialize` (protocol 1): `loadSession` true; MCP http and sse; sessionCapabilities list and resume (no close); one auth method, `openai` (an API key in the environment, not a login MOSS can run). Unmeasured (no session was started, so nothing that spends the user's plan was run): where a row isn't known it takes the cautious value (a reattach by `load` with its replay dropped, even where `resume` is advertised, MCP names unread, calls a cancel leaves open closed by MOSS), it is held as acting without asking (`unasked-actions`) since it loads the user's own approval settings, and no sandbox is admitted, so it asks for the user's OK. `subagents` is null: no vendor page consulted states how the agent reports its own. The agent suite's live gates measure each row.",
+  "source": "measured by an `initialize` exchange (lane AP, 2026-11-21) and the CLI's `--help`; the rest cautious",
+  "quirks": {
+    "capabilities": {
+      "snakeCaseDuplicates": false,
+      "httpMcpUnadvertised": false
+    },
+    "turns": {
+      "refusal": "unknown",
+      "cancelLeavesToolCallsOpen": true,
+      "reportsUsage": true,
+      "quotaErrorsAsText": false
+    },
+    "progress": {
+      "countsChildProcesses": true
+    },
+    "placement": "local",
+    "marks": [
+      "unasked-actions"
+    ],
+    "launch": {
+      "identity": {
+        "versionArgs": [
+          "--version"
+        ],
+        "versionPattern": "^(\\d+\\.\\d+\\.\\d+)\\s*$"
+      },
+      "envAllow": [],
+      "envSet": {},
+      "versions": ">=0.26.5 <1.0.0"
+    },
+    "mcp": {
+      "transports": [
+        "stdio",
+        "http",
+        "sse"
+      ],
+      "storesPlainText": false,
+      "passesEnvironment": false,
+      "instructionsReachPrompt": "unknown",
+      "systemPromptChannel": null,
+      "tellsConversationId": false
+    },
+    "sessions": {
+      "load": {
+        "supported": true,
+        "replays": true
+      },
+      "resume": {
+        "supported": false,
+        "replays": false
+      },
+      "replayKeepsToolCallIds": true,
+      "listFiltersHonestly": false,
+      "close": false
+    },
+    "permissions": {
+      "optionKinds": [
+        "allow_once",
+        "reject_once"
+      ],
+      "neverAsks": [],
+      "mcpNames": null
+    },
+    "config": {
+      "modelOption": "model",
+      "effortOption": "thought_level",
+      "effortInModel": false,
+      "choicePersists": false
+    },
+    "auth": {
+      "methods": [
+        {
+          "id": "openai",
+          "headless": false
+        }
+      ],
+      "requiredError": {
+        "code": -32000
+      }
+    },
+    "subagents": null
+  }
+}

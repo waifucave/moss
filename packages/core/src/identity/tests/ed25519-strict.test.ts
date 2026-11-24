@@ -15,7 +15,7 @@ import { toBase64 } from "../bytes";
 import { DeviceKey } from "../device-key";
 import { ED25519_L, isStrictEd25519Point, isStrictEd25519Signature } from "../ed25519-strict";
 import { answerKeyBytes, generateEd25519, publicKeyFromBase64, verifyEd25519, verifyKeySignature } from "../keys";
-import * as service from "@waifucave/clover-service-shared/ed25519-strict";
+import * as service from "@waifucave/moss-service-shared/ed25519-strict";
 import { deviceIdFor, type PairingProof } from "../../contracts/device-registry";
 import { FakeDeviceRegistry, makeFakeDevice } from "../../contracts/fakes/device-registry";
 import { fallbackDialTarget } from "../../links/node";
@@ -107,7 +107,7 @@ describe("strict Ed25519 keys", () => {
 
   test("this desktop's answer key: a small-order key is refused by the registry, and a real one is taken", async () => {
     const key = await DeviceKey.loadOrCreate(new MemorySecretStore());
-    const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-h-strict-")), key, clock: new FakeClock(), self: { name: "Studio", os: "macos" } });
+    const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-strict-")), key, clock: new FakeClock(), self: { name: "Studio", os: "macos" } });
     const zero = toBase64(new Uint8Array(32));
     const err = await registry.setOwnAnswerKey(zero, "none", new Uint8Array(64)).catch((e: unknown) => e);
     expect(isContractError(err, "invalid")).toBe(true);

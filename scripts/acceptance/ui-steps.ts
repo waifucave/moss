@@ -8,11 +8,17 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseIpcLine } from "../../apps/desktop/src/main/ui/ipc-stats";
 import type { Cdp } from "./cdp";
-import type { CloverClient } from "./client";
-import { BOT_PARTS_BOT, BOT_PARTS_CLIENT, BOT_PARTS_SETTINGS, FIELDS_IDS, OFFICE_ID, OFFICE_REFUSAL, writeBotParts, writeOfficePanels } from "./manifest-fields-step";
+import type { MossClient } from "./client";
+import { BOT_PARTS_BOT, BOT_PARTS_CLIENT, BOT_PARTS_SETTINGS, BACKGROUND_IDS, FIELDS_IDS, MIC_IDS, OFFICE_ID, OFFICE_REFUSAL, writeBackground, writeBotParts, writeMicrophone, writeOfficePanels } from "./manifest-fields-step";
+import { ACTIVE_IDS, ACTIVE_NAMES, ACTIVE_POINT, ACTIVE_TITLE, activeWrong, writeActiveOne, type ActiveSeen } from "./active-one-step";
+import { FIGURE_PACK_STEP, FIGURE_REACTS_STEP, FIGURE_RENDERER_STEP, GENERAL_POINTS_STEP, figurePackStep, figureReactsStep, figureRendererStep, generalPointsStep, type FigureCtx } from "./figure-steps";
+import { cardShownJs } from "./island-shown";
+import { linesSince } from "./log-since";
+import { scaled } from "./time-scale";
+import { MEASURED_ON_MAC_ONLY, MEASURED_ROWS, measuredOnMacOnly } from "./measured";
 
 export type UiStatus = "PASS" | "FAIL" | "BLOCKED";
 export interface UiRow { name: string; status: UiStatus; detail: string }
@@ -25,58 +31,77 @@ export const UI_STEPS = [
   "a setting changed in Settings is still there when it is opened again",
   "the Dispatch pill sends: a message typed in the pill goes to its bot, and the bot's reply is shown",
   "a send that is refused says so by the composer, and the draft stays",
-  "Alpha's tab is drawn by Alpha's own layout (its talk column)",
+  "MOSS's tab is drawn by MOSS's own layout (its talk column)",
   "a pending tool card is drawn by the island (not empty, not one colour, no raw JSON), and idle surfaces stay quiet",
   "the island and the pill are clear outside their own shape (no backdrop box), in dark and light",
   "the composer's slash menu lists a plugin's command and runs it as you: its result shows by the composer, and the line never reaches the bot",
   "Theme chosen in Settings (Dark, Light, System) reaches every window: the main window's and a card page's computed scheme follow it, the island and the pill stay see-through",
   "the Plugins page installs a plugin from a folder (main's picker), its OK card pressed; its detail shows its tools; it is removed on its sealed card; the page's own calls without a click are refused",
   "a third-party plugin with UI installed from its folder as it is (a TSX client importing React and the UI SDK, no react shipped) renders in its own layer once OK'd, its client built by the registry at load; turned off in the Plugins page it leaves the window, and its layer's own connection to the core closes",
-  "the bot editor opens the user's way, from Alpha's Edit button and from Settings → Bots → Edit, and draws its controls",
-  "the bot editor imports a model the user picked: Choose avatar… (main's picker) → Import and use; no path on the page, the model's own credit note shown and on her header, and her stage draws it",
+  "the bot editor opens the user's way, from MOSS's Edit button and from Settings → Bots → Edit, and draws its controls",
+  GENERAL_POINTS_STEP,
   "a bot's question card (AskUserQuestion) takes a pressed option and Send answer in the window and the turn goes on with the answer; a turn that fails shows Try again on its error row; one click sends the same message again (the user's own, byte for byte), the turn completes, the button goes, and nothing was sent twice",
-  "a third-party bot plugin that ships its own Live2D model (the placeholder's files) draws it on its stage, with no \"can't be shown\" note",
-  "a third-party character renderer (the SDK's picture-swap example) installed from its folder: a bot plugin whose avatar format is its own draws its pictures on its stage",
-  "a bot with a voice speaks its reply (the run's fixture voice, a tone): the app gets the pieces and makes frames, the picture-swap bot shows its talking picture while it speaks and Alpha's stage gets frames too; the stage's chip mutes at once and the next reply stays silent",
-  "Alpha's tab shows the stock sidebar exactly as on a plain bot's tab (same rows, size and colours) and her own top bar; her toggle folds the stock sidebar and back, her panel control opens and closes the panel sheet; a plain bot's tab keeps the stock bar; more scoped wins: an all-bots composer style loses to Alpha's own on her tab and shows on the plain bot's; her stage tools are offered to her and not to the plain bot; her outfit is her setting (her Outfit tool, the setting and her tool agree with what her figure wears)",
+  FIGURE_PACK_STEP,
+  FIGURE_RENDERER_STEP,
+  FIGURE_REACTS_STEP,
+  "MOSS's tab shows the stock sidebar exactly as on a plain bot's tab (same rows, size and colours) and her own top bar; her toggle folds the stock sidebar and back, her panel control opens and closes the panel sheet; a plain bot's tab keeps the stock bar; more scoped wins: an all-bots composer style loses to MOSS's own on her tab and shows on the plain bot's; her stage tools are offered to her and not to the plain bot; her outfit is her setting (her Outfit tool, the setting and her tool agree with what her figure wears)",
   "a bot plugin changes one thing in its tab: a layout of a few lines that extends the stock tab stands its stage to the left of the transcript, wider, and a hide entry takes the composer's model button out of its tab only",
-  "an idle app with Alpha's tab open stays cheap: the main process under a small CPU budget and the windows and main trading only a few messages a second, counted by channel",
+  "an idle app with MOSS's tab open stays cheap: the main process under a small CPU budget and the windows and main trading only a few messages a second, counted by channel",
   "a third-party media plugin page (the `files` capability) opens a generated video with the app's file picker (a token, never a path), plays it from the media URL with a range answered and one past the end refused, runs a WebAssembly module from its own folder, and gets a token from the save picker",
-  "a third-party plugin fills the window's spots in Alpha's tab (composer.action, conversation.message, .extra, tool.result, the Dispatch pill's pill.target) and its page tries the UI SDK's hooks",
+  "a third-party plugin fills the window's spots in MOSS's tab (composer.action, conversation.message, .extra, tool.result, the Dispatch pill's pill.target) and its page tries the UI SDK's hooks",
   "a third-party plugin fills file.preview for images: a coding session's Files panel shows a picture through the plugin's own component (its name and media type), with no \"no preview\" note",
   "a plugin with a bot (the plug rule): its Browser panel replaces the stock one on its bot's tab only, and a replacement that doesn't draw gives way to the stock panel with a way to try again; its settings are on its bot's Edit page; the Plugins page's switch for its parts beside the bot is pressed and the bot is kept",
   "a plugin adds a panel of its own on the right with a button of its own (the owner, November 14): an ordinary plugin's on bots' and coding tabs, a bot plugin's inside its bot (her tab only) and one beside her; one opens beside a stock panel and draws, a frame opens its own through shell.openPanel, the app-parts switch turns the beside one off and keeps hers, and a panel with no title is refused by its words",
+  "a plugin keeps a part running in the background (`app.background`, the owner, November 15): it is mounted in a hidden window of its own while the app is open, keeps counting at its real rate while hidden and through the main window being closed and opened again, plays a generated tone with no press when its plugin holds `audio` (made and measured in the page, muted at the app's output), gets no sound without it, and goes when the plugin is turned off",
+  "a point that takes one filler at a time (P4, the owner, November 15): a folder plugin declares one and three folder plugins fill it; the first installed is the default, Settings › Plugins draws one picker titled by the point's own title, the user's press picks the second (the declarer's host reads it and hears it, the filler reads it too), the second turned off lets the first stand in (the picker says so and the user is told once), and turned on again it is the one again",
+  "a plugin that holds `microphone` opens the microphone from its own frames (the owner, November 15): its composer.action button and its background part see the microphone granted for their frame (a test build opens no device and asks no system), and a second plugin without the capability sees it denied",
 ] as const;
 
 /** A tiny 1x1 PNG, for the Files panel's preview step. */
 const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
-/** A coding session in a folder of the run's user home (`alpha-code-work`, holding `tiny.png`), started with `agent.start` as the
- *  app starts one when the run has none; its id (the newest coding session `session.list` gives). It is started while the window
- *  is up and never announced to it: the window learns it from `conversation.watch`. */
-async function ensureCodingSession(ctx: Ctx, o: { withFile?: boolean } = {}): Promise<string | undefined> {
+/** The folder of the run's user home that the Files row's coding session works in: its own, so no other row's coding session
+ *  (the avatar row's is in `alpha-code-work`) is ever the one handed to it, and `tiny.png` is in it whoever else ran before. */
+export const FILES_FOLDER = "alpha-files-work";
+
+/** A coding session started with `agent.start` as the app starts one when the run has none; its id (the newest coding session
+ *  `session.list` gives). With `withFile`, the session is the one in `FILES_FOLDER` (holding `tiny.png`, put there every time).
+ *  It is started while the window is up and never announced to it: the window learns it from `conversation.watch`. */
+export async function ensureCodingSession(ctx: Pick<Ctx, "rpc" | "home">, o: { withFile?: boolean } = {}): Promise<string | undefined> {
   const rpc = ctx.rpc;
-  const newestView = async () => (await rpc.request<{ sessions: { id: string; kind?: string; startedAt?: number; root?: string }[] }>("session.list", { kinds: ["agent", "coding"] }).catch(() => ({ sessions: [] }))).sessions.filter((x) => x.kind === "coding").sort((x, y) => (y.startedAt ?? 0) - (x.startedAt ?? 0))[0];
-  const newest = async () => (await newestView())?.id;
-  const have = await newestView();
-  // With a file: the newest coding session must be the one in the run's folder that holds it (an earlier step's coding session, in another folder, has none).
-  if (have !== undefined && (o.withFile !== true || (have.root ?? "").endsWith("/alpha-code-work"))) return have.id;
+  const views = async () => (await rpc.request<{ sessions: { id: string; kind?: string; startedAt?: number; root?: string }[] }>("session.list", { kinds: ["agent", "coding"] }).catch(() => ({ sessions: [] }))).sessions.filter((x) => x.kind === "coding").sort((x, y) => (y.startedAt ?? 0) - (x.startedAt ?? 0));
+  const dir = ctx.home === undefined ? undefined : join(dirname(ctx.home), o.withFile === true ? FILES_FOLDER : "alpha-code-work");
+  if (o.withFile === true && dir !== undefined) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "tiny.png"), TINY_PNG);
+  }
+  // With a file: the newest coding session in that folder (an earlier row's coding session, in another folder, has no such file).
+  const have = (await views()).find((x) => o.withFile !== true || (x.root ?? "").endsWith(`/${FILES_FOLDER}`));
+  if (have !== undefined) return have.id;
   const computerName = (await rpc.request<{ computers: { name: string }[] }>("computer.list", {}).catch(() => ({ computers: [] }))).computers[0]?.name;
-  if (ctx.home === undefined || computerName === undefined) return undefined;
-  const dir = join(dirname(ctx.home), "alpha-code-work");
+  if (dir === undefined || computerName === undefined) return undefined;
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "tiny.png"), TINY_PNG);
-  await rpc.request("agent.start", { backend: "clover-code", computer: computerName, root: `home/${computerName}/alpha-code-work` }, 60_000);
-  return newest();
+  await rpc.request("agent.start", { backend: "moss-code", computer: computerName, root: `home/${computerName}/${basename(dir)}` }, 60_000);
+  return (await views())[0]?.id;
 }
 
-/** The window's own sidebar to a coding session: its Code switch pressed, the session's row (its id, the title a session with none
- *  of its own shows) listed and pressed, and the session's id then in the sidebar's current row. */
-async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>): Promise<string> {
-  await press("the sidebar's Code switch", ".cl-sidebar__switch-option", "Code");
-  await press(`the coding session ${codeId}'s row`, ".cl-sidebar__projects .cl-sidebar__row", codeId, 30_000);
-  await until("the coding session shown (its id in the sidebar's current row)", 30_000, async () => ((await inTree<boolean>(cdp, `[...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => (e.textContent || '').includes(${JSON.stringify(codeId)}))`)) !== undefined ? true : undefined), async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
-  return `the sidebar's Code switch listed the coding session ${codeId} started just before from outside the window, and its row went to it (the current row in the sidebar)`;
+/** What a session's sidebar row shows: its title, or its id when it has none (the engine titles a code session after its
+ *  first turn, §9.5). */
+/** A session's row in the window's sidebar, by its id (`data-session`): what it shows (its id, then its title once the first
+ *  turn has one) changes under a step that waits on it, its id never does. */
+export const sessionRowSelector = (id: string): string => `.cl-sidebar .cl-sidebar__agent .cl-sidebar__row[data-session=${JSON.stringify(id)}]`;
+
+/** The window's own sidebar to a coding session: the session's row under its project, found by its id (never by its label,
+ *  which a title landing after the first turn changes), pressed, and then the sidebar's current row; what the row showed is
+ *  read from it then, for the report. */
+export async function toCodingSession(cdp: Cdp, codeId: string, press: (what: string, selector: string, text?: string, ms?: number) => Promise<unknown>): Promise<string> {
+  const row = sessionRowSelector(codeId);
+  // Its project group may be folded and its row below the list's fold: one helper opens and scrolls (cdp.sessionRowCenter), then the press.
+  for (const d of await treeDocs(cdp)) await cdp.sessionRowCenter(d.session, codeId).catch(() => undefined);
+  await press(`the coding session ${codeId}'s row`, row, undefined, 30_000);
+  const label = await until("the coding session shown (its row the sidebar's current row)", 30_000, async () => (await inTree<string>(cdp, `(() => { const e = document.querySelector(${JSON.stringify(`${row}[aria-current]`)}); return e ? (e.querySelector('.cl-sidebar__title')?.textContent || e.textContent || '').trim() : null; })()`))?.value, async () => (await treeText(cdp)).replace(/\s+/g, " ").slice(0, 400));
+  return `the sidebar listed the coding session ${codeId} ("${label}") started just before from outside the window, and its row went to it (the current row in the sidebar)`;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -84,7 +109,7 @@ class Failed extends Error {}
 const fail = (m: string): never => { throw new Failed(m); };
 
 interface Ctx {
-  cdp: Cdp; rpc: CloverClient; reply: string; /** What the fake model provider has been asked, in order. */ requests(): { model?: string; lastUserText: string; answered?: string; toolResult?: { text: string; isError: boolean } }[]; /** The app's own log file, <home>/logs/app.log, as text. */ appLog(): string;
+  cdp: Cdp; rpc: MossClient; reply: string; /** What the fake model provider has been asked, in order. */ requests(): { model?: string; lastUserText: string; answered?: string; toolResult?: { text: string; isError: boolean } }[]; /** The app's own log file, <home>/logs/app.log, as text. */ appLog(): string;
   /** What the Settings step set, as the daemon keeps it (the upgrade's first half records it). */
   onSetting?(key: string, value: unknown): void;
   /** Runs a turn that raises a tool card, calls `inspect` with the card while it is pending, then presses its Approve in the window. */
@@ -98,23 +123,27 @@ interface Ctx {
   /** Sets the window's dark or light (the renders; the app follows a file the run writes). */
   setAppearance?(scheme: "dark" | "light" | "system"): void;
   /** Main presses a key chord in the window (`webContents.sendInputEvent`), from a file the build watches. */
-  pressKey?(key: string, modifiers: string[]): void;
-  /** The folder the test build's picker gives (CLOVER_TEST_PICK) and the plugin it holds. */
+  pressKey?(key: string, modifiers: string[], type?: "down" | "repeat" | "up"): void;
+  /** Closes the main window, or opens it again, as the user would (a file the test build watches: MOSS_TEST_WINDOW_FILE). */
+  mainWindow?(what: "close" | "open"): void;
+  /** The daemon's own log, as text (what the core says it told the user). */
+  daemonLog?(): string;
+  /** The folder the test build's picker gives (MOSS_TEST_PICK) and the plugin it holds. */
   pickFolder?: { path: string; id: string; name: string; tool: string };
   /** Only these window steps run (`--only-ui`), by their place in UI_STEPS; the others are skipped, not recorded. */
   only?: ReadonlySet<number>;
   /** Names the folder the test build's picker gives from now on (it reads its `.pick` file at each pick). */
   setPick?(folder: string): void;
-  /** The folder the test build's picker gives a bot editor's avatar import (CLOVER_TEST_PICK_AVATAR): the stock model and a credit note. */
+  /** The placeholder Live2D model's files (copied from Alpha's pack into the run's folder), for a row whose bot shows one. */
   avatarFolder?: string;
-  /** The media plugin's pickers (CLOVER_TEST_PICK_FILES): the answers file, the generated test video it opens and the file it saves. */
+  /** The media plugin's pickers (MOSS_TEST_PICK_FILES): the answers file, the generated test video it opens and the file it saves. */
   mediaPicks?: { answers: string; video: string; saved: string; folder: string };
   /** Lets the fake provider's turns `ACCEPTANCE-FAIL-<id>` succeed from now on (the Try again step). */
   healFake?(id: string): void;
-  /** Runs the user's `clover-core app screenshot --window main --out <dir>` (the target's own CLI) into a fresh folder:
+  /** Runs the user's `moss-core app screenshot --window main --out <dir>` (the target's own CLI) into a fresh folder:
    *  its exit code, what it printed, and the folder. */
   appScreenshot?(): Promise<{ code: number; stdout: string; stderr: string; dir: string }>;
-  /** Runs the user's `clover-core app <words>` (the target's own CLI): its exit code and what it printed. */
+  /** Runs the user's `moss-core app <words>` (the target's own CLI): its exit code and what it printed. */
   appCli?(words: string[]): Promise<{ code: number; stdout: string; stderr: string }>;
 }
 
@@ -165,14 +194,49 @@ export function distinctColours(png: Buffer, minShare = 0.002): { colours: numbe
   return { colours: [...counts.values()].filter((n) => n >= floor).length, width: w, height: h };
 }
 
-/** The clover layer's documents (the shell, the sidebar and every part of the bundled tree share one). */
+/** The moss layer's documents (the shell, the sidebar and every part of the bundled tree share one). */
 export async function treeDocs(cdp: Cdp): Promise<{ session: string; url: string; text: string }[]> {
   // Alpha's own frames too (her controls): while her tab shows there is no stock bar, her controls are what the user presses; the stock sidebar is beside her tab, as on every tab.
-  return (await cdp.documents()).filter((d) => d.url.startsWith("clover-plugin://clover/") || d.url.startsWith("clover-plugin://alpha"));
+  return (await cdp.documents()).filter((d) => d.url.startsWith("moss-plugin://moss/") || d.url.startsWith("moss-plugin://alpha"));
 }
 
 /** The window's own sidebar's items: the stock sidebar is beside every tab, Alpha's too (Bots doesn't offer a bot the sidebar). */
 const SIDEBAR_ITEMS = ".cl-sidebar button, .cl-sidebar a, .cl-sidebar [role=link]";
+/** MOSS Code's window (lane MC: no bots in it): a code session's row in the sidebar, and its tab in main. */
+const SESSION_ROWS = ".cl-sidebar .cl-sidebar__agent .cl-sidebar__row";
+const SESSION_TAB = ".cl-window__content .cl-agent-tab[data-place=main]";
+
+/** The code session the window opens on: the newest coding session. */
+async function windowSession(rpc: MossClient): Promise<string> {
+  const list = await rpc.request<{ sessions: { id: string; kind?: string; startedAt?: number }[] }>("session.list", { kinds: ["coding"] });
+  const id = list.sessions.filter((x) => x.kind === "coding").sort((x, y) => (y.startedAt ?? 0) - (x.startedAt ?? 0))[0]?.id;
+  return id ?? fail("no code session for the window to open on");
+}
+
+/** A code session that is already running, opened in the window from its sidebar row: a row that installs a plugin calls its
+ *  tools in one started before the install, which a change to the plugins' tools reaches at its next turn (lane AG). */
+async function showWindowSession(ctx: Ctx, id: string): Promise<string> {
+  const { cdp, rpc } = ctx;
+  await rpc.request("session.attach", { id }).catch(() => undefined);
+  const pressText = async (what: string, selector: string, text?: string, ms = 20_000) => {
+    const at = await until(what, ms, async () => {
+      for (const d of await treeDocs(cdp)) {
+        const c = await cdp.centerOf(d.session, selector, text).catch(() => undefined);
+        if (c !== undefined) return { session: d.session, c };
+      }
+      return undefined;
+    }, () => dumpFrames(cdp));
+    await cdp.click(at.session, at.c.x, at.c.y);
+  };
+  await toCodingSession(cdp, id, pressText);
+  return id;
+}
+
+/** That session's view (its model and effort). */
+async function windowSessionView(rpc: MossClient): Promise<{ id: string; model?: string; effort?: string }> {
+  const id = await windowSession(rpc);
+  return { id, ...(await rpc.request<{ session: { model?: string; effort?: string } }>("session.get", { id })).session };
+}
 
 async function inTree<T>(cdp: Cdp, expr: string): Promise<{ session: string; value: T } | undefined> {
   for (const d of await treeDocs(cdp)) {
@@ -195,12 +259,12 @@ export async function composerDoc(cdp: Cdp): Promise<{ session: string; value: t
 export async function shellDoc(cdp: Cdp): Promise<{ session: string; value: boolean } | undefined> {
   return inTree<boolean>(cdp, "!!document.querySelector('.cl-sidebar__top')");
 }
-/** A failed row's evidence, where the run keeps renders (CLOVER_ACCEPT_RENDERS): the window's picture as it stood
+/** A failed row's evidence, where the run keeps renders (MOSS_ACCEPT_RENDERS): the window's picture as it stood
  *  (`failed-step-<n>.png`; a window step's own number as `window-<n>`) and every document's address, words and buttons
  *  (`failed-step-<n>.txt`), the frames of plugins
- *  outside Clover's tree included. Returns a note for the row's detail, or "" when nothing was kept. Never throws. */
+ *  outside MOSS's tree included. Returns a note for the row's detail, or "" when nothing was kept. Never throws. */
 export async function failureShot(cdp: Cdp, n: number | string): Promise<string> {
-  const dir = process.env.CLOVER_ACCEPT_RENDERS;
+  const dir = process.env.MOSS_ACCEPT_RENDERS;
   if (!dir) return "";
   const kept: string[] = [];
   try {
@@ -229,11 +293,12 @@ export async function dumpFrames(cdp: Cdp): Promise<string> {
 }
 
 async function until<T>(what: string, ms: number, probe: () => Promise<T | undefined>, dump?: () => Promise<string>): Promise<T> {
-  const end = Date.now() + ms;
+  const long = scaled(ms);
+  const end = Date.now() + long;
   for (;;) {
     const v = await probe();
     if (v !== undefined) return v;
-    if (Date.now() > end) fail(`${what}: not within ${Math.round(ms / 1000)} s${dump === undefined ? "" : ` (frames: ${await dump().catch(() => "?")})`}`);
+    if (Date.now() > end) fail(`${what}: not within ${Math.round(long / 1000)} s${dump === undefined ? "" : ` (frames: ${await dump().catch(() => "?")})`}`);
     await sleep(400);
   }
 }
@@ -276,16 +341,16 @@ const STOPPED = "This part stopped.";
 const stoppedAnywhere = async (cdp: Cdp): Promise<boolean> => (await Promise.all((await cdp.documents()).map((d) => cdp.evaluate(d.session, DRAWN_TEXT_JS).catch(() => "")))).some((t) => String(t).includes(STOPPED));
 
 /** The window's ground under the sidebar's material, per scheme: `sidebar.solid` (the base theme's). Offscreen there is
- *  no desktop behind the window's vibrancy, so `sidebar.tint` (70% alpha) would composite over white and read as
+ *  no desktop behind the window's vibrancy, so `sidebar.tint` (translucent) would composite over white and read as
  *  mid-grey; a render lays it over this opaque ground instead, as macOS shows it over the material. */
 const RENDER_GROUND = { dark: { r: 0x20, g: 0x20, b: 0x20 }, light: { r: 0xf5, g: 0xf5, b: 0xf5 } } as const;
 
 /** The ground under the app's root and the shell's own frame (the sidebar's material sits in it), for a render: a
  *  render-only colour on their <html>, through the CSSOM (the default-background override doesn't reach under a
  *  headless capture's material). Without it a part with no background of its own (the stock conversation, the
- *  sidebar's 70% tint) shows the offscreen window's white, in dark mode too. `unshootWindow` takes it away. */
+ *  sidebar's translucent tint) shows the offscreen window's white, in dark mode too. `unshootWindow` takes it away. */
 export async function layGround(cdp: Cdp, scheme: "dark" | "light"): Promise<void> {
-  const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
+  const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
   const shell = await shellDoc(cdp).catch(() => undefined);
   const g = RENDER_GROUND[scheme];
   for (const session of [...(appRoot !== undefined ? [appRoot.session] : []), ...(shell !== undefined ? [shell.session] : [])]) {
@@ -295,7 +360,7 @@ export async function layGround(cdp: Cdp, scheme: "dark" | "light"): Promise<voi
 
 /** One picture of the app's window per scheme, at 1280x800, offscreen, into `dir`: `plugins-<name>-<scheme>.png`. */
 export async function shootWindow(cdp: Cdp, dir: string, name: string, setAppearance?: (scheme: "dark" | "light" | "system") => void, width = 1280): Promise<string[]> {
-  const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
+  const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
   if (appRoot === undefined) return [];
   const out: string[] = [];
   await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, appRoot.session);
@@ -314,7 +379,7 @@ export async function shootWindow(cdp: Cdp, dir: string, name: string, setAppear
 
 /** Back to the window as it was: the system's scheme, its own size and ground. */
 export async function unshootWindow(cdp: Cdp, setAppearance?: (scheme: "dark" | "light" | "system") => void): Promise<void> {
-  const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
+  const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
   setAppearance?.("system");
   if (appRoot !== undefined) {
     await cdp.send("Emulation.clearDeviceMetricsOverride", {}, appRoot.session).catch(() => undefined);
@@ -335,9 +400,9 @@ export async function renderNewUser(cdp: Cdp, dir: string, setAppearance?: (sche
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, shell.session).catch(() => undefined);
     // The welcome guide (a core page over the window, opened on a start with no provider signed in) is left, as a
     // user signed in by now would: its "Skip for now" at the foot of its list, scrolled into view and clicked.
-    const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
+    const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
     if (appRoot !== undefined) {
-      const skip = "[data-clover-welcome=skip]";
+      const skip = "[data-moss-welcome=skip]";
       await cdp.evaluate(appRoot.session, `(() => { document.querySelector('${skip}')?.scrollIntoView({ block: 'center' }); return true; })()`).catch(() => undefined);
       await new Promise((r) => setTimeout(r, 300));
       const at = await cdp.centerOf(appRoot.session, skip).catch(() => undefined);
@@ -395,7 +460,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (area !== "drag") fail(`the sidebar's title row declares no drag region (${String(area)})`);
     const moved = () => ctx.appLog().split("\n").filter((l) => l.includes("window: moved by its title area"));
     const was = moved().length;
-    const at = { x: 160, y: 20 };
+    // Pressed on MOSS's mark, which is part of the row and no control: a fixed point in the row can be under one of its
+    // buttons (the Bots/Code pair sits there in the open sidebar's first row; try 14k's packaged run pressed it at 160,20).
+    const at = (await cdp.evaluate(side.session, `(() => { const mark = document.querySelector('.cl-sidebar__top .cl-sidebar__brand'); if (!mark) return { x: 160, y: 20 }; const b = mark.getBoundingClientRect(); return { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) }; })()`)) as { x: number; y: number };
     const press = (type: string, x: number, y: number, buttons: number) => cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 }, side.session);
     await press("mouseMoved", at.x, at.y, 0);
     await press("mousePressed", at.x, at.y, 1);
@@ -454,7 +521,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       }
       return undefined;
     }, () => dumpFrames(cdp));
-    const before = await rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {});
+    // The code session's model (its composer's picker is the session's own).
+    const before = { bots: [await windowSessionView(rpc)] };
     const was = before.bots[0]?.model;
     await cdp.click(pill.session, pill.c.x, pill.c.y);
     const items = await until("the picker's models", 15_000, async () => {
@@ -472,7 +540,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (pick.y < 0 || pick.y > room) fail(`the picker's row can't be brought on screen (y ${Math.round(pick.y)} of ${room}): the menu doesn't scroll`);
     await cdp.click(pill.session, pick.x, pick.y);
     const now = await until("the bot's model to change", 15_000, async () => {
-      const m = (await rpc.request<{ bots: { model?: string }[] }>("bot.list", {})).bots[0]?.model;
+      const m = (await windowSessionView(rpc)).model;
       return m !== undefined && m !== was ? m : undefined;
     });
     if (!now.startsWith("anthropic/")) fail(`the pick landed on ${now}, a provider with no key stored (the run's only key is Anthropic's)`);
@@ -497,9 +565,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       await cdp.click(pill.session, row.x, row.y);
       const want = shown[at]!.t;
       await until(`the bot's effort to be ${want}`, 15_000, async () => {
-        const bot = (await rpc.request<{ bots: { model?: string; effort?: string }[] }>("bot.list", {})).bots[0];
+        const bot = await windowSessionView(rpc);
         return bot?.effort === want && bot.model === now ? true : undefined;
-      }, async () => `bot now: ${JSON.stringify((await rpc.request<{ bots: { model?: string; effort?: string }[] }>("bot.list", {})).bots[0])}`);
+      }, async () => `session now: ${JSON.stringify(await windowSessionView(rpc))}`);
       effortNote = `the Effort section listed ${levels.join(", ")}; picked "${want}" and it is the bot's effort`;
     } else {
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, pill.session);
@@ -574,12 +642,17 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const sw = await cdp.centerOf(first.session, "[role=switch]", "needs you");
     if (sw === undefined) fail("no \"needs you\" switch in Notifications");
     await cdp.click(first.session, sw!.x, sw!.y);
+    // The switch flips when the click's write has gone through the daemon and back to the page: 1.5 s on a Mac, longer on a loaded runner
+    // (it failed here on three runner runs and passed on the Mac). It is read until it differs, up to 15 s times the scale; the claim, that it flipped and
+    // the daemon keeps what it shows, is the same.
     await sleep(1_500);
-    const flipped = await readSwitch();
+    let flipped = await readSwitch();
+    for (const end = Date.now() + scaled(15_000); flipped.on === first.on && Date.now() < end;) { await sleep(300); flipped = await readSwitch(); }
     if (flipped.on === first.on) fail(`the switch didn't flip (still ${first.on})`);
     // The daemon has it.
-    const stored = await rpc.request<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id: "clover/settings" });
-    const kept = stored.settings.find((s) => s.key === "notifications.needsYou")?.value;
+    const readKept = async (): Promise<unknown> => (await rpc.request<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id: "moss/settings" })).settings.find((s) => s.key === "notifications.needsYou")?.value;
+    let kept = await readKept();
+    for (const end = Date.now() + scaled(10_000); kept !== flipped.on && Date.now() < end;) { await sleep(300); kept = await readKept(); }
     if (kept !== flipped.on) fail(`the daemon keeps notifications.needsYou = ${String(kept)}, the switch shows ${flipped.on}`);
     ctx.onSetting?.("notifications.needsYou", kept);
     // Leave Settings (the first sidebar item) and open it again.
@@ -655,6 +728,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const s = box.session;
     // The frame's own activation from the earlier steps has run out.
     await until("the composer frame to have no user activation", 15_000, async () => ((await cdp.evaluate(s, "navigator.userActivation.isActive")) === false ? true : undefined));
+    // A real click earlier in this frame gives it one send for 30 s after its release (user.send after a hold); a click the page
+    // makes itself is refused only once that has run out.
+    await sleep(31_000);
     const words = "ACCEPTANCE-REFUSED-DRAFT";
     await cdp.evaluate(s, `(() => { const t = document.querySelector('${COMPOSER_BOX}'); t.focus(); return true; })()`);
     await cdp.send("Input.insertText", { text: words }, s);
@@ -676,150 +752,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     await cdp.send("Input.insertText", { text: "" }, s);
     return `a send the page made by itself was refused; the composer said "${notice.slice(0, 80)}", kept the draft, and the notice went on typing`;
   });
-  // 7: the bot's own tab layout. Alpha ships tab/layout.json (an `.alpha-sheet` column holding the conversation and the composer);
-  // the daemon's plugin view says it as `bot: { layout }`, and the app draws the tab from it.
-  await step(7, async () => {
-    const talk = await until("Alpha's own talk column", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('[class*=\"alpha-sheet\"]')"), () => dumpFrames(cdp));
-    const inside = await cdp.evaluate(talk.session, "!!document.querySelector('[class*=\"alpha-sheet\"] .cl-composer')");
-    if (inside !== true) fail("Alpha's talk column holds no composer");
-    // The composer stays on screen under a conversation that has grown (the layout fills the window; the composer keeps its height).
-    const box = await cdp.evaluate(talk.session, "(() => { const r = document.querySelector('[class*=\"alpha-sheet\"] .cl-composer').getBoundingClientRect(); return { bottom: Math.round(r.bottom), room: innerHeight, h: Math.round(r.height) }; })()") as { bottom: number; room: number; h: number };
-    if (box.bottom > box.room || box.h < 40) fail(`Alpha's composer is off screen or squashed: bottom ${box.bottom} of ${box.room}, ${box.h} high`);
-    // More than colours: the layout's header is Alpha's own (name and model), and its stage holds the avatar the manifest names
-    // (the VRM's credit line, drawn on a canvas, not an empty box).
-    let last = "";
-    const parts = await until("Alpha's header and stage", 60_000, async () => {
-      // The stage is drawn in the layout's own document; the header is Alpha's own part, in a frame of its own.
-      const st = await cdp.evaluate(talk.session, "(() => { const st = document.querySelector('.cl-bot-stage'); if (!st) return null; const b = st.getBoundingClientRect(); return { canvas: st.querySelectorAll('canvas').length, w: Math.round(b.width), h: Math.round(b.height), text: (st.textContent || '').trim().slice(0, 120) }; })()") as { canvas: number; w: number; h: number; text: string } | null;
-      // Alpha's own layer is its own origin (`clover-plugin://alpha/`), so it is looked for in every document.
-      let head: { value: string } | undefined;
-      for (const d of await cdp.documents()) {
-        if (!d.url.startsWith("clover-plugin://alpha/")) continue;
-        const text = await cdp.evaluate(d.session, "(() => { const h = document.querySelector('.ac'); const m = document.querySelector('.rm__status'); return (h ? (h.textContent || '') : '') + ' ' + (m ? m.getAttribute('title') || '' : ''); })()").catch(() => "");
-        if (typeof text === "string" && text.trim() !== "") head = { value: `${head?.value ?? ""} ${text}`.trim() };
-      }
-      last = `stage ${JSON.stringify(st)}, header ${head === undefined ? "missing" : JSON.stringify(head.value.slice(0, 60))}`;
-      return st !== null && head !== undefined && st.canvas > 0 && !/can't be shown/.test(st.text) ? { ...st, header: head.value } : undefined;
-    }, async () => `${last} || ${await dumpFrames(cdp)}`);
-    if (!parts.header.includes("Alpha")) fail(`Alpha's header says "${parts.header}"`);
-    const heldModel = (await rpc.request<{ bots: { model?: string }[] }>("bot.list", {})).bots[0]?.model ?? "";
-    const wire = heldModel.slice(heldModel.indexOf("/") + 1);
-    if (wire === "" || !parts.header.includes(wire)) fail(`Alpha's header says "${parts.header}", but the bot's model is ${heldModel} (a pick in step 10 must show in it)`);
-    if (parts.w < 300 || parts.h < 200) fail(`Alpha's stage is ${parts.w}x${parts.h}, not the 260-620 wide column the layout declares`);
-    const renders = process.env.CLOVER_ACCEPT_RENDERS;
-    if (renders) {
-      // Step 4 left Settings open over the tab: close it the way a person does, for the picture.
-      const closer = await inTree<boolean>(cdp, "!!document.querySelector('button[aria-label=\"Close settings\"]')");
-      if (closer !== undefined) {
-        const c = await cdp.centerOf(closer.session, 'button[aria-label="Close settings"]');
-        if (c !== undefined) await cdp.click(closer.session, c.x, c.y);
-        await sleep(1500);
-      }
-      const root = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
-      for (const [name, width] of [["alpha-tab-wide.png", 1280], ["alpha-tab-narrow.png", 700]] as const) {
-        await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, root!.session);
-        await sleep(3000);
-        const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, root!.session) as { data: string };
-        writeFileSync(join(renders, name), Buffer.from(shot.data, "base64"));
-      }
-      // Her tab with the window's own sidebar beside it, open and folded (her own toggle, the user's way), at 1280 (the window the
-      // app opens: her wide room either way), 1060 (her mid room either way) and 700 (her narrow band), in each scheme:
-      // `alpha-tab-<wide|mid|narrow>-<open|folded>-<light|dark>.png`. The sidebar is left open and the scheme the system's.
-      const folded = async () => (await inTree<string>(cdp, "(() => { const w = document.querySelector('.cl-window'); return w ? String(w.dataset.collapsed === 'true') : null; })()"))?.value === "true";
-      const fold = async (want: boolean) => {
-        if ((await folded()) === want) return;
-        const at = await until("her sidebar toggle", 20_000, async () => { for (const d of await treeDocs(cdp)) { const c = await cdp.centerOf(d.session, ".ac__btn", want ? "Hide the sidebar" : "Show the sidebar").catch(() => undefined); if (c !== undefined) return { session: d.session, c }; } return undefined; });
-        await cdp.click(at.session, at.c.x, at.c.y);
-        await until("the sidebar " + (want ? "folded" : "open"), 10_000, async () => ((await folded()) === want ? true : undefined));
-      };
-      try {
-        for (const scheme of ["light", "dark"] as const) {
-          ctx.setAppearance?.(scheme);
-          for (const d of await cdp.documents()) await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] }, d.session).catch(() => undefined);
-          await layGround(cdp, scheme);
-          for (const side of ["open", "folded"] as const) {
-            await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, root!.session);
-            await sleep(800);
-            await fold(side === "folded");
-            for (const [size, width] of [["wide", 1280], ["mid", 1060], ["narrow", 700]] as const) {
-              await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, root!.session);
-              await sleep(3000);
-              const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, root!.session) as { data: string };
-              writeFileSync(join(renders, `alpha-tab-${size}-${side}-${scheme}.png`), Buffer.from(shot.data, "base64"));
-            }
-          }
-        }
-        // Her three outfits (her `outfit` setting, the Edit page's picker's), at the window the app opens with the sidebar open, in
-        // each scheme: `alpha-outfit-<outfit>-<light|dark>.png`.
-        await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, root!.session);
-        await fold(false);
-        try {
-          for (const scheme of ["light", "dark"] as const) {
-            ctx.setAppearance?.(scheme);
-            for (const d of await cdp.documents()) await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] }, d.session).catch(() => undefined);
-            await layGround(cdp, scheme);
-            for (const outfit of ["lilac-dress", "navy-uniform", "yellow-raincoat"]) {
-              await rpc.request("plugin.settings.set", { id: "alpha", key: "outfit", value: outfit }, 20_000);
-              await until(`her ${outfit} on her stage`, 20_000, async () => ((await inTree<string>(cdp, "(() => { const f = document.querySelector('figure.clvr-avatar[data-outfit]'); return f ? f.dataset.outfit : null; })()"))?.value === outfit ? true : undefined)).catch(() => undefined);
-              await sleep(1500);
-              const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, root!.session) as { data: string };
-              writeFileSync(join(renders, `alpha-outfit-${outfit}-${scheme}.png`), Buffer.from(shot.data, "base64"));
-            }
-          }
-        } finally {
-          await rpc.request("plugin.settings.set", { id: "alpha", key: "outfit", value: null }, 20_000).catch(() => undefined);
-        }
-      } finally {
-        await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, root!.session).catch(() => undefined);
-        await fold(false).catch(() => undefined);
-        await unshootWindow(cdp, ctx.setAppearance);
-      }
-      await cdp.send("Emulation.clearDeviceMetricsOverride", {}, root!.session).catch(() => undefined);
-    }
-    // The user's own look at the window (`clover-core app screenshot`, the owner's ask for 14d): the app's capture of its
-    // main window, offscreen, with no window shown: a PNG of the window's size at its scale, more than a handful of colours.
-    let shotSaid = "";
-    if (ctx.appScreenshot !== undefined) {
-      const r = await ctx.appScreenshot();
-      if (r.code !== 0) fail(`clover-core app screenshot exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(0, 300)} [packages/cli/src/app-cli.ts, packages/core/src/ipc/app-capture.ts, apps/desktop/src/main/capture.ts]`);
-      let printed: { windows?: { name: string; drawn: boolean; visible: boolean; file?: string; scale: number; bounds: { width: number; height: number }; pixels?: { width: number; height: number }; reduced?: boolean; note?: string }[] };
-      try { printed = JSON.parse(r.stdout); } catch { return fail(`clover-core app screenshot printed no JSON: ${r.stdout.slice(0, 200)}`); }
-      const w = printed.windows?.find((x) => x.name === "main");
-      if (w === undefined || printed.windows!.length !== 1) fail(`clover-core app screenshot listed ${JSON.stringify(printed.windows?.map((x) => x.name))}, not the main window alone`);
-      if (!w!.drawn || w!.file === undefined) fail(`the main window wasn't drawn: ${w!.note ?? "no file"} [apps/desktop/src/main/capture.ts]`);
-      if (w!.visible) fail("the main window says it is visible in a headless run");
-      if (!w!.file!.startsWith(r.dir)) fail(`the PNG went to ${w!.file}, not into --out ${r.dir}`);
-      const { colours, width, height } = distinctColours(readFileSync(w!.file!));
-      // The page's pixels per point: the display's scale for a window on screen, 1 for an offscreen one (a headless run's);
-      // half that when the picture was drawn smaller to fit. The height may lack a title bar the bounds hold.
-      const fits = [1, w!.scale].map((k) => k / (w!.reduced ? 2 : 1)).some((k) => Math.abs(width - w!.bounds.width * k) <= 4 && height <= w!.bounds.height * k + 4 && height >= (w!.bounds.height - 40) * k);
-      if (width < 600 || height < 400 || !fits) fail(`the main window's PNG is ${width}x${height}; its bounds are ${w!.bounds.width}x${w!.bounds.height} at scale ${w!.scale}`);
-      if (colours < 6) fail(`the main window's PNG (${width}x${height}) has ${colours} colour(s): an empty or flat picture [apps/desktop/src/main/capture.ts]`);
-      if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless (the screenshot)");
-      shotSaid = `; clover-core app screenshot drew main.png ${width}x${height} (bounds ${w!.bounds.width}x${w!.bounds.height} at scale ${w!.scale}), ${colours} colours, not visible, no window shown`;
-    }
-    // The user's navigation from a terminal (`clover-core app open`): Settings, then back to her tab, each by the route
-    // the app's own sidebar uses, each shown; nothing is clicked, and no window is shown.
-    if (ctx.appCli !== undefined) {
-      const went: string[] = [];
-      // Settings is a dialog over her tab: the shell says so (`dialog`), with the tab under it.
-      for (const [to, kind, dialog] of [["settings", "bot", "settings"], ["bot:alpha", "bot", undefined]] as const) {
-        const r = await ctx.appCli(["open", to]);
-        let a: { shown?: boolean; reason?: string; where?: { tab?: { kind?: string; id?: string }; dialog?: string }; frames?: unknown[] };
-        try { a = JSON.parse(r.stdout); } catch { return fail(`clover-core app open ${to} printed no JSON (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)} [packages/cli/src/app-cli.ts, apps/desktop/src/main/open.ts]`); }
-        if (r.code !== 0 || a.shown !== true || a.where?.tab?.kind !== kind || a.where?.dialog !== dialog) fail(`clover-core app open ${to}: shown ${String(a.shown)}${a.reason ? ` (${a.reason})` : ""}, the window at ${JSON.stringify(a.where?.tab)}${a.where?.dialog ? ` under ${a.where.dialog}` : ""} [apps/desktop/src/main/open.ts]`);
-        if (!Array.isArray(a.frames) || a.frames.length === 0) fail(`clover-core app open ${to} listed no frames`);
-        went.push(`${to} shown (${a.frames!.length} frames)`);
-      }
-      const here = await ctx.appCli(["where"]);
-      const at = (JSON.parse(here.stdout) as { where?: { tab?: { kind?: string; id?: string } } }).where?.tab;
-      const over = (JSON.parse(here.stdout) as { where?: { dialog?: string } }).where?.dialog;
-      if (at?.kind !== "bot" || at.id !== "alpha" || over !== undefined) fail(`clover-core app where says the window is at ${JSON.stringify(at)}${over ? ` under ${over}` : ""}, not Alpha's tab`);
-      if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless (app open)");
-      shotSaid += `; clover-core app open ${went.join(", then ")}; app where: Alpha's tab; no window shown`;
-    }
-    return `Alpha's talk column is drawn, with the composer in it, on screen; the header says "${parts.header.replace(/\s+/g, " ")}" and the stage is ${parts.w}x${parts.h} with the avatar on a canvas (${parts.text})${shotSaid}`;
-  });
+  // 7: no body: a bot's own tab layout is retired with the bot tab (G8), its row runs nowhere (elsewhere.ts).
 
   // 8: a pending tool card. The island draws it (the app provides the sealed kit: an island without it drew nothing, a
   // black box, and the 2 s fallback fired with the raw input). While the card is pending the island holds frames for
@@ -832,21 +765,24 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const before = count();
     await sleep(IDLE_MS);
     const idle = count() - before;
-    if (idle > IDLE_MAX) fail(`${idle} surface requests in ${IDLE_MS / 1000} s with nothing happening (at most ${IDLE_MAX}) [apps/desktop/src/layer/clover/hosts.tsx coalesced, plugins/clover/plugins/island/src/ui/IslandSurface.tsx]`);
+    if (idle > IDLE_MAX) fail(`${idle} surface requests in ${IDLE_MS / 1000} s with nothing happening (at most ${IDLE_MAX}) [plugins/moss/plugins/island/src/ui/coalesce.ts, plugins/moss/plugins/island/src/ui/IslandSurface.tsx]`);
     let said = "";
     await ctx.cardTurn(async (card) => {
       // The island's own part draws in a frame of the island's surface page; its card is the element that carries the card's id.
       const surfacePage = await until("the island's surface page", 20_000, async () => (await cdp.documents()).find((d) => /[?&]surface=island/.test(d.url)), undefined);
       const dumpIsland = async () => `island surface text: "${surfacePage.text.slice(0, 120)}"`;
-      const frames = await until(`the island to place the ${card.kind} card's sealed frames`, 20_000, async () => {
+      // The island's own part is a document its surface page frames (the main window draws the card in its own frames too).
+      const part = await until(`the island to place the ${card.kind} card's sealed frames`, 20_000, async () => {
+        const own = new Set<string>(((await cdp.evaluate(surfacePage.session, "[...document.querySelectorAll('iframe')].map((f) => f.src)").catch(() => [])) as string[]) ?? []);
         for (const d of await cdp.documents()) {
-          if (!d.url.startsWith("clover-plugin://clover/")) continue;
-          const n = Number(await cdp.evaluate(d.session, `document.querySelectorAll('[data-clover-card="${card.id}"] iframe[data-clover-sealed]').length`).catch(() => 0));
-          if (n >= 3) return n;
+          if (!own.has(d.url)) continue;
+          const n = Number(await cdp.evaluate(d.session, `document.querySelectorAll('[data-moss-card="${card.id}"] iframe[data-moss-sealed]').length`).catch(() => 0));
+          if (n >= 3) return { session: d.session, n };
         }
         return undefined;
       }, dumpIsland);
-      const mine = (await cdp.documents()).filter((d) => d.url.startsWith(`clover-sealed://card/${encodeURIComponent(card.id)}/`));
+      const frames = part.n;
+      const mine = (await cdp.documents()).filter((d) => d.url.startsWith(`moss-sealed://card/${encodeURIComponent(card.id)}/`));
       const words = mine.filter((d) => decodeURIComponent(d.url).includes("/field:")).map((d) => d.text).join(" ").trim();
       if (words === "") fail(`the island's card frames hold no words (${frames} frames, ${mine.length} sealed documents)`);
       // The line names the file the core resolved and sealed into the card, whole (its folder and its name), never only a name.
@@ -862,10 +798,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (raw !== null) fail(`the island's card shows raw JSON: "${words.slice(Math.max(0, raw.index - 20), raw.index + 40).replace(/\n/g, " ")}"`);
       // The picture of the island: more than one colour in it (a black or empty rectangle is one), measured over the whole
       // page the app drew (the island's window, which is transparent outside the card).
+      // The island holds the card hidden until its sealed frames are whole (see island-shown.ts); the picture is of what it then shows.
+      await until("the island to show the card (not held back)", 30_000, async () => ((await cdp.evaluate(part.session, cardShownJs(card.id)).catch(() => false)) === true ? true : undefined), dumpIsland);
       await sleep(600);
       const shot = (await cdp.send("Page.captureScreenshot", { format: "png" }, surfacePage.session)) as { data: string };
       const { colours, width, height } = distinctColours(Buffer.from(shot.data, "base64"));
-      if (colours < 3) fail(`the island's picture (${width}x${height}) has ${colours} colour(s): an empty or one-colour card [plugins/clover/plugins/island/src/ui/CardContent.tsx, apps/desktop/src/layer/clover/hosts.tsx APP_KIT]`);
+      if (colours < 3) fail(`the island's picture (${width}x${height}) has ${colours} colour(s): an empty or one-colour card [plugins/moss/plugins/island/src/ui/CardContent.tsx, apps/desktop/src/layer/moss/hosts.tsx APP_KIT]`);
       said = `${frames} sealed frames, words "${words.replace(/\s+/g, " ").slice(0, 70)}", ${colours} colours in a ${width}x${height} picture; idle ${idle} surface requests in ${IDLE_MS / 1000} s`;
     });
     if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless");
@@ -896,7 +834,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
           let painted = 0;
           for (const row of png.rows) for (let x = 0; x < png.width; x++) if (row[x * 4 + 3]! > 8) painted++;
           const share = painted / (png.width * png.height);
-          if (corners.some((a) => a > 8) || share > 0.75) fail(`the ${surface} paints outside its own shape in ${scheme} (${png.width}x${png.height}, corner alphas ${corners.join("/")}, ${(share * 100).toFixed(0)}% of the window painted) [apps/desktop/src/core/root.css, plugins/clover/plugins/${surface}]`);
+          if (corners.some((a) => a > 8) || share > 0.75) fail(`the ${surface} paints outside its own shape in ${scheme} (${png.width}x${png.height}, corner alphas ${corners.join("/")}, ${(share * 100).toFixed(0)}% of the window painted) [apps/desktop/src/core/root.css, plugins/moss/plugins/${surface}]`);
           said.push(`${surface} ${scheme} ${(share * 100).toFixed(0)}%`);
         }
       }
@@ -914,6 +852,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   // heard the tag from the user, the box is empty, and neither the fake model nor the conversation got the tag.
   await step(10, async () => {
     const tag = `SLASH-${randomBytes(4).toString("hex").toUpperCase()}`;
+    // Settings (rows 12 and 13 left it open over the tab) is closed the way a person does before they type in the composer: a run that
+    // keeps the window from one row to the next (`--units main`, one process) has it up over the menu, whose clicks it takes.
+    const closer = await inTree<boolean>(cdp, "!!document.querySelector('button[aria-label=\"Close settings\"]')");
+    if (closer !== undefined) {
+      const c = await cdp.centerOf(closer.session, 'button[aria-label="Close settings"]');
+      if (c !== undefined) await cdp.click(closer.session, c.x, c.y);
+      await until("Settings closed", 10_000, async () => ((await inTree<boolean>(cdp, "!!document.querySelector('button[aria-label=\"Close settings\"]')")) === undefined ? true : undefined));
+    }
     const box = await until("the composer's text box", 20_000, () => composerDoc(cdp), () => dumpFrames(cdp));
     const s = box.session;
     const asked = ctx.requests().length;
@@ -962,7 +908,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const seen: { what: string; dark: boolean }[] = [];
       let main: boolean | undefined;
       for (const d of await cdp.documents()) {
-        const what = d.url.startsWith(`clover-sealed://card/${encodeURIComponent(cardId)}/`) ? "card page" : /[?&]surface=(island|pill)/.test(d.url) ? `${/surface=island/.test(d.url) ? "island" : "pill"} page` : d.url.startsWith("clover-plugin://clover/") ? "main window" : d.url.startsWith("clover-core://") ? "core page" : undefined;
+        const what = d.url.startsWith(`moss-sealed://card/${encodeURIComponent(cardId)}/`) ? "card page" : /[?&]surface=(island|pill)/.test(d.url) ? `${/surface=island/.test(d.url) ? "island" : "pill"} page` : d.url.startsWith("moss-plugin://moss/") ? "main window" : d.url.startsWith("moss-core://") ? "core page" : undefined;
         if (what === undefined) continue;
         const dark = await darkOf(d.session);
         if (dark === undefined) continue;
@@ -1058,12 +1004,15 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   });
 
   // 12: the Plugins page, the user's way: Settings → Plugins → the plugin manager; Add → Choose a folder… (main's own
-  // picker, which the test build answers with CLOVER_TEST_PICK) → Install; its OK card pressed in the window; Installed →
+  // picker, which the test build answers with MOSS_TEST_PICK) → Install; its OK card pressed in the window; Installed →
   // Open shows its tools; Remove… raises the removal card, pressed; and the page's own calls, made with no click of the
   // user's, are refused by the door.
   await step(12, async () => {
     const pick = ctx.pickFolder;
     if (ctx.pressCard === undefined || pick === undefined) fail("this run can't press a card or has no folder for the picker");
+    // A step that stops part-way leaves nothing behind for the next row that installs the same fixture (the Review row's):
+    // the plugin goes at the end, removed or not by the page.
+    try {
     const clickText = async (what: string, selector: string, text: string | undefined, ms = 20_000) => {
       const at = await until(what, ms, async () => {
         for (const d of await treeDocs(cdp)) {
@@ -1091,8 +1040,16 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     await waitText("the chosen folder's name", `Chosen: ${pick!.path.split("/").pop()}`);
     const shownPath = await cdp.evaluate(page!.session, `document.body.innerText.includes(${JSON.stringify(pick!.path)})`);
     if (shownPath === true) fail("the page shows the picked folder's path: it should hold only a token and the name");
-    const reloads = () => (ctx.appLog().match(/layers: \S+ loads again to frame a layer installed after it was served/g) ?? []).length;
-    const reloadsBefore = reloads();
+    // The reload this install makes is the first one after the app's log says the plugin's OK card was answered: a reload
+    // that lands from an earlier cause (a layer installed just before the unit began, the app's first start) is another one.
+    const reloadLine = /^(\S+) layers: \S+ loads again to frame a layer installed after it was served$/m;
+    const reloadAfterOk = (): { at: number; earlier: number } | undefined => {
+      const log = ctx.appLog();
+      const ok = log.lastIndexOf("sealed: answer accepted");
+      if (ok < 0) return undefined;
+      const m = reloadLine.exec(log.slice(ok));
+      return m === null ? undefined : { at: Date.parse(m[1]!), earlier: (log.slice(0, ok).match(/layers: \S+ loads again to frame a layer installed after it was served/g) ?? []).length };
+    };
     // The document showing now is marked, so the check after the install reads the one loaded again, never this one.
     await cdp.evaluate(page!.session, "window.__acceptanceServedBefore = true");
     await clickText("the chosen folder's Install", "button", `Install ${pick!.path.split("/").pop()}`);
@@ -1103,21 +1060,53 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     });
     // Its status-bar line is drawn by its own layer, which the window's document wasn't served to frame: the document
     // loads again, and the user is still where they were (the Plugins page, its Add tab), not on the first page.
-    await until("the window's document loaded again for its layer", 30_000, async () => (reloads() > reloadsBefore ? true : undefined));
-    await until("its status line, drawn by its own layer", 30_000, async () => ((await cdp.documents()).some((d) => d.url.startsWith(`clover-plugin://${pick!.id}/`)) ? true : undefined), () => dumpFrames(cdp));
+    const reloaded = await until("the window's document loaded again for its layer (after its OK card was answered)", 30_000, async () => reloadAfterOk());
+    // How long the document served before stays in the window, inert, after main sent the reload (the app log's own time of the
+    // reload this install made, to the moment the old document is gone): measured every run, printed in the row's detail, and
+    // held to 5 s (the root's cap).
+    const reloadAt = reloaded.at;
+    // How long after the reload line the row first looked: a late first look is the row's own delay, not the window's.
+    const lookedAfter = Date.now() - reloadAt;
+    let inertMs = -1;
+    // A look that doesn't finish quickly says nothing: the harness's CDP call to a frame main removed mid-call gets no answer
+    // for its own 20 s limit, and the helper that lists the documents swallows that, so "no document holds the mark" came back
+    // 20.6 s late on a CI run (run 44366218389) while the app log shows the new document drawn a second after the reload.
+    // Each look is cut at 1.5 s and counts as "not looked" then; only a look that finished and found no mark means it left.
+    for (const end = Date.now() + 15_000; Date.now() < end; ) {
+      const looked = await Promise.race([
+        inTree<boolean>(cdp, "window.__acceptanceServedBefore === true").then((r) => ({ stays: r !== undefined })),
+        sleep(1_500).then(() => undefined),
+      ]);
+      if (looked !== undefined && !looked.stays) { inertMs = Date.now() - reloadAt; break; }
+      await sleep(40);
+    }
+    if (inertMs < 0 || inertMs > 5_500) {
+      // The app's own lines from the OK card's answer on, so a slow runner's failure says what the time was spent on.
+      const log = ctx.appLog();
+      const since = log.slice(Math.max(0, log.lastIndexOf("sealed: answer accepted"))).split("\n").filter((l) => l !== "").slice(0, 30).map((l) => l.slice(0, 150)).join(" | ");
+      fail(`the document served before stayed in the window ${inertMs < 0 ? "past 15 s" : `${inertMs} ms`} after the reload was sent (it is swapped out at the new document's first size, or after 5 s at the latest; the row first looked ${lookedAfter} ms after the reload line was logged; ${reloaded.earlier} earlier reload(s); the app's lines from the OK's answer: ${since})`);
+    }
+    await until("its status line, drawn by its own layer", 30_000, async () => ((await cdp.documents()).some((d) => d.url.startsWith(`moss-plugin://${pick!.id}/`)) ? true : undefined), () => dumpFrames(cdp));
     const kept = await until("the Plugins page in the document loaded again", 15_000, () => inTree<string>(cdp,
       "window.__acceptanceServedBefore === true || !document.querySelector('.cl-plugin-index__tabs') ? null : (document.querySelector('.cl-plugin-index [role=tab][aria-selected=true]')?.textContent ?? '(none)')"), () => dumpFrames(cdp));
-    if (kept.value.trim() !== "Add") fail(`after the reload the Plugins page shows the ${kept.value} tab, not the Add tab the user was on`);
+    // The page's own state comes back a moment after its first tabs are drawn (the first look can catch the default tab on a slow runner,
+    // as run 45227287282's Linux window-2 did): the Add tab must be there within 10 s, and a tab that never comes back still fails.
+    let tab = kept.value.trim();
+    for (const end = Date.now() + 10_000; tab !== "Add" && Date.now() < end; ) {
+      await sleep(250);
+      tab = (await inTree<string>(cdp, "document.querySelector('.cl-plugin-index [role=tab][aria-selected=true]')?.textContent ?? null").catch(() => undefined))?.value?.trim() ?? tab;
+    }
+    if (tab !== "Add") fail(`after the reload the Plugins page shows the ${tab} tab, not the Add tab the user was on`);
     const stale = await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true");
     if (stale !== undefined) await until("the document served before out of the window", 10_000, async () => ((await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true")) === undefined ? true : undefined), () => dumpFrames(cdp));
     page = { session: kept.session, value: true };
 
     // The door: the page's own calls with no click of the user's are refused, nothing reaches the core.
     const refusals = await cdp.evaluate(page!.session, `(async () => {
-      const part = document.querySelector('.cl-plugin-index')?.closest('[data-clover-part]');
-      const mount = part?.getAttribute('data-clover-part');
+      const part = document.querySelector('.cl-plugin-index')?.closest('[data-moss-part]');
+      const mount = part?.getAttribute('data-moss-part');
       if (!mount) return 'no mount';
-      const tryCall = (m, p) => window.cloverLayer.api(mount, m, p).then(() => m + ': went through', (e) => m + ': ' + String(e && e.message || e));
+      const tryCall = (m, p) => window.mossLayer.api(mount, m, p).then(() => m + ': went through', (e) => m + ': ' + String(e && e.message || e));
       return [
         await tryCall('plugin.install', { source: { from: 'folder', path: ${JSON.stringify(pick!.path)} } }),
         await tryCall('plugin.remove', { id: ${JSON.stringify(pick!.id)} }),
@@ -1130,15 +1119,15 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const still = await rpc.request<{ plugin: { state: string } }>("plugin.get", { id: pick!.id }).catch(() => undefined);
     if (still === undefined) fail(`${pick!.id} is gone after the page's refused calls`);
 
-    // The renders (CLOVER_ACCEPT_RENDERS, --renders): each tab, then the detail and the app's own key dialog, at 1280,
+    // The renders (MOSS_ACCEPT_RENDERS, --renders): each tab, then the detail and the app's own key dialog, at 1280,
     // dark and light, offscreen.
-    const renders = process.env.CLOVER_ACCEPT_RENDERS;
+    const renders = process.env.MOSS_ACCEPT_RENDERS;
     const rendered: string[] = [];
     let iconSeen = "";
     let grantedPath = "";
     let grantSkipped = "";
     let labelsSaid = "";
-    const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
+    const appRoot = (await cdp.documents()).find((d) => d.url === "moss-core://app/");
     const shoot = async (name: string) => {
       if (!renders || appRoot === undefined) return;
       // Wide, then narrow: the page's own width is the window's.
@@ -1185,8 +1174,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const pickRow = await until(`${pick!.name}'s labels in its row`, 15_000, async () => rowLabels(pick!.name));
       if (pickRow !== JSON.stringify(pickWant)) fail(`${pick!.name}'s row shows ${pickRow}, the core derived ${JSON.stringify(pickWant)}`);
       const alphaWant = await wantLabels("alpha");
-      const alphaRow = await rowLabels("Alpha");
-      if (!alphaWant.includes("Bot") || alphaRow !== JSON.stringify(alphaWant)) fail(`Alpha's labels: the core derived ${JSON.stringify(alphaWant)} (a bot's own plugin brings Bot), her row shows ${alphaRow}`);
+      const alphaRow = await rowLabels("MOSS's stage");
+      // Alpha's plugin brings no bot now (lane MC: she is the engine's default bot, a record): her row says what it does bring.
+      if (alphaWant.includes("Bot") || alphaRow !== JSON.stringify(alphaWant)) fail(`Alpha's labels: the core derived ${JSON.stringify(alphaWant)} (her plugin brings no bot now), her row shows ${alphaRow}`);
       if ([...pickWant, ...alphaWant].some((l) => /plugin|type|kind/i.test(l))) fail(`a label names a kind of plugin: ${[...pickWant, ...alphaWant].join(", ")}`);
       labelsSaid = `its row shows what it brings (${pickWant.join(", ")}) and Alpha's shows ${alphaWant.join(", ")}, both as the core derived them`;
       await clickText(`Open ${pick!.name}`, `button[aria-label=${JSON.stringify(`Open ${pick!.name}`)}]`, undefined);
@@ -1197,9 +1187,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         await shoot("detail");
         // Its key: the app's own dialog (a core page over the window), never a field on the page.
         await clickText("its key's Enter key…", "button", "Enter key");
-        await until("the app's key dialog", 15_000, async () => ((await cdp.evaluate(appRoot!.session, "!!document.querySelector('[data-clover-key-field]')").catch(() => false)) === true ? true : undefined));
+        await until("the app's key dialog", 15_000, async () => ((await cdp.evaluate(appRoot!.session, "!!document.querySelector('[data-moss-key-field]')").catch(() => false)) === true ? true : undefined));
         await shoot("key-dialog");
-        const close = await cdp.centerOf(appRoot!.session, ".clover-page__close");
+        const close = await cdp.centerOf(appRoot!.session, ".moss-page__close");
         if (close !== undefined) await cdp.click(appRoot!.session, close.x, close.y);
         await sleep(800);
       }
@@ -1227,9 +1217,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         const dir = join(base, id);
         mkdirSync(join(dir, "stdio"), { recursive: true });
         cpSync(join(import.meta.dir, "fixtures", "acceptance-page", "stdio", "server.mjs"), join(dir, "stdio", "server.mjs"));
-        const manifest = { manifest: 1, id, name, description: "A copy the Plugins page's acceptance clause made in a temp folder.", version: "0.0.1", engines: { clover: "^1.0.0" }, ...extra,
+        const manifest = { manifest: 1, id, name, description: "A copy the Plugins page's acceptance clause made in a temp folder.", version: "0.0.1", engines: { moss: "^1.0.0" }, ...extra,
           contributes: { mcpServers: { page: { type: "stdio", command: "bun", args: ["${plugin}/stdio/server.mjs"], tools: { PageProbe: "on-demand" }, ...server } } } };
-        writeFileSync(join(dir, "clover.json"), JSON.stringify(manifest, null, 2));
+        writeFileSync(join(dir, "moss.json"), JSON.stringify(manifest, null, 2));
         return dir;
       };
       const openAdd = async () => {
@@ -1271,7 +1261,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const cardCount = async () => (await rpc.request<{ cards: { id: string }[] }>("card.list").catch(() => ({ cards: [] }))).cards.length;
       const cardsBefore = await cardCount();
       // The saved file is its manifest's description: the plugin's own record changes, with no card.
-      const manifestPath = join(devDir, "clover.json");
+      const manifestPath = join(devDir, "moss.json");
       // One save is enough: the core's watch, and its catch-up look every 5 s for an event the OS drops, read it within about
       // 5 s plus the settle time. 20 s is the wait.
       const edited = "Edited by the acceptance clause while it was a development folder.";
@@ -1317,9 +1307,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       await waitText("the adult plugin's For adults section", "I am 18 or older");
       // The adult confirm.
       await clickScrolled("I am 18 or older", "button", "I am 18 or older");
+      // From a part it asks on a sealed card (F2's fix round: one press in a plugin's frame never declares the user's age);
+      // nothing is confirmed before the press on the card.
+      const ageCard = await ctx.pressCard!("the age card", (c) => c.kind === "change" && c.change === "plugin-confirm-adult");
       await until("plugin.list adultConfirmed true", 20_000, async () => ((await adultOf()) ? true : undefined));
       await until("the adult section gone", 15_000, async () => ((await treeText(cdp)).includes("I am 18 or older") ? undefined : true), () => dumpFrames(cdp));
-      said.push(`adult: ${adultId} (adult:true, OK card ${adultCard}) showed the confirm until "I am 18 or older" was pressed (plugin.list adultConfirmed true)`);
+      said.push(`adult: ${adultId} (adult:true, OK card ${adultCard}) showed the confirm until "I am 18 or older" was pressed and its sealed card ${ageCard} answered (plugin.list adultConfirmed true)`);
       await clickScrolled("Remove…", "button", "Remove");
       await ctx.pressCard!("its removal card", (c) => c.kind === "change" && c.change === "plugin-remove" && (c.pluginId === undefined || c.pluginId === adultId));
       await until(`${adultId} removed`, 30_000, async () => ((await rpc.request("plugin.get", { id: adultId }).then(() => false, () => true)) ? true : undefined));
@@ -1358,7 +1351,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (dataDir !== undefined) await until("its data folder gone with it", 15_000, async () => (existsSync(dataDir) ? undefined : true), async () => `${dataDir} still holds ${JSON.stringify(readdirSync(dataDir))}`);
     const dataSaid = dataDir !== undefined ? "Remove and delete its data… pressed on its card, the plugin and its data folder gone" : "Remove and delete its data… pressed on its card, the plugin gone";
     const controls = ctx.setPick !== undefined ? await pluginsPageControls() : "development folders and adult not driven (no picker control)";
-    return `installed ${pick!.id} from a picked folder (the page held a token and the name, never the path), its OK card ${okCard} pressed (now ${running}); the window's document loaded again for its layer and kept the Plugins page on its Add tab; the page's own calls with no click refused (${refusals.replace(/plugin\.|ui\./g, "").slice(0, 160)}…); its detail showed ${pick!.tool}; ${labelsSaid}, the detail the same; its icon ${iconSeen}; ${logSaid}; ${dataSaid} (card ${removeCard}); ${grantsSaid}; ${controls}${rendered.length > 0 ? `; rendered ${rendered.length} pictures` : ""}`;
+    return `installed ${pick!.id} from a picked folder (the page held a token and the name, never the path), its OK card ${okCard} pressed (now ${running}); the window's document loaded again for its layer (the old one, inert, left ${inertMs} ms after the reload was sent; ${reloaded.earlier} reload(s) were logged before this install's OK) and kept the Plugins page on its Add tab; the page's own calls with no click refused (${refusals.replace(/plugin\.|ui\./g, "").slice(0, 160)}…); its detail showed ${pick!.tool}; ${labelsSaid}, the detail the same; its icon ${iconSeen}; ${logSaid}; ${dataSaid} (card ${removeCard}); ${grantsSaid}; ${controls}${rendered.length > 0 ? `; rendered ${rendered.length} pictures` : ""}`;
+    } finally {
+      await rpc.request("plugin.remove", { id: pick!.id }).catch(() => undefined);
+    }
   });
 
   // 13: a third-party plugin with UI (the acceptance-ui fixture), installed from its folder as it is: its client is TSX
@@ -1373,7 +1369,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const folder = join(import.meta.dir, "fixtures", id);
     if (existsSync(join(folder, "node_modules"))) fail(`the fixture ships a node_modules; it must lean on the layer's import map`);
     if (!existsSync(join(folder, "client", "index.tsx")) || existsSync(join(folder, "client", "index.js"))) fail("the fixture's client must be its TSX source alone");
-    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`clover-plugin://${id}/`));
+    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`moss-plugin://${id}/`));
     const stateOf = async () => (await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state;
     const clickText = async (what: string, selector: string, text: string | undefined, ms = 20_000) => {
       const at = await until(what, ms, async () => {
@@ -1458,7 +1454,33 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         return undefined;
       }, async () => `its page counts ${JSON.stringify(pinged)} after ${presses} press(es); the app's log: ${ctx.appLog().split("\n").filter((l) => l.includes("keys:")).slice(-3).join(" | ") || "no keys: line"}`);
       if (!ctx.appLog().includes(`keys: ${id}.ping ran from its key`)) fail(`its page counted a ping, but the app's log has no "keys: ${id}.ping ran from its key"`);
-      const keyed = `its command ${id}.ping, bound to mod+shift+y, ran from a real key press in the window (${presses} press(es) until main had the key; its page counted ${pinged}); ${translated}`;
+      // A held key binding (§5.4 `hold`): the fixture's `held` names mod+shift+u with `hold: true`. Main sends its down, two
+      // auto-repeats, another key's up, the shift's up (a modifier let go first ends the hold), then its key's up, each one
+      // event; the page counts what its handler was told: one down and one up, no more.
+      const mod = process.platform === "darwin" ? "meta" : "control";
+      const heldRead = async () => (await pageRead("(() => { const m = document.querySelector('[data-acceptance-ui=\"main\"]'); return m ? `${m.getAttribute('data-held-down')}/${m.getAttribute('data-held-up')}` : ''; })()")) as string;
+      const send = async (key: string, modifiers: string[], type: "down" | "repeat" | "up") => {
+        ctx.pressKey!(key, modifiers, type);
+        await sleep(700); // main polls the key file every 250 ms: one event per write
+      };
+      await send("U", [mod, "shift"], "down");
+      await until("its held command's down on its page", 15_000, async () => ((await heldRead()) === "1/0" ? true : undefined), async () => `its page reads ${await heldRead()}; the app's log: ${ctx.appLog().split("\n").filter((l) => l.includes("keys:")).slice(-4).join(" | ")}`);
+      await send("U", [mod, "shift"], "repeat");
+      await send("U", [mod, "shift"], "repeat");
+      await send("A", [mod, "shift"], "up");
+      await sleep(800);
+      if ((await heldRead()) !== "1/0") fail(`after its key's repeats and another key's up, its page reads ${await heldRead()} (down/up), not 1/0`);
+      await send("Shift", [mod], "up");
+      await until("its held command's up on its page", 15_000, async () => ((await heldRead()) === "1/1" ? true : undefined), async () => `its page reads ${await heldRead()}`);
+      await send("U", [mod], "up");
+      await sleep(800);
+      if ((await heldRead()) !== "1/1") fail(`after its key's own up (the hold already ended), its page reads ${await heldRead()}, not 1/1`);
+      const heldLines = ctx.appLog().split("\n").filter((l) => l.includes(`keys: ${id}.held `));
+      // A log made of two sources (the app's own output and the home's app log) may hold a line twice: each source counts alone.
+      const once = (what: string) => Math.max(...[true, false].map((own) => heldLines.filter((l) => l.startsWith("[moss-app]") === own && l.includes(what)).length));
+      if (once(`${id}.held down from its key`) !== 1 || once(`${id}.held up from its key`) !== 1) fail(`the app's log has these held-key lines: ${heldLines.join(" | ")}`);
+      const repeats = ctx.appLog().split("\n").filter((l) => /keys: repeated .*\+U in the window/.test(l)).length;
+      const keyed = `its command ${id}.ping, bound to mod+shift+y, ran from a real key press in the window (${presses} press(es) until main had the key; its page counted ${pinged}); its held command ${id}.held (mod+shift+u, hold) got one down and one up from real key events (a down, ${repeats} repeat(s), another key's up and the shift let go first, then its key's up): its page counted 1 down and 1 up; ${translated}`;
       // The Plugins page, the user's way: the sidebar's Plugins entry, Installed, its row's Open, Turn off.
       const shell = keyShell;
       for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, shell.session).catch(() => undefined);
@@ -1476,13 +1498,13 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     }
     // Only a plugin that no longer shows UI loses its connection: no part of the bundled tree's was closed by a reload
     // (it would lose its subscriptions each time).
-    const churned = ctx.appLog().split("\n").filter((l) => /layers: clover(\/[^']*)?'s layer connection closed/.test(l));
+    const churned = ctx.appLog().split("\n").filter((l) => /layers: moss(\/[^']*)?'s layer connection closed/.test(l));
     if (churned.length > 0) fail(`a reload closed the bundled tree's connections too: ${churned.slice(0, 3).join(" | ")}`);
     return `${summary13}; no connection of the bundled tree's closed`;
   });
 
   // 14: the bot editor, the user's way, both routes: Alpha's own Edit button (the pencil in her header), and Settings → Bots →
-  // Edit Alpha. Each time the editor is drawn: its heading, name, model and avatar controls are on screen.
+  // Edit MOSS. Each time the editor is drawn: its heading, name and model controls are on screen.
   const clickIn = async (what: string, selector: string, text: string | undefined, ms = 20_000) => {
     const at = await until(what, ms, async () => {
       for (const d of await treeDocs(cdp)) {
@@ -1494,7 +1516,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     await cdp.click(at.session, at.c.x, at.c.y);
   };
   // A tab just switched to is held invisible while its parts draw (the shell's KeptTab: `data-held`, up to 1.2 s), and a
-  // press made in one of its frames meanwhile lands nowhere (try 14j's packaged run: Edit Alpha pressed, no editor in
+  // press made in one of its frames meanwhile lands nowhere (try 14j's packaged run: Edit MOSS pressed, no editor in
   // 30 s). A person can only press what they see: wait for the hold to lift before pressing anything in the tab.
   const tabShown = async (what: string) => {
     await until(`${what}: the tab shown (its hold lifted)`, 10_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-window') && !document.querySelector('.cl-shell-kept[data-held]')").then((r) => (r?.value === true ? true : undefined), () => undefined), () => dumpFrames(cdp));
@@ -1504,27 +1526,15 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, shell.session).catch(() => undefined);
     await sleep(400);
   };
-  // The bot editor's Avatar section is drawn by clover/character through `bot.editor.section`, which mounts a moment after the
-  // editor itself: wait (bounded) for the section element inside the editor before anything reads its controls. When it never
-  // comes the failure says so, not that a word is missing.
-  const AVATAR_SECTION_MS = 10_000;
-  const avatarSectionDrawn = async (how: string): Promise<void> => {
-    try {
-      await until(`the bot editor's Avatar section (${how})`, AVATAR_SECTION_MS, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-bot-editor:not(.cl-bot-editor--loading) .cl-avatar-section')").then((r) => (r?.value === true ? true : undefined), () => undefined), () => dumpFrames(cdp));
-    } catch {
-      fail(`the bot editor (${how}) opened, but its Avatar section (clover/character, bot.editor.section) never came within ${AVATAR_SECTION_MS / 1000} s`);
-    }
-  };
   const editorDrawn = async (how: string): Promise<string> => {
     await until(`the bot editor (${how})`, 30_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-bot-editor:not(.cl-bot-editor--loading)')").then((r) => (r?.value === true ? true : undefined), () => undefined), () => dumpFrames(cdp));
-    await avatarSectionDrawn(how);
     const seen = await until(`the bot editor (${how})`, 30_000, async () => {
       for (const d of await treeDocs(cdp)) {
         const r = await cdp.evaluate(d.session, `(() => {
           const e = document.querySelector('.cl-bot-editor:not(.cl-bot-editor--loading)');
           if (!e) return undefined;
           const t = e.innerText;
-          return JSON.stringify({ heading: /Edit Alpha/.test(t), name: !!e.querySelector('input[aria-label=Name]'), model: !!e.querySelector('select[aria-label=Model]'), choose: /Choose avatar/.test(t), back: /Back to the bot/.test(t) });
+          return JSON.stringify({ heading: /Edit MOSS/.test(t), name: !!e.querySelector('input[aria-label=Name]'), model: !!e.querySelector('select[aria-label=Model]'), back: /Back to the bot/.test(t) });
         })()`).catch(() => undefined);
         if (typeof r === "string") return r;
       }
@@ -1538,96 +1548,72 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   await step(14, async () => {
     await escape();
     // Route 1: Alpha in the sidebar, then the pencil in her header.
-    await clickIn("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
+    await clickIn("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
     await tabShown("Alpha's tab");
-    await clickIn("Alpha's Edit button", 'button[aria-label="Edit Alpha"]', undefined);
+    await clickIn("Alpha's Edit button", 'button[aria-label="Edit MOSS"]', undefined);
     const one = await editorDrawn("Alpha's Edit button");
     await clickIn("Back to the bot", "button", "Back to the bot");
-    // Route 2: Settings (the sidebar's gear), the Bots section of the Settings window (the sidebar has a Bots entry too), Edit Alpha.
+    // Route 2: Settings (the sidebar's gear), the Bots section of the Settings window (the sidebar has a Bots entry too), Edit MOSS.
     await clickIn("the Settings button", "button[aria-label=Settings]", undefined);
     await clickIn("the Settings window's Bots section", "button.cl-settings__section", "Bots");
-    await clickIn("Edit Alpha in Settings", '[class*=cl-settings__] button[aria-label="Edit Alpha"]', undefined);
+    await clickIn("Edit MOSS in Settings", '[class*=cl-settings__] button[aria-label="Edit MOSS"]', undefined);
     const two = await editorDrawn("Settings → Bots → Edit");
     await clickIn("Back to the bot", "button", "Back to the bot");
-    return `the bot editor drew its heading, name, model and avatar controls from ${one} and from ${two}`;
+    return `the bot editor drew its heading, name and model controls (the figure is the avatar plugin's own Settings section now) from ${one} and from ${two}`;
   });
 
-  // 15: the picker, on the editor: Choose avatar… (main's own picker, which the test build answers with
-  // CLOVER_TEST_PICK_AVATAR: a copy of the stock model with a credit note, never anyone's own) → the name shows, never the
-  // path → Import and use → imported, the model's own note shown under the avatar, and it is her avatar (the core's `user:`
-  // copy); her header shows the note, and her stage fetches the model from the core's own `/_a/` folder. Her avatar is put
-  // back to the plugin's own after.
-  await step(15, async () => {
-    const id = "alpha";
-    const picked = ctx.avatarFolder;
-    if (picked === undefined) fail("this run has no model folder for the picker");
-    const waitText = (what: string, text: string, ms = 30_000) => until(what, ms, async () => ((await treeText(cdp)).includes(text) ? true : undefined), () => dumpFrames(cdp));
-    const avatarOf = async () => (await rpc.request<{ bots: { id: string; avatar?: { src: string; credit?: string }; userLayer: string[] }[] }>("bot.list", {})).bots.find((b) => b.id === id);
-    try {
-      await escape();
-      await clickIn("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
-      await tabShown("Alpha's tab");
-      await clickIn("Alpha's Edit button", 'button[aria-label="Edit Alpha"]', undefined);
-      await avatarSectionDrawn("Alpha's Edit button");
-      await waitText("the bot editor's avatar row", "Choose avatar");
-      await clickIn("Choose avatar…", "button", "Choose avatar…");
-      const name = picked!.split("/").pop()!;
-      await waitText("the picked name", `Picked: ${name}`);
-      const page = await treeText(cdp);
-      if (page.includes(picked!) || page.includes("/Users/") || page.includes("/private/")) fail("the page shows the picked model's path: it should hold only a token and the name");
-      await clickIn("Import and use", "button", "Import and use");
-      // The format's name as its renderer declares it (clover/live2d's `avatar.formats` entry).
-      await waitText("the import's result", "Imported a Live2D (Cubism) model");
-      await waitText("the model's own note under the avatar", "From the model's own notes");
-      const view = await until("her avatar from the core's own folder", 20_000, async () => {
-        const b = await avatarOf();
-        return b !== undefined && b.userLayer.includes("avatar") && b.avatar?.src.startsWith(`/_a/${id}/`) ? b : undefined;
-      });
-      if (!/credit the acceptance suite/.test(view.avatar?.credit ?? "")) fail(`the core's avatar listing has no credit note (${JSON.stringify(view.avatar)})`);
-      const text = await treeText(cdp);
-      // The note sits in the editor's text box (the user's to change or clear).
-      const boxed = await until("the note in the editor's text box", 10_000, async () => {
-        for (const d of await treeDocs(cdp)) {
-          const v = await cdp.evaluate(d.session, `document.querySelector('textarea[aria-label="Credit note"]')?.value ?? null`).catch(() => null);
-          if (typeof v === "string") return v;
-        }
+  // 15: the general pieces the figure stands on, for any plugin (figure-steps.ts): a point's messages and the files its
+  // entries bring, with a metronome, a dancer and a stranger that have nothing to do with figures.
+  const figureCtx = (): FigureCtx => ({
+    cdp, rpc,
+    // One turn of `session` that calls `tool` (the fake's ACCEPTANCE-CALL, loading a deferred tool first); a tool card it
+    // raises is pressed in the window, as the person does; the call's result as the model got it.
+    startCodingSession: async () => {
+      const computer = (await rpc.request<{ computers: { name: string }[] }>("computer.list", {})).computers[0]?.name ?? fail("no computer");
+      const model = (await rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha")?.model ?? fail("Alpha has no model");
+      if (ctx.home === undefined) fail("this run gives no home");
+      mkdirSync(join(dirname(ctx.home!), "alpha-code-work"), { recursive: true });
+      const tag = `ACCEPTANCE-TAG-${randomBytes(4).toString("hex").toUpperCase()}`;
+      return (await rpc.request<{ session: string }>("agent.start", { backend: "moss-code", computer, root: `home/${computer}/alpha-code-work`, model, prompt: tag }, 60_000)).session;
+    },
+    callTool: async (session, tool, input) => {
+      const seen = ctx.requests().length;
+      const tag = randomBytes(4).toString("hex");
+      await rpc.request("session.send", { id: session, message: { text: `ACCEPTANCE-CALL ${tool} ${JSON.stringify(input)}`, clientMessageId: `tool-${tag}` } }, 30_000);
+      const cards: string[] = [];
+      const result = await until(`${tool}'s result in ${session}'s turn`, 120_000, async () => {
+        // The result of THIS tool's call: the request after the one that called it (a deferred tool's Glossary load
+        // comes first, with a result of its own).
+        const since = ctx.requests().slice(seen) as { toolUse?: string; toolResult?: { text: string; isError: boolean } }[];
+        const at = since.findIndex((r) => r.toolUse !== undefined && (r.toolUse === tool || r.toolUse.endsWith(`__${tool}`)));
+        const got = at < 0 ? undefined : since.slice(at + 1).map((r) => r.toolResult).find((x) => x !== undefined);
+        if (got !== undefined) return got;
+        const card = (await rpc.request<{ cards: { id: string; kind: string; session?: string }[] }>("card.list", {}).catch(() => ({ cards: [] }))).cards.find((c) => c.kind === "tool" && c.session === session && !cards.includes(c.id));
+        if (card !== undefined && ctx.pressCard !== undefined) cards.push(await ctx.pressCard(`${tool}'s card`, (c) => c.id === card.id));
         return undefined;
-      });
-      if (!boxed.includes("credit the acceptance suite")) fail(`the note isn't in the editor's text box under the avatar (${boxed.slice(0, 80)})`);
-      if (/\/Users\/|\/private\//.test(text)) fail("a path is on screen after the import");
-      // The picture (--renders): the editor with the pick's result and the model's own note, dark and light.
-      if (process.env.CLOVER_ACCEPT_RENDERS) await shootWindow(cdp, process.env.CLOVER_ACCEPT_RENDERS, "bot-editor-avatar-import", ctx.setAppearance);
-      const result = text.match(/Imported a Live2D \(Cubism\) model \([^)]*\)/)?.[0] ?? "";
-      // Her tab: the header shows the note, and the stage fetches the model from the core's own folder.
-      await clickIn("Back to the bot", "button", "Back to the bot");
-      // Her header is her own layer's part (her plugin's document, not the bundled tree's).
-      await until("her header's credit line", 30_000, async () => {
-        for (const d of await cdp.documents()) {
-          const v = await cdp.evaluate(d.session, `document.querySelector('.rm__credit')?.textContent ?? null`).catch(() => null);
-          if (typeof v === "string" && v.includes("credit the acceptance suite")) return true;
-        }
-        return undefined;
-      }, () => dumpFrames(cdp));
-      // Her stage draws the imported model: its stage box (in the layout's own document) holds a canvas and no "can't be shown".
-      // (The page's resource timeline can't see a custom-scheme fetch, so the drawn stage is what is read.)
-      let stage = "";
-      await until("her stage drawing the imported model", 45_000, async () => {
-        for (const d of await treeDocs(cdp)) {
-          const st = await cdp.evaluate(d.session, "(() => { const st = document.querySelector('.cl-bot-stage'); if (!st) return null; const b = st.getBoundingClientRect(); return JSON.stringify({ canvas: st.querySelectorAll('canvas').length, w: Math.round(b.width), h: Math.round(b.height), text: (st.textContent || '').trim().slice(0, 100), format: st.dataset.format || '', live2d: st.querySelectorAll('.clvl-avatar').length, vrm: st.querySelectorAll('.clvr-avatar').length }); })()").catch(() => null);
-          if (typeof st !== "string") continue;
-          const o = JSON.parse(st) as { canvas: number; w: number; h: number; text: string; format: string; live2d: number; vrm: number };
-          stage = st;
-          // The renderer of the imported format is the one mounted (a VRM canvas of the plugin's own model would also have a canvas).
-          if (o.format === "live2d" && o.live2d > 0 && o.vrm === 0 && o.canvas > 0 && o.w > 100 && o.h > 100 && !/can't be shown|placeholder model/.test(o.text)) return true;
-        }
-        return undefined;
-      }, async () => `${stage} || ${await dumpFrames(cdp)}`);
-      const stageSaid = (JSON.parse(stage) as { w: number; h: number; text: string });
-      return `Choose avatar… showed only the name (${name}); Import and use said "${result}"; the model's own note is under the avatar and on her header; her avatar is the core's copy (${view.avatar!.src.replace(/m-[^/]*/, "m-…")}) and her stage (${stageSaid.w}x${stageSaid.h}) draws it on a canvas${stageSaid.text ? ` (${stageSaid.text})` : ""}`;
-    } finally {
-      await rpc.request("bot.setUserLayer", { id, patch: { avatar: null } }).catch(() => undefined);
-    }
+      }, async () => `cards pressed ${cards.length}; open cards of the session: ${(await rpc.request<{ cards: { kind: string; session?: string }[] }>("card.list", {}).catch(() => ({ cards: [] }))).cards.filter((c) => c.session === session).map((c) => c.kind).join(",") || "none"}; requests since (what the model was told, then what it did): ${ctx.requests().slice(seen).map((r) => `${r.lastUserText.slice(0, 40)} {tail ${JSON.stringify(((r as { body?: { messages?: { role?: string; content?: unknown }[] } }).body?.messages ?? []).slice(-3).map((m) => ({ role: m.role, content: typeof m.content === "string" ? m.content.slice(0, 80) : Array.isArray(m.content) ? (m.content as { type?: string; text?: string }[]).map((b) => `${b.type}${b.text ? `:${b.text.slice(0, 60)}` : ""}`) : "?" })))}} [${(r as { tools?: string[] }).tools?.length ?? "?"} tools, ${((r as { tools?: string[] }).tools ?? []).filter((t) => t.endsWith(tool)).join("+") || `none ending ${tool}`}]${(r as { toolUse?: string }).toolUse !== undefined ? ` => call ${(r as { toolUse?: string }).toolUse}` : " => text"}${(r as { toolResult?: { text: string } }).toolResult !== undefined ? ` (carried a result: ${(r as { toolResult?: { text: string } }).toolResult!.text.slice(0, 60)})` : ""}`).join(" | ")}`);
+      return { called: tool, result, cards };
+    },
+    pressCard: ctx.pressCard ?? (() => fail("this run can't press a card")),
+    escape: async () => { for (const type of ["keyDown", "keyUp"]) for (const d of await treeDocs(cdp)) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, d.session).catch(() => undefined); await sleep(300); },
+    toCodingSession: async () => {
+      const press = async (what: string, selector: string, text?: string, ms = 20_000) => {
+        const at = await until(what, ms, async () => {
+          for (const d of await treeDocs(cdp)) {
+            const c = await cdp.centerOf(d.session, selector, text).catch(() => undefined);
+            if (c !== undefined) return { session: d.session, c };
+          }
+          return undefined;
+        }, () => dumpFrames(cdp));
+        await cdp.click(at.session, at.c.x, at.c.y);
+        await sleep(700);
+      };
+      const id = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
+      await toCodingSession(cdp, id, press);
+      return id;
+    },
   });
+  await step(15, () => generalPointsStep(figureCtx()));
 
   // 16: Try again. A turn the fake provider fails (ACCEPTANCE-FAIL-<id>: a 400 nothing retries) ends in an error; the
   // conversation's error row offers "Try again"; the fake is let to answer; ONE click sends the user's own message again
@@ -1637,12 +1623,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (ctx.healFake === undefined) fail("this run has no way to let the fake provider's failing turn succeed");
     const tag = `ACCEPTANCE-FAIL-${randomBytes(4).toString("hex").toUpperCase()}`;
     const words = `${tag} say hello again,  with my  spacing`;
-    const bot = (await rpc.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha");
-    if (bot === undefined) fail("no bot alpha");
+    // The code session the window shows (lane MC: MOSS Code's window has no bots).
+    const bot = { mainSession: await windowSession(rpc) };
     const log = async () => (await rpc.request<{ events: Record<string, unknown>[] }>("session.history", { id: bot!.mainSession, limit: 500 })).events;
     const mine = (events: Record<string, unknown>[]) => events.filter((e) => e.type === "user_message" && typeof e.text === "string" && e.text.includes(tag));
     await escape();
-    await clickIn("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
+    await clickIn("the code session in the sidebar", SESSION_ROWS, undefined);
     const box = await until("the composer's text box", 20_000, () => composerDoc(cdp), () => dumpFrames(cdp));
     await cdp.evaluate(box.session, `document.querySelector('${COMPOSER_BOX}').focus()`);
     await cdp.send("Input.insertText", { text: words }, box.session);
@@ -1673,7 +1659,13 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (!seenAt.hit) fail(`the click would land on something else (${JSON.stringify(seenAt)})`);
     await cdp.click(button.session, there!.x, there!.y);
     await until("the turn's own reply on screen", 150_000, async () => ((await treeText(cdp)).includes(`${ctx.reply} ${tag}`) ? true : undefined), async () => `log: ${(await log()).slice(-8).map((e) => `${String(e.type)}${e.stopReason ? `:${String(e.stopReason)}` : ""}${typeof e.text === "string" ? `(${e.text.slice(0, 40)})` : ""}`).join(" ")}; the fake answered ${ctx.requests().filter((r) => r.lastUserText.includes(tag)).map((r) => r.answered).join(",") || "nothing"} || ${await dumpFrames(cdp)}`);
-    const after = await log();
+    // The reply is on screen while the turn is still ending: its `turn_completed` follows the text into the log, so the log is read
+    // until the turn that came after the error has ended (bounded; a turn that really failed shows no reply, and ends here as it did).
+    const after = await until("the retried turn's end in the log", 30_000, async () => {
+      const l = await log();
+      const ended = l.filter((e) => e.type === "turn_completed");
+      return ended.length >= 2 && ended.at(-1)?.stopReason === "end_turn" ? l : undefined;
+    }, async () => `log: ${(await log()).slice(-8).map((e) => `${String(e.type)}${e.stopReason ? `:${String(e.stopReason)}` : ""}`).join(" ")}`);
     const sent = mine(after);
     if (sent.length !== 2) fail(`the log holds ${sent.length} of the user's message after Try again, not 2`);
     if (sent[1]!.text !== sent[0]!.text || !String(sent[0]!.text).includes("again,  with my  spacing")) fail(`the message sent again is not the first, byte for byte (${JSON.stringify(sent[0]!.text)} then ${JSON.stringify(sent[1]!.text)})`);
@@ -1718,269 +1710,13 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const asked = ctx.requests().filter((r) => r.lastUserText.includes(tag));
     return `the bot's question card (${qTag}) took a pressed option and "Send answer" in the window and the turn went on with "${choice}" as the tool's result (no "didn't go through"); a failed turn (${tag}) showed Try again on its error row; one click sent the same words again (the log holds two, equal byte for byte, ${sent[1]!.device ? "as the user's own message" : "as a user message"}), the next turn completed with its own reply, and the button is gone (${asked.length} request(s) reached the fake)`;
   });
-  // 17: a bot plugin of its own with its own Live2D model in its assets (the placeholder generator's files, copied into a temp
-  // folder), installed from that folder. Its tab's stage draws the model: the model's JSON files are served to that bot, so the
-  // avatar frame shows its canvas and no "can't be shown" note.
-  await step(17, async () => {
-    if (ctx.pressCard === undefined) fail("this run can't press a card");
-    const stock = ctx.avatarFolder;
-    if (stock === undefined) return fail("this run has no stock model folder");
-    const id = "acceptance-avatar-bot";
-    const name = "Acceptance Avatar Bot";
-    const parent = mkdtempSync(join(tmpdir(), "clover-avatar-bot-"));
-    const folder = join(parent, id); // a plugin's folder is named for its id
-    mkdirSync(folder);
-    mkdirSync(join(folder, "assets", "live2d"), { recursive: true });
-    mkdirSync(join(folder, "bot"), { recursive: true });
-    mkdirSync(join(folder, "tab"), { recursive: true });
-    for (const f of ["alpha.model3.json", "alpha.moc3", "alpha.png"]) cpSync(join(stock, f), join(folder, "assets", "live2d", f));
-    writeFileSync(join(folder, "bot", "instructions.md"), "You are a test bot.\n");
-    writeFileSync(join(folder, "tab", "layout.json"), JSON.stringify({ layout: 1, root: { stack: [{ spot: "conversation", grow: 1 }, { spot: "bot.stage", grow: 1 }], grow: 1 } }));
-    writeFileSync(join(folder, "clover.json"), JSON.stringify({
-      manifest: 1, id, name, description: "The acceptance run's bot with its own Live2D model.", version: "0.0.1", engines: { clover: "^1.0.0" },
-      contributes: { bot: { name, instructions: "bot/instructions.md", model: { default: "anthropic/claude-sonnet-5-5", effort: "medium" }, avatar: { file: "assets/live2d/alpha.model3.json", format: "live2d" }, layout: "tab/layout.json" } },
-    }));
-    try {
-      const installed = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
-      if (installed.id !== id) fail(`the fixture installed as ${installed.id}`);
-      const ok = await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === id);
-      await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state) === "running" ? true : undefined));
-      await escape();
-      let lastPress = 0;
-      const seen = await until("its stage drawing the model", 60_000, async () => {
-        for (const d of await treeDocs(cdp)) {
-          const r = await cdp.evaluate(d.session, "(() => ({ canvas: !!document.querySelector('.clvl-canvas'), refused: (document.body.innerText || '').includes(\"can't be shown\") }))()").catch(() => undefined) as { canvas: boolean; refused: boolean } | undefined;
-          if (r?.refused) fail("the stage says the avatar can't be shown");
-          if (r?.canvas) return true;
-        }
-        if (Date.now() - lastPress > 6_000) {
-          lastPress = Date.now();
-          await clickIn(`${name} in the sidebar`, SIDEBAR_ITEMS, name, 5_000).catch(() => undefined);
-        }
-        return undefined;
-      }, () => dumpFrames(cdp));
-      return `${id} (a bot plugin shipping its own Live2D model, the placeholder's files) installed from its folder, OK card ${ok} pressed; its stage drew the model's canvas (${seen}), with no "can't be shown" note`;
-    } finally {
-      await rpc.request("plugin.remove", { id }).catch(() => undefined);
-      rmSync(parent, { recursive: true, force: true });
-    }
-  });
-  // 18: the format is a plugin's own. The SDK's picture-swap example (a character renderer) is installed from its folder; then a bot
-  // plugin whose avatar format is `pngtuber` (the example's sample model copied beside it) is installed, and its stage draws the
-  // renderer's pictures: the model's JSON and pictures were served to that bot because the renderer declared them. The mouth waits
-  // for the app's speech feed to reach a third-party frame (not asserted here).
-  await step(18, async () => {
-    if (ctx.pressCard === undefined) fail("this run can't press a card");
-    const exampleDir = resolve(import.meta.dir, "..", "..", "packages", "plugin-sdk", "examples", "example-pngtuber");
-    const botId = "acceptance-pngtuber-bot";
-    const name = "Acceptance Picture Bot";
-    const parent = mkdtempSync(join(tmpdir(), "clover-pngtuber-bot-"));
-    const folder = join(parent, botId);
-    mkdirSync(join(folder, "model"), { recursive: true });
-    mkdirSync(join(folder, "bot"), { recursive: true });
-    mkdirSync(join(folder, "tab"), { recursive: true });
-    cpSync(join(exampleDir, "sample-model"), join(folder, "model"), { recursive: true });
-    writeFileSync(join(folder, "bot", "instructions.md"), "You are a test bot.\n");
-    writeFileSync(join(folder, "tab", "layout.json"), JSON.stringify({ layout: 1, root: { stack: [{ spot: "conversation", grow: 1 }, { spot: "bot.stage", grow: 1 }], grow: 1 } }));
-    // Its host half: one command that cues the figure's `happy` expression through the plugin API (`avatar.control`), the ordinary path
-    // a bot plugin takes; the answer is the app's own (`ok`, or why the cue wasn't played).
-    mkdirSync(join(folder, "host"), { recursive: true });
-    writeFileSync(join(folder, "host", "index.ts"), [
-      "// The acceptance run's picture bot: its one command cues the renderer's `happy` expression with `api.avatar.cue`.",
-      "let held: { avatar: { cue(cue: unknown): Promise<unknown> | unknown } } | undefined;",
-      "export async function start(api: { avatar: { cue(cue: unknown): Promise<unknown> | unknown } }): Promise<void> { held = api; }",
-      "export async function stop(): Promise<void> {}",
-      "export async function cue(): Promise<{ text: string }> {",
-      "  if (held === undefined) return { text: \"cue: no api\" };",
-      "  return { text: `cue: ${JSON.stringify(await held.avatar.cue({ type: \"expression\", name: \"happy\" }))}` };",
-      "}",
-      "",
-    ].join("\n"));
-    writeFileSync(join(folder, "clover.json"), JSON.stringify({
-      manifest: 1, id: botId, name, description: "The acceptance run's bot with a community-format avatar.", version: "0.0.1", engines: { clover: "^1.0.0" },
-      capabilities: ["avatar.control"], host: { entry: "host/index.ts", runtime: "bun" },
-      contributes: { commands: [{ name: "cue", description: "Cues the figure's happy expression", handler: "cue" }], bot: { name, instructions: "bot/instructions.md", model: { default: "anthropic/claude-sonnet-5-5", effort: "medium" }, avatar: { file: "model/sunny.pngtuber.json", format: "pngtuber" }, layout: "tab/layout.json" } },
-    }));
-    const installed: string[] = [];
-    try {
-      for (const [dir, id] of [[exampleDir, "example-pngtuber"], [folder, botId]] as const) {
-        const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: dir } }, 60_000);
-        if (r.id !== id) fail(`${id} installed as ${r.id}`);
-        installed.push(id);
-        await ctx.pressCard!(`${id}'s OK card`, (c) => c.kind === "plugin-ok" && c.pluginId === id);
-        await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state) === "running" ? true : undefined));
-      }
-      await escape();
-      // The renderer is a third-party part: its frame is its own layer's document (clover-plugin://example-pngtuber/), never
-      // one of the clover tree's, so it is looked for among every document, not the tree's.
-      const rendererDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith("clover-plugin://example-pngtuber/"));
-      const PROBE = "(() => { const e = document.querySelector('[data-pngtuber]'); const img = e && e.querySelector('img'); return e ? { state: e.getAttribute('data-pngtuber'), loaded: !!img && img.complete && img.naturalWidth > 0, src: img ? img.getAttribute('src') : null } : null; })()";
-      const allDocs = async () => (await cdp.documents()).map((d) => d.url.slice(0, 60)).join(" | ");
-      let lastPress = 0;
-      const first = await until("its stage drawing the renderer's picture", 60_000, async () => {
-        for (const d of await rendererDocs()) {
-          const r = await cdp.evaluate(d.session, PROBE).catch(() => undefined) as { state: string; loaded: boolean; src: string | null } | null | undefined;
-          if (r?.state === "broken") fail("the renderer says the picture set can't be shown");
-          if (r?.loaded) return { session: d.session, ...r };
-        }
-        if (Date.now() - lastPress > 6_000) {
-          lastPress = Date.now();
-          await clickIn(`${name} in the sidebar`, SIDEBAR_ITEMS, name, 5_000).catch(() => undefined);
-        }
-        return undefined;
-      }, async () => `${await dumpFrames(cdp)} || every document: ${await allDocs()}`);
-      // What the stage shows for a while (the bot is quiet: the idle picture, and the renderer's own blink every few seconds).
-      const states = new Map<string, string>();
-      for (const end = Date.now() + 7_000; Date.now() < end; await sleep(80)) {
-        const r = await cdp.evaluate(first.session, PROBE).catch(() => undefined) as { state: string; loaded: boolean; src: string | null } | null | undefined;
-        if (r?.loaded && !states.has(r.state)) states.set(r.state, (r.src ?? "").split("/").pop() ?? "");
-      }
-      if (!states.has("idle")) fail(`the quiet bot's stage never showed the idle picture (${[...states.keys()].join(", ") || "nothing"})`);
-      if (states.has("talk")) fail("the quiet bot's stage showed the talk picture");
-      const shown = [...states.entries()].map(([s, f]) => `${s} (${f})`).join(", ");
-      // useAvatarControl: the bot's own command cues `happy` through the plugin API; the renderer's frame (which called setCatalogue and onCue
-      // through the hook) swaps to its second picture set, drawn by code, and says so in its own attributes.
-      const CUED = "(() => { const e = document.querySelector('[data-pngtuber]'); const svg = e && e.querySelector('svg[role=img]'); return e ? { state: e.getAttribute('data-pngtuber'), label: svg ? svg.getAttribute('aria-label') : null, img: !!e.querySelector('img') } : null; })()";
-      const ran = await until("the bot's cue command to answer", 30_000, async () => {
-        const r = await rpc.request<{ result?: { text?: string }; text?: string }>("command.run", { name: `${botId}.cue` }).catch(() => undefined);
-        const text = r?.result?.text ?? r?.text;
-        return text?.startsWith("cue:") && text.includes('"ok":true') ? text : undefined;
-      }, async () => `command.run said ${JSON.stringify(await rpc.request("command.run", { name: `${botId}.cue` }).catch((e) => String(e)))}`);
-      const cued = await until("the renderer showing the cued picture set", 15_000, async () => {
-        const r = await cdp.evaluate(first.session, CUED).catch(() => undefined) as { state: string; label: string | null; img: boolean } | null | undefined;
-        return r?.state === "happy" && r.label !== null ? r : undefined;
-      }, async () => `the renderer says ${JSON.stringify(await cdp.evaluate(first.session, CUED).catch(() => "?"))}; ${ran}`);
-      if (cued.img) fail("the cued picture set still draws the files' pictures beside the code-drawn one");
-      const cuedSaid = `useAvatarControl: the bot's command cued happy (${ran}) and the renderer's frame switched from idle to its code-drawn picture set "${cued.label}" (data-pngtuber=happy)`;
-      return `${cuedSaid}; the picture-swap renderer installed from its folder (OK card pressed), then ${botId} (avatar format pngtuber, the example's sample model): its stage, the renderer's own frame (${first.src?.split("/").pop()}), drew the renderer's pictures, served by what the renderer declared; over 7 s quiet it showed ${shown}`;
-    } finally {
-      for (const id of installed.reverse()) await rpc.request("plugin.remove", { id }).catch(() => undefined);
-      rmSync(parent, { recursive: true, force: true });
-    }
-  });
-  // 19: a bot's voice (§6.6). The run's fixture voice (scripts/acceptance/fixtures/acceptance-voice: a generated tone, no key, no
-  // network) is installed from its folder and set as the voice of a picture-swap bot and of Alpha, the user's way (their user
-  // layers). A turn of each: the core speaks the reply (`voice.play` pieces), the shell's player counts them and makes frames (the
-  // test build's counters on its root: data-voice-pieces, data-voice-frames, data-voice-speaking), the picture-swap renderer shows
-  // its talking picture while the bot speaks, and Alpha's stage gets frames. Then the stage's chip mutes (the app's one mute,
-  // `voice.speakReplies`, through the stage's `ui.set`): the next reply plays nothing, at once, with no restart.
-  await step(19, async () => {
-    if (ctx.pressCard === undefined) fail("this run can't press a card");
-    const voiceDir = resolve(import.meta.dir, "fixtures", "acceptance-voice");
-    const exampleDir = resolve(import.meta.dir, "..", "..", "packages", "plugin-sdk", "examples", "example-pngtuber");
-    const botId = "acceptance-voice-bot";
-    const name = "Acceptance Voice Bot";
-    const parent = mkdtempSync(join(tmpdir(), "clover-voice-bot-"));
-    const folder = join(parent, botId);
-    for (const d of ["model", "bot", "tab"]) mkdirSync(join(folder, d), { recursive: true });
-    cpSync(join(exampleDir, "sample-model"), join(folder, "model"), { recursive: true });
-    writeFileSync(join(folder, "bot", "instructions.md"), "You are a test bot.\n");
-    writeFileSync(join(folder, "tab", "layout.json"), JSON.stringify({ layout: 1, root: { stack: [{ spot: "conversation", grow: 1 }, { spot: "bot.stage", grow: 1 }], grow: 1 } }));
-    writeFileSync(join(folder, "clover.json"), JSON.stringify({
-      manifest: 1, id: botId, name, description: "The acceptance run's bot that speaks.", version: "0.0.1", engines: { clover: "^1.0.0" },
-      contributes: { bot: { name, instructions: "bot/instructions.md", model: { default: "anthropic/claude-sonnet-5-5", effort: "medium" }, avatar: { file: "model/sunny.pngtuber.json", format: "pngtuber" }, layout: "tab/layout.json" } },
-    }));
-    const VOICE = { provider: "acceptance-voice", voice: "tone" };
-    const installed: string[] = [];
-    const voiced: string[] = [];
-    type Counters = { pieces: number; frames: number; speaking: string[]; overlap: number };
-    const counters = async (): Promise<Counters | undefined> => {
-      const r = await inTree<string>(cdp, "(() => { const d = document.documentElement.dataset; return d.voicePieces === undefined ? null : JSON.stringify({ pieces: +d.voicePieces, frames: +(d.voiceFrames || 0), speaking: (d.voiceSpeaking || '').split(',').filter(Boolean), overlap: +(d.voiceOverlap || 0) }); })()");
-      return r === undefined ? undefined : JSON.parse(r.value) as Counters;
-    };
-    const mainOf = async (id: string) => (await rpc.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots.find((b) => b.id === id)?.mainSession ?? fail(`no bot ${id}`);
-    /** One turn of a bot's main conversation; resolves when its reply is in the log. `providerCard`: the turn first asks
-     *  the user before it spends the provider the bot's plugin chose (`bot-provider`, a third party's model choice:
-     *  packages/core/src/bots/provider-consent.ts), and its Approve is pressed in the window, as the user would. */
-    const turn = async (bot: string, words: string, providerCard = false) => {
-      const session = await mainOf(bot);
-      const tag = `ACCEPTANCE-TAG-${randomBytes(4).toString("hex").toUpperCase()}`;
-      await rpc.request("session.send", { id: session, message: { text: `${words} ${tag}`, clientMessageId: `voice-${tag}` } }, 30_000);
-      if (providerCard) await ctx.pressCard!(`${bot}'s provider card (its plugin chose its model)`, (c) => c.kind === "change" && c.change === "bot-provider" && (c.session === undefined || c.session === session));
-      await until(`${bot}'s reply`, 120_000, async () => {
-        const events = (await rpc.request<{ events: Record<string, unknown>[] }>("session.history", { id: session, limit: 200 })).events;
-        return events.some((e) => e.type === "assistant_message" && typeof e.text === "string" && e.text.includes(tag)) ? true : undefined;
-      });
-    };
-    const openTab = async (label: string) => {
-      await escape();
-      await clickIn(`${label} in the sidebar`, SIDEBAR_ITEMS, label);
-      await sleep(500);
-    };
-    try {
-      for (const [dir, id] of [[voiceDir, "acceptance-voice"], [exampleDir, "example-pngtuber"], [folder, botId]] as const) {
-        const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: dir } }, 60_000);
-        if (r.id !== id) fail(`${id} installed as ${r.id}`);
-        installed.push(id);
-        await ctx.pressCard!(`${id}'s OK card`, (c) => c.kind === "plugin-ok" && c.pluginId === id);
-        await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state) === "running" ? true : undefined));
-      }
-      for (const id of [botId, "alpha"]) {
-        await rpc.request("bot.setUserLayer", { id, patch: { voice: VOICE } });
-        voiced.push(id);
-      }
-
-      // The picture-swap bot: its stage drawn, a watcher in the renderer's frame keeps every picture state it shows.
-      await openTab(name);
-      // The renderer is a third-party part: its frame is its own layer's document (clover-plugin://example-pngtuber/),
-      // never one of the clover tree's (as row 26 finds it).
-      const frame = await until("the picture-swap renderer's frame", 60_000, async () => {
-        for (const d of (await cdp.documents()).filter((x) => x.url.startsWith("clover-plugin://example-pngtuber/"))) {
-          if (await cdp.evaluate(d.session, "!!document.querySelector('[data-pngtuber]')").catch(() => false)) return { session: d.session };
-        }
-        return undefined;
-      }, () => dumpFrames(cdp));
-      await cdp.evaluate(frame.session, "(() => { const e = document.querySelector('[data-pngtuber]'); window.__voiceSeen = [e.getAttribute('data-pngtuber')]; new MutationObserver(() => window.__voiceSeen.push(e.getAttribute('data-pngtuber'))).observe(e, { attributes: true, attributeFilter: ['data-pngtuber'] }); return true; })()");
-      const before = await until("the shell's voice counters", 20_000, counters);
-      // A record of the player's counters as they change, for a failure's dump (who spoke when).
-      const voiceDoc = await inTree<boolean>(cdp, "(() => { const e = document.documentElement; if (e.dataset.voicePieces === undefined) return null; if (window.__vq) return true; const t0 = Date.now(); window.__vq = []; const note = () => { const d = e.dataset; window.__vq.push([Date.now() - t0, +d.voicePieces, d.voiceSpeaking || '-', +(d.voiceOverlap || 0)].join(' ')); if (window.__vq.length > 400) window.__vq.shift(); }; note(); new MutationObserver(note).observe(e, { attributes: true }); return true; })()");
-      const voiceRecord = async () => (voiceDoc === undefined ? "no record" : String(await cdp.evaluate(voiceDoc.session, "window.__vq ? window.__vq.join(' | ') : 'none'").catch(() => "?")).slice(-1500));
-      // The player's document as one the user has used: its AudioContext starts only after the user's activation there
-      // (a click in a third party's own frames, such as this bot's tab, gives it none), and a sound that can't start
-      // would sit in a suspended context and sound later over the next.
-      if (voiceDoc !== undefined) await cdp.send("Runtime.evaluate", { expression: "true", userGesture: true }, voiceDoc.session).catch(() => undefined);
-      // A third party's bot: its first turn asks once for the provider its plugin chose (Notes keeper's does too).
-      await turn(botId, "Say something.", true);
-      const after = await until("the reply's speech counted and its frames made", 30_000, async () => {
-        const c = await counters();
-        return c !== undefined && c.pieces > before.pieces && c.frames > before.frames ? c : undefined;
-      }, async () => `${JSON.stringify(await counters())}; ${ctx.appLog().split("\n").filter((l) => /voice/i.test(l)).slice(-5).join(" | ")}`);
-      const shown = await until("the talking picture, then idle again", 20_000, async () => {
-        const seen = (await cdp.evaluate(frame.session, "JSON.stringify(window.__voiceSeen || [])").catch(() => "[]")) as string;
-        const states = JSON.parse(seen) as string[];
-        return states.includes("talk") && states.at(-1) !== "talk" ? states : undefined;
-      }, async () => String(await cdp.evaluate(frame.session, "JSON.stringify(window.__voiceSeen || [])").catch(() => "?")));
-
-      // Alpha: her stage gets frames while she speaks.
-      await openTab("Alpha");
-      const alphaBefore = (await counters())!;
-      let alphaSpoke = false;
-      const alphaTurn = turn("alpha", "Say something too.");
-      const alphaAfter = await until("Alpha's speech counted and its frames made", 150_000, async () => {
-        const c = await counters();
-        if (c?.speaking.includes("alpha")) alphaSpoke = true;
-        return c !== undefined && c.pieces > alphaBefore.pieces && c.frames > alphaBefore.frames && alphaSpoke && !c.speaking.includes("alpha") ? c : undefined;
-      }, async () => JSON.stringify(await counters()));
-      await alphaTurn;
-
-      // The chip mutes at once: the next reply plays nothing.
-      await clickIn("the stage's mute chip", "button.cl-bot-stage__chip", undefined);
-      await until("the chip saying it is muted", 10_000, () => inTree<boolean>(cdp, "document.querySelector('button.cl-bot-stage__chip')?.getAttribute('data-voice') === 'muted'"));
-      const muted = (await counters())!;
-      await turn("alpha", "Stay quiet.");
-      await sleep(3_000);
-      const quiet = (await counters())!;
-      if (quiet.pieces !== muted.pieces) fail(`muted, the next reply still sent ${quiet.pieces - muted.pieces} piece(s)`);
-      await clickIn("the stage's chip again (unmute)", "button.cl-bot-stage__chip", undefined);
-      // Both bots' replies went through Clover Voice's one queue: never two at once on the player.
-      if (quiet.overlap > 1) fail(`two bots sounded at once (data-voice-overlap ${quiet.overlap}); the player (ms pieces speaking overlap): ${await voiceRecord()}`);
-      return `the fixture voice on ${botId} and Alpha (their user layers), spoken by Clover Voice: ${botId}'s reply came as ${after.pieces - before.pieces} piece(s) and ${after.frames - before.frames} frame(s), and its renderer showed ${shown.join(" → ")}; Alpha's as ${alphaAfter.pieces - alphaBefore.pieces} piece(s) and ${alphaAfter.frames - alphaBefore.frames} frame(s) while she spoke; never two bots at once (data-voice-overlap ${quiet.overlap}); muted by the stage's chip, the next reply sent no piece`;
-    } finally {
-      for (const id of voiced) await rpc.request("bot.setUserLayer", { id, patch: { voice: null } }).catch(() => undefined);
-      for (const id of installed.reverse()) await rpc.request("plugin.remove", { id }).catch(() => undefined);
-      rmSync(parent, { recursive: true, force: true });
-    }
-  });
+  // 17: the avatar plugin's figure beside a coding session: a third-party pack (the placeholder Live2D files), drawn by the
+  // bundled 2D renderer in the session's Avatar panel (figure-steps.ts).
+  await step(17, () => figurePackStep(figureCtx()));
+  // 18: a third-party renderer for the avatar plugin and a plugin that moves the figure (figure-steps.ts).
+  await step(18, () => figureRendererStep(figureCtx()));
+  // 19: the figure reacts to the session beside it and to speech (figure-steps.ts).
+  await step(19, () => figureReactsStep(figureCtx()));
   // 20: Alpha's tab under Bots' plug (the owner, November 14): the window's own sidebar beside her tab exactly as beside a plain
   // bot's (same rows, size and colours, not even tinted by her accent), her own top bar instead of the stock one, her toggle
   // folding the stock sidebar and back, her panel control opening the panel sheet; a plain bot's tab keeps the stock bar.
@@ -1993,20 +1729,20 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const everyId = "acceptance-every-composer";
     // The all-bots composer style: two tokens, one Alpha's own composer style (tab/pane.json) sets and one only her theme sets.
     const EVERY = { surface: "#E3EEFA", composer: "#CFE6D2" } as const;
-    const parent = mkdtempSync(join(tmpdir(), "clover-plain-bot-"));
+    const parent = mkdtempSync(join(tmpdir(), "moss-plain-bot-"));
     const folder = join(parent, id);
     mkdirSync(join(folder, "bot"), { recursive: true });
     writeFileSync(join(folder, "bot", "instructions.md"), "You are a plain test bot.\n");
-    writeFileSync(join(folder, "clover.json"), JSON.stringify({
+    writeFileSync(join(folder, "moss.json"), JSON.stringify({
       // No model of its own (a plugin's choice would ask the provider card first); step 8 gives it Alpha's as the user's pick.
-      manifest: 1, id, name, description: "The acceptance run's plain bot: no layout of its own, so the stock window.", version: "0.0.1", engines: { clover: "^1.0.0" },
+      manifest: 1, id, name, description: "The acceptance run's plain bot: no layout of its own, so the stock window.", version: "0.0.1", engines: { moss: "^1.0.0" },
       contributes: { bot: { name, instructions: "bot/instructions.md" } },
     }));
     const everyFolder = join(parent, everyId);
     mkdirSync(everyFolder, { recursive: true });
     writeFileSync(join(everyFolder, "paint.json"), JSON.stringify({ theme: 1, name: "Every composer", tokens: { "color.surface": EVERY.surface, "composer.background": EVERY.composer } }));
-    writeFileSync(join(everyFolder, "clover.json"), JSON.stringify({
-      manifest: 1, id: everyId, name: "Acceptance Every Composer", description: "The acceptance run's style for every bot's composer: two tokens, nothing else.", version: "0.0.1", engines: { clover: "^1.0.0" },
+    writeFileSync(join(everyFolder, "moss.json"), JSON.stringify({
+      manifest: 1, id: everyId, name: "Acceptance Every Composer", description: "The acceptance run's style for every bot's composer: two tokens, nothing else.", version: "0.0.1", engines: { moss: "^1.0.0" },
       contributes: { ui: [{ spot: "composer", id: "paint", style: "paint.json" }] },
     }));
     const installed: string[] = [];
@@ -2024,7 +1760,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     };
     const toAlpha = async () => {
       await escape();
-      if ((await inTree<boolean>(cdp, "!!document.querySelector('.ac')")) === undefined) await press("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
+      if ((await inTree<boolean>(cdp, "!!document.querySelector('.ac')")) === undefined) await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
       await until("Alpha's own controls", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('.ac')"), () => dumpFrames(cdp));
     };
     // The window's own sidebar as drawn: its box, ground, rule and material, the tokens its content takes, and each row's
@@ -2036,7 +1772,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       return String(await cdp.evaluate(shell.session, `(() => {
         const side = document.querySelector('.cl-window__sidebar'), content = document.querySelector('.cl-window__sidebar-content');
         const cs = (e) => getComputedStyle(e), r = side.getBoundingClientRect(), c = cs(side), k = cs(content);
-        const skip = new Set(["Alpha", ${JSON.stringify(name)}]);
+        const skip = new Set(["MOSS", ${JSON.stringify(name)}]);
         const rows = [...document.querySelectorAll('.cl-sidebar__row')].filter((e) => e.getClientRects().length > 0).map((e) => {
           const words = (e.innerText || '').trim().split('\\n').map((l) => l.trim()).filter((l) => l !== '');
           const t = e.getAttribute('aria-label') || words.find((l) => l.length > 1) || words[0] || '';
@@ -2046,11 +1782,11 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         }).filter((x) => x !== null);
         // Its height is the window's (an earlier row's render may have left the window at another size).
         return JSON.stringify({ box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.abs(r.height - innerHeight) < 2 ? 'window height' : Math.round(r.height)], ground: c.backgroundColor, rule: c.borderRightColor + ' ' + c.borderRightWidth, material: c.backdropFilter,
-          accent: k.getPropertyValue('--clover-color-accent').trim(), text: k.getPropertyValue('--clover-color-text').trim(), ink: k.color, rows });
+          accent: k.getPropertyValue('--moss-color-accent').trim(), text: k.getPropertyValue('--moss-color-text').trim(), ink: k.color, rows });
       })()`));
     };
     const composerTokens = async () => {
-      const v = await inTree<string>(cdp, `(() => { const el = [...document.querySelectorAll('.cl-composer')].find((e) => e.getClientRects().length > 0); if (!el) return null; const c = getComputedStyle(el); return JSON.stringify({ surface: c.getPropertyValue('--clover-color-surface').trim().toUpperCase(), composer: c.getPropertyValue('--clover-composer-background').trim().toUpperCase() }); })()`);
+      const v = await inTree<string>(cdp, `(() => { const el = [...document.querySelectorAll('.cl-composer')].find((e) => e.getClientRects().length > 0); if (!el) return null; const c = getComputedStyle(el); return JSON.stringify({ surface: c.getPropertyValue('--moss-color-surface').trim().toUpperCase(), composer: c.getPropertyValue('--moss-composer-background').trim().toUpperCase() }); })()`);
       return v === undefined ? undefined : (JSON.parse(v.value) as { surface: string; composer: string });
     };
     try {
@@ -2092,46 +1828,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (!(railWidth > 0 && railWidth <= 100)) fail(`the folded sidebar is ${railWidth} px wide, not the stock rail`);
       await press("her sidebar toggle again", ".ac__btn", "Show the sidebar");
       await until("the stock sidebar open again", 10_000, async () => (!(await collapsed()) && (await inTree<boolean>(cdp, "!!document.querySelector('.cl-sidebar:not([data-collapsed])')")) !== undefined ? true : undefined));
-      // 2b. The figure's box (`avatar.box` and `avatar.watch`, `avatar.read`): her "Right now" bubble is placed from the box her stage's renderer
-      // publishes (inline left/top, set only once a box is known), and moves when the box does: the window made a little narrower
-      // changes the stage's box, and the bubble follows it; widened again, it comes back. With the sidebar folded so the window's
-      // width leaves her the wide room the bubble and her stage tools show in.
-      await press("her sidebar toggle (for the bubble)", ".ac__btn", "Hide the sidebar");
-      await until("the stock sidebar folded", 10_000, async () => ((await collapsed()) ? true : undefined));
-      const bubble = async () => (await inTree<string>(cdp, "(() => { const e = document.querySelector('.rm__say'); return e && e.getClientRects().length > 0 && e.style.top !== '' ? e.style.left + '|' + e.style.top : null; })()"))?.value;
-      let boxSaid = "";
-      let stageTools = "";
-      try {
-        const placedAt = await until("her bubble placed from the figure's box (avatar.box)", 60_000, () => bubble(), async () => `${(await inTree<string>(cdp, "document.querySelector('.rm') ? document.querySelector('.rm').dataset.size + ' ' + (document.querySelector('.rm__say') ? 'bubble ' + document.querySelector('.rm__say').getAttribute('style') : 'no bubble') : 'no room'"))?.value}`);
-        const appTop = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
-        if (appTop === undefined) fail("no app document to resize");
-        let movedTo = "";
-        try {
-          await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1240, height: 800, deviceScaleFactor: 1, mobile: false }, appTop!.session);
-          movedTo = await until("her bubble moving with the box (avatar.watch)", 30_000, async () => { const v = await bubble(); return v !== undefined && v !== placedAt ? v : undefined; }, async () => `still ${await bubble()}`);
-        } finally {
-          // Back to the window's own size (the sidebar's look is compared at it below).
-          await cdp.send("Emulation.clearDeviceMetricsOverride", {}, appTop!.session).catch(() => undefined);
-        }
-        const nums = (v: string | undefined) => (v ?? "").match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
-        const near = (v: string | undefined, w: string) => { const x = nums(v), y = nums(w); return x.length === y.length && x.length > 0 && x.every((n, i) => Math.abs(n - y[i]!) <= 8); };
-        await until("her bubble back where it was (within a few px)", 30_000, async () => (near(await bubble(), placedAt) ? true : undefined), async () => `now ${await bubble()}, was ${placedAt}`);
-        boxSaid = `her bubble was placed from the figure's box (${placedAt}), moved with it when the window narrowed (${movedTo}) and came back`;
-        // 2c. Her stage tools (in her wide room, the sidebar folded): each is present; one that the figure's renderer can do opens its list (Expression, from the model's catalogue), the others say why not.
-        const toolNames = (await inTree<string>(cdp, "(() => { const t = [...document.querySelectorAll('.rm__tool')]; return t.length ? JSON.stringify(t.map(e => e.getAttribute('aria-label') + ':' + (e.getAttribute('aria-disabled') ?? 'on'))) : null; })()"))?.value ?? "[]";
-        if (!/Expression/.test(toolNames)) fail(`her stage tools are not drawn (${toolNames})`);
-        // Her own model wears her outfits, so her Outfit tool is on (it puts on her next outfit).
-        if (!toolNames.includes('"Outfit:on"')) fail(`her Outfit tool isn't on with her own model loaded (${toolNames})`);
-        stageTools = `her stage tools were drawn (${toolNames})`;
-        if ((await inTree<boolean>(cdp, "!!document.querySelector('.rm__tool[aria-label=Expression]:not([aria-disabled])')")) !== undefined) {
-          await press("her Expression tool", ".rm__tool", "Expression");
-          await until("her expression list", 10_000, () => inTree<boolean>(cdp, "!!document.querySelector('.rm__list [role=menuitem]')"));
-          await press("her Expression tool again", ".rm__tool", "Expression");
-          stageTools += "; Expression opened a list of the model's own expressions";
-        }
-      } finally {
-        if (await collapsed()) await press("her sidebar toggle (back open)", ".ac__btn", "Show the sidebar").catch(() => undefined);
-      }
+      // (2b and 2c, her bubble placed from the figure's box and her stage tools drawn from its catalogue, left with the figure:
+      // the platform has no figure API, and the avatar plugin's figure stands beside a session; the figure rows prove it.)
       // 3. Her panel control opens the panel sheet and closes it: the Browser panel, which the bundled browser view fills (her
       // Session control opens the slim column beside her conversation, not a panel).
       const control = "Browser";
@@ -2154,14 +1852,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (plainSide !== herSide) fail(`the sidebar beside Alpha's tab isn't the one beside a plain bot's: hers ${herSide}; plain ${plainSide}`);
       const plainTokens = await until("the plain bot's composer in the all-bots style", 20_000, async () => { const t = await composerTokens(); return t !== undefined && t.surface === EVERY.surface && t.composer === EVERY.composer ? t : undefined; }, async () => `its composer reads ${JSON.stringify(await composerTokens())}`);
       // 6. Back to Alpha by the sidebar's row: her chrome returns.
-      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
+      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
       await until("her chrome back", 20_000, async () => ((await win("w.dataset.barMode")) === "none" ? true : undefined));
       // 7. A coding session started now, outside the window, with no tab change after it: the Code switch of the sidebar beside her
       // tab lists it (the sidebar follows `conversation.watch`), and its row goes to it (the session's id in the sidebar's current row).
       const codeId = await ensureCodingSession(ctx) ?? fail("this run could not start a coding session");
       const side = await toCodingSession(cdp, codeId, press);
       await press("Bots in the sidebar's switch", ".cl-sidebar__switch-option", "Bots");
-      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
+      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS");
       await until("her chrome back", 20_000, async () => ((await win("w.dataset.barMode")) === "none" ? true : undefined));
       // 8. Her stage tools are hers alone (`mcpServers.stage.scope: own-bot`): a turn of hers is offered them, the plain bot's isn't.
       const bots = async () => (await rpc.request<{ bots: { id: string; name: string; model?: string; mainSession?: string }[] }>("bot.list", {})).bots;
@@ -2177,9 +1875,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         });
         return { session, tools: (req as { tools?: string[] }).tools ?? [] };
       };
-      const STAGE_TOOLS = ["set_scene", "set_mood", "toggle_outfit", "pin_note", "stage_status"];
+      // Her room's tools (her figure's are the avatar plugin's own, for every bot and session, on demand).
+      const STAGE_TOOLS = ["set_scene", "set_mood", "pin_note", "stage_status"];
       const stageIn = (tools: readonly string[]) => STAGE_TOOLS.filter((t) => tools.some((x) => x === t || x.endsWith(`__${t}`)));
-      const hers = await offered("Alpha");
+      const hers = await offered("MOSS");
       // The plain bot on Alpha's model, picked the user's way (its user layer): the user's default here is a provider with no key.
       const alphaModel = (await bots()).find((b) => b.id === "alpha")?.model ?? fail("bot.list gives Alpha no model");
       await rpc.request("bot.setUserLayer", { id, patch: { model: alphaModel } }, 20_000);
@@ -2188,29 +1887,8 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (plain.tools.length === 0) fail(`${name}'s turn was offered no tools at all, so it proves nothing`);
       if (stageIn(plain.tools).length > 0) fail(`${name}'s turn was offered Alpha's stage tools: ${stageIn(plain.tools).join(", ")}`);
       const toolsSaid = `her stage tools (${STAGE_TOOLS.join(", ")}) were offered to her turn and none to ${name}'s (offered ${plain.tools.length} others)`;
-      // 9. Her outfit is her setting: her Outfit button puts on her next outfit there, the setting changed by the user
-      // (`plugin.settings.set`, the Edit page's picker's call) shows on her stage, and her tool's change shows in the setting.
-      const worn = async () => (await inTree<string>(cdp, "(() => { const f = document.querySelector('figure.clvr-avatar[data-outfit]'); return f ? f.dataset.outfit : null; })()"))?.value;
-      const outfitSet = async () => (await rpc.request<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id: "alpha" })).settings.find((x) => x.key === "outfit")?.value;
-      const trail = async () => `the figure: ${(await inTree<string>(cdp, "(() => { const f = document.querySelector('figure.clvr-avatar[data-outfit]'); return f ? document.querySelectorAll('figure.clvr-avatar').length + ' in its document, heard ' + (f.dataset.cues || 'nothing') : null; })()"))?.value}; her room: ${(await inTree<string>(cdp, "(() => { const r = document.querySelector('.rm[data-dressing]'); return r ? r.dataset.dressing : null; })()"))?.value}`;
-      const wears = (what: string, want: string) => until(what, 30_000, async () => ((await worn()) === want ? true : undefined), async () => `her figure wears ${await worn()}, the setting says ${JSON.stringify(await outfitSet())}; ${await trail()}`);
-      let outfitSaid = "";
-      try {
-        await wears("her lilac dress, the default", "lilac-dress");
-        await press("her Outfit tool", ".rm__tool", "Outfit");
-        await until("her Outfit tool's pick in her setting", 20_000, async () => ((await outfitSet()) === "navy-uniform" ? true : undefined), async () => `the setting says ${JSON.stringify(await outfitSet())}`);
-        await wears("her navy uniform on her stage", "navy-uniform");
-        await rpc.request("plugin.settings.set", { id: "alpha", key: "outfit", value: "yellow-raincoat" }, 20_000);
-        await wears("the setting's raincoat on her stage", "yellow-raincoat");
-        await rpc.request("session.send", { id: hers.session, message: { text: 'ACCEPTANCE-CALL toggle_outfit {"part":"lilac-dress","on":true}', clientMessageId: `outfit-${randomBytes(4).toString("hex")}` } }, 30_000);
-        await until("her tool's outfit in her setting", 60_000, async () => ((await outfitSet()) === "lilac-dress" ? true : undefined), async () => `the setting says ${JSON.stringify(await outfitSet())}`);
-        await wears("her tool's lilac dress on her stage", "lilac-dress");
-        outfitSaid = "her outfit is her setting: her Outfit tool put on the navy uniform (the setting said so and her figure wore it), the setting set to the yellow raincoat put it on her figure, and her toggle_outfit tool's lilac dress was in the setting and on her figure";
-      } finally {
-        await rpc.request("plugin.settings.set", { id: "alpha", key: "outfit", value: null }, 20_000).catch(() => undefined);
-      }
       const rows = (JSON.parse(herSide) as { rows: string[] }).rows.length;
-      return `${side}; ${toolsSaid}; ${outfitSaid}; on Alpha's tab no stock bar (bar-mode none), her own controls, ${sizeSaid}, and the window's own sidebar beside it exactly as beside ${name}'s (box, ground, rule, material, its accent and text tokens and ${rows} rows the same; her skin "${skin}" reaches the bar and panels only); her toggle folded the stock sidebar to its ${railWidth} px rail and opened it again; ${boxSaid}; ${panels}; ${stageTools}; more scoped wins: her composer kept her own color.surface (${herTokens.surface}) and composer.background (${herTokens.composer}) against an all-bots style, which ${name}'s composer took (${plainTokens.surface}, ${plainTokens.composer}); ${name}'s tab kept the stock bar, and Alpha's brought her chrome back`;
+      return `${side}; ${toolsSaid}; on Alpha's tab no stock bar (bar-mode none), her own controls, ${sizeSaid}, and the window's own sidebar beside it exactly as beside ${name}'s (box, ground, rule, material, its accent and text tokens and ${rows} rows the same; her skin "${skin}" reaches the bar and panels only); her toggle folded the stock sidebar to its ${railWidth} px rail and opened it again; ${panels}; more scoped wins: her composer kept her own color.surface (${herTokens.surface}) and composer.background (${herTokens.composer}) against an all-bots style, which ${name}'s composer took (${plainTokens.surface}, ${plainTokens.composer}); ${name}'s tab kept the stock bar, and Alpha's brought her chrome back`;
     } finally {
       for (const pid of installed.reverse()) await rpc.request("plugin.remove", { id: pid }).catch(() => undefined);
       rmSync(parent, { recursive: true, force: true });
@@ -2219,196 +1897,32 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     }
   });
 
-  // 21: changing one thing, the owner's questions. A bot plugin whose `tab/layout.json` extends the stock tab and states
-  // three changes (the tab a row, so the stage stands to the left of the transcript; the stage wider; the bot's header
-  // at the top of the transcript's column), with one `ui` entry that hides the composer's model button (a keyed
-  // `composer.action`) in its own tab and one that takes another plugin's Pin button out of its header (a list spot's
-  // hide, by `target`). A second plugin, not the bot's, rearranges that tab with a layout patch: the header moves to
-  // just above the composer, in a row of its own that its CSS nudges up 6 px. The user switches that patch off in the
-  // bot editor (the header goes back), sets a layout of their own in the user layer (the tab a column) and resets it.
-  // Its stage shows the placeholder's Live2D model. Rendered wide and narrow, light and dark, with CLOVER_ACCEPT_RENDERS.
-  await step(21, async () => {
-    if (ctx.pressCard === undefined) fail("this run can't press a card");
-    const stock = ctx.avatarFolder;
-    if (stock === undefined) return fail("this run has no stock model folder");
-    const id = "acceptance-layout-patch";
-    const moverId = "acceptance-layout-mover";
-    const name = "Acceptance Layout Patch";
-    const parent = mkdtempSync(join(tmpdir(), "clover-layout-patch-"));
-    const folder = join(parent, id);
-    const moverFolder = join(parent, moverId);
-    cpSync(resolve(import.meta.dir, "fixtures", id), folder, { recursive: true });
-    cpSync(resolve(import.meta.dir, "fixtures", moverId), moverFolder, { recursive: true });
-    mkdirSync(join(folder, "assets", "live2d"), { recursive: true });
-    for (const f of ["alpha.model3.json", "alpha.moc3", "alpha.png"]) cpSync(join(stock, f), join(folder, "assets", "live2d", f));
-    const cls = (c: string) => `clv-${id}__${c}`;
-    const nudgeCls = `clv-${moverId}__nudge`;
-    // The talk column's own children, in order: where the header (and its nudge row) and the composer are.
-    const MEASURE = `(() => {
-      const tab = document.querySelector('.${cls("tab")}'); const stage = document.querySelector('.${cls("stage")}'); const talk = document.querySelector('.${cls("talk")}');
-      if (!tab || !stage || !talk) return null;
-      const r = (e) => { const b = e.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; };
-      const modelButton = [...talk.querySelectorAll('button.cl-composer__pill')].some((b) => (b.getAttribute('aria-label') || '').startsWith('Model:'));
-      const kids = [...talk.children];
-      const at = (sel) => kids.findIndex((k) => k.matches(sel) || !!k.querySelector(sel));
-      const nudge = talk.querySelector('.${nudgeCls}');
-      return { tab: r(tab), stage: r(stage), talk: r(talk), row: getComputedStyle(tab).flexDirection, canvas: !!stage.querySelector('.clvl-canvas'), composer: !!talk.querySelector('textarea'), modelButton,
-        header: at('.cl-bot-header'), composerAt: at('textarea'), kids: kids.length, nudged: nudge ? getComputedStyle(nudge).transform : null,
-        inNudge: nudge ? !!nudge.querySelector('.cl-bot-header') : false, buttons: talk.querySelector('.cl-bot-header') ? talk.querySelector('.cl-bot-header').querySelectorAll('iframe').length : -1 };
-    })()`;
-    type Box = { x: number; y: number; w: number; h: number };
-    type Measured = { tab: Box; stage: Box; talk: Box; row: string; canvas: boolean; composer: boolean; modelButton: boolean; header: number; composerAt: number; kids: number; nudged: string | null; inNudge: boolean; buttons: number };
-    const installed: string[] = [];
-    const before = await rpc.request<{ lists?: unknown[] }>("ui.settings", {}).catch(() => undefined);
-    let lastPress = 0;
-    const shows = async <T,>(bot: string, expr: string, what: string, ok: (m: T) => boolean, ms = 60_000) => (await until(what, ms, async () => {
-      const m = await inTree<T>(cdp, expr);
-      if (m !== undefined && ok(m.value)) return m;
-      if (Date.now() - lastPress > 6_000) {
-        lastPress = Date.now();
-        await clickIn(`${bot} in the sidebar`, SIDEBAR_ITEMS, bot, 5_000).catch(() => undefined);
-      }
-      return undefined;
-    }, () => dumpFrames(cdp))).value;
-    const tabShows = (what: string, ok: (m: Measured) => boolean, ms = 60_000) => shows<Measured>(name, MEASURE, what, (m) => m.canvas && m.composer && ok(m), ms);
-    // A switch in the bot editor, brought into view (the rows are below its fold), pressed, and seen to flip.
-    const flip = async (label: string, to: boolean) => {
-      const sw = `button[role=switch][aria-label="${label}"]`;
-      await until(`the switch "${label}"`, 30_000, () => inTree<boolean>(cdp, `document.querySelector('${sw}')?.getAttribute('aria-checked') === '${!to}'`), () => dumpFrames(cdp));
-      await inTree<boolean>(cdp, `(() => { const e = document.querySelector('${sw}'); if (!e) return false; e.scrollIntoView({ block: "center" }); return true; })()`);
-      await sleep(300);
-      await clickIn(`the switch "${label}"`, sw, undefined);
-      await until(`the switch "${label}", ${to ? "on" : "off"}`, 20_000, () => inTree<boolean>(cdp, `document.querySelector('${sw}')?.getAttribute('aria-checked') === '${to}'`), () => dumpFrames(cdp));
-    };
-    // The plain bot: no layout of its own; the mover places its top-bar Edit button just above the composer, and
-    // takes its conversation out.
-    const plainId = "acceptance-layout-plain";
-    const plainName = "Acceptance Layout Plain";
-    const plainFolder = join(parent, plainId);
-    mkdirSync(join(plainFolder, "bot"), { recursive: true });
-    writeFileSync(join(plainFolder, "bot", "instructions.md"), "You are a plain test bot.\n");
-    writeFileSync(join(plainFolder, "clover.json"), JSON.stringify({
-      manifest: 1, id: plainId, name: plainName, description: "The acceptance run's plain bot: no layout of its own; another plugin rearranges its tab.", version: "0.0.1", engines: { clover: "^1.0.0" },
-      contributes: { bot: { name: plainName, instructions: "bot/instructions.md", model: { default: "anthropic/claude-sonnet-5-5", effort: "medium" } } },
-    }, null, 2));
-    const PLAIN = `(() => {
-      const tab = document.querySelector('.clv-${plainId}__tab'); const talk = document.querySelector('.clv-${plainId}__talk');
-      if (!tab || !talk) return null;
-      const kids = [...talk.children]; const nudge = talk.querySelector('.${nudgeCls}');
-      const edit = 'button[aria-label="Edit ${plainName}"]';
-      return { kids: kids.length, nudgeAt: nudge ? kids.findIndex((k) => k === nudge || k.contains(nudge)) : -1, composerAt: kids.findIndex((k) => !!k.querySelector('textarea')),
-        editInTab: nudge ? nudge.querySelectorAll(edit).length : 0, edits: document.querySelectorAll(edit).length, conv: !!tab.querySelector('.cl-conv'), nudged: nudge ? getComputedStyle(nudge).transform : null };
-    })()`;
-    type Plain = { kids: number; nudgeAt: number; composerAt: number; editInTab: number; edits: number; conv: boolean; nudged: string | null };
-    try {
-      for (const [pid, dir] of [[id, folder], [plainId, plainFolder], [moverId, moverFolder]] as const) {
-        const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: dir } }, 60_000);
-        if (r.id !== pid) fail(`the fixture installed as ${r.id}`);
-        installed.push(pid);
-        await ctx.pressCard!(`${pid}'s OK card`, (c) => c.kind === "plugin-ok" && c.pluginId === pid);
-        await until(`${pid} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id: pid }).catch(() => undefined))?.plugin.state) === "running" ? true : undefined));
-      }
-      // Out of any dialog.
-      await escape().catch(() => undefined);
-      // The bot's layout and the mover's patch: the header just above the composer, in the mover's row, nudged 6 px up.
-      await tabShows("its tab arranged by its layout and the mover's patch, the model on its stage", (m) => m.inNudge && m.buttons >= 1 && (m.nudged ?? "").includes("-6"));
-      await sleep(1_500);
-      const m = await tabShows("its tab, settled", () => true, 10_000);
-      if (m.stage.x + m.stage.w > m.talk.x + 1) fail(`the stage isn't to the left of the transcript (${JSON.stringify(m)})`);
-      const share = m.stage.w / m.tab.w;
-      if (m.stage.w < 279 || share < 0.36 || share > 0.48) fail(`the stage is ${m.stage.w} px of a ${m.tab.w} px tab (${Math.round(share * 100)}%), not about 42%`);
-      if (Math.abs(m.stage.h - m.talk.h) > 2) fail(`the stage and the transcript aren't side by side (heights ${m.stage.h} and ${m.talk.h})`);
-      if (m.modelButton) fail("the composer in its tab still shows the model button its hide entry takes out");
-      if (!(m.header === m.composerAt - 1 && m.header > 0)) fail(`the header isn't just above the composer (header at ${m.header}, composer at ${m.composerAt} of ${m.kids})`);
-      if (m.nudged !== "matrix(1, 0, 0, 1, 0, -6)") fail(`the mover's row isn't nudged 6 px up (transform ${m.nudged})`);
-      if (m.buttons !== 1) fail(`the header shows ${m.buttons} of the mover's buttons; the bot's list hide takes Pin out, so Wave alone`);
-      const rendered: string[] = [];
-      const renders = process.env.CLOVER_ACCEPT_RENDERS;
-      const appRoot = (await cdp.documents()).find((d) => d.url === "clover-core://app/");
-      if (renders && appRoot !== undefined) {
-        try {
-          for (const [label, width] of [["wide", 1280], ["narrow", 900]] as const) {
-            await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false }, appRoot.session);
-            for (const scheme of ["light", "dark"] as const) {
-              ctx.setAppearance?.(scheme);
-              for (const d of await cdp.documents()) await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] }, d.session).catch(() => undefined);
-              await layGround(cdp, scheme);
-              await sleep(1_500);
-              const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, appRoot.session) as { data: string };
-              const file = `layout-patch-${label}-${scheme}.png`;
-              writeFileSync(join(renders, file), Buffer.from(shot.data, "base64"));
-              rendered.push(file);
-            }
-          }
-        } finally {
-          await unshootWindow(cdp, ctx.setAppearance);
-        }
-      }
-      // The user, in the bot editor: switches the mover's patch off (the header goes back to the top of the transcript),
-      // and shows the Pin button the bot's plugin hid (both header buttons then).
-      await clickIn(`${name}'s Edit button`, `button[aria-label="Edit ${name}"]`, undefined);
-      await flip("Acceptance Layout Mover rearranges this tab", false);
-      await flip("Show Pin", true);
-      await clickIn("Back to the bot", ".cl-bot-editor button", "Back to the bot");
-      const off = await tabShows("its tab with the mover's patch off and Pin shown: the header back on top, both buttons in it", (x) => x.header === 0 && !x.inNudge && x.buttons === 2, 30_000);
-      // The user's own layout (the user layer's `layout`), last: the tab a column, the stage above the transcript; Reset.
-      const userLayout = JSON.stringify({ layout: 1, extends: "bot", changes: [{ set: ".tab", as: "column" }] });
-      const set = await rpc.request<{ applied?: boolean }>("bot.setUserLayer", { id, patch: { layout: userLayout } });
-      if (set.applied !== true) fail(`the user layer's layout wasn't applied (${JSON.stringify(set)})`);
-      // The core's side first: the bot's user layer holds the layout. Read with `bot.get`, which the run's connection may
-      // call on a packaged core too (the CLI's role there; `plugin.ui` is the app's alone, so it was always refused).
-      await until("the bot's user layer holding the user's layout", 10_000, async () => {
-        const b = await rpc.request<{ bot: { userLayer: string[] } }>("bot.get", { id });
-        return b.bot.userLayer.includes("layout") ? true : undefined;
-      });
-      const mine = await tabShows("its tab with the user's own layout: a column", (x) => x.row === "column" && x.stage.y + x.stage.h <= x.talk.y + 2, 30_000);
-      await rpc.request("bot.setUserLayer", { id, patch: { layout: null } });
-      await tabShows("its tab after Reset: a row again", (x) => x.row === "row", 30_000);
-      // The owner's exact example on the plain bot: its top-bar Edit button just above its composer, nudged, and gone from
-      // the bar; the patch also took the conversation out. The way back from that tab: its Edit button, then the switch.
-      const p0 = await shows<Plain>(plainName, PLAIN, "the plain bot's tab: the Edit button above the composer, no conversation", (x) => x.editInTab === 1 && (x.nudged ?? "").includes("-6"));
-      if (!(p0.nudgeAt === p0.composerAt - 1)) fail(`the Edit button isn't just above the composer (row at ${p0.nudgeAt}, composer at ${p0.composerAt} of ${p0.kids})`);
-      if (p0.edits !== 1) fail(`the plain bot's Edit button shows ${p0.edits} times; placed in the tab, it leaves the bar`);
-      if (p0.conv) fail("the plain bot's tab still draws the conversation its patch removes");
-      await clickIn("the plain bot's Edit button, in its tab", `.${nudgeCls} button[aria-label="Edit ${plainName}"]`, undefined);
-      await flip("Acceptance Layout Mover rearranges this tab", false);
-      await clickIn("Back to the bot", ".cl-bot-editor button", "Back to the bot");
-      const p1 = await shows<Plain>(plainName, PLAIN, "the plain bot's tab with the patch off: the conversation drawn, the Edit button back in the bar", (x) => x.conv && x.editInTab === 0 && x.nudgeAt === -1 && x.edits === 1, 30_000);
-      // Its hide is its own tab's: Alpha's composer keeps the model button.
-      await escape().catch(() => undefined);
-      await clickIn("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha");
-      await until("Alpha's composer with its model button", 20_000, () => inTree<boolean>(cdp, "[...document.querySelectorAll('button.cl-composer__pill')].some((b) => (b.getAttribute('aria-label') || '').startsWith('Model:'))"), () => dumpFrames(cdp));
-      return `${id} (tab/layout.json: extends the stock tab, 3 changes; two hide entries) and ${moverId} (a patch to that tab, its own CSS) installed from their folders: its stage ${m.stage.w} px (${Math.round(share * 100)}% of the ${m.tab.w} px tab) stands left of the transcript (${m.talk.w} px), the model drawn on it; the header moved to just above the composer (child ${m.header} of ${m.kids}) in the mover's row, ${m.nudged}; one of the mover's two header buttons (Pin hidden by the bot's list hide); no model button in its composer, Alpha's keeps hers; in the bot editor the mover switched off and Pin shown again: the header back on top (child ${off.header}) with ${off.buttons} buttons; on ${plainId} (no layout of its own) the top-bar Edit button sat just above the composer (row ${p0.nudgeAt}, composer ${p0.composerAt}), ${p0.nudged}, once in the window, with the conversation removed; pressed there, its editor switched the patch off and the conversation came back (${p1.edits} Edit button, in the bar); the user's own layout made the tab a column (stage ${mine.stage.h} px over the transcript) and Reset made it a row again${rendered.length > 0 ? `; rendered ${rendered.join(", ")}` : ""}`;
-    } finally {
-      await rpc.request("bot.setUserLayer", { id, patch: { layout: null } }).catch(() => undefined);
-      if (before?.lists !== undefined) await rpc.request("ui.set", { patch: { lists: before.lists } }).catch(() => undefined);
-      for (const pid of installed.reverse()) await rpc.request("plugin.remove", { id: pid }).catch(() => undefined);
-      rmSync(parent, { recursive: true, force: true });
-    }
-  });
+  // 21: no body: a bot plugin's tab layout and another plugin's patch to it is retired with the bot tab (G8), its row runs nowhere (elsewhere.ts).
 
-  // 22: idle with Alpha's tab open. The app says every five seconds (CLOVER_IPC_STATS, the run sets it) what crossed between the
+  // 22: idle with Alpha's tab open. The app says every five seconds (MOSS_IPC_STATS, the run sets it) what crossed between the
   // windows and the main process, by channel, and what each process cost; a quiet app is a cheap one. An owner's app once ran
   // the main process at half a core with nothing happening: this holds the idle one to a budget, printed in the row.
   await step(22, async () => {
     const IDLE_MS = 15_000, MAIN_MAX_PERCENT = 25, MESSAGES_MAX_PER_SECOND = 20; // measured idle: main about 7.5%, under 1 message a second
-    if ((await inTree<boolean>(cdp, "!!document.querySelector('.ac')")) === undefined) {
-      const at = await until("Alpha in the sidebar", 20_000, async () => {
+    // A CI runner's load says nothing about the app: the row is the Mac's to measure (measured.ts).
+    if (measuredOnMacOnly()) return `${MEASURED_ON_MAC_ONLY}: ${MEASURED_ROWS[0]!.reason}`;
+    if ((await inTree<boolean>(cdp, `!!document.querySelector('${SESSION_TAB}')`)) === undefined) {
+      const at = await until("the code session in the sidebar", 20_000, async () => {
         for (const d of await treeDocs(cdp)) {
-          const c = await cdp.centerOf(d.session, SIDEBAR_ITEMS, "Alpha").catch(() => undefined);
+          const c = await cdp.centerOf(d.session, SESSION_ROWS).catch(() => undefined);
           if (c !== undefined) return { session: d.session, c };
         }
         return undefined;
       }, () => dumpFrames(cdp));
       await cdp.click(at.session, at.c.x, at.c.y);
-      await until("Alpha's own controls", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('.ac')"), () => dumpFrames(cdp));
+      await until("the code session's tab", 20_000, () => inTree<boolean>(cdp, `!!document.querySelector('${SESSION_TAB}')`), () => dumpFrames(cdp));
     }
     await sleep(6_000); // what opening her tab starts (her room's few ticks, the stage loading) is not idle
-    const from = ctx.appLog().length;
+    const logBefore = ctx.appLog();
     await sleep(IDLE_MS);
-    const raw = ctx.appLog().slice(from).split("\n").filter((l) => l.startsWith("ipc: ") || l.includes(" ipc: "));
+    const raw = linesSince(logBefore, ctx.appLog()).filter((l) => l.startsWith("ipc: ") || l.includes(" ipc: "));
     const lines = raw.flatMap((l) => { const p = parseIpcLine(l); return p === undefined ? [] : [p]; });
-    if (lines.length < 2) fail(`the app said ${lines.length} ipc line(s) in ${IDLE_MS / 1000} s (it says one every 5 s when CLOVER_IPC_STATS=1) [apps/desktop/src/main/ui/ipc-stats.ts]`);
+    if (lines.length < 2) fail(`the app said ${lines.length} ipc line(s) in ${IDLE_MS / 1000} s (it says one every 5 s when MOSS_IPC_STATS=1) [apps/desktop/src/main/ui/ipc-stats.ts]`);
     const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
     // The main process is the one typed Browser; the windows' are Tab; the rest (GPU, utility) are told too.
     const by = (type: string) => mean(lines.map((l) => l.cpu.filter((c) => c.type === type).reduce((a, c) => a + c.percent, 0)));
@@ -2422,7 +1936,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   });
 
   // 23: a third-party media plugin (acceptance-media, `files`), installed from its folder: its page, opened from its sidebar
-  // button, asks the app's file picker for a video (the test build answers from CLOVER_TEST_PICK_FILES, a generated file),
+  // button, asks the app's file picker for a video (the test build answers from MOSS_TEST_PICK_FILES, a generated file),
   // and gets a token, the name and the size, never the path. The page plays the video from the media URL (a range read
   // answered with 206 and its Content-Range, one past the end refused with 416; the `<video>` reads its size and length
   // from it), runs a WebAssembly module from its own folder, and its click on Save gets a token from the save picker. The
@@ -2433,10 +1947,10 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const picks = ctx.mediaPicks;
     if (picks === undefined) return fail("this run has no media picker answers");
     const id = "acceptance-media";
-    const parent = mkdtempSync(join(tmpdir(), "clover-media-"));
+    const parent = mkdtempSync(join(tmpdir(), "moss-media-"));
     const folder = join(parent, id);
     cpSync(join(import.meta.dir, "fixtures", id), folder, { recursive: true });
-    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`clover-plugin://${id}/`));
+    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`moss-plugin://${id}/`));
     const clickIn = async (what: string, selector: string, text: string | undefined, ms = 20_000) => {
       const at = await until(what, ms, async () => {
         for (const d of await treeDocs(cdp)) {
@@ -2553,21 +2067,56 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (ctx.pressCard === undefined) fail("this run can't press a card");
     const id = "acceptance-window";
     const folder = join(import.meta.dir, "fixtures", id);
-    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`clover-plugin://${id}/`));
-    /** The first element `sel` matches in any of the plugin's frames: its session and its attributes. */
+    const layerDocs = async () => (await cdp.documents()).filter((d) => d.url.startsWith(`moss-plugin://${id}/`));
+    /** The plugin's add-on frames as the window shows them (a frame, or the placeholder of one asleep), one under each message: its mount
+     *  (the place), its address now, whether it sleeps, and the message it is under (that row's key and kind). */
+    const hostFrames = async () => {
+      const out: { mount: string; src: string; asleep: boolean; message: string; kind: string }[] = [];
+      for (const d of await treeDocs(cdp)) {
+        const v = await cdp.evaluate(d.session, `JSON.stringify([...document.querySelectorAll('.cl-conv__extra [data-moss-entry="${id}#acceptance-window-extra"]')].map((e) => { const u = e.closest('.cl-conv__unit'); return { mount: e.getAttribute('data-moss-mount') || '', src: e.getAttribute('src') || '', asleep: e.hasAttribute('data-moss-asleep'), message: u ? u.getAttribute('data-key') || '' : '', kind: u ? u.getAttribute('data-unit') || '' : '' }; }))`).catch(() => "[]");
+        out.push(...(JSON.parse(String(v)) as { mount: string; src: string; asleep: boolean; message: string; kind: string }[]));
+      }
+      return out;
+    };
+    // The hooks probe is drawn under every message but the user's, one in each frame, so the row reads and presses ONE of them: the frame
+    // under the last such message (the reader is at the end of the conversation, so it is near the screen). It is named by its place, never
+    // by its address, which changes when it wakes.
+    let probeMount: string | undefined;
+    /** The address a frame was given (its single-use token): what a frame's `src` and its document's own URL share. */
+    const addressOf = (url: string) => { try { return new URL(url).searchParams.get("mount") ?? ""; } catch { return ""; } };
+    const probeDocs = async () => {
+      const all = await layerDocs();
+      if (probeMount === undefined) return all;
+      const src = (await hostFrames()).find((f) => f.mount === probeMount)?.src;
+      return src === undefined || src === "" ? [] : all.filter((d) => addressOf(d.url) === addressOf(src));
+    };
+    const PROBE_PARTS = ["page", "box", "kept", "remount", "drag", "menu", "open"].map((n) => `[data-acceptance-window="${n}"]`);
+    /** The first element `sel` matches in any of the plugin's frames (in the probe's own frame, for the probe's parts): its session and its attributes. */
     const find = async (sel: string): Promise<{ session: string; attrs: Record<string, string>; text: string } | undefined> => {
-      for (const d of await layerDocs()) {
+      for (const d of await (PROBE_PARTS.includes(sel) ? probeDocs() : layerDocs())) {
         const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector(${JSON.stringify(sel)}); return e ? JSON.stringify({ attrs: Object.fromEntries([...e.attributes].map((a) => [a.name, a.value])), text: e.textContent || "" }) : "" })()`).catch(() => undefined);
         if (typeof v === "string" && v !== "") return { session: d.session, ...(JSON.parse(v) as { attrs: Record<string, string>; text: string }) };
       }
       return undefined;
     };
-    const waitFor = (what: string, sel: string, ms = 45_000) => until(what, ms, () => find(sel), () => dumpFrames(cdp));
+    // The row lands on its session's tab itself: a wait that finds nothing while another view is up (an earlier row, or a window document
+    // that loaded again, left the window elsewhere) puts the window on that session again, as a person would, and keeps waiting.
+    let landedOn: string | undefined;
+    const tabShown = async () => {
+      for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]') && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => e.getAttribute('data-session') === ${JSON.stringify(landedOn ?? "")} || (e.textContent || '').includes(${JSON.stringify(landedOn ?? "")}))`).catch(() => false)) === true) return true;
+      return false;
+    };
+    const waitFor = (what: string, sel: string, ms = 45_000) => until(what, ms, async () => {
+      const f = await find(sel);
+      if (f !== undefined) return f;
+      if (landedOn !== undefined && !(await tabShown())) await showWindowSession(ctx, landedOn).catch(() => undefined);
+      return undefined;
+    }, () => dumpFrames(cdp));
     /** Where the plugin's frames are in the window, and whether each sleeps (a frame away from the screen sleeps and wakes when it comes near: §5.5). */
     const placed = async () => {
       const out: string[] = [];
       for (const d of await treeDocs(cdp)) {
-        const v = await cdp.evaluate(d.session, `(() => { const vis = document.visibilityState; const els = [...document.querySelectorAll('[data-clover-entry^="${id}#"]')].map((e) => { const b = e.getBoundingClientRect(); return e.tagName.toLowerCase() + (e.hasAttribute('data-clover-asleep') ? ' asleep' : '') + ' ' + Math.round(b.top) + ',' + Math.round(b.height); }); return els.length ? vis + ': ' + els.join('; ') : ''; })()`).catch(() => "");
+        const v = await cdp.evaluate(d.session, `(() => { const vis = document.visibilityState; const els = [...document.querySelectorAll('[data-moss-entry^="${id}#"]')].map((e) => { const b = e.getBoundingClientRect(); return e.tagName.toLowerCase() + (e.hasAttribute('data-moss-asleep') ? ' asleep' : '') + ' ' + Math.round(b.top) + ',' + Math.round(b.height); }); return els.length ? vis + ': ' + els.join('; ') : ''; })()`).catch(() => "");
         if (typeof v === "string" && v !== "") out.push(v);
       }
       return out.join(" | ");
@@ -2575,15 +2124,22 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     /** Brings the plugin's frames into view one at a time, as a person scrolls the conversation to a message further up: a part in a
      *  long conversation is away from the screen, asleep, and wakes when it comes near. */
     let revealed = 0;
-    const reveal = async () => {
+    /** Scrolls the frame of one place into view (and wakes it): by its mount. */
+    const scrollTo = async (mount: string) => {
       for (const d of await treeDocs(cdp)) {
-        await cdp.evaluate(d.session, `(() => { const els = [...document.querySelectorAll('[data-clover-entry^="${id}#"]')]; const e = els[${revealed++} % Math.max(els.length, 1)]; if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); return els.length; })()`).catch(() => undefined);
+        await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-moss-mount="${mount}"]'); if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); return !!e; })()`).catch(() => undefined);
+      }
+    };
+    const reveal = async () => {
+      if (probeMount !== undefined) return scrollTo(probeMount);
+      for (const d of await treeDocs(cdp)) {
+        await cdp.evaluate(d.session, `(() => { const els = [...document.querySelectorAll('[data-moss-entry^="${id}#"]')]; const e = els[${revealed++} % Math.max(els.length, 1)]; if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); return els.length; })()`).catch(() => undefined);
       }
     };
     const press = async (what: string, sel: string) => {
       let tries = 0;
       const at = await until(what, 20_000, async () => {
-        for (const d of await layerDocs()) {
+        for (const d of await (PROBE_PARTS.includes(sel) ? probeDocs() : layerDocs())) {
           const c = await cdp.centerOf(d.session, sel).catch(() => undefined);
           if (c !== undefined) return { session: d.session, c };
         }
@@ -2611,23 +2167,26 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       await cdp.click(at.session, at.c.x, at.c.y);
       await sleep(600);
     };
-    const botMain = async () => (await rpc.request<{ bots: { id: string; mainSession: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha")?.mainSession ?? fail("no bot alpha");
+    // The code session the window opens on, running before the install.
+    const running = await windowSession(rpc);
     const installed = await rpc.request<{ id: string; state: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
     try {
       if (installed.id !== id) fail(`the fixture installed as ${installed.id}`);
       const ok = await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === id);
       await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "running") ? true : undefined));
-      // A turn in Alpha's conversation that calls the plugin's tool; her tab is open while it runs.
-      // Alpha's tab is the one open at the start of a window run; pressed again only when another tab is showing.
-      if ((await find('[data-acceptance-window="composer"]')) === undefined) await openApp("Alpha").catch(() => undefined);
-      const session = await botMain();
+      // A turn that calls the plugin's tool, in that code session (running before its OK), open in the window while it runs.
+      const session = await showWindowSession(ctx, running);
+      landedOn = session;
       const tag = `WINDOW-TAG-${randomBytes(4).toString("hex").toUpperCase()}`;
       await rpc.request("session.send", { id: session, message: { text: `ACCEPTANCE-CALL Window {"text":"${tag}"}`, clientMessageId: `window-${tag}` } }, 30_000);
-      const carded = "a read-only tool of its own: it ran with no card";
+      // A read-only tool of the plugin's own runs with no card where its host is fenced (macOS); where it is not (Linux: plugin code
+      // runs as the user, spec §5.2 item 58) the registry cannot forecast it contained, so the tool asks and the card is pressed.
+      const carded = process.platform === "darwin" ? "a read-only tool of its own: it ran with no card" : "a tool of its own that asks where its host is unfenced: its card pressed";
+      if (process.platform !== "darwin") await ctx.pressCard!("its tool card (its host is unfenced here, so even a read-only tool asks)", (c) => c.kind === "tool" && c.session === session);
       await until("the tool's result in the model's next request", 90_000, async () => ctx.requests().find((r) => r.toolResult?.text.includes(`acceptance-window-pong: ${tag}`)),
         async () => `${carded}; the provider's last requests: ${JSON.stringify(ctx.requests().slice(-3).map((r) => ({ said: r.lastUserText.slice(0, 80), answered: r.answered?.slice(0, 80), result: r.toolResult?.text.slice(0, 80) })))}`);
       // 1.83 composer.action: its button is in the composer of Alpha's tab, pressed in the window.
-      await waitFor("its composer.action button in Alpha's composer", '[data-acceptance-window="composer"]');
+      await waitFor("its composer.action button in the session's composer", '[data-acceptance-window="composer"]');
       await press("its composer button", '[data-acceptance-window="composer"]');
       await until("its composer button's press counted", 15_000, async () => ((await find('[data-acceptance-window="composer"]'))?.attrs["data-pressed"] === "1" ? true : undefined));
       // 1.89 conversation.message keyed `user`: the user's message drawn by the plugin, with its text (conversation.read).
@@ -2647,13 +2206,19 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (toolResult.attrs["data-tool"] !== "mcp__acceptance-window-tools__Window") fail(`its tool.result cell was given ${JSON.stringify(toolResult.attrs["data-tool"])}`);
       if (!(toolResult.attrs["data-result"] ?? "").includes(tag)) fail(`its tool.result cell's call didn't carry the result (${(toolResult.attrs["data-result"] ?? "").slice(0, 120)})`);
       // Its probe under the user's message (in the plugin's own frame in Alpha's tab): the hooks.
+      // The probe is drawn under every message but the user's, in a frame of its own under each: this row reads and presses one, the one
+      // under the last such message, named by its place.
+      probeMount = (await until("its add-on frame under the last message that is not the user's", 45_000, async () => (await hostFrames()).filter((f) => f.kind !== "user" && f.mount !== "").at(-1)?.mount, async () => `frames ${JSON.stringify(await hostFrames())}`));
+      await scrollTo(probeMount);
       const page = await waitFor("its hooks probe under the user's message", '[data-acceptance-window="page"]');
       const attrOf = async (name: string) => (await find('[data-acceptance-window="page"]'))?.attrs[`data-${name}`] ?? "";
       await until("the hooks' first answers", 20_000, async () => ((await attrOf("approvals")) !== "" && (await attrOf("questions")) !== "" ? true : undefined), async () => `page said ${JSON.stringify((await find('[data-acceptance-window="page"]'))?.attrs)}`);
       const listsSaid = `useApprovals gave a list (${await attrOf("approvals")}), useQuestions gave a list (${await attrOf("questions")})`;
       if (Number.isNaN(Number(await attrOf("approvals"))) || Number.isNaN(Number(await attrOf("questions")))) fail(`the hooks gave no list: ${JSON.stringify(page.attrs)}`);
+      // useUserSend is a function for any part now (the app refuses a send from a part without the `user.send` capability, which this
+      // plugin does not declare; the runtime tests cover the refusal); useComposerHost stays undefined outside the composer spot.
       const absent = [await attrOf("usersend"), await attrOf("composerhost")];
-      if (absent.join(",") !== "undefined,undefined") fail(`useUserSend / useComposerHost for a third party's page should be undefined, were ${absent.join(", ")}`);
+      if (absent.join(",") !== "function,undefined") fail(`useUserSend should be a function (refused on use without user.send) and useComposerHost undefined for a third party's page, were ${absent.join(", ")}`);
       // useViewFrame: the hook was given the probe's box element; what the frame measured of it is compared with the harness's own
       // measurement of the same element in the real window (its box and the viewport), and main's answer to the hook's report is in the app log
       // (this plugin has no `browser` capability, so main refuses to place a view for it, and says so).
@@ -2661,7 +2226,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // The frame is laid out after the probe mounts (and a row run after others finds it grown later), so the probe says its element's box again
       // whenever it changes and the row brings the frame into view when it has no box and waits for the drawn box (a width, 24 tall) the harness's own measure agrees with.
       const ownBox = async () => {
-        for (const d of await layerDocs()) {
+        for (const d of await probeDocs()) {
           const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acceptance-window="box"]'); if (!e) return null; const b = e.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height), vw: innerWidth, vh: innerHeight }; })()`).catch(() => null);
           if (v !== null && typeof v === "object") return v as { x: number; y: number; w: number; h: number; vw: number; vh: number };
         }
@@ -2685,11 +2250,65 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       const refused = ctx.appLog().split("\n").filter((l) => l.includes("may not place the acceptance-window view"));
       if (refused.length === 0) fail("main didn't answer the view frame's report (no `may not place the acceptance-window view` line in the app log)");
       // useSurface / useSurfaceEnvironment: this frame is a tab's, not a surface window's root, so the request answers nothing and the environment is none.
-      const surfaceSaid = await attrOf("surface");
-      const envSaid = await attrOf("surfaceenv");
+      // The probe's frame may have loaded again since the wait above (the reveal wakes a frame that slept far up a long transcript,
+      // and its page starts with no answers): both answers are waited for anew, then judged exactly as before.
+      const [surfaceSaid, envSaid] = await until("the probe's surface answers once its frame settled", 20_000, async () => {
+        const s = await attrOf("surface");
+        const e = await attrOf("surfaceenv");
+        return s !== "" && e !== "" ? ([s, e] as const) : undefined;
+      }, async () => `page said ${JSON.stringify((await find('[data-acceptance-window="page"]'))?.attrs)}`);
       if (surfaceSaid !== "function; asked: undefined") fail(`useSurface from a tab's frame gave ${JSON.stringify(surfaceSaid)}`);
       if (envSaid !== "none") fail(`useSurfaceEnvironment in a tab's frame gave ${JSON.stringify(envSaid)}, not none`);
       const hooksSaid = `useViewFrame was given the probe's box and the frame measured it at ${frameSaid} (the harness measured the same element at ${mine.x},${mine.y} ${mine.w}x${mine.h} in ${mine.vw}x${mine.vh}); main answered its report: ${refused[0]!.replace(/^\S+\s*/, "").slice(0, 110)}; useSurface (${surfaceSaid}) and useSurfaceEnvironment (${envSaid}) answered for a frame on a tab, not on a surface window`;
+      // One frame for each place a part appears (spec §14.2 item 77): the add-on is drawn under EACH message of the conversation, each in a
+      // frame of its own (its own mount and address), given THAT message's own item, and no frame of the plugin reads "forbidden" (a second
+      // frame on one address was served nothing, and the one page that drew was given the last message's item).
+      // Counted in every tree document and summed (inTree answers with the FIRST document whose value is not false, and 0 is not false).
+      const messageCount = async () => {
+        let n = 0;
+        for (const d of await treeDocs(cdp)) n += Number(await cdp.evaluate(d.session, "document.querySelectorAll('.cl-conv__extra').length").catch(() => 0)) || 0;
+        return n;
+      };
+      // At least three messages (a session of its own has the turn's message and its answer): one more turn when there are fewer.
+      if ((await messageCount()) < 3) {
+        // The same kind of turn as the first (the fake provider answers it with the plugin's read-only tool and then its words).
+        await rpc.request("session.send", { id: session, message: { text: `ACCEPTANCE-CALL Window {"text":"${tag}-again"}`, clientMessageId: `window-more-${tag}` } }, 30_000);
+        await until("the follow-up's messages in the conversation", 60_000, async () => ((await messageCount()) >= 3 ? true : undefined), () => dumpFrames(cdp));
+      }
+      const everyMessage = await until("an add-on frame under each message", 30_000, async () => {
+        const frames = await hostFrames();
+        const messages = await messageCount();
+        return messages >= 3 && frames.length === messages && frames.every((f) => f.mount !== "") ? frames : undefined;
+      }, async () => `the window's add-on frames: ${JSON.stringify(await hostFrames())}`);
+      if (new Set(everyMessage.map((f) => f.mount)).size !== everyMessage.length) fail(`two messages' add-ons share a mount: ${JSON.stringify(everyMessage)}`);
+      if (new Set(everyMessage.map((f) => f.message)).size !== everyMessage.length) fail(`two rows of the conversation share a key: ${JSON.stringify(everyMessage)}`);
+      const awakeNow = everyMessage.filter((f) => !f.asleep);
+      if (new Set(awakeNow.map((f) => addressOf(f.src))).size !== awakeNow.length) fail(`two add-on frames hold one address: ${JSON.stringify(awakeNow)}`);
+      // Each frame, brought into view (as a person scrolls to a message further up), is given its own message's item: the first, the last three
+      // and a few between (all of them when there are eight or fewer).
+      const last = everyMessage.length - 1;
+      const picks = [...new Set(everyMessage.length <= 8 ? everyMessage.map((_, i) => i) : [0, 1, Math.floor(last / 3), Math.floor((2 * last) / 3), last - 2, last - 1, last])];
+      const checked: string[] = [];
+      for (const i of picks) {
+        const f = everyMessage[i]!;
+        await scrollTo(f.mount);
+        const given = await until(`the add-on under message ${f.message} drawn, with its own item`, 30_000, async () => {
+          const now = (await hostFrames()).find((x) => x.mount === f.mount);
+          if (now === undefined || now.asleep || now.src === "") { await scrollTo(f.mount); return undefined; }
+          for (const d of await layerDocs()) {
+            if (addressOf(d.url) !== addressOf(now.src)) continue;
+            const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acceptance-window="extra"]'); return e ? JSON.stringify({ id: e.getAttribute("data-id"), kind: e.getAttribute("data-kind") }) : ""; })()`).catch(() => "");
+            if (typeof v === "string" && v !== "") return JSON.parse(v) as { id: string; kind: string };
+          }
+          return undefined;
+        }, async () => `its frames: ${JSON.stringify(await hostFrames())}; documents: ${(await layerDocs()).map((d) => d.url).join(" ")}`);
+        if (given.id !== f.message || given.kind !== f.kind) fail(`the add-on under message ${f.message} (${f.kind}) was given the item ${JSON.stringify(given)}`);
+        checked.push(`${f.kind}:${f.message}`);
+      }
+      const forbidden = (await layerDocs()).filter((d) => /forbidden/i.test(d.text));
+      if (forbidden.length > 0) fail(`${forbidden.length} frame(s) of the plugin read "forbidden": ${forbidden.map((d) => d.url).join(" ")}`);
+      await reveal();
+      const eachSaid = `its add-on was drawn under each of the ${everyMessage.length} messages, each in a frame of its own (${everyMessage.length} mounts, ${awakeNow.length} awake with ${awakeNow.length} addresses) and, brought into view, given that message's own item (${checked.length} checked: ${checked.slice(0, 4).join(", ")}${checked.length > 4 ? ", ..." : ""}); no frame of the plugin reads "forbidden"`;
       // useKept: counted twice, the child remounted, the count is kept.
       await press("kept +1", '[data-acceptance-window="kept"]');
       await press("kept +1 again", '[data-acceptance-window="kept"]');
@@ -2746,14 +2365,27 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       // A plugin that is off is not a target: switched off, the pill's menu no longer lists it (and the daemon refuses a send to it).
       await rpc.request("plugin.setEnabled", { id, enabled: false }, 30_000);
       await until(`${id} off`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "off") ? true : undefined));
-      await sleep(800);
-      if ((await cdp.evaluate(s, "document.querySelectorAll('[role=menuitemradio]').length").catch(() => 0)) === 0) await pillPress("the pill's target button again", "button[data-menu-toggle=targets]");
-      await sleep(600);
-      const stillListed = await cdp.evaluate(s, "[...document.querySelectorAll('[role=menuitemradio]')].some((e) => (e.textContent || '').includes('Acceptance window'))").catch(() => undefined);
-      const listed = await cdp.evaluate(s, "[...document.querySelectorAll('[role=menuitemradio]')].map((e) => (e.textContent || '').trim()).join(' | ')").catch(() => "?");
+      // The pill learns of the plugin going off by an event, and its menu is the list it holds when it is read: read it until it
+      // no longer lists the plugin (the menu closed and opened again between readings, so each one is a fresh read), for at
+      // most 20 s. A fixed wait read a list the event had not reached yet on a loaded runner.
+      let stillListed: boolean | undefined = true;
+      let listed = "?";
+      for (const end = Date.now() + 20_000; Date.now() < end; ) {
+        await sleep(800);
+        if ((await cdp.evaluate(s, "document.querySelectorAll('[role=menuitemradio]').length").catch(() => 0)) === 0) await pillPress("the pill's target button again", "button[data-menu-toggle=targets]");
+        await sleep(600);
+        stillListed = await cdp.evaluate(s, "[...document.querySelectorAll('[role=menuitemradio]')].some((e) => (e.textContent || '').includes('Acceptance window'))").then((v) => v as boolean, () => undefined);
+        listed = String(await cdp.evaluate(s, "[...document.querySelectorAll('[role=menuitemradio]')].map((e) => (e.textContent || '').trim()).join(' | ')").catch(() => "?"));
+        if (stillListed === false) break;
+        // Close it, so the next reading opens it afresh.
+        await pillPress("the pill's target button, to close the list", "button[data-menu-toggle=targets]").catch(() => undefined);
+      }
       if (stillListed !== false) fail(`the pill still lists the plugin as a target while it is off (menu: ${String(listed)})`);
       const offSaid = `switched off (plugin.setEnabled), the pill's menu no longer lists it (it lists: ${String(listed).slice(0, 80)})`;
-      return `${id} installed from its folder, OK'd on its card ${ok}; in Alpha's tab it filled composer.action (its button pressed in the window), conversation.message keyed user (it drew ${JSON.stringify(user.slice(0, 40))}), the tool call's card (${carded}), conversation.message.extra (${extra.attrs["data-kind"]} under a message) and tool.result for ${toolResult.attrs["data-tool"]} (the call's result in its cell); the Dispatch pill listed its pill.target, a pick and the Send circle sent the words to its host handler (${reported.slice(0, 80)}); its probe: ${listsSaid}; ${hooksSaid}; useUserSend and useComposerHost are undefined for it; useKept kept 2 over a remount; useDrag offered text and claimed it; useMenu from a click answered ${menuSaid}; useOpen answered ${openSaid.slice(0, 80)}; ${offSaid}`;
+      // The frames of the plugin were served each its own address once: the app's log has no refused document load for any of its mounts.
+      const refusedLoads = ctx.appLog().split("\n").filter((l) => l.includes(`(${id})`) && /refused a document load|refused a load of an address it replaced/.test(l));
+      if (refusedLoads.length > 0) fail(`the app refused ${refusedLoads.length} document load(s) of the plugin's frames (a frame that loaded an address it had been served): ${refusedLoads[0]!.slice(0, 200)}`);
+      return `${id} installed from its folder, OK'd on its card ${ok}; ${eachSaid}; the app log has no refused document load for its mounts; in Alpha's tab it filled composer.action (its button pressed in the window), conversation.message keyed user (it drew ${JSON.stringify(user.slice(0, 40))}), the tool call's card (${carded}), conversation.message.extra (${extra.attrs["data-kind"]} under a message) and tool.result for ${toolResult.attrs["data-tool"]} (the call's result in its cell); the Dispatch pill listed its pill.target, a pick and the Send circle sent the words to its host handler (${reported.slice(0, 80)}); its probe: ${listsSaid}; ${hooksSaid}; useUserSend and useComposerHost are undefined for it; useKept kept 2 over a remount; useDrag offered text and claimed it; useMenu from a click answered ${menuSaid}; useOpen answered ${openSaid.slice(0, 80)}; ${offSaid}`;
     } finally {
       await rpc.request("plugin.remove", { id }).catch(() => undefined);
     }
@@ -2796,7 +2428,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       };
       const drawnIn = async () => {
         for (const d of await cdp.documents()) {
-          if (!d.url.startsWith(`clover-plugin://${id}/`)) continue;
+          if (!d.url.startsWith(`moss-plugin://${id}/`)) continue;
           const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acceptance-preview="main"]'); return e ? e.textContent || "" : "" })()`).catch(() => "");
           if (typeof v === "string" && v !== "") return v;
         }
@@ -2815,154 +2447,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       if (!drawn!.includes("tiny.png") || !drawn!.includes("image/png")) fail(`the plugin's preview drew ${JSON.stringify(drawn!.slice(0, 120))}, not the file's name and media type`);
       if ((await inTree<boolean>(cdp, "[...document.querySelectorAll('.cl-files__empty-text')].some((e) => /preview/i.test(e.textContent || ''))")) !== undefined) fail("the Files panel still shows its no-preview note beside the plugin's preview");
       await pressIn("Bots in the sidebar's switch", ".cl-sidebar__switch-option", "Bots").catch(() => undefined);
-      await pressIn("Alpha in the stock sidebar", SIDEBAR_ITEMS, "Alpha").catch(() => undefined);
+      await pressIn("Alpha in the stock sidebar", SIDEBAR_ITEMS, "=MOSS").catch(() => undefined);
       return `${id} installed from its folder, OK'd on its card ${ok}; a coding session's Files panel (opened from the sidebar's Code switch) listed tiny.png and, picked, drew it through the plugin's file.preview component (${JSON.stringify(drawn!.slice(0, 60))}), not the no-preview note`;
     } finally {
       await rpc.request("plugin.remove", { id }).catch(() => undefined);
     }
   });
 
-  // 26: the plug rule in the window (the owner, November 14; design/plug-rule-2026-11-14.md). A plugin with a bot (lane B's
-  // Juniper fixture: an island tab beside it, a Browser panel of its own, settings): on Juniper's tab its Browser panel replaces
-  // the stock one, on Alpha's tab the stock one shows; Juniper's Edit page has a section of the plugin's settings headed with her
-  // name (a switch pressed, read back from the daemon); the Plugins page's second switch (the parts beside the bot) is pressed and
-  // the plugin keeps running with the bot kept. Then the same plugin with a Browser panel that never draws: after two seconds the
-  // panel says so and shows Clover's own, and its button tries the bot's again.
-  await step(26, async () => {
-    if (ctx.pressCard === undefined) fail("this run can't press a card");
-    const id = FIELDS_IDS.bot;
-    const parent = mkdtempSync(join(tmpdir(), "clover-plug-app-"));
-    const win = async (expr: string) => (await inTree<string>(cdp, `(() => { const w = document.querySelector('.cl-window'); return w ? String(${expr}) : null; })()`))?.value;
-    const press = async (what: string, selector: string, text?: string, ms = 20_000) => {
-      const at = await until(what, ms, async () => {
-        for (const d of await treeDocs(cdp)) {
-          await cdp.evaluate(d.session, `(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (e) e.scrollIntoView({ block: "center" }); return true; })()`).catch(() => undefined);
-          const c = await cdp.centerOf(d.session, selector, text).catch(() => undefined);
-          if (c !== undefined) return { session: d.session, c };
-        }
-        return undefined;
-      }, () => dumpFrames(cdp));
-      await cdp.click(at.session, at.c.x, at.c.y);
-      await sleep(700);
-    };
-    const inTreeNow = async (expr: string) => (await inTree<boolean>(cdp, `!!(${expr})`)) !== undefined;
-    const install = async (variant: keyof typeof BOT_PARTS_CLIENT, root: string) => {
-      const folder = writeBotParts(root, "anthropic/claude-sonnet-5-5", { client: BOT_PARTS_CLIENT[variant], settings: BOT_PARTS_SETTINGS });
-      const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
-      if (r.id !== id) fail(`the fixture installed as ${r.id}`);
-      await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === id);
-      await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "running") ? true : undefined));
-    };
-    const toTab = async (name: string) => {
-      await escape();
-      await press("the Bots side", ".cl-sidebar__switch-option, .cl-sidebar [role=radio]", "Bots").catch(() => undefined);
-      await press(`${name} in the sidebar`, SIDEBAR_ITEMS, name);
-    };
-    /** The bot's Browser panel on its own tab (the stock bar's toggle), opened. */
-    const openBrowser = async () => {
-      if (!(await inTreeNow("document.querySelector('.cl-panel__view[data-view=browser]')"))) await press("the Browser toggle", ".cl-panel-toggle[aria-label=\"Browser\"]");
-      await until("the Browser panel open", 15_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-panel__view[data-view=browser]')"), () => dumpFrames(cdp));
-    };
-    /** Opens the panel and waits for `check`, again when a plugin installed after the window was served made it load again (its first
-     *  layer's serving does, and the panel open at that moment closes: the app logs "loads again to frame a layer installed after it
-     *  was served"). */
-    const openUntil = async (what: string, check: () => Promise<boolean>) => {
-      let last = "";
-      for (let attempt = 0; attempt < 4; attempt++) {
-        await openBrowser().catch(() => undefined);
-        try {
-          await until(what, 12_000, async () => ((await check()) ? true : undefined));
-          return;
-        } catch (e) {
-          last = String(e);
-        }
-      }
-      const panel = await win("document.querySelector('.cl-panel__view[data-view=browser]')?.outerHTML.slice(0, 600) ?? 'no panel'");
-      fail(`${what}: not within 4 tries (${last.slice(0, 120)}; the panel: ${panel}; frames: ${await dumpFrames(cdp)})`);
-    };
-    const layerHas = async (sel: string) => {
-      for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`clover-plugin://${id}/`))) {
-        if ((await cdp.evaluate(d.session, `!!document.querySelector(${JSON.stringify(sel)})`).catch(() => false)) === true) return true;
-      }
-      return false;
-    };
-    const renders = process.env.CLOVER_ACCEPT_RENDERS;
-    const said: string[] = [];
-    try {
-      await install("drawing", join(parent, "a"));
-      // 1. Juniper's tab: her Browser panel replaces the stock one.
-      await toTab(BOT_PARTS_BOT);
-      await openUntil("Juniper's own Browser panel drawn on her tab", () => layerHas("[data-juniper-browser]"));
-      if (await inTreeNow("document.querySelector('[data-replaced-panel=browser][data-fell]')")) fail("Juniper's drawing Browser panel was swapped for the stock one");
-      said.push("on Juniper's tab her own Browser panel replaced the stock one");
-      // The way back is the host's, outside her frame, from the first moment: Show Clover's panel, then Use Juniper's panel.
-      await press("Show Clover's panel", ".cl-panel__actions .cl-panel__text-button", "Show Clover's panel");
-      await until("Clover's own Browser panel in her place", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('[data-replaced-panel=browser][data-fell] [data-clover-entry^=\"clover/\"]')"), () => dumpFrames(cdp));
-      await press("Use Juniper's panel", ".cl-panel__actions .cl-panel__text-button", `Use ${BOT_PARTS_BOT}'s panel`);
-      await until("her own Browser panel drawn again", 20_000, async () => ((await layerHas("[data-juniper-browser]")) ? true : undefined), () => dumpFrames(cdp));
-      said.push("Show Clover's panel (in the host's header) put the stock panel in her place and Use Juniper's panel brought hers back");
-      // On Alpha's tab the stock one shows, with none of Juniper's inside her panel sheet.
-      await toTab("Alpha");
-      await until("Alpha's own controls", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('.ac')"), () => dumpFrames(cdp));
-      if (!(await inTreeNow("document.querySelector('.cl-chrome-panels .cl-panel')"))) await press("her Browser control", ".ac__act", "Browser");
-      await until("Alpha's panel sheet open", 15_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-chrome-panels .cl-panel')"), () => dumpFrames(cdp));
-      if (await inTreeNow(`document.querySelector('.cl-chrome-panels [data-replaced-panel]') || document.querySelector('.cl-chrome-panels [data-clover-entry^="${id}#"]')`)) fail("Juniper's Browser panel is in Alpha's panel sheet (it replaces the panel on her own tab only)");
-      await press("her Browser control again", ".ac__act", "Browser");
-      said.push("on Alpha's tab the stock panel (none of hers)");
-      // 2. Her Edit page: the plugin's settings as a section headed with her name; the switch pressed, read back from the daemon.
-      await toTab(BOT_PARTS_BOT);
-      await press("Edit Juniper", `[aria-label="Edit ${BOT_PARTS_BOT}"]`);
-      await until("the settings section headed with her name", 20_000, () => inTree<boolean>(cdp, `!!document.querySelector('.cl-bot-editor__settings[data-bot-settings="${id}"]')`), () => dumpFrames(cdp));
-      const heading = await win(`document.querySelector('.cl-bot-editor__settings-title')?.textContent`);
-      if (heading !== BOT_PARTS_BOT) fail(`the section's heading is ${JSON.stringify(heading)}, not ${BOT_PARTS_BOT}`);
-      if (!(await inTreeNow(`document.querySelector('.cl-bot-editor__settings [role=switch][aria-label="${BOT_PARTS_SETTINGS.loud.title}"]')`))) fail("the section has no switch for the plugin's per-bot setting");
-      if (renders) await shootWindow(cdp, renders, "plug-app-edit-section", ctx.setAppearance);
-      await press("the Speaks up switch", `.cl-bot-editor__settings [role=switch][aria-label="${BOT_PARTS_SETTINGS.loud.title}"]`);
-      await until("the setting kept by the daemon", 20_000, async () => {
-        const r = await rpc.request<{ settings: { key: string; value?: unknown }[] }>("plugin.settings.get", { id, bot: id }).catch(() => undefined);
-        return r?.settings.find((x) => x.key === "loud")?.value === true ? true : undefined;
-      });
-      if (renders) await unshootWindow(cdp, ctx.setAppearance);
-      said.push("her Edit page's section (her name) pressed a per-bot switch and the daemon has it");
-      // 3. The Plugins page: the switch for the parts beside her bot, pressed; the plugin keeps running and she is kept.
-      await escape();
-      await press("the sidebar's Plugins entry", SIDEBAR_ITEMS, "Plugins");
-      await until("the Plugins page", 15_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-plugin-index__tabs')"), () => dumpFrames(cdp));
-      await press("the Installed tab", "[role=tab]", "Installed");
-      const toggle = `[role=switch][aria-label="Its parts beyond ${BOT_PARTS_BOT}'s tab"]`;
-      await until("the app-parts switch on its row", 20_000, () => inTree<boolean>(cdp, `!!document.querySelector(${JSON.stringify(toggle)})`), async () => `${renders ? (writeFileSync(join(renders, "plug-app-miss.png"), await cdp.screenshot()), "shot kept; ") : ""}page: ${JSON.stringify(((await inTree<string>(cdp, "(document.querySelector('.cl-plugin-index')?.innerText || 'no page').slice(0, 300)"))?.value ?? '').replace(/\s+/g, ' '))}; names: ${JSON.stringify((await inTree<string>(cdp, "JSON.stringify([...document.querySelectorAll('.cl-plugin-index__name')].map((e) => e.textContent).filter((t) => /Juniper|Acceptance/.test(t || '')))"))?.value)}; switches: ${JSON.stringify((await inTree<string>(cdp, "JSON.stringify([...document.querySelectorAll('[role=switch]')].map((e) => e.getAttribute('aria-label')))"))?.value)}; ${await dumpFrames(cdp)}`);
-      if (renders) await shootWindow(cdp, renders, "plug-app-plugins-toggle", ctx.setAppearance);
-      if (renders) await unshootWindow(cdp, ctx.setAppearance);
-      await press("the app-parts switch", toggle);
-      await until("its app parts off in the daemon, the plugin still running", 30_000, async () => {
-        const r = await rpc.request<{ plugin: { state: string; parts?: { app?: { enabled?: boolean } } } }>("plugin.get", { id }).catch(() => undefined);
-        return r?.plugin.state === "running" && r.plugin.parts?.app?.enabled === false ? true : undefined;
-      }, async () => JSON.stringify(await rpc.request("plugin.get", { id }).catch(() => undefined)).slice(0, 300));
-      const kept = (await rpc.request<{ bots: { id: string }[] }>("bot.list", {})).bots.some((b) => b.id === id);
-      if (!kept) fail("the bot is gone after her app parts were switched off");
-      if ((await inTree<boolean>(cdp, `document.querySelector(${JSON.stringify(toggle)})?.getAttribute('aria-checked') === 'false'`)) === undefined) fail("the switch doesn't show the parts off");
-      await toTab(BOT_PARTS_BOT);
-      said.push("the Plugins page's switch turned her parts beside the bot off, the plugin running, Juniper kept and her tab still there");
-      await rpc.request("plugin.remove", { id }).catch(() => undefined);
-      // 4. A replacement that never draws: after two seconds the stock panel shows, the header says so, and the button tries again.
-      await install("never", join(parent, "b"));
-      await toTab(BOT_PARTS_BOT);
-      const fellTitle = `${BOT_PARTS_BOT}'s browser panel didn't draw; showing Clover's.`;
-      const fellNow = async () => (await win(`document.querySelector('.cl-panel__view[data-view=browser]')?.getAttribute('aria-label')`)) === fellTitle;
-      await openUntil("the panel falling back to Clover's own", fellNow);
-      if (!(await inTreeNow("document.querySelector('[data-replaced-panel=browser] [data-clover-entry^=\"clover/\"]')"))) fail("after the fall back the stock Browser panel isn't in the panel");
-      await press("Try Juniper's again", ".cl-panel__text-button", `Try ${BOT_PARTS_BOT}'s again`);
-      await until("the fall back again (her panel still doesn't draw)", 30_000, () => inTree<boolean>(cdp, `document.querySelector('.cl-panel__view[data-view=browser]')?.getAttribute('aria-label') === ${JSON.stringify(fellTitle)}`), () => dumpFrames(cdp));
-      said.push("a Browser panel that never draws fell back to Clover's after 2 s with its header saying so, and Try again tried hers once more");
-      if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless");
-      return said.join("; ");
-    } finally {
-      await rpc.request("plugin.remove", { id }).catch(() => undefined);
-      rmSync(parent, { recursive: true, force: true });
-      await escape().catch(() => undefined);
-      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha").catch(() => undefined);
-    }
-  });
+  // 26: no body: the plug rule on a bot's tab is retired with the bot tab (G8), its row runs nowhere (elsewhere.ts).
 
   // 27: panels a plugin adds (§5.5, the owner, November 14: "an Office plugin for sheets, slides and documents"). An ordinary plugin
   // (acc-office, no bot): Sheets on every tab, Slides on coding sessions only; on Alpha's tab her controls draw Sheets' button and not
@@ -2973,7 +2465,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   await step(27, async () => {
     if (ctx.pressCard === undefined) fail("this run can't press a card");
     const bot = FIELDS_IDS.bot;
-    const parent = mkdtempSync(join(tmpdir(), "clover-own-panels-"));
+    const parent = mkdtempSync(join(tmpdir(), "moss-own-panels-"));
     const said: string[] = [];
     const press = async (what: string, selector: string, text?: string, ms = 20_000) => {
       const at = await until(what, ms, async () => {
@@ -2988,14 +2480,14 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     };
     const has = async (sel: string) => (await inTree<boolean>(cdp, `!!document.querySelector(${JSON.stringify(sel)})`)) !== undefined;
     const layerHas = async (id: string, sel: string) => {
-      for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`clover-plugin://${id}/`))) {
+      for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`moss-plugin://${id}/`))) {
         if ((await cdp.evaluate(d.session, `!!document.querySelector(${JSON.stringify(sel)})`).catch(() => false)) === true) return true;
       }
       return false;
     };
     const pressLayer = async (id: string, sel: string) => {
       const at = await until(`${sel} in ${id}'s frame`, 30_000, async () => {
-        for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`clover-plugin://${id}/`))) {
+        for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`moss-plugin://${id}/`))) {
           const c = await cdp.centerOf(d.session, sel).catch(() => undefined);
           if (c !== undefined) return { session: d.session, c };
         }
@@ -3037,7 +2529,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       }
       const views = (await inTree<string>(cdp, "[...document.querySelectorAll('[data-view]')].map((e) => e.getAttribute('data-view')).join(',')"))?.value;
       const html = (await inTree<string>(cdp, `(() => { const v = document.querySelector(${JSON.stringify(view(id))}); return v ? [...v.children].slice(1).map((c) => c.outerHTML).join('').replace(/<svg.*?<\\/svg>/g, '').slice(0, 300) : null; })()`))?.value ?? 'none';
-      const urls = (await cdp.documents()).filter((d) => !d.url.startsWith('clover-plugin://clover/')).map((d) => d.url.slice(0, 50)).join(' | ');
+      const urls = (await cdp.documents()).filter((d) => !d.url.startsWith('moss-plugin://moss/')).map((d) => d.url.slice(0, 50)).join(' | ');
       fail(`${id} not open and drawn in 4 tries (${last.slice(0, 80)}; views: ${views}; its view: ${html.slice(0, 200)}; documents: ${urls}; log: ${ctx.appLog().split("\n").filter((l) => /acc-office|refus|layers|loads again/.test(l)).slice(-5).join(" // ").slice(0, 900)})`);
     };
     const sheets = `${OFFICE_ID}#sheets`;
@@ -3052,7 +2544,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       said.push(`a panel entry with no title is refused: "${OFFICE_REFUSAL}"`);
       // 1. The ordinary plugin on Alpha's tab.
       await install(OFFICE_ID, writeOfficePanels(join(parent, "office")));
-      await toTab("Alpha");
+      await toTab("=MOSS");
       await until("Alpha's controls with a Sheets button", 30_000, () => inTree<boolean>(cdp, `!!document.querySelector(${JSON.stringify(alphaButton("Sheets"))})`), () => dumpFrames(cdp));
       if (await has(alphaButton("Slides"))) fail("Slides (coding sessions only) has a button on Alpha's tab");
       await openOwn(alphaButton("Sheets"), sheets, OFFICE_ID, "[data-office-sheets]");
@@ -3073,7 +2565,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       await install(bot, folder);
       await toTab(BOT_PARTS_BOT);
       await until("Juniper's bar with Scene and Desk and Sheets", 30_000, async () => ((await has(ownButton(`${bot}#scene`))) && (await has(ownButton(`${bot}#desk`))) && (await has(ownButton(sheets))) ? true : undefined), () => dumpFrames(cdp));
-      await toTab("Alpha");
+      await toTab("=MOSS");
       await until("Alpha's controls with Desk", 30_000, () => inTree<boolean>(cdp, `!!document.querySelector(${JSON.stringify(alphaButton("Desk"))})`), () => dumpFrames(cdp));
       if (await has(alphaButton("Scene"))) fail("Juniper's inside panel, Scene, has a button on Alpha's tab");
       said.push("Juniper's tab has buttons for Scene, Desk and Sheets; Alpha's has Desk (beside her) and not Scene (inside her)");
@@ -3096,7 +2588,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
         const r = await rpc.request<{ plugin: { state: string; parts?: { app?: { enabled?: boolean } } } }>("plugin.get", { id: bot }).catch(() => undefined);
         return r?.plugin.state === "running" && r.plugin.parts?.app?.enabled === false ? true : undefined;
       });
-      await toTab("Alpha");
+      await toTab("=MOSS");
       await until("Alpha's controls without Desk", 30_000, async () => ((await has(".ac__act[aria-label=Browser]")) && !(await has(alphaButton("Desk"))) ? true : undefined), () => dumpFrames(cdp));
       await toTab(BOT_PARTS_BOT);
       await until("Juniper's bar: Scene kept, Desk gone", 30_000, async () => ((await has(ownButton(`${bot}#scene`))) && !(await has(ownButton(`${bot}#desk`))) ? true : undefined), () => dumpFrames(cdp));
@@ -3108,7 +2600,213 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       rmSync(parent, { recursive: true, force: true });
       await escape().catch(() => undefined);
       await press("Bots in the sidebar's switch", ".cl-sidebar__switch-option", "Bots").catch(() => undefined);
-      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "Alpha").catch(() => undefined);
+      await press("Alpha in the sidebar", SIDEBAR_ITEMS, "=MOSS").catch(() => undefined);
+    }
+  });
+
+  // 28: a plugin keeps a part running in the background (`app.background`, the owner, November 15: "no infrastructure in the core or the
+  // app that only one plugin uses"). Two ordinary plugins, each with one background part that counts its own 100 ms timer and starts a
+  // generated tone on its own: `acc-background` holds `audio`, `acc-background-quiet` doesn't. Each part is mounted in a hidden window of
+  // its own (the app log says so), keeps counting at about its real rate while hidden (a throttled timer
+  // would count about one a second), and `acc-background`'s tone runs (the audio context is running, the analyser saw a level and its clock
+  // advanced) while the app stays muted at its output (no "played unmuted" line); the quiet one's context never runs. The main window is
+  // closed and opened again (the test build's window file): the part is the same one (same start time), still counting. Turned off
+  // (`plugin.setEnabled`), its document goes and the app log says it stopped.
+  await step(28, async () => {
+    if (ctx.pressCard === undefined) fail("this run can't press a card");
+    if (ctx.mainWindow === undefined) fail("this run can't close and open the main window");
+    const parent = mkdtempSync(join(tmpdir(), "moss-background-"));
+    const ids = [BACKGROUND_IDS.sound, BACKGROUND_IDS.quiet];
+    const said: string[] = [];
+    const part = async (id: string): Promise<Record<string, string> | undefined> => {
+      for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`moss-plugin://${id}/`))) {
+        const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acc-background]'); return e ? JSON.stringify(Object.fromEntries([...e.attributes].map((a) => [a.name, a.value]))) : ''; })()`).catch(() => "");
+        if (typeof v === "string" && v !== "") return JSON.parse(v) as Record<string, string>;
+      }
+      return undefined;
+    };
+    const waitPart = (id: string, what: string, ok: (a: Record<string, string>) => boolean = () => true, ms = 45_000) =>
+      until(`${id}'s background part ${what}`, ms, async () => { const a = await part(id); return a !== undefined && ok(a) ? a : undefined; }, () => dumpFrames(cdp));
+    const install = async (id: string) => {
+      const folder = writeBackground(parent, id, { audio: id === BACKGROUND_IDS.sound });
+      const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+      if (r.id !== id) fail(`the fixture installed as ${r.id}`);
+      await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === id);
+      await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "running") ? true : undefined),
+        async () => `plugin.get: ${JSON.stringify(await rpc.request("plugin.get", { id }).catch((e: unknown) => String(e))).slice(0, 600)}`);
+    };
+    const n = (a: Record<string, string>, k: string) => Number(a[`data-${k}`]);
+    try {
+      for (const id of ids) await install(id);
+      // 1. Each part is mounted, in a hidden window of its own, and counts.
+      const first = await waitPart(BACKGROUND_IDS.sound, "counting", (a) => n(a, "ticks") >= 5);
+      await waitPart(BACKGROUND_IDS.quiet, "counting", (a) => n(a, "ticks") >= 5);
+      for (const id of ids) if (!ctx.appLog().includes(`background: ${id}#ticker started`)) fail(`the app log has no "background: ${id}#ticker started" line`);
+      said.push(`each part was mounted in a window of its own that is never shown (the app log says so; its page reports ${first["data-vis"]}) and counted`);
+      // 2. Its timer keeps its real rate while hidden: 100 ms ticks, about 30 in 3 s (a throttled page would count about 3).
+      const t0 = await waitPart(BACKGROUND_IDS.sound, "read");
+      await sleep(3_000);
+      const t1 = await waitPart(BACKGROUND_IDS.sound, "read again");
+      const ticked = n(t1, "ticks") - n(t0, "ticks");
+      // A shared CI runner can starve the page: MOSS_ACCEPT_TICK_MIN lowers the bar there (ci.yml sets it to 10; a throttled page counts about 3).
+      const tickMin = /^\d+$/.test(process.env.MOSS_ACCEPT_TICK_MIN ?? "") ? Number(process.env.MOSS_ACCEPT_TICK_MIN) : 20;
+      if (ticked < tickMin) fail(`the hidden part counted ${ticked} ticks in 3 s of a 100 ms timer (a slowed timer counts about 3; the bar is ${tickMin})`);
+      said.push(`its 100 ms timer counted ${ticked} ticks in 3 s while hidden`);
+      // 3. Sound: the holder's tone runs with no press, and is muted at the output; the other plugin's context never runs.
+      const tone = await waitPart(BACKGROUND_IDS.sound, "making its tone", (a) => a["data-ctx"] === "running" && n(a, "rms") > 0.01 && n(a, "time") > 0.5, 30_000);
+      if (/audio: played unmuted/.test(ctx.appLog())) fail("a page's sound played unmuted in a muted build");
+      if (!/audio: muted/.test(ctx.appLog())) fail("the app never said it was muted");
+      const silent = await part(BACKGROUND_IDS.quiet);
+      if (silent === undefined) fail("the plugin without audio has no background part");
+      if (silent!["data-ctx"] === "running" || n(silent!, "rms") > 0 || n(silent!, "time") > 0) fail(`the plugin without audio got sound: ${JSON.stringify(silent)}`);
+      said.push(`acc-background's tone ran with no press (context ${tone["data-ctx"]}, level ${tone["data-rms"]}, clock ${tone["data-time"]} s), muted at the app's output; acc-background-quiet's context stayed ${silent!["data-ctx"]}`);
+      // 4. The main window closed and opened again: the same part, still counting.
+      const before = await waitPart(BACKGROUND_IDS.sound, "read before the window closes");
+      ctx.mainWindow!("close");
+      await until("the main window closed", 20_000, async () => (/window: the test seam closes the main window/.test(ctx.appLog()) ? true : undefined), () => dumpFrames(cdp));
+      await sleep(2_500);
+      const during = await waitPart(BACKGROUND_IDS.sound, "still there with the main window closed");
+      if (n(during, "ticks") - n(before, "ticks") < 15) fail(`with the main window closed the part counted ${n(during, "ticks") - n(before, "ticks")} ticks in 2.5 s`);
+      ctx.mainWindow!("open");
+      await until("the shell drawn again", 60_000, () => composerDoc(cdp), () => dumpFrames(cdp));
+      const after = await waitPart(BACKGROUND_IDS.sound, "after the window opened again", (a) => n(a, "ticks") > n(during, "ticks"));
+      if (after["data-started"] !== before["data-started"]) fail(`the part started again when the main window opened (${before["data-started"]} then ${after["data-started"]}): it should have outlived it`);
+      said.push("the main window was closed and opened again: the same part (one start time) kept counting through it");
+      // 5. Turned off, it goes.
+      await rpc.request("plugin.setEnabled", { id: BACKGROUND_IDS.sound, enabled: false }, 30_000);
+      await until("its background part gone", 30_000, async () => ((await part(BACKGROUND_IDS.sound)) === undefined && ctx.appLog().includes(`background: ${BACKGROUND_IDS.sound}#ticker stopped`) ? true : undefined), () => dumpFrames(cdp));
+      if ((await part(BACKGROUND_IDS.quiet)) === undefined) fail("turning one plugin off took the other plugin's background part with it");
+      said.push("turned off, its background part was gone and the other plugin's stayed");
+      if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless");
+      return said.join("; ");
+    } finally {
+      for (const id of ids) await rpc.request("plugin.remove", { id }).catch(() => undefined);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  // 29: one at a time (P4, the owner, November 15: no plugin's own setting decides which voice mode, stage or other filler is
+  // used). A folder plugin declares `acc-deck.mode` with `oneAtATime` and a title; three folder plugins fill it (none bundled,
+  // so the first installed is the default). Each host half's `active` command says what `points.active` answers and what
+  // `points.onActive` heard. Settings › Plugins draws one picker titled by the point's title, the user's press on the second
+  // makes it the one (the declarer hears it, the second filler reads itself), the second turned off lets the first stand in
+  // (the picker's note, and the daemon's notice to the user), and turned on again the user's pick is the one again.
+  await step(29, async () => {
+    if (ctx.pressCard === undefined) fail("this run can't press a card");
+    const parent = mkdtempSync(join(tmpdir(), "moss-active-"));
+    const folders = writeActiveOne(parent);
+    const order = [[ACTIVE_IDS.deck, folders.deck], [ACTIVE_IDS.one, folders.one], [ACTIVE_IDS.two, folders.two], [ACTIVE_IDS.three, folders.three]] as const;
+    const asked = async (id: string) => (await rpc.request<{ result: { active: string; heard: string[] } }>("command.run", { name: `${id}.active`, args: {} }, 30_000)).result;
+    const group = `.cl-settings__one [role=radiogroup][aria-label=${JSON.stringify(ACTIVE_TITLE)}]`;
+    const pickerNow = async () => (await inTree<string>(cdp, `(() => { const g = document.querySelector(${JSON.stringify(group)}); if (!g) return null; return JSON.stringify({ title: g.getAttribute('aria-label'), options: [...g.querySelectorAll('[role=radio]')].map((r) => [r.textContent, r.getAttribute('aria-checked') === 'true']), note: g.closest('.cl-settings__one')?.querySelector('.cl-settings__detail')?.textContent ?? '' }); })()`))?.value;
+    type Drawn = { title: string; options: [string, boolean][]; note: string };
+    const drawnPicker = (what: string, ok: (d: Drawn) => boolean) => until(what, 30_000, async () => {
+      const v = await pickerNow();
+      const d = v === undefined ? undefined : (JSON.parse(v) as Drawn);
+      return d !== undefined && ok(d) ? d : undefined;
+    }, () => dumpFrames(cdp));
+    const openPlugins = async () => {
+      await escape();
+      await clickIn("the Settings button", "button[aria-label=Settings]", undefined);
+      await clickIn("the Settings window's Plugins section", "button.cl-settings__section", "Plugins");
+    };
+    try {
+      for (const [id, folder] of order) {
+        const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+        if (r.id !== id) fail(`the fixture installed as ${r.id}`);
+        await ctx.pressCard!(`${id}'s OK card`, (c) => c.kind === "plugin-ok" && c.pluginId === id);
+        await until(`${id} running`, 30_000, async () => ((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "running" ? true : undefined));
+      }
+      const before = (await asked(ACTIVE_IDS.deck)).active;
+      // Settings › Plugins: the picker, from the registry, titled by the point's own title. A layer installed a moment ago
+      // loads the window's document again, which closes a dialog opened before it: opened again until the picker shows.
+      let shown: Drawn | undefined;
+      for (let attempt = 0; attempt < 3 && shown === undefined; attempt++) {
+        await openPlugins().catch(() => undefined);
+        shown = await drawnPicker("the deck mode picker", (d) => d.options.length === 3).catch(() => undefined);
+      }
+      if (shown === undefined) fail(`Settings › Plugins drew no picker titled "${ACTIVE_TITLE}" (point.active.list: ${JSON.stringify(await rpc.request("point.active.list", {}).catch((e: unknown) => String(e))).slice(0, 600)})`);
+      // The user's press on the second, in the window.
+      await clickIn(`the picker's ${ACTIVE_NAMES.two}`, `${group} [role=radio]`, ACTIVE_NAMES.two);
+      await drawnPicker("the second pressed", (d) => d.options.some(([n, on]) => n === ACTIVE_NAMES.two && on));
+      const picked = await until("the declarer to hear the pick", 20_000, async () => { const a = await asked(ACTIVE_IDS.deck); return a.heard.length > 0 ? a : undefined; });
+      const fillerSees = (await asked(ACTIVE_IDS.two)).active;
+      // The second turned off: the first stands in, the picker says so, and the daemon tells the user once.
+      await rpc.request("plugin.setEnabled", { id: ACTIVE_IDS.two, enabled: false }, 30_000);
+      const offActive = await until("the first standing in", 20_000, async () => { const a = (await asked(ACTIVE_IDS.deck)).active; return a.includes(ACTIVE_IDS.one) ? a : undefined; }).catch(async () => (await asked(ACTIVE_IDS.deck)).active);
+      await openPlugins().catch(() => undefined);
+      const note = (await drawnPicker("the picker with the first standing in", (d) => d.note.includes("isn't running")).catch(() => undefined))?.note ?? "";
+      const noticeLine = `${ACTIVE_POINT}: ${ACTIVE_NAMES.two} isn't running, so ${ACTIVE_NAMES.one} takes its place for now.`;
+      const notice = ctx.daemonLog === undefined ? false : await until("the daemon's notice", 10_000, async () => (ctx.daemonLog!().includes(noticeLine) ? true : undefined)).catch(() => false);
+      await rpc.request("plugin.setEnabled", { id: ACTIVE_IDS.two, enabled: true }, 30_000);
+      const back = await until("the user's pick again", 30_000, async () => { const a = (await asked(ACTIVE_IDS.deck)).active; return a.includes(ACTIVE_IDS.two) ? a : undefined; }).catch(async () => (await asked(ACTIVE_IDS.deck)).active);
+      const seen: ActiveSeen = { before, picker: { title: shown!.title, options: shown!.options }, picked: { active: picked.active, heard: picked.heard }, fillerSees, off: { active: offActive, note, notice }, back };
+      const wrong = activeWrong(seen);
+      if (/window: shown while headless/.test(ctx.appLog())) wrong.push("a window was shown while headless");
+      if (wrong.length > 0) fail(`${wrong.join("; ")} (${JSON.stringify(seen).slice(0, 800)})`);
+      return `the default was the first installed (${before}); Settings › Plugins drew "${ACTIVE_TITLE}" with ${shown!.options.map(([n]) => n).join(", ")}; the user's press made ${picked.active} the one (the declarer heard ${picked.heard.join(", ")}, the second filler read ${fillerSees}); the second off, ${offActive} stood in ("${note}") and the daemon told the user once; on again, ${back} was the one`;
+    } finally {
+      await escape().catch(() => undefined);
+      for (const [id] of [...order].reverse()) await rpc.request("plugin.remove", { id }).catch(() => undefined);
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  // 30: the microphone (`microphone`, the owner, November 15). Two ordinary plugins, each with a `composer.action` part (Alpha's composer)
+  // that reads the page's own view of the microphone as it mounts: `acc-mic` holds the capability (and keeps a background part that does
+  // the same), `acc-mic-quiet` doesn't. A test build opens no device and never asks the system (the macOS question would show a prompt),
+  // so nothing calls getUserMedia: the holder's parts see the permission granted and their frame allowed; the other plugin's part sees
+  // it denied and its frame blocked.
+  await step(30, async () => {
+    if (ctx.pressCard === undefined) fail("this run can't press a card");
+    const parent = mkdtempSync(join(tmpdir(), "moss-mic-"));
+    const ids = [MIC_IDS.holder, MIC_IDS.other];
+    const said: string[] = [];
+    const part = async (id: string, kind: string): Promise<Record<string, string> | undefined> => {
+      for (const d of (await cdp.documents()).filter((x) => x.url.startsWith(`moss-plugin://${id}/`))) {
+        const v = await cdp.evaluate(d.session, `(() => { const e = document.querySelector('[data-acc-mic="${kind}"]'); return e ? JSON.stringify(Object.fromEntries([...e.attributes].map((a) => [a.name, a.value]))) : ''; })()`).catch(() => "");
+        if (typeof v === "string" && v !== "") return JSON.parse(v) as Record<string, string>;
+      }
+      return undefined;
+    };
+    const finished = (id: string, kind: string, what: string) =>
+      until(`${id}'s ${kind} part ${what}`, 60_000, async () => { const a = await part(id, kind); return a !== undefined && a["data-state"] !== "asking" ? a : undefined; }, async () => `${id}'s ${kind} part: ${JSON.stringify(await part(id, kind))}; its documents: ${(await cdp.documents()).filter((x) => x.url.includes("acc-mic")).map((x) => x.url.slice(0, 60)).join(" | ")}; log: ${ctx.appLog().split("\n").filter((l) => /acc-mic|microphone|media/i.test(l)).slice(-5).join(" // ")}`);
+    const install = async (id: string) => {
+      const folder = writeMicrophone(parent, id, { mic: id === MIC_IDS.holder });
+      const r = await rpc.request<{ id: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
+      if (r.id !== id) fail(`the fixture installed as ${r.id}`);
+      await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === id);
+      await until(`${id} running`, 30_000, async () => (((await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state === "running") ? true : undefined),
+        async () => `plugin.get: ${JSON.stringify(await rpc.request("plugin.get", { id }).catch((e: unknown) => String(e))).slice(0, 600)}`);
+    };
+    try {
+      for (const id of ids) await install(id);
+      // The code session's tab, where the composer's action parts are drawn.
+      await escape();
+      const at = await until("the code session in the sidebar", 20_000, async () => {
+        for (const d of await treeDocs(cdp)) {
+          const c = await cdp.centerOf(d.session, SESSION_ROWS).catch(() => undefined);
+          if (c !== undefined) return { session: d.session, c };
+        }
+        return undefined;
+      }, () => dumpFrames(cdp));
+      await cdp.click(at.session, at.c.x, at.c.y);
+      await sleep(600);
+      for (const [id, kind] of [[MIC_IDS.holder, "composer"], [MIC_IDS.holder, "background"]] as const) {
+        const a = await finished(id, kind, "answered");
+        if (a["data-state"] !== "done") fail(`${id}'s ${kind} part couldn't ask: ${a["data-error"]}`);
+        if (a["data-perm"] !== "granted" || a["data-policy"] !== "allowed") fail(`${id}'s ${kind} part sees the microphone as ${a["data-perm"]} (frame policy ${a["data-policy"]}), not granted`);
+        said.push(`${id}'s ${kind} part sees the microphone granted and its frame allowed`);
+      }
+      const refused = await finished(MIC_IDS.other, "composer", "answered");
+      if (refused["data-state"] !== "done" || refused["data-perm"] === "granted" || refused["data-policy"] === "allowed") fail(`the plugin without the capability may use the microphone (${JSON.stringify(refused)})`);
+      said.push(`${MIC_IDS.other}'s part sees it ${refused["data-perm"]} and its frame ${refused["data-policy"]}`);
+      if (/system.*microphone|askForMediaAccess/i.test(ctx.appLog())) fail("the system was asked for the microphone in a test build");
+      if (/window: shown while headless/.test(ctx.appLog())) fail("a window was shown while headless");
+      return said.join("; ");
+    } finally {
+      for (const id of ids) await rpc.request("plugin.remove", { id }).catch(() => undefined);
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 }

@@ -1,20 +1,19 @@
 // The capability catalog (spec §5.4 "Capabilities", §5.6). Each capability gates a fixed set of plugin-API calls and
 // live events (`api-calls.ts`); without it, those calls don't exist for that plugin. Capabilities gate the plugin API
-// only: they are not containment (§5.6 "The guards"). Versioned with `engines.clover`.
-import { BUNDLED_ROOT_PLUGIN, isPluginId } from "@waifucave/clover-protocol";
+// only: they are not containment (§5.6 "The guards"). Versioned with `engines.moss`.
+import { isPluginId } from "@waifucave/moss-protocol";
 
 export interface CapabilityInfo {
   /** The name as a manifest lists it; `call:` and `network:` take an argument. */
   readonly name: string;
   /** What it lets the plugin do (§5.4's table). */
   readonly lets: string;
-  /** What the OK says about it (§5.6), in English; trusted packs translate it under `clover.capability.<name>`. */
+  /** What the OK says about it (§5.6), in English; trusted packs translate it under `moss.capability.<name>`. */
   readonly ok: string;
-  /** The OK words it specially (§5.4: "controls the screen…", "restyles approval cards", "hears what you say to your bots…"). */
+  /** The OK words it specially (§5.4: "controls the screen…", "restyles approval cards", "hears what you say to your bots…"):
+   *  a risky capability, whose `ok` line says the risk in plain words. Any plugin may ask for any capability (the owner,
+   *  2026-11-15: "Yes, all with a warning"); the OK card is the gate. */
   readonly warns: boolean;
-  /** Only the bundled `clover` tree may hold it, as only its process may use `keys.*`: the validator refuses it for any
-   *  other plugin, and the core never grants it to one (`mayHoldCapability`). */
-  readonly bundledOnly?: true;
 }
 
 export const CAPABILITIES: readonly CapabilityInfo[] = [
@@ -24,55 +23,95 @@ export const CAPABILITIES: readonly CapabilityInfo[] = [
   { name: "bots.read", lets: "Read the list of every bot and their settings (there is no per-bot grant yet)", ok: "sees all your bots and their settings", warns: false },
   { name: "routines.read", lets: "Read the list of routines and their runs", ok: "sees your routines and their runs", warns: false },
   { name: "computers.read", lets: "Read the computer registry: each computer's folders, level and state", ok: "sees your computers, their folders and levels", warns: false },
-  { name: "computers.control", lets: "Take and release holds and the user-working mark, learn where Clover's windows are, and say when an action is running", ok: "controls the screen and input of your computers", warns: true },
+  { name: "computers.control", lets: "Take and release holds and the user-working mark, learn where MOSS's windows are, and say when an action is running", ok: "controls the screen and input of your computers", warns: true },
   /** Not in §5.4's table: added at M0 for the island's Devices tab (review S16). */
   { name: "devices.read", lets: "Read the user's devices: their names, kinds, links, which one is the main, and which are online", ok: "sees your devices", warns: false },
-  { name: "approvals", lets: "Hear which cards are pending, never their text, and place their sealed frames", ok: "restyles approval cards", warns: true },
+  /** Pairing and removing the user's own devices from a plugin's frame (Settings' Devices page). It changes who may reach the engine, so
+   *  every change stays the user's own press in the frame, and adding or removing a device is still the engine's sealed card (spec §5.5,
+   *  §8.1); the capability only opens the calls and the pairing's steps (the code and the four words, of any pairing on this computer: the engine cannot tell which part began one, as the door calls as the user). The add card shows the four words itself. Any plugin may ask; the OK card says so. */
+  { name: "devices.manage", lets: "On the user's own press in its frame: show a pairing code or enter one, see the pairing code and the four words of any pairing on this computer, and ask to add or remove a device; adding or removing one is still a sealed card the user answers", ok: "pairs and removes your devices when you press its controls, and sees the pairing code and the four words (each add or removal still asks on MOSS's own card, which shows the four words itself)", warns: true },
+  /** The owner's ruling of 2026-11-17 (no plugin has a bot): a plugin's own cards are the ones its own tools' calls raised, in any
+   *  session or bot's turn, and its moved bot's; the core names them on the card (`ownedBy`). */
+  { name: "approvals", lets: "Hear which of the cards its own tools' calls raised are pending (in any session or bot's turn), never their text, and place their sealed frames", ok: "shows approval cards for its own tools", warns: true },
+  /** Lane G's F4 (the owner's ruling of 2026-11-15: nothing that only one plugin uses). What the island does for every card, any
+   *  plugin may do behind its OK card: with `approvals`, hear every pending card's meta (not only its own bot's, and the cards that
+   *  have no bot: a plugin's OK, a change from Settings) and place their sealed frames, with the `card.*` look of its own. The
+   *  sealed rules (the checks on a press, the page's own visibility and open-delay) do not move, and the card's words never reach it. */
+  { name: "approvals.all", lets: "Needs `approvals` too: hear the meta of every pending card, not only its own tools' (a plugin's OK card, a change from Settings), place their sealed frames in a surface of its own, and give each the look of its own `card.*` tokens; the card's words never reach it and the press stays the sealed frame's own", ok: "shows all your approval cards, whichever bot or plugin asks, and takes your yes or no on them", warns: true },
+  /** The user's own words as the user: what the Dispatch pill does, behind a call any plugin's part may make. */
+  { name: "user.send", lets: "Send text the part chooses to any bot, any session (coding sessions too) or any `pill.target` entry, as the user, on any real click or key press inside its own frames (`useUserSend`); one send for one press, or one send after a press the app saw held and released, within 30 s of the release (hold-to-talk), the release of its own held key binding (`commands[].hold`) included, wherever the window's focus was", ok: "sends messages to your bots and sessions as you, with text it chooses, when you click or press a key in its window, or press its own key anywhere in MOSS Code's window, or up to 30 seconds after you let go", warns: true },
+  /** A window that floats: the island's and the pill's level. */
+  { name: "overlay", lets: "Open surfaces (`app.surface` entries) that float above every other window on every desktop, over the menu bar and full-screen apps, as large as the screen (`alwaysOnTop`); without it a surface is an ordinary window level, at most 800 by 600", ok: "shows windows on top of everything else on your screen", warns: true },
+  /** A line in the menu-bar (tray) menu. */
+  { name: "tray", lets: "Add items to MOSS's menu-bar (tray) menu (`app.tray` entries): one that hides and shows a surface of its own, or runs a command of its own", ok: "adds items to the menu in your menu bar", warns: false },
   { name: "files", lets: "Read and write files through the folder tree, inside the fence", ok: "reads and writes files on your computers", warns: false },
   /** The controller's ruling after #345: the plugin-process fence leaves a session's project folders read-only to a
    *  plugin's hooks and stdio MCP servers; this lets them write there (never `.git/hooks`, `.git/config` or a
    *  credential file). Bundled plugins hold it the same way. */
   { name: "project.write", lets: "Let its hooks and stdio MCP servers change files in the session's project folders (never `.git/hooks`, `.git/config` or a credential file); without it, those folders are read-only to them", ok: "changes files in your project folders", warns: true },
-  /** The bundled `clover` tree only for now: this build serves `browser.*` to no plugin (the core runs no Clover
-   *  Browser for plugins yet), and a third-party plugin's OK must not put it in force for later (try 12's ruling). */
-  { name: "browser", lets: "Drive the Clover Browser through its API", ok: "drives the Clover Browser", warns: false, bundledOnly: true },
-  /** Not in §5.4's table: lane F's request for the terminal panel. The bundled `clover` tree only (the controller's
-   *  ruling, review T1), since the daemon can't check that what a component sends came from the user's keys. */
-  { name: "terminal", lets: "Show the user's terminals on their computers, fed only with what the runtime derives from the user's own key presses and pastes; never on a computer at read-only", ok: "runs commands on your computers", warns: true, bundledOnly: true },
+  /** Any plugin may ask (the owner, 2026-11-15); the card says what it can see and do there. */
+  { name: "browser", lets: "Drive the MOSS Browser on this computer. A host half: only the session whose tool call it serves, while that call is open, on that session's own tab, out of sight. A component the user can see: a live view for the person over every owner's tab here, the person's own signed-in tabs included; it lists them (address and title), shows, hides and hears them, and pictures the one its own view holds (live or paused), freely; it runs DevTools, navigates, opens or closes a tab, or pictures another, only right after the user's own press in it. A background part: nothing, not even the tab events. Never the person's other browsers", ok: "drives the MOSS Browser: a bot's own tab as its tool; its page sees every MOSS Browser tab on this computer, its address, title and picture, ones you opened yourself included, with no asking, and opens, closes and acts in tabs when you press its controls, signed in wherever you signed in there", warns: true },
+  /** Not in §5.4's table: lane F's request for the terminal panel. Any plugin may ask (the owner, 2026-11-15); the daemon
+   *  can't check that what a component sends came from the user's keys (review T1), so the card says it plainly. */
+  { name: "terminal", lets: "Open terminals on the user's computers from a component (never on one at read-only), and resize, read and close its own: what a terminal runs is only what the user types or pastes into it, which the app hands over itself; no call of the plugin's writes to one", ok: "opens terminals on your computers that run what you type in them, as you, outside MOSS's sandbox, and sees what they show", warns: true },
   /** The window itself (`shell.*`): a plugin that draws its own bar, sidebar or controls in a bot's tab. Reads answer where the window is; acts are the user's own press and change only the window's place. */
   { name: "shell.read", lets: "Read where the window is: the tab showing, the sidebar's and panels' state, the sidebar's app buttons and how far the native window controls reach", ok: "sees which tab and panels are showing", warns: false },
-  { name: "shell.control", lets: "Move the window's own parts when the user presses its controls: show a tab, a panel or the settings, fold the sidebar, open the bot's editor, drag the window; never a conversation, a card or a file", ok: "lets its own buttons move around Clover's window", warns: false },
-  { name: "plugins.install", lets: "Install plugins from the indexes and npm for the user to OK: each lands found, with its sealed OK card, and nothing it installs runs before that OK", ok: "installs plugins for you to OK", warns: false, bundledOnly: true },
+  { name: "shell.control", lets: "Move the window's own parts when the user presses its controls: show a tab, a panel or the settings, fold the sidebar, open the bot's editor, drag the window; never a conversation, a card or a file", ok: "lets its own buttons move around MOSS's window", warns: false },
+  { name: "plugins.install", lets: "Install plugins from the indexes and npm for the user to OK: each lands found, with its sealed OK card, and nothing it installs runs before that OK", ok: "downloads other plugins from the indexes and npm onto your computer, each waiting for your OK on its own card", warns: true },
   /** Events only (the controller's ruling for the Plugins page): `plugin_changed`, `plugin_removed`, `plugin_found` and
-   *  `plugin_card_note` on a layer, ids and states and Clover's own words, never a folder; no method or API call names
-   *  it, so it opens nothing callable. The bundled `clover` tree only. */
-  { name: "plugins.watch", lets: "Hear which plugins appear, change state or go (their ids and states only), and why a yes on a plugin's change card couldn't be done; it can call nothing", ok: "sees which plugins you have and whether they're on", warns: false, bundledOnly: true },
+   *  `plugin_card_note` on a layer, ids and states and MOSS's own words, never a folder; no method or API call names
+   *  it, so it opens nothing callable. */
+  { name: "plugins.watch", lets: "Hear which plugins appear, change state or go (their ids and states only), and why a yes on a plugin's change card couldn't be done; it can call nothing", ok: "sees every plugin you have, whether it's on, and when you add or remove one", warns: true },
   { name: "usage.read", lets: "Read usage rows and plan readings", ok: "sees your usage and plan readings", warns: false },
-  { name: "logs.read", lets: "Read Clover's logs and every plugin's", ok: "reads Clover's logs and every plugin's logs", warns: false },
-  { name: "avatar.read", lets: "Read the figure of its own bot: the names its model answers to (expressions, motions, outfit parts), where the figure is on the stage, and hear them change", ok: "sees your bot's figure", warns: false },
-  { name: "avatar.control", lets: "Make the figure of its own bot play an expression or a motion, switch an outfit part, calm or liven it, or look at a point; the renderer says plainly what it doesn't do", ok: "moves your bot's figure", warns: false },
-  /** The bundled `clover` tree only: the stage tells the core which renderer drew a bot's figure, its names and its box. */
-  { name: "avatar.report", lets: "Report which renderer draws a bot's figure, what its model has and where it stands (the stage's own)", ok: "reports your bots' figures", warns: false, bundledOnly: true },
+  { name: "logs.read", lets: "Read MOSS's logs and every plugin's", ok: "reads MOSS's logs and every plugin's logs", warns: false },
   { name: "notify", lets: "Send the user a notification through the notifiers", ok: "sends you notifications", warns: false },
-  { name: "audio", lets: "Hear the user's push-to-talk audio to their bots, and play sound through the app, including as the bots' voices", ok: "hears what you say to your bots with push-to-talk, and can play sound, including as your bots' voices", warns: true },
-  /** The voice providers' endpoints (`voices.*`, §6.6): their audio or text back as the plugin's own data (a narration
-   *  track, a transcript). A voice mode has it by being one. Nothing sounds through it: the player is the active
-   *  voice mode's alone. */
-  { name: "voices.use", lets: "Ask the voice providers (`voices` entries) to speak text or transcribe audio, getting the audio or text back", ok: "can ask your voice providers to speak or transcribe, which may use your accounts with them", warns: true },
+  /** Sound with no press from the user: its background part may start sound by itself, and it may take the device's speech
+   *  turn (`device/speech`, one voice at a time). */
+  { name: "audio", lets: "Play sound with no press from the user, even from a part kept in the background, and take the device's speech turn (`device/speech`) so it never talks over another plugin", ok: "can play sound at any time, even while no window of it shows", warns: true },
+  /** The user's microphone for a plugin's own frames: `getUserMedia({ audio: true })` works in a frame of a plugin that holds it,
+   *  and in no other plugin's. The system's own question still applies (the first time, on a Mac). Hold-to-talk is a plugin's
+   *  own use of it (MOSS Voice's talk button), taking the device's microphone turn (`device/microphone`). */
+  { name: "microphone", lets: "Open the user's microphone from its own frames (`getUserMedia({ audio: true })`), whenever its parts run, including a part kept in the background; the system's own permission still applies, and no other plugin's frame gets it", ok: "hears your microphone, also while no window of it shows", warns: true },
+  /** F2 (the app's door for its parts, by capability; the controller's rulings of 2026-11-15): what the bundled Settings,
+   *  Plugins page, bot editor, shell and composer do, any plugin may do behind its OK card. Each write is
+   *  the user's own press in the holder's frame; what is on a sealed card today stays on one for every holder. */
+  { name: "app.settings", lets: "Read MOSS's own settings (its look, theme, language, layout lists, and which plugin is active for each one-at-a-time job) and, on the user's own press in its frame, change the look, the theme, the language and which plugin does each job", ok: "reads MOSS Code's settings, and changes its window's look, language and which plugin does each job when you press its controls", warns: true },
+  { name: "bots.edit", lets: "On the user's own press in its frame: change a bot's settings (its name, instructions, model, voice, and whether its browser may reach the home network), its tab's layout switches, and its own plugin's settings for that bot; open MOSS's own key dialog for that bot's keys (the key never passes the plugin); read the model list and MOSS's layout settings", ok: "changes your bots' settings when you press its controls: their names, instructions, models, voices and keys, and whether a bot's browser may reach your home network", warns: true },
+  { name: "plugins.read", lets: "Read every plugin's record and manifest, its settings (a secret only as set or not), sign-ins, development folders, granted files, commands and notification mutes, and the plugin indexes; it can change nothing", ok: "sees every plugin you have, its settings and what it may do", warns: true },
+  /** Carries `plugins.read` (`IMPLIED_CAPABILITIES`). */
+  { name: "plugins.manage", lets: "On the user's own press in its frame: install (each landing behind its own OK card), remove, update, pin, restart and switch plugins on and off; add and remove indexes and development folders (a folder only from MOSS's own picker); sign plugins in and out (a key only in MOSS's own key dialog); change any plugin's settings (never a key); take back picked files; mute a plugin's notifications. A removal, an update, a sign-out and a renewal still ask on MOSS's sealed card", ok: "installs, removes, switches on and off and changes the settings and sign-ins of your plugins when you press its controls", warns: true },
+  { name: "tools.permissions", lets: "Read and, on the user's own press in its frame, change what each plugin tool may do (always allow, ask, always block): every installed plugin's tools, MOSS's own bundled plugins' included, so a tool set to always allow then acts with no card; not MOSS's built-in shell and file tools. It can also take back the card rules saved for a bot", ok: "shows and changes, for each plugin tool, whether it may be used and whether it asks first, and can set any plugin's tools, MOSS's own plugins' included, to act without asking you, with no card (not MOSS's built-in shell and file tools)", warns: true },
+  { name: "account.read", lets: "Read whether MOSS is signed in to an account, with which provider, and the account's id, name and email", ok: "sees the name and email of your MOSS account", warns: true },
+  /** A composer's door to every plugin's commands: the command runs with the commanded plugin's own powers, never the caller's. */
+  { name: "commands.run", lets: "From the composer it fills: list every running plugin's commands and, on the user's own press, run one as the user, with that plugin's own powers (a carded action still raises its card)", ok: "runs your plugins' commands as you when you press a key in it", warns: true },
+  /** Reads by kind of data (spec revision 19, §3.6, G6; item 115's working names fixed by lane SP). `sessions.read` is the
+   *  user's code sessions and nothing of bots'; `conversation.read` (above) is bots' conversations and nothing of code
+   *  sessions from revision 19 on, and a grant OK'd before it reads no bot's conversation until the plugin asks again
+   *  (the protocol's `grantReadsBots`). The feed and live pictures have one capability per kind. Not served yet (lane AF). */
+  { name: "sessions.read", lets: "Read the user's code sessions and follow them live, and nothing of bots' conversations; sealed card fields never reach it", ok: "reads your code sessions", warns: false },
+  /** Starting a code session (spec §9.4, lane MC; the controller's ruling of 2026-11-17): its own capability, never
+   *  `user.send`'s. A part holding it starts a session with a coding agent only in a folder the person picked in the app's
+   *  own dialog (a pick token), on the person's own press, with no prompt. */
+  { name: "sessions.start", lets: "Start a session with a coding agent, on the user's own press, in a folder the user picked in the app's own dialog or one of the folders the user used recently (never a path the plugin names), with no words of the plugin's unless it also holds user.send; read the names of the folders the user used recently, with no click", ok: "starts sessions with a coding agent, in a folder you pick or one you used recently without asking you again, and sees the names of the folders you used recently", warns: true },
+  { name: "activity.read.sessions", lets: "Read the activity feed of the user's code sessions: each one's state (idle, listening, thinking, working, asking, stuck, done, asleep), its title (which a bot or the person wrote, and can come from the conversation) and the tool it works with; never the messages, a tool's arguments or a card's text", ok: "follows what your code sessions are doing: their titles, their states and which tool they are using", warns: false },
+  { name: "activity.read.bots", lets: "Read the activity feed of every bot: each one's state (idle, listening, thinking, working, asking, stuck, done, asleep), its name and the tool it works with; never what was said, a tool's arguments or a card's text", ok: "follows what all your bots are doing: their names, their states and which tool they are using, never their words", warns: false },
+  { name: "picture.read.sessions", lets: "Show the live pictures tools publish of their work in the user's code sessions (inert pixels, with the publisher's id): a computer-use tool's can show the user's own screen, a browser tool's a page the user is signed in to", ok: "shows live pictures of what tools are doing in your code sessions, which can include your own screen and pages you are signed in to", warns: true },
+  { name: "picture.read.bots", lets: "Show the live pictures tools publish of every bot's work (inert pixels, with the publisher's id): a computer-use tool's can show the user's own screen, a browser tool's a page the user is signed in to", ok: "shows live pictures of what all your bots' tools are doing, which can include your own screen and pages you are signed in to", warns: true },
   { name: "call:<plugin-id>", lets: "Run that plugin's commands", ok: "runs commands of {plugin}", warns: false },
   /** Lane A's web plugin (WebFetch): any public host, through the core's fetch with the web floors (public addresses
    *  only, the dangerous-domain list, a private address refused with no card, the audit log). Its components get no host from
-   *  it. The bundled `clover` tree only. */
-  { name: "network:public", lets: "Reach any public host through the core's fetch, with its web floors: public addresses only (a private address is refused, with no card to allow it), the dangerous-domain list, size and time caps, no key, and the audit log; its components reach no host from it", ok: "connects to any public website, through Clover's web safeguards", warns: true, bundledOnly: true },
+   *  it. */
+  { name: "network:public", lets: "Reach any public host through the core's fetch, with its web floors: public addresses only (a private address is refused, with no card to allow it), the dangerous-domain list, size and time caps, no key, and the audit log; its components reach no host from it", ok: "connects to any public website, through MOSS's web safeguards, so what you or your bots give it can leave your computer", warns: true },
   { name: "network:<host>", lets: "Reach that host through the core's fetch, which adds the plugin's own keys and tokens, and from the plugin's components, which reach no other host", ok: "connects to {host}", warns: false },
 ];
 
-/** Whether a plugin may hold a capability at all: a `bundledOnly` one only in the bundled `clover` tree, which the core
- *  decides from the install record (`source: "bundled"`, top-level id `clover`), never from the manifest. */
-export function mayHoldCapability(capability: string, plugin: { id: string; source: string }): boolean {
-  if (!CAPABILITIES.find((c) => c.name === capability)?.bundledOnly) return true;
-  const top = plugin.id.includes("/") ? plugin.id.slice(0, plugin.id.indexOf("/")) : plugin.id;
-  return plugin.source === "bundled" && top === BUNDLED_ROOT_PLUGIN;
+/** What holding a capability also gives: `plugins.manage` reads what it manages (`plugins.read`). The router reads a plugin's grants through `withImplied`. */
+export const IMPLIED_CAPABILITIES: Readonly<Record<string, readonly string[]>> = { "plugins.manage": ["plugins.read"] };
+
+/** `granted` and the capabilities they imply. */
+export function withImplied(granted: readonly string[]): readonly string[] {
+  const extra = granted.flatMap((c) => IMPLIED_CAPABILITIES[c] ?? []).filter((c) => !granted.includes(c));
+  return extra.length === 0 ? granted : [...granted, ...extra];
 }
 
 /** Whether a plugin may reach any public host (`network:public`) through the core's fetch, which applies the web floors;

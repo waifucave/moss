@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SessionEvent } from "../src/events";
 import { buildCleanerVectorsFixture, buildDangerousDomainsFixture } from "./parity-fixtures";
-import { buildCloverArtifacts } from "./clover-artifacts";
+import { buildMossArtifacts } from "./moss-artifacts";
 
 const outDir = join(import.meta.dir, "..", "generated");
 const fixDir = join(outDir, "fixtures");
@@ -72,6 +72,8 @@ const fixtures: Record<string, unknown> = {
   // fixture each, so Swift round-trips both.
   "tool_call_with_display_title": { ...base, threadId: "main", type: "tool_call", callId: "call_62", name: "mcp__alpha-stage__pin_note", argsJson: "{\"text\":\"Tea\"}", displayTitle: "Pin a note" },
   "tool_result_with_display": { ...base, threadId: "main", type: "tool_result", callId: "call_63", output: "Mood: joy", isError: false, display: { kind: "mood", label: "Mood", value: "joy", swatch: "#FFC45A" } },
+  // An MCP Apps page's address (`app`): additive/optional on the EXISTING tool_result shape.
+  "tool_result_with_app": { ...base, threadId: "main", type: "tool_result", callId: "call_64", output: "Rendered a chart.", isError: false, app: { resourceUri: "ui://charts/build-times" } },
   // SP3 T4b review fix (Phase-A CRITICAL): this BASE fixture deliberately carries NO issuedAt/
   // expiresAt — it is the pre-T4b persisted shape, and Swift round-tripping it proves an OLD
   // session-JSONL approval_requested still decodes with the fields ABSENT (they are optional).
@@ -300,30 +302,18 @@ writeFileSync(join(fixDir, "dangerous-domains.json"), JSON.stringify(buildDanger
 const cleanerVectors = buildCleanerVectorsFixture();
 writeFileSync(join(fixDir, "cleaner-vectors.json"), JSON.stringify(cleanerVectors, null, 2));
 
-// 3. Sync fixtures into the Swift test bundle — the SessionEvent per-variant fixtures ONLY (see
-// the comment above): a blanket directory copy would also carry dangerous-domains.json/
-// cleaner-vectors.json into RoundTripTests.swift's Fixtures/, which decodes every file there as a
-// SessionEvent and hard-asserts an exact count (65 as of B2 T2). Both counts here are
-// deliberately written as "the count RoundTripTests asserts" rather than restated numbers — they
-// have drifted twice; check `RoundTripTests.swift` rather than trusting a figure in this comment.
-const swiftFixDir = join(import.meta.dir, "..", "..", "..", "apple", "WinterProtocol", "Tests", "WinterProtocolTests", "Fixtures");
-rmSync(swiftFixDir, { recursive: true, force: true }); // delete-then-copy: no orphaned fixtures after variant renames
-mkdirSync(swiftFixDir, { recursive: true });
-for (const name of Object.keys(fixtures)) {
-  cpSync(join(fixDir, `${name}.json`), join(swiftFixDir, `${name}.json`));
-}
-// 4. Clover's protocol (spec revision 17): an area file each, a fixture per Clover event and every role's allow list,
-// under generated/clover/ (scripts/clover-artifacts.ts). Delete-then-write, so a renamed event leaves no orphan.
-const cloverDir = join(outDir, "clover");
-rmSync(cloverDir, { recursive: true, force: true });
-const cloverFiles = buildCloverArtifacts();
-for (const [rel, content] of cloverFiles) {
-  mkdirSync(dirname(join(cloverDir, rel)), { recursive: true });
-  writeFileSync(join(cloverDir, rel), content);
+// 4. MOSS's protocol (spec revision 17): an area file each, a fixture per MOSS event and every role's allow list,
+// under generated/moss/ (scripts/moss-artifacts.ts). Delete-then-write, so a renamed event leaves no orphan.
+const mossDir = join(outDir, "moss");
+rmSync(mossDir, { recursive: true, force: true });
+const mossFiles = buildMossArtifacts();
+for (const [rel, content] of mossFiles) {
+  mkdirSync(dirname(join(mossDir, rel)), { recursive: true });
+  writeFileSync(join(mossDir, rel), content);
 }
 
 console.log(
-  `generated: schema + ${Object.keys(fixtures).length} fixtures (synced to Swift test bundle) + ` +
+  `generated: schema + ${Object.keys(fixtures).length} fixtures + ` +
     `dangerous-domains (${buildDangerousDomainsFixture().length} entries) + cleaner-vectors (${cleanerVectors.length} vectors) + ` +
-    `clover (${cloverFiles.size} files)`,
+    `moss (${mossFiles.size} files)`,
 );

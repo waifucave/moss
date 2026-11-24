@@ -1,10 +1,11 @@
-// `clover.json`, format 1 (spec §5.9): the one source for the manifest's TypeScript types (`types.ts`), its JSON Schema
-// (`generated/clover.schema.json`) and its validation (`validate.ts`). Every shape below follows §5.9's reference; the
+// `moss.json`, format 1 (spec §5.9): the one source for the manifest's TypeScript types (`types.ts`), its JSON Schema
+// (`generated/moss.schema.json`) and its validation (`validate.ts`). Every shape below follows §5.9's reference; the
 // details §5.9 leaves open are noted where they are chosen.
 import { z } from "zod";
-import { Os, Platform, RunsOn, Scope, SemverVersion, SessionKind, TopPluginId, COMPUTER_NAME_RE, utf16 } from "@waifucave/clover-protocol";
+import { LookColor, Os, Platform, RunsOn, Scope, SemverVersion, SessionKind, TopPluginId, COMPUTER_NAME_RE, utf16 } from "@waifucave/moss-protocol";
 import { AUTH_SCHEME_RE } from "../api/keyed-fetch";
-import { avatarFileProblem } from "../catalogs/avatars";
+import { DATA_FILE_CAPS, DATA_FILE_TYPES } from "../catalogs/data-files";
+import { TURN_LOCAL_NAME } from "../catalogs/turns";
 import {
   ComponentName, EntryId, HandlerName, JsonSchema, KEY_CHORD_RE, COMMAND_NAME_RE, LangTag, NAMESPACE_RE, Path, PathGlob,
   LinkUrl, PointName, Program, SecretName, SettingKey, Text, TOOL_NAME_RE, Url,
@@ -32,6 +33,29 @@ export const PointDeclSchema = z.strictObject({
   private: z.boolean().optional(),
   deprecated: Text.optional(),
   doc: Text.optional(),
+  /** One filler at a time (§5.4 "One at a time"): the platform keeps which entry is active, the user's choice in
+   *  Settings or the default (the first bundled filler, else the first installed); `points.active` reads it. */
+  oneAtATime: z.boolean().optional(),
+  /** The point's own title: Settings' picker for a one-at-a-time point is titled by it ("Voice", "Stage"), and a
+   *  `fills` line names the point by it. */
+  title: Text.optional(),
+  /** The line its fillers' OK cards show (`fillsOkLines`): what a plugin that fills this point is given or does, in the
+   *  declarer's words, shown as plain text and attributed to the declarer. `warns`: shown as a caution. A point declared
+   *  without it carries no point messages: `points.send` and `points.onMessage` on it are refused, since no OK card told
+   *  the person what goes between the plugins. */
+  fills: z.strictObject({ ok: utf16(300, 1), warns: z.boolean().optional() }).optional(),
+  /** Files that come with each entry (`catalogs/data-files.ts`): by the name of a top-level `path` field of `fields`, the
+   *  kinds of inert data file that sit beside the file it names, in its folder and below, which the app then serves to
+   *  every layer as the kind's one fixed media type (a model's binaries, a word list's JSON, a sound bank's audio). */
+  files: z.record(utf16(64, 1), z.strictObject({
+    kinds: z.array(z.strictObject({
+      ext: z.array(utf16(32, 2).regex(/^\.[a-z0-9]+(\.[a-z0-9]+)*$/)).min(1).max(16),
+      type: z.enum(DATA_FILE_TYPES),
+      maxBytes: z.number().int().min(1).max(Math.max(...Object.values(DATA_FILE_CAPS))).optional(),
+    }).superRefine((k, ctx) => {
+      if (k.maxBytes !== undefined && k.maxBytes > DATA_FILE_CAPS[k.type]) ctx.addIssue({ code: "custom", path: ["maxBytes"], message: `a ${k.type} file may be at most ${DATA_FILE_CAPS[k.type]} bytes` });
+    })).min(1).max(16),
+  })).optional(),
 });
 
 export const DeclaresSchema = z.record(PointName, PointDeclSchema);
@@ -62,7 +86,7 @@ export const AuthSchema = z.discriminatedUnion("method", [
     placement: KeyPlacementSchema.optional(),
   }),
   z.strictObject({ method: z.literal("custom"), handler: HandlerName, placement: KeyPlacementSchema.optional() }),
-  /** A sign-in the core runs by a flow of its own (lane A's ask), for the bundled `clover` tree only: the Console's
+  /** A sign-in the core runs by a flow of its own (lane A's ask), for the bundled `moss` tree only: the Console's
    *  sign-ins through their official brokers, xAI's device flow. */
   z.strictObject({ method: z.literal("core"), flow: z.enum(CORE_SIGN_IN_FLOWS), placement: KeyPlacementSchema.optional() }),
 ]);
@@ -79,6 +103,8 @@ export const SettingSchema = z.strictObject({
   scope: z.enum(["account", "device", "bot"]).optional(),
   /** The plugin waits until the value is set. */
   required: z.boolean().optional(),
+  /** The plugin's own state: readable and writable through `settings.get/set` as any setting, never listed in Settings. Not for a `secret`. */
+  hidden: z.boolean().optional(),
 });
 
 // -------------------------------------------------------------------------------------------------
@@ -91,25 +117,17 @@ export const BotSchema = z.strictObject({
   instructions: Path,
   /** A qualified catalog id; with no key for it, the user's default model. */
   model: z.strictObject({ default: utf16(200, 1), effort: utf16(32, 1).optional() }).optional(),
-  /** `format` is `vrm` or `live2d` (`AVATAR_FORMATS`), or one a renderer plugin brings; a `live2d` file is a Cubism
-   *  `.model3.json` or a `.zip` holding one. */
-  avatar: z.strictObject({ file: Path, format: utf16(32, 1).regex(/^[a-z0-9-]+$/), portrait: Path.optional() })
-    .superRefine((a, ctx) => {
-      const problem = avatarFileProblem(a.format, a.file);
-      if (problem) ctx.addIssue({ code: "custom", path: ["file"], message: problem });
-    })
-    .optional(),
-  voice: z.strictObject({
-    provider: EntryId, voice: utf16(256, 1), model: utf16(128, 1).optional(),
-    /** Listening from another voice provider (§6.6). */
-    listen: z.strictObject({ provider: EntryId, model: utf16(128, 1).optional() }).optional(),
-  }).optional(),
+  /** Retired (spec revision 19, G7): a bot has no figure of its own; a figure is an avatar pack. Read only to say so. */
+  avatar: z.unknown().optional(),
   /** A theme id from this plugin, and a layout file; both apply in its tab. */
   theme: EntryId.optional(),
   layout: Path.optional(),
   greeting: Path.optional(),
   /** Starter memories, copied once into the bot's memory folder. */
   memory: Path.optional(),
+  /** Retired: a bot's voice is no longer set here (the validator warns, and nothing reads it). A plugin gives its bot
+   *  a default voice on MOSS Voice's point `moss.voice.defaults`. Accepted so an older bot still loads. */
+  voice: z.unknown().optional(),
   ...declares,
 });
 
@@ -147,12 +165,35 @@ export const McpServerSchema = z.strictObject({
    *  call to one runs without an approval card at the default level. Never a hint a server gives at run time; a change
    *  to the list asks for the OK again. */
   readOnly: z.array(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/)).max(256).optional(),
-  /** The tools of this server whose only effect is the plugin's own display (an avatar's expression, a stage's scene,
+  /** The tools of this server whose only effect is the plugin's own display (a figure's expression, a scene,
    *  a pinned card): named on the OK card, and only as that card shows them, a call to one counts as a contained call
    *  (effect `other`), which runs without a card at the default level, asks at "ask" and is refused at read-only. They
-   *  hold only where the tree can't reach the network and holds no capability beyond reading Clover's own state
+   *  hold only where the tree can't reach the network and holds no capability beyond reading MOSS's own state
    *  (`containedToolsHold`). Never a tool also listed in `readOnly`; a change to the list asks for the OK again. */
   contained: z.array(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/)).max(256).optional(),
+  /** The tools of this server that search the web (R1: what the core once knew only of its own web plugin): named on the
+   *  OK card with a warning, a call to one is judged as a web search (effect `search`: at the default level it runs
+   *  without a card). The plugin must hold a `network:` capability. Never a tool on another of these lists; a change to
+   *  the list asks for the OK again. */
+  webSearch: z.array(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/)).max(16).optional(),
+  /** The tools of this server that read a web page at `input.url`: named on the OK card with a warning, a call to one is
+   *  judged as a page fetch (a page whose address the session already saw runs without a card, within the turn's
+   *  budget; any other asks, and "Always allow" holds for its site). The plugin must hold `network:public`. Never a tool
+   *  on another of these lists; a change to the list asks for the OK again. */
+  webFetch: z.array(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/)).max(16).optional(),
+  /** The tools of this server that drive the calling bot's own tab of the MOSS Browser with the Browser tool's verbs
+   *  (`input.verb`; F5: what the core once knew only of its own Browser tool's plugin): named on the OK card with a
+   *  warning, a call to one is judged as the Browser tool's (looking verbs run without a card; click, type, key and
+   *  select ask for the site, "Always allow" kept per bot and site). The plugin must hold `browser`. Never a tool on
+   *  another of these lists; a change to the list asks for the OK again. */
+  browserTools: z.array(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/)).max(16).optional(),
+  /** A tool offered only while its plugin holds a capability (`{ "WebFetch": "network:public" }`): one that could only
+   *  refuse without it isn't listed. Each capability must be one the plugin declares. */
+  needs: z.record(utf16(64, 1).regex(/^[A-Za-z0-9_.-]+$/), utf16(512, 1)).optional(),
+  /** `host` only (spec revision 19, §3.6, G5, item 115): this server's tools publish a live picture of their work for the
+   *  session of the tool call they serve (the plugin API's `pictures.publish`); the OK card says it "shows a live picture
+   *  of what it is doing". Adding it in an update asks again. */
+  picture: z.literal(true).optional(),
   /** Extra text for the MCP block, capped at about 4 KB (§6.1). */
   instructions: Path.optional(),
   /** `host` only: bound to its computer, so a local server (§9.1). */
@@ -188,6 +229,17 @@ export const AgentBackendSchema = z.strictObject({
   /** A JSON file in the folder with the backend's quirks (`AgentQuirks`, lane K), so each backend's row lives in its
    *  own plugin (K's ask). */
   quirks: Path.optional(),
+  /** Its look (spec revision 20, §9.5): its brand colour and, for a gradient, a second, `#rrggbb`. */
+  color: LookColor.optional(),
+  color2: LookColor.optional(),
+  /** Its mark: a PNG or SVG file in the plugin's own folder (the owner's ruling of 2026-11-21: each agent's plugin ships
+   *  its mark; removing one is this line and its file). Checked with the plugin's other files: inside its folder, no
+   *  symlink out, at most `ICON_FILE_MAX_BYTES`, its bytes' type, an SVG only when inert; a refused or missing icon is no
+   *  icon (the SDK's fallback mark), never a failed plugin. */
+  icon: Path.optional(),
+  /** Its mark for the dark theme: a second file read exactly as `icon` is (the same checks; a bad one is no `iconDark`, the
+   *  entry keeps its `icon`). Without it `icon` is drawn on both themes. */
+  iconDark: Path.optional(),
   ...declares,
 });
 
@@ -197,9 +249,9 @@ export const AgentBackendSchema = z.strictObject({
  *  plugin's react is never bundled into its client (it can't bring another React version to a layer). A file only the
  *  plugin's client entries reach may import these without shipping them; a file a host, hook, server or command also
  *  reaches must ship what it imports. */
-export const CLIENT_BARE_IMPORTS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "react-dom", "react-dom/client", "@waifucave/clover-plugin-sdk/ui"] as const;
+export const CLIENT_BARE_IMPORTS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "react-dom", "react-dom/client", "@waifucave/moss-plugin-sdk/ui"] as const;
 /** The reason a plugin marked `availability: { status: "not-yet" }` shows, as the registry gives it (state `off`). */
-export { NOT_AVAILABLE_YET } from "@waifucave/clover-protocol";
+export { NOT_AVAILABLE_YET } from "@waifucave/moss-protocol";
 /** The React major the layers provide. */
 export const CLIENT_REACT_MAJOR = 19;
 
@@ -218,6 +270,10 @@ export const HookSchema = z.strictObject({
   /** `own-bot`: only the sessions of the bots this plugin's tree contributes (their conversations, side threads and
    *  the agents they start), enforced by the host before a hook is called; the OK card says so. */
   scope: PartScope.optional(),
+  /** Only hears its events: what it answers is ignored, and it holds nothing up. A `message.out` observer is told each
+   *  bot's reply once it is stored (with the bot and the session), so the replies keep streaming as they would with no
+   *  hook (a hook that may rewrite a reply holds it until it ran). The OK says it sees and never says it changes. */
+  observe: z.boolean().optional(),
   ...declares,
 });
 
@@ -227,6 +283,11 @@ export const CommandSchema = z.strictObject({
   args: JsonSchema.optional(),
   handler: HandlerName,
   key: utf16(64).regex(KEY_CHORD_RE).optional(),
+  /** With `key`: the key binding asks for the key's release as well as its press (§5.4). The handler runs with
+   *  `{ key: "down" }` when the chord goes down (a held key's repeats are no new press), once with `{ key: "up" }` when its
+   *  key or one of its modifiers comes up, and with `{ key: "cancel" }` for a hold that ended with no release (`HoldPhase`).
+   *  It runs only from its key, so it declares no `args`; its key is never a text-editing one (`TEXT_EDITING_KEYS`). */
+  hold: z.boolean().optional(),
   runsOn: RunsOn.optional(),
   /** `own-bot`: a command inside the bot: the user runs it, and of the bots only the one its plugin holds. */
   scope: PartScope.optional(),
@@ -241,24 +302,10 @@ export const TriggerSchema = z.strictObject({
   ...declares,
 });
 
-export const VoiceSchema = z.strictObject({
-  id: EntryId,
-  name: Text,
-  speak: z.boolean().optional(),
-  listen: z.boolean().optional(),
-  auth: z.array(AuthSchema).max(16).optional(),
-  handler: HandlerName,
-  ...declares,
-});
-
-/** A voice mode (§6.6): the one plugin, of those installed, that speaks the bots' replies, plays sound as their
- *  voices and hears push-to-talk; the user chooses which is active (Settings › Voice). `handler` names the host
- *  export the core calls (`reply`, `stop`, `listenStart`, `listenEnd`, `offer`: `VoiceModeHandler`). */
-export const VoiceModeSchema = z.strictObject({
-  id: EntryId,
-  name: Text,
-  handler: HandlerName,
-  ...declares,
+/** One of a plugin's own turns that another plugin may take (§5.4 "Turns"): `<plugin id>/<name>`. */
+export const TurnEntrySchema = z.strictObject({
+  name: utf16(64, 1).regex(TURN_LOCAL_NAME),
+  doc: Text,
 });
 
 export const ComputerProviderSchema = z.strictObject({
@@ -334,7 +381,19 @@ export const UiSchema = z.object({
     alwaysOnTop: z.boolean().optional(),
     transparent: z.boolean().optional(),
     placement: z.partialRecord(Os, utf16(256, 1)).optional(),
+    /** How the surface stands when the main window is in front: `stays` (the default) or `steps-aside` (it leaves the
+     *  screen and comes back when another app is in front). */
+    front: z.enum(["stays", "steps-aside"]).optional(),
+    /** The surface draws the pending cards (with `approvals` and `approvals.all`): the platform's rule is one place at a
+     *  time, so it shows them only while the main window is not in front, and the window draws them otherwise. */
+    cards: z.boolean().optional(),
+    /** How the user summons it: `tap` (a four-finger tap on the trackpad, when the add-on is there). */
+    summon: z.array(z.enum(["tap"])).max(1).optional(),
   }).optional(),
+  /** On an `app.tray` entry: the own surface (an `app.surface` entry id of this plugin) the menu item hides and shows. */
+  toggles: EntryId.optional(),
+  /** On an `app.tray` entry: a command of this plugin's (the core's `command.list`) the menu item runs. */
+  command: utf16(128, 1).optional(),
   /** In a plugin with a bot: a part beside the bot, which follows the app's rules (any spot an ordinary plugin fills,
    *  `when.bot` any bots) and has its own switch, rather than one of the bot's tab (§5.5, the owner's rule of November
    *  14). Without it, a bot's plugin fills only what Bots offers, on its own tab. */
@@ -348,6 +407,8 @@ export const UiSchema = z.object({
 
 /** The core points, by their `contributes` key, and each one's shape there. */
 export const CORE_CONTRIBUTION_SCHEMAS = {
+  /** Retired by spec revision 19 (§5.3 "There is no `bot` point", item 101): bots become engine data; lane BT moves each
+   *  plugin's bot into a record once (protocol bots.ts), and the entry goes after the move. */
   bot: BotSchema,
   models: z.array(ModelSchema).max(64),
   mcpServers: z.record(utf16(64, 1).regex(/^[A-Za-z0-9_-]+$/), McpServerSchema),
@@ -357,8 +418,7 @@ export const CORE_CONTRIBUTION_SCHEMAS = {
   hooks: z.array(HookSchema).max(256),
   commands: z.array(CommandSchema).max(512),
   triggers: z.array(TriggerSchema).max(64),
-  voices: z.array(VoiceSchema).max(64),
-  voiceModes: z.array(VoiceModeSchema).max(1),
+  turns: z.array(TurnEntrySchema).max(64),
   computerProviders: z.array(ComputerProviderSchema).max(16),
   computer: ComputerSchema,
   relays: z.array(ServiceSchema).max(16),
@@ -385,8 +445,7 @@ export const ContributionsSchema = z.object({
   hooks: CORE_CONTRIBUTION_SCHEMAS.hooks.optional(),
   commands: CORE_CONTRIBUTION_SCHEMAS.commands.optional(),
   triggers: CORE_CONTRIBUTION_SCHEMAS.triggers.optional(),
-  voices: CORE_CONTRIBUTION_SCHEMAS.voices.optional(),
-  voiceModes: CORE_CONTRIBUTION_SCHEMAS.voiceModes.optional(),
+  turns: CORE_CONTRIBUTION_SCHEMAS.turns.optional(),
   computerProviders: CORE_CONTRIBUTION_SCHEMAS.computerProviders.optional(),
   computer: CORE_CONTRIBUTION_SCHEMAS.computer.optional(),
   relays: CORE_CONTRIBUTION_SCHEMAS.relays.optional(),
@@ -418,20 +477,20 @@ export const ManifestSchema = z.strictObject({
   author: z.strictObject({ name: utf16(200, 1), url: LinkUrl.optional() }).optional(),
   license: utf16(100, 1).optional(),
   homepage: LinkUrl.optional(),
-  /** Tool prefix (top level only); default = id; children share it; "clover" reserved. */
+  /** Tool prefix (top level only); default = id; children share it; "moss" reserved. */
   namespace: utf16(40, 1).regex(NAMESPACE_RE).optional(),
   /** Plugin-API semver range; required when the plugin has code. */
-  engines: z.strictObject({ clover: utf16(256, 1) }).optional(),
+  engines: z.strictObject({ moss: utf16(256, 1) }).optional(),
   /** Code runs only on these; default all. */
   platforms: z.array(Platform).min(1).max(4).optional(),
   /** Whole tree; off until the user confirms they are 18+. */
   adult: z.boolean().optional(),
   /** Children only; default true. */
   enabledByDefault: z.boolean().optional(),
-  /** Clover's own plugins only (the bundled `clover` tree): a plugin this build lists but can't run yet (`not-yet`),
+  /** MOSS's own plugins only (the bundled `moss` tree): a plugin this build lists but can't run yet (`not-yet`),
    *  with a short reason key (what it waits for is in the owner's PARKED list). The registry never starts it (no host,
    *  no server, no hooks, no part, no tool, no capability in force) and refuses to switch it; its OK, switch and
-   *  settings stay as they were. A plugin outside Clover's tree carrying it is refused at validation. */
+   *  settings stay as they were. A plugin outside MOSS's tree carrying it is refused at validation. */
   availability: z.strictObject({ status: z.literal("not-yet"), reason: utf16(40, 1).regex(/^[a-z0-9][a-z0-9-]*$/) }).optional(),
   /** Default "both"; covers mcpServers, skills, agents, hooks. `own-bot`: a bot plugin's own parts, only the sessions of
    *  the bots its tree contributes and the agents they delegate to (a server or hook may still say otherwise). */
@@ -450,6 +509,16 @@ export const ManifestSchema = z.strictObject({
      *  picked for it, its tree's network proxy, nothing more of the user's). Only with `process: "own"`; the OK card
      *  says so. */
     programs: z.literal(true).optional(),
+    /** Programs and folders of the user's outside the plugin sandbox (P5; the owner, 2026-11-15: "Yes, named on the
+     *  card"). `programs`: what its host half runs OUTSIDE the sandbox through `api.outside.run`, with the user's own
+     *  access (their sign-ins, their Keychain, their files, their network), each a bare name found on the user's PATH or
+     *  an absolute path; only these leave the sandbox. `read`: folders of the user's (`~/…` or an absolute path) its
+     *  host process reads, read only. The OK card names every one with a warning; a change to either list asks for the
+     *  OK again. A top-level plugin's only. */
+    outside: z.strictObject({
+      programs: z.array(utf16(1024, 1)).max(16).optional(),
+      read: z.array(utf16(1024, 1)).max(16).optional(),
+    }).optional(),
     /** Starts at once there (§5.2); otherwise only when needed. */
     start: RunsOn.optional(),
     /** Points the host serves (§5.4). */
@@ -483,10 +552,10 @@ export const ManifestSchema = z.strictObject({
   /** Runs add-ons of its own, in a format it chooses (§5.4). */
   addons: z.strictObject({ description: Text }).optional(),
   contributes: ContributionsSchema.optional(),
-  /** Written by Clover's release build (`buildPluginForShipping`, core `registry/ship.ts`), never by hand: `host.entry`,
+  /** Written by MOSS's release build (`buildPluginForShipping`, core `registry/ship.ts`), never by hand: `host.entry`,
    *  `client.entry` and each program a `stdio` server or agent backend runs with `bun` or `node` name built ES modules
    *  of JavaScript, with their dependencies bundled in and a client's CSS listed in `client.css`. Honoured only in a
-   *  bundled tree (`clover`, `alpha`), whose bytes the signed core's manifest pins; any other plugin that says it is
+   *  bundled tree (`moss`, `alpha`), whose bytes the signed core's manifest pins; any other plugin that says it is
    *  refused (`built_not_bundled`). It spares the registry a rebuild, never a check: the registry scans every client
    *  entry at load, built or not. */
   built: z.literal(true).optional(),

@@ -28,7 +28,7 @@ export { endpointAnswers };
 /** A daemon already holds this home and answers on its endpoint. The second daemon exits 0. */
 export class AlreadyRunningError extends Error {
   constructor(public readonly pid: number) {
-    super(`clover-core already running (pid ${pid})`);
+    super(`moss-core already running (pid ${pid})`);
   }
 }
 
@@ -225,4 +225,19 @@ export async function acquireLock(lockPath: string, socketPath: string, opts: Ac
     if (Date.now() - started >= confirmMs) throw new LockHeldNoDaemonError(lockPath);
     await new Promise((r) => setTimeout(r, pollMs));
   }
+}
+
+/**
+ * A short lock on any file (RL's engine install lock, `bin/.install.lock`): the same OS lock the daemon's takes, with no
+ * socket or endpoint check. Held: a handle whose `release` lets go (the file stays, it is only a name); busy: undefined.
+ * Throws `LockFailedError` when the OS refuses for another reason. The kernel drops it when the holder exits, so a crashed
+ * install never leaves it held.
+ */
+export function tryFileLock(lockPath: string, opts: { platform?: NodeJS.Platform; backend?: "os" | "pidfile" } = {}): { release(): void } | undefined {
+  const platform = opts.platform ?? process.platform;
+  const attempt = backendFor(platform, opts.backend ?? "os").attempt(lockPath);
+  if (attempt.kind === "busy") return undefined;
+  attempt.writePid();
+  let released = false;
+  return { release() { if (!released) { released = true; attempt.release(() => {}); } } };
 }

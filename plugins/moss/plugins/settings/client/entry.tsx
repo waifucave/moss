@@ -1,0 +1,433 @@
+// Settings on the runtime: the `main` entry keyed `settings`, which the shell shows as a dialog over the tab under it.
+// Only MOSS's own settings: the account, the devices, appearance (the theme plugin, the language), notifications,
+// the plugins with their states, OKs and logs, each computer's level, and the bots, which open in the bot editor.
+//
+// It reads and changes them through the core, as the `moss` layer may (§5.5): `plugin.list` and `plugin.get` for the
+// plugins, `plugin.setEnabled`, `plugin.logs`, `ui.settings` and `ui.set` for the theme and language, `account.status`.
+// The computers, devices and bots come through the plugin API. A sensitive change (a computer's level, removing a
+// device) comes back as a sealed card, and the window closes Settings while it waits (the shell's `cardPending`).
+// Light, dark or system and the text size have no place in B's `UiSettings` yet, so they are this plugin's own
+// settings until B says where they live.
+import { type CoreClient, Spot, useCore, usePluginApi, useSpotEntries } from "@waifucave/moss-plugin-sdk/ui";
+import type { PluginDetail, PluginSummary, UiPluginView, UiSettings } from "@waifucave/moss-plugin-sdk";
+import { deviceKind, fieldText, plain } from "./local";
+import { useEffect, useRef, useState } from "react";
+import { APPEARANCE_KEYS, NOTIFICATION_KEYS, OWN_SETTING_KEYS, settingKey } from "./keys";
+import { LanguageChooser } from "./LanguageChooser";
+import { SettingsModal } from "./SettingsModal";
+import { S } from "./strings";
+import type { ExtraSection, Language, OneAtATimeView, SettingsPairing, SettingsSection, SettingsValues, ToolAvailability, ToolPermission } from "./types";
+
+/** `tool.permissions`' answer. */
+/** A bot's id as a name when nothing better is known: `alpha` -> `Alpha`, `crew/luna` -> `Luna`. */
+export function botNameOf(id: string): string {
+  const last = id.split("/").pop() ?? id;
+  return last.length === 0 ? id : last[0]!.toUpperCase() + last.slice(1);
+}
+
+interface ToolsRaw { plugins: { pluginId: string; name: string; server: string; tools: { name: string; title?: string; permission: ToolPermission; availability?: ToolAvailability; declared?: "preload" | "on-demand"; isNew?: boolean; cardRules: { bot: string; computers: string[] }[] }[] }[] }
+
+const DEFAULT_APPEARANCE: SettingsValues["appearance"] = { theme: "system", textSize: "default" };
+const DEFAULT_NOTIFICATIONS: SettingsValues["notifications"] = { needsYou: true, agentDone: true, routineFailed: true, sounds: false };
+
+export interface SettingsEntryProps {
+  route?: string;
+  /** The section to open on: one of MOSS's, an added one's id, or `languages` for the language chooser; and an item
+   *  in it to bring into view and mark (lane E's `useOpen`: a device's id on Devices, a plugin's id on Plugins, a
+   *  computer's name on Levels, a bot's id on Bots). */
+  params?: { section?: string; item?: string };
+  navigate?: (route: { route: string; params: Record<string, string> }) => void;
+  close?: () => void;
+}
+
+/** What each capability lets a plugin do, in plain words, as its OK says. */
+const OK_WORDS: Record<string, string> = {
+  "conversation.read": "Reads your bots' conversations",
+  "conversation.post": "Posts notes and messages to bots",
+  "memory.read": "Reads your bots' memories",
+  "bots.read": "Sees your bots",
+  "routines.read": "Sees your routines",
+  "computers.read": "Sees your computers",
+  "computers.control": "Controls the screen and input of your computers",
+  approvals: "Restyles approval cards",
+  files: "Reads and writes files in your folders",
+  terminal: "Runs commands on your computers",
+  browser: "Drives the MOSS Browser",
+  "usage.read": "Reads your usage",
+  "logs.read": "Reads MOSS's logs",
+  notify: "Sends you notifications",
+  audio: "Can hear your microphone",
+  "devices.read": "Sees your devices",
+  "devices.manage": "Pairs and removes your devices when you press its controls (each still asks on MOSS's own card)",
+};
+
+export function okWords(detail: Pick<PluginDetail, "capabilities" | "networkHosts">): string[] {
+  const out: string[] = [];
+  for (const c of detail.capabilities) {
+    if (c.startsWith("network:")) continue;
+    if (c.startsWith("call:")) out.push(`Runs ${c.slice(5)}'s commands`);
+    else out.push(OK_WORDS[c] ?? c);
+  }
+  for (const h of detail.networkHosts) out.push(`Reaches ${h}`);
+  return out;
+}
+
+/** The registry's reason for MOSS's own plugin this build can't run yet (the protocol's `NOT_AVAILABLE_YET`; the
+ *  Plugins page's own copy matches it, and a test pins both). */
+export const NOT_AVAILABLE_YET = "not available in this build yet";
+
+const SOURCES: Record<PluginSummary["source"], string> = {
+  bundled: "Bundled",
+  index: "From the plugin index",
+  npm: "From npm",
+  local: "From a folder",
+  wrapped: "Wrapped by MOSS",
+  dev: "A development folder",
+};
+
+/** The languages Settings offers: English, built in, and every installed pack's. */
+const LANGUAGE_NAMES: Record<string, { native: string; name: string }> = {
+  en: { native: "English", name: "English" },
+  "en-US": { native: "English (United States)", name: "English (United States)" },
+  de: { native: "Deutsch", name: "German" },
+  es: { native: "Español", name: "Spanish" },
+  fr: { native: "Français", name: "French" },
+  ja: { native: "日本語", name: "Japanese" },
+  "pt-BR": { native: "Português (Brasil)", name: "Portuguese (Brazil)" },
+};
+const languageOf = (lang: string): Language => ({ id: lang, ...(LANGUAGE_NAMES[lang] ?? { native: lang, name: lang }) });
+
+interface Loaded {
+  plugins: PluginSummary[];
+  account?: string;
+  language: string;
+  globalTheme?: string;
+  /** The core's light / dark / system choice (`ui.settings`), the one the app's main process applies to every window. */
+  appearance?: "light" | "dark" | "system";
+  themes: { id: string; name: string }[];
+  languages: Language[];
+}
+
+async function load(core: CoreClient): Promise<Loaded> {
+  const quiet = <T,>(p: Promise<T>) => p.catch(() => undefined);
+  const [list, account, ui, pluginUi] = await Promise.all([
+    quiet((core.call("plugin.list", {}) as Promise<{ plugins: PluginSummary[] }>)),
+    quiet(core.call("account.status", {})),
+    quiet((core.call("ui.settings", {}) as Promise<UiSettings>)),
+    quiet((core.call("plugin.ui", {}) as Promise<{ plugins: UiPluginView[] }>)),
+  ]);
+  // One plugin.list, never a call per plugin: what each may do is on the Plugins page, for the one opened.
+  const plugins = list?.plugins ?? [];
+  // The base theme is the plain one (spec, open question 14).
+  const name = (id: string) => (id === "moss/base-theme" ? "Plain" : plain(plugins.find((p) => p.id === id)?.name) || id);
+  const themes = (pluginUi?.plugins ?? []).flatMap((p) => p.themes.map((t) => ({ id: `${p.pluginId}#${t.id}`, name: p.themes.length > 1 ? `${name(p.pluginId)}: ${t.id}` : name(p.pluginId) })));
+  const langs = new Set<string>(["en-US"]);
+  for (const p of pluginUi?.plugins ?? []) for (const l of p.locales) langs.add(l.lang);
+  return {
+    plugins,
+    ...(account?.user ? { account: account.user.name ?? account.user.email ?? "" } : {}),
+    language: ui?.language ?? "en-US",
+    ...(ui?.globalTheme ? { globalTheme: ui.globalTheme } : {}),
+    ...(ui?.appearance ? { appearance: ui.appearance } : {}),
+    themes,
+    languages: [...langs].map(languageOf),
+  };
+}
+
+export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
+  const api = usePluginApi();
+  const core = useCore();
+  // `languages` opens the language chooser over Appearance (the welcome guide's and the gallery's door).
+  const start = props.params?.section;
+  const [section, setSection] = useState<SettingsSection | string>(start && start !== "languages" ? start : "appearance");
+  const [picking, setPicking] = useState(start === "languages");
+  const [item, setItem] = useState<string | undefined>(props.params?.item);
+  // A place can open Settings again while it is open (the island's Devices tab at another device).
+  useEffect(() => {
+    if (start === "languages") setPicking(true);
+    else if (start) setSection(start);
+    setItem(props.params?.item);
+  }, [start, props.params?.item]);
+  const [logs, setLogs] = useState<{ name: string; lines: string[] } | undefined>(undefined);
+  const [loaded, setLoaded] = useState<Loaded | undefined>(undefined);
+  const [revision, setRevision] = useState(0);
+  // Light / dark / system is the core's `appearance` alone (the app's main process applies it): what a pick set until the
+  // core is read again, else what the core has, else system.
+  const [failure, setFailure] = useState<string | undefined>(undefined);
+  // Each control's save (SettingsModalProps.saves): one at a time per control, and back to the stored value when it fails.
+  const busyRef = useRef(new Set<string>());
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const beginSave = (path: string): boolean => {
+    if (busyRef.current.has(path)) return false;
+    busyRef.current.add(path);
+    setBusy(new Set(busyRef.current));
+    setFailed((f) => { if (!f.has(path)) return f; const n = new Set(f); n.delete(path); return n; });
+    return true;
+  };
+  const endSave = (path: string, ok: boolean) => {
+    busyRef.current.delete(path);
+    setBusy(new Set(busyRef.current));
+    if (!ok) setFailed((f) => new Set(f).add(path));
+  };
+  const [themePick, setThemePick] = useState<"light" | "dark" | "system" | undefined>(undefined);
+  const [computers, setComputers] = useState<Awaited<ReturnType<NonNullable<NonNullable<typeof api.computers>["list"]>>>>([]);
+  const [devices, setDevices] = useState<Awaited<ReturnType<NonNullable<typeof api.devices>["list"]>>>([]);
+  // A kept card rule names its bot by its id (bots are MOSS's to show; this window reads none of their data).
+  const bots: { id: string; name: string }[] = [];
+  // Tools: read when the section is open, and again after each change (a card's rule taken back, a value set).
+  const [toolsRaw, setToolsRaw] = useState<ToolsRaw | undefined>(undefined);
+  const [toolsRev, setToolsRev] = useState(0);
+  useEffect(() => {
+    if (section !== "tools" || core === undefined) return;
+    let live = true;
+    void (core.call as (m: string, p: unknown) => Promise<ToolsRaw>)("tool.permissions", {}).then((r) => live && setToolsRaw(r), () => live && setFailure(S.choiceFailed(S.section.tools)));
+    return () => { live = false; };
+  }, [section, core, toolsRev]);
+  // One at a time (spec §5.4): the points' pickers on the Plugins page, read when it opens, after a pick, and after a
+  // plugin is switched (its fillers change).
+  const [oneRaw, setOneRaw] = useState<{ points: { point: string; title: string | { en: string }; fillers: OneAtATimeView["fillers"]; active?: OneAtATimeView["active"]; chosen?: OneAtATimeView["chosen"] }[] } | undefined>(undefined);
+  const [oneRev, setOneRev] = useState(0);
+  useEffect(() => {
+    if (section !== "plugins" || core === undefined) return;
+    let live = true;
+    void (core.call as (m: string, p: unknown) => Promise<NonNullable<typeof oneRaw>>)("point.active.list", {}).then((r) => live && setOneRaw(r), () => undefined);
+    return () => { live = false; };
+  }, [section, core, oneRev, revision]);
+  const toolsCall = (m: string, p: unknown): void => {
+    void (core!.call as (m: string, p: unknown) => Promise<unknown>)(m, p).then(() => setToolsRev((r) => r + 1), () => setFailure(S.choiceFailed(S.section.tools)));
+  };
+  const [own, setOwn] = useState<{ appearance?: SettingsValues["appearance"]; notifications?: SettingsValues["notifications"] }>({});
+  // The controls pressed since the last read of the settings began: that read was asked before the press, so its answer holds the
+  // value as it was and must not put it back on the screen (the stored value is the press's already; window row 13).
+  const pressedSince = useRef(new Set<string>());
+  // Pairing and removing a device (spec §8.1): the user's own press in this page's frame (`devices.manage`). Adding a device and
+  // removing one are the engine's sealed card, raised and placed by the engine (a call here answers `applied: false` and the
+  // card's id, and the window closes Settings while the card waits); nothing on this page adds or removes one. The pairing's
+  // steps (the four words, the card, the end) come as `pairing_changed`, which only a part holding `devices.manage` hears.
+  const [pairing, setPairing] = useState<SettingsPairing | undefined>(undefined);
+  const pairingRef = useRef<{ id: string; words?: string[] } | undefined>(undefined);
+  const refreshDevices = (): void => void api.devices?.list().then((d) => setDevices(d), () => undefined);
+  useEffect(() => {
+    if (core === undefined) return;
+    const offs = [
+      core.on("pairing_changed", (e) => {
+        const now = pairingRef.current;
+        if (now === undefined || e.pairingId !== now.id) return;
+        const words = Array.isArray(e.words) ? (e.words as string[]) : undefined;
+        switch (e.step) {
+          case "words":
+            if (words) { now.words = words; setPairing((p) => ({ ...p, words })); }
+            break;
+          case "card":
+            setPairing((p) => ({ ...p, confirming: true }));
+            break;
+          case "done":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairDone });
+            refreshDevices();
+            break;
+          case "expired":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairExpired });
+            break;
+          case "failed":
+            pairingRef.current = undefined;
+            setPairing({ ended: S.pairFailed(typeof e.reason === "string" ? e.reason : "") });
+            break;
+        }
+      }),
+      core.on("device_changed", refreshDevices),
+      core.on("device_removed", refreshDevices),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [core, api]);
+  const pairCall = (m: string, p: unknown): Promise<any> => (core!.call as (m: string, p: unknown) => Promise<unknown>)(m, p);
+  const pairingFailed = (err: unknown): void => {
+    pairingRef.current = undefined;
+    setPairing({ ended: S.pairFailed(err instanceof Error ? err.message : "") });
+  };
+  // The core's choice, read again, is what the control shows from then on.
+  useEffect(() => setThemePick(undefined), [loaded]);
+
+  useEffect(() => {
+    let live = true;
+    pressedSince.current.clear();
+    if (core) load(core).then((l) => live && setLoaded(l), () => undefined);
+    api.computers?.list?.().then((c) => live && setComputers(c), () => undefined);
+    api.devices?.list().then((d) => live && setDevices(d), () => undefined);
+    void Promise.all(OWN_SETTING_KEYS.map(async (k) => [k, await api.settings.get(k)] as const)).then(
+      (pairs) => {
+        if (!live) return;
+        const got = new Map(pairs);
+        const pick = <G extends "appearance" | "notifications">(group: G, fields: readonly string[]) => {
+          const out: Record<string, unknown> = {};
+          for (const f of fields) {
+            const v = got.get(settingKey(group, f));
+            if (v !== undefined && !pressedSince.current.has(settingKey(group, f))) out[f] = v;
+          }
+          return Object.keys(out).length > 0 ? out : undefined;
+        };
+        const appearance = pick("appearance", APPEARANCE_KEYS);
+        const notifications = pick("notifications", NOTIFICATION_KEYS);
+        setOwn((o) => ({ appearance: { ...(o.appearance ?? DEFAULT_APPEARANCE), ...appearance } as SettingsValues["appearance"], notifications: { ...(o.notifications ?? DEFAULT_NOTIFICATIONS), ...notifications } as SettingsValues["notifications"] }));
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [api, core, revision]);
+
+  const extra: ExtraSection[] = useSpotEntries("settings.section").entries.map((e) => {
+    const ref = `${e.pluginId}#${e.id}`;
+    return { id: ref, title: fieldText(e.fields?.title) ?? e.pluginId, render: () => <Spot name="settings.section" only={ref} /> };
+  });
+
+  const main = computers.find((c) => c.isMain)?.name ?? "";
+  const values: SettingsValues = {
+    account: { name: loaded?.account ?? "", main },
+    appearance: { ...(own.appearance ?? DEFAULT_APPEARANCE), theme: themePick ?? loaded?.appearance ?? "system" } as SettingsValues["appearance"],
+    language: { id: loaded?.language ?? "en-US", name: languageOf(loaded?.language ?? "en-US").native },
+    notifications: own.notifications ?? DEFAULT_NOTIFICATIONS,
+    plugins: (loaded?.plugins ?? []).map((p) => ({
+      id: p.id,
+      name: plain(p.name),
+      source: SOURCES[p.source],
+      state: p.state,
+      enabled: p.enabled,
+      ...(p.reason ? { reason: p.reason } : {}),
+      ...(p.state === "off" && p.reason === NOT_AVAILABLE_YET ? { notYet: true as const } : {}),
+    })),
+    themes: loaded?.themes ?? [],
+    theme: loaded?.globalTheme ?? loaded?.themes[0]?.id ?? "",
+    levels: computers.map((c) => ({ computer: c.name, ...(c.link === "self" ? { here: true } : {}), level: c.level })),
+    levelOptions: [
+      { id: "read-only", label: "Read only" },
+      { id: "ask", label: "Ask first" },
+      { id: "ask-risky", label: "Ask when risky" },
+      { id: "accept-edits", label: "Accept edits" },
+      { id: "automatic", label: "Fully automatic" },
+    ],
+    devices: devices.map((d) => ({ id: d.id, name: d.name, kind: deviceKind(d), ...(d.isThis ? { here: true } : {}), ...(d.isMain ? { main: true } : {}) })),
+  };
+
+  const onChange = (path: string, value: unknown) => {
+    const [head, key, field] = path.split(".");
+    if (head === "appearance" && key === "theme") {
+      if ((value === "light" || value === "dark" || value === "system") && core) {
+        setThemePick(value);
+        setFailure(undefined);
+        // The core is read again after the call: the control then shows the core's value, so a change made elsewhere shows
+        // too. A call that fails puts the control back and says so.
+        void core.call("ui.set", { patch: { appearance: value } }).then(
+          () => setRevision((r) => r + 1),
+          () => { setThemePick(undefined); setFailure(S.choiceFailed(S.theme)); },
+        );
+      }
+    } else if ((head === "appearance" || head === "notifications") && key) {
+      // Shown at once; saved in the person's press. Refused or failed: back to the stored value, and the line beside it says so.
+      if (!beginSave(path)) return;
+      const stored = (values[head] as Record<string, unknown>)[key];
+      const put = (v: unknown) => setOwn((o) => (head === "appearance"
+        ? { ...o, appearance: { ...(o.appearance ?? values.appearance), [key]: v } as SettingsValues["appearance"] }
+        : { ...o, notifications: { ...(o.notifications ?? values.notifications), [key]: v } as SettingsValues["notifications"] }));
+      put(value);
+      pressedSince.current.add(settingKey(head, key));
+      void Promise.resolve().then(() => api.settings.set(settingKey(head, key), value)).then(
+        () => endSave(path, true),
+        () => { put(stored); endSave(path, false); },
+      );
+    } else if (head === "theme" && typeof value === "string" && core) {
+      // A theme is `<plugin-id>#<theme-id>` (B's `ThemeRef`).
+      if (value.includes("#")) void core.call("ui.set", { patch: { globalTheme: value } }).then(() => setRevision((r) => r + 1), () => setFailure(S.choiceFailed(S.themePlugin)));
+    } else if (head === "plugins" && key && field === "enabled" && core) {
+      if (!beginSave(path)) return;
+      void core.call("plugin.setEnabled", { id: key, enabled: value === true }).then(
+        () => { setRevision((r) => r + 1); endSave(path, true); },
+        () => endSave(path, false),
+      );
+    }
+  };
+
+  if (picking) {
+    return (
+      <LanguageChooser
+        languages={loaded?.languages ?? [languageOf("en-US")]}
+        current={values.language.id}
+        onPick={(lang) => {
+          setPicking(false);
+          void core?.call("ui.set", { patch: { language: lang } }).then(() => setRevision((r) => r + 1), () => setFailure(S.choiceFailed(S.language)));
+        }}
+        onClose={() => setPicking(false)}
+      />
+    );
+  }
+
+  return (
+    <SettingsModal
+      {...(failure !== undefined ? { failure } : {})}
+      saves={{ busy, failed }}
+      section={section}
+      onSection={(s) => {
+        setLogs(undefined);
+        setSection(s);
+        setItem(undefined);
+      }}
+      {...(item !== undefined ? { item } : {})}
+      onClose={() => props.close?.()}
+      values={values}
+      onChange={onChange}
+      onOpenLanguage={() => setPicking(true)}
+      {...(core
+        ? {
+            // The setup guide is the app's own page over the window: Settings steps aside for it.
+            onOpenSetup: () => void (core.call as (m: string, p: unknown) => Promise<unknown>)("app.openSetup", {}).then(() => props.close?.(), () => setFailure(S.setupGuideFailed)),
+          }
+        : {})}
+      {...(props.navigate ? { onOpenPlugin: (id: string) => props.navigate!({ route: "plugins", params: { id } }), onOpenPluginManager: () => props.navigate!({ route: "plugins", params: {} }) } : {})}
+      {...(core
+        ? {
+            onOpenPluginLogs: (id: string) =>
+              void core.call("plugin.logs", { id, lines: 200 }).then((r) => setLogs({ name: values.plugins.find((p) => p.id === id)?.name ?? id, lines: r.lines })),
+            // A computer's level and making one the main are not offered here yet (backlog); pairing and removing a device are
+            // (`devices.manage`), each ending in the engine's own sealed card.
+            onPairBegin: () => {
+              void pairCall("device.pair.begin", {}).then(
+                (r: { pairingId: string; code?: string; qr?: string }) => { pairingRef.current = { id: r.pairingId }; setPairing({ code: r.code ?? r.qr ?? "" }); },
+                pairingFailed,
+              );
+            },
+            onPairJoin: (code: string) => {
+              void pairCall("device.pair.join", { code }).then(
+                (r: { pairingId: string; words?: string[] }) => { pairingRef.current = { id: r.pairingId, ...(r.words ? { words: r.words } : {}) }; setPairing(r.words ? { words: r.words } : {}); },
+                pairingFailed,
+              );
+            },
+            onPairConfirm: () => {
+              const now = pairingRef.current;
+              if (now?.words === undefined) return;
+              setPairing((p) => ({ ...p, confirming: true }));
+              void pairCall("device.pair.confirm", { pairingId: now.id, words: now.words }).then(() => undefined, pairingFailed);
+            },
+            onPairCancel: () => {
+              const now = pairingRef.current;
+              pairingRef.current = undefined;
+              setPairing(undefined);
+              if (now) void pairCall("device.pair.cancel", { pairingId: now.id }).then(() => undefined, () => undefined);
+            },
+            onRemoveDevice: (id: string) => {
+              void pairCall("device.revoke", { id }).then(() => undefined, () => setFailure(S.choiceFailed(S.section.devices)));
+            },
+          }
+        : {})}
+      {...(pairing ? { pairing } : {})}
+      {...(logs ? { logs: { ...logs, onBack: () => setLogs(undefined) } } : {})}
+      extraSections={extra}
+      {...(toolsRaw !== undefined ? { tools: { plugins: toolsRaw.plugins.map((p) => ({ ...p, tools: p.tools.map((t) => ({ ...t, cardRules: t.cardRules.map((r) => ({ ...r, botName: bots.find((b) => b.id === r.bot)?.name ?? botNameOf(r.bot) })) })) })) } } : {})}
+      {...(core ? { onSetAvailability: (server: string, tool: string | undefined, availability: ToolAvailability) => toolsCall("tool.setAvailability", { server, ...(tool !== undefined ? { tool } : {}), availability }), onSetTool: (server: string, tool: string | undefined, permission: ToolPermission) => toolsCall("tool.setPermission", { server, ...(tool !== undefined ? { tool } : {}), permission }), onTakeBackRule: (server: string, tool: string, bot: string) => toolsCall("tool.takeBackRule", { server, tool, bot }) } : {})}
+      {...(oneRaw !== undefined ? { oneAtATime: oneRaw.points.map((p) => ({ ...p, title: typeof p.title === "string" ? p.title : p.title.en })) } : {})}
+      {...(core ? { onPickActive: (point: string, entry: { pluginId: string; entryId: string }) => void (core.call as (m: string, p: unknown) => Promise<unknown>)("point.active.set", { point, entry }).then(() => setOneRev((r) => r + 1), () => setFailure(S.choiceFailed(S.section.plugins))) } : {})}
+    />
+  );
+}

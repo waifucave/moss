@@ -1,0 +1,47 @@
+{
+  "manifest": 1,
+  "name": "2D model avatar",
+  "description": "Draws the avatar plugin's figure when it is a 2D model, breathing and blinking, its mouth moving with what MOSS Voice says. It hears nothing itself and plays no sound.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx"
+  },
+  "contributes": {
+    "locales": [
+      {
+        "lang": "en",
+        "file": "locales/en.json"
+      }
+    ],
+    "ui": [
+      {
+        "spot": "moss.character.renderer",
+        "id": "live2d",
+        "key": "live2d",
+        "component": "Live2dAvatarSpot"
+      }
+    ],
+    "moss.character.formats": [
+      {
+        "id": "live2d",
+        "format": "live2d",
+        "name": "Live2D (Cubism)",
+        "capabilities": [
+          "lipsync",
+          "expressions",
+          "motions",
+          "outfits",
+          "lookat",
+          "pace"
+        ], "entry": [".model3.json"]
+      }
+    ],
+    "moss.voice.speech": [
+      {
+        "id": "mouth"
+      }
+    ]
+  }
+}

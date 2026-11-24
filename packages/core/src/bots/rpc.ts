@@ -14,9 +14,9 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import {
-  BotId, CLOVER_ERR, ComputerName, DEVICES_METHODS, ERR, IMAGE_REFERENCE_INVALID, SESSIONS_METHODS, SessionId, utf16,
+  BotId, MOSS_ERR, ComputerName, DEVICES_METHODS, ERR, IMAGE_REFERENCE_INVALID, SESSIONS_METHODS, SessionId, utf16,
   type BotView, type Caller, type ChangeResult, type MemoryEntry, type MethodSpec, type SessionView, type UserMessageImageRef,
-} from "@waifucave/clover-protocol";
+} from "@waifucave/moss-protocol";
 import type { DeviceRegistry } from "../contracts/device-registry";
 import { verifyUserMessage } from "../contracts/session-host";
 import { StageImageRefusal, stageSessionImage, validateImageRefs } from "../agent/stage-image";
@@ -26,12 +26,11 @@ import type { DurableSessionHost } from "../sessions/durable-host";
 import { projectRecord, projectRecords, readsSealed, transientFor, type WireEvent } from "../sessions/wire";
 import { listMemory, readMemory } from "./memory";
 import { botPaths } from "./paths";
-import { avatarFormatsOf, formatName, importableFormats, importAvatar, SHIPPED_FORMATS, type AvatarFormats } from "./avatar-import";
-import type { PluginRegistry } from "../contracts/plugin-registry";
 import { StagedImages } from "./staged-images";
 import { refuseWhileUpdating, type UpdateGateLike } from "./update-gate";
 import type { BotService } from "./service";
 import type { BotQuestions } from "./questions";
+import { fromPeer } from "../sessions/exchange-depth";
 
 // The handler helpers are shared with every lane's methods (rpc/handler.ts, H-M1's ask).
 export { MethodError, handler, requireUser, toMethodError, type MethodContext, type MethodHandler } from "../rpc/handler";
@@ -51,10 +50,12 @@ export interface SessionsMethodsDeps {
   /** `session.setModel` for a background agent or a coding session (lane K's `AgentManager.setModel`); without it the
    *  new model is recorded in the session's view and its driver reads it at the next turn. */
   setAgentModel?(id: string, model: string, effort?: string): Promise<void>;
+  /** `session.setConfig` on an agent or coding session (`AgentManager.setOption`). */
+  setAgentOption?(id: string, option: string, value: string): Promise<void>;
   /** The bot side's questions (questions.ts): `session.answer` resolves the one waiting. Without it, none waits. */
   questions?: Pick<BotQuestions, "answer">;
-  /** The registry whose `avatar.formats` entries say what an avatar import takes; without it, Clover's own two. */
-  registry?: Pick<PluginRegistry, "entries">;
+  /** A plugin's capabilities in force (its OK's), for what it may hear of `session.links`; without it a plugin hears none. */
+  capabilitiesOf?(pluginId: string): readonly string[];
 }
 
 /** How far back a bot conversation's messages are read for the staged copies they still name (never pruned). */
@@ -67,19 +68,8 @@ const REPLAY_PAGE = 500;
 export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, MethodHandler> {
   const { bots, host } = deps;
   const M = SESSIONS_METHODS;
-  const formats = (): AvatarFormats => (deps.registry === undefined ? SHIPPED_FORMATS : avatarFormatsOf(deps.registry));
   /** A caller other than the user's own app and devices gets cards without their sealed parts. */
   const sealed = (ctx: MethodContext) => !readsSealed(ctx.caller);
-  // `bot.importAvatar`'s queue: one import at a time per bot (the next starts when the last has settled).
-  const importing = new Map<string, Promise<unknown>>();
-  const importsOf = <T,>(bot: string, run: () => Promise<T>): Promise<T> => {
-    const last = importing.get(bot) ?? Promise.resolve();
-    const next = last.then(run, run);
-    const tail = next.then(() => undefined, () => undefined);
-    importing.set(bot, tail);
-    void tail.then(() => { if (importing.get(bot) === tail) importing.delete(bot); });
-    return next;
-  };
   type UserCaller = Extract<Caller, { kind: "user" }>;
   const isLocal = (caller: UserCaller) => (caller.client === "app" || caller.client === "cli") && (caller.device === undefined || caller.device === deps.localDevice);
   /** What each client off this computer staged, per session: the only images it may name (kept across restarts). */
@@ -90,7 +80,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     return StagedImages.key(id, caller.client, caller.device);
   };
   /** A message's images (§6.6 "attachments"), each held to the inherited rules (staged for this session, or the user's
-   *  own image file, never inside the Clover home). A client on this computer names either; a client off it (the
+   *  own image file, never inside the MOSS home). A client on this computer names either; a client off it (the
    *  phone) names only images it staged itself through `session.stageImage` in this session, never a file of its own. */
   const checkedImages = (caller: UserCaller, id: string, text: string, images: readonly UserMessageImageRef[] | undefined): UserMessageImageRef[] | undefined => {
     if (images === undefined || images.length === 0) return undefined;
@@ -101,7 +91,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       }
     }
     try {
-      return validateImageRefs(id, text, images, { cloverHome: deps.home });
+      return validateImageRefs(id, text, images, { mossHome: deps.home });
     } catch (err) {
       if (err instanceof StageImageRefusal) throw new MethodError(err.internal ? ERR.INTERNAL : ERR.INVALID_PARAMS, err.message, { code: err.code, ...(err.n === undefined ? {} : { n: err.n }) });
       throw new MethodError(ERR.INTERNAL, "the message's images couldn't be checked", { code: IMAGE_REFERENCE_INVALID });
@@ -166,29 +156,19 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
 
     [M.botSetUserLayer.name]: handler(M.botSetUserLayer, async ({ id, patch }, ctx): Promise<ChangeResult> => bots.setUserLayer(id, patch, ctx.caller)),
 
-    [M.botImportAvatar.name]: handler(M.botImportAvatar, async ({ id, path }, ctx) => {
-      const caller = requireUser(ctx, "import an avatar");
-      if (!isLocal(caller)) throw new MethodError(ERR.INVALID_PARAMS, "an avatar is read from this computer's own files: import it from this computer's app or terminal");
-      // The bot first: an unknown id leaves nothing behind.
-      if (!bots.has(id)) throw new MethodError(ERR.INVALID_PARAMS, `no bot ${id}`);
-      // One import at a time per bot, copy and layer both: a second one waits, so it never deletes the earlier model (or its
-      // staging folder) before the first has made it the bot's avatar.
-      return importsOf(id, async () => {
-        const f = formats();
-        const imported = importAvatar(deps.home, id, path, f);
-        await bots.setUserLayer(id, { avatar: { file: imported.file, format: imported.format, ...(imported.credit === undefined ? {} : { credit: imported.credit }) } }, ctx.caller);
-        const decl = f.active.find((d) => d.format === imported.format);
-        return { format: imported.format, ...(decl === undefined ? {} : { name: formatName(decl) }), files: imported.files, bytes: imported.bytes, ...(imported.credit === undefined ? {} : { credit: imported.credit }) };
-      });
-    }),
-
-    [M.botAvatarFormats.name]: handler(M.botAvatarFormats, async () => ({ formats: importableFormats(formats()) })),
-
     [M.sessionList.name]: handler(M.sessionList, async ({ kinds, bot }) => ({
       sessions: host.list(bot === undefined ? {} : { bot }).filter((s) => kinds === undefined || kinds.includes(s.kind)),
     })),
 
     [M.sessionGet.name]: handler(M.sessionGet, async ({ id }) => ({ session: view(id) })),
+
+    // The record of links between sessions (§9.5), heard as the live `session_link` is: a plugin learns of a pair only
+    // when it may read both sessions' kinds; the person (app, terminal, phone, web) hears every one.
+    [M.sessionLinks.name]: handler(M.sessionLinks, async ({ since }, ctx) => host.graph.links(
+      // Any other caller (a session, a peer) reads as a plugin with no capability: nothing.
+      ctx.caller.kind === "user" ? { kind: "user" } : { kind: "plugin", capabilities: ctx.caller.kind === "plugin" ? deps.capabilitiesOf?.(ctx.caller.pluginId) ?? [] : [] },
+      since,
+    )),
 
     [M.sessionHistory.name]: handler(M.sessionHistory, async ({ id, before, limit }, ctx) => {
       const v = view(id);
@@ -287,8 +267,10 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       const caller = requireUser(ctx, "try a turn again");
       refuseWhileUpdating(deps.updateGate);
       const v = reachable(session);
-      if (v.kind !== "bot" || v.bot === undefined || bots.mainSession(v.bot) !== session) throw new ContractError("refused", "only a bot's own conversation is tried again");
-      if (!bots.botsRunHere().includes(v.bot)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now; send it again from the composer`);
+      // A coding session (the person's own, an agent's too) runs where it was started: its host's `resendFailedTurn` checks that.
+      const coding = v.kind === "coding";
+      if (!coding && (v.kind !== "bot" || v.bot === undefined || bots.mainSession(v.bot) !== session)) throw new ContractError("refused", "only a bot's own conversation or a coding session is tried again");
+      if (!coding && !bots.botsRunHere().includes(v.bot!)) throw new ContractError("not_main", `this computer doesn't run ${v.bot}'s conversation now; send it again from the composer`);
       const { seq } = await host.resendFailedTurn(session, { device: caller.device ?? deps.localDevice }, (input) => {
         if (input.images !== undefined && input.images.length > 0) {
           try {
@@ -315,7 +297,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     // shows the question (`conversation.post`); never a session's, so no bot answers its own or another's.
     [M.sessionAnswer.name]: handler(M.sessionAnswer, async ({ id, callId, answers, notes }, ctx) => {
       const caller = ctx.caller;
-      if (caller.kind !== "user" && caller.kind !== "plugin") throw new MethodError(CLOVER_ERR.NOT_THE_USER, "only the user, or a plugin showing the question, answers it");
+      if (caller.kind !== "user" && caller.kind !== "plugin") throw new MethodError(MOSS_ERR.NOT_THE_USER, "only the user, or a plugin showing the question, answers it");
       reachable(id);
       const by = caller.kind === "user" ? "user" : `plugin:${caller.pluginId}`;
       const outcome = deps.questions?.answer(id, callId, answers, by, notes)
@@ -352,6 +334,16 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       if (v.status === "stopped" || v.status === "failed") throw new ContractError("closed", `session ${id} has ended`);
       await deps.setAgentModel?.(id, model, effort);
       host.update(id, { model, effort: effort ?? null });
+      return { ok: true as const };
+    }),
+
+    [M.sessionSetConfig.name]: handler(M.sessionSetConfig, async ({ id, option, value }, ctx) => {
+      requireUser(ctx, "change a session's option");
+      const v = view(id);
+      if (v.kind === "bot" || v.kind === "side-thread") throw new ContractError("refused", "a bot's conversation and side threads have no agent options");
+      if (v.status === "stopped" || v.status === "failed") throw new ContractError("closed", `session ${id} has ended`);
+      if (deps.setAgentOption === undefined) throw new ContractError("refused", "this session's runtime has no options to set");
+      await deps.setAgentOption(id, option, value);
       return { ok: true as const };
     }),
 
@@ -397,8 +389,9 @@ export const PeerSessionDeliverParams = z.object({
   /** The computer the message comes from; it must be the one the link authenticated. */
   computer: ComputerName,
   input: z.discriminatedUnion("from", [
-    z.object({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(100_000, 1) }),
-    z.object({ from: z.literal("agent"), agent: SessionId, text: utf16(100_000, 1) }),
+    // `depth`: the exchange brake's count, carried across the link (sessions/exchange-depth.ts; one beyond its limit reads as the limit).
+    z.object({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(100_000, 1), depth: z.number().int().nonnegative().max(1_000).optional() }),
+    z.object({ from: z.literal("agent"), agent: SessionId, text: utf16(100_000, 1), depth: z.number().int().nonnegative().max(1_000).optional() }),
     z.object({ from: z.literal("routine"), routine: utf16(128, 1), name: utf16(200, 1), sideThread: SessionId, text: utf16(100_000) }),
     z.object({
       from: z.literal("task-notification"), agent: SessionId, backend: utf16(128, 1),
@@ -428,7 +421,7 @@ export function peerSessionMethods(deps: PeerSessionMethodsDeps): Record<string,
   };
   return {
     [PEER_SESSION_DELIVER]: async (raw, ctx) => {
-      if (ctx.caller.kind !== "peer") throw new MethodError(CLOVER_ERR.ROLE_REFUSED, `${PEER_SESSION_DELIVER} comes only from another computer over the link`);
+      if (ctx.caller.kind !== "peer") throw new MethodError(MOSS_ERR.ROLE_REFUSED, `${PEER_SESSION_DELIVER} comes only from another computer over the link`);
       const parsed = PeerSessionDeliverParams.safeParse(raw);
       if (!parsed.success) throw new MethodError(ERR.INVALID_PARAMS, `${PEER_SESSION_DELIVER}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "params"}: ${i.message}`).join("; ")}`);
       try {
@@ -439,14 +432,14 @@ export function peerSessionMethods(deps: PeerSessionMethodsDeps): Record<string,
         // A bot's message only from the computer running that bot (#313's review): a peer can't name a sender it doesn't run.
         if (input.from === "bot") botSenderCheck(deps.bots, input, computer);
         if (input.from === "routine") routineSenderCheck(deps.routines, input, target.bot!, computer);
-        const { seq } = await deps.host.deliver(id, input);
+        const { seq } = await deps.host.deliver(id, fromPeer(input));
         return { seq };
       } catch (err) {
         throw toMethodError(err);
       }
     },
     [P.name]: handler(P, async ({ id, message, device, sentAt }, ctx) => {
-      if (ctx.caller.kind !== "peer") throw new MethodError(CLOVER_ERR.ROLE_REFUSED, "peer.session.send comes only from another computer over the link");
+      if (ctx.caller.kind !== "peer") throw new MethodError(MOSS_ERR.ROLE_REFUSED, "peer.session.send comes only from another computer over the link");
       refuseWhileUpdating(deps.updateGate);
       const relayedBy = ctx.caller.device;
       // Only a bot's main conversation this computer runs takes a relayed message: never an agent, a side thread or a

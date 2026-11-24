@@ -10,7 +10,7 @@
 //   setting), running, stopped (after crashes, set by the plugin host) or blocked (revoked), each with a reason.
 // * A child is switched on and off by itself, and switching its parent off switches it off (§5.1).
 // * An entry whose point is missing waits ("waiting for `island.tab`"), and starts when the point appears. A UI spot
-//   exists while the entry that declares it is active (§5.4); `app.root`, `app.surface` and `bot.tab` are the app's.
+//   exists while the entry that declares it is active (§5.4); `app.root`, `app.surface` and `app.background` are the app's.
 // * Entry ids other plugins refer to (a model provider, voice, agent backend, trigger type, computer provider) are
 //   unique among enabled plugins: on a clash only that entry is refused, and the plugin enabled first, by the synced
 //   list's order, keeps the id (§5.1 "Entry ids"). Commands are unique within their namespace (§5.4).
@@ -19,8 +19,6 @@
 // * A well-known name's point is recorded with the catalog's declaration (the plugin SDK's `catalogPointDecl`),
 //   whatever its declarer wrote, so its `keep` and `needs` hold (review S2): `conversation.message` keeps `approval`.
 // * A point declared `private` takes entries only from its declarer's own tree; another plugin's entry is refused.
-// * In a bot's own plugin, a `bot.tab` entry with no key takes that bot's id as its key, so it fills its own bot's tab,
-//   never every bot's (§5.5).
 // * An OK card left unanswered never refuses a plugin: it stays found until the user answers; only their deny
 //   (`refuse`) refuses it (the broker's rule 6).
 // * Installs and the switch (F-M2's review, S1 and S2, the controller's rulings): an installed plugin lands found,
@@ -30,7 +28,7 @@
 //   install, and no answer typed anywhere else, is the OK. Switching a found plugin on is a sensitive change (§5.5): it
 //   raises the same card and never loads the plugin directly. Switching on a plugin the user OK'd and only switched off
 //   applies at once. The switch is refused (`refused`) for a blocked, refused or invalid plugin, and switching the
-//   bundled `clover` plugin off is refused: it would turn off Settings itself.
+//   bundled `moss` plugin off is refused: it would turn off Settings itself.
 // * Only one enabled plugin may use a namespace (§6.7): a later one, by the synced list's order, stays off and says
 //   whose it is.
 // * The OK is bound to the tree the card showed (review S7): `approve` refuses with `changed` when the folder's tree
@@ -47,9 +45,9 @@
 //   is built by the registry into a cached ES module whose only bare imports are `CLIENT_BARE_IMPORTS`, rebuilt when
 //   the tree hash changes, and the view's `clientEntry` names that module; a build that fails leaves the plugin
 //   `invalid` with the bundler's message.
-// * Entry ids and titles a spot reserves (`island.tab`'s Needs you) and always-on-top surfaces are the bundled
-//   `clover` tree's alone (lane G's review, R12): another plugin's such entry is refused.
-import type { PluginProvenance, PluginState, PluginSummary, ValidationIssue } from "@waifucave/clover-protocol";
+// * Entry ids and titles a spot reserves (`island.tab`'s Needs you) are the bundled `moss` tree's alone (lane G's review, R12):
+//   another plugin's such entry is refused. An always-on-top surface is any plugin's with the `overlay` capability (F4).
+import type { PluginProvenance, PluginState, PluginSummary, ValidationIssue } from "@waifucave/moss-protocol";
 import type { Unsubscribe } from "./common";
 import type { CoreEntries, Manifest, PointDecl } from "./sdk-types";
 
@@ -58,6 +56,10 @@ export interface PluginRecord extends PluginSummary {
   folder: string;
   /** The tree hash the user last OK'd (an OK card's approve); `treeHash` is the folder now. */
   okHash?: string;
+  /** The catalog revision its OK was given at (`GRANT_REVISION`); absent for an OK from before revisions were kept. A grant
+   *  made before revision 19 reads neither kind of data (`granted` leaves `conversation.read` and `sessions.read` out)
+   *  until the plugin asks again (§3.6). */
+  okRevision?: number;
   /** A change to its card styling waits for its OK: approval cards keep the styling of `okHash`. */
   cardStylingHeld?: boolean;
   /** As validated: refused contributions and entries left out; undefined when the plugin itself is refused. */
@@ -141,7 +143,7 @@ export interface PluginRegistry {
   points(): RegisteredPoint[];
   /** The user's switch (§5.1). On a found plugin it raises the sealed OK card (`{ applied: false, card }`) and loads
    *  nothing; on a plugin OK'd and switched off it applies. Rejects `refused` for a blocked, refused or invalid plugin,
-   *  and for switching the bundled `clover` plugin off. With `part: "app"`, only the plugin's parts beside its bot
+   *  and for switching the bundled `moss` plugin off. With `part: "app"`, only the plugin's parts beside its bot
    *  (§5.5): the bot and the plugin's own switch stay; refused for a plugin with no such parts. */
   setEnabled(id: string, enabled: boolean, opts?: { part?: "app" }): Promise<SwitchResult>;
   /** A plugin installed into the folder (`plugin.install`), from anywhere: found, with its sealed OK card raised at once
@@ -157,6 +159,12 @@ export interface PluginRegistry {
    *  plugin's edit in place): what `watch` doesn't report. The plugin host reloads its host half on it and its MCP
    *  servers are listed again. Optional: a registry whose trees never change in place has none. */
   watchTrees?(fn: (changed: { id: string }) => void): Unsubscribe;
+  /** The user's choice for a one-at-a-time point (§5.4 "One at a time"), kept with the records: the entry they picked
+   *  in Settings, whether it runs now or not; undefined when they picked none. A removed plugin's choices go with it. */
+  chosen?(point: string): { pluginId: string; entryId: string } | undefined;
+  /** Keeps the user's choice (only the user's own door calls it: Settings' picker, `point.active.set`), or forgets it;
+   *  reported as an `entries` change of the point. */
+  choose?(point: string, ref: { pluginId: string; entryId: string } | undefined): void;
 }
 
 /** The entry field each core point keeps unique among enabled plugins (§5.1 "Entry ids"); the plugin SDK's catalog
@@ -165,10 +173,8 @@ export const UNIQUE_ENTRY_FIELD: Readonly<Partial<Record<keyof CoreEntries, stri
   models: "provider",
   agentBackends: "id",
   triggers: "type",
-  voices: "id",
-  voiceModes: "id",
   computerProviders: "id",
 };
 
 /** The spots the app's own plugin runtime declares (§5.3 "App core points"). Every other spot is a plugin's. */
-export const CORE_SPOTS: readonly string[] = ["app.root", "app.surface", "bot.tab"];
+export const CORE_SPOTS: readonly string[] = ["app.root", "app.surface", "app.background"];

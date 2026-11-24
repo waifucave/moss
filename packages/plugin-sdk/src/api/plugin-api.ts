@@ -13,13 +13,12 @@
 // overrides (another service origin, say) are the plugin's own settings, never environment variables, which the
 // plugin host doesn't pass on.
 import {
-  type BotView, type Caller, type CardMeta, type CommandView, type ComputerView, type CloverWindow, type DeviceView, type FileStat, type HostProcess,
+  type BotView, type Caller, type CardMeta, type CommandView, type ComputerView, type MossWindow, type DeviceView, type FileStat, type HostProcess,
   type HoldTarget, type HoldView, type InstallSource, type MemoryEntry, type PlanReading, type PluginState, type RoutineRunView, type RoutineView,
   type Screenshot, type SessionView, type TabOwner, type TabView, type UsageRow, type Viewport, BUNDLED_ROOT_PLUGIN,
-  topPluginIdOf,
-} from "@waifucave/clover-protocol";
+  topPluginIdOf, type ActivityView, type DataKind, type PictureView, type PicturePublishMeta,
+} from "@waifucave/moss-protocol";
 
-import type { AvatarApi, AvatarReport } from "../catalogs/avatar-cues";
 
 export type Unsubscribe = () => void;
 
@@ -94,7 +93,7 @@ export interface NotifierHandler {
 }
 
 /** A notifier's context. `desktop` is the local app's notifications on the computer the notifier runs on (lane G's
- *  ask: a `runsOn: "each"` notifier reaches its own computer's app), present only for the bundled `clover` tree's
+ *  ask: a `runsOn: "each"` notifier reaches its own computer's app), present only for the bundled `moss` tree's
  *  notifiers; the core sends them as `app.notify`. The same calls are `PluginApi.desktop` in that tree's process. */
 export interface NotifierContext extends HandlerContext {
   readonly desktop?: DesktopNotifications;
@@ -136,10 +135,10 @@ export interface NotifierUpdate {
   /** For `kind: "routine-result"`: whether the run failed (an error, a timeout, a refusal, stopped or cut off), so a
    *  notifier can leave out the ones that went well (lane G's `routineFailed`). */
   failed?: boolean;
-  /** Who the update is from, always (#179's review): `clover` (name "Clover") for the core's own (a message, a card, a
+  /** Who the update is from, always (#179's review): `moss` (name "MOSS") for the core's own (a message, a card, a
    *  question, a routine's result, an agent finishing, its own notices), or the plugin that called `notify.send`, by id
-   *  and name (lane G's ask). `bundled` is false for a plugin outside the bundled `clover` tree: a notifier shows its
-   *  notification marked as a plugin's ("Home, a plugin: …"), never as Clover's or a bot's, so no plugin named like a
+   *  and name (lane G's ask). `bundled` is false for a plugin outside the bundled `moss` tree: a notifier shows its
+   *  notification marked as a plugin's ("Home, a plugin: …"), never as MOSS's or a bot's, so no plugin named like a
    *  bot ("Luna") speaks as one. */
   sender: { pluginId: string; name: string; bundled: boolean };
 }
@@ -246,6 +245,7 @@ export interface CompanionHandler {
   pairing?(args: { code: string; expiresAt: number }, ctx: HandlerContext): Promise<{ url?: string; qr?: string }>;
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 /** What `register` takes in place of a routine's key: base64url (no padding) of SHA-256 over
  *  `clover hook key v1|<key>`, as the waifucave forwarder's service stores it. */
 export async function webhookKeyHash(key: string): Promise<string> {
@@ -335,6 +335,40 @@ export interface PointsApi {
   /** Calls the handler an entry names in `field` (a field whose format is `handler`); `method` picks one handler of a
    *  handler object, and the call fails `not_installed` when the export has no such function. */
   call<R = unknown>(point: string, entry: { pluginId: string; entryId: string }, field: string, args?: unknown, opts?: CallOptions & { method?: string }): Promise<R>;
+  /** `call` for a handler that answers with a stream (§5.4 "Streams"): the handler returns bytes (a `Uint8Array`), an
+   *  async iterable of them or a `ReadableStream` of them, and the caller reads them as they come. Resolves with the
+   *  stream once the call is under way; a refusal (the same checks as `call`) rejects. A handler that fails, or returns
+   *  anything else, errors the stream with why. `timeoutMs` (default and most 10 minutes) bounds the whole stream;
+   *  `signal` aborted, or the stream cancelled, stops the handler's pump. */
+  stream(point: string, entry: { pluginId: string; entryId: string }, field: string, args?: unknown, opts?: CallOptions & { method?: string }, onEvent?: (event: StreamReadEvent) => void): Promise<ReadableStream<Uint8Array>>;
+  /** A one-at-a-time point's active entry (§5.4 "One at a time"): the user's choice in Settings, else the default (the
+   *  first bundled filler, else the first installed); undefined when it has no filler running. Its declarer's tree reads
+   *  it, and so does a plugin with an entry in it (a filler learns whether it is the one). Only the user changes it. */
+  active(point: string): Promise<ActiveFiller | undefined>;
+  /** Hears the active entry change: the user's choice, or the default taking over when the active one stops. */
+  onActive(point: string, listener: (active: ActiveFiller | undefined) => void): Unsubscribe;
+  /** A message on a point a plugin declares (point messages): between the point's declaring plugin and the plugins
+   *  with an active entry in it, never anyone else. From the declarer it goes to every filler (or the one `to` names);
+   *  from a filler it goes to the declarer. Plain data, at most `POINT_MESSAGE_MAX_BYTES` serialized and
+   *  `POINT_MESSAGES_PER_SECOND` a second per plugin; every one is delivered, in order. Filling such a point is what
+   *  its declarer's `fills` line on the filler's OK card says, so the card is the gate: a point declared without a
+   *  `fills.ok` line carries no messages (refused, both ways, and listening on it too). */
+  send(point: string, value: unknown, opts?: { to?: string }): Promise<void>;
+  /** Hears the messages on a point the plugin declares or fills (`send`), each with the plugin that sent it, while it
+   *  declares or fills it. */
+  onMessage(point: string, listener: (message: PointMessage) => void): Unsubscribe;
+}
+
+/** A point message as its receiver hears it: who sent it (a plugin id) and what. */
+export interface PointMessage {
+  readonly from: string;
+  readonly value: unknown;
+}
+
+/** Which entry of a one-at-a-time point is active: its plugin and entry id, never its value. */
+export interface ActiveFiller {
+  readonly pluginId: string;
+  readonly entryId: string;
 }
 
 /** Commands (§5.4): another plugin's run only with `call:<plugin-id>`, which the OK lists. A call to a plugin that
@@ -348,7 +382,30 @@ export interface CommandsApi {
  *  component's computer, unless `platforms` leaves it out; then on the main (§5.4 "Its own host"). */
 export interface HostApi {
   call<R = unknown>(name: string, args?: unknown, opts?: CallOptions): Promise<R>;
-  on(event: string, listener: (data: unknown) => void): Unsubscribe;
+  /** `call`, when the host half sent it while serving a session's call (a tool call): whose, as the core recorded it. */
+  on(event: string, listener: (data: unknown, call?: HostMessageCall) => void): Unsubscribe;
+}
+
+/** Whose call a host half's message was sent inside: the session, its kind and its bot (the core's own record). */
+export interface HostMessageCall { session: string; kind: "bot" | "side-thread" | "agent" | "coding"; bot?: string }
+
+/** What a program run outside the sandbox gave back: its exit code (null when a signal ended it), its output as text
+ *  (each capped at `OUTSIDE_OUTPUT_MAX` bytes; `truncated` when one was cut), and `timedOut` when its time ran out. */
+export interface OutsideRun {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  truncated?: boolean;
+  timedOut?: boolean;
+}
+
+/** Programs of the user's run outside the plugin sandbox (P5): only the ones its manifest names (`host.outside.programs`),
+ *  which its OK card listed with a warning, run with the user's own access; any other is refused. Host halves only.
+ *  `program` is the name as the manifest has it; `args` go to it as they are (no shell); `cwd` is the user's home
+ *  unless given (an absolute path or `~/…`); `input` is written to its standard input; `timeoutMs` is 60 s by default,
+ *  at most 10 minutes. */
+export interface OutsideApi {
+  run(program: string, args?: readonly string[], opts?: { cwd?: string; input?: string; timeoutMs?: number }): Promise<OutsideRun>;
 }
 
 /** A host half reaches its components' `host.on` (§5.4 "Its components"). */
@@ -407,7 +464,7 @@ export type KeyedFetchErrorCode = (typeof KEYED_FETCH_ERROR_CODES)[number];
 
 /** The `auth` name that adds this computer's waifucave account token (lane H mints it), the key to every computer
  *  (§8.1). No manifest may name a secret `waifucave`. The rules:
- *  * only plugins of the `clover` tree may use it (the forwarder, push), and only from the `clover` process, which the
+ *  * only plugins of the `moss` tree may use it (the forwarder, push), and only from the `moss` process, which the
  *    core decides from the install record (the owner's answer to S4); for any other it is no entry of theirs
  *    (`unknown_auth`);
  *  * only `https://` URLs on a `waifucave.com` host in the plugin's `network:` capabilities (`mayUseWaifucaveAuth`);
@@ -428,7 +485,7 @@ export const WAIFUCAVE_DOMAIN = "waifucave.com";
  *  exact origins, `http` allowed (`http://127.0.0.1:8787`); the core's own setting, never a plugin's. */
 export type WaifucaveTarget = { domain: string } | { origins: readonly string[] };
 
-/** Whether a plugin may fetch `url` with `auth: "waifucave"`: a `clover` plugin, calling from the `clover` process
+/** Whether a plugin may fetch `url` with `auth: "waifucave"`: a `moss` plugin, calling from the `moss` process
  *  (`from`, the process its connection is bound to; a component is `ui`). Its `network:` capability is checked as for
  *  any fetch. */
 export function mayUseWaifucaveAuth(
@@ -437,7 +494,7 @@ export function mayUseWaifucaveAuth(
   from: HostProcess | "ui",
   target: WaifucaveTarget = { domain: WAIFUCAVE_DOMAIN },
 ): boolean {
-  if (from !== "clover" || topPluginIdOf(pluginId) !== BUNDLED_ROOT_PLUGIN) return false;
+  if (from !== "moss" || topPluginIdOf(pluginId) !== BUNDLED_ROOT_PLUGIN) return false;
   let u: URL;
   try {
     u = new URL(url);
@@ -460,8 +517,8 @@ export interface SecretsApi {
 /** Key pairs the core keeps for a plugin on this computer, whose private halves never leave the core: in the secret
  *  store, never synced, one set per computer, kept when the plugin is removed (as its data folder is) until `delete`.
  *  For a host half that must receive what was sealed to this computer, as the waifucave forwarder does, without
- *  holding a secret a worker could leak. Only from the `clover` process (the owner's answer to S4): the core honours
- *  `open` there alone, so the other calls are the `clover` tree's too, since a pair no one can open with is no use. */
+ *  holding a secret a worker could leak. Only from the `moss` process (the owner's answer to S4): the core honours
+ *  `open` there alone, so the other calls are the `moss` tree's too, since a pair no one can open with is no use. */
 export interface KeysApi {
   /** The named X25519 key pair's public key (32 bytes, raw), made on first use. */
   publicKey(name: string): Promise<Uint8Array>;
@@ -502,6 +559,34 @@ export interface ConversationApi {
   answer(session: string, callId: string, answers: Record<string, string>): Promise<void>;
 }
 
+/** `sessions.read` (spec revision 19, §3.6, G6): the user's code sessions, and nothing of bots' conversations, which
+ *  are `conversation.read`'s. Sealed card fields never reach a plugin. */
+export interface SessionsApi {
+  list(): Promise<SessionView[]>;
+  get(session: string): Promise<SessionView>;
+  watch(listener: (session: SessionView) => void): Unsubscribe;
+  history(session: string, page: { before?: number; limit: number }): Promise<{ events: Record<string, unknown>[]; hasMore: boolean }>;
+  follow(session: string, listener: (event: Record<string, unknown>) => void, opts?: { since?: number }): Unsubscribe;
+}
+
+/** The activity feed (spec revision 19, §3.6, G4), by kind: `activity.read.sessions` for code sessions,
+ *  `activity.read.bots` for bots. States and names only, never words: a code session's `name` is its title. */
+export interface ActivityApi {
+  list(kind: DataKind): Promise<ActivityView[]>;
+  watch(kind: DataKind, listener: (activity: ActivityView) => void): Unsubscribe;
+}
+
+/** A tool's live picture (spec revision 19, §3.6, G5). Reading is by kind (`picture.read.sessions`,
+ *  `picture.read.bots`); `open` gives the picture's frames as a byte stream (each frame a 4-byte big-endian length and one
+ *  image). `publish` is a tool's host half's, while it serves a tool call, when its server declares `picture: true`: the
+ *  engine keys the picture to that call's session, never to anything the plugin names. */
+export interface PicturesApi {
+  list(kind: DataKind, of?: { session?: string; bot?: string }): Promise<PictureView[]>;
+  watch(kind: DataKind, listener: (event: { picture: PictureView } | { ended: string }) => void): Unsubscribe;
+  open(picture: string, options?: { maxFps?: number; signal?: AbortSignal }): Promise<ReadableStream<Uint8Array>>;
+  publish(meta: PicturePublishMeta, options?: { signal?: AbortSignal }): Promise<WritableStream<Uint8Array>>;
+}
+
 export interface MemoryApi {
   list(bot: string): Promise<MemoryEntry[]>;
   read(bot: string, path: string): Promise<string>;
@@ -510,7 +595,8 @@ export interface MemoryApi {
 export interface BotsApi {
   list(): Promise<BotView[]>;
   get(bot: string): Promise<BotView>;
-  watch(listener: (bot: BotView) => void): Unsubscribe;
+  /** `listener` hears each bot that changes (or appears); `onRemoved`, when given, hears the id of each bot that is removed. */
+  watch(listener: (bot: BotView) => void, onRemoved?: (id: string) => void): Unsubscribe;
 }
 
 export interface RoutinesApi {
@@ -539,7 +625,7 @@ export interface TriggerHandler {
   disarm(args: { routine: string; type: string }, ctx: HandlerContext): Promise<void> | void;
 }
 
-/** `computers.read` gives the registry; `computers.control` gives holds, the user-working mark, Clover's own windows
+/** `computers.read` gives the registry; `computers.control` gives holds, the user-working mark, MOSS's own windows
  *  and the action signal (§9.2), whose OK says "controls the screen and input of your computers". */
 export interface ComputersApi {
   list(): Promise<ComputerView[]>;
@@ -553,13 +639,7 @@ export interface ComputersApi {
   setUserWorking(computer: string, on: boolean, target?: HoldTarget): Promise<void>;
   /** For the bound session too, as `takeHold` is. */
   setActionRunning(computer: string, running: boolean): Promise<void>;
-  cloverWindows(computer: string): Promise<CloverWindow[]>;
-}
-
-/** The stage's own call (bundled `clover` tree, components only): which renderer drew a bot's figure, what its model has
- *  and where it stands; `undefined` clears it. */
-export interface AvatarReportApi {
-  report(bot: string, report: AvatarReport | undefined): Promise<void>;
+  mossWindows(computer: string): Promise<MossWindow[]>;
 }
 
 /** `devices.read`: the user's devices, for the island's Devices tab and the like: names, kinds, links, online state
@@ -570,7 +650,7 @@ export interface DevicesApi {
 }
 
 /** `approvals`: which cards are pending and where, never their text, and only the cards of the plugin's own bot (the
- *  bundled `clover` tree: all). A component places one with the UI API's `<Card id>` and its parts. `watch` hands the
+ *  bundled `moss` tree: all). A component places one with the UI API's `<Card id>` and its parts. `watch` hands the
  *  whole pending list each time it changes. */
 export interface ApprovalsApi {
   pending(): Promise<CardMeta[]>;
@@ -605,7 +685,7 @@ export interface FilesApi {
    *  `files.path(token)` (lane A's) for the real path to hand its own process (ffmpeg). An open grant is read-only; a save grant is
    *  write on that one file (and reads it); a folder picked for writing carries read too. The core keeps the grants
    *  (`plugin.grant.add/remove/list`, app role) until the user removes one in Settings or the plugin is removed, and refuses
-   *  places no plugin may hold (the Clover home, secrets, the plugins folder, the user's home itself) with a reason. */
+   *  places no plugin may hold (the MOSS home, secrets, the plugins folder, the user's home itself) with a reason. */
   pickOpen?(opts?: { multiple?: boolean; filters?: FilePickFilter[] }): Promise<FilePickResult>;
   pickFolder?(opts?: { forWriting?: boolean }): Promise<FilePickResult>;
   pickSave?(opts?: { suggestedName?: string; filters?: FilePickFilter[] }): Promise<FilePickResult>;
@@ -625,13 +705,13 @@ export interface FileGrant { token: string; name: string; kind: "file" | "folder
 export type FilePickResult = { grants: FileGrant[] } | { cancelled: true };
 
 /** `terminal`: the user's terminals on their computers (lane F's request; lane J's PTY), for the component that draws
- *  one. Only the bundled `clover` tree holds it (`bundledOnly`, review T1); its OK says it runs commands on the user's
- *  computers, and a computer at read-only never opens one for a plugin (`refused`). Components only.
+ *  one. Any plugin may ask for it (the owner, 2026-11-15); its OK warns that it runs commands as the user outside
+ *  MOSS's sandbox, and a computer at read-only never opens one for a plugin (`refused`). Components only.
  *  What reaches a terminal is not written by the component: lane E's runtime derives it from trusted input events.
  *  `input` takes the `keydown` or `paste` event itself; a trusted key press becomes its bytes, and a trusted paste goes
  *  through the paste door, which takes the clipboard's text, brackets it when the program turned bracketed paste on,
  *  and asks the user before one of more than one line goes. An untrusted or made-up event sends nothing. */
-/** `plugins.install`, bundled-only (the plugin index browser): what it installs lands found, with its sealed OK card, and
+/** `plugins.install` (the plugin index browser's, or any plugin's that the user OK'd with it): what it installs lands found, with its sealed OK card, and
  *  never runs before the user's OK (F-M2's review, S1). Components only. */
 export interface PluginsApi {
   install(source: InstallSource): Promise<{ id: string; state: PluginState; card?: string }>;
@@ -681,7 +761,9 @@ export type ShellTarget =
   | { readonly session: string }
   | { readonly side: "bots" | "code" }
   | { readonly app: string }
-  | { readonly page: "plugins" | "archive" };
+  | { readonly page: "plugins" | "archive" }
+  /** MOSS Code's start page (spec revision 20, §9.5): the `main` entry keyed `start`, or the shell's new-session page. */
+  | { readonly page: "start" };
 
 /**
  * The window itself: what a plugin that draws its own bar, its own sidebar or its own controls asks of the app, so
@@ -735,7 +817,7 @@ export interface TerminalInputEvent {
   readonly isTrusted: boolean;
 }
 
-/** `browser`: the Clover Browser's API (§12.1); DevTools calls pass only allowlisted domains. */
+/** `browser`: the MOSS Browser's API (§12.1); DevTools calls pass only allowlisted domains. */
 /** A plugin's calls carry the plugin as their caller, or, while it serves a tool call, that call's session (R7).
  *
  *  Whose tabs a call may open (#179's review, S1): acting as itself, a plugin opens tabs only in its own partition
@@ -748,7 +830,7 @@ export interface TerminalInputEvent {
  *  (L's question). A layer's calls carry `{ kind: "plugin", pluginId }`, never the user. `computer` is a computer's
  *  name, as `api.plugin.computer` gives this one. */
 export interface BrowserApi {
-  /** Whose tool call this is (the bundled `clover` tree's host halves): the session the core bound to it, its kind and
+  /** Whose tool call this is (a host half holding `browser`, F5): the session the core bound to it, its kind and
    *  its bot. A call made outside a tool call is refused. */
   toolCaller(): Promise<{ kind: "session"; sessionId: string; sessionKind: string; bot?: string }>;
   tabs(filter?: { owner?: TabOwner; computer?: string }): Promise<TabView[]>;
@@ -776,7 +858,7 @@ export interface UsageApi {
 }
 
 /** Logs: the last `lines` lines (default 200, at most 2,000), and each line from now on. A plugin's own tree's (its own
- *  id or a child's, as its Settings page shows them) with no capability; with `logs.read`, Clover's own (`"core"`) and
+ *  id or a child's, as its Settings page shows them) with no capability; with `logs.read`, MOSS's own (`"core"`) and
  *  any other plugin's. */
 export interface LogsApi {
   read(source: "core" | { plugin: string }, opts?: { lines?: number }): Promise<string[]>;
@@ -791,85 +873,125 @@ export interface NotifyApi {
   send(notification: { title: string; body?: string; session?: string }): Promise<void>;
 }
 
-/** `audio`: the app plays a plugin's audio as a bot's speech (the plugin's own bot's unless `opts.bot` names another live
- *  bot), and hands it the user's push-to-talk audio for every bot as it comes (§6.6). The OK says it "hears what you say to your bots with push-to-talk, and can play sound, including as your bots' voices".
- *  `play`'s `done` settles when the last piece is handed to the app, not when the app finishes playing it. */
-/** `speech`: the active voice mode's own door to this device's player, the one sink (§6.6). Any other plugin, an
- *  inactive voice mode included, is refused (`modes` excepted). */
-export interface SpeechApi {
-  /** One piece of a bot's speech to the player: pcm16-24k (16-bit little-endian mono at 24 kHz), the last `final`.
-   *  `utterance` is the mode's own name for it (`[A-Za-z0-9_-]`, at most 64). The last piece's answer waits until the
-   *  player says the utterance ended (`ended: true`), or until its length and a few seconds have passed (`false`): when
-   *  it resolves, the next sound may start. Other pieces answer `null`. */
-  piece(p: { bot: string; session: string; utterance: string; data: Uint8Array; final: boolean }): Promise<{ ended: boolean } | null>;
-  /** Plays a sound a plugin offered as a bot's voice (`audio.play`; its ticket from `VoiceModeHandler.offer`): its
-   *  pieces so far and those still coming. Resolves once it ended on the player (or its deadline passed), with how long
-   *  it sounds. */
-  play(req: { ticket: string }): Promise<SpeechDone>;
-  /** Ends what an utterance (or everything a bot) is sounding now; its last piece goes, so the player knows. */
-  stop(req: { utterance?: string; bot?: string }): Promise<void>;
-  /** The voice modes on and running here, and which is active. */
-  modes(): Promise<{ pluginId: string; id: string; name: string; active: boolean }[]>;
+// -------------------------------------------------------------------------------------------------
+// Streams (§5.4 "Streams"): a byte stream between a plugin's two halves, and a handler's answer as a stream
+// -------------------------------------------------------------------------------------------------
+
+/** What a stream's opener may say about it to its acceptor: plain JSON, at most 4 KiB serialized. */
+export type StreamMeta = Record<string, unknown>;
+
+export interface StreamOpenOptions {
+  /** Plain data the acceptor's `accept` callback is given with the stream. */
+  meta?: StreamMeta;
+  /** Aborted: a stream not yet accepted rejects, an open one is cancelled. */
+  signal?: AbortSignal;
 }
 
-export interface SpeechDone {
-  bytes: number;
-  /** How long it sounds (pcm16-24k: two bytes a sample at 24 kHz). */
-  seconds: number;
-  /** Stopped before its end. */
-  cut: boolean;
-  /** The player said it ended; `false` when its deadline passed with no word from it (no window, say). */
-  ended: boolean;
+/** What the writing end hears of its stream: the other half accepted it, or the stream was aborted (its reason). */
+export type StreamOpenEvent = { type: "open"; id: string } | { type: "aborted"; reason: string };
+
+/** What the reading end hears: a stream opened to it, its pieces in order, its end, or its abort (its reason). */
+export type StreamReadEvent =
+  | { type: "opened"; id: string; meta: StreamMeta }
+  | { type: "chunk"; id: string; data: Uint8Array }
+  | { type: "end"; id: string }
+  | { type: "aborted"; id: string; reason: string };
+
+/** `accept`'s answer: its `Unsubscribe` (stop accepting, abort the streams being read), and `opened`, which settles once
+ *  the daemon registered this half as an acceptor of the name (a half that opens at once waits for it) or rejects with
+ *  why it couldn't. */
+export type StreamsAcceptHandle = Unsubscribe & { readonly opened: Promise<void> };
+
+/** A byte stream between a plugin's own two halves (a host half and one of its components), in order, with
+ *  back-pressure, ended by either side or when either side goes; for media and files, where `ui.send`'s 64 KB messages
+ *  don't fit. No capability: a stream connects only one plugin's own halves (and, through `points.stream`, a caller to a
+ *  handler it may already call). `open` and `accept` are what to use; the rest are what they stand on.
+ *
+ *  A half `accept`s a name; the other half `open`s it (a component to its host half, a host half to one of its
+ *  components: the newest acceptor of the name there is picked, and none is a refusal naming why). The opener writes, the
+ *  acceptor reads. At most 8 streams open at once per plugin; a write waits while the reader hasn't consumed what it was
+ *  sent (the daemon buffers 256 KiB and has 192 KiB unacknowledged at most, in pieces of at most 32 KiB). */
+export interface StreamsApi {
+  /** Opens `name` to the other half. Resolves once an acceptor took it, with the writable end: `write` any number of
+   *  `Uint8Array`s (cut into pieces of at most 32 KiB, each awaited), `close()` ends it, `abort()` cancels it. A stream
+   *  aborted by the other side (cancelled, gone, its plugin stopped) errors the writable with why. */
+  open(name: string, options?: StreamOpenOptions, onEvent?: (event: StreamOpenEvent) => void): Promise<WritableStream<Uint8Array>>;
+  /** Accepts the streams other halves of this plugin open to `name`: `onStream` is given each one's readable end and its
+   *  `meta`. The readable acknowledges the bytes as they are read, so a slow reader slows the writer; `cancel()` cancels
+   *  the stream. The returned function stops accepting and aborts the streams still being read. */
+  accept(name: string, onStream: (stream: ReadableStream<Uint8Array>, meta: StreamMeta) => void): StreamsAcceptHandle;
+  /** What `open`'s writable stands on: one piece (at most 32 KiB) of stream `id`, resolving once the daemon has room. Only the writing end's half. */
+  write(id: string, bytes: Uint8Array): Promise<void>;
+  /** What `close()` stands on: no more pieces; the reader's stream ends once it has them all. */
+  end(id: string): Promise<void>;
+  /** What `abort()` and the reader's `cancel()` stand on: either end cancels, and the other is told `reason`. Ending an already ended stream is a no-op. */
+  cancel(id: string, reason?: string): Promise<void>;
+  /** What the readable stands on: the reading end says it consumed `bytes` of what it was sent. */
+  ack(id: string, bytes: number): Promise<void>;
 }
 
-/** One provider on `voices` (§6.6), as a voice mode sees it. */
-export interface VoiceProviderView {
-  pluginId: string;
-  id: string;
+// -------------------------------------------------------------------------------------------------
+// Turns (§5.4 "Turns"): a one-at-a-time queue the platform runs
+// -------------------------------------------------------------------------------------------------
+
+/** How the platform ended a turn its holder hadn't said was done: its limit passed, or its holder went (its frame, its
+ *  host process, its plugin, or the app). */
+export type TurnLoss = "limit" | "stopped";
+
+/** A take's own events: its place while it waits, the grant, an extension, and the end. */
+export type TurnEvent =
+  | { type: "waiting"; ahead: number }
+  | { type: "granted"; id: string; until: number }
+  | { type: "extended"; until: number }
+  | { type: "ended"; reason: "done" | TurnLoss };
+
+export interface TurnOptions {
+  /** How long it may be held before the platform ends it (`lost` resolves `"limit"`): default 60 s, at most 10 minutes. */
+  limitMs?: number;
+  /** A few words for the daemon's log and the turn's `state` (at most 200 characters). */
+  note?: string;
+  /** Aborted: a take still waiting leaves the queue (its promise rejects), a held turn ends as with `done`. */
+  signal?: AbortSignal;
+}
+
+/** A held turn. */
+export interface Turn {
+  readonly id: string;
+  /** When the platform ends it unless it is done or extended first (epoch ms). */
+  readonly until: number;
+  /** Ends it; the next taker's turn begins. */
+  done(): Promise<void>;
+  /** Moves `until` on by `ms`, never past 10 minutes from the grant; the new `until`. */
+  extend(ms: number): Promise<number>;
+  /** Settles only if the platform ended it: `"limit"` or `"stopped"`. Never after `done`. */
+  readonly lost: Promise<TurnLoss>;
+}
+
+/** A turn's queue now. */
+export interface TurnState {
   name: string;
-  speak: boolean;
-  listen: boolean;
+  /** Who holds it: the plugin, its take's note, since and until when (epoch ms). */
+  holder?: { plugin: string; note?: string; since: number; until: number };
+  /** How many takes wait behind the holder. */
+  waiting: number;
 }
 
-/** `voices`: the providers' endpoints (§6.6), for a plugin with `voices.use` and for any voice mode. A provider
- *  plugin's `voices` entry is its endpoint; the core carries the calls (as it carries `points.call`) and places no key:
- *  the provider's own keyed fetch does, and the caller sees only audio and text, its own data: nothing sounds through
- *  these (the player is the active voice mode's, `speech`). At most VOICES_CALLS_PER_PLUGIN open at once a plugin;
- *  each use is logged with the caller's id. */
-export interface VoicesApi {
-  providers(): Promise<VoiceProviderView[]>;
-  /** `text` (or, for the active voice mode, a reply's `ticket`, whose text stays in the core) said by `provider` with
-   *  `voice`. A ticket's bot gets the user's provider check first. Each piece of audio (pcm16-24k) comes to
-   *  `listener` as it is made, then `done` (or `error`); the returned function cancels. */
-  speak(provider: string, req: { ticket?: string; text?: string; voice?: string; model?: string }, listener: (e: { audio?: Uint8Array; done?: { bytes: number }; error?: string }) => void): Unsubscribe;
-  /** Opens `provider`'s listening under the caller's own `id` (for the active voice mode, a push-to-talk utterance's,
-   *  from `VoiceModeHandler.listenStart`); the caller feeds it (`feed`), and what it heard comes to `listener`. */
-  listen(provider: string, req: { id: string; format: "pcm16-16k" | "opus" }, listener: (e: { text?: string; error?: string }) => void): Unsubscribe;
-  /** One piece of an open listening, the last `final`. */
-  feed(id: string, data: Uint8Array, final: boolean): Promise<void>;
-}
-
-/** What the core calls on the active voice mode's handler (its `voiceModes` entry's `handler`, an exported object). */
-export interface VoiceModeHandler {
-  /** A bot's reply to say: at its turn's end, or `asked` by the user's speak button; `voice` is the bot's voice choice.
-   *  The text stays in the core: the ticket goes to `voices.speak`. `queued`: it waits its turn. */
-  reply(args: { ticket: string; bot: string; session: string; asked: boolean; voice: { provider: string; voice: string; model?: string } }): Promise<{ queued: boolean }>;
-  /** The user's stop on a bot: what it says ends, and what it has waiting goes. */
-  stop(args: { bot: string }): Promise<void>;
-  /** The user holds push-to-talk on this device: whatever sounds stops and nothing starts until the last piece.
-   *  `voice` is the bot's voice choice; the mode opens a provider's listening for `utterance` (`voices.listen`). */
-  listenStart(args: { bot: string; utterance: string; format: "pcm16-16k" | "opus"; voice: { provider: string; voice: string; model?: string } }): Promise<void>;
-  /** One push-to-talk piece; the mode feeds it on. On the last (`final`) it answers what the provider heard. */
-  listenPiece(args: { bot: string; utterance: string; data: Uint8Array; final: boolean }): Promise<{ text?: string }>;
-  /** A push-to-talk utterance ended without its last piece (the app went away): resume. */
-  listenEnd(args: { bot: string; utterance: string }): Promise<void>;
-  /** A plugin plays sound as a bot's voice (`audio.play`): its ticket, to play in its turn (`speech.play`). */
-  offer(args: { ticket: string; bot: string; from: string }): Promise<void>;
-}
-
-export interface AudioApi {
-  play(audio: { format: "pcm16-24k" | "mp3" | "opus"; data: Uint8Array | AsyncIterable<Uint8Array> }, opts?: { bot?: string }): Promise<{ stop(): void; done: Promise<void> }>;
-  onRecording(listener: (chunk: { utterance: string; format: "pcm16-16k" | "opus"; data: Uint8Array; final: boolean }) => void): Unsubscribe;
+/** One-at-a-time queues (§5.4 "Turns"), in both halves. A name is `<plugin id>/<name>` (the plugin's own; another
+ *  plugin's only if its manifest lists the name in `contributes.turns`), or a device turn (`device/speech`, behind
+ *  `audio`). First come, first served; one holder per name. The platform ends a turn when its holder says done, when its
+ *  limit passes, when the holder's frame is gone, its host process exits, its plugin stops, or the app quits (for a
+ *  frame); a take still waiting leaves the queue the same ways. */
+export interface TurnsApi {
+  /** Waits for the caller's turn, then resolves with it. Refused (`refused`) for a name the caller may not take, and over
+   *  the caps: 64 takes of one name and 256 over all its names held or waiting per plugin, 4,096 on the computer. */
+  take(name: string, options?: TurnOptions, onEvent?: (event: TurnEvent) => void): Promise<Turn>;
+  /** Ends the caller's own turn (or takes its waiting take out of the queue) by its id; an id already ended is a no-op. */
+  done(id: string): Promise<void>;
+  /** `Turn.extend` by the turn's id: the new `until`. */
+  extend(id: string, ms: number): Promise<number>;
+  state(name: string): Promise<TurnState>;
+  /** Hears each change of the queue (a grant, an end, a take joining or leaving), from now on. */
+  watch(name: string, listener: (state: TurnState) => void): Unsubscribe;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -894,7 +1016,9 @@ export interface PluginApi {
   readonly net: NetApi;
   /** Only in a process of the plugin's own (§5.2). */
   readonly secrets?: SecretsApi;
-  /** The `clover` process's per-computer keys: the plugin's own X25519 pairs, whose private half stays in the core. */
+  /** In host halves: the programs its manifest names, run outside the sandbox (P5). */
+  readonly outside?: OutsideApi;
+  /** The `moss` process's per-computer keys: the plugin's own X25519 pairs, whose private half stays in the core. */
   readonly keys?: KeysApi;
   readonly settings: SettingsApi;
   /** A sealed card that says it comes from this plugin, with its name, id and source and the text; returns only the
@@ -921,7 +1045,7 @@ export interface PluginApi {
   /** Components only, with `approvals`: the cards that wait for this plugin's own bot, without their text. */
   readonly approvals?: ApprovalsApi;
   readonly files?: FilesApi;
-  /** The bundled `clover` tree's host halves only (its Browser tool, for the session a tool call serves): `tabs`, `open`,
+  /** The bundled `moss` tree's host halves only (its Browser tool, for the session a tool call serves): `tabs`, `open`,
    *  `close`, `navigate`, `screenshot`, `cdp` (the tool's own nine DevTools methods) and `caller`. `show`, `hide`,
    *  `onCdpEvent` and `watch` are the person's panel's (a component's), not a host half's; a third-party plugin's `browser` isn't served. */
   readonly browser?: NotYet<BrowserApi, "show" | "hide" | "onCdpEvent" | "watch">;
@@ -929,21 +1053,23 @@ export interface PluginApi {
   readonly shell?: Partial<ShellApi>;
   /** Components only. */
   readonly terminal?: TerminalApi;
-  /** Components only, of the bundled `clover` tree. */
+  /** Components only, of the bundled `moss` tree. */
   readonly plugins?: PluginsApi;
   /** `usage.read`: the usage rows and plan readings, read-only. */
   readonly usage?: UsageApi;
-  /** Its own tree's logs with no capability; Clover's and every other plugin's with `logs.read`. */
+  /** Its own tree's logs with no capability; MOSS's and every other plugin's with `logs.read`. */
   readonly logs: LogsApi;
   readonly notify?: NotifyApi;
-  /** `audio`: the app plays its audio as a bot's speech (its own bot's unless `opts.bot`), and it hears push-to-talk. */
-  readonly audio?: AudioApi;
-  /** The active voice mode's player door (§6.6); refused to every other plugin. */
-  readonly speech?: SpeechApi;
-  /** The voice providers' endpoints, for the active voice mode (§6.6). */
-  readonly voices?: VoicesApi;
-  /** `avatar.read`, `avatar.control`: the plugin's own bot's figure, each call by its capability. */
-  readonly avatar?: Partial<AvatarApi> & Partial<AvatarReportApi>;
-  /** Only the bundled `clover` tree's process: this computer's desktop notifications, for its notifier. */
+  /** Only the bundled `moss` tree's process: this computer's desktop notifications, for its notifier. */
   readonly desktop?: DesktopNotifications;
+  /** One-at-a-time queues the platform runs (§5.4 "Turns"): its own turns, another plugin's it offers, the device's. */
+  readonly turns: TurnsApi;
+  /** Byte streams between its own two halves (§5.4 "Streams"). */
+  readonly streams: StreamsApi;
+  /** Spec revision 19 (§3.6): code sessions (`sessions.read`), the activity feed (`activity.read.sessions`,
+   *  `activity.read.bots`) and live pictures (`picture.read.sessions`, `picture.read.bots`) by kind. `pictures.publish`
+   *  is a host half's alone, for a server whose manifest says `picture: true`. */
+  readonly sessions?: SessionsApi;
+  readonly activity?: ActivityApi;
+  readonly pictures?: PicturesApi;
 }

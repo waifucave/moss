@@ -1,0 +1,48 @@
+{
+  "manifest": 1,
+  "name": "Sidebar",
+  "description": "The default sidebar: the code sessions by project, New, the apps, and the account and settings at the bottom.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx",
+    "css": [
+      "client/styles.css"
+    ]
+  },
+  "capabilities": [
+    "computers.read",
+    "sessions.read",
+    "account.read"
+  ],
+  "contributes": {
+    "ui": [
+      {
+        "spot": "sidebar",
+        "component": "SidebarEntry",
+        "declares": {
+          "sidebar.app": {
+            "shape": "list",
+            "props": {},
+            "fields": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string"
+                },
+                "opens": {
+                  "type": "string"
+                }
+              }
+            },
+            "doc": "App buttons; `opens` names the `main` key it shows."
+          }
+        }
+      }
+    ]
+  }
+}

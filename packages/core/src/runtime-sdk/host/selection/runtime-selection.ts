@@ -152,6 +152,8 @@ export interface CredentialPresence {
   readonly byProvider: Readonly<Record<string, CredentialRef["kind"]>>;
   /** Per-provider auth family + wire dialects, where the host knows them. See `ProviderAuthView`. */
   readonly authByProvider?: Readonly<Record<string, ProviderAuthView>>;
+  /** How many slots' probes failed (a locked or denied store): the set is partial then. Absent: none failed. */
+  readonly failedProbes?: number;
 }
 
 /**
@@ -276,7 +278,7 @@ export function isSelectionRefusal<T extends object>(value: T | SelectionRefusal
 export class SelectionRefusedError extends RuntimeSdkError {
   readonly refusal: SelectionRefusal;
   constructor(refusal: SelectionRefusal) {
-    super(`clover runtime host: runtime selection refused (${refusal.reason}) — ${refusal.detail}`);
+    super(`moss runtime host: runtime selection refused (${refusal.reason}) — ${refusal.detail}`);
     this.refusal = refusal;
   }
 }

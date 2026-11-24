@@ -1,44 +1,46 @@
 // The documents and headers the app serves on its own schemes (spec §5.5; spike S9's measured design, decision 94).
 // Pure, so the headers are unit-tested.
 //
-//   clover-core://app/        the window's root: core code only, no plugin's
-//   clover-plugin://<layer>/  one plugin layer's origin; `/?mount=<token>` is a frame's document (single use),
-//                             `/_clover/…` the layer runtime (React, the UI API, the boot, the clover tree's bundle),
+//   moss-core://app/        the window's root: core code only, no plugin's
+//   moss-plugin://<layer>/  one plugin layer's origin; `/?mount=<token>` is a frame's document (single use),
+//                             `/_moss/…` the layer runtime (React, the UI API, the boot, the moss tree's bundle),
 //                             `/_p/<plugin id>/…` that plugin's own files
-//   clover-sealed://          sealed card frames (E-M3); refused until then
-//   clover-web://<layer>/     a web page entry's folder page, served only in that plugin's own web session
+//   moss-sealed://          sealed card frames (E-M3); refused until then
+//   moss-web://<layer>/     a web page entry's folder page, served only in that plugin's own web session
 //
 // Every layer document and script carries a CSP that keeps it to its own origin, and `Connection-Allowlist`, which
 // Chromium 156 enforces per document and worker, DNS lookups included: a document's lookups are matched against the
 // list by host only (`HostOnlyMatch`), so the list never holds a `*` host. A script's list is `(response-origin)`; a
-// document's also names each installed layer's origin by its label (`clover-plugin://<layer>/*`), because Chromium
+// document's also names each installed layer's origin by its label (`moss-plugin://<layer>/*`), because Chromium
 // holds a child frame's navigation to its parent's list. So a document can look up only the installed layers' labels
 // (the E-M1 review's B1; the app CI job's DNS-prefetch probe, with its positive control, checks it). Declared network
 // hosts join both when lane B's registry hands them over; until then every layer is fail-closed (S9 item 7). The known
 // gap stays (decision 94): a remote ICE candidate can still make a directly mounted document send checks to an
 // undeclared address; the windows' `disable_non_proxied_udp` policy is the defence in depth.
 import { createHash } from "node:crypto";
-import { CLIENT_BARE_IMPORTS } from "@waifucave/clover-plugin-sdk";
+import { CLIENT_BARE_IMPORTS } from "@waifucave/moss-plugin-sdk";
 
-export const LAYER_SCHEME = "clover-plugin";
-export const CORE_SCHEME = "clover-core";
-export const SEALED_SCHEME = "clover-sealed";
+export const LAYER_SCHEME = "moss-plugin";
+export const CORE_SCHEME = "moss-core";
+export const SEALED_SCHEME = "moss-sealed";
 /** A web page entry's folder page (§5.5 "Web pages"), in that plugin's own web session only. */
-export const WEB_SCHEME = "clover-web";
+export const WEB_SCHEME = "moss-web";
+/** An MCP Apps view's own documents (§5.5 "MCP Apps"), one session and one origin per view (`web-views.ts`). */
+export const APP_SCHEME = "moss-app";
 
-/** What the layer runtime serves under `/_clover/`. */
-export const RUNTIME_PATH = "/_clover/";
+/** What the layer runtime serves under `/_moss/`. */
+export const RUNTIME_PATH = "/_moss/";
 
 /** The bare specifiers every layer provides, each to the layer's one copy: exactly `CLIENT_BARE_IMPORTS`, the names a
  *  client's build keeps as imports and the loader check lets a client-only file import without shipping. A plugin
  *  that ships its own react still gets this one in its layer. */
 const IMPORT_PATHS: Record<(typeof CLIENT_BARE_IMPORTS)[number], string> = {
-  react: "/_clover/vendor/react.js",
-  "react/jsx-runtime": "/_clover/vendor/react-jsx-runtime.js",
-  "react/jsx-dev-runtime": "/_clover/vendor/react-jsx-runtime.js",
-  "react-dom": "/_clover/vendor/react-dom.js",
-  "react-dom/client": "/_clover/vendor/react-dom-client.js",
-  "@waifucave/clover-plugin-sdk/ui": "/_clover/sdk-ui.js",
+  react: "/_moss/vendor/react.js",
+  "react/jsx-runtime": "/_moss/vendor/react-jsx-runtime.js",
+  "react/jsx-dev-runtime": "/_moss/vendor/react-jsx-runtime.js",
+  "react-dom": "/_moss/vendor/react-dom.js",
+  "react-dom/client": "/_moss/vendor/react-dom-client.js",
+  "@waifucave/moss-plugin-sdk/ui": "/_moss/sdk-ui.js",
 };
 export const IMPORT_MAP = { imports: Object.fromEntries(CLIENT_BARE_IMPORTS.map((name) => [name, IMPORT_PATHS[name]])) } as const;
 
@@ -48,7 +50,7 @@ const IMPORT_MAP_HASH = `'sha256-${createHash("sha256").update(IMPORT_MAP_TEXT).
 /** The layer's own declared hosts (none until lane B's registry hands them over). `wasm`: WebAssembly may be compiled in the
  *  layer's document (a third-party plugin's own tools: a codec, ffmpeg.wasm). It is not `'unsafe-eval'`: strings still never
  *  become code, and the module's bytes come from a script-src source, the plugin's own folder (`/_p/`, fetched under
- *  `connect-src 'self'`). The bundled `clover` layer never gets it. */
+ *  `connect-src 'self'`). The bundled `moss` layer never gets it. */
 export function layerCsp(hosts: readonly string[] = [], wasm = false): string {
   const net = hosts.join(" ");
   return [
@@ -117,14 +119,21 @@ export const CORE_CSP = [
   "base-uri 'none'",
 ].join("; ");
 
-/** The one origin that may record: the bundled `clover` layer's, whose shell is the app's push-to-talk recorder (spec §6.6; the
- *  app records and plugins never get the microphone). Every other document of the app's schemes keeps `microphone=()`. */
-export const MICROPHONE_ORIGIN = `${LAYER_SCHEME}://clover`;
+/** A layer document's microphone policy, ONE rule for every layer (the bundled tree's and a third party's alike; a plugin and
+ *  its children share a layer, which holds `microphone` when any of them does): `"*"` while its own layer holds it (open to
+ *  itself, and to the frames it holds that may open it too), else `false` (closed). A frame carries `allow="microphone"`
+ *  only when its own layer holds it (the runtime's `microphone` flag), and main's permission handler answers by the
+ *  requesting frame's own layer (microphone.ts). Permissions Policy passes a feature to a child frame only when every
+ *  document above it has it, so a holder's frame inside a document of a layer that doesn't hold it gets no microphone. */
+export function layerMicrophone(layer: string, holds: (layer: string) => boolean): MicrophonePolicy | false {
+  return holds(layer) ? "*" : false;
+}
+export type MicrophonePolicy = "(self)" | "*";
 
-/** `headers` with the microphone policy opened to `allow` (`(self)` for the clover layer's own document, the layer's origin for
+/** `headers` with the microphone policy opened to `allow` (`(self)` for the moss layer's own document, the layer's origin for
  *  the core root that frames it); the iframe still needs `allow="microphone"` (root.ts), and main's permission handler
- *  still answers only while the user's press has a recording open (listen.ts). */
-export function withMicrophone(headers: Record<string, string>, allow: "(self)" | `(self "${string}")`): Record<string, string> {
+ *  still answers only for a layer that holds `microphone` (microphone.ts). */
+export function withMicrophone(headers: Record<string, string>, allow: MicrophonePolicy): Record<string, string> {
   const policy = headers["Permissions-Policy"];
   if (policy === undefined || !policy.includes("microphone=()")) return headers;
   return { ...headers, "Permissions-Policy": policy.replace("microphone=()", `microphone=${allow}`) };
@@ -149,7 +158,7 @@ export function commonHeaders(): Record<string, string> {
   };
 }
 
-/** The headers of a plugin web page's own scheme (`clover-web:`): `commonHeaders` without the isolation pair. A web page is
+/** The headers of a plugin web page's own scheme (`moss-web:`): `commonHeaders` without the isolation pair. A web page is
  *  its own top-level view with its own session and may embed any site's frames (a map, a video, a sign-in), which an
  *  embedder policy would block unless each of those sent one. Nothing of it is ever isolated. */
 export function webHeaders(): Record<string, string> {
@@ -160,8 +169,10 @@ export function webHeaders(): Record<string, string> {
 }
 
 /** The headers of a response on a layer's origin. A document (`text/html`) names the installed layers it may frame. */
-export function layerHeaders(contentType: string, hosts: readonly string[] = [], layers: readonly string[] = [], wasm = false, microphone = false): Record<string, string> {
-  const h: Record<string, string> = { ...(microphone ? withMicrophone(commonHeaders(), "(self)") : commonHeaders()), "Content-Type": contentType };
+export function layerHeaders(contentType: string, hosts: readonly string[] = [], layers: readonly string[] = [], wasm = false, microphone: boolean | MicrophonePolicy = false): Record<string, string> {
+  // `true`: `(self)`; a policy string as `layerMicrophone` makes it. A frame still needs its `allow` (root.ts, the SDK's Spot) and
+  // main's permission handler.
+  const h: Record<string, string> = { ...(typeof microphone === "string" ? withMicrophone(commonHeaders(), microphone) : microphone ? withMicrophone(commonHeaders(), "(self)") : commonHeaders()), "Content-Type": contentType };
   const doc = contentType.startsWith("text/html");
   if (doc) h["Content-Security-Policy"] = layerCsp(hosts, wasm);
   if (doc || contentType.startsWith("text/javascript")) h["Connection-Allowlist"] = connectionAllowlist(hosts, doc ? layers : undefined);
@@ -182,11 +193,11 @@ export function layerDocument(input: { css: readonly string[]; title: string }):
     '<meta charset="utf-8">',
     `<title>${escapeAttr(input.title)}</title>`,
     `<script type="importmap">${IMPORT_MAP_TEXT}</script>`,
-    '<link rel="stylesheet" href="/_clover/layer.css">',
+    '<link rel="stylesheet" href="/_moss/layer.css">',
     ...input.css.map((href) => `<link rel="stylesheet" href="${escapeAttr(href)}">`),
-    '<script type="module" src="/_clover/boot.js"></script>',
+    '<script type="module" src="/_moss/boot.js"></script>',
     "</head>",
-    '<body><div id="clover-root"></div></body>',
+    '<body><div id="moss-root"></div></body>',
     "</html>",
   ].join("\n");
 }

@@ -1,0 +1,604 @@
+// A fake engine for MOSS's tests and renders: the real wire (JSON-RPC over NDJSON on `<home>/run/core.sock`, the `app`
+// token, `protocol.prove`, the hello with `surface`), with the pieces other lanes are building served from the spine's
+// contracts' own fakes (`@waifucave/moss-core/contracts/fakes`): bots as records (FakeBotRecords), the activity feed
+// (FakeActivityFeed), live pictures (FakeLivePictures), the router (FakeCardRouter, fed by MOSS's presence reports), the
+// program answer keys (FakeProgramAnswerKeys, a real Ed25519 check of MOSS's registration and of every answer) and the
+// tool setting (FakeToolSettings). A method it doesn't serve answers as the real engine does: "not served yet" (-32601).
+//
+// It never touches a real home: the tests give it a temp folder. Everything it is asked goes to `<home>/fake/calls.jsonl`.
+import { createHmac, randomBytes } from "node:crypto";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
+import { join } from "node:path";
+import {
+  encodeLine, LineDecoder, programCardAnswerSigningInput, RELEASE_DOOR_METHODS, releaseStanding, SURFACE_MOUNTS, MOSS_ERR,
+  type ActivityState, type Card, type CardPlacement, type RoutineView, type Surface,
+} from "@waifucave/moss-protocol";
+import { FakeActivityFeed, FakeBotRecords, FakeCardRouter, FakeLivePictures, FakeProgramAnswerKeys, FakeToolSettings } from "@waifucave/moss-core/contracts/fakes";
+import type { Clock, TimerHandle } from "@waifucave/moss-core/contracts";
+import { daemonEndpoint } from "../../src/main/client";
+import { BOTS, botId, cardsAt, MEMORY, MODELS, PLUGINS, routinesOf, TOOL_VALUES } from "./fixtures";
+
+export const FAKE_DEVICE = "devstudio0000000001";
+
+/** Real time, for the fakes that take a clock. */
+export const realClock: Clock = {
+  now: () => Date.now(),
+  monotonic: () => performance.now(),
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    return { id: t as unknown as number, t } as unknown as TimerHandle;
+  },
+  clearTimeout: (h) => clearTimeout((h as unknown as { t: ReturnType<typeof setTimeout> }).t),
+  status: () => ({ reference: "public", offsetMs: 0, accuracyMs: 0, synced: true }),
+};
+
+export type FakePiece = "bots" | "activity" | "router" | "pictures" | "routines" | "tools" | "keys";
+
+export interface FakeEngineOptions {
+  home: string;
+  /** Pieces this engine doesn't serve (their methods answer "not served yet"). */
+  drop?: readonly FakePiece[];
+  /** The engine's release: a hello naming an older one is refused as behind, a newer one is served the release door only
+   *  (`ahead`, as the real engine's hello is). Default: the hello's own. */
+  release?: string;
+  /** Whether the engine is idle for an update (`update.status`, `update.apply`, `pair.exiting {update}`); default idle. */
+  updateIdle?: () => boolean;
+  /** What `release.bring` answers (default: `waiting`, or `switching` with `now`). */
+  bring?: (p: { release: string; bundlePath: string; now?: boolean }) => "waiting" | "switching";
+  /** A PNG for the live picture's frames; none: no picture. */
+  picturePng?: Uint8Array;
+  /** How often a followed picture sends a frame. */
+  frameMs?: number;
+  /** The pid `protocol.prove` says it sees at the other end: MOSS's (the test knows it; a Unix socket's peer pid isn't
+   *  read here). Default: this process's, for a client in the same process. */
+  peerPid?: () => number | undefined;
+  /** A bot whose conversation is this many generated messages instead of its fixture's (paging back through it). */
+  /** A tool call running on a bot's main session: sent as a `tool_call` event when MOSS attaches to that session (the
+   *  status line takes a file's base name or a site's host from its input; the conversation never draws it). */
+  running?: Record<string, { name: string; argsJson: string; displayTitle?: string }>;
+  longTalk?: { bot: string; messages: number; /** The words of message `i` (0-based; even ones are the person's). Default: "Long message N". */ text?: (i: number) => string };
+  /** What `host.status` answers (the background host's state). */
+  host?: { state: string; crashes: number; since: number; gaveUp?: boolean };
+}
+
+interface Conn {
+  id: number;
+  socket: Socket;
+  authed: boolean;
+  surface?: Surface;
+  areas: Set<string>;
+  /** Served as `ahead`: the release door only. */
+  ahead?: boolean;
+  attached: Set<string>;
+  streams: Map<string, ReturnType<typeof setInterval>>;
+}
+
+type Rpc = { id?: number | string; method?: string; params?: unknown; result?: unknown; error?: unknown };
+
+export class RpcError extends Error {
+  constructor(readonly code: number, message: string, readonly data?: unknown) { super(message); }
+}
+
+export interface FakeEngine {
+  home: string;
+  token: string;
+  endpoint: string;
+  bots: FakeBotRecords;
+  feed: FakeActivityFeed;
+  router: FakeCardRouter;
+  keys: FakeProgramAnswerKeys;
+  /** Every request MOSS made, in order (method and params, the token left out). */
+  calls(): { method: string; params: unknown; conn: number }[];
+  /** The cards answered, and with which option. */
+  answered(): { id: string; option: string; program: string }[];
+  placements(): { card: string; place: CardPlacement }[];
+  /** Computer use acting on this computer: the engine then refuses every program's `card.answer`, as the real one does. */
+  setActing(acting: boolean): void;
+  /** A card the engine raises now: pending, routed, and told to every connection that follows the approvals. */
+  raise(card: Card): void;
+  /** Runs before the next `card.list` is answered (a card raised between a connection's subscribe and its list). */
+  beforeCardList(fn: () => void): void;
+  /** Asks every app connection a request of the engine's own (`app.ping`, `app.quit`). */
+  ask(method: string, params?: unknown): Promise<unknown[]>;
+  /** A `release_changed` event to every connection that follows `release`. */
+  releaseChanged(e: { state: "current" | "waiting" | "switching"; incoming?: string; waitingFor?: { turns: number; agents: number } }): void;
+  /** A core event of the `devices` area to every connection that follows it (`pairing_changed`, `device_changed`). */
+  devicesEvent(e: Record<string, unknown>): void;
+  /** Ends every connection (the engine went away, as a release switch does). */
+  dropAll(): void;
+  close(): Promise<void>;
+}
+
+export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine> {
+  const drop = new Set(o.drop ?? []);
+  const run = join(o.home, "run");
+  mkdirSync(run, { recursive: true });
+  mkdirSync(join(o.home, "fake"), { recursive: true });
+  const token = randomBytes(24).toString("base64url");
+  writeFileSync(join(run, "app.token"), token, { mode: 0o600 });
+  const endpoint = daemonEndpoint(o.home);
+  rmSync(endpoint, { force: true });
+  const log: { method: string; params: unknown; conn: number }[] = [];
+  const answered: { id: string; option: string; program: string }[] = [];
+  let actingNow = false;
+  let relay: { mode: "n0" | "off" | "custom"; url?: string } = { mode: "n0" };
+  let beforeList: (() => void) | undefined;
+
+  const now = Date.now();
+  const bots = new FakeBotRecords({ clock: realClock });
+  const feed = new FakeActivityFeed();
+  const pictures = new FakeLivePictures({ clock: realClock });
+  const router = new FakeCardRouter({ clock: realClock, hostLive: true });
+  const keys = new FakeProgramAnswerKeys();
+  const tools = new FakeToolSettings();
+  for (const p of PLUGINS) tools.declare(p.server, { ...p.tools } as Record<string, "preload" | "on-demand">);
+  for (const v of TOOL_VALUES) {
+    if (v.availability !== undefined) tools.setAvailability(v.server, v.tool, v.availability);
+    if (v.permission !== undefined) tools.setPermission(v.server, v.tool, v.permission);
+  }
+
+  /** Each bot's routines, changed by `routine.edit`, and their instructions. */
+  const routines = new Map<string, RoutineView[]>();
+  const routineText = new Map<string, string>();
+  const routinesFor = (bot: string): RoutineView[] => {
+    if (!routines.has(bot)) routines.set(bot, routinesOf(bot, now));
+    return routines.get(bot)!;
+  };
+  /** Each bot's conversation, as its main session's events. */
+  const talk = new Map<string, Record<string, unknown>[]>();
+  const summaries = new Map<string, { id: string; last?: { text: string; from: "user" | "bot" | "note"; at: number }; unread: boolean }>();
+  for (const b of BOTS) {
+    const v = await bots.create({ name: b.name, ...(b.face !== undefined ? { face: b.face } : {}), ...(b.model !== undefined ? { model: b.model } : {}), ...(b.instructions !== undefined ? { instructions: b.instructions } : {}) }, { kind: "user" });
+    const session = v.mainSession;
+    const events: Record<string, unknown>[] = [];
+    const start = now - b.ago * 60_000 - b.talk.length * 90_000;
+    b.talk.forEach(([who, text, files], i) => {
+      const ts = start + (i + 1) * 90_000;
+      events.push(who === "user"
+        ? { type: "user_message", seq: i + 1, sessionId: session, ts, threadId: "main", text: files !== undefined ? `${text} [File #1]` : text, clientName: "MOSS", ...(files !== undefined ? { files: files.map((f, n) => ({ n: n + 1, path: `/Users/someone/Documents/${f}` })) } : {}) }
+        : { type: "assistant_message", seq: i + 1, sessionId: session, ts, threadId: "main", text });
+    });
+    if (o.longTalk?.bot === v.id) {
+      events.length = 0;
+      const n = o.longTalk.messages;
+      for (let i = 0; i < n; i++) {
+        const ts = now - (n - i) * 1_000;
+        events.push(i % 2 === 0
+          ? { type: "user_message", seq: i + 1, sessionId: session, ts, threadId: "main", text: o.longTalk.text?.(i) ?? `Long message ${i + 1}`, clientName: "MOSS" }
+          : { type: "assistant_message", seq: i + 1, sessionId: session, ts, threadId: "main", text: o.longTalk.text?.(i) ?? `Long message ${i + 1}` });
+      }
+    }
+    talk.set(v.id, events);
+    const lastTalk = b.talk[b.talk.length - 1];
+    summaries.set(v.id, { id: v.id, ...(lastTalk !== undefined ? { last: { text: lastTalk[1], from: lastTalk[0], at: now - b.ago * 60_000 } } : {}), unread: b.unread === true });
+    feed.set({ subject: { kind: "bots", id: v.id }, state: b.mood, name: b.name, ...(b.tool !== undefined ? { tool: b.tool } : {}), since: now - b.ago * 60_000 });
+  }
+  // Juniper's browser publishes a live picture of its tab.
+  let pictureId: string | undefined;
+  if (o.picturePng !== undefined) {
+    const pub = pictures.publish({ session: "bot:juniper", kind: "bots", bot: "juniper", pluginId: "moss/browser", tool: "mcp__moss__Browser", callId: "call_1", declares: true, open: true }, { format: "png", width: 1280, height: 800 });
+    pub.frame(o.picturePng);
+    pictureId = pub.id;
+  }
+  const cards = new Map<string, Card>(cardsAt(now).map((c) => [c.id, c]));
+  for (const c of cards.values()) router.pending({ id: c.id, ...(c.session !== undefined ? { session: c.session } : {}), ...(c.bot !== undefined ? { bot: c.bot } : {}) });
+
+  const conns = new Map<number, Conn>();
+  let nextConn = 1;
+  let nextReq = 1;
+  const waiting = new Map<number, (v: unknown) => void>();
+
+  const write = (c: Conn, msg: unknown) => { if (!c.socket.destroyed) c.socket.write(encodeLine(msg)); };
+  const event = (area: string, e: Record<string, unknown>) => {
+    for (const c of conns.values()) if (c.authed && c.areas.has(area)) write(c, { jsonrpc: "2.0", method: "core.event", params: { ts: Date.now(), ...e } });
+  };
+  router.watch((ch) => event("surfaces", { type: "card_placed", card: ch.card, place: ch.place, ...(ch.before !== undefined ? { before: ch.before } : {}) }));
+  feed.watch("bots", { kind: "user" }, (a) => event("activity", { type: "activity_changed", activity: a }));
+
+  const notServed = (method: string) => new RpcError(-32601, `${method} is not served yet`);
+  const piece = (p: FakePiece, method: string) => { if (drop.has(p)) throw notServed(method); };
+
+  async function serve(c: Conn, method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (method === "protocol.prove") {
+      const nonce = String(params.nonce ?? "");
+      const pid = o.peerPid?.() ?? process.pid;
+      return { proof: createHmac("sha256", token).update(`moss-daemon-proof\0${nonce}\0${pid}`).digest("base64url"), pid };
+    }
+    if (method === "protocol.hello") {
+      if (params.token !== token) throw new RpcError(-32001, "bad token");
+      const surface = (params.surface ?? "code") as Surface;
+      if (params.role !== "app") throw new RpcError(MOSS_ERR.SURFACE_REFUSED, "surface refused", { reason: "not-app", surface });
+      const release = typeof params.release === "string" ? params.release : undefined;
+      const standing = o.release !== undefined && release !== undefined ? releaseStanding(o.release, release) : "same";
+      if (standing === "behind") throw new RpcError(MOSS_ERR.RELEASE_REFUSED, "release refused", { standing: "behind", engine: o.release, client: release, needs: o.release });
+      c.authed = true;
+      c.surface = surface;
+      c.ahead = standing === "ahead";
+      return {
+        ok: true, serverVersion: "0.124.0", protocolVersion: 1, caller: { kind: "user", client: "app" }, device: FAKE_DEVICE, features: [],
+        surface, mount: SURFACE_MOUNTS[surface], ...(release !== undefined ? { release: { standing, engine: o.release ?? release } } : {}),
+      };
+    }
+    if (!c.authed) throw new RpcError(-32002, "say hello first");
+    // An app ahead of the engine: the release door and nothing else (the real engine's rule, RELEASE_DOOR_METHODS).
+    if (c.ahead === true && !(RELEASE_DOOR_METHODS as readonly string[]).includes(method)) throw new RpcError(MOSS_ERR.RELEASE_REFUSED, `${method}: an app ahead of the engine has the release door only`);
+    if (method === "update.status") {
+      const idle = o.updateIdle?.() ?? true;
+      return { idle, busy: idle ? [] : ["a turn"] };
+    }
+    if (method === "update.apply") return { at: (o.updateIdle?.() ?? true) ? "now" : "when-idle" };
+    if (method === "pair.exiting") {
+      if ((params as { reason?: string }).reason === "update" && !(o.updateIdle?.() ?? true)) throw new RpcError(-32010, "not idle for the update", { code: "update_not_ready" });
+      return { ok: true };
+    }
+    if (method === "release.bring") {
+      const p = params as { release: string; bundlePath: string; now?: boolean };
+      return { state: o.bring?.(p) ?? (p.now === true ? "switching" : "waiting") };
+    }
+    switch (method) {
+      case "events.subscribe":
+        for (const a of (params.areas as string[]) ?? []) c.areas.add(a);
+        return { ok: true };
+      case "bot.records":
+        piece("bots", method);
+        return { bots: bots.list() };
+      case "bot.summaries":
+        piece("bots", method);
+        return { summaries: [...summaries.values()] };
+      case "bot.conversation": {
+        piece("bots", method);
+        const id = String(params.id);
+        const v = bots.get(id);
+        if (v === undefined) throw new RpcError(-32004, `no bot ${id}`);
+        // Pages as the engine's do: the `limit` events before `before` (a seq), newest last, and whether any is older.
+        const all = talk.get(id) ?? [];
+        const before = typeof params.before === "number" ? params.before : Number.POSITIVE_INFINITY;
+        const limit = typeof params.limit === "number" ? params.limit : 100;
+        const upTo = all.filter((e) => (e.seq as number) < before);
+        const page = upTo.slice(Math.max(0, upTo.length - limit));
+        return { session: v.mainSession, events: page, hasMore: upTo.length > page.length };
+      }
+      case "bot.create": {
+        piece("bots", method);
+        const v = await bots.create({ name: String(params.name), ...(typeof params.model === "string" ? { model: params.model } : {}) }, { kind: "user" });
+        talk.set(v.id, []);
+        summaries.set(v.id, { id: v.id, unread: false });
+        feed.set({ subject: { kind: "bots", id: v.id }, state: "idle", name: String(params.name), since: Date.now() });
+        event("bots", { type: "bot_record_changed", bot: v });
+        return { bot: v };
+      }
+      case "bot.markRead": {
+        piece("bots", method);
+        const s = summaries.get(String(params.id));
+        if (s !== undefined) s.unread = false;
+        return { ok: true };
+      }
+      case "activity.list":
+        piece("activity", method);
+        return { activity: feed.list("bots", { kind: "user" }) };
+      case "routine.list":
+        piece("routines", method);
+        return { routines: routinesFor(String(params.bot ?? "")) };
+      case "routine.get": {
+        piece("routines", method);
+        const r = routinesFor(String(params.bot)).find((x) => x.id === params.id);
+        if (r === undefined) throw new RpcError(-32004, `no routine ${String(params.id)} of this bot on this computer`);
+        return { routine: r, instructions: routineText.get(r.id) ?? `What ${r.name} does.\n` };
+      }
+      case "routine.runNow": {
+        piece("routines", method);
+        const r = [...routines.values()].flat().find((x) => x.id === params.id);
+        if (r === undefined) throw new RpcError(-32004, `no routine ${String(params.id)} on this computer`);
+        if (r.state !== "active") throw new RpcError(-32600, `the routine ${r.id} is ${r.state}`);
+        return { session: `s_side_${r.id}` };
+      }
+      case "routine.edit": {
+        piece("routines", method);
+        const list = routinesFor(String(params.bot));
+        const i = list.findIndex((x) => x.id === params.id);
+        if (i < 0) throw new RpcError(-32004, `no routine ${String(params.id)} of this bot on this computer`);
+        const patch = params.patch as { name?: string; schedule?: string; instructions?: string; paused?: boolean };
+        if (patch.schedule !== undefined && !/^(every \d+[smhd]|(\S+ ){4}\S+)$/.test(patch.schedule)) throw new RpcError(-32602, `the schedule doesn't read: "${patch.schedule}"`);
+        const r = { ...list[i]! };
+        if (patch.name !== undefined) r.name = patch.name;
+        if (patch.schedule !== undefined) r.triggers = [{ type: "schedule", summary: patch.schedule }, ...r.triggers.filter((t) => t.type !== "schedule")];
+        if (patch.instructions !== undefined) routineText.set(r.id, `${patch.instructions}\n`);
+        if (patch.paused === true) r.state = "paused";
+        if (patch.paused === false && r.state === "paused") r.state = "active";
+        list[i] = r;
+        return { routine: r };
+      }
+      case "memory.list": {
+        const files = MEMORY[String(params.bot)];
+        if (files === undefined) return { entries: [] };
+        return { entries: Object.entries(files).map(([path, text]) => ({ path, size: Buffer.byteLength(text), modifiedAt: now - 3_600_000 })) };
+      }
+      case "memory.read": {
+        const text = MEMORY[String(params.bot)]?.[String(params.path)];
+        if (text === undefined) throw new RpcError(-32004, `no memory file ${String(params.path)}`);
+        return { text };
+      }
+      case "picture.list":
+        piece("pictures", method);
+        return { pictures: pictures.list("bots", { kind: "user" }, typeof params.bot === "string" ? { bot: params.bot } : {}) };
+      case "picture.open": {
+        piece("pictures", method);
+        const id = String(params.id);
+        const reader = pictures.open(id, { kind: "user" });
+        const stream = `st_${randomBytes(6).toString("hex")}`;
+        let seq = 0;
+        const send = () => {
+          const bytes = reader.latest();
+          if (bytes !== undefined) write(c, { jsonrpc: "2.0", method: "picture.frame", params: { stream, seq: seq++, format: "png", width: 1280, height: 800, data: Buffer.from(bytes).toString("base64"), at: Date.now() } });
+        };
+        // As the real engine does: the latest frame goes out at once, before this call's own answer reaches the window.
+        send();
+        c.streams.set(stream, setInterval(send, o.frameMs ?? 1_000));
+        return { stream };
+      }
+      case "picture.close": {
+        const t = c.streams.get(String(params.stream));
+        if (t !== undefined) clearInterval(t);
+        c.streams.delete(String(params.stream));
+        return { ok: true };
+      }
+      case "card.list": {
+        const first = beforeList;
+        beforeList = undefined;
+        first?.();
+        return { cards: [...cards.values()] };
+      }
+      case "card.placement":
+        piece("router", method);
+        return { placements: router.list() };
+      case "presence.report":
+        piece("router", method);
+        if (c.surface !== "moss" && c.surface !== "code") throw new RpcError(MOSS_ERR.SURFACE_REFUSED, "only a window reports presence");
+        return router.report({ connId: c.id, program: c.surface }, params as never);
+      case "device.programKey.set": {
+        piece("keys", method);
+        try {
+          return await keys.register({ device: FAKE_DEVICE, program: c.surface ?? "code", publicKey: String(params.publicKey), held: params.held as never, alg: params.alg as never, signature: String(params.signature) });
+        } catch (err) {
+          throw new RpcError(-32602, err instanceof Error ? err.message : "invalid");
+        }
+      }
+      case "card.answer": {
+        // As the real core does for every program: no answer while computer use acts on this computer.
+        if (actingNow) return { accepted: false, reason: "computer use is acting right now" };
+        const card = cards.get(String(params.id));
+        if (card === undefined) return { accepted: false, reason: "no such card" };
+        if (params.hash !== card.hash) return { accepted: false, reason: "the card changed" };
+        const option = String(params.option);
+        if (!card.options.some((x) => x.id === option)) return { accepted: false, reason: "no such option" };
+        const proof = params.proof as { via?: string; device?: string; at?: number; signature?: string; program?: string };
+        // As lane RT's engine does: a proof that names its program verifies with that program's key alone. The fake also
+        // holds it to the connection's own program (no press forwarded between programs).
+        const program = c.surface ?? "code";
+        if (proof?.via !== "device" || proof.device !== FAKE_DEVICE || typeof proof.at !== "number" || typeof proof.signature !== "string") return { accepted: false, reason: "no device proof" };
+        if (proof.program !== program) return { accepted: false, reason: "the proof doesn't name this program" };
+        const input = programCardAnswerSigningInput({ program, id: card.id, hash: card.hash, option, at: proof.at, ...(Array.isArray(params.children) ? { children: params.children as string[] } : {}) });
+        const ok = await keys.verify(FAKE_DEVICE, program, new TextEncoder().encode(input), new Uint8Array(Buffer.from(proof.signature, "base64")));
+        if (!ok) return { accepted: false, reason: "the signature isn't this program's" };
+        if (!router.mayPress(card.id, { kind: "window", program: program === "host" ? "code" : program, window: "main" })) return { accepted: false, reason: "the card isn't placed there" };
+        cards.delete(card.id);
+        router.resolved(card.id);
+        answered.push({ id: card.id, option, program });
+        event("approvals", { type: "card_resolved", id: card.id, outcome: card.options.find((x) => x.id === option)?.kind === "approve" ? "approved" : "denied", option });
+        return { accepted: true };
+      }
+      case "computer.acting":
+        return { running: false };
+      case "release.record":
+        return { ok: true };
+      case "command.run":
+        return { result: null };
+      // The voice point and its plugin's held command, as MOSS Voice declares them (the talk command MOSS derives).
+      case "point.active.list":
+        return { points: [{ point: "moss.voice.modes", title: "Voice", declaredBy: "moss/voice", fillers: [{ pluginId: "moss/voice", entryId: "moss-voice", name: "MOSS Voice" }], active: { pluginId: "moss/voice", entryId: "moss-voice" } }] };
+      case "command.list":
+        return { commands: [{ name: "moss.push-to-talk", pluginId: "moss/voice", description: "Hold to talk", key: "ctrl+shift+space", hold: true }] };
+      case "user.send": {
+        const to = params.to as { bot?: string };
+        const id = to?.bot;
+        const v = id !== undefined ? bots.get(id) : undefined;
+        if (v === undefined) throw new RpcError(-32004, "no such bot");
+        // The real engine's refusal of a file: -32602 with its own plain sentence and `data.code` (spec §6, `file_reference_invalid`).
+        const files = params.files as { path: string }[] | undefined;
+        if (files !== undefined && files.length > 10) throw new RpcError(-32602, `A message can carry at most 10 files; you picked ${files.length}.`, { code: "file_reference_invalid" });
+        const events = talk.get(v.id) ?? [];
+        const e = { type: "user_message", seq: events.length + 1, sessionId: v.mainSession, ts: Date.now(), threadId: "main", text: String(params.text), clientName: "MOSS" };
+        events.push(e);
+        talk.set(v.id, events);
+        for (const k of conns.values()) if (k.attached.has(v.mainSession)) write(k, { jsonrpc: "2.0", method: "event", params: e });
+        return { seq: e.seq };
+      }
+      case "session.attach": {
+        c.attached.add(String(params.id));
+        for (const [bot, call] of Object.entries(o.running ?? {})) {
+          const v = bots.get(bot);
+          if (v === undefined || v.mainSession !== String(params.id)) continue;
+          const seq = (talk.get(bot)?.length ?? 0) + 1000;
+          setTimeout(() => write(c, { jsonrpc: "2.0", method: "event", params: { type: "tool_call", seq, sessionId: v.mainSession, ts: Date.now(), threadId: "main", callId: `call_${bot}`, ...call } }), 300);
+        }
+        return { lastSeq: 0 };
+      }
+      case "session.detach":
+        c.attached.delete(String(params.id));
+        return { ok: true };
+      case "plugin.list":
+        // Names as the real engine sends them: a plugin's `Text` may be a table of languages (the first as one, the rest
+        // as plain strings), which the window must never draw as it is (it once took the whole window down).
+        return { plugins: PLUGINS.map((p) => ({ id: p.id, name: p.id === "fish-audio" ? { en: p.name } : p.name, version: "1.0.0", enabled: p.enabled, state: "running" })) };
+      case "tool.permissions": {
+        piece("tools", method);
+        const rows = tools.list();
+        return {
+          plugins: PLUGINS.filter((p) => Object.keys(p.tools).length > 0).map((p) => ({
+            pluginId: p.id, name: p.name, server: p.server,
+            tools: rows.filter((r) => r.server === p.server).map((r) => ({ name: r.tool, permission: r.permission, availability: r.availability, declared: r.declared, cardRules: [] })),
+          })),
+        };
+      }
+      case "tool.setAvailability":
+        piece("tools", method);
+        tools.setAvailability(String(params.server), typeof params.tool === "string" ? params.tool : undefined, params.availability as never);
+        return { ok: true };
+      case "tool.setPermission":
+        piece("tools", method);
+        tools.setPermission(String(params.server), typeof params.tool === "string" ? params.tool : undefined, params.permission as never);
+        return { ok: true };
+      case "plugin.auth.signIn":
+        return { state: typeof params.key === "string" ? "signed-in" : "signed-out", ...(typeof params.key === "string" ? {} : { authorizeUrl: "https://example.test/authorize" }) };
+      case "plugin.auth.signOut":
+        return { applied: false, card: "card_signout_000001" };
+      case "bot.archived":
+        piece("bots", method);
+        return { bots: bots.archived() };
+      case "bot.remove":
+        piece("bots", method);
+        await bots.remove(String(params.id));
+        event("bots", { type: "bot_record_removed", id: String(params.id) });
+        return { ok: true };
+      case "bot.restore": {
+        piece("bots", method);
+        const v = await bots.restore(String(params.id));
+        event("bots", { type: "bot_record_changed", bot: v });
+        return { bot: v };
+      }
+      case "bot.instructions.get":
+        piece("bots", method);
+        return { text: bots.instructions(String(params.id)) };
+      case "bot.edit": {
+        piece("bots", method);
+        const v = await bots.edit(String(params.id), params.patch as never);
+        event("bots", { type: "bot_record_changed", bot: v });
+        return { applied: true };
+      }
+      case "pair.quit":
+        return { ok: true };
+      case "host.status":
+        return o.host ?? { state: "running", crashes: 0, since: now };
+      case "models.list":
+        return { models: MODELS, default: "anthropic/claude-sonnet" };
+      case "plugin.install":
+        return { id: "added-plugin", state: "found", card: "card_added_plugin" };
+      case "account.status":
+        return { signedIn: true, provider: "email", user: { id: "u_1", name: "Sam", email: "sam@example.test" } };
+      case "device.list":
+        return { devices: [{ id: FAKE_DEVICE, name: "Studio", kind: "desktop", isThis: true }, { id: "devphone000000000001", name: "Phone", kind: "phone" }] };
+      case "computer.list":
+        return { computers: [{ name: "Studio", level: "ask-risky" }, { name: "Laptop", level: "ask" }] };
+      // Pairing and removing a device, as the engine answers them for the app's own press: a code, the words, and a sealed card
+      // for the add and the removal (`applied: false`).
+      case "device.relay.get":
+        return relay;
+      case "device.relay.set":
+        if (params.mode === "custom" && !/^https:\/\/[^/@\s]+\/?$/.test(String(params.url ?? ""))) throw new RpcError(-32602, "a relay server's address is an https:// address with no login or query in it");
+        relay = { mode: params.mode as "n0" | "off" | "custom", ...(params.mode === "custom" ? { url: String(params.url) } : {}) };
+        return relay;
+      case "device.pair.begin":
+        return { pairingId: "pair_host", qr: "clover-pair:1:AAAA", code: "KQ7-M2P", expiresAt: now + 600_000 };
+      case "device.pair.join":
+        return { pairingId: "pair_join", words: ["amber", "river", "lantern", "moss"], expiresAt: now + 600_000 };
+      case "device.pair.confirm":
+        return { applied: false, card: "card_pair" };
+      case "device.pair.cancel":
+        return { ok: true };
+      case "device.revoke":
+        return { applied: false, card: "card_revoke" };
+      case "plugin.auth.list":
+        if (params.id === "moss/model-anthropic") return { auth: [{ index: 0, method: "api-key", state: "signed-in" }] };
+        if (params.id === "fish-audio") return { auth: [{ index: 0, method: "api-key", state: "signed-out" }] };
+        return { auth: [] };
+      case "plugin.settings.get":
+        if (params.id === "moss/voice") {
+          return { settings: [
+            { key: "voice", type: "enum", title: "Voice", scope: "bot", required: false, options: [{ value: "fish:river", title: "River (Fish Audio)" }, { value: "fish:sol", title: "Sol (Fish Audio)" }], value: "fish:river", set: true },
+            { key: "silent", type: "boolean", title: "No voice for this bot", scope: "bot", required: false, value: false, set: false },
+            { key: "speakReplies", type: "boolean", title: "Speak replies", scope: "account", required: false, value: true, set: false },
+          ] };
+        }
+        return { settings: [] };
+      case "bot.pluginSettings":
+        piece("bots", method);
+        return { plugins: [{ pluginId: "moss/voice", name: "MOSS Voice", settings: [
+          { key: "voice", type: "enum", title: "Voice", scope: "bot", required: false, options: [{ value: "fish:river", title: "River (Fish Audio)" }, { value: "fish:sol", title: "Sol (Fish Audio)" }], value: "fish:river", set: true },
+          { key: "silent", type: "boolean", title: "No voice for this bot", scope: "bot", required: false, value: false, set: false },
+        ] }] };
+      case "plugin.settings.set":
+        return { applied: true };
+      default:
+        throw notServed(method);
+    }
+  }
+
+  const server: Server = createServer((socket) => {
+    const c: Conn = { id: nextConn++, socket, authed: false, areas: new Set(), attached: new Set(), streams: new Map() };
+    conns.set(c.id, c);
+    const dec = new LineDecoder();
+    socket.on("data", (chunk: Buffer) => {
+      for (const line of dec.push(chunk)) {
+        let msg: Rpc;
+        try { msg = JSON.parse(line) as Rpc; } catch { continue; }
+        if (msg.method === undefined && typeof msg.id === "number") { waiting.get(msg.id)?.(msg.error ?? msg.result); waiting.delete(msg.id); continue; }
+        if (msg.method === undefined) continue;
+        const method = msg.method;
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const { token: _t, ...shown } = params;
+        log.push({ method, params: shown, conn: c.id });
+        try { appendFileSync(join(o.home, "fake", "calls.jsonl"), `${JSON.stringify({ t: Date.now(), conn: c.id, method, params: shown })}\n`); } catch { /* the home went away */ }
+        void serve(c, method, params).then(
+          (result) => { if (msg.id !== undefined) write(c, { jsonrpc: "2.0", id: msg.id, result }); },
+          (err: unknown) => {
+            const e = err instanceof RpcError ? err : new RpcError(-32603, err instanceof Error ? err.message : String(err));
+            if (msg.id !== undefined) write(c, { jsonrpc: "2.0", id: msg.id, error: { code: e.code, message: e.message, ...(e.data !== undefined ? { data: e.data } : {}) } });
+          },
+        );
+      }
+    });
+    const gone = () => {
+      for (const t of c.streams.values()) clearInterval(t);
+      conns.delete(c.id);
+      router.dropped(c.id);
+    };
+    socket.on("close", gone);
+    socket.on("error", gone);
+  });
+  await new Promise<void>((resolve) => server.listen(endpoint, resolve));
+  void pictureId;
+
+  return {
+    home: o.home, token, endpoint, bots, feed, router, keys,
+    calls: () => [...log],
+    answered: () => [...answered],
+    placements: () => router.list(),
+    setActing: (acting) => { actingNow = acting; },
+    raise: (card) => {
+      cards.set(card.id, card);
+      router.pending({ id: card.id, ...(card.session !== undefined ? { session: card.session } : {}), ...(card.bot !== undefined ? { bot: card.bot } : {}) });
+      event("approvals", { type: "card_requested", card });
+    },
+    beforeCardList: (fn) => { beforeList = fn; },
+    releaseChanged: (e) => event("release", { type: "release_changed", engine: o.release ?? "0.124.0", ...e }),
+    devicesEvent: (e) => event("devices", e),
+    dropAll: () => { for (const c of conns.values()) c.socket.destroy(); },
+    ask: async (method, params = {}) => Promise.all([...conns.values()].filter((c) => c.authed).map((c) => new Promise((resolve) => {
+      const id = nextReq++;
+      waiting.set(id, resolve);
+      write(c, { jsonrpc: "2.0", id, method, params });
+    }))),
+    close: () => new Promise<void>((resolve) => {
+      for (const c of conns.values()) { for (const t of c.streams.values()) clearInterval(t); c.socket.destroy(); }
+      server.close(() => resolve());
+    }),
+  };
+}
+
+/** A mood set in the fake feed, as the engine would on a bot's turn. */
+export function setMood(e: FakeEngine, id: string, state: ActivityState, name: string): void {
+  e.feed.set({ subject: { kind: "bots", id }, state, name, since: Date.now() });
+}
+
+export { botId };

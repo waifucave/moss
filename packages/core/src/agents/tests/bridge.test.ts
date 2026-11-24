@@ -1,13 +1,13 @@
 // The bridge as processes: the kernel's pid for a socket's caller, the real bridge process speaking MCP on stdio and
-// Clover's protocol to the endpoint, and a stolen token refused (spike S5 edit 4).
+// MOSS's protocol to the endpoint, and a stolen token refused (spike S5 edit 4).
 import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError, RpcPeer } from "@waifucave/clover-agent-sdk/acp";
-import { bridgeCloverParts, type BridgeHandlers } from "../bridge/handlers";
-import { serveClover } from "../testing/clover-endpoint";
+import { bridgeMossParts, type BridgeHandlers } from "../bridge/handlers";
+import { serveMoss } from "../testing/moss-endpoint";
 import { BRIDGE_MAIN_PATH } from "../bridge/main";
 import { peerPidOf } from "../bridge/peer";
 import { BRIDGE_ENV } from "../bridge/server";
@@ -18,7 +18,7 @@ import { waitFor } from "./world";
 // Real processes: generous on a loaded CI runner.
 setDefaultTimeout(60_000);
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "clover-k-br-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-k-br-")));
 const children: ChildProcess[] = [];
 afterAll(() => {
   for (const c of children) c.kill("SIGKILL");
@@ -40,11 +40,12 @@ function endpointWith(handlers: Partial<BridgeHandlers>, tokens: BridgeTokens, n
     sendMessage: async (sessionId, m) => {
       sent.push({ sessionId, ...m });
     },
+    listSessions: async () => ({ sessions: [{ id: "s_other", kind: "coding", title: "Docs pass", status: "idle", backend: "claude-code" }] }),
     glossary: async () => ({ results: [{ name: "pdf", kind: "skill", description: "Read PDFs" }], loaded: [] }),
     ...handlers,
   };
-  // Lane C's Clover server, serving the bridge role as the daemon does.
-  const ep = serveClover(sockPath(name), bridgeCloverParts(tokens, full));
+  // Lane C's MOSS server, serving the bridge role as the daemon does.
+  const ep = serveMoss(sockPath(name), bridgeMossParts(tokens, full));
   return { ep, sent };
 }
 
@@ -87,13 +88,17 @@ describe.skipIf(!posix)("the bridge process", () => {
     expect((discover as RpcError).code).toBe(-32601);
     const init = (await mcp.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } })) as Record<string, unknown>;
     expect(init["protocolVersion"]).toBe("2025-06-18");
-    expect(init["serverInfo"]).toEqual({ name: "clover", version: "0.0.0" });
+    expect(init["serverInfo"]).toEqual({ name: "moss", version: "0.0.0" });
     expect(init["instructions"]).toBe("Use SendMessage to report.");
     const list = (await mcp.request("tools/list", {})) as { tools: { name: string; description: string }[] };
-    expect(list.tools.map((t) => t.name)).toEqual(["SendMessage", "Glossary"]);
+    expect(list.tools.map((t) => t.name)).toEqual(["SendMessage", "ListSessions", "Glossary"]);
     expect(list.tools.every((t) => t.description.length > 40)).toBe(true);
     expect(await mcp.request("tools/call", { name: "SendMessage", arguments: { message: "halfway" } })).toEqual({ content: [{ type: "text", text: "Sent." }], isError: false });
     expect(sent).toEqual([{ sessionId: "agent_one", text: "halfway" }]);
+    // `ListSessions` over the real socket: the daemon's `bridge.listSessions`, bound to this session's live token.
+    const listed = (await mcp.request("tools/call", { name: "ListSessions", arguments: {} })) as { content: { text: string }[]; isError: boolean };
+    expect(listed.isError).toBe(false);
+    expect(listed.content[0]!.text).toBe('- s_other · coding · idle · agent "claude-code" · title "Docs pass"');
     const glossary = (await mcp.request("tools/call", { name: "Glossary", arguments: { query: "pdf" } })) as { content: { text: string }[] };
     expect(glossary.content[0]!.text).toContain("Read PDFs");
     expect(await mcp.request("tools/call", { name: "Render", arguments: {} })).toEqual({ content: [{ type: "text", text: "ran Render" }], isError: false });
@@ -104,6 +109,9 @@ describe.skipIf(!posix)("the bridge process", () => {
       return r.isError ? r : undefined;
     }, "the revoked bridge to fail")) as { content: { text: string }[] };
     expect(after.content[0]!.text).toContain("went away");
+    // ...and a revoked token's `ListSessions` is refused as its `SendMessage` is: the method is mounted inside the same live-token check.
+    const listAfter = (await mcp.request("tools/call", { name: "ListSessions", arguments: {} })) as { isError: boolean; content: { text: string }[] };
+    expect(listAfter.isError).toBe(true);
     ep.close();
   });
 

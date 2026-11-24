@@ -2,10 +2,10 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-// The usage DB (`docs/claude/usage.md`): `<CLOVER_HOME>/usage/usage.db`, a file of its own — NEVER a table in
+// The usage DB (`docs/claude/usage.md`): `<MOSS_HOME>/usage/usage.db`, a file of its own — NEVER a table in
 // `runtime-state.db`, whose schema version other branches move. Its own tiny schema (`PRAGMA user_version`).
 //
-//  - `usage_records`: one row per model per turn (Clover), per token_count increment (Codex) or per assistant
+//  - `usage_records`: one row per model per turn (MOSS), per token_count increment (Codex) or per assistant
 //    message (Claude Code). Numbers, a model, a provider, a time and an opaque id — NOTHING ELSE from another app's
 //    files (no content, no path, no project name). `dedupe` is UNIQUE: a re-read never counts twice.
 //  - `usage_hourly`: the same numbers rolled up per hour × source × provider × model, written in the SAME
@@ -29,10 +29,10 @@ import { dirname } from "node:path";
 
 export const USAGE_DB_SCHEMA_VERSION = 5;
 
-export type UsageSource = "winter" | "codex" | "claude-code" | "opencode";
-export const USAGE_SOURCES: readonly UsageSource[] = ["winter", "codex", "claude-code", "opencode"];
+/** `winter` (MOSS's own turns) or the name of a `usage.sources` entry: the core knows no tool by name. */
+export type UsageSource = string;
 
-/** How a record's cost was reached: the runtime's own list price, Clover's list-price estimate from the catalog (a
+/** How a record's cost was reached: the runtime's own list price, MOSS's list-price estimate from the catalog (a
  *  subscription row, or another app's usage), the cost the other app itself recorded (OpenCode), or no price at all. */
 export type CostBasis = "list" | "estimate" | "reported" | "unknown";
 
@@ -72,7 +72,7 @@ export interface UsageRow {
   unpricedTokens: number;
   /** Records priced by the runtime itself (`list`). */
   listRecords: number;
-  /** Records priced by Clover's estimate. */
+  /** Records priced by MOSS's estimate. */
   estimateRecords: number;
   /** Records priced by the other app itself (`reported`). */
   reportedRecords: number;
@@ -104,8 +104,8 @@ export interface IngestFileState {
   state: Record<string, unknown>;
 }
 
-/** The plans an alarm can watch (the plan slots, not the usage sources). */
-export type AlarmProvider = "codex" | "claude-code" | "antigravity";
+/** The plans an alarm can watch: the name of a `usage.sources` entry that gives a plan. */
+export type AlarmProvider = string;
 
 /** A one-shot plan alarm: fires once when a window's used share reaches `thresholdPercent`; its notice is then kept
  *  until a client acknowledges it, and the row goes. */
@@ -147,7 +147,7 @@ export interface Subscription {
   renewalDay: number;
   /** 1…12, yearly plans only. */
   renewalMonth?: number;
-  /** Which usage counts toward this plan: `codex`, `claude-code`, `winter` (any Clover session), or `winter:<provider>`. */
+  /** Which usage counts toward this plan: `codex`, `claude-code`, `winter` (any MOSS session), or `winter:<provider>`. */
   covers: string[];
   createdAt: number;
   updatedAt: number;
@@ -179,7 +179,7 @@ export class UsageDb {
 
   private migrate(): void {
     const v = this.schemaVersion();
-    if (v > USAGE_DB_SCHEMA_VERSION) throw new Error(`usage.db is schema ${v}, newer than this Clover (${USAGE_DB_SCHEMA_VERSION})`);
+    if (v > USAGE_DB_SCHEMA_VERSION) throw new Error(`usage.db is schema ${v}, newer than this MOSS (${USAGE_DB_SCHEMA_VERSION})`);
     if (v === USAGE_DB_SCHEMA_VERSION) { this.ensureAlarmsTable(); return; }
     if (v < 1) this.migrateTo1();
     if (v < 2) {
@@ -502,7 +502,7 @@ export class UsageDb {
     const clauses: string[] = [];
     const args: Array<string | number> = [from, to];
     for (const c of covers) {
-      if (c === "codex" || c === "claude-code" || c === "opencode" || c === "winter") { clauses.push("source = ?"); args.push(c); }
+      if (c.startsWith("winter:") === false && /^[a-z][a-z0-9-]{0,39}$/.test(c)) { clauses.push("source = ?"); args.push(c); }
       else if (c.startsWith("winter:")) { clauses.push("(source = 'winter' AND provider = ?)"); args.push(c.slice("winter:".length)); }
     }
     if (clauses.length === 0) return { costUsd: 0, tokens: 0, unpricedTokens: 0 };
@@ -552,6 +552,25 @@ export class UsageDb {
     this.commitFile({ key, source, inode: 0, offset: 0, state }, [], now);
   }
 
+  /** Every source that has a record or a progress row (what a query that names no source covers), `winter` included. */
+  knownSources(): UsageSource[] {
+    const rows = this.db.query("SELECT source FROM usage_hourly UNION SELECT source FROM ingest_files").all() as Array<{ source: string }>;
+    return [...new Set(["winter", ...rows.map((r) => r.source)])];
+  }
+
+  /** What the store held for `source` before its state moved to the source: its read offsets and progress records. */
+  legacyRows(source: UsageSource, exceptKeyPrefix: string): Record<string, { inode: number; offset: number; state: Record<string, unknown>; updatedAt: number }> {
+    const rows = this.db.query("SELECT key FROM ingest_files WHERE source = ? AND key NOT LIKE ?").all(source, `${exceptKeyPrefix}%`) as Array<{ key: string }>;
+    const out: Record<string, { inode: number; offset: number; state: Record<string, unknown>; updatedAt: number }> = {};
+    for (const { key } of rows) {
+      const r = this.db.query("SELECT inode, offset, updated_at FROM ingest_files WHERE key = ?").get(key) as Record<string, unknown> | null;
+      const f = this.fileState(key);
+      if (r === null || f === undefined) continue;
+      out[key] = { inode: f.inode, offset: f.offset, state: f.state, updatedAt: n(r.updated_at) };
+    }
+    return out;
+  }
+
   // ── probe latches ───────────────────────────────────────────────────────────────────────────────
 
   latch(key: string): { reason: string; at: number } | undefined {
@@ -567,7 +586,7 @@ export class UsageDb {
   // ── plan alarms ─────────────────────────────────────────────────────────────────────────────────
 
   private static alarmOf(r: Record<string, unknown>): UsageAlarm | undefined {
-    const provider = r.provider === "codex" || r.provider === "claude-code" || r.provider === "antigravity" ? r.provider : undefined;
+    const provider = typeof r.provider === "string" && r.provider.length > 0 ? r.provider : undefined;
     if (provider === undefined) return undefined;
     return { id: String(r.id), provider, windowKey: String(r.window_key), thresholdPercent: n(r.threshold), createdAt: n(r.created_at) };
   }

@@ -9,17 +9,18 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { API_CALLS, type ApiCallInfo } from "@waifucave/clover-plugin-sdk";
+import { API_CALLS, type ApiCallInfo } from "@waifucave/moss-plugin-sdk";
+import { isDataFolder } from "../api-members";
 
 const ROOT = resolve(import.meta.dir, "..", "..", "..", "..", "..");
 const PLUGINS = join(ROOT, "plugins");
 
 /** Bundled host halves the scan skips, by plugin id, with why. Each must still fail the scan: one that passes comes off. */
 const SKIPPED: Record<string, string> = {
-  "clover/forwarder": "parked: PARKED.md",
-  "clover/push": "parked: PARKED.md",
-  "clover/companion-web": "parked: PARKED.md",
-  "clover/relay-cloudflare": "parked: PARKED.md",
+  "moss/forwarder": "parked: PARKED.md",
+  "moss/push": "parked: PARKED.md",
+  "moss/companion-web": "parked: PARKED.md",
+  "moss/relay-cloudflare": "parked: PARKED.md",
 };
 
 /** What `api.plugin` is: data, the plugin's own `PluginSelf`. */
@@ -33,6 +34,8 @@ const PREFIXES = new Set(Object.keys(CALLS).flatMap((call) => call.split(".").ma
 /** Why `api.<path>` is wrong in a host half, or undefined when it's a member a host half may reach. */
 function memberProblem(path: readonly string[]): string | undefined {
   if (path[0] === "plugin") return path.length === 1 || PLUGIN_SELF.has(path[1]!) ? undefined : `api.${path.join(".")} isn't a field of api.plugin`;
+  // `api.storage.dataFolder`: the one data member of an area (api-members.ts `isDataFolder`), answered by every host.
+  if (path.length === 2 && isDataFolder(path.slice(0, 1), path[1]!)) return undefined;
   for (let i = 1; i <= path.length; i++) {
     const dotted = path.slice(0, i).join(".");
     const info = CALLS[dotted];
@@ -103,7 +106,7 @@ interface Half {
 function bundledHalves(): Half[] {
   const halves: Half[] = [];
   const visit = (folder: string, parent: string | undefined) => {
-    const manifestFile = join(folder, "clover.json");
+    const manifestFile = join(folder, "moss.json");
     if (!existsSync(manifestFile)) return;
     const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as { id?: string; host?: { entry?: string } };
     // A child plugin has no id of its own: it is its parent's and its folder's name.
@@ -141,16 +144,17 @@ function problems(half: Half): string[] {
 describe("bundled host halves reach only the plugin API's host members", () => {
   const halves = bundledHalves();
 
-  test("the scan sees every bundled host half (the clover tree's and Alpha's)", () => {
+  test("the scan sees every bundled host half (the moss tree's and Alpha's)", () => {
     const ids = halves.map((h) => h.id);
-    for (const id of ["alpha", "clover/browser", "clover/notifications", "clover/web", "clover/fish-audio", "clover/provider-gcp", ...Object.keys(SKIPPED)]) expect(ids).toContain(id);
+    for (const id of ["alpha", "moss/browser", "moss/notifications", "moss/web", "moss/fish-audio", "moss/provider-gcp", ...Object.keys(SKIPPED)]) expect(ids).toContain(id);
     for (const h of halves) expect(h.files.length).toBeGreaterThan(0);
   });
 
   test("the checker: a member outside the catalog, a component's call, a not-yet call, and past a call each fail; host members pass", () => {
-    expect(apiPaths("const o = api.env?.CLOVER_HOOKS_ORIGIN; api.log('x'); ctx.api.net.fetch(u)")).toEqual([["env", "CLOVER_HOOKS_ORIGIN"], ["log"], ["net", "fetch"]]);
-    expect(memberProblem(["env", "CLOVER_HOOKS_ORIGIN"])).toBe("api.env doesn't exist in the plugin API");
+    expect(apiPaths("const o = api.env?.MOSS_HOOKS_ORIGIN; api.log('x'); ctx.api.net.fetch(u)")).toEqual([["env", "MOSS_HOOKS_ORIGIN"], ["log"], ["net", "fetch"]]);
+    expect(memberProblem(["env", "MOSS_HOOKS_ORIGIN"])).toBe("api.env doesn't exist in the plugin API");
     expect(memberProblem(["computer"])).toBe("api.computer doesn't exist in the plugin API");
+    expect(memberProblem(["storage", "dataFolder"])).toBeUndefined();
     expect(memberProblem(["t"])).toBe("api.t is a component's alone");
     // No call a host half can reach is marked not-yet any more (the last, browser.onCdpEvent, is a component's alone).
     expect(memberProblem(["settings", "get", "x"])).toBe("api.settings.get.x reaches past the call settings.get");

@@ -1,9 +1,9 @@
 // The core's own pages, drawn in a window's root over whatever fills it (spec §5.8): the welcome setup guide (§3.3)
 // and safe mode's plugin manager. Core code only, as the rest of the root: plain DOM, no plugin's, no inline styles
-// (the root's CSP), and the daemon only through the main process's checked calls (`cloverRoot.call`). A key the user
+// (the root's CSP), and the daemon only through the main process's checked calls (`mossRoot.call`). A key the user
 // pastes goes from its field to that call and nowhere else: never stored here, never shown again, never logged.
 
-import { orderProviders, SEARCH_FROM } from "./provider-order";
+import { orderProviders, SEARCH_FROM } from "@waifucave/moss-protocol/provider-order";
 
 export type Translate = (key: string, params?: Record<string, string | number>) => string;
 export type Call = (name: string, params?: unknown) => Promise<unknown>;
@@ -54,12 +54,12 @@ function message(err: unknown): string {
 function frame(host: HTMLElement, title: string, onClose: (() => void) | undefined, t: Translate): { body: HTMLElement; actions: HTMLElement; status: HTMLElement } {
   host.replaceChildren();
   host.hidden = false;
-  const body = el("div", { class: "clover-page__body" });
-  const actions = el("div", { class: "clover-page__actions" });
-  const status = el("p", { class: "clover-page__status", role: "status", "aria-live": "polite" });
-  const head = el("header", { class: "clover-page__head" }, el("h1", {}, title));
-  if (onClose !== undefined) head.append(button(t("safe.close"), onClose, { class: "clover-page__close" }));
-  host.append(el("section", { class: "clover-page", role: "dialog", "aria-modal": "true", "aria-label": title }, head, body, status, actions));
+  const body = el("div", { class: "moss-page__body" });
+  const actions = el("div", { class: "moss-page__actions" });
+  const status = el("p", { class: "moss-page__status", role: "status", "aria-live": "polite" });
+  const head = el("header", { class: "moss-page__head" }, el("h1", {}, title));
+  if (onClose !== undefined) head.append(button(t("safe.close"), onClose, { class: "moss-page__close" }));
+  host.append(el("section", { class: "moss-page", role: "dialog", "aria-modal": "true", "aria-label": title }, head, body, status, actions));
   return { body, actions, status };
 }
 
@@ -67,104 +67,290 @@ function frame(host: HTMLElement, title: string, onClose: (() => void) | undefin
 // The welcome setup guide
 // -------------------------------------------------------------------------------------------------
 
+interface SetupView {
+  ready: boolean;
+  missing: ("provider" | "model" | "default-provider")[];
+  providers: string[];
+  default?: { model: string; source: "chosen" | "computed"; effort?: string };
+  recommended?: Record<string, { model: string; effort?: string }>;
+  dismissed: boolean;
+  /** The default model whose provider is signed out, in names a person knows (`welcome.setup`). */
+  signedOutAs?: { model: string; provider: string };
+}
+
+interface PickView {
+  id: string;
+  name: string;
+  provider: string;
+  providerName: string;
+}
+
+/** The setup guide (§3.3, the owner's 2026-11-20 ruling): add a provider, then the default model (already chosen when
+ *  one provider was added, a picker when several), then done, which lands on a new code session. Skippable at every
+ *  step; the engine keeps what is set up and whether it was skipped, so finishing or skipping here holds for MOSS too. */
+/** A model as the guide names it: "Claude Opus 5.5 · medium" when it has an effort. */
+function withEffort(name: string, effort: string | undefined): string {
+  return effort === undefined || effort === "" ? name : `${name} · ${effort}`;
+}
+
 export async function showWelcome(host: HTMLElement, t: Translate, call: Call, done: () => void): Promise<void> {
-  const page = frame(host, t("welcome.title"), undefined, t);
-  page.body.append(el("p", {}, t("welcome.intro")), el("p", { class: "clover-page__note" }, t("welcome.no-claude")));
-  const search = el("input", { type: "search", class: "clover-page__search", autocomplete: "off", spellcheck: "false", "aria-label": t("welcome.search"), placeholder: t("welcome.search"), "data-clover-search": "" });
-  search.hidden = true;
-  const list = el("div", { class: "clover-page__list" }, el("p", {}, t("welcome.loading")));
-  page.body.append(search, list);
-  let all: ProviderView[] = [];
-  const show = () => {
-    const shown = orderProviders(all, search.value);
-    list.replaceChildren(...(shown.length > 0 ? shown.map((p) => provider(p)) : [el("p", {}, t("welcome.no-match"))]));
-  };
-  search.addEventListener("input", show);
-  const finish = async () => {
-    await call("welcome.done");
+  const total = 3;
+  const skip = async () => {
+    await call("welcome.skip");
     done();
   };
-  const start = button(t("welcome.done"), finish, { class: "clover-page__primary", "data-clover-welcome": "start" });
-  page.actions.append(button(t("welcome.skip"), finish, { "data-clover-welcome": "skip" }), start);
-  const draw = async () => {
-    let providers: ProviderView[];
-    try {
-      providers = ((await call("welcome.providers")) as { providers: ProviderView[] }).providers;
-    } catch (err) {
-      list.replaceChildren(el("p", {}, t("welcome.failed", { error: message(err) })));
-      return;
-    }
-    if (providers.length === 0) {
-      list.replaceChildren(el("p", {}, t("welcome.none")));
-      return;
-    }
-    const ready = providers.filter((p) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing")).length;
-    page.status.textContent = ready > 0 ? t("welcome.ready", { count: ready }) : "";
-    start.disabled = false;
-    all = providers;
-    search.hidden = providers.length < SEARCH_FROM;
-    show();
-  };
-  const provider = (p: ProviderView): HTMLElement => {
-    const box = el("article", { class: "clover-page__item", "data-clover-provider": p.id }, el("h2", {}, p.name));
-    // The terms come first (§5.7): each sign-in waits until they are accepted.
-    let accepted = p.terms === undefined;
-    const signIns: HTMLElement[] = [];
-    if (p.terms !== undefined) {
-      const tick = el("input", { type: "checkbox", id: `terms-${p.id}`, "data-clover-terms": p.id });
-      tick.addEventListener("change", () => {
-        accepted = tick.checked;
-        for (const s of signIns) s.toggleAttribute("data-disabled", !accepted);
-        for (const c of box.querySelectorAll<HTMLButtonElement | HTMLInputElement>("[data-needs-terms]")) c.disabled = !accepted;
-      });
-      const terms = "url" in p.terms
-        ? button(t("welcome.terms", { provider: p.name }), () => call("welcome.openTerms", { id: p.id }).then(() => undefined, (err) => void (page.status.textContent = t("welcome.failed", { error: message(err) }))), { class: "clover-page__link" })
-        : el("blockquote", { class: "clover-page__terms" }, p.terms.text);
-      box.append(terms, el("label", { class: "clover-page__check", for: `terms-${p.id}` }, tick, t("welcome.terms-accept", { provider: p.name })));
-    }
-    for (const a of p.auth) {
-      const row = el("div", { class: "clover-page__auth", "data-clover-auth": `${p.id}#${a.index}` });
-      signIns.push(row);
-      if (a.state === "signed-in" || a.state === "refreshing") {
-        row.append(el("p", { class: "clover-page__ok" }, `${t("welcome.signed-in")}${a.account !== undefined ? ` (${a.account})` : ""}`));
-      } else if (a.method === "api-key") {
-        const field = el("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": t("welcome.key-label", { provider: p.name }), placeholder: t("welcome.paste-key"), "data-needs-terms": "", "data-clover-key": `${p.id}#${a.index}` });
-        field.disabled = !accepted;
-        const save = button(t("welcome.save-key"), async () => {
-          const key = field.value;
-          if (key.trim() === "") return;
-          try {
-            await call("welcome.signIn", { id: p.id, index: a.index, key });
-            field.value = "";
-            page.status.textContent = t("welcome.key-saved");
-            await draw();
-            page.status.textContent = t("welcome.key-saved");
-          } catch (err) {
-            field.value = "";
-            page.status.textContent = t("welcome.failed", { error: message(err) });
-          }
-        }, { "data-needs-terms": "", "data-clover-save": `${p.id}#${a.index}` });
-        save.disabled = !accepted;
-        if (a.help !== undefined) row.append(el("p", { class: "clover-page__note" }, a.help));
-        row.append(el("label", { class: "clover-page__field" }, t("welcome.key-label", { provider: p.name }), field), save);
-      } else {
-        const go = button(t("welcome.sign-in"), async () => {
-          try {
-            const r = (await call("welcome.signIn", { id: p.id, index: a.index })) as { state: string; opened: boolean };
-            page.status.textContent = r.opened ? t("welcome.waiting") : "";
-            await draw();
-          } catch (err) {
-            page.status.textContent = t("welcome.failed", { error: message(err) });
-          }
-        }, { "data-needs-terms": "", "data-clover-signin": `${p.id}#${a.index}` });
-        go.disabled = !accepted;
-        row.append(go);
+  const skipButton = () => button(t("welcome.skip"), skip, { "data-moss-welcome": "skip" });
+  const stepNote = (n: number) => el("p", { class: "moss-page__step", "data-moss-step": String(n) }, t("welcome.step", { n, total }));
+
+  // Step 1: a provider, each with its own way in (its terms first, then a key or a sign-in).
+  const providersStep = async (): Promise<void> => {
+    const page = frame(host, t("welcome.title"), undefined, t);
+    host.querySelector("section")?.setAttribute("data-moss-welcome-step", "providers");
+    page.body.append(stepNote(1), el("p", {}, t("welcome.intro")), el("p", { class: "moss-page__note" }, t("welcome.no-claude")));
+    const search = el("input", { type: "search", class: "moss-page__search", autocomplete: "off", spellcheck: "false", "aria-label": t("welcome.search"), placeholder: t("welcome.search"), "data-moss-search": "" });
+    search.hidden = true;
+    const list = el("div", { class: "moss-page__list" }, el("p", {}, t("welcome.loading")));
+    // The default model's provider signed out (a key removed, a sign-in that lapsed): said once, plainly, before the list.
+    const signedOut = el("p", { class: "moss-page__note", role: "status", "data-moss-signed-out": "" });
+    signedOut.hidden = true;
+    page.body.append(signedOut, search, list);
+    void (call("welcome.setup") as Promise<SetupView>).then((s) => {
+      if (s.signedOutAs === undefined) return;
+      signedOut.textContent = t("welcome.signed-out", { model: s.signedOutAs.model, provider: s.signedOutAs.provider });
+      signedOut.hidden = false;
+    }, () => undefined);
+    let all: ProviderView[] = [];
+    // Each provider is a closed row that opens to its terms and its ways in when clicked (the one shown alone is open).
+    const opened = new Set<string>();
+    const show = () => {
+      const shown = orderProviders(all, search.value);
+      list.replaceChildren(...(shown.length > 0 ? shown.map((p) => provider(p, shown.length === 1)) : [el("p", {}, t("welcome.no-match"))]));
+    };
+    search.addEventListener("input", show);
+    const next = button(t("welcome.next"), () => modelStep(), { class: "moss-page__primary", "data-moss-welcome": "next" });
+    next.disabled = true;
+    page.actions.append(skipButton(), next);
+    const draw = async () => {
+      let providers: ProviderView[];
+      try {
+        providers = ((await call("welcome.providers")) as { providers: ProviderView[] }).providers;
+      } catch (err) {
+        list.replaceChildren(el("p", {}, t("welcome.failed", { error: message(err) })));
+        return;
       }
-      box.append(row);
-    }
-    return box;
+      if (providers.length === 0) {
+        list.replaceChildren(el("p", {}, t("welcome.none")));
+        return;
+      }
+      const ready = providers.filter((p) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing")).length;
+      page.status.textContent = ready > 0 ? t("welcome.ready", { count: ready }) : t("welcome.need-provider");
+      next.disabled = ready === 0;
+      all = providers;
+      search.hidden = providers.length < SEARCH_FROM;
+      show();
+    };
+    const provider = (p: ProviderView, alone: boolean): HTMLElement => {
+      const isReady = p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing");
+      const open = alone || opened.has(p.id);
+      const head = el("button", { type: "button", class: "moss-page__item-head", "aria-expanded": String(open), "data-moss-open": p.id }, el("span", {}, p.name), isReady ? el("span", { class: "moss-page__ok" }, t("welcome.signed-in")) : null);
+      head.addEventListener("click", () => {
+        if (opened.has(p.id)) opened.delete(p.id);
+        else opened.add(p.id);
+        show();
+      });
+      const row = el("article", { class: `moss-page__item moss-page__item--row${open ? " is-open" : ""}`, "data-moss-provider": p.id }, head);
+      if (!open) return row;
+      const box = el("div", { class: "moss-page__item-body" });
+      row.append(box);
+      // The terms come first (§5.7): each sign-in waits until they are accepted.
+      let accepted = p.terms === undefined;
+      const signIns: HTMLElement[] = [];
+      if (p.terms !== undefined) {
+        const tick = el("input", { type: "checkbox", id: `terms-${p.id}`, "data-moss-terms": p.id });
+        tick.addEventListener("change", () => {
+          accepted = tick.checked;
+          for (const s of signIns) s.toggleAttribute("data-disabled", !accepted);
+          for (const c of box.querySelectorAll<HTMLButtonElement | HTMLInputElement>("[data-needs-terms]")) c.disabled = !accepted;
+        });
+        const terms = "url" in p.terms
+          ? button(t("welcome.terms", { provider: p.name }), () => call("welcome.openTerms", { id: p.id }).then(() => undefined, (err) => void (page.status.textContent = t("welcome.failed", { error: message(err) }))), { class: "moss-page__link" })
+          : el("blockquote", { class: "moss-page__terms" }, p.terms.text);
+        box.append(terms, el("label", { class: "moss-page__check", for: `terms-${p.id}` }, tick, t("welcome.terms-accept", { provider: p.name })));
+      }
+      for (const a of p.auth) {
+        const row = el("div", { class: "moss-page__auth", "data-moss-auth": `${p.id}#${a.index}` });
+        signIns.push(row);
+        if (a.state === "signed-in" || a.state === "refreshing") {
+          row.append(el("p", { class: "moss-page__ok" }, `${t("welcome.signed-in")}${a.account !== undefined ? ` (${a.account})` : ""}`));
+        } else if (a.method === "api-key") {
+          const field = el("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": t("welcome.key-label", { provider: p.name }), placeholder: t("welcome.paste-key"), "data-needs-terms": "", "data-moss-key": `${p.id}#${a.index}` });
+          field.disabled = !accepted;
+          const save = button(t("welcome.save-key"), async () => {
+            const key = field.value;
+            if (key.trim() === "") return;
+            try {
+              await call("welcome.signIn", { id: p.id, index: a.index, key });
+              field.value = "";
+              await draw();
+              page.status.textContent = t("welcome.key-saved");
+            } catch (err) {
+              field.value = "";
+              page.status.textContent = t("welcome.failed", { error: message(err) });
+            }
+          }, { "data-needs-terms": "", "data-moss-save": `${p.id}#${a.index}` });
+          save.disabled = !accepted;
+          if (a.help !== undefined) row.append(el("p", { class: "moss-page__note" }, a.help));
+          row.append(el("label", { class: "moss-page__field" }, t("welcome.key-label", { provider: p.name }), field), save);
+        } else {
+          const go = button(t("welcome.sign-in"), async () => {
+            try {
+              const r = (await call("welcome.signIn", { id: p.id, index: a.index })) as { state: string; opened: boolean };
+              page.status.textContent = r.opened ? t("welcome.waiting") : "";
+              await draw();
+            } catch (err) {
+              page.status.textContent = t("welcome.failed", { error: message(err) });
+            }
+          }, { "data-needs-terms": "", "data-moss-signin": `${p.id}#${a.index}` });
+          go.disabled = !accepted;
+          row.append(go);
+        }
+        box.append(row);
+      }
+      return row;
+    };
+    await draw();
   };
-  await draw();
+
+  // Step 2: the default model: shown already chosen (one provider added), with the picker one click away; a picker
+  // when several were added and none is chosen.
+  const modelStep = async (): Promise<void> => {
+    const page = frame(host, t("welcome.model-title"), undefined, t);
+    host.querySelector("section")?.setAttribute("data-moss-welcome-step", "model");
+    page.body.append(stepNote(2), el("p", {}, t("welcome.model-intro")));
+    let setup: SetupView;
+    let models: PickView[];
+    try {
+      [setup, models] = await Promise.all([call("welcome.setup") as Promise<SetupView>, call("welcome.models").then((r) => (r as { models: PickView[] }).models)]);
+    } catch (err) {
+      page.body.append(el("p", {}, t("welcome.failed", { error: message(err) })));
+      page.actions.append(button(t("welcome.back"), () => providersStep(), { "data-moss-welcome": "back" }), skipButton());
+      return;
+    }
+    const named = (id: string) => models.find((m) => m.id === id);
+    const select = el("select", { class: "moss-page__select", "aria-label": t("welcome.model-label"), "data-moss-model-picker": "" });
+    let group: HTMLOptGroupElement | undefined;
+    for (const m of models) {
+      if (group?.label !== m.providerName) select.append(group = el("optgroup", { label: m.providerName }));
+      group.append(el("option", { value: m.id }, m.name));
+    }
+    const current = setup.default?.model;
+    // Pre-filled: the default there is, else the first added provider's recommended model; the person still says so.
+    const first = current ?? setup.providers.map((p) => setup.recommended?.[p]?.model).find((x) => x !== undefined && named(x) !== undefined) ?? models[0]?.id;
+    if (first !== undefined) select.value = first;
+    const pickerRow = el("label", { class: "moss-page__field" }, t("welcome.model-label"), select);
+    const next = button(t("welcome.next"), async () => {
+      const chosen = select.value;
+      if (chosen === "") return;
+      try {
+        const effort = chosen !== current ? ((await call("welcome.setDefault", { model: chosen })) as SetupView).default?.effort : setup.default?.effort;
+        await doneStep(chosen, named(chosen), effort);
+      } catch (err) {
+        page.status.textContent = t("welcome.failed", { error: message(err) });
+      }
+    }, { class: "moss-page__primary", "data-moss-welcome": "next" });
+    if (models.length === 0) {
+      page.body.append(el("p", { class: "moss-page__note" }, t("welcome.model-none")));
+      next.disabled = true;
+    } else if (current !== undefined) {
+      const m = named(current);
+      const line = el("p", { class: "moss-page__ok", "data-moss-default": current }, t("welcome.model-chosen", { model: withEffort(m?.name ?? current, setup.default?.effort), provider: m?.providerName ?? current.slice(0, current.indexOf("/")) }));
+      pickerRow.hidden = true;
+      const change = button(t("welcome.change"), () => {
+        pickerRow.hidden = false;
+        change.hidden = true;
+        select.focus();
+      }, { class: "moss-page__link", "data-moss-welcome": "change" });
+      page.body.append(line, change, pickerRow);
+    } else {
+      page.body.append(el("p", {}, t("welcome.model-pick")), pickerRow);
+    }
+    page.actions.append(button(t("welcome.back"), () => providersStep(), { "data-moss-welcome": "back" }), skipButton(), next);
+  };
+
+  // Step 3: done: the window lands on a new code session.
+  const doneStep = async (model: string, m: PickView | undefined, effort: string | undefined): Promise<void> => {
+    const page = frame(host, t("welcome.done-title"), undefined, t);
+    host.querySelector("section")?.setAttribute("data-moss-welcome-step", "done");
+    // The model named as step 2 names it: name · effort (provider).
+    const said = withEffort(m?.name ?? model, effort);
+    page.body.append(stepNote(3), el("p", { "data-moss-done-model": `${said} (${m?.providerName ?? model.slice(0, model.indexOf("/"))})` }, t("welcome.done-intro", { model: said, provider: m?.providerName ?? model.slice(0, model.indexOf("/")) })));
+    page.body.append(button(t("welcome.devices"), () => relayStep(model, m, effort), { class: "moss-page__link", "data-moss-welcome": "relay" }));
+    page.actions.append(
+      button(t("welcome.back"), () => modelStep(), { "data-moss-welcome": "back" }),
+      button(t("welcome.start-code"), async () => {
+        await call("welcome.done");
+        done();
+      }, { class: "moss-page__primary", "data-moss-welcome": "start" }),
+    );
+  };
+
+  // The relay page (spec §8.3), reached from the done step: what a relay is for, n0's public relays on by default, the person's
+  // own server, or none. The cloud computer's relay and a Cloudflare relay are shown and not offered (relay plugins the links
+  // don't take yet).
+  const relayStep = async (model: string, m: PickView | undefined, effort: string | undefined): Promise<void> => {
+    const page = frame(host, t("welcome.relay-title"), undefined, t);
+    host.querySelector("section")?.setAttribute("data-moss-welcome-step", "relay");
+    let saved: { mode: string; url?: string } | undefined;
+    let mode = "n0";
+    const url = el("input", { type: "url", placeholder: "https://relay.example.com", "aria-label": t("welcome.relay-custom-label"), "data-moss-relay-url": "" });
+    url.hidden = true;
+    const save = button(t("welcome.relay-save"), async () => {
+      try {
+        const r = (await call("welcome.setRelay", { mode, ...(mode === "custom" ? { url: url.value.trim() } : {}) })) as { mode: string; url?: string };
+        saved = r;
+        url.value = r.url ?? "";
+        page.status.textContent = t("welcome.relay-saved");
+      } catch (err) {
+        page.status.textContent = t("welcome.failed", { error: message(err) });
+      }
+      refresh();
+    }, { class: "moss-page__primary", "data-moss-welcome": "relay-save" });
+    const refresh = (): void => {
+      url.hidden = mode !== "custom";
+      save.disabled = saved === undefined || (saved.mode === mode && (mode !== "custom" || (saved.url ?? "") === url.value.trim())) || (mode === "custom" && url.value.trim() === "");
+    };
+    const choice = (value: string, title: string, detail: string, off = false): HTMLElement => {
+      const input = el("input", { type: "radio", name: "relay", value });
+      input.disabled = off;
+      input.checked = !off && mode === value;
+      input.addEventListener("click", () => { mode = value; page.status.textContent = ""; refresh(); });
+      return el("label", { class: "moss-page__field", "data-moss-relay": value }, input, el("strong", {}, ` ${title} `), el("span", {}, detail));
+    };
+    page.body.append(
+      el("p", {}, t("welcome.relay-intro")),
+      el("p", { class: "moss-page__note" }, t("welcome.relay-privacy")),
+      choice("n0", t("welcome.relay-n0"), t("welcome.relay-n0-detail")),
+      choice("custom", t("welcome.relay-custom"), t("welcome.relay-custom-detail")),
+      url,
+      choice("cloud", t("welcome.relay-cloud"), t("welcome.relay-cloud-detail"), true),
+      choice("cloudflare", t("welcome.relay-cloudflare"), t("welcome.relay-cloudflare-detail"), true),
+      choice("off", t("welcome.relay-off"), t("welcome.relay-off-detail")),
+    );
+    url.addEventListener("input", () => { page.status.textContent = ""; refresh(); });
+    page.actions.append(button(t("welcome.back"), () => doneStep(model, m, effort), { "data-moss-welcome": "back" }), save);
+    save.disabled = true;
+    try {
+      saved = (await call("welcome.relay")) as { mode: string; url?: string };
+      mode = saved.mode;
+      url.value = saved.url ?? "";
+      for (const input of host.querySelectorAll<HTMLInputElement>("input[name=relay]")) input.checked = !input.disabled && input.value === mode;
+    } catch (err) {
+      page.status.textContent = t("welcome.failed", { error: message(err) });
+    }
+    refresh();
+  };
+
+  await providersStep();
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -174,7 +360,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
 export async function showPlugins(host: HTMLElement, t: Translate, call: Call, close: () => void): Promise<void> {
   const page = frame(host, t("safe.title"), () => void call("page.close").finally(close), t);
   page.body.append(el("p", {}, t("safe.intro")));
-  const list = el("div", { class: "clover-page__list" }, el("p", {}, t("safe.loading")));
+  const list = el("div", { class: "moss-page__list" }, el("p", {}, t("safe.loading")));
   page.body.append(list);
   const draw = async () => {
     let plugins: ManagedPlugin[];
@@ -190,10 +376,10 @@ export async function showPlugins(host: HTMLElement, t: Translate, call: Call, c
     }
     list.replaceChildren(...plugins.map((p) => {
       const state = p.state === "found" ? t("safe.state.found") : p.state === "invalid" ? t("safe.state.invalid") : p.enabled ? t("safe.on") : t("safe.off");
-      const row = el("article", { class: "clover-page__item", "data-clover-plugin": p.id },
+      const row = el("article", { class: "moss-page__item", "data-moss-plugin": p.id },
         el("h2", {}, p.name),
-        el("p", { class: "clover-page__note" }, `${p.id} · ${state}${p.reason !== undefined ? ` · ${p.reason}` : ""}`));
-      const acts = el("div", { class: "clover-page__row" });
+        el("p", { class: "moss-page__note" }, `${p.id} · ${state}${p.reason !== undefined ? ` · ${p.reason}` : ""}`));
+      const acts = el("div", { class: "moss-page__row" });
       const act = async (name: string) => {
         try {
           await call(name, { id: p.id });
@@ -203,8 +389,8 @@ export async function showPlugins(host: HTMLElement, t: Translate, call: Call, c
           page.status.textContent = t("safe.failed", { error: message(err) });
         }
       };
-      if (p.enabled) acts.append(button(t("safe.turn-off"), () => act("plugins.turnOff"), { "data-clover-turn-off": p.id }));
-      if (!p.child) acts.append(button(t("safe.remove"), () => act("plugins.remove"), { "data-clover-remove": p.id }));
+      if (p.enabled) acts.append(button(t("safe.turn-off"), () => act("plugins.turnOff"), { "data-moss-turn-off": p.id }));
+      if (!p.child) acts.append(button(t("safe.remove"), () => act("plugins.remove"), { "data-moss-remove": p.id }));
       row.append(acts);
       return row;
     }));
@@ -282,10 +468,10 @@ export async function showKey(host: HTMLElement, t: Translate, call: Call, close
   }
   const onVisibility = () => guard.seen(document.visibilityState === "visible");
   document.addEventListener("visibilitychange", onVisibility);
-  const state = el("p", { class: "clover-page__note", "data-clover-key-state": view.set ? "set" : "unset" });
-  const field = el("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": view.label, placeholder: t("key.paste"), "data-clover-key-field": "" });
+  const state = el("p", { class: "moss-page__note", "data-moss-key-state": view.set ? "set" : "unset" });
+  const field = el("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": view.label, placeholder: t("key.paste"), "data-moss-key-field": "" });
   // The removal's second step: its own row above the field, never where Remove was.
-  const confirmRow = el("div", { class: "clover-page__row", role: "group", "data-clover-key-confirm": "" });
+  const confirmRow = el("div", { class: "moss-page__row", role: "group", "data-moss-key-confirm": "" });
   confirmRow.hidden = true;
   const act = async (name: "key.save" | "key.remove", params: Record<string, unknown>, done: string) => {
     try {
@@ -300,22 +486,22 @@ export async function showKey(host: HTMLElement, t: Translate, call: Call, close
     const value = field.value;
     field.value = "";
     await act("key.save", { value }, "key.saved");
-  }, { class: "clover-page__primary", "data-clover-key-save": "" });
+  }, { class: "moss-page__primary", "data-moss-key-save": "" });
   const remove = guarded(t("key.remove"), guard, () => {
     confirmRow.hidden = false;
     remove.hidden = true;
     save.hidden = true;
     guard.rearm();
     keep.focus();
-  }, { "data-clover-key-remove": "" });
-  const keep = guarded(t("key.keep"), guard, () => draw(view), { "data-clover-key-keep": "" });
-  const really = guarded(t("key.remove"), guard, () => act("key.remove", {}, "key.removed"), { class: "clover-page__danger", "data-clover-key-remove-confirm": "" });
+  }, { "data-moss-key-remove": "" });
+  const keep = guarded(t("key.keep"), guard, () => draw(view), { "data-moss-key-keep": "" });
+  const really = guarded(t("key.remove"), guard, () => act("key.remove", {}, "key.removed"), { class: "moss-page__danger", "data-moss-key-remove-confirm": "" });
   // Keep comes first in the row; it is where focus goes, so a stray Enter keeps the key.
   confirmRow.append(el("span", {}, t("key.remove-ask")), keep, really);
   function draw(v: KeyView): void {
     view = v;
     state.textContent = v.set ? t("key.is-set", { label: v.label }) : t("key.not-set", { label: v.label });
-    state.setAttribute("data-clover-key-state", v.set ? "set" : "unset");
+    state.setAttribute("data-moss-key-state", v.set ? "set" : "unset");
     confirmRow.hidden = true;
     remove.hidden = !v.set;
     save.hidden = false;
@@ -323,7 +509,14 @@ export async function showKey(host: HTMLElement, t: Translate, call: Call, close
     guard.rearm();
     field.focus();
   }
-  page.body.append(el("p", {}, t("key.intro", { plugin: view.plugin })), state, confirmRow, el("label", { class: "clover-page__field" }, view.label, field));
+  page.body.append(el("p", {}, t("key.intro", { plugin: view.plugin })), state, confirmRow, el("label", { class: "moss-page__field" }, view.label, field));
   page.actions.append(remove, save);
   draw(view);
+}
+
+/** The core's page steps aside for a card waiting in this window, or comes back: kept as it is (its step, what was typed),
+ *  only not drawn (root.css: `#moss-page[data-aside]`). */
+export function stepAside(host: HTMLElement, aside: boolean): void {
+  if (aside) host.dataset.aside = "yes";
+  else delete host.dataset.aside;
 }

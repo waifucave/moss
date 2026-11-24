@@ -2,7 +2,7 @@
 // `card.*` tokens, with the escapes, and no identifier beyond the frame's own token (spec §5.5).
 import { describe, expect, test } from "bun:test";
 import { SEALED_PRESS_WORDS, buttonPage, fieldPage, sealedEscape } from "../src/main/sealed-pages";
-import type { SealedValue } from "@waifucave/clover-protocol";
+import type { SealedValue } from "@waifucave/moss-protocol";
 
 const TOKEN = "se_001abcdef";
 describe("a sealed field's page", () => {
@@ -11,10 +11,10 @@ describe("a sealed field's page", () => {
   test("the field's frame shows the sealed words, with the card's own tokens in, and nothing out", () => {
     const p = fieldPage({ cardId: "card_0a1b2c3d", token: TOKEN, field: "title", value: text, tokens: { "card.radius": "12px", "plugin.other": "x" } });
     expect(p).toContain("Run a command?");
-    expect(p).toContain('--clover-card-radius: 12px;');
+    expect(p).toContain('--moss-card-radius: 12px;');
     expect(p).not.toContain("plugin.other");
     expect(p).toContain(`data-token="${TOKEN}"`);
-    expect(p).not.toContain("cloverSealed.answer"); // a field answers nothing.
+    expect(p).not.toContain("mossSealed.answer"); // a field answers nothing.
   });
 
   test("code and lists and rows come through their own tags", () => {
@@ -42,8 +42,8 @@ describe("a sealed field's page", () => {
     expect(sealedEscape("a\nb")).toBe("a\nb");
     const tricky = fieldPage({ cardId: "card_x", token: TOKEN, field: "title", value: { type: "text", text: "x" }, tokens: { "card.font.family": "a); b { color: red }", "card.radius": "12px" } });
     // The token's value goes in only when it parses as its grammar's own run: a `;`'s own injection is dropped (S1).
-    expect(tricky).not.toContain("--clover-card-font-family:");
-    expect(tricky).toContain("--clover-card-radius: 12px;");
+    expect(tricky).not.toContain("--moss-card-font-family:");
+    expect(tricky).toContain("--moss-card-radius: 12px;");
     expect(tricky).not.toContain("{ color: red }");
   });
 });
@@ -67,7 +67,7 @@ describe("a sealed button's page", () => {
   test("a deny button takes the deny's own colours, not the approve's", () => {
     const p = buttonPage({ cardId: "card_x", token: TOKEN, option: "deny", label: "Deny", kind: "deny" });
     expect(p).toContain("seal-deny");
-    expect(p).toContain('--clover-card-deny-background');
+    expect(p).toContain('--moss-card-deny-background');
   });
 
   test("the page says the answer only once: the answering flag holds through the response", () => {
@@ -135,8 +135,24 @@ describe("the app's own fallback card page", () => {
   });
 });
 
-import { KEY_CHANGED_TEXT, KEY_FAULT_TEXT, REFUSED_TEXT } from "../src/main/sealed-pages";
+import { KEY_CHANGED_TEXT, KEY_FAULT_TEXT, NOT_CHECKED_REASON, NOT_SHOWN_REASON, PRESS_AGAIN_TEXT, REFUSED_TEXT, WINDOW_OVER_TEXTS } from "../src/main/sealed-pages";
 describe("a refused answer shows on the card", () => {
+  test("a press main didn't take for its fresh reading (a button only just drawn) says press again, never that it failed", () => {
+    for (const reason of [NOT_SHOWN_REASON, NOT_CHECKED_REASON]) expect(reason).toMatch(/press it again$/);
+    expect(PRESS_AGAIN_TEXT).toBe("Not ready yet — press again.");
+    const b = buttonPage({ cardId: "card_x", token: TOKEN, option: "allow_once", label: "Allow", kind: "approve" });
+    const own = ownCardPage({
+      cardId: "card_x", token: TOKEN, origin: "user", issuedAt: 0, expiresAt: null, fields: { title: { type: "text", text: "T" } },
+      options: [{ id: "allow_once", kind: "approve", label: "Allow" }, { id: "deny", kind: "deny", label: "Deny" }],
+    });
+    // Both pages read main's `again` first and show the press-again line for it.
+    for (const page of [b, own]) expect(page).toContain(`r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)}`);
+    // A window over the button (R12) says so, not "not ready".
+    // A window over the button (R12) says which and what to do, from a fixed set (main names which, never the words).
+    for (const page of [b, own]) expect(page).toContain(`typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered]`);
+    for (const t of Object.values(WINDOW_OVER_TEXTS)) expect(t).toMatch(/press again/);
+  });
+
   test("the button page and the fallback card say so and answer again; neither leaves a lasting \"…\"", () => {
     const b = buttonPage({ cardId: "card_x", token: TOKEN, option: "allow_once", label: "Allow", kind: "approve" });
     expect(b).toContain(JSON.stringify(REFUSED_TEXT));
@@ -206,5 +222,26 @@ describe("the Review on the app's own card page (the owner's ruling, 2026-11-13)
     const p = ownCardPage({ ...base, reviewable: true });
     expect(p.indexOf("<script>")).toBeLessThan(p.indexOf("<body"));
     expect(p).toContain('addEventListener("DOMContentLoaded", wireReview)');
+  });
+});
+
+describe("the reading's limit", () => {
+  test("a press waits for its two readings (the second a settle after the press) with room to spare, and gives the reading up well inside the age the app accepts it at", async () => {
+    const { FRESH_LIMIT_MS, FRESH_SETTLE_MS } = await import("../src/main/sealed-pages");
+    const { FRESH_MAX_AGE_MS } = await import("../src/main/sealed");
+    // Measured on the GitHub macOS runners (608 presses, three runs): 5 to 373 ms, median about 140, p95 about 210.
+    expect(FRESH_LIMIT_MS).toBeGreaterThanOrEqual(2 * 373);
+    expect(FRESH_LIMIT_MS).toBeGreaterThan(FRESH_SETTLE_MS * 4);
+    expect(FRESH_LIMIT_MS).toBeLessThanOrEqual(FRESH_MAX_AGE_MS / 1.5);
+  });
+
+  test("the page gives its reading up at the limit, as a 'late' that refuses nothing and answers nothing, and the readings are the same two as before", async () => {
+    const { buttonPage, FRESH_LIMIT_MS, FRESH_SETTLE_MS } = await import("../src/main/sealed-pages");
+    const b = buttonPage({ cardId: "card_x", token: "t".repeat(43), option: "allow_once", label: "Allow", kind: "approve" });
+    expect(b).toContain(`resolve(null); }, ${FRESH_LIMIT_MS})`);
+    expect(b).toContain(`t0 + ${FRESH_SETTLE_MS} - performance.now()`);
+    // A cover that comes during the wait spoils the press whatever the limit is: an entry that says the button doesn't show between the readings, or a last one that doesn't.
+    expect(b).toContain("if (after.some((x) => !shows(x))) spoiled = true");
+    expect(b).toContain("finish(seen && !spoiled)");
   });
 });

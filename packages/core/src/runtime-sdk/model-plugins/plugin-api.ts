@@ -12,13 +12,12 @@
 // * `secrets.get` answers only a plugin the core put in a process of its own (`hostProcessFor` from the install
 //   record), and only for a secret its own `auth` entries name.
 import type { ApiHandlers } from "../../plugin-host/api/router";
-import { isBundledClover } from "./load";
 import { pinnedFetch, PinnedFetchRefused } from "../../plugin-host/pinned-fetch";
 import { ipAddressClass } from "../../agent/tools/web";
 import { originOf } from "./user-endpoint";
 import { maskError, maskResponse, noteKeys } from "./key-redaction";
 import { publicFetch } from "./public-fetch";
-import { reachesPublicNetwork } from "@waifucave/clover-plugin-sdk";
+import { reachesPublicNetwork } from "@waifucave/moss-plugin-sdk";
 import { hostAllowed, hostRules } from "../../plugin-host/net-proxy";
 
 /** Whether a URL's host is on the plugin's declared `network:` list (the keyed fetch's hosts), read as B's gate and the
@@ -127,7 +126,9 @@ interface AuthLike {
   placement?: KeyPlacement;
 }
 
-/** Every `auth` entry of a plugin, top-level and each model's, by the name a fetch names it with. */
+/** Every `auth` entry of a plugin, top-level, each model's and each cloud computer provider's (`computerProviders`,
+ *  spec §9.2: the provider's API key or sign-in is its own entry, asked and kept like a model's), by the name a fetch
+ *  names it with. */
 export function authEntriesOf(record: Pick<PluginRecord, "manifest">): Map<string, AuthLike> {
   const out = new Map<string, AuthLike>();
   const m = record.manifest;
@@ -139,6 +140,7 @@ export function authEntriesOf(record: Pick<PluginRecord, "manifest">): Map<strin
   };
   add(m?.auth as unknown[] | undefined);
   for (const model of m?.contributes?.models ?? []) add(model.auth as unknown[]);
+  for (const provider of m?.contributes?.computerProviders ?? []) add(provider.auth as unknown[]);
   return out;
 }
 
@@ -170,7 +172,7 @@ function keyedInit(init: RequestInit | undefined): KeyedFetchInit {
  * hold its processes to its own hosts too): a plugin's fetch reaches only its declared hosts, with only its own keys
  * (a third party's are its own items, which the user stored for it; never a provider slot, `keychain-tokens.ts`), and
  * `secrets.get` reads only its own `auth` entries' secrets, in a process of its own. The keyless `network:public` path
- * is the bundled tree's alone (the capability is `bundledOnly`, and is checked here again).
+ * is any plugin's that holds the capability (granted after its OK card's warning line; the owner, 2026-11-15).
  */
 export function modelPluginApiHandlers(opts: ModelPluginApiOptions): ApiHandlers {
   const fetches = new Map<string, { key: string; fetch: KeyedFetch }>();
@@ -228,8 +230,8 @@ export function modelPluginApiHandlers(opts: ModelPluginApiOptions): ApiHandlers
       }
       try {
         // A host on the plugin's declared network: list goes through its keyed fetch; any other only with
-        // `network:public` granted (B's gate checked it too), keyless, through Clover's web safeguards.
-        if (!declaredHost(ctx.record, url) && isBundledClover(ctx.record) && reachesPublicNetwork(ctx.record.granted)) {
+        // `network:public` granted (B's gate checked it too), keyless, through MOSS's web safeguards.
+        if (!declaredHost(ctx.record, url) && reachesPublicNetwork(ctx.record.granted)) {
           return maskResponse(await publicOf(ctx.record.id, url, init ?? {}, fetchOpts as Record<string, unknown> | undefined), keys);
         }
         return maskResponse(await fetchFor(ctx.record)(url, keyedInit(init), fetchOpts), keys);

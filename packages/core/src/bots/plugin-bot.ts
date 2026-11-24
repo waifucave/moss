@@ -1,6 +1,9 @@
 // A bot as its plugin declares it (spec §5.9 `Bot`, §6.1): the `bot` entry of a plugin's manifest, read from the
 // plugin registry, with the files it names read from the plugin's folder. Owner: lane D.
 //
+// Retired by spec revision 19 (§6.1 "A bot is engine data", item 101): lane BT reads these once for the move into bot
+// records (contracts `BotRecords.move`, `PluginBotForMove`), then the plugin bot format goes.
+//
 // * **One bot per plugin**, and the bot's id is the plugin's id. A pack of bots keeps each one in a child plugin, so
 //   a pack's bots are `pack/luna` and `pack/nova` (§6.1), whose files and folders write the `/` as `--` (§5.1).
 // * Only an active `bot` entry of a plugin that is on is a bot. A plugin switched off, refused, blocked or removed
@@ -23,13 +26,13 @@ export interface PluginBot {
   id: string;
   /** The plugin's folder on this computer. */
   folder: string;
-  /** Where the record the bot (and its model tag) came from was loaded from: `bundled` only for Clover's own staged
+  /** Where the record the bot (and its model tag) came from was loaded from: `bundled` only for MOSS's own staged
    *  copy (the registry's `bundledDirs`); whether its tags are the staged bytes' is the bot side's `bundledChoice`. */
   source: PluginRecord["source"];
   entry: BotEntry;
-  /** Set by the bot service once per load (never here): whether `entry`'s model tag and voice are the ones Clover's
-   *  own bundled plugin chose, as staging verified its bytes (`BotServiceOptions.bundledChoice`). */
-  bundled?: { model: boolean; voice: boolean };
+  /** Set by the bot service once per load (never here): whether `entry`'s model tag is the one MOSS's own bundled
+   *  plugin chose, as staging verified its bytes (`BotServiceOptions.bundledChoice`). */
+  bundled?: { model: boolean };
   /** The plugin's `<bot-instructions>` text. */
   instructions: string;
   greeting?: string;
@@ -58,7 +61,10 @@ export function pluginPath(folder: string, path: string): string | undefined {
 function readText(folder: string, path: string, max: number): { ok: true; text: string } | { ok: false; reason: string } {
   const real = pluginPath(folder, path);
   if (real === undefined) return { ok: false, reason: `"${path}" isn't a file inside the plugin's folder` };
-  if (!statSync(real).isFile()) return { ok: false, reason: `"${path}" isn't a file` };
+  const st = statSync(real);
+  if (!st.isFile()) return { ok: false, reason: `"${path}" isn't a file` };
+  // Its size first, so a huge file is never read whole (four bytes at most per character).
+  if (st.size > max * 4) return { ok: false, reason: `"${path}" is longer than ${max} characters` };
   let text = readFileSync(real, "utf8");
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   if (text.length > max) return { ok: false, reason: `"${path}" is longer than ${max} characters` };

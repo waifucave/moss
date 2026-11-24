@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   // push.waifucave.com: waifucave push (spec §10). Content-free "you have N updates" pushes to the account's
-  // phones (APNs) and browsers (Web Push), asked for by the clover/push notifier on the user's computer.
+  // phones (APNs) and browsers (Web Push), asked for by the moss/push notifier on the user's computer.
   //
   // The top level is the local profile that the tests use, where every outbound request goes to local fakes of
   // APNs and the Web Push services; env.production is what the first deploy at the live gates would use.

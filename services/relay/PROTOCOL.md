@@ -4,7 +4,7 @@ The relay a user runs in their own Cloudflare account (spec §8.3: "No iroh rela
 
 The relay never sees content: a link's frames are end-to-end encrypted by the link layer (lane H), and mail is sealed for its device before it reaches the relay plugin. What the relay sees is which devices talk, when, and how much.
 
-The `clover/relay-cloudflare` plugin is its client: it hands the link layer the room URL, and keeps mail.
+The `moss/relay-cloudflare` plugin is its client: it hands the link layer the room URL, and keeps mail.
 
 ## Who may use it
 

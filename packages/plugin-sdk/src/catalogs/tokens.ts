@@ -1,18 +1,18 @@
 // The design-token catalog (spec §5.5 "Themes use design tokens first"): each token's name, type and default, with
 // `card.*` the set sealed approval frames take. The defaults are layer 1 of the theme stack, the look a part has with
-// no theme at all; they are the base theme's values (lane G), so the `clover` plugin's theme and a part with none
+// no theme at all; they are the base theme's values (lane G), so the `moss` plugin's theme and a part with none
 // agree. Tokens flow down: a plugin that dresses a smaller part uses the colours around it unless it sets its own.
 // Lane E's theme engine sets each as a CSS custom property inside the part a theme dresses (`cssProperty`).
 //
 // Names: dot-separated segments of lowercase letters and digits, each starting with a letter (`color.text.muted`).
-// The property is `--clover-` and the name with its dots as hyphens (`--clover-color-text-muted`); with no hyphen or
+// The property is `--moss-` and the name with its dots as hyphens (`--moss-color-text-muted`); with no hyphen or
 // capital inside a segment, two names never map to one property. `card.*` stays self-contained: a card value never
 // derives from another token, so restyling the accent never silently restyles approval cards.
 //
 // A plugin's own tokens live under the reserved group `plugin`: `plugin.<top-level id>.<name>` (`plugin.luna.glow`,
 // `plugin.mcp-blender.glow`), so no plugin id, however it is spelled, can name a catalog token, `card.*` included, and
 // no group the catalog adds later can meet one. The id may hold hyphens; they become underscores in the property
-// (`--clover-plugin-mcp_blender-glow`), so the name-to-property map stays one to one.
+// (`--moss-plugin-mcp_blender-glow`), so the name-to-property map stays one to one.
 //
 // Every value, a catalog token's or a plugin's own, passes `isSafeTokenValue` before it reaches CSS.
 //
@@ -75,9 +75,12 @@ export const TOKENS: readonly TokenInfo[] = [
   t("color.hover", "color", "#EFEFEF", "#2A2A2A", "A row's fill under the pointer."),
   t("color.selected", "color", "#DFDFDF", "#3D3D3D", "A selected row's fill. Navigation stays neutral: never the accent."),
   // The window's chrome over its material (macOS vibrancy, Windows 11 acrylic; lane E sets the material).
-  t("sidebar.tint", "color", "#F5F5F5B3", "#202020B3", "The sidebar over the window's material."),
+  // Light enough to read as glass (the owner, 2026-11-22: "somewhat translucent to what's behind"): the material itself
+  // keeps the text readable, as a native sidebar's does; the tint only evens it.
+  t("sidebar.tint", "color", "#F5F5F566", "#20202059", "The sidebar over the window's material."),
   t("sidebar.solid", "color", "#F5F5F5", "#202020", "The sidebar where the window has no material (Linux)."),
-  t("titlebar.tint", "color", "#FFFFFFC7", "#191919C7", "The title bar over what scrolls under it."),
+  // The same tint as the sidebar's (the owner, 2026-11-22: "give the same tint to both the sidebar and the top bar").
+  t("titlebar.tint", "color", "#F5F5F566", "#20202059", "The title bar over what scrolls under it."),
   t("titlebar.blur", "dimension", "16px", undefined, "The title bar's backdrop blur."),
   t("titlebar.height", "dimension", "45px", undefined, "The title bar's height, its rule included."),
   // Text.
@@ -104,7 +107,7 @@ export const TOKENS: readonly TokenInfo[] = [
   t("color.diff.removed.soft", "color", "#C2364F17", "#DA6F8024", "The tint behind a line a diff removes."),
   t("color.branch", "color", "#6F52C4", "#B19EDE", "A session's branch badge."),
   t("color.unread", "color", "#8A8A8A", "#848484", "The unread dot: a neutral grey."),
-  t("color.brand", "color", "#C2387A", "#FF7AB6", "Clover's mark: the one place the brand pink shows, since the accent follows the OS."),
+  t("color.brand", "color", "#C2387A", "#FF7AB6", "MOSS's mark: the one place the brand pink shows, since the accent follows the OS."),
   t("color.scrim", "color", "#00000033", "#00000080", "Behind a dialog."),
   t("color.focus", "color", "#2F6FDF", "#4180E3", "The keyboard focus ring.", "system"),
   // Messages.
@@ -163,7 +166,7 @@ export const TOKENS: readonly TokenInfo[] = [
   t("radius.small", "dimension", "6px", undefined, "Small corners: chips, rows."),
   t("radius.medium", "dimension", "8px", undefined, "Medium corners: buttons, fields."),
   t("radius.large", "dimension", "12px", undefined, "Large corners: panels, inner cards."),
-  t("radius.huge", "dimension", "24px", undefined, "The largest corners: sheets, the stage."),
+  t("radius.huge", "dimension", "24px", undefined, "The largest corners: sheets."),
   t("radius.round", "dimension", "999px", undefined, "A capsule's end."),
   t("space.xs", "dimension", "4px", undefined, "4 on the grid."),
   t("space.s", "dimension", "8px", undefined, "8 on the grid."),
@@ -220,17 +223,6 @@ export const TOKENS: readonly TokenInfo[] = [
   t("pill.plume.tail", "color", "#0D54FF", undefined, "The working plume where it cools."),
   t("pill.plume.body", "color", "#298CFF", undefined, "The working plume's body."),
   t("pill.plume.hot", "color", "#CCEDFF", undefined, "The working plume at the nozzle."),
-  // The bot's stage and its avatar.
-  t("stage.background", "paint", "linear-gradient(180deg, #FFFFFF 0%, #F4F2F8 100%)", "linear-gradient(180deg, #1D1D23 0%, #151519 100%)", "The stage behind the avatar."),
-  t("stage.floor", "color", "#1C1B221F", "#0000008C", "The soft pool of shadow under the avatar."),
-  t("stage.glow", "color", "#2F6FDF1F", "#4180E31F", "The light behind the avatar."),
-  t("stage.foreground", "paint", "#00000000", undefined, "A paint over the avatar's lower edge (grass, mist), so a figure the stage crops reads as standing behind it."),
-  t("stage.foreground.height", "dimension", "0px", undefined, "How far up the stage that paint reaches."),
-  t("stage.text", "color", "#676674", "#9B9AA8", "Credits and notes on the stage."),
-  t("avatar.light.key", "color", "#FFFFFF", "#F2EEFF", "The avatar's key light."),
-  t("avatar.light.fill", "color", "#F2F6FF", "#C9D8F2", "The avatar's fill light."),
-  t("avatar.light.rim", "color", "#FFFFFF", "#DCE6F7", "The avatar's rim light."),
-  t("avatar.exposure", "number", 1, 0.95, "The avatar's exposure: 1 is neutral."),
 ];
 
 export const TOKEN_NAMES: ReadonlySet<string> = new Set(TOKENS.map((x) => x.name));
@@ -266,15 +258,15 @@ export function isPluginTokenName(name: string, pluginTopId: string): boolean {
   return name.length <= 128 && name.startsWith(`${PLUGIN_TOKEN_GROUP}.${pluginTopId}.`) && PLUGIN_TOKEN_NAME_RE.test(name);
 }
 
-/** The CSS custom property a token sets: `color.text.muted` → `--clover-color-text-muted`. Dots become hyphens, and the
- *  hyphens a plugin id may hold become underscores (`plugin.mcp-blender.glow` → `--clover-plugin-mcp_blender-glow`), so
+/** The CSS custom property a token sets: `color.text.muted` → `--moss-color-text-muted`. Dots become hyphens, and the
+ *  hyphens a plugin id may hold become underscores (`plugin.mcp-blender.glow` → `--moss-plugin-mcp_blender-glow`), so
  *  the map is one to one. Throws for anything that is neither a catalog-grammar name nor a plugin token name. */
 export function cssProperty(name: string): string {
   if (name.length > 128 || !(TOKEN_NAME_RE.test(name) || PLUGIN_TOKEN_NAME_RE.test(name))) throw new Error(`not a token name: ${name}`);
-  return `--clover-${name.replace(/-/g, "_").replace(/\./g, "-")}`;
+  return `--moss-${name.replace(/-/g, "_").replace(/\./g, "-")}`;
 }
 
-/** `var(--clover-color-text-muted)`, for component styles. */
+/** `var(--moss-color-text-muted)`, for component styles. */
 export function cssVar(name: string): string {
   return `var(${cssProperty(name)})`;
 }
@@ -393,7 +385,7 @@ export const AUTO_INKS: Readonly<Record<string, AutoInk>> = {
 };
 
 /** Variables the frame sets for what sits inside it (lane F's request), never a theme: CSS custom properties named as
- *  tokens are (`--clover-frame-inset-top`), each a CSS length. */
+ *  tokens are (`--moss-frame-inset-top`), each a CSS length. */
 export const FRAME_VARIABLES: readonly { readonly name: string; readonly doc: string }[] = [
   { name: "frame.inset.top", doc: "The title bar's height: what `main`'s content keeps clear of at its top." },
   { name: "frame.window.controls", doc: "The room the window's own controls take at the title bar's start (80px on macOS by default; lane E sets it from `titlebar-area-x`)." },

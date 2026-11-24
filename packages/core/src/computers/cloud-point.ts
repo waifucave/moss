@@ -18,7 +18,17 @@ import type { CloudAuthority, CloudComputers, CloudFolder, CloudPairingDoor, Clo
 /** Lane H's lease as the cloud's authority: this device acts while it can and holds the lease, and its tenure is the
  *  lease's scope and epoch, so a change started under one epoch never finishes under another. */
 export function leaseAuthority(lease: Lease): CloudAuthority {
+  // Hand-overs: how many times this computer stopped holding the lease since it started. A cloud pairing token made
+  // while it was alone is the same main's after the group's founding, but not after a hand-over and a return.
+  let held = lease.state().holder === lease.self;
+  let handovers = 0;
+  lease.watch(() => {
+    const now = lease.state().holder === lease.self;
+    if (held && !now) handovers += 1;
+    held = now;
+  });
   return {
+    handovers: () => handovers,
     canAct: () => lease.canAct(),
     tenure: () => {
       const s = lease.state();
@@ -138,6 +148,16 @@ export class CloudPoint {
     });
     this.#running = p;
     return p;
+  }
+
+  /** Before a provider plugin is removed: its machines are asked about first (`CloudComputers.retireProvider`). A plugin
+   *  that is no provider, or has no machines, goes at once. Throws when the removal must not go on. */
+  async guardRemoval(pluginId: string): Promise<void> {
+    const ids = this.#registry.entries("computerProviders")
+      .filter((c) => (c.pluginId === pluginId || c.pluginId.startsWith(`${pluginId}/`)) && c.entryId)
+      .map((c) => c.entryId!);
+    if (ids.length === 0) return;
+    await this.#cloud.retireProvider(ids);
   }
 
   /** What lane H's authenticated pairing door calls when a device presents a cloud computer's token. */

@@ -6,7 +6,7 @@ export * from "./ndjson";
 export * from "./conn-writer";
 export * from "./cowork";
 
-// Clover's protocol (spec revision 17): the shared vocabulary, the roles, one file per area, and the index that
+// MOSS's protocol (spec revision 17): the shared vocabulary, the roles, one file per area, and the index that
 // gathers them. Names here never repeat one of the inherited exports above.
 export * from "./common";
 export * from "./strings";
@@ -21,4 +21,15 @@ export * from "./agents";
 export * from "./app";
 export * from "./browser";
 export * from "./usage";
-export * from "./clover";
+export * from "./moss";
+// The split into two apps on one engine (spec revision 19): surfaces and the router, the host, one release, what the
+// engine gives every place, and bots as engine data.
+export * from "./surfaces";
+export * from "./host";
+export * from "./release";
+export * from "./activity";
+export * from "./bots";
+// The session canvas (spec revision 20, §9.5): the session graph, who may reach whom, and a scene to play.
+export * from "./session-graph";
+export * from "./reach";
+export * from "./session-scene";

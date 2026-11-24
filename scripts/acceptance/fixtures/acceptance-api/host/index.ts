@@ -51,15 +51,11 @@ async function probe(a: Api): Promise<string> {
   await at("routines", async () => `listed:${(await a.routines.list({})).length}`);
   await at("own-command", async () => word((await a.commands.run("acceptance-api.ping", {})).text));
   await at("other-command", async () => `ran:${word(JSON.stringify(await a.commands.run("acceptance-echo.say", { text: "x" })))}`);
-  await at("audio-play", async () => {
-    const h = await a.audio.play({ format: "pcm16-24k", data: new Uint8Array(0) }, { bot: "alpha" });
-    await h.done;
-    return "handed";
-  });
-  await at("audio-listen", async () => {
-    const off = a.audio.onRecording(() => {});
-    off();
-    return "watched";
+  // A plugin's sound is its own part's, in the device's speech turn (behind `audio`): taken and let go.
+  await at("speech-turn", async () => {
+    const t = await a.turns.take("device/speech", { limitMs: 5_000, note: "acceptance-api" });
+    await t.done();
+    return "taken";
   });
   await at("keys", async () => `made:${(await a.keys.publicKey("x")).length}`);
   // The rest of each area's members (try 15's gate).
@@ -114,7 +110,7 @@ async function probe(a: Api): Promise<string> {
     const listed = (await within<{ holds: { id: string }[] }>(a.computers.holds(name))).holds.some((h) => h.id === taken.hold!.id);
     await within(a.computers.setActionRunning(name, true));
     await within(a.computers.setActionRunning(name, false));
-    const windows = await within(a.computers.cloverWindows(name));
+    const windows = await within(a.computers.mossWindows(name));
     await within(a.computers.setUserWorking(name, true, { kind: "app", app: "AcceptanceApiNoSuchMark" }));
     await within(a.computers.releaseHold(taken.hold.id));
     const left = (await within<{ holds: { id: string }[] }>(a.computers.holds(name))).holds.some((h) => h.id === taken.hold!.id);

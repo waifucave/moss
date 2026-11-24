@@ -12,9 +12,10 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { STAGE_TOOLS } from "../../plugins/alpha/server/tools";
-import { TOOL_NAME as BROWSER_TOOL } from "../../plugins/clover/plugins/browser/src/schema";
-import { WEB_TOOLS } from "../../plugins/clover/plugins/web/src/tools";
-import { TOOLS as BUILDER_TOOLS, TOOL_NEW } from "../../plugins/clover/plugins/plugin-builder/src/tools";
+import { FIGURE_TOOLS } from "../../plugins/moss/plugins/character/server/tools";
+import { TOOL_NAME as BROWSER_TOOL } from "../../plugins/moss/plugins/browser/src/schema";
+import { WEB_TOOLS } from "../../plugins/moss/plugins/web/src/tools";
+import { TOOLS as BUILDER_TOOLS, TOOL_NEW } from "../../plugins/moss/plugins/plugin-builder/src/tools";
 import { callTurn, type ExampleCtx } from "./example-steps";
 import { FAKE_PUBLIC_SITE } from "./fake-exa";
 
@@ -25,13 +26,16 @@ const PLUGINS = resolve(import.meta.dir, "..", "..", "plugins");
 /** Each bundled plugin's MCP server, by `<plugin>/<server>`, with the names of the tools it lists. */
 const SERVERS: Record<string, readonly string[]> = {
   "alpha/stage": STAGE_TOOLS.map((t) => t.name),
-  "clover/browser/browser": [BROWSER_TOOL],
-  "clover/plugin-builder/builder": BUILDER_TOOLS.map((t) => t.name),
-  "clover/web/web": WEB_TOOLS.map((t) => t.name),
+  "moss/browser/browser": [BROWSER_TOOL],
+  "moss/character/figure": FIGURE_TOOLS.map((t) => t.name),
+  "moss/plugin-builder/builder": BUILDER_TOOLS.map((t) => t.name),
+  "moss/web/web": WEB_TOOLS.map((t) => t.name),
 };
 const WEB: ReadonlySet<string> = new Set(WEB_TOOLS.map((t) => t.name));
+/** Servers only a bot is offered: not called in a code session. */
+const BOTS_ONLY: ReadonlySet<string> = new Set(["alpha/stage"]);
 
-/** One harmless call per tool: it reads, or changes only Alpha's display, and undoes what it pins. */
+/** One harmless call per tool: it reads, or changes only a display (Alpha's room, the avatar), and undoes what it pins. */
 const INPUTS: Record<string, Record<string, unknown>> = {
   stage_status: {},
   set_scene: { scene: "meadow" },
@@ -41,22 +45,22 @@ const INPUTS: Record<string, Record<string, unknown>> = {
   celebrate: {},
   set_expression: { name: "acceptance-smoke" },
   play_motion: { name: "acceptance-smoke" },
-  toggle_outfit: { part: "acceptance-smoke" },
+  toggle_outfit: { part: "acceptance-smoke", on: true },
+  figure_status: {},
   [BROWSER_TOOL]: { verb: "tabs" },
   WebSearch: { query: "acceptance smoke" },
   WebFetch: { url: `https://${FAKE_PUBLIC_SITE}/article` },
-  // It returns a template's files and writes nothing (plugins/clover/plugins/plugin-builder/src/tools.ts).
+  // It returns a template's files and writes nothing (plugins/moss/plugins/plugin-builder/src/tools.ts).
   [TOOL_NEW]: { template: "theme", id: "acceptance-smoke", name: "Acceptance smoke" },
 };
 
-/** The honest refusals a harmless call may get, by tool: the run's window shows Alpha headless, with no model of hers
- *  loaded, so a model's names aren't there (her stage's own words, plugins/alpha/server/stage.ts). */
+/** The honest refusals a harmless call may get, by tool: the avatar plugin's tools (plugins/moss/plugins/character/server)
+ *  say so when no avatar is shown for the session, or when the model shown has no such name. */
 const HONEST: Record<string, RegExp> = {
-  set_expression: /Her tab hasn't loaded a model yet|The model has no expression/,
-  play_motion: /Her tab hasn't loaded a model yet|The model has no motion/,
-  // On her own model a name that isn't one of her outfits is refused with their names (plugins/alpha/server/store.ts), so the
-  // smoke's call changes nothing.
-  toggle_outfit: /Her tab hasn't loaded a model yet|The model has no outfit part|Her outfits are lilac-dress, navy-uniform, yellow-raincoat/,
+  set_expression: /no avatar is shown|this model has no expression|nothing is drawing the figure/,
+  play_motion: /no avatar is shown|this model has no motion|nothing is drawing the figure|doesn't do motions/,
+  toggle_outfit: /no avatar is shown|this model has no outfit part|nothing is drawing the figure|doesn't do outfits/,
+  figure_status: /no avatar is shown/,
 };
 
 /** What a bundled plugin calling into a core that doesn't serve the call looks like. */
@@ -65,12 +69,25 @@ const NOT_SERVED = /not served on this computer|ContractError|isn't available ye
 class Failed extends Error {}
 const fail = (m: string): never => { throw new Failed(m); };
 
+/** For a failure message: each `mcp__<server>__` prefix the requests declared (`body.tools`, with how many deferred) and offered
+ *  callable (`tools`, the declared list with the conversation's additions and removals applied), per request, newest last. */
+function serverShapes(ctx: ExampleCtx): string {
+  const out: string[] = [];
+  for (const [i, r] of ctx.requests().entries()) {
+    const declared = ((r.body as { tools?: { name: string; defer_loading?: boolean }[] } | undefined)?.tools ?? []).filter((t) => t.name.startsWith("mcp__moss_"));
+    const servers = [...new Set(declared.map((t) => t.name.split("__")[1]!))];
+    const part = servers.map((k) => `${k.slice(5, 9)}: declared ${declared.filter((t) => t.name.startsWith(`mcp__${k}__`)).length} (${declared.filter((t) => t.name.startsWith(`mcp__${k}__`) && t.defer_loading === true).length} deferred), callable ${r.tools.filter((t) => t.startsWith(`mcp__${k}__`)).length}`);
+    if (part.length > 0) out.push(`#${i} ${part.join(" / ")}`);
+  }
+  return out.slice(-6).join(" | ");
+}
+
 /** Every bundled manifest's MCP servers, as `<plugin>/<server>`, each with whether its plugin carries lane B's mark
  *  (`availability.status: "not-yet"`: listed on the Plugins page, never started, no server offered). */
 function bundledServers(): { key: string; marked: boolean }[] {
   const out: { key: string; marked: boolean }[] = [];
   const visit = (folder: string, id: string) => {
-    const file = join(folder, "clover.json");
+    const file = join(folder, "moss.json");
     if (!existsSync(file)) return;
     const m = JSON.parse(readFileSync(file, "utf8")) as { availability?: { status?: string }; contributes?: { mcpServers?: Record<string, unknown> } };
     for (const server of Object.keys(m.contributes?.mcpServers ?? {})) out.push({ key: `${id}/${server}`, marked: m.availability?.status === "not-yet" });
@@ -81,7 +98,7 @@ function bundledServers(): { key: string; marked: boolean }[] {
   return out.sort((a, b) => (a.key < b.key ? -1 : 1));
 }
 
-/** The smoke, on a bot session that has every bundled tool (Alpha's: her stage's, and the clover tree's for every bot).
+/** The smoke, on a bot session that has every bundled tool (Alpha's: her stage's, and the moss tree's for every bot).
  *  `web` says whether the run's fake search backend is there (or why not). */
 export async function bundledToolsStep(ctx: ExampleCtx, session: string, web: true | string): Promise<string> {
   const all = bundledServers();
@@ -92,7 +109,10 @@ export async function bundledToolsStep(ctx: ExampleCtx, session: string, web: tr
   if (unknown.length > 0) fail(`a bundled plugin's MCP server this step doesn't call: ${unknown.join(", ")} (add its tools to SERVERS and a harmless call each to INPUTS)`);
   const gone = Object.keys(SERVERS).filter((s) => !servers.includes(s) && !marked.includes(s));
   if (gone.length > 0) fail(`SERVERS names a server no bundled manifest has: ${gone.join(", ")}`);
-  const tools = servers.flatMap((s) => SERVERS[s] ?? []);
+  // Alpha's stage server is her own (scope bots, lane MC2's until her figure is a pack): MOSS Code's run calls every other
+  // bundled tool in its code session, and her stage's are proved where she has a tab.
+  const botsOnly = servers.filter((s) => BOTS_ONLY.has(s));
+  const tools = servers.filter((s) => !BOTS_ONLY.has(s)).flatMap((s) => SERVERS[s] ?? []);
   const unoffered = marked.flatMap((s) => SERVERS[s] ?? []);
   const noInput = tools.filter((t) => INPUTS[t] === undefined);
   if (noInput.length > 0) fail(`no harmless call for ${noInput.join(", ")} (add one to INPUTS)`);
@@ -119,6 +139,7 @@ export async function bundledToolsStep(ctx: ExampleCtx, session: string, web: tr
   const offered = new Set(ctx.requests().flatMap((r) => r.tools));
   const leaked = [...offered].filter((name) => unoffered.some((t) => name === t || name.endsWith(`__${t}`)));
   if (leaked.length > 0) problems.push(`a plugin listed as not available offered ${leaked.join(", ")}`);
+  if (problems.length > 0) problems.push(`the bridge servers in the requests this step sent: ${serverShapes(ctx)}`);
   if (problems.length > 0) fail(`${problems.join(" | ")}${lines.length > 0 ? ` (the rest: ${lines.join("; ")})` : ""}`);
-  return `${tools.length} bundled tools from ${servers.join(", ")}: ${lines.join("; ")}${marked.length > 0 ? `; not offered (listed as not available): ${marked.join(", ")}` : ""}`;
+  return `${tools.length} bundled tools from ${servers.filter((x) => !BOTS_ONLY.has(x)).join(", ")}${botsOnly.length > 0 ? ` (not called here, a bot's own: ${botsOnly.join(", ")})` : ""}: ${lines.join("; ")}${marked.length > 0 ? `; not offered (listed as not available): ${marked.join(", ")}` : ""}`;
 }

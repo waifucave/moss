@@ -1,7 +1,7 @@
-// Validating a manifest without running anything (spec §5.1 "Formats", §5.4 "Point schemas", §5.6 "`clover plugin
-// validate`", §5.9 "Checked before anything runs"). `validateManifest` checks one `clover.json`; `validateTree` (tree.ts)
+// Validating a manifest without running anything (spec §5.1 "Formats", §5.4 "Point schemas", §5.6 "`moss plugin
+// validate`", §5.9 "Checked before anything runs"). `validateManifest` checks one `moss.json`; `validateTree` (tree.ts)
 // reads a whole plugin folder through a reader, children and referenced files included. Both return what
-// `clover plugin validate` prints: the class, contributions, declared points, network hosts, helper permissions,
+// `moss plugin validate` prints: the class, contributions, declared points, network hosts, helper permissions,
 // capabilities, tool names, settings and findings, and `describeOk` gives the OK's text.
 //
 // What a finding refuses (§5.1, §5.4): an error in the manifest's envelope refuses the plugin; an unknown key in
@@ -10,11 +10,15 @@
 import type { z } from "zod";
 import {
   BUNDLED_BOT_PLUGIN, BUNDLED_ROOT_PLUGIN, isPluginId, type ValidationIssue,
-} from "@waifucave/clover-protocol";
-import { CAPABILITIES, capabilityOkText, isCapability, parseCapability, parseSettingHost } from "../catalogs/capabilities";
+} from "@waifucave/moss-protocol";
+import { capabilityOkText, isCapability, parseCapability, parseSettingHost } from "../catalogs/capabilities";
+import { RETIRED_BOT_AVATAR, RETIRED_TAB_LAYOUT, retiredCapability, retiredMessage, retiredPoint } from "../catalogs/retired";
+
+/** Extensions a data file is never: a document, a script, a style, SVG or wasm. */
+const ACTIVE_EXTENSIONS = /\.(html?|xhtml|xml|svgz?|m?js|cjs|mjs|ts|tsx|jsx|css|wasm|php|sh)$/i;
 import { TOOL_HOOK_EVENTS, type HookEvent } from "../catalogs/hooks";
 import { hookReadsStdinAsScript } from "./hook-command";
-import { CORE_POINT_NAMES, WELL_KNOWN_POINT_NAMES, dataPointInfo } from "../catalogs/points";
+import { CORE_POINTS, CORE_POINT_NAMES, WELL_KNOWN_POINT_NAMES, dataPointInfo, isPlatformDataPoint } from "../catalogs/points";
 import { OWN_PANEL_KEY_RE, SAME_ON_EVERY_TAB, SPOT_NAMES, botsOffer, foldTitle, isOwnPanelKey, isReservedPluginName, spotInfo } from "../catalogs/spots";
 import { holdsBot, marksAppParts, pluginParts, skillItem } from "./parts";
 import { treePathProblem } from "../formats/tree-hash";
@@ -23,14 +27,18 @@ import { isRange, satisfies } from "../semver";
 import { FORMATS, MANIFEST_FILE, PLUGIN_API_VERSION } from "../version";
 import { DOTTED_POINT_NAME_RE, NAMESPACE_RE, POINT_NAME_RE } from "./fields";
 import { checkArgsSchema } from "./args";
+import { TEXT_EDITING_KEYS } from "./keys";
 import { hookOptionEnvName, parseInterpolation, SETTING_FED_PARTS, usesSecretFiles, usesSecrets } from "./interpolation";
 import { fetchesCodeAtRunTime, toolWireName } from "./names";
 import { CORE_CONTRIBUTION_KEYS, CORE_CONTRIBUTION_SCHEMAS, ManifestSchema, isToolKey, type CoreContributionKey } from "./schema";
 import type { Manifest, PointDecl } from "./types";
 
+/** The OK card's line for a plugin whose tools publish a live picture (spec revision 19, item 115's words). */
+export const PICTURE_OK_LINE = "It shows a live picture of what it is doing.";
+
 /** Environment names a plugin's server never sets (the core refuses them too, `refuseReservedPluginEnv`). Matched
  *  without case: Windows' environment names are case-insensitive, and a manifest runs on every OS. */
-export const RESERVED_ENV = /^(CLOVER_|BUN_|LD_|DYLD_|NODE_(?!(ENV|NO_WARNINGS)$))/i;
+export const RESERVED_ENV = /^(MOSS_|BUN_|LD_|DYLD_|NODE_(?!(ENV|NO_WARNINGS)$))/i;
 
 export type PluginClassName = "data" | "web" | "code";
 
@@ -71,16 +79,25 @@ export interface ManifestReport {
   readOnlyTools: { server: string; tools: string[]; network: boolean }[];
   /** Each server's tools it declares display-only (`contained`), which the OK names. */
   containedTools: { server: string; tools: string[]; network: boolean }[];
+  /** Each server's tools it declares as a web search (`webSearch`) or a page fetch (`webFetch`), which the OK names with a
+   *  warning (R1: no door checks a plugin's id). */
+  webTools: { server: string; search: string[]; fetch: string[]; browser?: string[] }[];
   /** `stdio` servers given a secret through their environment (`${secret:…}` in `env`), which the OK discloses: macOS
    *  lets any process of the same user read another's environment, and a third-party server's program can't be signed
    *  to hide it (the controller's ruling on #377). */
   envSecrets: string[];
-  /** It declares programs of its own (a `stdio` server, a helper, or a Node host, Clover's own plugins only), which
-   *  Clover's load guard doesn't hold to the plugin's folder: the OK says so (#234's check 3). */
+  /** The servers that publish a live picture (`picture: true`, spec revision 19 §3.6), which the OK names. Optional: a
+   *  report made before revision 19 has none. */
+  pictureServers?: string[];
+  /** It declares programs of its own (a `stdio` server, a helper, or a Node host, MOSS's own plugins only), which
+   *  MOSS's load guard doesn't hold to the plugin's folder: the OK says so (#234's check 3). */
   ownPrograms: boolean;
   /** Its host half runs in a process of its own that runs programs (`host.programs`), fenced to its own folders and
    *  the files the user picks: the OK says so. */
   hostPrograms: boolean;
+  /** Programs of the user's its host half runs outside the sandbox, and folders of the user's it reads
+   *  (`host.outside`, P5), as its manifest names them: the OK names each with a warning. */
+  outside: { programs: string[]; read: string[] };
   addons: boolean;
   adult: boolean;
   bot: boolean;
@@ -95,11 +112,11 @@ export interface ValidateOptions {
   folderName?: string;
   /** For a child plugin: its top-level plugin's id and namespace. */
   parent?: { id: string; namespace: string };
-  /** The app's own plugins (`clover`, `alpha` and their children) may use the reserved names. */
+  /** The app's own plugins (`moss`, `alpha` and their children) may use the reserved names. */
   bundled?: boolean;
   /** The plugin API the app has; default `PLUGIN_API_VERSION`. */
   apiVersion?: string;
-  /** The file name findings name; default `clover.json`. */
+  /** The file name findings name; default `moss.json`. */
   file?: string;
 }
 
@@ -184,11 +201,7 @@ function collectPaths(m: Record<string, unknown>): { path: Seg[]; value: string;
   const c = isObject(m.contributes) ? m.contributes : {};
   if (isObject(c.bot)) {
     const b = c.bot;
-    for (const k of ["instructions", "layout", "greeting", "memory"]) add(["contributes", "bot", k], b[k], "contribution");
-    if (isObject(b.avatar)) {
-      add(["contributes", "bot", "avatar", "file"], b.avatar.file, "contribution");
-      add(["contributes", "bot", "avatar", "portrait"], b.avatar.portrait, "contribution");
-    }
+    for (const k of ["instructions", "greeting", "memory"]) add(["contributes", "bot", k], b[k], "contribution");
   }
   const list = (key: string) => (Array.isArray(c[key]) ? (c[key] as unknown[]) : []);
   list("models").forEach((e, i) => isObject(e) && add(["contributes", "models", i, "catalog"], e.catalog, "entry"));
@@ -245,6 +258,7 @@ function checkSetting(f: Findings, key: string, s: Record<string, unknown>): voi
   const type = s.type as string;
   const options = Array.isArray(s.options) ? s.options.map((o) => (typeof o === "string" ? o : isObject(o) ? String(o.value) : "")) : undefined;
   if (type === "enum" && (!options || options.length === 0)) f.error("plugin", "setting_options", at, "an `enum` setting needs `options`");
+  if (type === "secret" && s.hidden === true) f.error("plugin", "setting_hidden_secret", [...at, "hidden"], "a secret can't be hidden: the person enters it in the key dialog, so Settings must list it");
   if (type !== "enum" && s.options !== undefined) f.warn("setting_options", at, "`options` applies only to an `enum` setting");
   if (type !== "number" && (s.min !== undefined || s.max !== undefined)) f.warn("setting_range", at, "`min` and `max` apply only to a `number` setting");
   if (s.default === undefined) return;
@@ -281,6 +295,10 @@ function checkDeclares(f: Findings, topId: string | undefined, declares: unknown
       f.error(refuses, "point_declares_core", at, `"${name}" is one of the core's points; no plugin declares it`);
       continue;
     }
+    if (isPlatformDataPoint(name)) {
+      f.error(refuses, "point_declares_core", at, `"${name}" is the platform's point (the core reads it); no plugin declares it, a plugin fills it`);
+      continue;
+    }
     const wellKnown = WELL_KNOWN_POINT_NAMES.has(name);
     const spot = d.props !== undefined;
     if (wellKnown) {
@@ -301,6 +319,40 @@ function checkDeclares(f: Findings, topId: string | undefined, declares: unknown
     if (spot && !(declarer.ui && typeof declarer.ui.component === "string")) {
       f.error(refuses, "spot_declarer", at, "a UI spot (a declaration with `props`) is declared only by a `ui` entry with a `component`");
       continue;
+    }
+    // One at a time (§5.4): Settings' picker is titled by the point's own title, and a single point takes one filler
+    // already. A well-known name's comes from the catalog, whatever the declarer wrote.
+    if (!wellKnown && d.oneAtATime === true) {
+      if (d.shape === "single") {
+        f.error(refuses, "point_one_single", [...at, "oneAtATime"], `"${name}" is a single point, which takes one filler already; oneAtATime is for a list or keyed point`);
+        continue;
+      }
+      // A UI spot draws every filler (\`Spot\`): one drawn at a time isn't the app's yet, so a spot can't say it.
+      if (spot) {
+        f.error(refuses, "point_one_spot", [...at, "oneAtATime"], `"${name}" is a UI spot, which draws every filler; oneAtATime is for a data point (your component reads \`points.active\` and draws the one)`);
+        continue;
+      }
+      if (d.title === undefined) {
+        f.error(refuses, "point_one_title", [...at, "title"], `"${name}" takes one filler at a time: give it a title, which Settings' picker shows ("Voice", "Stage")`);
+        continue;
+      }
+    }
+    // Files that come with each entry (`files`): each names a top-level field of `fields` whose format is `path`.
+    if (isObject(d.files)) {
+      const props = isObject(d.fields) && isObject(d.fields.properties) ? d.fields.properties : {};
+      const wrong = Object.keys(d.files).filter((k) => !(isObject(props[k]) && (props[k] as Record<string, unknown>).format === "path"));
+      if (wrong.length > 0) {
+        f.error(refuses, "point_files", [...at, "files"], `\`files\` names the entry fields whose files come along; ${wrong.map((k) => `"${k}"`).join(", ")} ${wrong.length === 1 ? "isn't a field" : "aren't fields"} of \`fields\` with format \`path\``);
+        continue;
+      }
+      // A kind is inert data: an extension that names a page, a script, a style, SVG or wasm is refused, whatever type it
+      // is given (the app would serve it inert anyway; the declaration says what it means).
+      const active = Object.values(d.files).flatMap((spec) => (isObject(spec) && Array.isArray(spec.kinds) ? spec.kinds : []))
+        .flatMap((k) => (isObject(k) && Array.isArray(k.ext) ? k.ext : [])).filter((e) => typeof e === "string" && ACTIVE_EXTENSIONS.test(e));
+      if (active.length > 0) {
+        f.error(refuses, "point_files", [...at, "files"], `a point's files are inert data; ${[...new Set(active)].join(", ")} would be a page, a script, a style, SVG or wasm`);
+        continue;
+      }
     }
     const where = jsonPointer(at);
     // A UI spot may be declared on several of a plugin's entries (lane F: its panel and its Files view both declare
@@ -325,11 +377,11 @@ function checkDeclares(f: Findings, topId: string | undefined, declares: unknown
 export function refusedReport(issues: ValidationIssue[], id?: string, namespace?: string): ManifestReport {
   return {
     ok: false, id, namespace, manifest: undefined, class: "data", contributions: [], declares: [], networkHosts: [], dynamicHosts: false,
-    helperPermissions: [], capabilities: [], toolNames: [], settings: [], fetchesCode: [], readOnlyTools: [], containedTools: [], envSecrets: [], ownPrograms: false, hostPrograms: false, addons: false, adult: false, bot: false, restylesCards: false, issues,
+    helperPermissions: [], capabilities: [], toolNames: [], settings: [], fetchesCode: [], readOnlyTools: [], containedTools: [], webTools: [], envSecrets: [], ownPrograms: false, hostPrograms: false, outside: { programs: [], read: [] }, addons: false, adult: false, bot: false, restylesCards: false, issues,
   };
 }
 
-/** Validates one `clover.json`, given as text (JSON with comments) or as parsed JSON. */
+/** Validates one `moss.json`, given as text (JSON with comments) or as parsed JSON. */
 export function validateManifest(input: unknown, opts: ValidateOptions = {}): ManifestReport {
   const f = new Findings(opts.file ?? MANIFEST_FILE);
   const empty = (): ManifestReport => refusedReport(f.list);
@@ -348,14 +400,14 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
     return empty();
   }
 
-  // The format comes first: a newer one is refused with "needs a newer Clover" (§5.1).
+  // The format comes first: a newer one is refused with "needs a newer MOSS" (§5.1).
   const format = raw.manifest;
   if (typeof format !== "number" || !Number.isInteger(format) || format < 1) {
     f.error("plugin", "manifest_format", ["manifest"], `\`manifest\` must be ${FORMATS.manifest}`);
     return empty();
   }
   if (format > FORMATS.manifest) {
-    f.error("plugin", "needs_newer_clover", ["manifest"], `manifest format ${format} needs a newer Clover (this one reads format ${FORMATS.manifest})`);
+    f.error("plugin", "needs_newer_moss", ["manifest"], `manifest format ${format} needs a newer MOSS (this one reads format ${FORMATS.manifest})`);
     return empty();
   }
 
@@ -389,29 +441,29 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   const topId = isChild ? opts.parent!.id : declaredId;
   if (!opts.bundled) {
     if (!isChild && (declaredId === BUNDLED_ROOT_PLUGIN || declaredId === BUNDLED_BOT_PLUGIN)) {
-      f.error("plugin", "id_reserved", ["id"], `"${declaredId}" is one of the plugins Clover ships`);
+      f.error("plugin", "id_reserved", ["id"], `"${declaredId}" is one of the plugins MOSS ships`);
     }
-    if (namespace === BUNDLED_ROOT_PLUGIN) f.error("plugin", "namespace_reserved", ["namespace"], "the namespace `clover` is reserved for the plugins Clover ships");
+    if (namespace === BUNDLED_ROOT_PLUGIN) f.error("plugin", "namespace_reserved", ["namespace"], "the namespace `moss` is reserved for the plugins MOSS ships");
   }
-  // A plugin named like a reserved title would label its tab with it (#179's review): "Needs you" and "Clover" are
-  // Clover's own (lane G's ask).
+  // A plugin named like a reserved title would label its tab with it (#179's review): "Needs you" and "MOSS" are
+  // MOSS's own (lane G's ask).
   if (topId !== BUNDLED_ROOT_PLUGIN && typeof top.name === "string" && isReservedPluginName(top.name)) {
-    f.error("plugin", "name_reserved", ["name"], `"${top.name}" is a name only Clover's own plugins have`);
+    f.error("plugin", "name_reserved", ["name"], `"${top.name}" is a name only MOSS's own plugins have`);
   }
 
-  // "Not available in this build yet" is Clover's word about its own plugins: another plugin can't wear it (it would
-  // read as Clover's own state, and the plugin's author would expect it to stop a plugin the registry would start).
+  // "Not available in this build yet" is MOSS's word about its own plugins: another plugin can't wear it (it would
+  // read as MOSS's own state, and the plugin's author would expect it to stop a plugin the registry would start).
   if (top.availability !== undefined && topId !== BUNDLED_ROOT_PLUGIN) {
-    f.error("plugin", "availability_bundled_only", ["availability"], "only the plugins Clover ships can be marked not available yet");
+    f.error("plugin", "availability_bundled_only", ["availability"], "only the plugins MOSS ships can be marked not available yet");
   }
 
   const capabilities = Array.isArray(top.capabilities) ? top.capabilities.filter((c): c is string => typeof c === "string") : [];
   capabilities.forEach((c, i) => {
-    if (!isCapability(c)) f.error("plugin", "capability_unknown", ["capabilities", i], `"${c}" is not a capability (see the catalog)`);
+    const retired = retiredCapability(c);
+    if (retired !== undefined) f.error("plugin", "capability_retired", ["capabilities", i], retiredMessage(retired));
+    else if (!isCapability(c)) f.error("plugin", "capability_unknown", ["capabilities", i], `"${c}" is not a capability (see the catalog)`);
+    else if (c === "approvals.all" && !capabilities.includes("approvals")) f.error("plugin", "capability_needs", ["capabilities", i], "`approvals.all` needs `approvals` too");
     else if (capabilities.indexOf(c) !== i) f.warn("capability_duplicate", ["capabilities", i], `"${c}" is listed twice`);
-    else if (CAPABILITIES.find((x) => x.name === c)?.bundledOnly && topId !== BUNDLED_ROOT_PLUGIN) {
-      f.error("plugin", "capability_bundled_only", ["capabilities", i], `"${c}" is only for the plugins Clover ships`);
-    }
   });
 
   if (isObject(top.settings)) for (const [k, s] of Object.entries(top.settings)) if (isObject(s)) checkSetting(f, k, s);
@@ -420,9 +472,9 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   if (top.helper !== undefined) {
     f.error("plugin", "helper_not_supported", ["helper"], "a helper isn't supported: run a program from the host half (`host.process: \"own\"` with `host.programs: true`), or as a `stdio` MCP server");
   }
-  // A host half runs under Bun, where Clover's load guard holds it to its folder (#234's check 3, the controller's
+  // A host half runs under Bun, where MOSS's load guard holds it to its folder (#234's check 3, the controller's
   // ruling). Bun runs Node-style code (`node:` modules, npm packages), and a program of its own runs from a host half
-  // with `host.programs` or as a `stdio` server, which the OK covers. Node isn't supported for any plugin: Clover's own
+  // with `host.programs` or as a `stdio` server, which the OK covers. Node isn't supported for any plugin: MOSS's own
   // cloud model plugins run on Bun in a process of their own too (lane A's code adapters).
   if (isObject(top.host) && top.host.runtime === "node") {
     f.error("plugin", "host_runtime_node", ["host", "runtime"], "node is not supported: a plugin's host runs under Bun, which runs Node-style code (`node:` modules, npm packages), so leave out `runtime`; a program of its own runs with `host.programs` (in a process of its own) or as a `stdio` server");
@@ -437,10 +489,27 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   if (isChild && isObject(top.host) && top.host.programs === true) {
     f.error("plugin", "host_programs_top_only", ["host", "programs"], "only a top-level plugin's host runs programs; move it to the top plugin");
   }
+  // P5: programs and folders of the user's outside the sandbox, each named (the OK card lists them).
+  const outsideField = isObject(top.host) && isObject(top.host.outside) ? top.host.outside : undefined;
+  if (outsideField !== undefined && isChild) {
+    f.error("plugin", "outside_top_only", ["host", "outside"], "only a top-level plugin names programs and folders outside its sandbox; move it to the top plugin");
+  }
+  // Its own process: the folders it reads go in that process's fence alone, never a shared one's.
+  if (outsideField !== undefined && isObject(top.host) && top.host.process !== "own") {
+    f.error("plugin", "outside_own_process", ["host", "outside"], "a host half that names programs or folders outside its sandbox runs in a process of its own: add `\"process\": \"own\"` beside it");
+  }
+  if (outsideField !== undefined) {
+    (Array.isArray(outsideField.programs) ? outsideField.programs as unknown[] : []).forEach((p, i) => {
+      if (typeof p !== "string" || !outsideProgramOk(p)) f.error("plugin", "outside_program_invalid", ["host", "outside", "programs", i], `"${String(p)}" isn't a program: a name found on the PATH (letters, digits, ".", "_", "+", "-") or an absolute path, with no ".."`);
+    });
+    (Array.isArray(outsideField.read) ? outsideField.read as unknown[] : []).forEach((p, i) => {
+      if (typeof p !== "string" || !outsideFolderOk(p)) f.error("plugin", "outside_folder_invalid", ["host", "outside", "read", i], `"${String(p)}" isn't a folder it may read: "~/" and a folder, or an absolute path below the disk's top folders (not "/Users" or "/Volumes" themselves, nothing under "/System"), with no ".."; never the whole home or the whole disk`);
+    });
+  }
 
   // A built plugin (`built: true`) names JavaScript modules only: TypeScript would mean the build didn't run.
   if (top.built === true && opts.bundled !== true) {
-    f.error("plugin", "built_not_bundled", ["built"], "only the plugins Clover ships are built by its release; this plugin can't say it is");
+    f.error("plugin", "built_not_bundled", ["built"], "only the plugins MOSS ships are built by its release; this plugin can't say it is");
   }
   if (top.built === true) {
     const js = (p: unknown) => typeof p !== "string" || /\.(?:js|mjs)$/.test(p);
@@ -517,7 +586,7 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
     for (const [key, value] of Object.entries(rawContributes)) {
       const at: Seg[] = ["contributes", key];
       if ((CORE_CONTRIBUTION_KEYS as string[]).includes(key)) {
-        const result = checkCoreContribution(f, key as CoreContributionKey, value, at, { hasHost, hasClient, isBot, botName, topId, id, namespace, bundled: opts.bundled === true, seenDecl, declared, refusedPathUnder });
+        const result = checkCoreContribution(f, key as CoreContributionKey, value, at, { hasHost, hasClient, isBot, botName, topId, capabilities, id, namespace, bundled: opts.bundled === true, seenDecl, declared, refusedPathUnder });
         if (result !== undefined) kept[key] = result;
       } else if (DOTTED_POINT_NAME_RE.test(key)) {
         const result = checkPluginPointValue(f, key, value, at, { hasHost });
@@ -533,6 +602,27 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   if (isObject(kept.bot) && typeof kept.bot.theme === "string") {
     const themes = Array.isArray(kept.themes) ? (kept.themes as { id: string }[]).map((t) => t.id) : [];
     if (!themes.includes(kept.bot.theme)) f.warn("theme_ref", ["contributes", "bot", "theme"], `"${kept.bot.theme}" is none of this plugin's themes; the tab uses the base theme`);
+  }
+
+  // A bot's voice was once set here: an older bot still loads, the field ignored (a plugin gives its bot a default voice
+  // on MOSS Voice's point instead).
+  if (isObject(kept.bot) && kept.bot.voice !== undefined) {
+    f.warn("bot_voice", ["contributes", "bot", "voice"], "a bot's voice is no longer set here and this is ignored; give your bot a default voice with `moss.voice.defaults` (MOSS Voice's point), which the user's own choice overrides");
+    delete (kept.bot as Record<string, unknown>).voice;
+  }
+
+  // A bot's own figure was once set here (`contributes.bot.avatar`): an older bot still loads, the field ignored, and the
+  // warning says where a figure goes now (an avatar pack).
+  if (isObject(kept.bot) && kept.bot.avatar !== undefined) {
+    f.warn("bot_avatar_retired", ["contributes", "bot", "avatar"], `${retiredMessage(RETIRED_BOT_AVATAR)}; this is ignored`);
+    delete (kept.bot as Record<string, unknown>).avatar;
+  }
+
+  // A bot's tab layout was once set here (`contributes.bot.layout`): an older bot still loads, the field ignored (a bot has
+  // no tab in MOSS Code's window).
+  if (isObject(kept.bot) && kept.bot.layout !== undefined) {
+    f.warn("bot_layout_retired", ["contributes", "bot", "layout"], `${retiredMessage(RETIRED_TAB_LAYOUT)}; this is ignored`);
+    delete (kept.bot as Record<string, unknown>).layout;
   }
 
   // Tool names are unique within a top-level plugin and contain no `__` (§5.9, §6.7).
@@ -555,15 +645,15 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   const manifestOut = { ...(topParsed.success ? topParsed.data : (top as Record<string, unknown>)), ...(rawContributes !== undefined ? { contributes } : {}) } as Manifest;
   const klass = classify(manifestOut);
 
-  // engines.clover is required when the plugin has code, and must take in this app's plugin API (§5.1).
-  const engines = isObject(top.engines) && typeof top.engines.clover === "string" ? top.engines.clover : undefined;
+  // engines.moss is required when the plugin has code, and must take in this app's plugin API (§5.1).
+  const engines = isObject(top.engines) && typeof top.engines.moss === "string" ? top.engines.moss : undefined;
   const apiVersion = opts.apiVersion ?? PLUGIN_API_VERSION;
   if (engines === undefined) {
-    if (klass === "code") f.error("plugin", "engines_missing", ["engines"], "a plugin with code needs `engines.clover`, the plugin-API range it was written for");
+    if (klass === "code") f.error("plugin", "engines_missing", ["engines"], "a plugin with code needs `engines.moss`, the plugin-API range it was written for");
   } else if (!isRange(engines)) {
-    f.error("plugin", "engines_range", ["engines", "clover"], `"${engines}" is not a semver range`);
+    f.error("plugin", "engines_range", ["engines", "moss"], `"${engines}" is not a semver range`);
   } else if (!satisfies(apiVersion, engines)) {
-    f.error("plugin", "engines_excludes_api", ["engines", "clover"], `needs plugin API ${engines}; this Clover has ${apiVersion}`);
+    f.error("plugin", "engines_excludes_api", ["engines", "moss"], `needs plugin API ${engines}; this MOSS has ${apiVersion}`);
   }
   if (top.platforms !== undefined && klass !== "code") f.warn("platforms_no_code", ["platforms"], "`platforms` limits where code runs, and this plugin has none");
 
@@ -578,10 +668,10 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
     dynamicHosts = true;
     for (const key of p.settings) if (!settingKeys.has(key)) f.error("plugin", "interpolation", ["capabilities", i], `\${setting:${key}} names no setting of this plugin`);
   });
-  // A sign-in the core runs is the clover tree's alone (lane A's ask), at the top level as in entries.
+  // A sign-in the core runs is the moss tree's alone (lane A's ask), at the top level as in entries.
   (Array.isArray(top.auth) ? top.auth : []).forEach((a: unknown, i: number) => {
     if (isObject(a) && a.method === "core" && topId !== BUNDLED_ROOT_PLUGIN) {
-      f.error("plugin", "auth_core_bundled_only", ["auth", i, "method"], "a sign-in the core runs is only for the plugins Clover ships");
+      f.error("plugin", "auth_core_bundled_only", ["auth", i, "method"], "a sign-in the core runs is only for the plugins MOSS ships");
     }
   });
   for (const url of urlFields(manifestOut)) {
@@ -601,6 +691,7 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
 
   const readOnlyTools: { server: string; tools: string[]; network: boolean }[] = [];
   const containedTools: { server: string; tools: string[]; network: boolean }[] = [];
+  const webTools: { server: string; search: string[]; fetch: string[]; browser?: string[] }[] = [];
   if (isObject(contributes.mcpServers)) {
     for (const [name, s] of Object.entries(contributes.mcpServers)) {
       if (Array.isArray(s.readOnly) && s.readOnly.length > 0) readOnlyTools.push({ server: name, tools: [...new Set(s.readOnly as string[])].sort(), network: serverReachesNetwork(s) });
@@ -608,6 +699,27 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
       // One tool, one class: a tool both lists name is neither.
       const both = Array.isArray(s.readOnly) && Array.isArray(s.contained) ? (s.contained as string[]).filter((t) => (s.readOnly as string[]).includes(t)) : [];
       if (both.length > 0) f.error("plugin", "tool_in_both_lists", ["contributes", "mcpServers", name, "contained"], `${[...new Set(both)].sort().join(", ")} can't be both read-only and display-only: list each tool in one of them`);
+      // The web lists (R1): how the approvals judge a call, named on the card. One tool, one class; a search needs a
+      // `network:` capability, a page fetch `network:public` (the core's fetch with its web floors).
+      const search = Array.isArray(s.webSearch) ? [...new Set(s.webSearch as string[])].sort() : [];
+      const fetch = Array.isArray(s.webFetch) ? [...new Set(s.webFetch as string[])].sort() : [];
+      // F5: the Browser tool's class, any plugin's that holds `browser`.
+      const browserList = Array.isArray(s.browserTools) ? [...new Set(s.browserTools as string[])].sort() : [];
+      if (search.length > 0 || fetch.length > 0 || browserList.length > 0) {
+        webTools.push({ server: name, search, fetch, ...(browserList.length > 0 ? { browser: browserList } : {}) });
+        const lists = [s.readOnly, s.contained, s.webSearch, s.webFetch, s.browserTools].map((l) => (Array.isArray(l) ? new Set(l as string[]) : new Set<string>()));
+        const twice = [...new Set([...search, ...fetch, ...browserList])].filter((t) => lists.filter((l) => l.has(t)).length > 1);
+        if (twice.length > 0) f.error("plugin", "tool_in_both_lists", ["contributes", "mcpServers", name], `${twice.join(", ")} can't be on two of readOnly, contained, webSearch, webFetch and browserTools: list each tool in one of them`);
+        if (browserList.length > 0 && !capabilities.includes("browser")) f.error("plugin", "browser_tool_no_capability", ["contributes", "mcpServers", name, "browserTools"], `a Browser tool drives the MOSS Browser: the plugin needs the browser capability`);
+        if (search.length > 0 && !capabilities.some((c) => c.startsWith("network:"))) f.error("plugin", "web_tool_no_network", ["contributes", "mcpServers", name, "webSearch"], `a web search tool needs a network: capability to reach its search service`);
+        if (fetch.length > 0 && !capabilities.includes("network:public")) f.error("plugin", "web_tool_no_network", ["contributes", "mcpServers", name, "webFetch"], `a page-fetch tool needs network:public, the core's fetch with its web safeguards`);
+      }
+      // A tool offered only while the plugin holds a capability: one it declares.
+      if (isObject(s.needs)) {
+        for (const [tool, cap] of Object.entries(s.needs)) {
+          if (typeof cap !== "string" || !capabilities.includes(cap)) f.error("plugin", "tool_needs_undeclared", ["contributes", "mcpServers", name, "needs", tool], `${tool} needs "${String(cap)}", which this plugin doesn't declare in its capabilities`);
+        }
+      }
     }
   }
   // A list the OK card can't show can't be OK'd: the lines naming both lists' tools fit in READ_ONLY_OK_MAX_LINES card
@@ -616,6 +728,16 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
     + containedTools.reduce((n, r) => n + containedOkLines(r, true).length, 0);
   if (readOnlyLines > READ_ONLY_OK_MAX_LINES) {
     f.error("plugin", "read_only_too_long", ["contributes", "mcpServers"], `the read-only and display-only tools would fill ${readOnlyLines} lines of the OK card, and at most ${READ_ONLY_OK_MAX_LINES} lines of ${OK_LINE_MAX.toLocaleString("en-US")} characters fit: list fewer or shorter names`);
+  }
+
+  // A live picture (G5): published through the plugin API, so only by the plugin's own `host` server.
+  const pictureServers: string[] = [];
+  if (isObject(contributes.mcpServers)) {
+    for (const [name, s] of Object.entries(contributes.mcpServers)) {
+      if (s.picture !== true) continue;
+      if (s.type !== "host") f.error("plugin", "picture_not_host", ["contributes", "mcpServers", name, "picture"], `a live picture is published through the plugin API, so only a host server's tools publish one`);
+      else pictureServers.push(name);
+    }
   }
 
   const envSecrets: string[] = [];
@@ -628,6 +750,10 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
   const ownPrograms = isObject(top.helper)
     || (isObject(contributes.mcpServers) && Object.values(contributes.mcpServers).some((s) => s.type === "stdio"));
   const hostPrograms = !isChild && isObject(top.host) && top.host.programs === true && top.host.process === "own";
+  const outside = {
+    programs: [...new Set(outsideField !== undefined && Array.isArray(outsideField.programs) ? (outsideField.programs as unknown[]).filter((p): p is string => typeof p === "string") : [])],
+    read: [...new Set(outsideField !== undefined && Array.isArray(outsideField.read) ? (outsideField.read as unknown[]).filter((p): p is string => typeof p === "string") : [])],
+  };
   const ok = !f.refusesPlugin();
   return {
     ok,
@@ -646,9 +772,12 @@ export function validateManifest(input: unknown, opts: ValidateOptions = {}): Ma
     fetchesCode,
     readOnlyTools,
     containedTools,
+    webTools,
     envSecrets,
+    ...(pictureServers.length > 0 ? { pictureServers: pictureServers.sort() } : {}),
     ownPrograms,
     hostPrograms,
+    outside,
     addons: top.addons !== undefined,
     adult: top.adult === true,
     bot: kept.bot !== undefined,
@@ -691,6 +820,8 @@ interface CoreCtx {
   /** The bot's name, for the refusals' words. */
   botName?: string | undefined;
   topId: string | undefined;
+  /** This manifest's own capabilities (`window` fields and `app.tray` ask for some). */
+  capabilities: readonly string[];
   id: string | undefined;
   /** The plugin's namespace (its top-level plugin's, for a child). */
   namespace: string | undefined;
@@ -702,14 +833,16 @@ interface CoreCtx {
 }
 
 const LIST_KEYS = new Set<CoreContributionKey>([
-  "models", "skills", "agents", "agentBackends", "hooks", "commands", "triggers", "voices", "voiceModes", "computerProviders",
+  "models", "skills", "agents", "agentBackends", "hooks", "commands", "triggers", "computerProviders",
   "relays", "notifiers", "companions", "themes", "locales", "ui",
+  "turns",
 ]);
 
 /** The field each list point's entries are unique by within one plugin (§5.1 "Entry ids"). */
 const UNIQUE_BY: Partial<Record<CoreContributionKey, string>> = {
-  models: "provider", agentBackends: "id", hooks: "id", commands: "name", triggers: "type", voices: "id", voiceModes: "id",
+  models: "provider", agentBackends: "id", hooks: "id", commands: "name", triggers: "type",
   computerProviders: "id", relays: "id", notifiers: "id", companions: "id", themes: "id", locales: "lang",
+  turns: "name",
 };
 
 function entrySchemaOf(key: CoreContributionKey): z.ZodType {
@@ -730,6 +863,7 @@ function checkCoreContribution(f: Findings, key: CoreContributionKey, value: unk
     const unique = UNIQUE_BY[key];
     const seen = new Map<string, number>();
     const uiIds = new Map<string, number>();
+    let backgrounds = 0;
     value.forEach((entry, i) => {
       const eat = [...at, i];
       const parsed = entrySchema.safeParse(entry);
@@ -763,6 +897,10 @@ function checkCoreContribution(f: Findings, key: CoreContributionKey, value: unk
           return;
         }
         uiIds.set(uid, i);
+        if (spot === "app.background" && e.hide !== true && ++backgrounds > BACKGROUND_PARTS_MAX) {
+          f.error("entry", "ui_background_cap", eat, `a plugin may keep at most ${BACKGROUND_PARTS_MAX} parts running in the background (\`app.background\`)`);
+          return;
+        }
       }
       if (isObject(e)) checkDeclares(f, ctx.topId, e.declares, eat, key === "ui" ? { ui: e } : {}, "entry", ctx.seenDecl, ctx.declared);
       out.push(parsed.data);
@@ -857,7 +995,7 @@ function checkEntry(f: Findings, key: CoreContributionKey, e: Record<string, unk
       if (isObject(e.env)) {
         const reserved = Object.keys(e.env).filter((k) => RESERVED_ENV.test(k)).sort();
         if (reserved.length > 0) {
-          f.error("entry", "reserved_env", [...at, "env", reserved[0]!], `a server's \`env\` never sets ${reserved.join(", ")}: Clover sets its own \`CLOVER_*\` names, and what changes how Bun, Node or the loader loads code (\`BUN_*\`, \`NODE_*\` but \`NODE_ENV\` and \`NODE_NO_WARNINGS\`, \`LD_*\`, \`DYLD_*\`) isn't a plugin's`);
+          f.error("entry", "reserved_env", [...at, "env", reserved[0]!], `a server's \`env\` never sets ${reserved.join(", ")}: MOSS sets its own \`MOSS_*\` names, and what changes how Bun, Node or the loader loads code (\`BUN_*\`, \`NODE_*\` but \`NODE_ENV\` and \`NODE_NO_WARNINGS\`, \`LD_*\`, \`DYLD_*\`) isn't a plugin's`);
           return false;
         }
       }
@@ -913,6 +1051,19 @@ function checkEntry(f: Findings, key: CoreContributionKey, e: Record<string, unk
       return ok;
     }
     case "commands": {
+      // A held key binding (`hold`) is a key's: it needs `key`, never a text-editing one, and it runs only from its key, so no args.
+      if (e.hold === true && e.key === undefined) {
+        f.error("entry", "hold_without_key", [...at, "hold"], "`hold` asks for a key's release as well as its press: give the command a `key`");
+        return false;
+      }
+      if (e.hold === true && e.args !== undefined) {
+        f.error("entry", "hold_args", [...at, "args"], "a held key's command declares no `args`: it runs only from its key, and its handler gets `{ key: \"down\" }` on the press, `{ key: \"up\" }` on the release and `{ key: \"cancel\" }` when it ended with none");
+        return false;
+      }
+      if (e.hold === true && typeof e.key === "string" && TEXT_EDITING_KEYS.has(e.key.split("+").pop() ?? "")) {
+        f.error("entry", "hold_editing_key", [...at, "key"], `\`hold\` can't take ${e.key}: its key edits text where you type (the arrows, Home, End, Backspace, Delete, Enter and Tab), so holding it in the message box would count as the binding's presses; pick another key`);
+        return false;
+      }
       // A command's args schema in the subset `command.run` enforces (F-M3's review N4), or it takes no call.
       if (e.args !== undefined) {
         const schema = checkArgsSchema(e.args);
@@ -925,9 +1076,9 @@ function checkEntry(f: Findings, key: CoreContributionKey, e: Record<string, unk
     }
     case "triggers":
       // `schedule` and `webhook` are the core's own types, and `webhook` working at all is read from the bundled
-      // trigger's entry: a plugin outside the bundled tree can't contribute either (as Clover's reserved UI entries).
+      // trigger's entry: a plugin outside the bundled tree can't contribute either (as MOSS's reserved UI entries).
       if ((e.type === "schedule" || e.type === "webhook") && ctx.topId !== BUNDLED_ROOT_PLUGIN) {
-        f.error("entry", "trigger_reserved", [...at, "type"], `the "${e.type}" trigger is Clover's own`);
+        f.error("entry", "trigger_reserved", [...at, "type"], `the "${e.type}" trigger is MOSS's own`);
         return false;
       }
       return needHost("handler");
@@ -935,9 +1086,6 @@ function checkEntry(f: Findings, key: CoreContributionKey, e: Record<string, unk
     case "notifiers":
     case "companions":
       return needHost("handler");
-    case "voiceModes":
-      return needHost("handler");
-    case "voices":
     case "computerProviders":
       return needHost("handler") && checkAuthHandlers(f, e.auth, [...at, "auth"], ctx);
     case "ui":
@@ -956,7 +1104,7 @@ function checkAuthHandlers(f: Findings, auth: unknown, at: Seg[], ctx: CoreCtx):
       return false;
     }
     if (isObject(a) && a.method === "core" && ctx.topId !== BUNDLED_ROOT_PLUGIN) {
-      f.error("entry", "auth_core_bundled_only", [...at, i, "method"], "a sign-in the core runs is only for the plugins Clover ships");
+      f.error("entry", "auth_core_bundled_only", [...at, i, "method"], "a sign-in the core runs is only for the plugins MOSS ships");
       return false;
     }
   }
@@ -977,17 +1125,15 @@ function checkUi(f: Findings, e: Record<string, unknown>, at: Seg[], ctx: CoreCt
   }
   // A pill target is data too: the Dispatch pill draws its row from `title`, and the user's words go to `handler`.
   const targetOnly = e.spot === "pill.target" && typeof e.handler === "string" && kinds.length === 0;
-  if (kinds.length !== 1 && !actionOnly && !targetOnly) {
+  // A tray line is data as well: its `title` is the line, `toggles` or `command` what it does.
+  const trayOnly = e.spot === "app.tray" && kinds.length === 0;
+  if (kinds.length !== 1 && !actionOnly && !targetOnly && !trayOnly) {
     f.error("entry", "ui_one_of", at, "a `ui` entry has exactly one of `component`, `web`, `style`, `layout` or `hide: true`");
     return false;
   }
-  // A layout patch for bots' tabs: on `bot.tab`, its bots by `when.bot` (none: every bot the plugin dresses).
-  if (e.layout !== undefined && e.spot !== "bot.tab") {
-    f.error("entry", "ui_layout_spot", [...at, "spot"], "a `layout` entry rearranges bots' tabs: its spot is `bot.tab`, its bots `when.bot`");
-    return false;
-  }
-  if (e.layout !== undefined && e.key !== undefined) {
-    f.error("entry", "ui_layout_spot", [...at, "key"], "a `layout` entry names its bots with `when.bot`, not `key`");
+  // A layout patch rearranged bots' tabs, which are retired (spec revision 19, §5.5, G8): refused, saying where to go.
+  if (e.layout !== undefined) {
+    f.error("entry", "spot_retired", [...at, "layout"], `${retiredMessage(RETIRED_TAB_LAYOUT)}`);
     return false;
   }
   if (e.component !== undefined && !ctx.hasClient) {
@@ -999,6 +1145,11 @@ function checkUi(f: Findings, e: Record<string, unknown>, at: Seg[], ctx: CoreCt
     return false;
   }
   const spotName = e.spot as string;
+  const retiredSpot = retiredPoint(spotName);
+  if (retiredSpot !== undefined) {
+    f.error("entry", "spot_retired", [...at, "spot"], retiredMessage(retiredSpot));
+    return false;
+  }
   const spot = spotInfo(spotName);
   if (e.target !== undefined && e.hide !== true) {
     f.error("entry", "ui_target", [...at, "target"], "`target` names the entry a `hide` takes out of a list spot; this entry hides nothing");
@@ -1006,23 +1157,51 @@ function checkUi(f: Findings, e: Record<string, unknown>, at: Seg[], ctx: CoreCt
   }
   if (e.hide === true && spot?.shape === "list" && e.target === undefined) f.warn("ui_hide_list", [...at, "hide"], `"${spotName}" is a list: a \`hide\` there names the entry it takes out (\`target\`), and without one it hides nothing`);
   if (e.hide === true && spot !== undefined && spot.shape !== "list" && e.target !== undefined) f.warn("ui_target", [...at, "target"], `"${spotName}" shows one entry${spot.shape === "keyed" ? " per key" : ""}; a \`hide\` there hides it, and \`target\` is ignored`);
+  if (spotName === "app.background" && e.hide !== true && e.component === undefined) {
+    f.error("entry", "ui_background_component", [...at, "component"], "a background part is a `component` of the plugin's client: it has no page of its own to show");
+    return false;
+  }
   if (e.window !== undefined && spotName !== "app.surface") {
     f.error("entry", "ui_window_not_surface", [...at, "window"], "`window` is for `app.surface` entries");
     return false;
   }
   const bundledTree = ctx.topId === BUNDLED_ROOT_PLUGIN;
-  if (isObject(e.window) && e.window.alwaysOnTop === true && !bundledTree) {
-    f.error("entry", "ui_always_on_top", [...at, "window", "alwaysOnTop"], "only the plugins Clover ships open always-on-top surfaces");
+  if (isObject(e.window)) {
+    // What a surface may do is what its plugin's OK card says (F4, the owner's ruling of 2026-11-15): no door checks a plugin's id.
+    const needs = (field: string, cap: string, why: string): boolean => {
+      if (ctx.capabilities.includes(cap)) return true;
+      f.error("entry", "ui_window_capability", [...at, "window", field], `${why} needs the \`${cap}\` capability`);
+      return false;
+    };
+    if (e.window.alwaysOnTop === true && !needs("alwaysOnTop", "overlay", "an always-on-top surface")) return false;
+    if (e.window.cards === true && !needs("cards", "approvals.all", "a surface that draws the pending cards")) return false;
+    if (e.window.cards === true && !ctx.capabilities.includes("approvals")) {
+      f.error("entry", "ui_window_capability", [...at, "window", "cards"], "a surface that draws the pending cards needs the `approvals` capability");
+      return false;
+    }
+  }
+  if ((e.toggles !== undefined || e.command !== undefined) && spotName !== "app.tray") {
+    f.error("entry", "ui_tray_field", [...at, e.toggles !== undefined ? "toggles" : "command"], "`toggles` and `command` are for `app.tray` entries");
     return false;
+  }
+  if (spotName === "app.tray" && e.hide !== true) {
+    if (!ctx.capabilities.includes("tray")) {
+      f.error("entry", "ui_window_capability", [...at], "an `app.tray` entry needs the `tray` capability");
+      return false;
+    }
+    if ((e.toggles === undefined) === (e.command === undefined)) {
+      f.error("entry", "ui_tray_field", [...at], "an `app.tray` entry has either `toggles` (the id of one of the plugin's own surfaces) or `command` (one of its own commands)");
+      return false;
+    }
   }
   if (spot?.reserved && !bundledTree) {
     const id = typeof e.id === "string" ? e.id : spotName;
     if (spot.reserved.ids.some((r) => foldTitle(r) === foldTitle(id))) {
-      f.error("entry", "ui_reserved", [...at, "id"], `"${id}" is reserved for Clover's own ${spotName} entry`);
+      f.error("entry", "ui_reserved", [...at, "id"], `"${id}" is reserved for MOSS's own ${spotName} entry`);
       return false;
     }
     if (typeof e.title === "string" && spot.reserved.titles.some((t) => foldTitle(t) === foldTitle(e.title as string))) {
-      f.error("entry", "ui_reserved", [...at, "title"], `"${e.title}" is reserved for Clover's own ${spotName} entry`);
+      f.error("entry", "ui_reserved", [...at, "title"], `"${e.title}" is reserved for MOSS's own ${spotName} entry`);
       return false;
     }
   }
@@ -1057,13 +1236,14 @@ function checkUi(f: Findings, e: Record<string, unknown>, at: Seg[], ctx: CoreCt
     f.error("entry", "bot_tied_not_offered", [...at, "when", "bot"], `"${spotName}" looks the same on every tab: nothing tied to a bot's tab dresses it.`);
     return false;
   }
+  // A part kept in the background has no place in a tab: nothing ties it to a bot's.
+  if (spotName === "app.background" && bots.length > 0) {
+    f.error("entry", "bot_tied_not_offered", [...at, "when", "bot"], `"${spotName}" has no place in a bot's tab: nothing tied to a bot's tab runs there.`);
+    return false;
+  }
   if (ctx.isBot && e.app !== true) {
     const bot = ctx.botName ?? ctx.id ?? "its bot";
     // Inside the bot: only what Bots offers, on its own tab.
-    if (spotName === "bot.editor.section") {
-      f.error("entry", "bot_editor_stock", [...at, "spot"], `${bot}'s Edit page keeps its stock look; its settings show there as a section of their own, from the plugin's settings.`);
-      return false;
-    }
     if (spotName === "panel" && !botsOffer(spotName, typeof e.key === "string" ? e.key : undefined)) {
       const which = typeof e.key === "string" ? `"${e.key}" isn't one of them` : "an entry with no key would fill every panel";
       f.error("entry", "bot_panel_not_offered", [...at, typeof e.key === "string" ? "key" : "spot"], `Bots offers the Browser and agent panels on ${bot}'s tab, and a panel of its own (any other key, with a title); ${which}.`);
@@ -1085,6 +1265,11 @@ function checkUi(f: Findings, e: Record<string, unknown>, at: Seg[], ctx: CoreCt
 /** A dotted `contributes` key: a point another plugin declares (§5.4). A well-known data point's entries are checked
  *  now; any other waits until its point appears, and is checked then. */
 function checkPluginPointValue(f: Findings, key: string, value: unknown, at: Seg[], ctx: { hasHost: boolean }): unknown {
+  const retired = retiredPoint(key);
+  if (retired !== undefined) {
+    f.error("contribution", "point_retired", at, retiredMessage(retired));
+    return undefined;
+  }
   if (CORE_POINT_NAMES.has(key) || SPOT_NAMES.has(key)) {
     f.error("contribution", "fill_spot_through_ui", at, `"${key}" is a UI spot; fill it with a \`ui\` entry`);
     return undefined;
@@ -1138,7 +1323,6 @@ function urlFields(m: Manifest): string[] {
     if (model.endpoint) out.push(model.endpoint.baseUrl);
     auth(model.auth);
   }
-  for (const v of c.voices ?? []) auth(v.auth);
   for (const p of c.computerProviders ?? []) auth(p.auth);
   for (const u of c.ui ?? []) if (u.web?.url) out.push(u.web.url);
   return out;
@@ -1182,16 +1366,23 @@ export function hookOkLines(reports: readonly ManifestReport[]): string[] {
     const hooks = (r.manifest as { contributes?: { hooks?: unknown } } | undefined)?.contributes?.hooks;
     return !Array.isArray(hooks) || hooks.every((h) => ((h as { scope?: unknown }).scope ?? scopeOf(r) ?? scopeOf(top)) === "own-bot");
   });
+  // The events a hook that may change something is on (an `observe` hook only hears them).
+  const changes = new Set<string>();
+  for (const r of reports) {
+    const hooks = (r.manifest as { contributes?: { hooks?: unknown } } | undefined)?.contributes?.hooks;
+    if (!Array.isArray(hooks)) continue;
+    for (const h of hooks) if ((h as { observe?: unknown }).observe !== true) for (const e of (h as { on?: unknown }).on instanceof Array ? (h as { on: unknown[] }).on : []) if (typeof e === "string") changes.add(e);
+  }
   const sees: string[] = [];
   if (events.has("message.in")) sees.push("your messages");
   if (events.has("message.out")) sees.push("the bots' replies");
   if (events.has("tool.before")) sees.push("each tool call before it runs");
   if (events.has("tool.after")) sees.push("what each tool returns");
   const can: string[] = [];
-  if (events.has("message.in") || events.has("message.out")) can.push("change messages");
-  if (events.has("tool.before")) can.push("change or refuse a tool call (never approve one)");
-  if (events.has("tool.after")) can.push("change what a tool returns");
-  // An external coding agent's own session is its own: the hooks see only what it asks Clover about (Clover's rule).
+  if (changes.has("message.in") || changes.has("message.out")) can.push("change messages");
+  if (changes.has("tool.before")) can.push("change or refuse a tool call (never approve one)");
+  if (changes.has("tool.after")) can.push("change what a tool returns");
+  // An external coding agent's own session is its own: the hooks see only what it asks MOSS about (MOSS's rule).
   const agents = `Its hooks don't see what a coding agent such as Claude Code or Codex does inside its own session${events.has("tool.before") ? "; they can refuse starting one" : ""}.`;
   if (sees.length === 0) return [own ? "Its hooks run when its own bot's turns start, end or are compacted, and see no other bot." : "Its hooks run when a conversation's turns start, end or are compacted.", agents];
   if (own) return [`Its hooks see only what its own bot does: ${sees.join(", ").replace("your messages", "your messages to it").replace("the bots' replies", "its replies")}${can.length > 0 ? `; they can ${can.join(", ")}` : ""}.`, agents];
@@ -1208,9 +1399,9 @@ export const NOTIFIER_OK_LINE = "It is told when your bots need you or have answ
 export const PILL_TARGET_OK_LINE = "It can be picked as a target in the Dispatch pill: what you then type there goes to it, as your own words, and not to a bot.";
 
 export const HOST_START_OK_LINES = {
-  each: "It runs in the background from the moment Clover starts, on every computer it's installed on.",
-  main: "It runs in the background from the moment Clover starts, on your main computer.",
-  chosen: "It runs in the background from the moment Clover starts, on the computer you add it on.",
+  each: "It runs in the background from the moment MOSS or MOSS Code starts, on every computer it's installed on.",
+  main: "It runs in the background from the moment MOSS or MOSS Code starts, on your main computer.",
+  chosen: "It runs in the background from the moment MOSS or MOSS Code starts, on the computer you add it on.",
 } as const;
 
 /** What a plugin tree runs without being asked, for its OK (§5.2, §7): the routine triggers it adds (a routine that
@@ -1240,25 +1431,76 @@ export function backgroundOkLines(reports: readonly ManifestReport[]): string[] 
   return lines;
 }
 
-/** A voice mode's lines on its OK card (§6.6): it replaces Clover's voice only when the user chooses it, and it uses the
- *  voice providers (`voices.use`, which it holds by being a voice mode). */
-export const VOICE_MODE_OK_LINE = "It can replace Clover's voice: when you choose it in Settings › Voice, it speaks your bots' replies and hears what you say with push-to-talk.";
-export const VOICE_MODE_PROVIDERS_OK_LINE = "It uses your voice providers: it asks them to speak or transcribe, which may use your accounts with them.";
-/** A voice provider's line (`voices`): its entry is an endpoint other plugins may call. */
-export const VOICE_PROVIDER_OK_LINE = "Plugins you allow can ask it to speak or transcribe, using your account with it.";
+
+/** A point's `fills` line as its declarer wrote it, with who declared it and its title (§5.4): the core's points'
+ *  from `CORE_POINTS` (declared by MOSS), a plugin's from its declaration. `tree`: the declarer's top-level id (its
+ *  own tree's entries get no line). */
+export interface FillsDecl { by: string; title: string; ok: string; warns?: boolean; tree?: string; /** The declarer's plugin id (a plugin's point; none for the core's). */ id?: string }
+/** The `fills` of a point a plugin declares, as the registry knows it now (undefined: none, or not declared here). */
+export type FillsOf = (point: string) => FillsDecl | undefined;
+
+/** The most a `fills` line's parts may run to once made plain. */
+export const FILLS_OK_MAX = 300;
+const FILLS_NAME_MAX = 80;
+
+/** Text as one plain line: control, line-break, zero-width, direction-mark and direction-override characters to one
+ *  space, runs of space to one, trimmed and cut to `max`. A declarer's words are shown as text, never as markup. */
+export function plainLine(s: string, max: number): string {
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/** One filler's line for a point with `fills`, attributed to its declarer so it can't pass as MOSS's words: a
+ *  plugin's point names the declarer by its name and its id (the id alone when the name is empty once made plain). */
+export function fillsLine(f: FillsDecl): string {
+  const ok = plainLine(f.ok, FILLS_OK_MAX).replace(/[.!?]$/, "");
+  const name = plainLine(f.by, FILLS_NAME_MAX);
+  const id = f.id === undefined ? "" : plainLine(f.id, FILLS_NAME_MAX);
+  const label = id === "" ? `${name}'s` : name === "" || name === id ? `${id}'s` : `${name}'s (${id})`;
+  const line = `Fills ${label} "${plainLine(f.title, FILLS_NAME_MAX)}": ${ok}.`;
+  return f.warns === true ? `Careful: ${line}` : line;
+}
+
+/** The core point's `fills`, from the catalog. */
+function coreFills(point: string): FillsDecl | undefined {
+  const p = CORE_POINTS.find((x) => x.name === point);
+  return p?.fills === undefined ? undefined : { by: "MOSS", title: p.title ?? p.name, ok: p.fills.ok, ...(p.fills.warns === true ? { warns: true } : {}) };
+}
+
+/** The `fills` lines of a tree's OK card (§5.4, §5.6): one per point with a `fills` line that the tree's plugins fill
+ *  (a core point's from the catalog; another plugin's through `declared`), the cautions first. A point the tree
+ *  declares itself, and a point with no `fills`, show nothing. */
+export function fillsOkLines(reports: readonly ManifestReport[], declared?: FillsOf): string[] {
+  const top = reports.find((r) => r.id !== undefined && !r.id.includes("/"))?.id;
+  const points = new Set<string>();
+  for (const r of reports) for (const c of r.contributions) if (c.entries > 0) points.add(c.point);
+  // A UI spot a plugin declares is filled through `ui` (an entry naming its spot): its `fills` line counts the same.
+  for (const r of reports) {
+    const ui = (r.manifest?.contributes as { ui?: unknown } | undefined)?.ui;
+    if (Array.isArray(ui)) for (const e of ui) if (isObject(e) && typeof e.spot === "string" && e.spot.includes(".")) points.add(e.spot);
+  }
+  const decls: FillsDecl[] = [];
+  for (const point of points) {
+    const f = coreFills(point) ?? (point.includes(".") ? declared?.(point) : undefined);
+    if (f === undefined || (f.tree !== undefined && top !== undefined && f.tree === top)) continue;
+    decls.push(f);
+  }
+  return [...decls.filter((d) => d.warns === true), ...decls.filter((d) => d.warns !== true)].map(fillsLine);
+}
 
 /** A plugin that fills the island's `island.line` point (the owner's ruling, 2026-11-14): the card says it puts words on the
  *  island, so the user has seen that before it can. */
-export const ISLAND_LINE_OK_LINE = "It puts a line of text on the island, with its name beside it, in the island's own style, when Clover isn't in front.";
+export const ISLAND_LINE_OK_LINE = "It puts a line of text on the island, with its name beside it, in the island's own style, when MOSS isn't in front.";
+export const BACKGROUND_OK_LINE = "It keeps a part running in the background while MOSS is open.";
+/** The most `app.background` parts one plugin may have. */
+export const BACKGROUND_PARTS_MAX = 2;
 
 /** The OK's text for a plugin, in English (§5.1, §5.6); the app shows it from the built-in tables in the user's
  *  language. One card covers a plugin and its children. */
 /** How the OK card names a part beside a bot (`pluginParts`): a `ui` entry by its spot, the rest by their point. */
 const BESIDE_LABELS: Readonly<Record<string, string>> = {
   "island.tab": "an island tab", "sidebar.app": "a sidebar button", "settings.section": "a Settings section", main: "an app page",
-  status: "the status bar", "app.surface": "a window of its own", "pill.target": "a Dispatch pill target", sidebar: "the sidebar",
-  "sidebar.bot": "the bots' sidebar rows", "bot.editor.section": "a section on bots' Edit pages", panel: "a panel", "panel.view": "a panel",
-  "bot.tab": "other bots' tabs", locales: "translations", mcpServers: "tools", skills: "skills", hooks: "hooks",
+  status: "the status bar", "app.surface": "a window of its own", "app.background": "a part running in the background", "pill.target": "a Dispatch pill target", sidebar: "the sidebar",
+  panel: "a panel", "panel.view": "a panel", locales: "translations", mcpServers: "tools", skills: "skills", hooks: "hooks",
   agents: "agent definitions", commands: "commands", "island.line": "a line on the island",
 };
 /** The right panels Bots offers a bot to replace on its tab, as the OK card names them. */
@@ -1322,6 +1564,9 @@ export function ownPanelLines(manifest: Manifest | undefined): string[] {
   return lines;
 }
 
+/** The OK card's line for a plugin that restyles approval cards (`approvals`, or a theme setting `card.*` tokens). */
+export const RESTYLES_CARDS_OK_LINE = "It restyles approval cards.";
+
 export function describeOk(
   report: ManifestReport,
   opts: {
@@ -1333,7 +1578,7 @@ export function describeOk(
     /** The plugin's host code runs fenced to its network proxy on this computer (macOS with its sandbox on, B-M2's
      *  2g): only then does the OK say host code is held to the list. */
     hostNetworkHeld?: boolean;
-    /** Whether this computer runs plugin processes in Clover's sandbox (the plugin fence). `false`: the OK says the
+    /** Whether this computer runs plugin processes in MOSS's sandbox (the plugin fence). `false`: the OK says the
      *  plugin's programs run without it here (#406's review); absent: nothing is said either way. */
     sandboxed?: boolean;
     /** The core's grant to a wrapper the user brought (its install record's `wrapped.network`, the owner's ruling of
@@ -1350,23 +1595,21 @@ export function describeOk(
   const lines: string[] = [];
   const what = report.class === "code" ? "runs code on your computers" : report.class === "web" ? "shows web pages" : "is data only: files, no code";
   lines.push(`${report.id ?? "This plugin"} ${what}.`);
-  if (opts.networkOpen === true) lines.push("It can reach any host on the network, including services on this computer and your local network: it's a server you added, which names no hosts, so Clover doesn't hold its programs to a list. They are still fenced from your files.");
-  if (report.class === "code" && opts.os && opts.os !== "macos") lines.push("Its code could read Clover's logins and approve its own cards.");
+  if (opts.networkOpen === true) lines.push("It can reach any host on the network, including services on this computer and your local network: it's a server you added, which names no hosts, so MOSS doesn't hold its programs to a list. They are still fenced from your files.");
+  if (report.class === "code" && opts.os && opts.os !== "macos") lines.push("Its code could read MOSS's logins and approve its own cards.");
   if (report.contributions.length > 0) lines.push(`It adds: ${report.contributions.map((c) => c.point).join(", ")}.`);
   lines.push(...botPartLines(report.manifest));
   lines.push(...ownPanelLines(report.manifest));
   if (report.contributions.some((c) => c.point === "island.line")) lines.push(ISLAND_LINE_OK_LINE);
-  if ((report.manifest?.contributes?.voiceModes?.length ?? 0) > 0) {
-    lines.push(VOICE_MODE_OK_LINE);
-    if (!report.capabilities.includes("voices.use")) lines.push(VOICE_MODE_PROVIDERS_OK_LINE);
-  }
-  if ((report.manifest?.contributes?.voices?.length ?? 0) > 0) lines.push(VOICE_PROVIDER_OK_LINE);
+  if ((report.manifest?.contributes?.ui ?? []).some((e) => (e as { spot?: string; hide?: boolean }).spot === "app.background" && (e as { hide?: boolean }).hide !== true)) lines.push(BACKGROUND_OK_LINE);
   for (const cap of report.capabilities) {
     if (parseCapability(cap)?.kind === "network") continue;
     const text = capabilityOkText(cap);
     if (text) lines.push(`It ${text}.`);
   }
-  if (opts.restylesCards && !report.capabilities.includes("approvals")) lines.push(`It ${capabilityOkText("approvals")}.`);
+  // A plugin that draws approval cards' surroundings (`approvals`, or a theme's `card.*` tokens) restyles them (§5.5's limit):
+  // its own line, beside what `approvals` lets it show.
+  if (opts.restylesCards || report.restylesCards) lines.push(RESTYLES_CARDS_OK_LINE);
   // Host code is held to the list only where the fence holds it to its proxy (#371's review: the sandbox there and on,
   // not merely macOS).
   const hostHeld = opts.hostNetworkHeld === true;
@@ -1394,20 +1637,75 @@ export function describeOk(
   for (const cmd of report.fetchesCode) lines.push(`It fetches code when it runs: ${cmd}.`);
   // Lane C's ask: what this card shows is what may run without an approval card at the default level, nothing else.
   // A server that can reach the network gets no skip (`readOnlyReachesNetwork`), and the card says its tools still ask.
-  const treeNet = { capabilities: opts.treeCapabilities ?? report.capabilities, wrappedNetwork: opts.wrappedNetwork === true || opts.networkOpen === true, fenced: opts.sandboxed !== false };
-  for (const r of report.readOnlyTools ?? []) lines.push(...readOnlyOkLines(r, readOnlyReachesNetwork(r, treeNet)));
-  for (const r of report.containedTools ?? []) lines.push(...containedOkLines(r, containedToolsHold(r, treeNet)));
+  // A plugin that names programs of the user's it runs outside its sandbox (P5) gets no tool that runs without a card:
+  // a tool is its own code, which could run them with what a bot hands it. Its card says its tools still ask.
+  const runsOutside = (report.outside?.programs.length ?? 0) > 0;
+  const treeNet = { capabilities: opts.treeCapabilities ?? report.capabilities, wrappedNetwork: opts.wrappedNetwork === true || opts.networkOpen === true, fenced: opts.sandboxed !== false, runsOutside };
+  if (runsOutside) lines.push(...outsideToolsOkLines(report));
+  else {
+    for (const r of report.readOnlyTools ?? []) lines.push(...readOnlyOkLines(r, readOnlyReachesNetwork(r, treeNet)));
+    for (const r of report.containedTools ?? []) lines.push(...containedOkLines(r, containedToolsHold(r, treeNet)));
+    for (const w of report.webTools ?? []) lines.push(...webToolOkLines(w));
+  }
+  if ((report.pictureServers?.length ?? 0) > 0) lines.push(PICTURE_OK_LINE);
   if (report.envSecrets.length > 0) {
     lines.push(`Its server${report.envSecrets.length > 1 ? "s" : ""} ${report.envSecrets.join(", ")} get${report.envSecrets.length > 1 ? "" : "s"} your keys in ${report.envSecrets.length > 1 ? "their" : "its"} environment, which other plugins on this ${opts.os === "macos" ? "Mac" : "computer"} could read.`);
   }
-  if (report.ownPrograms) lines.push("It runs its own programs, which Clover doesn't confine.");
+  if (report.ownPrograms) lines.push("It runs its own programs, which MOSS doesn't confine.");
   // Its host code's programs (`host.programs`): held to its own folder and the user's picks where the fence holds them;
   // elsewhere the line below says they run without the sandbox.
   if (report.hostPrograms === true) lines.push(opts.sandboxed === false ? HOST_PROGRAMS_OK_LINE_UNFENCED : HOST_PROGRAMS_OK_LINE);
-  if (opts.sandboxed === false && report.class === "code") lines.push("Its programs run without Clover's sandbox on this computer.");
-  if (report.addons) lines.push("It loads add-ons of its own, which Clover doesn't check.");
+  if (opts.sandboxed === false && report.class === "code") lines.push("Its programs run without MOSS's sandbox on this computer.");
+  lines.push(...outsideOkLines(report.outside ?? { programs: [], read: [] }));
+  if (report.addons) lines.push("It loads add-ons of its own, which MOSS doesn't check.");
   if (report.adult) lines.push("It may contain adult content.");
   return lines;
+}
+
+/** A program a manifest may name outside the sandbox: a bare name found on the PATH, or an absolute path with no `..`. */
+export function outsideProgramOk(p: string): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(p)) return false;
+  if (p.startsWith("/")) return p.length > 1 && !p.split("/").includes("..") && !p.endsWith("/");
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(p);
+}
+
+/** A folder a manifest may name to read outside the sandbox: `~/` and a folder, or an absolute path below `/`, with no
+ *  `..`; never the whole home or the whole disk. */
+export function outsideFolderOk(p: string): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(p)) return false;
+  const rest = p.startsWith("~/") ? p.slice(2) : p.startsWith("/") ? p.slice(1) : undefined;
+  if (rest === undefined) return false;
+  const parts = rest.split("/").filter((s) => s !== "");
+  if (parts.length === 0 || parts.includes("..") || parts.includes(".")) return false;
+  // An absolute path names a folder below the disk's top folders, never one of them (`/Users`, `/home`, `/Volumes`,
+  // `/private` hold every home), and nothing of the system's own (`/System` reaches the homes another way). The core
+  // also refuses any folder that holds the user's home or MOSS's.
+  // Case-folded: the disk is case-insensitive by default, so `/system` is `/System`.
+  if (p.startsWith("/")) return parts.length >= 2 && parts[0]!.toLowerCase() !== "system";
+  return true;
+}
+
+/** The OK card's lines for what a plugin names outside its sandbox (P5), each a warning: every program it runs with the
+ *  user's own access, and every folder of the user's it reads. */
+export function outsideOkLines(o: { programs: readonly string[]; read: readonly string[] }): string[] {
+  const lines: string[] = [];
+  // One line a program: what it is (any arguments the plugin chooses, the user's own access) is the whole of the risk.
+  for (const program of o.programs) lines.push(`${OUTSIDE_PROGRAM_LINE}: ${program}.`);
+  if (o.read.length > 0) lines.push(`It reads ${o.read.length === 1 ? "this folder" : "these folders"} of yours outside its sandbox: ${o.read.join(", ")}.`);
+  return lines;
+}
+
+/** The start of the OK card's line for each program a plugin runs outside its sandbox (P5); the program follows. */
+export const OUTSIDE_PROGRAM_LINE = "It runs this program of yours outside MOSS's sandbox, with whatever arguments it chooses and your own access (your sign-ins, your Keychain, your files and your network)";
+
+/** The OK card's lines for the tools of a plugin that runs programs outside its sandbox (P5): each server that says its
+ *  tools only read, only change its display or search or read the web, one line saying they still ask (its tools are
+ *  its own code, which can run those programs with what a bot hands them). */
+export function outsideToolsOkLines(report: Pick<ManifestReport, "readOnlyTools" | "containedTools" | "webTools">): string[] {
+  const servers = new Map<string, number>();
+  for (const r of [...(report.readOnlyTools ?? []), ...(report.containedTools ?? [])]) servers.set(r.server, (servers.get(r.server) ?? 0) + r.tools.length);
+  for (const w of report.webTools ?? []) servers.set(w.server, (servers.get(w.server) ?? 0) + w.search.length + w.fetch.length + (w.browser?.length ?? 0));
+  return [...servers].map(([server, n]) => `Its server ${server} says ${n === 1 ? "one tool needs" : `${n} tools need`} no asking, but this plugin runs programs of yours outside its sandbox, so ${n === 1 ? "it still asks" : "they still ask"} before running.`);
 }
 
 /** The OK card's line for a host half that runs programs (`host.programs`), where the plugin fence holds them. */
@@ -1429,18 +1727,20 @@ function serverReachesNetwork(s: { type?: unknown; url?: unknown }): boolean {
 
 /** Whether a server's read-only tools still ask: they skip the card only where a call can't carry its arguments off
  *  the computer. So never for an http server, a tree with any `network:` grant (`network:public` and local ones
- *  included), a wrapper whose install record carries a network grant, or where Clover's fence doesn't hold plugin
+ *  included), a wrapper whose install record carries a network grant, or where MOSS's fence doesn't hold plugin
  *  processes (`fenced` false). A cardless "read-only" call on a networked server is a cardless send of whatever the
  *  bot puts in its arguments. The call-time check (`pluginToolReadOnly`) and the OK card read this same rule. */
 export function readOnlyReachesNetwork(
   server: { type?: unknown; url?: unknown; network?: boolean } | undefined,
-  tree: { capabilities: readonly string[]; wrappedNetwork: boolean; fenced: boolean },
+  tree: { capabilities: readonly string[]; wrappedNetwork: boolean; fenced: boolean; runsOutside?: boolean },
 ): boolean {
-  return server === undefined || server.network === true || serverReachesNetwork(server) || !tree.fenced || tree.wrappedNetwork
+  // A tree that names programs it runs outside its sandbox (P5, `host.outside.programs`): its code reaches what they
+  // reach, the network included, with what a bot hands a tool.
+  return server === undefined || server.network === true || serverReachesNetwork(server) || !tree.fenced || tree.wrappedNetwork || tree.runsOutside === true
     || tree.capabilities.some((c) => typeof c === "string" && c.startsWith("network:"));
 }
 
-/** The capabilities a tree may hold for its display-only tools (`contained`) to skip the card: reads of Clover's own
+/** The capabilities a tree may hold for its display-only tools (`contained`) to skip the card: reads of MOSS's own
  *  state, which change nothing and, with no network anywhere in the tree and the plugin fence holding its processes,
  *  stay on this computer. A contained tool's plugin may keep what a call hands it in its own data (that is what a
  *  display is for), so what it may read and where it may send it bound the skip. Every other capability, and any one
@@ -1453,16 +1753,11 @@ export function readOnlyReachesNetwork(
  *  - `call:<plugin>`: another plugin's commands, and their effects;
  *  - `logs.read`: every plugin's logs, other plugins' data;
  *  - `network:*`: the network, already a condition of its own (`readOnlyReachesNetwork`).
- *  The two `avatar.*` capabilities stay allowed: the plugin's own bot's figure is its display (`avatar.report`, which
- *  tells the core what the stage drew, is bundled-only and not here). */
+ */
 export const CONTAINED_TOOL_CAPABILITIES: readonly string[] = [
   "conversation.read", "memory.read", "bots.read", "routines.read", "computers.read", "devices.read", "usage.read",
   // The window's own parts (`shell.*`): display only, acts count only by the user's own press in a plugin's frame.
   "shell.read", "shell.control",
-  // The figure's own display: `avatar.control` cues only the plugin's own bot's avatar (an expression, a motion, an
-  // outfit part, the pace, a look-at point: nothing it can read, send or keep), at most 20 a second; `avatar.read` reads
-  // that figure's names and box.
-  "avatar.read", "avatar.control",
 ];
 
 /** Whether a server's display-only tools may skip the card: everything that holds a read-only tool to its card
@@ -1471,7 +1766,7 @@ export const CONTAINED_TOOL_CAPABILITIES: readonly string[] = [
  *  (`pluginToolContained`) and the OK card read this same rule. */
 export function containedToolsHold(
   server: { type?: unknown; url?: unknown; network?: boolean } | undefined,
-  tree: { capabilities: readonly string[]; wrappedNetwork: boolean; fenced: boolean },
+  tree: { capabilities: readonly string[]; wrappedNetwork: boolean; fenced: boolean; runsOutside?: boolean },
 ): boolean {
   return !readOnlyReachesNetwork(server, tree) && tree.capabilities.every((c) => typeof c === "string" && CONTAINED_TOOL_CAPABILITIES.includes(c));
 }
@@ -1480,7 +1775,7 @@ export function containedToolsHold(
  *  at most `OK_LINE_MAX`; or, where they don't hold (`containedToolsHold`), one line saying they still ask. */
 export function containedOkLines(r: { server: string; tools: readonly string[] }, hold: boolean): string[] {
   const n = r.tools.length;
-  if (!hold) return [`Its server ${r.server} says ${n === 1 ? "one tool only changes" : `${n} tools only change`} its own display, but it can reach the network or do more than read Clover's state, so ${n === 1 ? "it still asks" : "they still ask"} before running.`];
+  if (!hold) return [`Its server ${r.server} says ${n === 1 ? "one tool only changes" : `${n} tools only change`} its own display, but it can reach the network or do more than read MOSS's state, so ${n === 1 ? "it still asks" : "they still ask"} before running.`];
   const lines: string[] = [];
   let line = `Its server ${r.server} says ${n === 1 ? "this tool only changes its own display, so at the default level it runs" : "these tools only change its own display, so at the default level they run"} without asking: `;
   let first = true;
@@ -1493,6 +1788,17 @@ export function containedOkLines(r: { server: string; tools: readonly string[] }
     first = false;
   }
   lines.push(`${line}.`);
+  return lines;
+}
+
+/** The OK card's lines for a server's web tools (`webSearch`, `webFetch`), each a warning: what runs without asking at
+ *  the default level, and that what a bot searches or fetches goes through this plugin. */
+export function webToolOkLines(w: { server: string; search: readonly string[]; fetch: readonly string[]; browser?: readonly string[] }): string[] {
+  const lines: string[] = [];
+  const names = (t: readonly string[]) => t.join(", ").slice(0, 300);
+  if (w.search.length > 0) lines.push(`Its server ${w.server} says ${names(w.search)} search${w.search.length === 1 ? "es" : ""} the web: at the default approval level a search runs without asking, and what a bot searches goes to this plugin.`);
+  if (w.fetch.length > 0) lines.push(`Its server ${w.server} says ${names(w.fetch)} read${w.fetch.length === 1 ? "s" : ""} web pages: at the default approval level a page whose link a bot already has is read without asking (a few a turn), any other page asks, site by site, and what is read goes through this plugin.`);
+  if ((w.browser ?? []).length > 0) lines.push(`Its server ${w.server} says ${names(w.browser!)} drive${w.browser!.length === 1 ? "s" : ""} the calling bot's own tab of the MOSS Browser. Looking and acting are told apart by the plugin's own word (its verbs): at the default approval level what it calls looking runs without asking, what it calls clicking and typing asks for the site, and what the tab shows goes through this plugin.`);
   return lines;
 }
 

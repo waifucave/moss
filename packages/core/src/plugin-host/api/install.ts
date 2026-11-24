@@ -1,10 +1,11 @@
-// `plugins.install` from a component (the SDK's catalog: capability `plugins.install`, where `ui`; the capability is
-// bundled-only, the plugin index browser's, "Install plugins from the indexes and npm for the user to OK"): an install
+// `plugins.install` from a component (the SDK's catalog: capability `plugins.install`, where `ui`; any plugin may ask for
+// it behind its OK card's warning line, the plugin index browser among them, "Install plugins from the indexes and npm
+// for the user to OK"): an install
 // from an index or npm, nothing else (a folder path or a wrapped item is the user's own to bring), through the user's door
 // (`pluginRegistryMethods`' `plugin.install`), which lands the plugin found, waiting behind its sealed OK card. The card
 // says which plugin asked ("<plugin> wants to add <name>.", the provenance `{ by: "plugin" }`), and nothing it installs
 // runs before the user's OK. The router checks the capability and that the call comes from a component.
-import { InstallSource } from "@waifucave/clover-protocol";
+import { InstallSource } from "@waifucave/moss-protocol";
 import { ContractError } from "../../contracts/common";
 import type { ComponentInstallDoor } from "../registry-methods";
 import type { ApiHandlers } from "./router";

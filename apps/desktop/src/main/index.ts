@@ -1,15 +1,15 @@
-// Clover's desktop app, the main process (spec §3.1, §5.5, §5.8; plan §4 E, M1): the windows, the menu-bar or tray
+// MOSS's desktop app, the main process (spec §3.1, §5.5, §5.8; plan §4 E, M1): the windows, the menu-bar or tray
 // icon, the app's side of the always-on pair with the daemon, the protocol client, and the plugin runtime that loads
 // the shell's UI halves into layers.
 //
 // The app runs in the menu bar (the tray) with no window until the user opens one. A start by the user opens the main
 // window; a start by the daemon or at login doesn't. Closing a window only closes it; Quit stops both halves.
 //
-// A headless run (`--clover-headless`, the smoke run, the tests) never shows a window, a Dock icon or a tray icon and
+// A headless run (`--moss-headless`, the smoke run, the tests) never shows a window, a Dock icon or a tray icon and
 // never takes the focus: on macOS the app is an accessory from its first line, and everything it writes stays in its
 // temporary home.
-import { existsSync, mkdirSync, readFileSync, watchFile, writeFileSync } from "node:fs";
-import { hostname, release as osRelease, userInfo } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, watchFile, writeFileSync } from "node:fs";
+import { homedir, hostname, release as osRelease, userInfo } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,95 +17,171 @@ import { themeSourceOf } from "./theme-source";
 import { captureOne, captureWindows, surfaceName as captureName, type CaptureDeps, type WindowLike } from "./capture";
 import { openWindow, OPEN_TARGETS } from "./open";
 import { RENDER_CONSOLE_MAX, RenderQueue, renderPlace, type RenderConsoleLine, type RenderHandle } from "./render";
-import type { ShellState } from "@waifucave/clover-plugin-sdk";
+import type { ShellState } from "@waifucave/moss-plugin-sdk";
 import { pluginIconFile } from "./ui/plugin-icon";
-import { app, BrowserWindow, Menu, Notification, clipboard, dialog, nativeImage, nativeTheme, powerMonitor, safeStorage, screen, session, shell, systemPreferences, webFrameMain, type Input, type MenuItemConstructorOptions } from "electron";
-import { APP_METHODS, BROWSER_METHODS, PLUGINS_METHODS, CLOVER_PROTOCOL_VERSION, CORE_EVENT_NOTIFICATION, CardRequestedEvent, CardResolvedEvent, PairStatus, UiSettings, UiSettingsChangedEvent } from "@waifucave/clover-protocol";
-import { systemAccentFromOs } from "@waifucave/clover-plugin-sdk";
+import { app, BrowserWindow, ipcMain, Menu, webContents, Notification, clipboard, dialog, nativeImage, nativeTheme, powerMonitor, safeStorage, screen, session, shell, systemPreferences, webFrameMain, type Input, type MenuItemConstructorOptions } from "electron";
+import { APP_METHODS, BROWSER_METHODS, TabChangedEvent, TabClosedEvent, TabView, PLUGINS_METHODS, MOSS_PROTOCOL_VERSION, CORE_EVENT_NOTIFICATION, ReleaseChangedEvent, compareReleases, CardPlacedEvent, CardRequestedEvent, CardResolvedEvent, PairStatus, PRESENCE_REFRESH_MS, SURFACES_METHODS, UiSettings, UiSettingsChangedEvent, type CardPlacement } from "@waifucave/moss-protocol";
+import { systemAccentFromOs } from "@waifucave/moss-plugin-sdk";
 import { testBrowserNames } from "./browser/test-names";
 import { BROWSER_ASSETS, createBrowserHost, isBrowserContents, type BrowserHost } from "./browser/index";
 import { refusedLaunchSwitches, TEST_BUILD_MARKER } from "./debug-guard";
 import { testBuildAppRefusal } from "./test-build";
 import { housingFor, loadScreens } from "./housing";
+import { buttonAt, inWindow, MISS_BOUND_MS, MissWatch, type Box } from "./sealed-miss";
+import { coverAdvice, coverName, isOurProgram, loadWindowList, pressCoverRead, windowIdOfMediaSource, type WindowList } from "./overlap";
 import { HANG_COMPOSITOR_MS, HANG_PING_MS, HangWatch, hangVerdict, type PingResult } from "./hang";
 import { appIdentity, daemonHome, parseLaunchArgs, resolveAppProfile, SMOKE_PREFIX, UI_PARTITION } from "./identity";
-import { cliLauncher, locateDaemonBinary } from "./pair/login";
+import { adoptHomeEngine, cliLauncher, installEngineCopy, locateDaemonBinary, startEngineThroughOs } from "./pair/login";
+import { appRelease, bundlePathOf, createRelease, writeOwnRecord } from "./release";
 import { Pair, type PairState } from "./pair/pair";
 import { quitQuestion, type QuitChoice } from "./pair/quit";
 import { appHello, devOverridesAllowed, pairEnv, readAppToken, readStartInfo } from "./pair/start";
 import { daemonEndpoint, dial as dialDaemon, RpcCallError, type DaemonClient } from "./protocol/client";
 import { FileGrants, answersFor } from "./ui/file-grants";
 import { OptionalCalls } from "./pair/optional-calls";
-import { anyReady, listProviders, pageCall, type CorePage } from "./core-pages";
+import { loadWithRetry } from "./pair/setup-retry";
+import { testTimeScale } from "./test-scale";
+import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type CorePage } from "./core-pages";
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
 import { AppLog, appLogPath } from "./app-log";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
-import { SealedFrames } from "./sealed";
-import { ownCardPage } from "./sealed-pages";
-import { translate } from "@waifucave/clover-plugin-sdk/ui/bridge";
+import { OWN_ELEMENT, SealedFrames } from "./sealed";
+import { BrowserAreaFrames, isBrowserEvent, ViewBindings } from "./ui/browser-calls";
+import { FRESH_LIMIT_MS, NOT_CHECKED_REASON, NOT_SHOWN_REASON, ownCardPage, pinVisible } from "./sealed-pages";
+import { translate } from "@waifucave/moss-plugin-sdk/ui/bridge";
 import { Notifications } from "./notify";
 import { gateAnswer } from "./registry-gate";
 import { appShortcut, fallbackMayShow, fallbackOnVisibility, sealedInputAllowed } from "./shortcuts";
 import { InstallGate, installKindOf, startUpdater, writeInstallMarker, type Updater } from "./updater";
 import { devAppIcon } from "./icons";
 import { AppTray } from "./tray";
-import { DEFAULT_PREFS, readPrefs, writePrefs, type AppPrefs } from "./prefs";
+// lane HS: start
+import { desktopProgram, headlessUserData, hostHello, hostIdentity, hostProfileAndHome, hostStartInfo, hostTrayMenu, midWorkWarning, takeHostLock, type HostLock, type HostTrayActions } from "./host-program";
+import { EngineWatch, HOST_ENGINE_GONE_MS, hostBundlePath, installHostHandlers, leaveFor, sayHostReady, stopEverything, type HostRuntimeDeps } from "./host-runtime";
+import { fallbackHere as fallbackHereOf, fallbackMayDraw, mountPlan, type MountPlan } from "./mount-plan";
+import { drawerExempt, overlayStandsDown, surfacesReport } from "./host-stacking";
+import { FocusHandBack } from "./focus-handback";
+import { RemoteViews } from "./browser/remote-view";
+import { streamCommandOf } from "./browser/stream-command";
+import { electronRemoteViewport } from "./browser/remote-viewport";
+import { TabFrameSender } from "./browser/frame-sender";
+import { SURFACE_MOUNTS, type HostState, type MountList } from "@waifucave/moss-protocol";
+// lane HS: end
+import { DEFAULT_PREFS, readPrefs, withLegacyHidden, writePrefs, type AppPrefs } from "./prefs";
 import { FourFingerTap, loadTouches, type TouchAddon } from "./touch-tap";
 import type { TrayState } from "./tray-menu";
 import { readUiPlugins, type UiPluginExtras } from "./ui/model";
-import { CLICK_THROUGH_POLL_MS, ClickThrough, MenuGate, SendGate, sendImages, sendTarget, PointerLog, ViewFrames, checkRegions, mayOpen, surfaceBounds, surfaceMayFloat, surfacePlacement, surfaceSize, type MenuItem, type Rect } from "./ui/brokers";
-import type { OpenTarget, SurfaceEnvironment } from "@waifucave/clover-plugin-sdk/ui/bridge";
+import { CLICK_THROUGH_POLL_MS, ClickThrough, MenuGate, SendGate, sendImages, sendTarget, PointerLog, ViewFrames, checkRegions, surfaceBounds, surfacePlacement, surfaceSize, type Hold, type MenuItem, type Rect } from "./ui/brokers";
+import type { OpenTarget, SurfaceEnvironment } from "@waifucave/moss-plugin-sdk/ui/bridge";
 import { IpcStats, cpuMeter, ipcStatsOn, startIpcStats } from "./ui/ipc-stats";
 import { guardContents, hardenSession, installIpc, installUiSession, registerSchemes, startCensus } from "./ui/electron";
+import { FrameWatches } from "./ui/frame-watches";
 import { LAYER_SCHEME } from "./ui/documents";
-import { LISTEN_REQUEST_MS, ListenHolds, micPermission } from "./ui/listen";
-import { LayerError, UiRuntime, type SealedAskOutcome } from "./ui/runtime";
-import { PluginKeys, keysMayRun } from "./plugin-keys";
+import { micHandlers } from "./ui/microphone";
+import { LayerError, surfaceSettingHolds, UiRuntime, type SealedAskOutcome } from "./ui/runtime";
+import { PluginKeys, keysMayRun, type HoldStep } from "./plugin-keys";
 import { WebViews, isWebViewContents, webSpec } from "./ui/web-views";
 import type { Os } from "./ui/spots";
-import { cloverFront, FrontWatcher, islandMayDraw, placeCard, pressMayBeTaken, placeLine, type CardPlace } from "./card-place";
-import { appIsRegular, mainWindowFront, PILL_PLUGIN, pillAfterTap, pillAfterTray, surfaceShown, type MainWindowState, type PillMode } from "./front-rules";
-import { linuxSession, mainWindowPlan, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
+import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, type CardPlace, type PressSource } from "./card-place";
+import { afterTap, afterTray, appIsRegular, mainWindowFront, surfaceShown, type MainWindowState, type PutAway } from "./front-rules";
+import { linuxSession, mainWindowPlan, surfaceDrawsOffscreen, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
 
 // First of all, before any window or daemon connection: a debugging switch on the signed app would drive its renderer
 // around the daemon's check of who connects (debug-guard.ts).
 {
   // A test-marked build (the define, folded out of a real one) may open its DevTools port on loopback for the UI run.
-  const refused = refusedLaunchSwitches({ argv: process.argv, hasSwitch: (n) => app.commandLine.hasSwitch(n), packaged: app.isPackaged, env: process.env, testBuild: app.isPackaged && existsSync(join(process.resourcesPath, TEST_BUILD_MARKER)), testDebug: typeof __CLOVER_TEST_BUILD__ === "string" && process.env.CLOVER_TEST_DEBUG === "1" });
-  if (typeof __CLOVER_TEST_BUILD__ === "string" && process.env.CLOVER_TEST_DEBUG === "1") process.stdout.write("[clover-app] test-marked build: the DevTools port is open on loopback for the UI run\n");
+  const refused = refusedLaunchSwitches({ argv: process.argv, hasSwitch: (n) => app.commandLine.hasSwitch(n), packaged: app.isPackaged, env: process.env, testBuild: app.isPackaged && existsSync(join(process.resourcesPath, TEST_BUILD_MARKER)), testDebug: typeof __MOSS_TEST_BUILD__ === "string" && process.env.MOSS_TEST_DEBUG === "1" });
+  if (typeof __MOSS_TEST_BUILD__ === "string" && process.env.MOSS_TEST_DEBUG === "1") process.stdout.write("[moss-app] test-marked build: the DevTools port is open on loopback for the UI run\n");
   if (refused.length > 0) {
-    process.stderr.write(`clover: refusing to start with ${refused.map((n) => `--${n}`).join(", ")} (a debugging or secret-logging switch)\n`);
+    process.stderr.write(`moss: refusing to start with ${refused.map((n) => `--${n}`).join(", ")} (a debugging or secret-logging switch)\n`);
     app.exit(2);
     process.exit(2);
   }
 }
 
-const identity = appIdentity(resolveAppProfile(process.env));
+// lane HS: start. Which program this process is: MOSS Code's window, or the background host (host-program.ts), and its
+// identity; the host's lock, taken once the single-instance lock is (below).
+const program = desktopProgram(process.argv, process.execPath);
+// lane HS: the host's profile and home (the dev helper is the dev profile on its own home, whatever Launch Services passed).
+const hostWhere = program === "host" ? hostProfileAndHome(process.env, process.execPath, homedir()) : undefined;
+const identity = hostWhere !== undefined ? hostIdentity(hostWhere.profile) : appIdentity(resolveAppProfile(process.env));
+let hostLock: HostLock | null | undefined;
+// The live preview's own build of the app (apps/desktop/scripts/build.ts --preview, which only scripts/preview/run.ts passes): `false`
+// in every other build. Compile-time only, tested inline wherever a path or a name of its own is read, so a release build and the test
+// twin carry none of it (scripts/test-build.ts PREVIEW_ONLY_APP_STRINGS and the label are what the build's gate looks for).
+declare const __MOSS_PREVIEW_BUILD__: string | false | undefined;
+/** This process is the preview: ONE window of MOSS Code from source on a throwaway home, and nothing else on the screen. */
+const preview: boolean = typeof __MOSS_PREVIEW_BUILD__ === "string";
+/** What the preview mounts: its main window and nothing else (mount-plan.ts's MountPlan, fixed). */
+const PREVIEW_PLAN: MountPlan = { mainWindow: true, surfaces: false, background: false, tray: "none", browser: false, drawsCards: true };
+/** What this process runs (mount-plan.ts): from the hello's mount list, and the host's state for a window. */
+// lane HS: a window mounts only its own points until the engine's hello says more (never an island the host may own,
+// drawn for a moment before the mount comes); an engine whose hello names no mount gets today's whole list then.
+let mountNow: MountPlan = preview ? PREVIEW_PLAN : mountPlan(program, program === "host" ? SURFACE_MOUNTS.host : SURFACE_MOUNTS.code);
+let helloMount: MountList | undefined;
+let mountSaid = false;
+let hostStateNow: HostState | undefined;
+/** lane HS: the engine stopped trying to start the host (`host_changed`'s `gaveUp`), and whether the notice was shown. */
+let hostGaveUp = false;
+let hostDownNoticed = false;
+// lane HS: end
 const args = parseLaunchArgs(process.argv, process.env);
 const headless = args.headless;
-/** A measuring run (`CLOVER_TEST_INVISIBLE=1`, or `hidden` to leave the main window away; headless, no `--clover-capture`; unpackaged or
+/** A measuring run (`MOSS_TEST_INVISIBLE=1`, or `hidden` to leave the main window away; headless, no `--moss-capture`; unpackaged or
  *  test-marked only): the windows are real, composited and throttled as the owner's are, but shown at opacity 0 and deaf to the
  *  mouse (`showInvisible`), so nothing is seen or touched on the screen. An offscreen or unthrottled headless window hides what the
  *  owner's app does while it idles. */
-const invisible: "shown" | "hidden" | undefined = headless && args.capture === undefined && (!app.isPackaged || typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string")
-  ? (process.env.CLOVER_TEST_INVISIBLE === "1" ? "shown" : process.env.CLOVER_TEST_INVISIBLE === "hidden" ? "hidden" : undefined)
+const invisible: "shown" | "hidden" | undefined = headless && args.capture === undefined && (!app.isPackaged || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string")
+  ? (process.env.MOSS_TEST_INVISIBLE === "1" ? "shown" : process.env.MOSS_TEST_INVISIBLE === "hidden" ? "hidden" : undefined)
   : undefined;
-const home = daemonHome(process.env);
+const home = hostWhere?.home ?? daemonHome(process.env);
+/** No other surface than the one window: a headless run draws nothing, the preview draws only its window. */
+const quiet: boolean = headless || preview;
+/** What the preview's command hands its app: the words the window says it is (its title and one plain line), the file whose changes
+ *  reload the window, and a fixed appearance. Read inline from the compile-time mark, never from a helper. */
+const previewBanner: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_BANNER : undefined;
+const previewReloadFile: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_RELOAD_FILE : undefined;
+const previewAppearance: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_APPEARANCE : undefined;
+/** The control door's socket and token (`--control` only; apps/desktop/src/main/preview-control.ts). Absent: no door is opened. */
+const previewControlSocket: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_CONTROL_SOCKET : undefined;
+const previewControlToken: string | undefined = typeof __MOSS_PREVIEW_BUILD__ === "string" ? process.env.MOSS_PREVIEW_CONTROL_TOKEN : undefined;
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
-declare const __CLOVER_TEST_BUILD__: string | false | undefined;
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
 // The source acceptance run's own build of the app (apps/desktop/scripts/build.ts --acceptance, which only
 // scripts/acceptance/run.ts passes): its label, `false` in every other build. Like the test mark it is tested inline in
 // each condition, so a release build has none of what it guards (scripts/test-build.ts's gate checks).
-declare const __CLOVER_ACCEPTANCE_BUILD__: string | false | undefined;
+declare const __MOSS_ACCEPTANCE_BUILD__: string | false | undefined;
+// The smoke run's test-only inputs: read only in a test build or the acceptance build, so a real build carries no trace of the names
+// (the marker gate in scripts/test-build.ts looks for them).
+const SMOKE_SEALED_CLICK: string | undefined = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string" ? process.env.MOSS_SMOKE_SEALED_CLICK : undefined;
+const SMOKE_SEALED_FALLBACK: boolean = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && process.env.MOSS_SMOKE_SEALED_FALLBACK === "1";
+const SMOKE_DROP_FRESH: boolean = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && process.env.MOSS_SMOKE_DROP_FRESH === "1";
+// A test-only pin of the sealed page's own periodic verdict to "visible" (so a press reaches the fresh-report check, never the page's old gate).
+const SMOKE_PIN_VISIBLE: boolean = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && process.env.MOSS_SMOKE_PIN_VISIBLE === "1";
+pinVisible.on = SMOKE_PIN_VISIBLE;
 // A test-marked build (compile-time only; a real build compiles this out): Chromium's mock keychain from the start, and
 // a refusal to start where it would still reach the login keychain or the live home (test-build.ts).
-if (typeof __CLOVER_TEST_BUILD__ === "string") {
-  process.stdout.write(`[clover-app] ${__CLOVER_TEST_BUILD__}: a test-marked build, never for release\n`);
+if (typeof __MOSS_TEST_BUILD__ === "string") {
+  process.stdout.write(`[moss-app] ${__MOSS_TEST_BUILD__}: a test-marked build, never for release\n`);
   app.commandLine.appendSwitch("use-mock-keychain");
   const refused = testBuildAppRefusal({ mockKeychain: app.commandLine.hasSwitch("use-mock-keychain"), home, account: userInfo().homedir });
+  if (refused !== undefined) {
+    process.stderr.write(`${refused}\n`);
+    app.exit(2);
+    process.exit(2);
+  }
+}
+// The preview (compile-time mark): Chromium's mock keychain from the start, and a refusal to start where it would reach the login
+// keychain, the live home or a packaged install: it runs from source (unpackaged), on a temp home, nowhere else.
+if (typeof __MOSS_PREVIEW_BUILD__ === "string") {
+  process.stdout.write(`[moss-app] ${__MOSS_PREVIEW_BUILD__}: the live preview's build, never for release\n`);
+  app.commandLine.appendSwitch("use-mock-keychain");
+  const refused = app.isPackaged
+    ? "moss: refusing to start: this is the live preview's build, and a packaged app never runs it"
+    : testBuildAppRefusal({ mockKeychain: app.commandLine.hasSwitch("use-mock-keychain"), home, account: userInfo().homedir });
   if (refused !== undefined) {
     process.stderr.write(`${refused}\n`);
     app.exit(2);
@@ -122,13 +198,14 @@ if (process.platform === "darwin") app.setActivationPolicy("accessory");
 app.setName(identity.productName);
 if (process.platform === "win32") app.setAppUserModelId(identity.appId);
 // A headless run keeps everything it writes in its own (temporary) home; so does a test-marked build.
-if (headless || typeof __CLOVER_TEST_BUILD__ === "string") {
-  app.setPath("userData", join(home, "app-data", identity.profile));
-  app.setPath("sessionData", join(home, "app-data", identity.profile, "session"));
+if (headless || preview || typeof __MOSS_TEST_BUILD__ === "string") {
+  // lane HS: the host's own folder, never the window's (host-program.ts).
+  app.setPath("userData", headlessUserData(home, program, identity.profile));
+  app.setPath("sessionData", join(headlessUserData(home, program, identity.profile), "session"));
 }
 // A headless run, a test-marked build and the acceptance run's build play no sound: the bots' voices still play through
 // the player (its clock and counters run), muted at Chromium's output.
-const silent = headless || typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string";
+const silent = headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 if (silent) app.commandLine.appendSwitch("mute-audio");
 // Every plugin origin in a process of its own (S9).
 app.commandLine.appendSwitch("site-per-process");
@@ -140,14 +217,14 @@ registerSchemes();
 
 const appLog = new AppLog(appLogPath(home));
 function log(line: string): void {
-  process.stdout.write(`[clover-app] ${line}\n`);
+  process.stdout.write(`[moss-app] ${line}\n`);
   appLog.write(line);
 }
 
 // A packaged app never shows Electron's "A JavaScript error occurred in the main process" box: an uncaught exception or
 // an unhandled rejection is one line and its stack in app.log, and the app goes on. A test-marked or acceptance build
 // keeps the default loud behaviour, so a run still fails on one.
-if (app.isPackaged && typeof __CLOVER_TEST_BUILD__ !== "string" && typeof __CLOVER_ACCEPTANCE_BUILD__ !== "string") {
+if (app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string") {
   const note = (kind: string, err: unknown): void => {
     try {
       log(`main: ${kind}: ${err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err)}`);
@@ -159,19 +236,45 @@ if (app.isPackaged && typeof __CLOVER_TEST_BUILD__ !== "string" && typeof __CLOV
 
 // The dev overrides (the daemon binary, the app token) count only in a dev or unpackaged run.
 const env = pairEnv(process.env, devOverridesAllowed({ packaged: app.isPackaged, profile: identity.profile }));
-const start = readStartInfo(home, process.argv);
+// lane HS: the host reads the engine's start file for it (host-program.ts), the window the pair's.
+const start = program === "host" ? hostStartInfo(home) : readStartInfo(home, process.argv);
 const safeMode = start.safeMode || args.safeMode;
 
 let runtime: UiRuntime;
 let pair: Pair;
-/** The windows' push-to-talk holds (ui/listen.ts), made at ready. */
-let listens: ListenHolds | undefined;
 let browser: BrowserHost | undefined;
-let tray: AppTray | undefined;
+// lane HS: MOSS Code's tray or the host's (the one menu-bar icon once a host runs).
+let tray: { show(state: TrayState): void; destroy(): void } | undefined;
 let mainWindow: BrowserWindow | undefined;
 let leaving = false;
 let shuttingDown = false;
 let updater: Updater | undefined;
+// One release for everything (spec §3.1; release.ts). This app's release, its bundle (what its record names), and the two
+// things it can be told: it is behind the engine (it updates itself before it connects), or ahead of it (it asks for its
+// engine to be brought in and says it waits for work to finish).
+// The release stand-ins below are read by a test build and the acceptance build only (a release build folds them out).
+const ownRelease = appRelease(app.getVersion(), (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") ? process.env.MOSS_TEST_APP_RELEASE : undefined);
+// A test build may name the bundle its record carries (the acceptance run's stand-in app folder); a release build never reads it.
+const ownBundle = ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") ? process.env.MOSS_TEST_APP_BUNDLE : undefined) ?? bundlePathOf(app.getPath("exe"), process.platform, process.env);
+const { catchUp, bringWatch, notice: releaseNotice } = createRelease({
+  ...((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") ? { stand: { outcome: process.env.MOSS_TEST_UPDATE_OUTCOME, retryMs: process.env.MOSS_TEST_RELEASE_RETRY_MS } } : {}),
+  updater: () => updater,
+  // The way out for an app that can never connect: the engine of its own bundle takes the home's engine out (`engine reset`), and the next start installs its own.
+  resetCommand: () => { const b = locateDaemonBinary({ env, packaged: app.isPackaged, resourcesPath: process.resourcesPath }); return b === undefined ? undefined : `"${b}" engine reset`; },
+  bring: async (p) => await pair.client!.request<{ state: "waiting" | "switching" }>("release.bring", p, 10_000),
+  // A switch whose new engine hasn't answered: start it through the OS (the login item runs it under `supervise`; with none registered, register it first).
+  // A test-marked build never registers a login item or starts the daemon through the OS.
+  startEngine: async () => {
+    const binary = installedEngine ?? locateDaemonBinary({ env, packaged: app.isPackaged, resourcesPath: process.resourcesPath });
+    if (binary === undefined || typeof __MOSS_TEST_BUILD__ === "string") return false;
+    return await startEngineThroughOs(identity.profile, cliLauncher({ binary, home, profile: identity.profile }), log);
+  },
+  changed: (n) => {
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.rootMessage(mainWindow.id, { type: "respot" });
+    tray?.show({ safeMode: runtime.safeMode, strings: runtime.coreStrings(), ...(n === undefined ? {} : { status: n.kind === "waiting" || n.kind === "switching" ? "Waiting to switch to a newer MOSS…" : n.kind === "engine-down" ? "MOSS Code is waiting for the new engine to start" : n.kind === "offline" ? "Offline: MOSS Code can't update yet" : "Updating MOSS Code…" }) });
+  },
+  log: (line) => log(line),
+});
 /** When a downloaded update installs (updater.ts): at the daemon's first idle moment, or at the user's Quit. */
 const installs = new InstallGate({
   status: async () => {
@@ -203,17 +306,43 @@ const installs = new InstallGate({
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  // lane HS: start. The host lock, an OS lock for this process's life: a second live host quits before its hello.
+  if (program === "host") {
+    hostLock = takeHostLock(home, process.platform);
+    if (hostLock === null) {
+      process.stdout.write("[moss-app] another background host holds the lock: this one leaves\n");
+      app.exit(0);
+    }
+  }
+  // lane HS: end
   app.on("second-instance", (_event, argv) => {
     const second = parseLaunchArgs(argv);
     if (second.quit) void requestQuit("launcher");
     else if (!headless) void openMainWindow();
   });
   app.on("window-all-closed", () => {
-    // Closing a window only closes it: the app stays in the menu bar.
+    // Closing a window only closes it: the app stays in the menu bar. The preview has no menu-bar icon: closing its window ends it
+    // (and the command that started it ends the engine and the fakes it started, and removes its folders).
+    if (preview) void requestQuit("window");
   });
-  // The app's guards on every webContents but the Clover Browser's (its tabs, the windows its pages open and its
+  // The app's guards on every webContents but the MOSS Browser's (its tabs, the windows its pages open and its
   // viewport pages), which lane L's own policy covers (ruling R11); `isBrowserContents` holds from creation on.
+  // lane HS: start. A headless run (the tests', the host's from a checkout) may never draw on the screen: any window of either
+  // program shown at more than zero opacity is said in the log, which the acceptance run fails on.
+  app.on("browser-window-created", (_event, win) => {
+    win.on("show", () => {
+      if (!headless) return;
+      let opacity = 1;
+      try { opacity = win.getOpacity(); } catch { /* a platform without window opacity */ }
+      if (opacity > 0) log(`window: shown while headless (${program}: ${win.getTitle().slice(0, 80)})`);
+    });
+    // R12: the program that draws the screen's surfaces says where they are whenever one shows, hides or moves.
+    for (const e of ["show", "hide", "moved", "resize", "closed"] as const) win.on(e as "show", () => scheduleSurfacesReport());
+  });
+  // lane HS: end
   app.on("web-contents-created", (_event, contents) => {
+    // The app's one mute: a page made after it was turned on is muted from the start.
+    if (prefs.soundMuted) contents.setAudioMuted(true);
     // A run that must make no sound: a page that plays while the switch is somehow missing is said once, loudly.
     if (silent) {
       let said = false;
@@ -225,6 +354,8 @@ if (!app.requestSingleInstanceLock()) {
     }
     // Web page entries' views keep to their own origin instead (web-views.ts).
     if (!isBrowserContents(contents) && !isWebViewContents(contents)) guardContents(contents, log);
+    // A part's sealed button page that never says it shows gets its frame's visibility changed (watchSealedDraw).
+    contents.on("did-frame-finish-load", (_e, isMainFrame, processId, routingId) => { if (!isMainFrame) watchSealedDraw(processId, routingId); });
   });
   app.on("before-quit", (event) => {
     if (leaving || shuttingDown) return;
@@ -252,8 +383,8 @@ async function microphoneProblem(): Promise<string | undefined> {
   if (process.platform !== "darwin") return undefined;
   const status = systemPreferences.getMediaAccessStatus("microphone");
   if (status === "granted") return undefined;
-  if (status === "denied" || status === "restricted") return "Microphone access is off for Clover. Turn it on in System Settings, under Privacy & Security, Microphone.";
-  return (await systemPreferences.askForMediaAccess("microphone")) ? undefined : "Microphone access wasn't allowed for Clover.";
+  if (status === "denied" || status === "restricted") return "Microphone access is off for MOSS Code. Turn it on in System Settings, under Privacy & Security, Microphone.";
+  return (await systemPreferences.askForMediaAccess("microphone")) ? undefined : "Microphone access wasn't allowed for MOSS Code.";
 }
 
 async function ready(): Promise<void> {
@@ -262,7 +393,7 @@ async function ready(): Promise<void> {
   if (process.platform === "darwin") {
     app.setActivationPolicy("accessory");
     if (headless) app.dock?.hide();
-    // Clover Dev, unpackaged, would otherwise wear Electron's icon in the Dock (docs/clover-brand.md).
+    // MOSS Code Dev, unpackaged, would otherwise wear Electron's icon in the Dock (docs/moss-brand.md).
     else if (devIcon.dock !== undefined) app.dock?.setIcon(join(here, "icons", devIcon.dock));
   }
   powerMonitor.on("shutdown", () => {
@@ -276,26 +407,19 @@ async function ready(): Promise<void> {
   await hardenSession(session.defaultSession, log);
   const ui = session.fromPartition(UI_PARTITION);
   await hardenSession(ui, log);
-  // Push-to-talk (listen.ts): the one place a microphone may open is the main window's `clover` shell, for audio, while the
-  // user's own press has a recording open in that window. `hardenSession` refused every permission to every frame; these two
-  // handlers (the request and the check, Chromium asks both) are the only exception, for this session alone.
-  const holds = listens = new ListenHolds({
-    shell: (windowId, message) => runtime.shellMessage(windowId, message),
-    request: (method, params) => {
-      const client = pair?.client;
-      if (client === undefined) return Promise.reject(new Error("Clover isn't running"));
-      return client.request(method, params, LISTEN_REQUEST_MS);
-    },
-    // The operating system's own question, on the first press of a real app; a test or acceptance build never asks (its shell
-    // records from a generated clip, never the microphone).
-    ...(typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string" ? {} : { ensureMic: microphoneProblem }),
-    log,
+  // The microphone (ui/microphone.ts): a frame whose own layer holds `microphone` may open it, for audio alone, by one rule
+  // for every layer. `hardenSession` refused every permission to
+  // every frame; these two handlers (the request and the check, Chromium asks both) are the only exception, for this session
+  // alone. On a real build the system's own question comes first (the first time, on a Mac); a test or acceptance build
+  // answers the check and the request but never asks the system (nothing in a test calls getUserMedia).
+  const testBuild = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
+  const mic = micHandlers({
+    layerScheme: LAYER_SCHEME, holds: (layer) => !preview && runtime?.layerHolds(layer, "microphone") === true, testBuild,
+    windowOf: (wc) => (wc === null ? undefined : BrowserWindow.fromWebContents(wc as Electron.WebContents)?.id),
+    systemProblem: microphoneProblem,
   });
-  ui.setPermissionRequestHandler((wc, permission, callback, details) => {
-    callback(micPermission({ permission, mediaTypes: "mediaTypes" in details ? details.mediaTypes : undefined, requestingUrl: details.requestingUrl, windowId: wc === null ? undefined : BrowserWindow.fromWebContents(wc)?.id }, holds, LAYER_SCHEME));
-  });
-  ui.setPermissionCheckHandler((wc, permission, origin, details) =>
-    micPermission({ permission, mediaTypes: details.mediaType === undefined || details.mediaType === "unknown" ? undefined : [details.mediaType], requestingUrl: details.requestingUrl ?? origin, windowId: wc === null ? undefined : BrowserWindow.fromWebContents(wc)?.id }, holds, LAYER_SCHEME));
+  ui.setPermissionRequestHandler((wc, permission, callback, details) => mic.request(wc, permission, callback, { mediaTypes: "mediaTypes" in details ? details.mediaTypes : undefined, requestingUrl: details.requestingUrl }));
+  ui.setPermissionCheckHandler((wc, permission, origin, details) => mic.check(wc, permission, origin, details));
 
   runtime = new UiRuntime({
     os, platform: process.platform, safeMode, log,
@@ -303,18 +427,29 @@ async function ready(): Promise<void> {
     onGone: (mount) => {
       views.drop(mount);
       webViews.drop(mount);
+      // The watches the frame left open end with it (a turn it took included, §5.4 "Turns").
+      for (const w of frameWatches.gone(mount)) {
+        browserWatches.delete(w.watch);
+        void layerLinks.call(w.pluginId, "plugin.layer.unwatch", { watch: w.watch }).catch(() => undefined);
+      }
+      // The last visible part of a plugin that subscribed to the `browser` area went: its connection stops hearing tabs.
+      viewBindings.gone(mount);
+      const lastBrowser = browserAreaFrames.gone(mount);
+      if (lastBrowser !== undefined) void layerLinks.call(lastBrowser, "events.unsubscribe", { areas: ["browser"] }).catch(() => undefined);
     },
     systemLanguage: app.getPreferredSystemLanguages()[0] ?? app.getLocale(),
     // The acceptance's tab-flash row (a headless test-marked or acceptance build only, compiled out of a release; the
     // marker gate's TEST_ONLY_APP_STRINGS checks it): frames out of sight sleep after this many ms, not a minute.
-    ...((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && /^\d+$/.test(process.env.CLOVER_TEST_SLEEP_AFTER_MS ?? "")
-      ? { sleepAfterMs: Math.min(60_000, Math.max(1_000, Number(process.env.CLOVER_TEST_SLEEP_AFTER_MS))) } : {}),
+    ...((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && /^\d+$/.test(process.env.MOSS_TEST_SLEEP_AFTER_MS ?? "")
+      ? { sleepAfterMs: Math.min(60_000, Math.max(1_000, Number(process.env.MOSS_TEST_SLEEP_AFTER_MS))) } : {}),
   });
   runtime.botName = (id) => botNames.get(id);
   // What came of each part's ask for a card's frames, before the first one was made (the narrow card's diagnosis).
   runtime.onSealedAsk = noteAsk;
-  // One place at a time: while Clover's window is in front the island is given no frame of a card (the window draws it).
-  runtime.islandMayDraw = () => islandMayDraw(mainWindowFront(mainState()));
+  // One place at a time (lane RT): the island is given a card's frames only for a card the engine's router placed on it.
+  // lane HS: the host's island draws only what the router placed on it (`card_placed`), never a card it hasn't placed yet
+  // (one the router then puts in MOSS Code's window would be drawn twice).
+  runtime.cardSurfaceMayDraw = (cardId) => (program === "host" ? enginePlaces.get(cardId) !== undefined && islandMayDraw(enginePlaces.get(cardId), false) : islandMayDraw(enginePlaces.get(cardId), mainWindowFront(mainState())));
   // A part's Review on a plugin's card: the app's own page for that card, shown now (a fallback already up stays).
   runtime.onCardPage = async (cardId) => {
     if (sealed.get(cardId) === undefined || !sealed.isPending(cardId)) return false;
@@ -329,17 +464,17 @@ async function ready(): Promise<void> {
     return true;
   };
   // The UI test's positive control for the DNS probe: never in a packaged app.
-  const unguarded = !app.isPackaged && headless ? (process.env.CLOVER_TEST_UNGUARDED_LAYERS ?? "").split(",").filter((l) => l !== "") : [];
+  const unguarded = !app.isPackaged && headless ? (process.env.MOSS_TEST_UNGUARDED_LAYERS ?? "").split(",").filter((l) => l !== "") : [];
   const iconsUnserved = new Set<string>();
   // What the user handed plugins' pages (`files.pick*`): tokens, served back at `/_g/` and told to the core.
   const fileGrants = new FileGrants();
   installUiSession(ui, runtime, dirs, log, {
     grants: fileGrants,
-    unguardedLayers: new Set(unguarded), avatarsDir: join(home, "user-layers", "avatars"),
+    unguardedLayers: new Set(unguarded), pluginDataDir: join(home, "plugin-data"),
     // A plugin's icon for the Plugins page's lists: where it is (`plugin.iconSource`, the app's alone), read here.
     pluginIcon: (id) => pluginIconFile(async (pid) => {
       const c = pair?.client;
-      if (c === undefined) throw new Error("Clover isn't connected");
+      if (c === undefined) throw new Error("MOSS Code isn't connected");
       const raw = await c.request("plugin.iconSource", { id: pid });
       const r = PLUGINS_METHODS.pluginIconSource.result.safeParse(raw);
       if (!r.success) throw new Error("the core's answer isn't plugin.iconSource's");
@@ -353,9 +488,13 @@ async function ready(): Promise<void> {
   });
   const ipcStats = ipcStatsOn({ env: process.env, flagFile: existsSync(join(home, "ipc-stats")) }) ? new IpcStats() : undefined;
   installIpc(runtime, {
-    listens: holds,
+    frameWatches,
     frameMetrics: (id, m) => runtime.setFrameMetrics(id, m),
-    shellState: (id, state) => shellStates.set(id, state),
+    shellState: (id, state) => {
+      shellStates.set(id, state);
+      // What the main window shows is its presence too (lane RT): a new tab is reported at once.
+      if (mainWindow !== undefined && !mainWindow.isDestroyed() && id === mainWindow.id && presence.showingChanged(showingOf(state))) void reportPresence();
+    },
     rootCommand: (_id, name) => {
       if (name === "restart-normally") void restart(false);
       if (name === "restart-safe-mode") void restart(true);
@@ -372,21 +511,35 @@ async function ready(): Promise<void> {
       if (err instanceof Error && /^a layer doesn't call /.test(err.message)) log(`layer: ${pluginId}: ${err.message.replace(/[^\w. -]/g, "").slice(0, 80)}`);
       throw err;
     }),
-    takeGesture: (windowId) => sends.take(windowId),
+    // A part's gestured call spends only a press that landed in its own frame (F2, read 52).
+    takeGesture: (windowId, frameId, arrived) => {
+      const ok = sends.takeIn(windowId, frameId, arrived);
+      if (!ok) log(`press: a call from frame ${frameId} found no press of its own (the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})`);
+      return ok;
+    },
+    settleGesture: (windowId) => sends.settle(windowId),
+    browserArea: (pluginId, mount, on) => {
+      if (on) browserAreaFrames.add(pluginId, mount);
+      else browserAreaFrames.gone(mount);
+    },
+    noteBrowserWatch: (watch) => { browserWatches.add(watch); },
+    showsTab: (_windowId, mount, tab) => viewBindings.bound(mount) === tab,
+    noteBrowserResult: (mount, method, params, result) => viewBindings.note(mount, method, params, result),
     treeRequest: async (method, params) => {
       if (JSON.stringify(params ?? null).length > LAYER_CALL_MAX) throw new LayerError("the call is too large");
       const client = pair.client;
-      if (client === undefined) throw new LayerError("Clover isn't running");
+      if (client === undefined) throw new LayerError("MOSS Code isn't running");
       // An install or an update downloads (up to 30 minutes for a large one); everything else answers within 30 s.
-      return client.request(method, params ?? {}, method === "plugin.install" || method === "plugin.update" ? 30 * 60_000 : method === "bot.importAvatar" ? 5 * 60_000 : 30_000);
+      return client.request(method, params ?? {}, method === "plugin.install" || method === "plugin.update" ? 30 * 60_000 : 30_000);
     },
     // The Plugins page's picker (tree-calls.ts `ui.pick`): main's own dialog over the window; a headless test-marked or
     // acceptance build takes the path the harness named instead (never in a release, which compiles both marks out; the
     // marker gate's TEST_ONLY_APP_STRINGS checks it).
     pick: async (windowId, kind, filters, use) => {
-      // An avatar's pick has its own answer (CLOVER_TEST_PICK_AVATAR), so one run can pick a plugin folder and a model.
-      if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless) {
-        const named = use === "bot.importAvatar" ? process.env.CLOVER_TEST_PICK_AVATAR : process.env.CLOVER_TEST_PICK;
+      // The preview opens no dialog of the system's (a window of its own only).
+      if (preview) return undefined;
+      if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless) {
+        const named = process.env.MOSS_TEST_PICK;
         // A `.pick` file names the folder at each pick, so one run picks several in turn (the harness rewrites it).
         const answer = named !== undefined && named.endsWith(".pick") ? (() => { try { return readFileSync(named, "utf8").split("\n")[0]!.trim(); } catch { return ""; } })() : named;
         if (answer !== undefined) return answer === "" ? undefined : answer;
@@ -398,11 +551,11 @@ async function ready(): Promise<void> {
     },
     grants: fileGrants,
     // A plugin page's `files.pickOpen/pickFolder/pickSave` (file-grants.ts): main's own dialog over the window. A headless
-    // test-marked or acceptance build takes the paths the harness named (CLOVER_TEST_PICK_FILES, a file of one path per
+    // test-marked or acceptance build takes the paths the harness named (MOSS_TEST_PICK_FILES, a file of one path per
     // line, read at each pick; empty = cancel); a release compiles that out and always opens the real dialog.
     pickFiles: async (windowId, request) => {
-      if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless) {
-        const named = process.env.CLOVER_TEST_PICK_FILES;
+      if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless) {
+        const named = process.env.MOSS_TEST_PICK_FILES;
         if (named !== undefined) {
           try {
             return answersFor(readFileSync(named, "utf8"), request.kind);
@@ -412,15 +565,15 @@ async function ready(): Promise<void> {
         }
       }
       // The UI smoke's own answer (an unpackaged headless run only, as the DNS probe's control is): the paths in a file, one per line.
-      if (!app.isPackaged && headless && process.env.CLOVER_SMOKE_PICK_FILES !== undefined) {
+      if (!app.isPackaged && headless && process.env.MOSS_SMOKE_PICK_FILES !== undefined) {
         try {
-          return answersFor(readFileSync(process.env.CLOVER_SMOKE_PICK_FILES, "utf8"), request.kind);
+          return answersFor(readFileSync(process.env.MOSS_SMOKE_PICK_FILES, "utf8"), request.kind);
         } catch {
           return [];
         }
       }
-      // A headless run (a test's, nobody at the screen) never opens a dialog: nothing may appear on the user's screen.
-      if (headless) return [];
+      // A headless run (a test's, nobody at the screen) never opens a dialog: nothing may appear on the user's screen; nor does the preview.
+      if (quiet) return [];
       const win = BrowserWindow.fromId(windowId);
       const parent = win !== null && !win.isDestroyed() ? win : undefined;
       const filters = request.filters?.map((f) => ({ name: f.name, extensions: [...f.extensions] }));
@@ -438,7 +591,7 @@ async function ready(): Promise<void> {
     // answers method-not-found and the pick still returns its token (the media URL needs only main's copy).
     registerGrant: async (grant) => {
       const client = pair.client;
-      if (client === undefined) throw new Error("Clover isn't running");
+      if (client === undefined) throw new Error("MOSS Code isn't running");
       try {
         await client.request("plugin.grant.add", { pluginId: grant.pluginId, token: grant.token, path: grant.path, kind: grant.kind, access: grant.access }, 10_000);
         return "ok";
@@ -455,27 +608,53 @@ async function ready(): Promise<void> {
       await openPage("key");
       return true;
     },
+    // Settings' "Open the setup guide" (`app.openSetup`): the same page the app menu's item opens.
+    openGuide: async () => { await openPage("welcome"); },
     terminalInput: (windowId, frameId, pluginId, terminalId, input) => terminalInput(windowId, frameId, pluginId, terminalId, input),
     // The sealed path (E-M3): the frame's own channel; the click's are the frame's own gates (IOv2, the trusted press,
     // the hour it stood visible), and here the app signs with the answer key over the card's id and hash and takes the
     // core's answer. The computer-use gate runs here in the main process, on both this button path and the fallback
     // (B3): fail closed — anything the core can't answer about it, the answer is refused.
     sealedAnswer: async (token, option, senderKey, children) => {
-      // One place at a time: a press from the island's frame while Clover's window is in front is not taken (the card is drawn
-      // in the window now; the island's frame was a beat behind the move).
+      // A press counts only if the visibility report that FOLLOWS it (a new observer the page made at the press) says the button
+      // showed whole and uncovered: a cover drawn a moment before the press is in that report, while the page's last timer-driven
+      // verdict (up to ~200 ms old and longer when the renderer is starved) is not. Taken first, so a refused answer spends it.
+      const fresh = sealed.takeFresh(token);
+      if (fresh !== "ok") {
+        log(`sealed: answer refused (${fresh === "covered" ? "the button was covered or not shown at the press" : fresh === "late" ? "the page's visibility report didn't come in time" : "no visibility report came with the press"})`);
+        // Most often the button wasn't laid out yet (it had only just been drawn): nothing is wrong with it, and the page says to
+        // press again (`again`), never that the answer failed.
+        return { accepted: false, again: true, reason: fresh === "covered" ? NOT_SHOWN_REASON : NOT_CHECKED_REASON };
+      }
+      // One place at a time (lane RT): a press is taken only where the engine's router placed the card (the island's frame
+      // for a card on the island, the window's for one in the window). The app's own card page (the window's strip, or the
+      // safety net's fallback card) is the core's own sealed card in this program and answers wherever the card is: a strip
+      // that is closing as the card moves to the island is still the card's own page under the pointer.
+      // A focus this program hasn't reported yet is reported first, so the placement read is the one the press was made in.
       const from = sealed.windowOf(token);
-      if (!pressMayBeTaken({ fromIsland: [...surfaces.values()].some((s) => !s.win.isDestroyed() && s.win.id === from && s.pluginId === "clover/island"), front: mainWindowFront(mainState()) })) {
-        log(`sealed: answer refused (the island's frame while the window is in front: the card is drawn in the window)`);
-        return { accepted: false, reason: "this card is in Clover's window now" };
+      const cardOfPress = sealed.cardOf(token);
+      await presenceIfStale();
+      const source: PressSource = [...surfaces.values()].some((s) => !s.win.isDestroyed() && s.win.id === from && s.cards) ? "island"
+        : sealed.elementOf(token) === OWN_ELEMENT ? "fallback" : "window";
+      const placed = cardOfPress === undefined ? undefined : enginePlaces.get(cardOfPress);
+      // lane HS (B1): the app's own card takes a press only in the program the placement names.
+      if (!pressMayBeTaken({ from: source, placed, front: mainWindowFront(mainState()) }) || (source === "fallback" && !fallbackMayDraw(placed, fallbackHereOf(mountNow, hostGaveUp)))) {
+        log(`sealed: answer refused (a press ${source === "island" ? "on the island" : "in the window"} for a card the router placed ${placed?.kind === "island" ? "on the island" : "in the window"})`);
+        return { accepted: false, reason: placed?.kind === "island" ? "this card is on the island now" : "this card is in MOSS's window now" };
+      }
+      // R12 (lane RT): no window of any app lies over the button, read from the OS's own window list (overlap.ts).
+      const cover = osCoverOf(from);
+      if (cover !== undefined) {
+        log(`sealed: answer refused (a window lies over the button: ${cover.advice})`);
+        return { accepted: false, covered: cover.name, reason: cover.advice };
       }
       const key = answerKeyValue;
       if (key === undefined) { log(`sealed: answer refused (no answer key)`); return { accepted: false, reason: "the answer key isn't there" }; }
       const client = pair.client;
-      if (client === undefined) { log(`sealed: answer refused (no client)`); return { accepted: false, reason: "Clover isn't running" }; }
-      // The gate first, before anything else moves: any computer use driving this desktop's computer, no.
-      const acting = await client.request<{ running?: boolean }>("computer.acting", {}, 3_000).catch(() => undefined);
-      if (acting === undefined) { log(`sealed: answer refused (computer-use check failed)`); return { accepted: false, reason: "the computer-use check couldn't run" }; }
-      if (acting.running === true) { log(`sealed: answer refused (computer use acting)`); return { accepted: false, reason: "computer use is acting right now" }; }
+      if (client === undefined) { log(`sealed: answer refused (no client)`); return { accepted: false, reason: "MOSS Code isn't running" }; }
+      // Computer use driving this computer refuses the press too (B3): the core reads it at `card.answer` itself, in the same
+      // step that takes the answer (lane RT). A round trip from here first (a 3 s `computer.acting`) was refused under load
+      // with "computer-use check failed", the person's press spent on a check that couldn't run.
       const option_ = option ?? sealed.optionOf(token);
       if (option_ === undefined) { log(`sealed: answer refused (no option)`); return { accepted: false, reason: "no option named" }; }
       // The key that signs the answer is registered first, or the answer isn't sent (the core could only refuse it, and
@@ -487,16 +666,25 @@ async function ready(): Promise<void> {
         const why = ready === undefined ? "no connection registered it" : "refused" in ready ? ready.refused : ready.again;
         log(`sealed: answer held back (this desktop's answer key isn't registered: ${why.slice(0, 160)})`);
         // A fault that persisted (the core's answers told nothing, 5 in a row): reconnecting starts a fresh registration.
-        if (ready !== undefined && "refused" in ready && ready.fault === true) return { accepted: false, key: "fault", reason: `Clover couldn't take this desktop's answer key (${why.slice(0, 120)})` };
+        if (ready !== undefined && "refused" in ready && ready.fault === true) return { accepted: false, key: "fault", reason: `MOSS couldn't take this desktop's answer key (${why.slice(0, 120)})` };
         // A different key already held for this desktop: trying again can't help, and the card says so (`key`).
-        if (ready !== undefined && "refused" in ready) return { accepted: false, key: "changed", reason: `this desktop's answer key isn't the one Clover holds for it (${why.slice(0, 120)})` };
+        if (ready !== undefined && "refused" in ready) return { accepted: false, key: "changed", reason: `this desktop's answer key isn't the one MOSS holds for it (${why.slice(0, 120)})` };
         return { accepted: false, reason: "this desktop's answer key isn't registered yet" };
       }
-      const out = sealed.buildAnswer(token, option_, children, senderKey, key, signedDevice ?? "");
+      // lane HS: the host's proof names its program (card-answer/3).
+      const out = sealed.buildAnswer(token, option_, children, senderKey, key, signedDevice ?? "", undefined, program === "host" ? "host" : undefined);
       if ("error" in out) { log(`sealed: answer refused (${out.error})`); return { accepted: false, reason: out.error }; }
       disarmFallback(out.card.id); // a part's own button answered first: the fallback's timer is gone.
       const r = await client.request<{ accepted: boolean; reason?: string }>("card.answer", { id: out.card.id, hash: out.card.hash, option: option_, proof: out.proof, ...(children !== undefined ? { children } : {}) }, 15_000).catch((err: unknown) => ({ accepted: false, reason: err instanceof Error ? err.message.slice(0, 200) : "refused" }));
-      if (r.accepted !== true) { sealed.confirmedAnswer(out.card.id, false); log(`sealed: core refused answer (${typeof r.reason === "string" ? r.reason.slice(0, 120) : "no reason"})`); return { accepted: false, ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}) }; }
+      if (r.accepted !== true) {
+        sealed.confirmedAnswer(out.card.id, false);
+        // The press disarmed the card's fallback and the buttons stopped showing while the answer was out (the fallback stays
+        // down for a card being answered): a refused answer with no part showing both buttons starts the 2 s again.
+        if (sealed.isPending(out.card.id) && !sealed.buttonsVisible(out.card.id) && fallbacks.get(out.card.id)?.win === undefined) void armFallback(out.card.id);
+        if (r.reason === "computer use is acting right now") log(`sealed: answer refused (computer use acting)`);
+        log(`sealed: core refused answer (${typeof r.reason === "string" ? r.reason.slice(0, 120) : "no reason"})`);
+        return { accepted: false, ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}) };
+      }
       sealed.confirmedAnswer(out.card.id, true);
       log(`sealed: answer accepted for ${out.card.id}`);
       return { accepted: true };
@@ -510,6 +698,10 @@ async function ready(): Promise<void> {
       if (cardId === undefined) return;
       // Each change of a frame's own visibility verdict, once (ids and the surface's name only): what armed a fallback card, or kept
       // a press from being ready, is then in the log, not a guess.
+      if (visible === true) {
+        sealedEverSeen.add(token);
+        if (sealedEverSeen.size > 512) sealedEverSeen.delete(sealedEverSeen.values().next().value!);
+      }
       if (sealedSeen.get(token) !== (visible === true)) {
         sealedSeen.set(token, visible === true);
         if (sealedSeen.size > 256) sealedSeen.delete(sealedSeen.keys().next().value!);
@@ -519,17 +711,31 @@ async function ready(): Promise<void> {
       if (visible === true) noteBothVisible(cardId, sealed.windowOf(token));
       const own = fallbacks.get(cardId);
       const fallbackOpen = own?.win !== undefined && !own.win.isDestroyed();
-      const step = fallbackOnVisibility({ visible: visible === true, bothVisible: sealed.buttonsVisible(cardId), fallbackOpen });
+      const step = fallbackOnVisibility({ visible: visible === true, bothVisible: sealed.buttonsVisible(cardId), fallbackOpen, answering: sealed.isAnswering(cardId) });
       if (step === "disarm") disarmFallback(cardId);
       else if (step === "arm" && sealed.get(cardId) !== undefined) {
         log(`card: ${cardId} fallback timer armed (a button stopped showing in ${surfaceName(sealed.windowOf(token))})`);
         void armFallback(cardId);
       }
     },
+    // The report a press asked for: logged with how long the page took to get it, so a limit that is too short shows in the log.
+    sealedFresh: (token: string, seen: boolean, ms: number) => {
+      // A test build can drop the report, to prove an answer with no report refuses (never in a packaged app).
+      if (SMOKE_DROP_FRESH && !app.isPackaged) return;
+      // No reading within the page's limit is "late" (the page was too busy to read the button), never "covered".
+      sealed.noteFresh(token, seen, !seen && ms >= FRESH_LIMIT_MS);
+      const cardId = sealed.cardOf(token);
+      if (cardId === undefined) return;
+      log(`sealed: press on ${cardId} ${sealed.elementOf(token) ?? "?"} in ${surfaceName(sealed.windowOf(token))}: fresh report ${seen ? "uncovered" : ms >= FRESH_LIMIT_MS ? "none in time" : "covered"} after ${ms} ms`);
+    },
     // A press the sealed page saw (a word, never a text): every one is in the log with its card, the surface and what came of it.
     sealedPress: (token: string, what: string) => {
       const cardId = sealed.cardOf(token);
       if (cardId === undefined) return;
+      // A sealed page heard the press: it isn't a missed one (sealed-miss.ts).
+      const pressedIn = sealed.windowOf(token);
+      if (pressedIn !== undefined) missWatch.heard(pressedIn);
+      else for (const w of BrowserWindow.getAllWindows()) missWatch.heard(w.id);
       log(`sealed: press on ${cardId} ${sealed.elementOf(token) ?? "?"} in ${surfaceName(sealed.windowOf(token))}: ${what}`);
     },
     // The app's own card page says how tall it is: its window fits it, within a sane range, from the top where it stands.
@@ -539,7 +745,7 @@ async function ready(): Promise<void> {
       const cardId = sealed.cardOf(token);
       if (cardId === undefined || sealed.elementOf(token) !== "own") return { state: "failed", why: "This card can't be reviewed here." };
       const client = pair.client;
-      if (client === undefined) return { state: "failed", why: "Clover isn't running." };
+      if (client === undefined) return { state: "failed", why: "MOSS Code isn't running." };
       return client.request<{ state: string; report?: string; why?: string; model?: string }>("plugin.review", { card: cardId, ...(peek ? { peek: true } : {}) }, 15_000)
         .catch((err: unknown) => ({ state: "failed", why: err instanceof Error ? err.message.slice(0, 300) : "The review couldn't start." }));
     },
@@ -550,7 +756,7 @@ async function ready(): Promise<void> {
         own.win.setContentSize(width ?? FALLBACK_WIDTH, Math.min(FALLBACK_MAX_HEIGHT, Math.max(FALLBACK_MIN_HEIGHT, height)));
       }
     },
-    userSend: async (windowId, to, message, active) => {
+    userSend: async (windowId, to, message, active, frameId) => {
       // Everything that can be refused is refused first, so a refused call spends nobody's gesture. Each refusal says why in
       // the app's log (the reason only, never the words) and reaches the person as the error the sender shows.
       const refuse = (reason: string, say = reason): never => {
@@ -562,15 +768,22 @@ async function ready(): Promise<void> {
       const images = sendImages(message.images);
       if ("error" in images) return refuse(`images: ${images.error}`, images.error);
       const client = pair.client;
-      if (client === undefined) return refuse("Clover isn't running");
+      if (client === undefined) return refuse("MOSS Code isn't running");
       // One key press or click that came to THIS frame (its own activation) and that the main process saw come to the
       // window covers one send (§5.5).
-      if (!active) return refuse("the frame reported no user activation", "the user's words go only right after their own key press or click");
-      if (!sends.take(windowId)) return refuse("the main process saw no key press or click come to the window just before", "the user's words go only right after their own key press or click");
+      // A hold that ended (hold-to-talk) lets this frame send once within 30 s of the release, its activation long gone; any other
+      // send is the one second after a press, in the frame's own activation. A refused call spends nobody's allowance or gesture.
+      if (!sends.takeRelease(windowId, frameId)) {
+        if (!active) return refuse("the frame reported no user activation", "the user's words go only right after their own key press or click");
+        // The press must have landed in THIS frame (F2, read 52): a press in another frame of the window is not this sender's.
+        const arrived = Date.now();
+        await sends.settle(windowId);
+        if (!sends.takeIn(windowId, frameId, arrived)) return refuse("the main process saw no key press or click land in this frame just before", "the user's words go only right after their own key press or click");
+      }
       try {
-        return await client.request<{ seq?: number }>("pill.send", { to: target, text: message.text, ...(images.length > 0 ? { images } : {}), clientMessageId: randomUUID() }, 30_000);
+        return await client.request<{ seq?: number }>("user.send", { to: target, text: message.text, ...(images.length > 0 ? { images } : {}), clientMessageId: randomUUID() }, 30_000);
       } catch (err) {
-        log(`send: the core refused pill.send (${why(err)})`);
+        log(`send: the core refused user.send (${why(err)})`);
         throw err;
       }
     },
@@ -592,19 +805,21 @@ async function ready(): Promise<void> {
       }
       void webViews.place(windowId, mount, web.plugin, spec, bounds).catch((err) => log(`web: ${why(err)}`));
     },
+    // An MCP Apps page's view: the engine reads the page and answers its messages (`mcpApp.*`, the window's own door).
+    appFrame: (windowId, key, call, bounds, note) => webViews.placeApp(windowId, key, call, bounds, note),
   }, log, ipcStats);
   startCensus(runtime);
-  // Asked for (`CLOVER_IPC_STATS=1`, or an `ipc-stats` file in the home): every five seconds, in this log, what crossed and what each process cost (counts, no payloads).
+  // Asked for (`MOSS_IPC_STATS=1`, or an `ipc-stats` file in the home): every five seconds, in this log, what crossed and what each process cost (counts, no payloads).
   if (ipcStats !== undefined) log("ipc: counters on (every 5 s: messages by channel, CPU by process; no payloads)");
   if (ipcStats !== undefined) startIpcStats(ipcStats, cpuMeter(() => app.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type, ...(m.cpu.cumulativeCPUUsage !== undefined ? { seconds: m.cpu.cumulativeCPUUsage } : {}) }))), log);
   // The source acceptance build's own run may fix the appearance for its renders (this process only; never the OS's).
-  if (typeof __CLOVER_ACCEPTANCE_BUILD__ === "string" && headless && (process.env.CLOVER_ACCEPT_APPEARANCE === "light" || process.env.CLOVER_ACCEPT_APPEARANCE === "dark")) nativeTheme.themeSource = process.env.CLOVER_ACCEPT_APPEARANCE;
+  if (typeof __MOSS_ACCEPTANCE_BUILD__ === "string" && headless && (process.env.MOSS_ACCEPT_APPEARANCE === "light" || process.env.MOSS_ACCEPT_APPEARANCE === "dark")) nativeTheme.themeSource = process.env.MOSS_ACCEPT_APPEARANCE;
   // The acceptance run's pictures in dark and light (a headless test-marked or acceptance build only, compiled out of a
   // release; the marker gate's TEST_ONLY_APP_STRINGS checks it): the window's scheme from a file the harness writes.
   // While it says "dark" or "light" it wins over the core's Theme choice (applyThemeSource yields to it); anything else
   // ("system", empty, no file) lets go, and the core's choice applies again.
-  if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && process.env.CLOVER_TEST_APPEARANCE_FILE) {
-    const file = process.env.CLOVER_TEST_APPEARANCE_FILE;
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_APPEARANCE_FILE) {
+    const file = process.env.MOSS_TEST_APPEARANCE_FILE;
     const follow = () => {
       let v = "";
       try {
@@ -619,22 +834,25 @@ async function ready(): Promise<void> {
     watchFile(file, { interval: 250 }, follow);
   }
   // The acceptance run's key press (a headless test-marked or acceptance build only, compiled out of a release; the marker
-  // gate's TEST_ONLY_APP_STRINGS checks it): a key chord from a file the harness writes, `{ n, key, modifiers }`, pressed
+  // gate's TEST_ONLY_APP_STRINGS checks it): a key chord from a file the harness writes, `{ n, key, modifiers, type? }`, pressed
   // in the main window with `sendInputEvent`, the one way a synthesized press reaches the window's before-input-event
-  // (CDP key events don't). Each new `n` is one press.
-  if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && process.env.CLOVER_TEST_KEY_FILE) {
-    const file = process.env.CLOVER_TEST_KEY_FILE;
+  // (CDP key events don't). Each new `n` is one press: down and up, or with `type` only its `down`, a `repeat` (a held key's
+  // auto-repeat) or its `up` (a held key binding's hold, its repeats and its release, one event each).
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_KEY_FILE) {
+    const file = process.env.MOSS_TEST_KEY_FILE;
     let last = 0;
     watchFile(file, { interval: 250 }, () => {
       try {
-        const v = JSON.parse(readFileSync(file, "utf8")) as { n?: unknown; key?: unknown; modifiers?: unknown };
+        const v = JSON.parse(readFileSync(file, "utf8")) as { n?: unknown; key?: unknown; modifiers?: unknown; type?: unknown };
         if (typeof v.n !== "number" || v.n <= last || typeof v.key !== "string" || !Array.isArray(v.modifiers)) return;
         last = v.n;
         const modifiers = v.modifiers.filter((m): m is "shift" | "control" | "alt" | "meta" => m === "shift" || m === "control" || m === "alt" || m === "meta");
         const w = mainWindow;
         if (w === undefined || w.isDestroyed()) return;
-        for (const type of ["keyDown", "keyUp"] as const) w.webContents.sendInputEvent({ type, keyCode: v.key, modifiers });
-        log(`keys: pressed ${modifiers.join("+")}+${v.key} in the window`);
+        const one = v.type === "down" || v.type === "repeat" || v.type === "up" ? v.type : undefined;
+        if (one === undefined) for (const type of ["keyDown", "keyUp"] as const) w.webContents.sendInputEvent({ type, keyCode: v.key, modifiers });
+        else w.webContents.sendInputEvent({ type: one === "up" ? "keyUp" : "keyDown", keyCode: v.key, modifiers: one === "repeat" ? [...modifiers, "isautorepeat" as const] : modifiers });
+        log(`keys: ${one === undefined ? "pressed" : one === "down" ? "put down" : one === "repeat" ? "repeated" : "let go of"} ${[...modifiers, v.key].join("+")} in the window`);
       } catch {
         // Not written yet.
       }
@@ -644,8 +862,8 @@ async function ready(): Promise<void> {
   // release; the marker gate's TEST_ONLY_APP_STRINGS checks it): the main window's real content size from a file the
   // harness writes, "<width>x<height>", the window itself resized as a person's drag would; anything else puts back the
   // size it had before the first one.
-  if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && process.env.CLOVER_TEST_WINDOW_SIZE_FILE) {
-    const file = process.env.CLOVER_TEST_WINDOW_SIZE_FILE;
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_WINDOW_SIZE_FILE) {
+    const file = process.env.MOSS_TEST_WINDOW_SIZE_FILE;
     let before: [number, number] | undefined;
     const follow = () => {
       let v = "";
@@ -672,34 +890,117 @@ async function ready(): Promise<void> {
     // when it changes, which process draws which window's frames (origins only, never a URL's path or query).
     startProcessDiag();
   }
+  // The host idle row (a headless test-marked or acceptance build only, compiled out of a release; the marker gate's
+  // TEST_ONLY_APP_STRINGS checks it): what a lid opening does to a running program, played from a file the harness appends to, one
+  // line per change, "<n> <command> [json]" with n counting up. `display {"bounds":…,"workArea":…,"notch":…}` puts the surfaces' display there,
+  // its camera housing (display-local, as the screen add-on reports one) with it,
+  // (`surfaceDisplay`) and emits the screen's `display-metrics-changed`; `display-removed`, `display-added` and
+  // `display-metrics-changed` emit those events, `suspend`, `resume` and `unlock-screen` the power monitor's; `front` and `back` are
+  // the engine's word that a window is or is no longer in front (the host's island steps aside and comes back). Each is emitted on
+  // the real module, so every listener the program has runs as it would.
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_SCREEN_FILE) {
+    const file = process.env.MOSS_TEST_SCREEN_FILE;
+    let seen = 0;
+    const emitOn = (target: unknown, event: string, ...rest: unknown[]) => (target as NodeJS.EventEmitter).emit(event, ...rest);
+    watchFile(file, { interval: 100 }, () => {
+      let text = "";
+      try { text = readFileSync(file, "utf8"); } catch { return; }
+      for (const line of text.split("\n")) {
+        const m = /^(\d+) ([a-z-]+)(?: (.*))?$/.exec(line.trim());
+        if (m === null || Number(m[1]) <= seen) continue;
+        seen = Number(m[1]);
+        const command = m[2]!;
+        const real = screen.getPrimaryDisplay();
+        if (command === "display") {
+          try {
+            const d = JSON.parse(m[3] ?? "{}") as { bounds?: Electron.Rectangle; workArea?: Electron.Rectangle; notch?: Rect | null };
+            testDisplay = d.bounds !== undefined && d.workArea !== undefined ? { bounds: d.bounds, workArea: d.workArea, notch: d.notch ?? null } : undefined;
+          } catch { testDisplay = undefined; }
+          emitOn(screen, "display-metrics-changed", {}, real, ["bounds", "workArea"]);
+        } else if (command === "display-removed" || command === "display-added") emitOn(screen, command, {}, real);
+        else if (command === "display-metrics-changed") emitOn(screen, command, {}, real, ["scaleFactor"]);
+        else if (command === "suspend" || command === "resume" || command === "unlock-screen") emitOn(powerMonitor, command);
+        else if ((command === "front" || command === "back") && program === "host") hostDeps().front?.(command === "front");
+        else continue;
+        log(`test: screen seam ${command}`);
+      }
+    });
+  }
+  // The preview (compile-time mark): the window reloads when the command says its files changed (a counter in a file, read
+  // twice a second, as the acceptance's key file is), and holds the pinned appearance from its first paint.
+  if (previewAppearance !== undefined) applyThemeSource(coreThemeSource);
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewReloadFile !== undefined && isAbsolute(previewReloadFile)) {
+    let last = "";
+    watchFile(previewReloadFile, { interval: 500 }, () => {
+      let now = "";
+      try { now = readFileSync(previewReloadFile, "utf8").trim(); } catch { return; }
+      if (now === last) return;
+      const first = last === "";
+      last = now;
+      if (first || mainWindow === undefined || mainWindow.isDestroyed()) return;
+      log("preview: the window's files changed; reloading it");
+      mainWindow.webContents.reloadIgnoringCache();
+    });
+  }
+  // The preview's control door, only when its command asked for it (`--control`): a private socket the command relays through.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewControlSocket !== undefined && previewControlToken !== undefined && isAbsolute(previewControlSocket)) {
+    const socketPath = previewControlSocket;
+    const token = previewControlToken;
+    void import("./preview-control").then((m) => m.startPreviewControl({ socketPath, token, window: () => mainWindow, engine: () => pair?.client, headless, log }));
+  }
   startFrontSeam();
+  startViewportPressSeam();
+  startWindowSeam();
   syncAppearance();
   nativeTheme.on("updated", syncAppearance);
   if (process.platform === "win32") systemPreferences.on("accent-color-changed", syncAppearance);
 
   for (const e of ["display-metrics-changed", "display-added", "display-removed"] as const) screen.on(e as "display-added", () => tellSurfaces());
-  startBrowser();
+  // lane HS: the browser's pages only where the mount puts them (applyMount starts or stops them as it changes).
+  if (mountNow.browser) startBrowser();
+  // One release for everything (spec §3.1): this app's record under the home (before any engine runs), then its engine put under
+  // the home under the install lock, so the login item and every start use the NEWEST installed copy, not this app's own.
+  // lane HS: the host is no app of its own: it records nothing and puts no engine under the home.
+  if (program === "code" && (app.isPackaged || typeof __MOSS_TEST_BUILD__ === "string")) writeOwnRecord(home, { program: "code", bundlePath: ownBundle, release: ownRelease }, log);
+  const bundledEngine = locateDaemonBinary({ env, packaged: app.isPackaged, resourcesPath: process.resourcesPath });
+  if (program === "code" && bundledEngine !== undefined && app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string") {
+    const placed = await adoptHomeEngine(identity.profile, {
+      install: () => installEngineCopy({ binary: bundledEngine, home, profile: identity.profile, bundlePath: ownBundle }),
+      launcherFor: (binary) => cliLauncher({ binary, home, profile: identity.profile }),
+      log,
+    });
+    if (placed === undefined) log("release: the engine wasn't put under the home; this app starts its own copy");
+    else { installedEngine = placed.binary; log(`release: the engine starts from the home's copy (release ${placed.release}${placed.reregistered ? ", the login item re-registered from it" : ""})`); }
+  }
   pair = makePair();
   setMenu();
   // The install marker: this home's daemon is the app's (or a package's), so it never updates itself (updater.ts).
   if (app.isPackaged) writeInstallMarker(home, installKindOf(process.platform, process.env), log);
   // A test-marked build never updates itself: a real release in its place would reach the login keychain.
-  if (!headless && typeof __CLOVER_TEST_BUILD__ !== "string") {
+  // lane HS: start. The host's own menu-bar icon (item 112); it never updates itself (its app does, and stops it first).
+  if (program === "host" && !headless && typeof __MOSS_TEST_BUILD__ !== "string") {
+    tray = new AppTray<HostTrayActions>(join(here, "icons"), hostTrayActions(), log, hostTrayMenu, identity.productName);
+    trayState = { safeMode, strings: runtime.coreStrings(), soundMuted: prefs.soundMuted };
+    syncFourFingerTap();
+    refreshTray();
+  }
+  // lane HS: end
+  if (program === "code" && !headless && !preview && typeof __MOSS_TEST_BUILD__ !== "string") {
     // The app's own updates (updater.ts): packaged builds only, never a headless or test run (no network from those).
     void startUpdater({
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
       log,
       onReady: (version) => {
-        const t = (key: string) => translate(runtime.coreStrings(), `clover.core.update.ready.${key}`, { version });
+        const t = (key: string) => translate(runtime.coreStrings(), `moss.core.update.ready.${key}`, { version });
         new Notification({ title: t("title"), body: t("body") }).show();
         void installs.downloaded(version);
       },
     }).then((u) => { updater = u; }).catch((err: unknown) => log(`updater: ${why(err)}`));
-    tray = new AppTray(join(here, "icons"), { open: () => void openMainWindow(), quit: () => void requestQuit("tray"), restart: (s) => void restart(s), managePlugins: () => void openPage("plugins"), togglePill: () => setPillMode(pillAfterTray(pillMode), "from the tray"), toggleFourFingerTap: () => setFourFingerTap(!prefs.fourFingerTap) }, log);
-    trayState = { safeMode, strings: runtime.coreStrings(), pillHidden: pillMode === "hidden" };
+    tray = new AppTray(join(here, "icons"), { open: () => void openMainWindow(), quit: () => void requestQuit("tray"), restart: (s) => void restart(s), managePlugins: () => void openPage("plugins"), line: (ref) => runTrayLine(ref), toggleFourFingerTap: () => setFourFingerTap(!prefs.fourFingerTap), toggleSoundMute: () => setSoundMuted(!prefs.soundMuted) }, log);
+    trayState = { safeMode, strings: runtime.coreStrings(), soundMuted: prefs.soundMuted };
     syncFourFingerTap();
-    tray.show(trayState);
+    refreshTray();
   }
   // A start by the user opens the window; a start by the daemon or at login doesn't. A headless run opens it hidden.
   if (start.by === "user" || headless) void openMainWindow();
@@ -715,7 +1016,12 @@ async function ready(): Promise<void> {
 // signed by the answer key. The store holds them; the sealed scheme serves the frames; nothing logs the fields.
 const sealed = new SealedFrames();
 // The timing lines: when a surface first asks for a card's frames (the fallback's own page aside).
-sealed.onMinted = (cardId, element, windowId) => { if (element !== "own") noteStep(cardId, windowId, "frames asked"); };
+sealed.onMinted = (cardId, element, windowId) => {
+  if (element !== "own") noteStep(cardId, windowId, "frames asked");
+  // lane HS (R12): the surface that asked for a pending card's frames is its drawer, shown again if it stood down.
+  const drawer = windowId === undefined ? undefined : [...surfaces.values()].find((x) => !x.win.isDestroyed() && x.win.id === windowId);
+  if (drawer !== undefined && stoodDown.has(drawer.ref)) applyVisibility(drawer);
+};
 /** The bots' names by id, as the daemon lists them (`bot.list`), so a card says "Alpha wants to…" and not an id. Refilled
  *  on each connection and when a card's bot isn't known yet; a name never decides anything, it only fills a sentence. */
 const botNames = new Map<string, string>();
@@ -732,8 +1038,11 @@ let signedDevice: string | undefined;
 // own page answers on its own channel.
 /** The last visibility verdict of each sealed frame (by its token), so a change is logged once. */
 const sealedSeen = new Map<string, boolean>();
-const fallbacks = new Map<string, { timer: ReturnType<typeof setTimeout>; win?: Electron.BrowserWindow; token?: string }>();
-const FALLBACK_DELAY_MS = 2_000;
+/** The sealed frames whose page has said "visible" at least once (watchSealedDraw redraws only a page that never has). */
+const sealedEverSeen = new Set<string>();
+const fallbacks = new Map<string, { timer: ReturnType<typeof setTimeout>; win?: Electron.BrowserWindow; token?: string; strip?: boolean }>();
+/** 2 s; times the acceptance run's scale on a test or source build (`test-scale.ts`), never on a released app. */
+const FALLBACK_DELAY_MS = 2_000 * testTimeScale(process.env, app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string");
 /** The fallback card's window: a card's own width, a height that fits what it says up to a sane most (it scrolls inside
  *  beyond that, its buttons staying in view). */
 const FALLBACK_WIDTH = 440;
@@ -746,6 +1055,9 @@ const FALLBACK_MAX_HEIGHT = 560;
  *  only), so a fallback that fired says which surface was late and at which step: its frames asked for, a button of
  *  its showing, both buttons showing. */
 const cardArrived = new Map<string, { at: number; seen: Set<string> }>();
+/** The engine's offer to copy an old install's home (a `change` card, `home-copy`), by id, while it waits: the setup
+ *  guide waits for it (it comes first). */
+const homeCopyCards = new Set<string>();
 function noteStep(cardId: string, windowId: number | undefined, step: "frames asked" | "a button visible"): void {
   const arrived = cardArrived.get(cardId);
   if (arrived === undefined) return;
@@ -759,6 +1071,8 @@ function surfaceName(windowId: number | undefined): string {
   if (windowId === undefined) return "a frame with no window";
   if (mainWindow !== undefined && !mainWindow.isDestroyed() && mainWindow.id === windowId) return "the main window";
   for (const s of surfaces.values()) if (!s.win.isDestroyed() && s.win.id === windowId) return s.ref;
+  // The app's own card pages: the window's strip (lane RT), or the safety net's fallback card.
+  for (const f of fallbacks.values()) if (f.win !== undefined && !f.win.isDestroyed() && f.win.id === windowId) return f.strip === true ? `the window's strip (window ${windowId})` : `the fallback card (window ${windowId})`;
   return `window ${windowId}`;
 }
 /** Each surface's asks for a card's frames until one is made (the timing lines' "frames asked" is the first one made):
@@ -874,6 +1188,39 @@ function noteBothVisible(cardId: string, windowId: number | undefined): void {
  *  before it is the window's own card; a move (the window comes forward or goes back) is decided at once, on what is known. */
 const cardPlaces = new Map<string, CardPlace>();
 const windowDraws = new Set<string>();
+/** Where the engine's router placed each pending card (lane RT: `card_placed` wins; a `card.placement` answer only fills in
+ *  a card no event placed; card-place.ts `PlacementBook`). */
+const enginePlaces = new PlacementBook();
+/** lane HS: whether the router has placed a pending card in a window (the host's island then steps aside, as a window's
+ *  island does for its own window in front: the host has no window of its own to watch). */
+/** lane HS: the engine's word (`host.front`) that a MOSS or MOSS Code window is in front: the host's island then draws no
+ *  strip line, as a window's own island doesn't. A card placed on the island still wins (`surfaceEnvironment`). */
+let engineFront = false;
+const windowHoldsCard = (): boolean => [...enginePlaces.entries()].some(([id, p]) => (p.kind === "strip" || p.kind === "conversation") && sealed.isPending(id));
+/** Whether the router has placed any pending card on the island (it then never steps aside, §3.5). */
+const islandHoldsCard = (): boolean => [...enginePlaces.entries()].some(([id, p]) => (p.kind === "island" || p.kind === "elsewhere") && sealed.isPending(id));
+/** The engine's word on a card's place (a `card_placed` event, or a snapshot's entry the book took): kept, and the card placed
+ *  again; the surfaces hear it (the island takes or lets go). */
+function enginePlaced(cardId: string, place: CardPlacement, from: "event" | "snapshot" = "event"): void {
+  const was = islandHoldsCard();
+  const onIsland = (p: CardPlacement | undefined) => p !== undefined && (p.kind === "island" || p.kind === "elsewhere");
+  const cardMoved = onIsland(enginePlaces.get(cardId)) !== onIsland(place);
+  const wasWindow = windowHoldsCard();
+  if (from === "event") enginePlaces.placed(cardId, place);
+  else if (enginePlaces.snapshot([{ card: cardId, place }]).length === 0) return;
+  // lane HS (B1): each placement decides again whether this program keeps a fallback for the card: one stood down for its
+  // placement is armed again when the card comes to this program (a card whose own buttons showed stays disarmed).
+  if (!fallbackHere(cardId)) { if (fallbacks.has(cardId)) { disarmFallback(cardId); heldOffFallbacks.add(cardId); } }
+  else if (heldOffFallbacks.delete(cardId) && sealed.isPending(cardId)) void armFallback(cardId);
+  if (cardPlaces.has(cardId)) placeCardNow(cardId);
+  tellGuideAside();
+  // The surfaces hear it only when the island's hold changes (their `mainFront`): a message on every placement made the
+  // island measure itself again under the pointer.
+  if (was !== islandHoldsCard()) {
+    for (const s of surfaces.values()) applyVisibility(s);
+    tellSurfaces();
+  } else if (program === "host" && (cardMoved || wasWindow !== windowHoldsCard())) tellSurfaces(); // lane HS: the host's island draws only placed cards: each one it takes or lets go
+}
 const CONVERSATION_ASK_GRACE_MS = 400;
 function drawnInWindow(cardId: string): void {
   if (windowDraws.has(cardId)) return;
@@ -883,7 +1230,7 @@ function drawnInWindow(cardId: string): void {
 }
 function placeCardNow(cardId: string): void {
   if (!sealed.isPending(cardId)) { cardPlaces.delete(cardId); return; }
-  const now = placeCard({ front: mainWindowFront(mainState()), drawnInWindow: windowDraws.has(cardId) });
+  const now = placeFromEngine(enginePlaces.get(cardId), { front: mainWindowFront(mainState()), drawnInWindow: windowDraws.has(cardId) });
   const before = cardPlaces.get(cardId);
   if (before === now) return;
   cardPlaces.set(cardId, now);
@@ -896,17 +1243,18 @@ function placeCardNow(cardId: string): void {
     // the move back, or the answer, closes it. Without one the window was open for good, beside the island's card.
     if (own?.win === undefined) {
       if (own !== undefined) clearTimeout(own.timer);
-      fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0) });
-      void showFallbackCard(cardId);
+      fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0), strip: true });
+      void showFallbackCard(cardId, true);
     }
   } else {
     // The conversation draws it, or the island does: the app's own card stands down, its timer starts over as the safety net.
     if (own?.win !== undefined && !own.win.isDestroyed()) { disarmFallback(cardId); void armFallback(cardId); }
   }
 }
-/** A card arrives: the island's at once while the window isn't in front; else the conversation gets a beat to ask for it. */
+/** A card arrives: the island's at once; one for the window gets a beat for its conversation to ask for it. */
 function placeArrivedCard(cardId: string): void {
-  if (!mainWindowFront(mainState())) { placeCardNow(cardId); return; }
+  const placed = enginePlaces.get(cardId);
+  if (placed !== undefined ? placed.kind !== "strip" && placed.kind !== "conversation" : !mainWindowFront(mainState())) { placeCardNow(cardId); return; }
   const t = setTimeout(() => placeCardNow(cardId), CONVERSATION_ASK_GRACE_MS);
   t.unref?.();
 }
@@ -915,8 +1263,31 @@ function movePendingCards(): void {
   for (const id of sealed.pendingIds()) if (cardPlaces.has(id)) placeCardNow(id);
 }
 
+/** A card the core told the app of (`card_requested`), or one already waiting when the app connected (`card.list`): the
+ *  store's copy, its fallback timer and its place, once. Its id and kind only in the log (no text): the acceptance run
+ *  checks the app was told of each card it answers. */
+function cardArrivedNow(card: { id: string; kind: string; change?: string }, waiting = false): void {
+  if (card.change === "home-copy") { homeCopyCards.add(card.id); queueMicrotask(tellGuideAside); }
+  if (cardArrived.has(card.id)) return;
+  sealed.fromCore(card);
+  if (!sealed.isPending(card.id)) return;
+  restack(); // lane HS (R12): every third-party on-screen part hides at once, before any of the card's buttons can show
+  cardArrived.set(card.id, { at: Date.now(), seen: new Set() });
+  armFallback(card.id);
+  placeArrivedCard(card.id);
+  log(`card: a ${card.kind} card ${card.id} arrived${waiting ? " (waiting when the app connected)" : ""}`);
+}
+function cardWaitingAtConnect(c: unknown): void {
+  const card = c as { id?: unknown; kind?: unknown } | null;
+  if (card === null || typeof card !== "object" || typeof card.id !== "string" || typeof card.kind !== "string") return;
+  cardArrivedNow(card as { id: string; kind: string }, true);
+}
+
 async function armFallback(cardId: string): Promise<void> {
   disarmFallback(cardId);
+  // lane HS (B1): one card in one place: only the program the router's placement names arms its own card (and one held
+  // off is armed when a later placement brings it here).
+  if (!fallbackHere(cardId)) { heldOffFallbacks.add(cardId); return; }
   const timer = setTimeout(() => void showFallbackCard(cardId), FALLBACK_DELAY_MS);
   timer.unref?.();
   fallbacks.set(cardId, { timer });
@@ -928,22 +1299,70 @@ function disarmFallback(cardId: string): void {
   clearTimeout(own.timer);
   if (own.win !== undefined && !own.win.isDestroyed()) own.win.close();
   fallbacks.delete(cardId);
+  restack();
 }
+
+// lane HS: start. R12's host half (host-stacking.ts).
+/** The surfaces standing down for a pending card, by ref (said once each way). */
+const stoodDown = new Set<string>();
+/** Every surface follows the stacking rule again (a card came, was answered, or its own card showed or went). */
+function restack(): void {
+  for (const s of surfaces.values()) applyVisibility(s);
+  tellGuideAside();
+  // lane HS (the reviewer's S): decided again at the earliest expiry, when a card stops being pending with no event.
+  clearTimeout(expiryRestack);
+  const next = sealed.nextExpiry();
+  if (next !== undefined) { expiryRestack = setTimeout(restack, Math.min(Math.max(0, next - Date.now()) + 50, 2 ** 31 - 1)); expiryRestack.unref?.(); }
+}
+let expiryRestack: ReturnType<typeof setTimeout> | undefined;
+/** The setup guide steps aside while a card waits in this window (or the old home's copy does), and is back after. */
+let guideAsideNow = false;
+function tellGuideAside(): void {
+  if (program !== "code") return;
+  const aside = guideStepsAside({
+    places: enginePlaces.entries(), pending: (id) => sealed.isPending(id), program,
+    copyWaits: [...homeCopyCards].some((id) => cardArrived.has(id)),
+  });
+  if (aside === guideAsideNow) return;
+  guideAsideNow = aside;
+  if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.rootMessage(mainWindow.id, { type: "core-page-aside", aside });
+}
+let surfacesTimer: ReturnType<typeof setTimeout> | undefined;
+let lastSurfaces = "";
+function scheduleSurfacesReport(): void {
+  if (program !== "host" || surfacesTimer !== undefined) return;
+  surfacesTimer = setTimeout(() => {
+    surfacesTimer = undefined;
+    const wins = [...[...surfaces.values()].map((s) => ({ id: s.ref, win: s.win })), ...[...fallbacks].filter(([, f]) => f.win !== undefined).map(([id, f]) => ({ id: `card:${id}`, win: f.win! }))]
+      .filter((w) => !w.win.isDestroyed()).map((w) => ({ id: w.id, visible: w.win.isVisible(), bounds: w.win.getBounds() }));
+    const windows = surfacesReport(wins);
+    const said = JSON.stringify(windows);
+    if (said === lastSurfaces || pair?.client === undefined) return;
+    lastSurfaces = said;
+    pair.client.request("host.surfaces", { windows }, 5_000).catch(() => { lastSurfaces = ""; });
+  }, 200);
+  surfacesTimer.unref?.();
+}
+// lane HS: end
 
 /** The app's own card page: the whole card, its fields and buttons, from the app's own scheme (its own single-use
  *  channel), shown without taking the focus (the user's own app in front stays). */
-async function showFallbackCard(cardId: string): Promise<void> {
+async function showFallbackCard(cardId: string, strip = false): Promise<void> {
   const card = sealed.get(cardId);
   if (card === undefined) return;
-  const smokeFallback = process.env.CLOVER_SMOKE_SEALED_FALLBACK === "1";
-  // The acceptance run's real press (CLOVER_TEST_SEALED_PRESS=1, a headless test-marked or unpackaged run only): the
+  // The person's answer is on its way to the core: no card window for a card they just answered (a refusal arms it again).
+  if (sealed.isAnswering(cardId)) { log(`card: the fallback card for ${cardId} was not drawn (its answer is on its way to the core)`); return; }
+  // lane HS (B1): and only it draws one (the host never docks a strip: it has no window; a window never draws the island's).
+  if (!fallbackHere(cardId)) { log(`card: ${strip ? "the window's strip" : "the fallback card"} for ${cardId} is another program's to draw (${enginePlaces.get(cardId)?.kind ?? "no place"})`); return; }
+  const smokeFallback = SMOKE_SEALED_FALLBACK;
+  // The acceptance run's real press (MOSS_TEST_SEALED_PRESS=1, a headless test-marked or unpackaged run only): the
   // fallback card is drawn OFFSCREEN (never shown, never on any screen), so the run can press its button with a trusted
   // DevTools input event and the answer goes the whole real way: the page's own gates, the app's signature with its
   // registered answer key, the core broker's proof check. Nothing else about the card or its gates changes.
   // Compile-time first (the test mark, or the acceptance build's), so a release build carries no part of it.
-  const offscreenPress = (typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && process.env.CLOVER_TEST_SEALED_PRESS === "1";
-  if (!offscreenPress && !fallbackMayShow({ headless, smokeFallback, testInput: (typeof __CLOVER_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless }) })) {
-    log(`card: the fallback card for ${cardId} was not shown (headless)`);
+  const offscreenPress = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_SEALED_PRESS === "1";
+  if (!offscreenPress && !fallbackMayShow({ headless: quiet, smokeFallback, testInput: (typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless }) })) {
+    log(`card: ${strip ? "the window's strip" : "the fallback card"} for ${cardId} was not shown (headless)`);
     return;
   }
   // The names a card says come from the daemon's own list; a bot not listed yet is asked for once, briefly.
@@ -954,12 +1373,18 @@ async function showFallbackCard(cardId: string): Promise<void> {
   if (held === undefined || (held.win !== undefined && !held.win.isDestroyed())) return;
   const mint = sealed.mint(cardId, "own");
   if (mint === undefined) return;
-  const url = `clover-sealed://card/${encodeURIComponent(cardId)}/own?token=${encodeURIComponent(mint.token)}`;
+  const url = `moss-sealed://card/${encodeURIComponent(cardId)}/own?token=${encodeURIComponent(mint.token)}`;
   const dark = nativeTheme.shouldUseDarkColors;
   // A plain window of its own size (never the main window's plan: that one's minimum size is a whole app's, which is
   // what made this card a giant at the corner of the screen). It is sized by its page, within a range, and shown
   // without taking the focus.
+  // The window's strip (lane RT, §3.5): the core's own card page docked inside MOSS Code's window, a child of it that moves
+  // with it, for a card the router placed in this window while it shows another session (or none). The safety net's card
+  // (no strip) stands at the screen's top corner away from the cursor, as before.
+  // A headless or test run's card is never docked (nothing there is on a screen, and the press runs offscreen).
+  const dock = strip && !headless && !offscreenPress && mainWindow !== undefined && !mainWindow.isDestroyed() ? mainWindow : undefined;
   const win = new BrowserWindow({
+    ...(dock !== undefined ? { parent: dock } : {}),
     width: FALLBACK_WIDTH, height: 280, useContentSize: true,
     minWidth: FALLBACK_WIDTH, maxWidth: FALLBACK_WIDTH, minHeight: FALLBACK_MIN_HEIGHT, maxHeight: FALLBACK_MAX_HEIGHT,
     title: identity.productName, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
@@ -974,19 +1399,26 @@ async function showFallbackCard(cardId: string): Promise<void> {
     if (own?.win === win) fallbacks.delete(cardId);
     followFront();
   });
-  // The card window counts as Clover's own: clicking from the main window onto it, or back, is not leaving Clover.
+  // The card window counts as MOSS's own: clicking from the main window onto it, or back, is not leaving MOSS.
   for (const ev of ["focus", "blur", "show", "hide"] as const) win.on(ev as "focus", followFront);
   // Keep the fallback away from the cursor so a plugin can't time a click onto it (S3, check 3): place it within the
   // cursor's display's work area, at the top on the side the cursor is not on (the top is where a notification stands, and
   // where the page grows from as it fits), before showing it, never after, so it never appears first in its default place.
   try {
-    const cursor = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursor);
-    const area = display.workArea;
     const bounds = win.getBounds();
-    const x = cursor.x < area.x + area.width / 2 ? area.x + area.width - bounds.width - 16 : area.x + 16;
-    const y = area.y + 12;
-    win.setBounds({ x: Math.round(x), y: Math.round(y), width: bounds.width, height: bounds.height });
+    if (dock !== undefined) {
+      // The strip: at the top of the window's content, centred, each further strip card below the one before.
+      const content = dock.getContentBounds();
+      const below = [...fallbacks.values()].filter((f) => f.strip === true && f.win !== undefined && !f.win.isDestroyed() && f.win !== win).length;
+      win.setBounds({ x: Math.round(content.x + Math.max(0, (content.width - bounds.width) / 2)), y: Math.round(content.y + 12 + below * 24), width: bounds.width, height: bounds.height });
+    } else {
+      const cursor = screen.getCursorScreenPoint();
+      const display = screen.getDisplayNearestPoint(cursor);
+      const area = display.workArea;
+      const x = cursor.x < area.x + area.width / 2 ? area.x + area.width - bounds.width - 16 : area.x + 16;
+      const y = area.y + 12;
+      win.setBounds({ x: Math.round(x), y: Math.round(y), width: bounds.width, height: bounds.height });
+    }
   } catch { /* best effort */ }
   // Bind the fallback's channel to its window's main frame once the page loads (B3): a plugin can't guess the
   // window's frame ids, and a frame from another window can't answer with this token.
@@ -995,15 +1427,16 @@ async function showFallbackCard(cardId: string): Promise<void> {
     const main = win.webContents.mainFrame;
     sealed.bindChannel(mint.token, `m:${main.processId}:${main.routingId}`);
     if (!win.isDestroyed() && offscreenPress) {
-      log(`card: the fallback card for ${cardId} (${card.kind}) is drawn offscreen for the test's press (not shown)`);
+      log(`card: ${strip ? "the window's strip" : "the fallback card"} for ${cardId} (${card.kind}) is drawn offscreen for the test's press (not shown)`);
       return;
     }
     if (!win.isDestroyed()) {
-      log(`card: the fallback card for ${cardId} (${card.kind}) is shown`);
+      log(`card: ${strip ? "the window's strip" : "the fallback card"} for ${cardId} (${card.kind}) is shown`);
       if (headless) {
         showInvisible(win);
         log(`window: shown invisible while headless (the sealed smoke's fallback card ${cardId}: opacity 0, ignores the mouse)`);
       } else win.showInactive();
+      restack();
     }
   }).catch(() => win.close());
   held.win = win;
@@ -1018,35 +1451,73 @@ function showInvisible(win: BrowserWindow): void {
   win.showInactive();
 }
 
+/** The engine binary under the home (`engine install`'s answer), which the login item and every start use when there is one. */
+let installedEngine: string | undefined;
+
 function makePair(): Pair {
-  const binary = locateDaemonBinary({ env, packaged: app.isPackaged, resourcesPath: process.resourcesPath });
+  const binary = installedEngine ?? locateDaemonBinary({ env, packaged: app.isPackaged, resourcesPath: process.resourcesPath });
   const p = new Pair({
     endpoint: daemonEndpoint(home),
     hello: () => {
       const token = readAppToken(home, env);
-      return token === undefined ? undefined : appHello(token, app.getVersion(), CLOVER_PROTOCOL_VERSION);
+      // lane HS: the host's hello names its surface and its release (host-program.ts).
+      return token === undefined ? undefined : program === "host" ? hostHello(token, app.getVersion(), MOSS_PROTOCOL_VERSION) : appHello(token, app.getVersion(), MOSS_PROTOCOL_VERSION, ownRelease);
     },
     // A test-marked build never registers a login item or starts the daemon through the OS (its core is started by
     // the test itself): no launcher.
-    ...(binary !== undefined && typeof __CLOVER_TEST_BUILD__ !== "string" ? { launcher: cliLauncher({ binary, home, profile: identity.profile }) } : {}),
+    // lane HS: the host never starts the engine (the engine starts it; an app opening starts the engine, §3.1).
+    ...(binary !== undefined && program === "code" && typeof __MOSS_TEST_BUILD__ !== "string" ? { launcher: cliLauncher({ binary, home, profile: identity.profile }) } : {}),
     // The token goes only to this user's own daemon, which proves it holds it (lane C's protocol.prove): on Windows a
     // pipe's name is in a namespace every user shares.
     prove: { pid: process.pid },
     log,
+    // One release for everything: behind the engine, the app updates itself before it connects (release.ts's `ReleaseCatchUp`).
+    onBehind: (b) => catchUp.start(b.needs),
+    // Ahead of the engine: only the release door is open; the app asks for its engine to be brought in.
+    onAhead: async (client) => {
+      await client.request("events.subscribe", { areas: ["release"] }).catch(() => undefined);
+      await bringWatch.start(ownRelease, ownBundle);
+    },
     onConnected: (client, hello) => {
+      // On this release as the engine: whatever waited for it is done.
+      bringWatch.done();
       // This desktop's answer key, registered on every connection (lane H's `device.answerKey.set`), and tried again on a
       // growing wait while the core can't take it yet (try 8: a daemon whose links were still starting answered "not
       // served yet" once, nothing asked again, and every press on a card was refused). A press waits on it.
       keyRegistration?.stop();
       keyRegistration = new KeyRegistration(answerKey(), client, hello.device, () => pair.client === client, log);
       signedDevice = hello.device;
-      // The pending cards, and their outcomes as they come: the store's own copy of the sealed ones, and the
-      // fallback's 2-second timers arm on each (a part's own button disarms its card's before the core's fires).
+      // The pending cards, and their outcomes as they come: subscribed first, then listed (`subscribeThenListCards`: listed
+      // first, a card raised the moment the core's parts came up was told to no connection, the upgrade pair's step 2).
       void refreshBotNames(client);
-      void client.request<unknown>("card.list").catch(() => undefined).then((r) => {
-        for (const c of (r as { cards?: unknown[] })?.cards ?? []) { sealed.fromCore(c); armFallback(String((c as { id?: unknown }).id ?? "")); }
+      // The engine's placements are this connection's from its first subscription (it tells each card's place then, lane RT).
+      enginePlaces.follow(client);
+      // lane HS (the reviewer's S): a card resolved while the connection was down is dropped once the list says so, and the
+      // third-party parts are decided again (they stood down for it).
+      const knownBefore = sealed.pendingIds();
+      void subscribeThenListCards(client, cardWaitingAtConnect).then((listed) => {
+        if (listed === undefined) return;
+        const gone = sealed.dropUnlisted(knownBefore, listed);
+        if (gone.length === 0) return;
+        for (const id of gone) { enginePlaces.delete(id); disarmFallback(id); heldOffFallbacks.delete(id); cardArrived.delete(id); cardPlaces.delete(id); windowDraws.delete(id); }
+        log(`card: ${gone.length} card(s) resolved while the connection was down, dropped`);
+        if (program === "host") tellSurfaces();
+        restack();
       });
-      return loadRegistry(client);
+      // lane HS: once the registry is in, the mount applies; the host then says it is up.
+      // A reading that fails (the engine answered later than 10 s) is asked again, on a growing wait, while this connection is the
+      // app's; the first failure lets this setup return, as it did, and the window's mount is applied when a try succeeds.
+      let firstFailed: () => void = () => {};
+      const failedFirst = new Promise<void>((r) => { firstFailed = r; });
+      const loading = loadWithRetry({
+        load: () => loadRegistry(client), waits: [1_000, 2_000, 4_000, 8_000, 15_000], current: () => pair.client === client,
+        sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)), log, onFirstFailure: firstFailed,
+      });
+      return Promise.race([loading.then((ok) => ({ ok })), failedFirst.then(() => undefined)]).then((first) => {
+        if (first?.ok === true) return mounted(client, hello);
+        if (first === undefined) void loading.then((ok) => (ok && pair.client === client ? mounted(client, hello) : undefined)).catch((err) => log(`pair: the window's mount failed: ${why(err)}`));
+        return undefined;
+      });
     },
     onState: (s) => stateChanged(s),
     onDaemonQuit: (reason) => {
@@ -1054,19 +1525,27 @@ function makePair(): Pair {
       exitApp();
     },
   });
-  // The Clover Browser (lane L): the daemon drives its tabs over the pair. The protocol's tab owner names a plugin by
+  // The MOSS Browser (lane L): the daemon drives its tabs over the pair. The protocol's tab owner names a plugin by
   // its `plugin` field, as the browser host's own contract does (lane L's `contract.ts`), so it passes through as is.
   p.handle("app.tab.open", async (params) => {
     const a = BROWSER_METHODS.appTabOpen.params.parse(params);
     return { tab: await browserHost().open({ id: a.id, owner: a.owner, ...(a.url !== undefined ? { url: a.url } : {}), place: a.place }) };
   });
   p.handle("app.tab.command", async (params) => {
+    // lane HS: the engine's stream commands (a tab's pictures for the windows and the live picture), checked here.
+    const stream = streamCommandOf(params);
+    if (stream !== undefined) {
+      if (stream.command.kind === "stream") log(`browser: the engine ${stream.command.on ? "starts" : "stops"} a tab's stream ${stream.command.stream} (${stream.command.codecs?.join(",") ?? "video"})`);
+      return { result: await browserHost().command(stream.id, stream.command) };
+    }
     const a = BROWSER_METHODS.appTabCommand.params.parse(params);
     return { result: await browserHost().command(a.id, a.command) };
   });
   p.handle("app.tab.list", () => ({ tabs: browserHost().list() }));
   // The heartbeat (ruling R9): answered at once, from the main process, so a hung app goes unanswered.
   p.handle("app.ping", () => ({ ok: true }));
+  // lane HS: the engine's requests to the host (host-runtime.ts).
+  if (program === "host") installHostHandlers(p, hostDeps());
   // Desktop notifications for the bundled notifier (lane G): shown unless the app is in front showing that session.
   p.handle("app.notify", (params) => {
     const raw = (params ?? {}) as Record<string, unknown>;
@@ -1082,20 +1561,12 @@ function makePair(): Pair {
     log(`notify: closed (${typeof id === "string" ? id : "all"})`);
     return { ok: true };
   });
-  // A bot's speech (§6.6): each piece goes on, as it came, to the main window's shell, which plays it. No file, no route.
-  p.handle("voice.play", (params) => {
-    const parsed = APP_METHODS.voicePlay.params.safeParse(params);
-    if (!parsed.success) throw new Error("voice.play needs a bot, an utterance, a piece number, audio and a format");
-    if (mainWindow !== undefined && !mainWindow.isDestroyed()) activateShellAudio(mainWindow.id);
-    if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.shellMessage(mainWindow.id, { type: "voice", piece: { bot: parsed.data.bot, utterance: parsed.data.utterance, seq: parsed.data.seq, audio: parsed.data.audio, format: parsed.data.format, final: parsed.data.final } });
-    return { ok: true };
-  });
-  // The user's look at what a window draws (`clover-core app screenshot`, capture.ts): Electron's own capture of the
+  // The user's look at what a window draws (`moss-core app screenshot`, capture.ts): Electron's own capture of the
   // window's page and the views over it, never the screen; nothing is shown, raised, focused or resized for it.
   const captureDeps: CaptureDeps = {
     windows: () => [
       ...(mainWindow !== undefined && !mainWindow.isDestroyed() ? [{ name: "main", win: mainWindow as unknown as WindowLike }] : []),
-      ...[...surfaces].map(([id, s]) => ({ name: captureName(id), win: s.win as unknown as WindowLike })),
+      ...[...surfaces.values()].map((s) => ({ name: captureName(s.id), win: s.win as unknown as WindowLike })),
     ],
     scaleOf: (bounds) => screen.getDisplayMatching(bounds).scaleFactor,
     fromBitmap: (bitmap, size) => nativeImage.createFromBitmap(bitmap, size),
@@ -1105,7 +1576,7 @@ function makePair(): Pair {
     if (!parsed.success) throw new Error("app.window.capture needs a window: main, a surface's name, or all");
     return captureWindows(captureDeps, parsed.data);
   });
-  // The user's navigation of the main window from a terminal (`clover-core app open`, `app where`, open.ts): the route its
+  // The user's navigation of the main window from a terminal (`moss-core app open`, `app where`, open.ts): the route its
   // own sidebar uses (the shell's act), then where it is; never a click or a key, never the window shown or moved.
   p.handle("app.window.open", async (params) => {
     const parsed = APP_METHODS.appWindowOpen.params.safeParse(params);
@@ -1115,7 +1586,7 @@ function makePair(): Pair {
       known: () => ({ bots: [...botNames.keys()].sort(), pages: [...new Set([...runtime.mainKeys(), ...runtime.appButtons().map((b) => b.id)])].sort() }),
       look: async (frames) => (await captureWindows(captureDeps, { window: "main", image: false, frames }).catch(() => ({ windows: [] }))).windows[0],
       state: () => (mainWindow !== undefined && !mainWindow.isDestroyed() ? shellStates.get(mainWindow.id) : undefined),
-      act: (act) => { if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.shellMessage(mainWindow.id, { type: "shell-act", act }); },
+      act: (act) => { if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.rootPartMessage(mainWindow.id, { type: "shell-act", act }); },
     }, parsed.data);
   });
   // A bot's look at a place in the app (`AppScreenshot`, render.ts): drawn in a render window the user never sees, one
@@ -1146,6 +1617,8 @@ function makePair(): Pair {
   });
   // Every message from the daemon is checked against lane B's schemas before it changes anything.
   p.onNotification((method, params) => {
+    // lane HS: a view's picture of a host's tab (`browser.view.open`'s stream), drawn in the panel that opened it.
+    if (method === "picture.frame" && program === "code" && params !== null && typeof params === "object") { remoteViewsNow?.frame(params as never); return; }
     if (method !== CORE_EVENT_NOTIFICATION || params === null || typeof params !== "object") return;
     const type = (params as { type?: unknown }).type;
     if (type === "ui_settings_changed") {
@@ -1155,26 +1628,56 @@ function makePair(): Pair {
         applyThemeSource(parsed.data.settings.appearance);
       } else log("pair: ignored a ui_settings_changed event that isn't one");
     }
+    if (type === "release_changed") {
+      const parsed = ReleaseChangedEvent.safeParse(params);
+      if (parsed.success) {
+        // A newer app is bringing its engine: this one (older, already open) shows it is updating and updates itself; the app that
+        // brings it hears its own waiting.
+        const inc = parsed.data.incoming;
+        if (inc !== undefined && compareReleases(inc, ownRelease) > 0 && parsed.data.state !== "current") catchUp.start(inc);
+        else bringWatch.event(parsed.data);
+      }
+    }
     if (type === "plugin_changed" || type === "plugin_removed" || type === "plugin_found" || type === "plugin_ui_changed" || type === "methods_changed") scheduleReload();
+    // A plugin's setting changed (its key only): a surface of its that says `when.setting` reads them again.
+    if (type === "plugin_settings_changed") {
+      const id = (params as { pluginId?: unknown }).pluginId;
+      if (typeof id === "string" && runtime.surfaceEntries().some((w) => w.pluginId === id && w.setting !== undefined)) {
+        surfaceSettings.delete(id);
+        readSurfaceSettings(id);
+      }
+    }
     if (type === "card_requested") {
       const parsed = CardRequestedEvent.safeParse(params);
+      if (parsed.success) cardArrivedNow(parsed.data.card);
+      else log("pair: ignored a card_requested event that isn't one");
+    }
+    // lane HS: the host's state, so a window lets the screen's parts go once a host owns them, and takes them back after.
+    if (type === "host_changed") hostStatusHeard(params);
+    // lane HS: the host's tabs, for the panel that shows them while the window runs no pages.
+    if (type === "tab_changed" && program === "code") { const t = TabChangedEvent.safeParse(params); if (t.success) remoteViews().tabChanged(t.data.tab); }
+    if (type === "tab_closed" && program === "code") { const t = TabClosedEvent.safeParse(params); if (t.success) remoteViews().tabClosed(t.data.id); }
+    if (type === "card_placed") {
+      const parsed = CardPlacedEvent.safeParse(params);
       if (parsed.success) {
-        sealed.fromCore(parsed.data.card);
-        cardArrived.set(parsed.data.card.id, { at: Date.now(), seen: new Set() });
-        armFallback(parsed.data.card.id);
-        placeArrivedCard(parsed.data.card.id);
-        // Its id and kind only (no text): the acceptance run checks the app was told of each card it answers.
-        log(`card: a ${parsed.data.card.kind} card ${parsed.data.card.id} arrived`);
-      } else log("pair: ignored a card_requested event that isn't one");
+        // Ids and places only: the acceptance run reads where the router put each card.
+        log(`router: ${parsed.data.card} placed ${parsed.data.place.kind}${"window" in parsed.data.place ? ` (${parsed.data.place.program} ${parsed.data.place.window})` : ""}${parsed.data.before !== undefined ? ` from ${parsed.data.before.kind}` : ""}`);
+        enginePlaced(parsed.data.card, parsed.data.place);
+      } else log("pair: ignored a card_placed event that isn't one");
     }
     if (type === "card_resolved") {
       const parsed = CardResolvedEvent.safeParse(params);
       if (parsed.success) {
+        enginePlaces.delete(parsed.data.id);
         sealed.resolvedOutcome(parsed.data.id, parsed.data.outcome);
         disarmFallback(parsed.data.id);
+        heldOffFallbacks.delete(parsed.data.id);
+        if (program === "host") tellSurfaces(); // lane HS: the host's island comes back once no window holds a card
+        restack(); // lane HS (R12): the overlays come back once no card is pending here
         cardArrived.delete(parsed.data.id);
         cardPlaces.delete(parsed.data.id);
         windowDraws.delete(parsed.data.id);
+        tellGuideAside();
         // A replacement of this desktop's answer key waits on its card: on the yes, the app keeps the new key.
         const client = pair.client;
         if (client !== undefined && signedDevice !== undefined && answerKeyValue?.pendingCard === parsed.data.id) {
@@ -1187,6 +1690,136 @@ function makePair(): Pair {
   });
   return p;
 }
+
+// lane HS: start. ------------------------------------------------------------------------------------------------
+// The background host's glue (host-program.ts, host-runtime.ts, mount-plan.ts hold the decisions).
+const tabFrames = new TabFrameSender((params) => pair?.client?.request("host.tab.frame", params, 10_000) ?? Promise.resolve(), Date.now, (line) => log(line));
+
+/** The cards whose fallback this program stood down because the router placed them in another program (B1). */
+const heldOffFallbacks = new Set<string>();
+/** Whether this program keeps its own fallback card for a card (B1), from the router's placement and what it draws. */
+function fallbackHere(cardId: string): boolean {
+  return fallbackMayDraw(enginePlaces.get(cardId), fallbackHereOf(mountNow, hostGaveUp));
+}
+
+/** lane HV: the host leaves by itself once its engine is gone for good (host-runtime.ts `EngineWatch`): armed from the host's
+ *  first dial and at every loss of its connection, disarmed on a connection. A test-marked or acceptance build may shorten the
+ *  wait (`MOSS_TEST_HOST_ENGINE_GONE_MS`, the host row's own check); a real build always waits HOST_ENGINE_GONE_MS. */
+const hostEngineGoneMs: number = (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && Number(process.env.MOSS_TEST_HOST_ENGINE_GONE_MS) > 0 ? Number(process.env.MOSS_TEST_HOST_ENGINE_GONE_MS) : HOST_ENGINE_GONE_MS;
+const engineWatch: EngineWatch | undefined = program === "host"
+  ? new EngineWatch({ boundMs: hostEngineGoneMs, after: (ms, fn) => { const t = setTimeout(fn, ms); return { cancel: () => clearTimeout(t) }; }, leave: () => hostDeps().leave(), log })
+  : undefined;
+
+function hostDeps(): HostRuntimeDeps {
+  return {
+    release: app.getVersion(), bundlePath: hostBundlePath(process.execPath, process.platform), safeMode,
+    parts: () => ({ surfaces: surfaces.size, background: backgrounds.size, tabs: (browser?.list() ?? []).map((t) => t.id).slice(0, 1024) }),
+    client: () => pair?.client,
+    leave: () => { hostLock?.release(); exitApp(); },
+    tabInput: (id, events) => browserHost().input(id, events),
+    front: (front) => { if (front === engineFront) return; engineFront = front; log(`host: a window ${front ? "is" : "is no longer"} in front`); tellSurfaces(); },
+    log,
+  };
+}
+
+function hostTrayActions(): HostTrayActions {
+  const menu = (action: "open-moss" | "open-code") => void pair?.client?.request("host.menu", { action }, 10_000).catch((err: unknown) => log(`host: ${action} failed: ${why(err)}`));
+  return {
+    open: () => menu("open-code"),
+    openMoss: () => menu("open-moss"),
+    openCode: () => menu("open-code"),
+    stopEverything: () => void requestQuit("tray"),
+    safeMode: () => void leaveFor(hostDeps(), "safe-mode"),
+    line: (ref) => runTrayLine(ref),
+    toggleFourFingerTap: () => setFourFingerTap(!prefs.fourFingerTap),
+    toggleSoundMute: () => setSoundMuted(!prefs.soundMuted),
+  };
+}
+
+/** "Stop everything" from the host's menu, with the warning when something is mid-work (a headless run takes the test's
+ *  answer, MOSS_TEST_QUIT_CHOICE, and never shows a dialog). */
+async function hostStopEverything(): Promise<void> {
+  const outcome = await stopEverything(hostDeps(), async (working) => {
+    if (headless) return process.env.MOSS_TEST_QUIT_CHOICE !== "cancel";
+    const w = midWorkWarning(working, runtime.coreStrings());
+    const r = await dialog.showMessageBox({ type: "warning", message: w.message, detail: w.detail, buttons: w.buttons, defaultId: 0, cancelId: 0, noLink: true });
+    return r.response === 1;
+  }).catch((err: unknown) => { log(`host: stop everything failed: ${why(err)}`); return "kept" as const; });
+  log(`host: stop everything: ${outcome}`);
+}
+
+/** The hello's mount, once the registry is in: the parts this process runs follow it; the host then says it is up. A
+ *  window hears the host's state from then on (`host_changed`). */
+async function mounted(client: DaemonClient, hello: { mount?: MountList }): Promise<void> {
+  helloMount = hello.mount;
+  if (program === "code") {
+    await client.request("events.subscribe", { areas: ["host", "browser"] }, 5_000).catch((e: unknown) => { log(`browser: the tab events refused (${why(e)}); the host's state only`); return client.request("events.subscribe", { areas: ["host"] }, 5_000); }).catch(() => undefined);
+    // The state now (S2): a change between the hello and the subscription is not missed. An older engine has no read.
+    hostStatusHeard(await client.request("host.status", {}, 5_000).catch(() => undefined));
+  }
+  applyMount();
+  if (program === "host") await sayHostReady(client, hostDeps());
+}
+
+/** MOSS Code's panel over the host's tabs (the window half of the browser; browser/remote-view.ts), made on first use. */
+let remoteViewsNow: RemoteViews | undefined;
+function remoteViews(): RemoteViews {
+  remoteViewsNow ??= new RemoteViews({
+    request: (method, params) => (pair?.client === undefined ? Promise.reject(new Error("no daemon")) : pair.client.request(method, params, 10_000)),
+    makeViewport: () => {
+      return electronRemoteViewport({ preload: join(here, "..", "..", BROWSER_ASSETS.preload.out), html: join(here, "..", "..", BROWSER_ASSETS.html.out) }, { log, testPress: viewportPressSeam });
+    },
+    log,
+  });
+  return remoteViewsNow;
+}
+
+/** `host_changed`, or `host.status`'s answer: the window's mount follows; a host the engine gave up on is said once. */
+function hostStatusHeard(params: unknown): void {
+  const p = (params ?? {}) as { state?: unknown; gaveUp?: unknown };
+  if (typeof p.state !== "string") return;
+  hostStateNow = p.state as HostState;
+  hostGaveUp = p.state === "absent" && p.gaveUp === true;
+  applyMount();
+  // B2 (never nowhere): a fallback held off for a card on the island is this window's again once nothing draws the island.
+  for (const id of [...heldOffFallbacks]) if (sealed.isPending(id) && fallbackHere(id) && heldOffFallbacks.delete(id)) void armFallback(id);
+  if (!hostGaveUp) { hostDownNoticed = false; return; }
+  if (hostDownNoticed || program !== "code") return;
+  hostDownNoticed = true;
+  const strings = runtime.coreStrings();
+  const title = translate(strings, "moss.core.host-down.title");
+  const body = translate(strings, "moss.core.host-down.body");
+  // One plain notice, silent; a headless run shows none and says so.
+  if (quiet || !Notification.isSupported()) { log(`host: the engine gave up starting the host (the notice not shown: ${quiet ? "headless" : "no notifications"})`); return; }
+  log("host: the engine gave up starting the host (the notice shown)");
+  try { new Notification({ title, body, silent: true }).show(); } catch { /* the desktop has no notifications */ }
+}
+
+/** Applies the mount plan now: the screen's surfaces, the background parts, the pages, and whose menu-bar icon. */
+function applyMount(): void {
+  // The preview is one window whatever the engine's hello and a host's state say: no island, no pill, no background part, no pages, no menu-bar icon.
+  const next = preview ? PREVIEW_PLAN : mountPlan(program, helloMount, hostStateNow, hostGaveUp);
+  const was = mountNow;
+  mountNow = next;
+  // Said on the first mount the engine's hello brings, and on every change after.
+  if (!mountSaid || JSON.stringify(was) !== JSON.stringify(next)) { mountSaid = true; log(`mount: ${JSON.stringify(next)}`); }
+  if (runtime !== undefined) { syncSurfaces(); syncBackgrounds(); }
+  if (next.browser && browser === undefined) startBrowser();
+  if (!next.browser && browser !== undefined) {
+    try { browser.shutdown(); } catch (err) { log(`browser: shutdown failed: ${why(err)}`); }
+    browser = undefined;
+  }
+  if (next.tray === "none" && program === "code" && tray !== undefined) { tray.destroy(); tray = undefined; }
+  // The window half of the browser: with no pages here, the panel shows the host's tabs (their list read once now).
+  if (program === "code") {
+    const remote = !next.browser;
+    if (remote && was?.browser !== false) {
+      void pair?.client?.request("browser.tabs", {}, 10_000).then((r) => { for (const t of ((r as { tabs?: unknown[] }).tabs ?? [])) { const p = TabView.safeParse(t); if (p.success) remoteViews().tabChanged(p.data); } }).catch(() => undefined);
+    }
+    remoteViews().enable(remote);
+  }
+}
+// lane HS: end. ----------------------------------------------------------------------------------------------------
 
 /** The answer key (a headless run's in memory: it never touches the OS's store) and the no-prompt rule's limits: an
  *  unpackaged app keeps it in memory alone (S4: no Keychain or keyring dialog from a dev build), and a Linux whose
@@ -1202,13 +1835,15 @@ function answerKey(): AnswerKey {
     // The acceptance's kept key (a file beside its throwaway keychain FILE), so a test app that quits and opens again,
     // or an upgraded one, registers the same key: a test-marked build or the source acceptance's build (both
     // compile-time marks, inline: a release build has none of this branch), headless only, and only an absolute path.
-    if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && isAbsolute(process.env.CLOVER_TEST_ANSWER_KEY ?? "")) {
-      answerKeyValue = new AnswerKey(fileVault(process.env.CLOVER_TEST_ANSWER_KEY!), log);
-    } else if (typeof __CLOVER_TEST_BUILD__ === "string" || headless || !app.isPackaged) answerKeyValue = new AnswerKey(memoryVault("none"), log);
+    if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && isAbsolute(process.env.MOSS_TEST_ANSWER_KEY ?? "")) {
+      answerKeyValue = new AnswerKey(fileVault(process.env.MOSS_TEST_ANSWER_KEY!), log);
+    } else if (typeof __MOSS_TEST_BUILD__ === "string" || headless || !app.isPackaged) answerKeyValue = new AnswerKey(memoryVault("none"), log);
     else if (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text") {
       log("answer key: this computer's secret store is plain text (no Secret Service); the key stays in memory");
       answerKeyValue = new AnswerKey(memoryVault("none"), log);
     } else answerKeyValue = new AnswerKey(safeStorageVault(join(app.getPath("userData"), "answer-key"), safeStorage), log);
+    // lane HS: the host registers and signs with its own program's key (ruling C), MOSS Code with the device's single key.
+    if (program === "host") answerKeyValue.program = "host";
   }
   return answerKeyValue;
 }
@@ -1252,7 +1887,17 @@ async function loadRegistry(client: DaemonClient): Promise<void> {
   clearTimeout(registryRetry);
   // `approvals` too: the cards (`card_requested`, `card_resolved`) are that area's, and an app that didn't subscribe to it
   // was never told of a card (the acceptance run's first card-arrival check found it).
-  await client.request("events.subscribe", { areas: ["plugins", "app", "approvals"] }).catch(() => undefined);
+  // `surfaces` (lane RT): where the engine's router places each card (`card_placed`).
+  // A new connection's router starts the book afresh before its events can come (it is followed already, at the connection's
+  // first subscription); a registry reload on the same one keeps what its events said.
+  enginePlaces.follow(client);
+  // A surface's `when.setting` is read again on each connection (a setting changed while away sent no event here).
+  surfaceSettings.clear();
+  await client.request("events.subscribe", { areas: [...APP_EVENT_AREAS] }).catch(() => undefined);
+  void reportPresence().then(() => client.request<unknown>("card.placement", {})).then((raw) => {
+    const r = SURFACES_METHODS.cardPlacement.result.safeParse(raw);
+    if (r.success && pair.client === client) for (const p of r.data.placements) enginePlaced(p.card, p.place, "snapshot");
+  }).catch(() => undefined);
   const [ui, settingsRaw, statusRaw] = await Promise.all([
     optional.call(client, "plugin.ui"),
     optional.call(client, "ui.settings"),
@@ -1289,6 +1934,7 @@ async function loadRegistry(client: DaemonClient): Promise<void> {
   } else log("pair: an empty UI list while a shell is showing; keeping it until it lasts");
   runtime.setChoices((settings.success ? settings.data : { picks: [], lists: [] }) as never);
   syncSurfaces();
+  syncBackgrounds();
   log(`layers: ${plugins.length} plugin(s) with UI`);
   const again = (ms: number, what: string): void => {
     registryRetry = setTimeout(() => {
@@ -1317,6 +1963,8 @@ async function loadRegistry(client: DaemonClient): Promise<void> {
 let corePage: CorePage | null = null;
 /** The plugin and key the key dialog is for, set only by the door's `ui.secret`; gone when the page closes. */
 let keyTarget: { target: KeyTarget; session: string; shown?: boolean } | undefined;
+/** Where an app before the engine kept the guide's setup (2026-11-20) noted it done or skipped: carried over once, as the
+ *  engine's own `setup.dismiss`, then removed. */
 const welcomeFlag = () => join(app.getPath("userData"), "welcome-done");
 
 const pageDeps = {
@@ -1324,16 +1972,12 @@ const pageDeps = {
   lang: () => runtime.language,
   openExternal: async (url: string) => {
     // A headless run opens nothing on the screen.
-    if (headless) log(`open: would open a page in the browser (${new URL(url).host})`);
+    if (quiet) log(`open: would open a page in the browser (${new URL(url).host})`);
     else await shell.openExternal(url);
   },
+  // The guide finished: the window lands on the coding side, a new code session when there's none (the shell's own act).
   welcomeDone: () => {
-    try {
-      mkdirSync(dirname(welcomeFlag()), { recursive: true });
-      writeFileSync(welcomeFlag(), `${new Date().toISOString()}\n`);
-    } catch (err) {
-      log(`welcome: couldn't note it's done: ${why(err)}`);
-    }
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.rootPartMessage(mainWindow.id, { type: "shell-act", act: { kind: "go", target: { side: "code" } } });
   },
   page: () => corePage,
   closePage: () => {
@@ -1343,6 +1987,9 @@ const pageDeps = {
   keyTarget: () => (corePage === "key" ? keyTarget : undefined),
   registryReady: () => registryReady,
   daemonDown: () => pair.stuck !== undefined,
+  releaseNotice,
+  switchNow: () => void bringWatch.switchNow(),
+  retryEngine: () => void bringWatch.retry(),
 };
 
 /** Shows one of the core's pages in the main window (opening it if need be). */
@@ -1350,23 +1997,48 @@ async function openPage(page: CorePage): Promise<void> {
   corePage = page;
   const win = await openMainWindow();
   if (win !== undefined) runtime.rootMessage(win.id, { type: "core-page", page });
+  if (win !== undefined) runtime.rootMessage(win.id, { type: "core-page-aside", aside: guideAsideNow });
 }
 
-/** The welcome guide opens by itself on a start with no model provider signed in, until it is done or skipped. */
+/** A later look while the engine's home-copy offer waits for its answer. */
+let welcomeRetry: ReturnType<typeof setTimeout> | undefined;
+
+/** The setup guide opens by itself while the engine says this home isn't set up for a first reply (no provider, or no
+ *  default model) and the person hasn't skipped it, in this app or in MOSS (`setup.state`, the engine's). */
 async function maybeWelcome(client: DaemonClient): Promise<void> {
-  if (runtime.safeMode || corePage !== null || existsSync(welcomeFlag())) return;
+  if (runtime.safeMode || corePage !== null) return;
+  let state: { ready: boolean; dismissed: boolean } | undefined;
   try {
-    const providers = await listProviders(client, runtime.language);
-    if (anyReady(providers)) return;
+    state = await client.request<{ ready: boolean; dismissed: boolean }>("setup.state", {});
+    // An app before the engine held this noted the guide done or skipped in its own folder: the engine's now.
+    if (existsSync(welcomeFlag())) {
+      if (!state.ready && !state.dismissed) state = await client.request<{ ready: boolean; dismissed: boolean }>("setup.dismiss", { dismissed: true });
+      try { rmSync(welcomeFlag(), { force: true }); } catch { /* it is only read once more */ }
+    }
   } catch {
-    // A daemon that can't list them (an older one, the fake): no guide.
+    // An older engine (no `setup.state`): the rule it had, no provider signed in; a daemon that can't list them, no guide.
+    if (existsSync(welcomeFlag())) return;
+    try {
+      if (anyReady(await listProviders(client, runtime.language))) return;
+    } catch {
+      return;
+    }
+    state = { ready: false, dismissed: false };
+  }
+  if (!guideOpens(state)) return;
+  // The engine's offer to copy an old install's home comes first: the guide waits until it is answered.
+  const copyOffered = [...homeCopyCards].some((id) => cardArrived.has(id));
+  if (copyOffered) {
+    if (welcomeRetry === undefined) welcomeRetry = setTimeout(() => { welcomeRetry = undefined; if (pair.client !== undefined) void maybeWelcome(pair.client); }, 5_000);
     return;
   }
-  log("welcome: no model provider is signed in; the guide opens");
+  log("welcome: this home isn't set up for a first reply; the setup guide opens");
   await openPage("welcome");
 }
 
 function stateChanged(s: PairState): void {
+  // Through a release switch the engine goes away and the new one comes up: watched (release.ts `BringWatch.connection`).
+  bringWatch.connection(s.kind === "connected" || s.kind === "ahead" || s.kind === "behind");
   // The layers' connections go with the pair's; each opens again on its plugin's next call.
   if (s.kind !== "connected") layerLinks.closeAll();
   // A new connection asks the daemon afresh: the earlier run of empty answers and its waits don't carry over.
@@ -1375,10 +2047,12 @@ function stateChanged(s: PairState): void {
     openingRetryMs = 250;
   }
   log(`pair: ${s.kind}${s.kind === "unavailable" ? ` (${s.reason})` : ""}`);
-  // The root draws "Starting Clover…" until the shell comes; once the pair has gone a long time with no daemon (and
+  // lane HV: an engine on the other end (on its release, or older and serving the release door only) is the host's engine.
+  engineWatch?.connected(s.kind === "connected" || s.kind === "ahead");
+  // The root draws "Starting MOSS…" until the shell comes; once the pair has gone a long time with no daemon (and
   // again when one comes), it is asked to draw again, so it says so instead.
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) runtime.rootMessage(mainWindow.id, { type: "respot" });
-  const status = s.kind === "reconnecting" ? "Reconnecting to Clover…" : s.kind === "unavailable" ? "Clover isn't running" : s.kind === "starting-daemon" ? "Starting Clover…" : s.kind === "unverified" ? "Can't verify the Clover daemon" : undefined;
+  const status = s.kind === "behind" ? "Updating MOSS Code…" : s.kind === "ahead" ? "Waiting to switch to a newer MOSS…" : s.kind === "reconnecting" ? "Reconnecting to MOSS…" : s.kind === "unavailable" ? "MOSS Code isn't running" : s.kind === "starting-daemon" ? "Starting MOSS…" : s.kind === "unverified" ? "Can't verify the MOSS daemon" : undefined;
   tray?.show({ safeMode: runtime.safeMode, strings: runtime.coreStrings(), ...(status !== undefined ? { status } : {}) });
 }
 
@@ -1386,7 +2060,8 @@ function stateChanged(s: PairState): void {
 async function show(what: { kind: string; url?: string; section?: string; item?: string; bot?: string }): Promise<{ ok: true }> {
   if (what.kind === "url" && typeof what.url === "string") {
     const url = new URL(what.url);
-    if (url.protocol === "https:" || url.protocol === "http:") await shell.openExternal(url.toString());
+    if (quiet) log(`open: would open a page in the browser (${url.host})`);
+    else if (url.protocol === "https:" || url.protocol === "http:") await shell.openExternal(url.toString());
     return { ok: true };
   }
   const win = await openMainWindow();
@@ -1398,7 +2073,6 @@ async function show(what: { kind: string; url?: string; section?: string; item?:
 
 /** A part asks to open a place in the main window (the island's Usage and Devices tabs open Settings there). */
 async function openFor(pluginId: string, target: OpenTarget): Promise<void> {
-  if (!mayOpen(pluginId)) throw new LayerError("only the app's own parts open places in its window");
   log(`open: ${target.kind}${target.kind === "settings" && target.section !== undefined ? ` ${target.section}` : ""} for ${pluginId}`);
   await show(target);
 }
@@ -1406,6 +2080,11 @@ async function openFor(pluginId: string, target: OpenTarget): Promise<void> {
 /** Quit (§3.1): says what would stop, offers Hand over and quit, then stops both halves. */
 async function requestQuit(source: string): Promise<void> {
   if (leaving) return;
+  // lane HS: the host never quits the pair: the OS's quit (a logout) is a leave on purpose, the menu's is "stop everything".
+  if (program === "host") { if (source === "tray") await hostStopEverything(); else await leaveFor(hostDeps(), "quit-everything"); return; }
+  // lane HS: with a background host owning the screen, quitting MOSS Code quits this window's program alone: the engine,
+  // the host and the bots keep working (spec §3.1). Stand-in until the pair is retired (lanes RT, RL, then HS).
+  if (program === "code" && mountNow.tray === "none" && pair?.client !== undefined) { log(`quit (${source}): MOSS Code only (the engine and the host keep working)`); exitApp(); return; }
   const client = pair?.client;
   let status: unknown;
   try {
@@ -1417,8 +2096,9 @@ async function requestQuit(source: string): Promise<void> {
   const q = quitQuestion(status);
   let choice: QuitChoice = "quit";
   if (q.ask) {
-    if (headless) {
-      const env = process.env.CLOVER_TEST_QUIT_CHOICE;
+    if (preview) choice = "quit";
+    else if (headless) {
+      const env = process.env.MOSS_TEST_QUIT_CHOICE;
       choice = env === "handover" || env === "cancel" ? env : "quit";
     } else {
       const r = await dialog.showMessageBox({ type: "question", message: q.message, detail: q.detail, buttons: q.buttons.map((b) => b.label), defaultId: 0, cancelId: q.buttons.length - 1, noLink: true });
@@ -1436,7 +2116,7 @@ async function requestQuit(source: string): Promise<void> {
 /** Leaves on purpose for a restart (into safe mode or out of it), telling the daemon first (§3.1). */
 async function restart(safe: boolean): Promise<void> {
   await pair.exiting("restart");
-  const rest = process.argv.slice(1).filter((a) => a !== "--safe-mode" && !a.startsWith("--clover-started-by="));
+  const rest = process.argv.slice(1).filter((a) => a !== "--safe-mode" && !a.startsWith("--moss-started-by="));
   app.relaunch({ args: [...rest, ...(safe ? ["--safe-mode"] : [])] });
   exitApp();
 }
@@ -1479,14 +2159,16 @@ async function daemonGone(maxMs: number): Promise<void> {
 
 /** The core's last Theme choice (applied again when a render's override lets go). */
 let coreThemeSource: unknown;
-/** A marked headless build's render scheme (CLOVER_TEST_APPEARANCE_FILE), while it holds one; never set in a real build. */
+/** A marked headless build's render scheme (MOSS_TEST_APPEARANCE_FILE), while it holds one; never set in a real build. */
 let testThemeOverride: "dark" | "light" | undefined;
 
 /** The Theme choice, on every window at once (live). Setting the same value again is a no-op, and "system" keeps following the OS. */
 function applyThemeSource(value: unknown): void {
   coreThemeSource = value;
-  const override = typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string" ? testThemeOverride : undefined;
-  const next = override ?? themeSourceOf(value);
+  const override = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string" ? testThemeOverride : undefined;
+  // The preview's command may pin the window to light or dark (its pictures); any other value follows the core's Theme choice as ever.
+  const pinned = previewAppearance === "light" || previewAppearance === "dark" ? previewAppearance : undefined;
+  const next = pinned ?? override ?? themeSourceOf(value);
   if (nativeTheme.themeSource !== next) nativeTheme.themeSource = next;
 }
 
@@ -1548,7 +2230,7 @@ async function openRenderWindow(size: { width: number; height: number }, deps: C
     const e = event as unknown as { level?: unknown; message?: unknown; frame?: { origin?: string; url?: string } | null };
     if ((e.level !== "error" && e.level !== "warning") || typeof e.message !== "string" || lines.length >= RENDER_CONSOLE_MAX) return;
     let plugin = "";
-    try { const u = new URL(e.frame?.url ?? e.frame?.origin ?? ""); if (u.protocol === "clover-plugin:") plugin = u.host; } catch { /* no frame */ }
+    try { const u = new URL(e.frame?.url ?? e.frame?.origin ?? ""); if (u.protocol === "moss-plugin:") plugin = u.host; } catch { /* no frame */ }
     if (plugin === "") return;
     lines.push({ plugin: plugin.slice(0, 256), level: e.level, message: e.message.replace(/\s+/g, " ").slice(0, 500) });
   });
@@ -1558,7 +2240,7 @@ async function openRenderWindow(size: { width: number; height: number }, deps: C
     renderWindows.delete(win);
   });
   try {
-    await win.loadURL("clover-core://app/");
+    await win.loadURL("moss-core://app/");
   } catch (err) {
     if (!win.isDestroyed()) win.destroy();
     throw err;
@@ -1575,6 +2257,8 @@ async function openRenderWindow(size: { width: number; height: number }, deps: C
 }
 
 async function openMainWindow(): Promise<BrowserWindow | undefined> {
+  // lane HS: the host never has a window; "open" from it is the engine's (host.menu opens MOSS Code).
+  if (!mountNow.mainWindow) return undefined;
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
     showMainWindow(mainWindow);
     return mainWindow;
@@ -1583,7 +2267,7 @@ async function openMainWindow(): Promise<BrowserWindow | undefined> {
   const plan = mainWindowPlan({
     platform: process.platform,
     acrylic: process.platform === "win32" && windowsHasAcrylic(osRelease()),
-    title: identity.productName,
+    title: previewBanner !== undefined ? `${identity.productName} · ${previewBanner}` : identity.productName,
     dark,
     solid: dark ? "#202020" : "#F5F5F5",
     symbol: dark ? "#F2F2F2" : "#1F1F1F",
@@ -1612,7 +2296,16 @@ async function openMainWindow(): Promise<BrowserWindow | undefined> {
   win.on("focus", () => runtime.focusReturned(id));
   win.webContents.on("before-input-event", (event, input) => shortcut(event, input, win));
   win.once("ready-to-show", () => showMainWindow(win));
-  await win.loadURL("clover-core://app/");
+  // The preview says what it is: its title stays as set (the page's own title never replaces it), and one small plain line sits at the
+  // window's bottom right, on top of the page and deaf to the mouse, so it can never be taken for the installed app.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string" && previewBanner !== undefined) {
+    win.on("page-title-updated", (event) => event.preventDefault());
+    const line = previewBanner;
+    win.webContents.on("did-finish-load", () => {
+      void win.webContents.executeJavaScript(`(() => { if (document.getElementById("moss-preview-line")) return; const e = document.createElement("div"); e.id = "moss-preview-line"; e.textContent = ${JSON.stringify(line)}; const s = e.style; s.position = "fixed"; s.right = "10px"; s.bottom = "6px"; s.zIndex = "2147483647"; s.font = "11px -apple-system, system-ui, sans-serif"; s.color = "rgba(128,128,128,0.95)"; s.pointerEvents = "none"; s.userSelect = "none"; document.body.appendChild(e); })()`).catch(() => undefined);
+    });
+  }
+  await win.loadURL("moss-core://app/");
   return win;
 }
 
@@ -1624,24 +2317,50 @@ async function openMainWindow(): Promise<BrowserWindow | undefined> {
 
 interface Surface {
   win: BrowserWindow;
+  /** The entry's id (`island`); the ref (`<plugin>#<id>`) is the surface's own key. */
+  id: string;
   ref: string;
   pluginId: string;
   placement?: string;
   regions: Rect[];
   clicks: ClickThrough;
   poll?: ReturnType<typeof setInterval>;
-  /** What the part last asked for (`visible`); the window shows only while `surfaceShown` agrees (the pill steps aside for the main window). */
+  /** What the part last asked for (`visible`); the window shows only while `surfaceShown` agrees (a surface that says `front: "steps-aside"` leaves for the main window). */
   wantsVisible?: boolean;
+  /** What its manifest and its plugin's capabilities say (`SurfaceEntry`): it floats (`overlay`), draws the pending cards while the
+   *  window isn't in front (`window.cards`), steps aside for the window in front, and is summoned by the four-finger tap. */
+  floats: boolean;
+  cards: boolean;
+  stepsAside: boolean;
+  tap: boolean;
 }
 
 /** A test-marked headless build's stand-in for the window being in front (its windows are never the focused ones): the file named
- *  by CLOVER_TEST_MAIN_FRONT_FILE holds `front` or `back`, read every 100 ms. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
+ *  by MOSS_TEST_MAIN_FRONT_FILE holds `front` or `back`, read every 100 ms. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
 let frontSeam: boolean | undefined;
+/** lane HS: a test-marked headless build's press into the panel's viewport (the run's DevTools can't reach that view: the
+ *  browser's contents are closed to debugging): the file named by MOSS_TEST_VIEWPORT_PRESS_FILE holds `x,y`, read every
+ *  100 ms, pressed once and removed. Compiled out of a release (TEST_ONLY_APP_STRINGS). */
+let viewportPressSeam = false;
+function startViewportPressSeam(): void {
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_VIEWPORT_PRESS_FILE) {
+    const file = process.env.MOSS_TEST_VIEWPORT_PRESS_FILE;
+    viewportPressSeam = true;
+    setInterval(() => {
+      let word = "";
+      try { word = readFileSync(file, "utf8").trim(); rmSync(file, { force: true }); } catch { return; }
+      const [x, y] = word.split(",").map(Number);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      log(`browser: the test seam pressed the panel at ${x},${y} (${remoteViewsNow?.testPress(x!, y!) ?? 0} view(s))`);
+    }, 100).unref?.();
+  }
+}
+
 function startFrontSeam(): void {
-  // The marks first and the whole seam inside them (as CLOVER_TEST_APPEARANCE_FILE's is): a release folds the test to
+  // The marks first and the whole seam inside them (as MOSS_TEST_APPEARANCE_FILE's is): a release folds the test to
   // false and drops the block, the variable's name with it. An early return on `!headless || …` left the name in.
-  if ((typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string") && headless && process.env.CLOVER_TEST_MAIN_FRONT_FILE) {
-    const file = process.env.CLOVER_TEST_MAIN_FRONT_FILE;
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_MAIN_FRONT_FILE) {
+    const file = process.env.MOSS_TEST_MAIN_FRONT_FILE;
     const read = () => {
       let word = "";
       try { word = readFileSync(file, "utf8").trim(); } catch { return; }
@@ -1655,42 +2374,147 @@ function startFrontSeam(): void {
   }
 }
 
-function mainState(): MainWindowState {
-  if (frontSeam !== undefined) return { exists: true, visible: true, minimized: false, focused: frontSeam };
-  // Clover is in front while its main window or one of its own card windows has the focus (a click on a card blurs the main window).
-  return cloverFront(mainWindow, [...fallbacks.values()].map((f) => f.win));
+/** A test-marked build's stand-in for the user closing and reopening the main window (the background part's row): the file named
+ *  by MOSS_TEST_WINDOW_FILE holds `close <n>` or `open <n>`, read every 100 ms; a new line closes the main window or opens it
+ *  again, as the tray's Open does. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
+function startWindowSeam(): void {
+  if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_WINDOW_FILE) {
+    const file = process.env.MOSS_TEST_WINDOW_FILE;
+    let last = "";
+    setInterval(() => {
+      let word = "";
+      try { word = readFileSync(file, "utf8").trim(); } catch { return; }
+      if (word === last) return;
+      last = word;
+      if (word.startsWith("close")) {
+        if (mainWindow !== undefined && !mainWindow.isDestroyed()) { log("window: the test seam closes the main window"); mainWindow.close(); }
+      } else if (word.startsWith("open")) {
+        log("window: the test seam opens the main window");
+        void openMainWindow();
+      }
+    }, 100).unref?.();
+  }
 }
 
-/** Shows or hides one surface's window as its part asked and the front rules allow. */
-/** The choices this computer keeps across restarts (the pill put away). */
+function mainState(): MainWindowState {
+  // The preview has no island and no host: no other place draws a card, so its one window counts as in front whenever it exists, and the router keeps every card in it.
+  if (typeof __MOSS_PREVIEW_BUILD__ === "string") return previewMainState(mainWindow);
+  if (frontSeam !== undefined) return { exists: true, visible: true, minimized: false, focused: frontSeam };
+  // MOSS is in front while its main window or one of its own card windows has the focus (a click on a card blurs the main window).
+  return mossFront(mainWindow, [...fallbacks.values()].map((f) => f.win));
+}
+
+/** This program's presence to the engine's router (lane RT, §3.5; `PresenceReporter`): its main window, focused or not (the
+ *  front watcher's settled state), visible, and which session or bot it shows. Sent on every change and at least every
+ *  `PRESENCE_REFRESH_MS`; an engine that doesn't serve it yet is asked again on the next connection. */
+let lastSaid = "";
+let presenceClient: DaemonClient | undefined;
+const presence = new PresenceReporter({
+  read: () => { const st = mainState(); return { exists: st.exists, visible: st.visible, minimized: st.minimized, front: mainWindowFront(st) }; },
+  showing: () => (mainWindow !== undefined && !mainWindow.isDestroyed() ? showingOf(shellStates.get(mainWindow.id)) : null),
+  send: async (report) => {
+    // lane HS: the host has no windows: only windows report presence (§3.5).
+    if (program === "host") return "unserved";
+    const client = pair?.client;
+    if (client === undefined) return "failed";
+    if (client !== presenceClient) { presenceClient = client; presence.reconnected(); }
+    try {
+      await client.request("presence.report", report, 5_000);
+      return "sent";
+    } catch (err) {
+      return err instanceof RpcCallError && err.code === -32601 ? "unserved" : "failed";
+    }
+  },
+  // Said once per change (ids and kinds only).
+  log: (line) => { if (line !== lastSaid) { lastSaid = line; log(line); } },
+});
+if (typeof __MOSS_PREVIEW_BUILD__ === "string") presence.settled(true);
+function reportPresence(): Promise<void> {
+  return presence.report();
+}
+/** Before a press is judged: the placement it reads is the one the press was made in. */
+function presenceIfStale(): Promise<void> {
+  return presence.beforePress();
+}
+if (process.type === "browser") setInterval(() => void reportPresence(), PRESENCE_REFRESH_MS).unref?.();
+
+/** The choices this computer keeps across restarts (the surfaces put away). */
 const prefsFile = (): string => join(app.getPath("userData"), "prefs.json");
 let prefs: AppPrefs = process.type === "browser" ? readPrefs(prefsFile()) : { ...DEFAULT_PREFS };
 let trayState: TrayState | undefined;
 
-/** What the user has done to the pill; only "hidden" is kept across restarts (a summon is for this run). */
-let pillMode: PillMode = prefs.pillHidden ? "hidden" : "auto";
-/** Whether the pill's part has asked to be shown (it asks until it has nothing to show). */
-const pillWants = (): boolean => [...surfaces.values()].some((s) => s.pluginId === PILL_PLUGIN && s.wantsVisible === true);
+/** What the user has done to each surface (by its ref): only "hidden" is kept across restarts (a summon is for this run). */
+const surfaceModes = new Map<string, PutAway>();
+const modeOf = (s: Surface): PutAway => surfaceModes.get(s.ref) ?? (prefs.hiddenSurfaces.includes(s.ref) ? "hidden" : "auto");
+/** The tray lines plugins added that toggle a surface (`app.tray` with `toggles`), by the surface's ref. */
+const trayToggleOf = (ref: string) => runtime.trayEntries().find((t) => t.surface === ref);
 
-/** Puts the Dispatch pill away, summons it (a tap shows it over Clover's own window too, until the next tap) or gives it its
- *  usual behaviour back. The window follows at once, the tray item says what a press will do next, and the log says what
- *  happened on the screen. */
-function setPillMode(mode: PillMode, how: string): void {
-  if (pillMode === mode) return;
-  pillMode = mode;
+/** The tray's menu as the plugins' lines and the surfaces' states say. */
+function refreshTray(): void {
+  if (trayState === undefined) return;
+  const lines = runtime.trayEntries().map((t) => {
+    // A command's line says whose it is (a plugin's own words are not the menu's); a toggle's verb is MOSS's.
+    if (t.surface === undefined) return { ref: t.ref, title: `${t.title} (${t.pluginName})` };
+    const s = [...surfaces.values()].find((x) => x.ref === t.surface);
+    return { ref: t.ref, title: t.title, hidden: s !== undefined && modeOf(s) === "hidden" };
+  });
+  const tapTitles = [...surfaces.values()].filter((s) => s.tap).map((s) => trayToggleOf(s.ref)?.title ?? s.id);
+  trayState = { ...trayState, lines, tapTitles, ...(touches !== null && touches !== undefined ? { fourFingerTap: prefs.fourFingerTap } : {}) };
+  tray?.show(trayState);
+}
+
+/** A tray line pressed: a toggle puts its surface away or gives it back; a command runs through the core, and only a command the
+ *  core lists as this plugin's own (a line can't run another plugin's). */
+function runTrayLine(ref: string): void {
+  const line = runtime.trayEntries().find((t) => t.ref === ref);
+  if (line === undefined) return;
+  if (line.surface !== undefined) {
+    const s = [...surfaces.values()].find((x) => x.ref === line.surface);
+    if (s !== undefined) setSurfaceMode(s, afterTray(modeOf(s)), "from the tray");
+    return;
+  }
+  if (line.command === undefined) return;
+  const client = pair.client;
+  if (client === undefined) return;
+  void client.request<{ commands?: { name?: string; pluginId?: string }[] }>("command.list", {}, 10_000)
+    .then((r) => {
+      const mine = (r.commands ?? []).some((c) => c.name === line.command && c.pluginId === line.pluginId);
+      if (!mine) { log(`tray: ${ref} names a command ${line.pluginId} doesn't have`); return undefined; }
+      return client.request("command.run", { name: line.command }, 30_000);
+    })
+    .catch((err: unknown) => log(`tray: ${ref}'s command didn't run (${why(err)})`));
+}
+
+/** Whether a surface's part has asked to be shown (it asks until it has nothing to show). */
+const surfaceWants = (s: Surface): boolean => s.wantsVisible === true;
+
+/** Puts a surface away, summons it (a tap shows it over MOSS's own window too, until the next tap) or gives it its usual
+ *  behaviour back. The window follows at once, the tray line says what a press will do next, and the log says what happened on
+ *  the screen. */
+function setSurfaceMode(s: Surface, mode: PutAway, how: string): void {
+  if (modeOf(s) === mode && surfaceModes.has(s.ref)) return;
+  surfaceModes.set(s.ref, mode);
   const hidden = mode === "hidden";
-  if (prefs.pillHidden !== hidden) {
-    prefs = { ...prefs, pillHidden: hidden };
+  if (prefs.hiddenSurfaces.includes(s.ref) !== hidden || prefs.pillHidden) {
+    prefs = { ...prefs, pillHidden: false, hiddenSurfaces: hidden ? [...prefs.hiddenSurfaces, s.ref] : prefs.hiddenSurfaces.filter((r) => r !== s.ref) };
     writePrefs(prefsFile(), prefs, log);
   }
-  for (const s of surfaces.values()) applyVisibility(s);
-  if (trayState !== undefined) { trayState = { ...trayState, pillHidden: hidden }; tray?.show(trayState); }
+  applyVisibility(s);
+  refreshTray();
   const front = mainWindowFront(mainState());
-  log(`pill: ${mode === "hidden" ? "put away" : mode === "summoned" ? (front ? "summoned over the main window" : "summoned") : front ? "back to its usual place (not shown: the main window is in front)" : "shown"} ${how}`);
+  log(`surface: ${s.id} ${mode === "hidden" ? "put away" : mode === "summoned" ? (front ? "summoned over the main window" : "summoned") : front && s.stepsAside ? "back to its usual place (not shown: the main window is in front)" : "shown"} ${how}`);
+}
+
+/** The first version's `pillHidden` switch, applied once to the surfaces that have a tray toggle (the pill's, today), then cleared. */
+function applyLegacyHidden(s: Surface): void {
+  if (!prefs.pillHidden || trayToggleOf(s.ref) === undefined) return;
+  prefs = withLegacyHidden(prefs, s.ref);
+  writePrefs(prefsFile(), prefs, log);
 }
 
 /** The four-finger tap (macOS, where the touch add-on is built): on unless turned off in the tray, never in a headless or
- *  test run (nothing there reads the trackpad). A tap does what the tray's Hide / Show item does. */
+ *  test run (nothing there reads the trackpad). A tap does what the tray's Hide / Show line does, to every surface whose
+ *  manifest says `summon: ["tap"]`. */
 let touches: TouchAddon | undefined | null = null;
 let fourFingerTap: FourFingerTap | undefined;
 function syncFourFingerTap(): void {
@@ -1701,11 +2525,13 @@ function syncFourFingerTap(): void {
   }
 }
 function syncFourFingerTapUnguarded(): void {
-  if (headless || typeof __CLOVER_TEST_BUILD__ === "string" || process.platform !== "darwin") return;
+  if (headless || preview || typeof __MOSS_TEST_BUILD__ === "string" || process.platform !== "darwin") return;
   if (touches === null) touches = loadTouches(join(here, "native", "touches.node"), log);
   if (touches === undefined) return;
   if (fourFingerTap === undefined) {
-    fourFingerTap = new FourFingerTap(touches, () => setPillMode(pillAfterTap(pillMode, pillWants(), mainState()), "by the four-finger tap"), log);
+    fourFingerTap = new FourFingerTap(touches, () => {
+      for (const s of surfaces.values()) if (s.tap) setSurfaceMode(s, afterTap(modeOf(s), { stepsAside: s.stepsAside }, surfaceWants(s), mainState()), "by the four-finger tap");
+    }, log);
     powerMonitor.on("resume", () => fourFingerTap?.reattach());
     powerMonitor.on("unlock-screen", () => fourFingerTap?.reattach());
   }
@@ -1719,16 +2545,43 @@ function setFourFingerTap(on: boolean): void {
   prefs = { ...prefs, fourFingerTap: on };
   writePrefs(prefsFile(), prefs, log);
   syncFourFingerTap();
-  if (trayState !== undefined) tray?.show(trayState);
+  refreshTray();
   log(`touches: four-finger tap turned ${on ? "on" : "off"}`);
 }
 
+// lane HS (row 53's cause): the island's fold hands key back to the window it took it from at the press (focus-handback.ts).
+const focusBack = new FocusHandBack();
+const isSurfaceWindow = (id: number): boolean => [...surfaces.values()].some((x) => !x.win.isDestroyed() && x.win.id === id);
+app.on("browser-window-focus", (_e, w) => focusBack.focused(w.id, isSurfaceWindow(w.id)));
+app.on("browser-window-blur", (_e, w) => focusBack.blurred(w.id, isSurfaceWindow(w.id)));
+app.on("browser-window-created", (_e, w) => { const id = w.id; w.once("closed", () => focusBack.closed(id)); });
+/** Hides a surface's window; one that is key and took key from a window of this program at a press gives it back to that
+ *  window (a press never focuses anything by itself, and nothing the person did not have in front is raised). */
+function hideSurface(s: Surface): void {
+  const back = focusBack.hiding(s.win.id, s.win.isFocused());
+  s.win.hide();
+  if (back === undefined) return;
+  const w = BrowserWindow.fromId(back);
+  if (w === null || w.isDestroyed() || !w.isVisible()) return;
+  w.focus();
+  log(`focus: ${s.ref} folded while key: key back to the window it took it from`);
+}
+
 function applyVisibility(s: Surface): void {
-  if (s.win.isDestroyed() || s.wantsVisible === undefined) return;
-  const show = surfaceShown(s.pluginId, s.wantsVisible, mainState(), pillMode);
+  if (s.win.isDestroyed()) return;
+  // lane HS (R12): a plugin's overlay stands down while a card is pending here, so nothing it draws is over a sealed button
+  // (decided, and said, whether or not the part has asked to show yet).
+  const down = overlayStandsDown(s, sealed.anyPending(), drawerExempt(s, sealed.pendingHeldIn(s.win.id), (id) => enginePlaces.get(id)?.kind === "island", (id) => runtime?.cardSurfaceMayDraw?.(id) !== false));
+  if (down !== stoodDown.has(s.ref)) {
+    if (down) stoodDown.add(s.ref); else stoodDown.delete(s.ref);
+    log(`surface: ${s.ref} ${down ? "hidden while a card is pending (a plugin's on-screen part)" : sealed.anyPending() ? "back (it draws the pending card)" : "back (no card pending here)"}`);
+  }
+  if (down && s.win.isVisible()) hideSurface(s);
+  if (s.wantsVisible === undefined) return;
+  const show = !down && surfaceShown({ stepsAside: s.stepsAside, holdsPlacedCard: s.cards && islandHoldsCard() }, s.wantsVisible, mainState(), modeOf(s));
   if (show && invisible !== undefined && !s.win.isVisible()) showInvisible(s.win);
   else if (show && !headless && !s.win.isVisible()) s.win.showInactive();
-  else if (!show && s.win.isVisible()) s.win.hide();
+  else if (!show && s.win.isVisible()) hideSurface(s);
   clickThrough(s);
 }
 
@@ -1740,30 +2593,122 @@ function followFront(): void {
 }
 const frontWatcher = new FrontWatcher({
   read: () => mainWindowFront(mainState()),
-  changed: () => { tellSurfaces(); movePendingCards(); },
+  changed: (front) => { presence.settled(front); tellSurfaces(); movePendingCards(); void reportPresence(); },
   settleMs: 120,
 });
 const surfaces = new Map<string, Surface>();
 
-function syncSurfaces(): void {
-  const wanted = runtime.surfaceEntries();
-  for (const [id, s] of [...surfaces]) {
-    if (wanted.some((w) => w.id === id && w.ref === s.ref)) continue;
-    clearInterval(s.poll);
-    surfaces.delete(id);
-    if (!s.win.isDestroyed()) s.win.destroy();
+/** The app's one mute over all plugin sound: every page of the app (the bots' voices in the main window, a background part's
+ *  sound) is muted at once and stays muted as new ones open. The choice is kept across restarts. */
+function setSoundMuted(on: boolean): void {
+  if (prefs.soundMuted === on) return;
+  prefs = { ...prefs, soundMuted: on };
+  writePrefs(prefsFile(), prefs, log);
+  for (const c of webContents.getAllWebContents()) if (!c.isDestroyed()) c.setAudioMuted(on);
+  if (trayState !== undefined) { trayState = { ...trayState, soundMuted: on }; tray?.show(trayState); }
+  log(`audio: all plugin sound ${on ? "muted" : "unmuted"} from the tray`);
+}
+
+// Parts kept in the background (`app.background`): each in a hidden window of its own, with the core root that places just
+// that entry. Created when the part may run, destroyed when it may not (the plugin stopped, turned off or removed), and
+// independent of the main window: closing it changes nothing here. Never shown, never focused, never slowed while hidden; a window
+// may start sound with no press only when its plugin holds `audio` (the other windows' autoplay policy still wants one).
+const backgrounds = new Map<string, { win: BrowserWindow; audio: boolean; microphone: boolean }>();
+/** The frame and the frames it sits in, as the ids a press is credited to (the window's main frame left out). */
+function frameChainOf(f: Electron.WebFrameMain | null): string[] {
+  const out: string[] = [];
+  for (let cur: Electron.WebFrameMain | null = f; cur !== null && !cur.detached && cur.parent !== null && out.length < 8; cur = cur.parent) out.unshift(`${cur.processId}:${cur.routingId}`);
+  return out;
+}
+
+/** A background part's window has no input of its own: it never earns a send's allowance. */
+function isBackgroundWindow(id: number): boolean {
+  for (const b of backgrounds.values()) if (!b.win.isDestroyed() && b.win.id === id) return true;
+  return false;
+}
+
+function syncBackgrounds(): void {
+  // lane HS: only where the mount puts the background parts.
+  const wanted = mountNow.background ? runtime.backgroundEntries() : [];
+  for (const [ref, b] of [...backgrounds]) {
+    const now = wanted.find((w) => w.ref === ref);
+    // A plugin whose `audio` changed gets a new window: the autoplay policy is fixed at a window's creation. So does one whose
+    // `microphone` changed: a stream it already has open would keep recording after the capability went.
+    if (now !== undefined && now.audio === b.audio && now.microphone === b.microphone && !b.win.isDestroyed()) continue;
+    backgrounds.delete(ref);
+    if (!b.win.isDestroyed()) b.win.destroy();
+    log(`background: ${ref} stopped`);
   }
   for (const w of wanted) {
-    if (surfaces.has(w.id)) continue;
-    // Only the clover tree's surfaces float above everything, on every Space (the review's ruling for 1.111.1).
-    const floats = surfaceMayFloat(w.pluginId);
+    if (backgrounds.has(w.ref)) continue;
+    const win = new BrowserWindow({
+      show: false, width: 64, height: 64, frame: false, focusable: false, skipTaskbar: true, paintWhenInitiallyHidden: true,
+      title: `${identity.productName} background`,
+      webPreferences: webPreferences({ preload: join(here, "preload.cjs"), partition: UI_PARTITION, headless: false, offscreen: false, background: true, autoplay: w.audio }),
+    });
+    watchWindow(win);
+    if (prefs.soundMuted) win.webContents.setAudioMuted(true);
+    win.setIgnoreMouseEvents(true);
+    backgrounds.set(w.ref, { win, audio: w.audio, microphone: w.microphone });
+    const id = win.id;
+    runtime.openWindow(id, { material: "none", surface: { id: w.ref, ref: w.ref, spot: "app.background" } });
+    win.on("closed", () => {
+      runtime.closeWindow(id);
+      if (backgrounds.get(w.ref)?.win === win) backgrounds.delete(w.ref);
+    });
+    void win.loadURL(`moss-core://app/?surface=${encodeURIComponent(w.ref)}`);
+    log(`background: ${w.ref} started${w.audio ? " (may play sound)" : ""}`);
+  }
+}
+app.on?.("before-quit", () => { for (const b of backgrounds.values()) if (!b.win.isDestroyed()) b.win.destroy(); });
+
+/** The settings of the plugins with a surface entry that says `when.setting`, as the core last said them (by plugin, then
+ *  key). A surface whose plugin's settings aren't known yet stays closed until they are; a change of one of that
+ *  plugin's settings (`plugin_settings_changed`, its key only) reads them again. Nothing is opened for a person who never
+ *  turned the setting on. */
+const surfaceSettings = new Map<string, ReadonlyMap<string, unknown>>();
+const surfaceSettingsAsked = new Set<string>();
+function readSurfaceSettings(pluginId: string): void {
+  const client = pair.client;
+  if (client === undefined || surfaceSettingsAsked.has(pluginId)) return;
+  surfaceSettingsAsked.add(pluginId);
+  void client.request<{ settings?: { key: string; value?: unknown }[] }>("plugin.settings.get", { id: pluginId }, 10_000).then((r) => {
+    surfaceSettings.set(pluginId, new Map((r.settings ?? []).map((x) => [x.key, x.value])));
+  }, (err: unknown) => log(`surface: ${pluginId}'s settings couldn't be read (${why(err)}); its surfaces that need one stay closed`)).finally(() => {
+    surfaceSettingsAsked.delete(pluginId);
+    syncSurfaces();
+  });
+}
+function syncSurfaces(): void {
+  // lane HS: only where the mount puts the screen's surfaces (one island: the host's once it runs).
+  const wanted = (mountNow.surfaces ? runtime.surfaceEntries() : []).filter((w) => {
+    const holds = surfaceSettingHolds(w.setting, surfaceSettings.get(w.pluginId));
+    if (holds === undefined) readSurfaceSettings(w.pluginId);
+    return holds === true;
+  });
+  // By ref: a plugin's copy of an entry id another plugin has (a folder-installed copy of the island) is its own surface.
+  for (const [ref, s] of [...surfaces]) {
+    if (wanted.some((w) => w.ref === ref)) continue;
+    clearInterval(s.poll);
+    surfaces.delete(ref);
+    surfaceModes.delete(ref);
+    if (!s.win.isDestroyed()) s.win.destroy();
+    log(`surface: ${ref} closed`);
+    refreshTray();
+  }
+  for (const w of wanted) {
+    if (surfaces.has(w.ref)) continue;
+    log(`surface: ${w.ref} opened`);
+    // A surface floats above everything, on every Space, when its plugin holds `overlay` (its OK card says so); no id decides it.
+    const floats = w.floats;
     const wayland = session_ === "wayland";
     const win = new BrowserWindow(surfaceWindowPlan({
       surface: { ...w.window, alwaysOnTop: floats && w.window.alwaysOnTop === true },
       title: `${identity.productName} ${w.id}`,
-      // A capture run (`--clover-capture`, headless) draws every window offscreen, the surfaces too: a hidden window gets no
-      // animation frames, so nothing that moves on frames (the island's morph, the pill's spring) would run under test.
-      webPreferences: webPreferences({ preload: join(here, "preload.cjs"), partition: UI_PARTITION, headless: headless && invisible === undefined, offscreen: headless && args.capture !== undefined }),
+      // A capture run's surfaces and the background host's headless ones draw offscreen (window.ts `surfaceDrawsOffscreen`: the
+      // host's never-shown island stopped drawing after a resize and read nothing for a press); a measuring run's are shown
+      // invisible instead, and a real build's are shown.
+      webPreferences: webPreferences({ preload: join(here, "preload.cjs"), partition: UI_PARTITION, headless: headless && invisible === undefined, offscreen: surfaceDrawsOffscreen({ headless, measuring: invisible !== undefined, capture: args.capture !== undefined, host: program === "host" }) }),
       wayland,
     }));
     watchWindow(win);
@@ -1773,7 +2718,7 @@ function syncSurfaces(): void {
     if (floats && !wayland && w.window.alwaysOnTop === true) win.setAlwaysOnTop(true, process.platform === "darwin" ? "status" : "floating");
     const placement = w.window.placement?.[os];
     const s: Surface = {
-      win, ref: w.ref, pluginId: w.pluginId, regions: [], ...(placement !== undefined ? { placement } : {}),
+      win, id: w.id, ref: w.ref, pluginId: w.pluginId, floats, cards: w.cards, stepsAside: w.stepsAside, tap: w.tap, regions: [], ...(placement !== undefined ? { placement } : {}),
       // macOS and Windows forward the cursor's moves to a window that ignores the mouse (`forward`).
       clicks: new ClickThrough((ignore) => {
         if (!win.isDestroyed()) win.setIgnoreMouseEvents(ignore, ignore ? { forward: true } : undefined);
@@ -1784,41 +2729,52 @@ function syncSurfaces(): void {
       if (mouse.type === "mouseMove" || mouse.type === "mouseEnter") s.clicks.move({ x: mouse.x, y: mouse.y });
       else if (mouse.type === "mouseLeave") s.clicks.move(undefined);
     });
-    surfaces.set(w.id, s);
+    surfaces.set(w.ref, s);
     const id = win.id;
     runtime.openWindow(id, { material: "none", surface: { id: w.id, ref: w.ref } });
     win.on("closed", () => {
       clearInterval(s.poll);
       runtime.closeWindow(id);
-      if (surfaces.get(w.id) === s) surfaces.delete(w.id);
+      if (surfaces.get(w.ref) === s) surfaces.delete(w.ref);
     });
-    place(w.id, s, win.getSize());
-    void win.loadURL(`clover-core://app/?surface=${encodeURIComponent(w.id)}`);
+    place(s, win.getSize());
+    applyLegacyHidden(s);
+    refreshTray();
+    void win.loadURL(`moss-core://app/?surface=${encodeURIComponent(w.id)}`);
   }
 }
 
-function place(surface: string, s: Surface, [width, height]: number[]): void {
-  const display = screen.getPrimaryDisplay();
-  s.win.setBounds(surfacePlacement({ surface, ...(s.placement !== undefined ? { placement: s.placement } : {}), size: { width: width!, height: height! }, display: display.bounds, workArea: display.workArea }));
+/** The display the surfaces sit on: the primary one, or the host idle row's stand-in for it (its screen seam, set only in a headless
+ *  test-marked or acceptance build; undefined on every other run). */
+let testDisplay: { bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch: Rect | null } | undefined;
+function surfaceDisplay(): { id: number; bounds: Electron.Rectangle; workArea: Electron.Rectangle; notch?: Rect | null } {
+  const d = screen.getPrimaryDisplay();
+  return testDisplay === undefined ? d : { id: d.id, ...testDisplay };
+}
+
+function place(s: Surface, [width, height]: number[]): void {
+  const display = surfaceDisplay();
+  s.win.setBounds(surfacePlacement({ ...(s.placement !== undefined ? { placement: s.placement } : {}), size: { width: width!, height: height! }, display: display.bounds, workArea: display.workArea }));
 }
 
 function steerSurface(windowId: number, request: Record<string, unknown>): void {
   log(`surface: a request ${Object.keys(request).filter((k) => k !== "ref").join(",")}${typeof request.visible === "boolean" ? ` visible=${request.visible}` : ""}${headless ? " (headless)" : ""}`);
   const entry = [...surfaces].find(([, s]) => !s.win.isDestroyed() && s.win.id === windowId);
   if (entry === undefined) return;
-  const [id, s] = entry;
-  const trusted = surfaceMayFloat(s.pluginId);
+  const [, s] = entry;
+  const id = s.id;
+  const trusted = s.floats;
   const wayland = session_ === "wayland";
   // A whole place on the screen, kept on its display (on Wayland the compositor may ignore where).
-  const display = screen.getPrimaryDisplay();
+  const display = surfaceDisplay();
   const bounds = request.bounds === undefined ? undefined : surfaceBounds(request.bounds, display, trusted);
   if (bounds !== undefined) {
     s.win.setBounds(bounds);
     log(`surface: ${id} bounds ${bounds.width}x${bounds.height}`);
   } else if (request.width !== undefined || request.height !== undefined) {
     const [w, h] = s.win.getSize();
-    const size = surfaceSize(request, { width: w!, height: h! }, { trusted: surfaceMayFloat(s.pluginId), workArea: screen.getPrimaryDisplay().workArea });
-    place(id, s, [size.width, size.height]);
+    const size = surfaceSize(request, { width: w!, height: h! }, { trusted, workArea: surfaceDisplay().workArea });
+    place(s, [size.width, size.height]);
     log(`surface: ${id} sized to ${size.width}x${size.height}`);
   }
   // On Wayland a surface is a normal window: it takes every click inside it.
@@ -1831,6 +2787,133 @@ function steerSurface(windowId: number, request: Record<string, unknown>): void 
   else clickThrough(s);
 }
 
+/** The OS-wide half of the overlap check (overlap.ts, R12): which of our programs' windows lies over the place the person
+ *  just pressed in window `windowId` (another app's window never counts), named by which (this program or another of ours,
+ *  never a title), or undefined when none does. A keyboard press has no point and isn't checked here. With no window list
+ *  (Windows, Linux, a Mac without the add-on built) the in-page check stands alone (said once). A headless run (a test's,
+ *  among other runs' windows) counts its own windows only. */
+let windowList: WindowList | undefined | null = null;
+let overlapUnread = false;
+let overlapRead = false;
+function osCoverOf(windowId: number | undefined): { name: ReturnType<typeof coverName>; advice: string } | undefined {
+  if (windowId === undefined) return undefined;
+  if (windowList === null) windowList = loadWindowList(join(here, "native", "screen.node"), log);
+  const win = BrowserWindow.fromId(windowId);
+  const id = win === null || win.isDestroyed() ? undefined : windowIdOfMediaSource(win.getMediaSourceId());
+  if (windowList === undefined || win === null || id === undefined) {
+    if (!overlapUnread) { overlapUnread = true; log(`overlap: the OS window list wasn't read for a press (${windowList === undefined ? "no window list here" : "no window id"}); the in-page check stands alone`); }
+    return undefined;
+  }
+  const list = windowList;
+  const recent = windowDowns.get(windowId);
+  const down = recent !== undefined && Date.now() - recent.at <= 2_000 ? recent : undefined;
+  const content = win.getContentBounds();
+  const own = new Map<number, { origin: { x: number; y: number }; regions?: readonly Rect[] }>();
+  for (const s of surfaces.values()) {
+    if (s.win.isDestroyed()) continue;
+    const sid = windowIdOfMediaSource(s.win.getMediaSourceId());
+    const b = s.win.getContentBounds();
+    if (sid !== undefined) own.set(sid, { origin: { x: b.x, y: b.y }, regions: s.regions });
+  }
+  const ours = (pid: number): boolean => pid === process.pid || (!headless && isOurProgram(list.bundleOf(pid)));
+  // A read that throws fails open (the press goes on to the page's own fresh reading), said once.
+  const r = pressCoverRead({ point: down === undefined ? undefined : { x: content.x + down.x, y: content.y + down.y }, read: () => list.above(id), ours, own });
+  if (r.failed !== undefined) {
+    if (!overlapUnread) { overlapUnread = true; log(`overlap: the OS window list couldn't be read for a press (${r.failed}); the in-page check stands alone`); }
+    return undefined;
+  }
+  const above = r.above ?? [];
+  // Said once (counts only): the OS's list was read for a press.
+  if (!overlapRead) { overlapRead = true; log(`overlap: the OS window list read for a press (${above.length} above, ${above.filter((w) => w.pid === process.pid).length} of this program's own${headless ? "; headless: its own only" : ""}${down === undefined ? "; no point: a keyboard press" : ""})`); }
+  if (r.cover === undefined) return undefined;
+  let bundle: string | undefined;
+  try { bundle = r.cover.pid === process.pid ? undefined : list.bundleOf(r.cover.pid); } catch { bundle = undefined; }
+  const name = coverName(r.cover, process.pid, bundle);
+  return { name, advice: coverAdvice(name) };
+}
+
+/** A press over a sealed button that no sealed page heard (sealed-miss.ts): Chromium handed the mouse-down over a drawn, visible
+ *  button to the document that embeds it, or to none. The button's page is told to say "press again"; nothing is answered. The
+ *  buttons' places: each pending sealed frame of the window that reported itself visible measures its own buttons, and each
+ *  document above it says where its iframe sits (a plugin's document lying about it can only move where the app looks). */
+const missWatch = new MissWatch();
+/** Each window's latest mouse-down in window coordinates (from the screen point; the event's own x/y are its target widget's). */
+const windowDowns = new Map<number, { x: number; y: number; at: number }>();
+async function noticeMissedPress(win: BrowserWindow, windowId: number): Promise<void> {
+  const point = missWatch.missed(windowId);
+  if (point === undefined || win.isDestroyed()) return;
+  const within = <T,>(p: Promise<T>): Promise<T | null> => Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 500))]);
+  const buttons: { frame: Electron.WebFrameMain; token: string; option: string | undefined; box: Box }[] = [];
+  for (const f of win.webContents.mainFrame.framesInSubtree) {
+    let token: string | null = null;
+    try { const u = new URL(f.url); token = u.protocol === "moss-sealed:" && u.host === "card" ? u.searchParams.get("token") : null; } catch { token = null; }
+    if (token === null || !sealed.isTokenVisible(token)) continue;
+    const cardId = sealed.cardOf(token);
+    if (cardId === undefined || !sealed.isPending(cardId)) continue;
+    // The page's own buttons, in its own viewport (a page of ours).
+    const own = await within(f.executeJavaScript(`[...document.querySelectorAll(".seal-button")].map((b) => { const r = b.getBoundingClientRect(); return { option: b.dataset.option ?? null, x: r.x, y: r.y, width: r.width, height: r.height }; })`, true) as Promise<unknown>);
+    if (!Array.isArray(own)) continue;
+    // Each document above it: where its iframe sits (the frame found by its own address, which carries its token).
+    const offsets: { x: number; y: number }[] = [];
+    let ok = true;
+    for (let child = f, parent = f.parent; parent !== null; child = parent, parent = parent.parent) {
+      const at = await within(parent.executeJavaScript(`(() => { const f = [...document.querySelectorAll("iframe")].find((x) => x.src === ${JSON.stringify(child.url)}); if (!f) return null; const r = f.getBoundingClientRect(); return { x: r.x + f.clientLeft, y: r.y + f.clientTop }; })()`, false) as Promise<unknown>);
+      if (at === null || typeof at !== "object" || typeof (at as { x?: unknown }).x !== "number" || typeof (at as { y?: unknown }).y !== "number") { ok = false; break; }
+      offsets.push(at as { x: number; y: number });
+    }
+    if (!ok) continue;
+    for (const b of own as { option?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown }[]) {
+      if (typeof b.x !== "number" || typeof b.y !== "number" || typeof b.width !== "number" || typeof b.height !== "number") continue;
+      buttons.push({ frame: f, token, option: typeof b.option === "string" ? b.option : undefined, box: inWindow({ x: b.x, y: b.y, width: b.width, height: b.height }, offsets) });
+    }
+  }
+  const hit = buttonAt(point, buttons);
+  if (hit === undefined) return;
+  log(`sealed: a press over ${sealed.cardOf(hit.token) ?? "?"} ${sealed.elementOf(hit.token) ?? "?"} in ${surfaceName(windowId)} reached no sealed page; it says press again`);
+  await within(hit.frame.executeJavaScript(`window.__mossNotReady?.(${JSON.stringify(hit.option ?? null)})`, true) as Promise<unknown>);
+}
+
+/** A part's sealed button page that never says it shows (lane SV). Chromium can leave an out-of-process frame with the embedding
+ *  document's view of it as it was when the frame was made: on a loaded machine (seen on every busy GitHub macOS runner, and
+ *  here under load) the button's page never draws a frame (its timeline stays at 0, its observer delivers nothing), or draws but
+ *  keeps the "no room" reading of the 0x0 frame it started in. Resizing or moving the frame doesn't send it again; a change of
+ *  the frame element's own visibility does. So a loaded button page that has not said "visible" by each mark below gets that
+ *  change: its frame is hidden for 200 ms and shown again (the element's own inline visibility put back; two of the embedder's
+ *  frames hidden were not enough on a runner: run 44175337048).
+ *  Only a page that has never said "visible" since it loaded: one that did is current, and a later "not visible" is its own
+ *  reading (a cover, a scroll), where hiding its frame could take a press away (run 44179342697). It only makes the page's
+ *  reading current: a covered, see-through, clipped or scrolled-away button still reads as not showing (IntersectionObserver v2
+ *  measures it again), and a press still needs its own fresh reading. Twice at most per load,
+ *  never on a timer of its own after that; a part that undoes it only leaves its card to the fallback. */
+const SEALED_REDRAW_AT_MS: readonly number[] = [700, 2000];
+const SEALED_REDRAW_HIDDEN_MS = 200;
+function watchSealedDraw(processId: number, routingId: number): void {
+  const f = webFrameMain.fromId(processId, routingId);
+  if (f === undefined || f === null || f.parent === null) return;
+  let token: string | null = null;
+  try { const u = new URL(f.url); token = u.protocol === "moss-sealed:" && u.host === "card" ? u.searchParams.get("token") : null; } catch { token = null; }
+  if (token === null || sealed.elementOf(token)?.startsWith("button:") !== true) return;
+  const url = f.url;
+  const t = token;
+  for (const at of SEALED_REDRAW_AT_MS) setTimeout(() => void redrawSealed(processId, routingId, url, t, at), at);
+}
+async function redrawSealed(processId: number, routingId: number, url: string, token: string, at: number): Promise<void> {
+  const f = webFrameMain.fromId(processId, routingId);
+  if (f === undefined || f === null || f.detached || f.url !== url || f.parent === null || f.parent.detached) return;
+  // A page that said "visible" once reads itself: it is current, and what hides it now (a cover, a scroll) is its reading's to say.
+  if (sealedEverSeen.has(token) || sealed.isTokenVisible(token)) return;
+  const cardId = sealed.cardOf(token);
+  if (cardId === undefined || !sealed.isPending(cardId)) return;
+  const contents = webContents.fromFrame(f);
+  const win = contents === undefined ? null : BrowserWindow.fromWebContents(contents);
+  // Not "is the window shown": a headless run's surfaces (the background host's island, the pill) draw and read themselves with
+  // the window not shown, and a page in a window that draws nothing takes the change as nothing.
+  if (win === null || win.isDestroyed()) return;
+  const js = `(() => { const f = [...document.querySelectorAll("iframe")].find((x) => x.src === ${JSON.stringify(url)}); if (!f) return false; const was = f.style.visibility; f.style.visibility = "hidden"; setTimeout(() => { f.style.visibility = was; }, ${SEALED_REDRAW_HIDDEN_MS}); return true; })()`;
+  const done = await Promise.race([f.parent.executeJavaScript(js, false).catch(() => false), new Promise<false>((r) => setTimeout(() => r(false), 500))]);
+  log(`sealed: ${cardId} ${sealed.elementOf(token) ?? "?"} in ${surfaceName(win.id)} said nothing visible ${at} ms after it loaded: its frame ${done === true ? "was hidden and shown again so its page reads itself again" : "wasn't found in its embedder"}`);
+}
+
 /** The screen add-on (macOS), for the camera housing; undefined where there is none. */
 let screens: ReturnType<typeof loadScreens> | null = null;
 
@@ -1838,9 +2921,9 @@ let screens: ReturnType<typeof loadScreens> | null = null;
  *  the camera housing, which the screen add-on reads (null where there is none). */
 function surfaceEnvironment(windowId: number): SurfaceEnvironment | undefined {
   if (![...surfaces.values()].some((s) => !s.win.isDestroyed() && s.win.id === windowId)) return undefined;
-  const d = screen.getPrimaryDisplay();
+  const d = surfaceDisplay();
   if (screens === null) screens = loadScreens(join(here, "native", "screen.node"), log);
-  return { os, ...(session_ !== undefined ? { session: session_ } : {}), display: { bounds: d.bounds, workArea: d.workArea, notch: housingFor(d.id, screens) }, mainFront: mainWindowFront(mainState()) } as SurfaceEnvironment; // `mainFront` rides along: the SDK's declaration doesn't name it (the island reads it)
+  return { os, ...(session_ !== undefined ? { session: session_ } : {}), display: { bounds: d.bounds, workArea: d.workArea, notch: d.notch !== undefined ? d.notch : housingFor(d.id, screens) }, mainFront: (program === "host" ? windowHoldsCard() || engineFront : mainWindowFront(mainState())) && !islandHoldsCard() } as SurfaceEnvironment; // `mainFront` rides along: the SDK's declaration doesn't name it (the island reads it)
 }
 
 /** The displays changed: each surface's part hears its environment as it is now. */
@@ -1877,6 +2960,14 @@ function clickThrough(s: Surface): void {
 const menus = new MenuGate();
 
 /** Each plugin layer's own connection to the core (its plugin API). */
+/** The watches each frame opened on its plugin's connection: a frame's going ends them (ui/frame-watches.ts). */
+const frameWatches = new FrameWatches();
+/** The watches open on a `browser.*` call (their values are the MOSS Browser's events), and the visible parts that
+ *  subscribed to the `browser` area (browser-calls.ts). */
+const browserWatches = new Set<string>();
+const browserAreaFrames = new BrowserAreaFrames();
+/** The tab each part's own browser view is bound to (browser-calls.ts `ViewBindings`). */
+const viewBindings = new ViewBindings();
 const layerLinks = new LayerLinks({
   appClient: () => pair?.client,
   dial: () => dialDaemon(daemonEndpoint(home)),
@@ -1892,7 +2983,8 @@ const layerLinks = new LayerLinks({
       const id = (params as { card?: { id?: unknown } }).card?.id;
       if (typeof id === "string") noteTold(id, pluginId);
     }
-    runtime.pluginMessage(pluginId, { type: "api-event", pluginId, method, params });
+    // The MOSS Browser's events go only to the plugin's documents the user can see (browser-calls.ts).
+    runtime.pluginMessage(pluginId, { type: "api-event", pluginId, method, params }, method === CORE_EVENT_NOTIFICATION && isBrowserEvent(params, browserWatches) ? { visibleOnly: true } : {});
   },
   log,
 });
@@ -1927,10 +3019,11 @@ async function terminalInput(windowId: number, frameId: string, pluginId: string
   await layerLinks.hand(pluginId, "terminal.write", { terminalId, data: paste.data, paste: true });
 }
 
-/** Asks before a paste of more than one line goes to a terminal (a headless run answers with CLOVER_TEST_PASTE_OK). */
+/** Asks before a paste of more than one line goes to a terminal (a headless run answers with MOSS_TEST_PASTE_OK). */
 async function okToPaste(windowId: number, lines: number): Promise<boolean> {
-  if (headless) return process.env.CLOVER_TEST_PASTE_OK === "1";
-  const t = (key: string, params?: Record<string, string | number>) => translate(runtime.coreStrings(), `clover.core.${key}`, params);
+  if (preview) return false;
+  if (headless) return process.env.MOSS_TEST_PASTE_OK === "1";
+  const t = (key: string, params?: Record<string, string | number>) => translate(runtime.coreStrings(), `moss.core.${key}`, params);
   const win = BrowserWindow.fromId(windowId);
   const options = { type: "question" as const, message: t("terminal.paste-title", { count: lines }), detail: t("terminal.paste-detail"), buttons: [t("terminal.paste"), t("terminal.cancel")], defaultId: 1, cancelId: 1, noLink: true };
   const r = win !== null && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
@@ -1939,6 +3032,20 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
 const sends = new SendGate();
+// A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse
+// press landed, bound to the frame the report came from (never a payload). First report wins; one with no recent press is dropped.
+ipcMain.on("moss:press-seen", (event) => {
+  const f = event.senderFrame;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (f === null || f.detached || win === null) return;
+  sends.seen(win.id, frameChainOf(f));
+});
+// The preload's synchronous ask, from a frame's capture-phase keydown: whether that key-down is the window's held key binding's
+// (its down or a repeat), which the page must not get. Main's `before-input-event` already ran for that same event.
+ipcMain.on("moss:held-key", (event, a: { key?: unknown; code?: unknown }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  event.returnValue = win !== null && typeof a?.key === "string" && pluginKeys.swallows(win.id, { key: a.key, ...(typeof a.code === "string" ? { code: a.code } : {}) });
+});
 const windowDrags = new TitleDrag();
 /** Where the main process last saw the cursor over a window, on the screen (from its own mouse events). */
 const cursors = new Map<number, { x: number; y: number }>();
@@ -1961,8 +3068,15 @@ function dragEnd(windowId: number): void {
   const from = windowDrags.end(windowId);
   const win = BrowserWindow.fromId(windowId);
   if (from === undefined || win === null || win.isDestroyed()) return;
-  const [x, y] = win.getPosition();
-  if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+  // X11 moves a window by asking the window manager, which answers a moment later: getPosition at the release still
+  // holds the place before the last moves, so on Linux the place is read once the manager has answered.
+  const report = () => {
+    if (win.isDestroyed()) return;
+    const [x, y] = win.getPosition();
+    if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+  };
+  if (process.platform === "linux") setTimeout(report, 300).unref?.();
+  else report();
 }
 
 /** The person's mouse-downs, by window (the view-frame gate). */
@@ -1972,26 +3086,12 @@ const pointers = new PointerLog();
  *  unresponsive while its documents answer, after a longer window (the smoke run's hang test may shorten it). */
 const hangs = new HangWatch((windowId) => {
   log(`window ${windowId} stayed unresponsive: restarting in safe mode`);
-  if (args.smoke && process.env.CLOVER_SMOKE_NO_RESTART === "1") {
+  if (args.smoke && process.env.MOSS_SMOKE_NO_RESTART === "1") {
     log("smoke: the restart is left out");
     return;
   }
   void restart(true);
 });
-
-/** The player's AudioContext starts only after a user activation in its own document, and the window keeps the gesture rule
- *  (a plugin's page must not make sound unasked). So the shell's own document, and only it, is given one, once per document
- *  (a reloaded document is a new mount), before the first piece reaches it. */
-const activatedShells = new Set<string>();
-function activateShellAudio(windowId: number): void {
-  for (const { mount, frame } of runtime.shellFrames(windowId)) {
-    if (activatedShells.has(mount)) continue;
-    const f = webFrameMain.fromId(frame.processId, frame.routingId);
-    if (f === undefined || f === null || f.detached) continue;
-    activatedShells.add(mount);
-    f.executeJavaScript("0", true).catch(() => activatedShells.delete(mount));
-  }
-}
 
 /** A window went unresponsive: which of its documents? Each is pinged; a plugin layer that doesn't answer has its
  *  process killed (its parent then shows "This part stopped" with a reload), and only a core root that doesn't answer
@@ -2030,10 +3130,12 @@ async function diagnoseHang(win: BrowserWindow): Promise<void> {
 }
 
 /** The longer window; the smoke run's test of it shortens it (unpackaged runs only). */
-const compositorMs = args.smoke && !app.isPackaged && Number(process.env.CLOVER_SMOKE_COMPOSITOR_MS ?? "0") > 0 ? Number(process.env.CLOVER_SMOKE_COMPOSITOR_MS) : HANG_COMPOSITOR_MS;
+const compositorMs = args.smoke && !app.isPackaged && Number(process.env.MOSS_SMOKE_COMPOSITOR_MS ?? "0") > 0 ? Number(process.env.MOSS_SMOKE_COMPOSITOR_MS) : HANG_COMPOSITOR_MS;
 
-/** Where each native view goes (ruling R8: the place the person used last), as the Clover Browser's `setView`. */
+/** Where each native view goes (ruling R8: the place the person used last), as the MOSS Browser's `setView`. */
 const views = new ViewFrames((name, target) => {
+  // lane HS: with no browser here (the host runs the pages), the panel shows the host's tab (browser/remote-view.ts).
+  if (program === "code") remoteViews().setTarget(name, target === undefined ? undefined : { windowId: target.windowId, bounds: target.bounds });
   if (browser === undefined) return;
   const win = target === undefined ? null : BrowserWindow.fromId(target.windowId);
   browser.setView(name, win === null || win.isDestroyed() ? undefined : { window: win, bounds: target!.bounds });
@@ -2050,8 +3152,8 @@ function front(): { focused: boolean; session?: string | null } {
 
 const notifications = new Notifications((req, onClick) => {
   // A headless run shows nothing and plays nothing.
-  if (headless || !Notification.isSupported()) {
-    log(`notify: ${headless ? "a headless run shows no notification" : "this desktop has no notifications"} (${req.id})`);
+  if (quiet || !Notification.isSupported()) {
+    log(`notify: ${quiet ? "a headless run shows no notification" : "this desktop has no notifications"} (${req.id})`);
     return undefined;
   }
   const n = new Notification({ title: req.title, ...(req.body !== undefined ? { body: req.body } : {}), ...(req.silent === true ? { silent: true } : {}), ...(process.platform === "linux" && req.urgent === true ? { urgency: "critical" as const } : {}) });
@@ -2069,9 +3171,23 @@ const notifications = new Notifications((req, onClick) => {
 const webViews = new WebViews((windowId) => {
   const w = BrowserWindow.fromId(windowId);
   return w === null || w.isDestroyed() ? undefined : w;
-}, log);
+}, log, {
+  engine: () => {
+    const client = pair.client;
+    if (client === undefined || client === null) return undefined;
+    return {
+      open: (session, callId) => client.request("mcpApp.open", { session, callId }, 30_000),
+      request: (session, callId, message, pressed) => client.request("mcpApp.request", { session, callId, message, pressed }, 90_000),
+    };
+  },
+  // A page's link goes the way every other address the app is asked to open goes (`show`'s url kind: the headless
+  // "would open" line, http and https only). The engine accepted it only inside the person's press in that view.
+  openLink: (url) => {
+    void show({ kind: "url", url }).catch((err: unknown) => log(`mcp-apps: a link didn't open (${why(err)})`));
+  },
+});
 
-/** The Clover Browser in this process (lane L, spec §12.1): made once the app is ready; what it reports goes to the
+/** The MOSS Browser in this process (lane L, spec §12.1): made once the app is ready; what it reports goes to the
  *  daemon over the pair. */
 function startBrowser(): void {
   const send = (method: string, params: unknown) => {
@@ -2079,7 +3195,7 @@ function startBrowser(): void {
     if (c !== undefined) void c.request(method, params).catch((err) => log(`browser: ${method} failed: ${why(err)}`));
   };
   // The acceptance run's fixture site, by name (a test or acceptance build only: a release build has none of this).
-  const testNames = typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string" ? testBrowserNames(process.env.CLOVER_TEST_BROWSER_NAMES) : undefined;
+  const testNames = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string" ? testBrowserNames(process.env.MOSS_TEST_BROWSER_NAMES) : undefined;
   browser = createBrowserHost({
     computer: hostname().replace(/\.local$/, ""),
     headless,
@@ -2089,6 +3205,9 @@ function startBrowser(): void {
     report: (events) => send("browser.report", { events }),
     hold: (id, held) => send("browser.hold", { id, held }),
     assets: { preload: join(here, "..", "..", BROWSER_ASSETS.preload.out), html: join(here, "..", "..", BROWSER_ASSETS.html.out) },
+    // lane HS: a tab's pictures to the engine (host.tab.frame, one in flight, the newest waiting), for its windows' views.
+    streamData: (stream, chunk) => tabFrames.chunk(stream, chunk),
+    streamAssets: { preload: join(here, "..", "..", BROWSER_ASSETS.streamPreload.out), html: join(here, "..", "..", BROWSER_ASSETS.streamHtml.out) },
   });
   void browser.start().catch((err) => log(`browser: start failed: ${why(err)}`));
 }
@@ -2102,7 +3221,7 @@ function browserHost(): BrowserHost {
  *  placed in it. (The guards come from `web-contents-created`.) */
 function watchWindow(win: BrowserWindow): void {
   const id = win.id;
-  // Clover Dev wears its own icon on Windows and Linux (docs/clover-brand.md); macOS's is the Dock's, set at ready.
+  // MOSS Code Dev wears its own icon on Windows and Linux (docs/moss-brand.md); macOS's is the Dock's, set at ready.
   if (devIcon.window !== undefined) win.setIcon(join(here, "icons", devIcon.window));
   // A part that stopped says why in its layer's console (the SDK's boundary); the app's log keeps the line, so a part that "stopped"
   // is never a bare mystery (the sentence only, capped; nothing else a page logs is kept).
@@ -2111,9 +3230,16 @@ function watchWindow(win: BrowserWindow): void {
     if (typeof e.message === "string" && /^the part .* stopped/.test(e.message)) log(`layers: ${e.message.replace(/\s+/g, " ").slice(0, 300)}`);
   });
   win.webContents.on("before-input-event", (event, input) => {
+    if (input.type === "keyUp" && !isBackgroundWindow(id)) {
+      // A key's release counts in the frame it comes to, if that is a frame the key went down in.
+      const f = win.webContents.focusedFrame;
+      sends.release(id, { kind: "key", key: input.key, ...(f !== null && !f.detached ? { frame: `${f.processId}:${f.routingId}` } : {}) });
+    }
     if (input.type === "keyDown" || input.type === "rawKeyDown") {
       menus.input(id);
-      sends.input(id);
+      // The frames the key went down in (the focused frame and the frames it sits in): a key held down repeats, which is no new press.
+      if (isBackgroundWindow(id)) sends.input(id);
+      else if (!input.isAutoRepeat) sends.press(id, { kind: "key", key: input.key, frames: frameChainOf(win.webContents.focusedFrame) });
       // The record is per focused frame (the review's S2), the frame the key came to: the part that hands it over
       // idents itself from that same frame. No focused frame records nothing.
       const f = win.webContents.focusedFrame;
@@ -2131,6 +3257,8 @@ function watchWindow(win: BrowserWindow): void {
       // A click sends on its release: the release the main process saw counts as the input too, so a person who holds the
       // button on Send for a while still sends (the press alone covers only the second after it).
       if (mouse.button === undefined || mouse.button === "left") sends.input(id);
+      // The release of the press seen (the same button): the press's own frames hold its allowance, whichever frame is focused now.
+      if (!isBackgroundWindow(id)) sends.release(id, { kind: "mouse", key: mouse.button ?? "left" });
       return dragEnd(id);
     }
     if (mouse.type === "mouseMove") {
@@ -2142,29 +3270,48 @@ function watchWindow(win: BrowserWindow): void {
     cursors.set(id, at);
     windowDrags.down(id, { button: mouse.button, x: mouse.x, y: mouse.y });
     menus.input(id);
-    sends.input(id);
+    if (isBackgroundWindow(id)) sends.input(id);
+    else {
+      // Which frame it landed in is that frame's own report a moment later (the preload's trusted pointerdown, `moss:press-seen`);
+      // the release waits for it if it comes first.
+      sends.press(id, { kind: "mouse", key: mouse.button ?? "left" });
+    }
     pointers.down(id, mouse.x, mouse.y);
+    // `x`/`y` are in the coordinates of the frame's widget the press went to (an out-of-process frame's own), so where it was in
+    // the window comes from the screen point (`globalX`/`globalY`) less the window's content origin.
+    const content = win.getContentBounds();
+    const inWin = typeof mouse.globalX === "number" && typeof mouse.globalY === "number" ? { x: mouse.globalX - content.x, y: mouse.globalY - content.y } : { x: mouse.x, y: mouse.y };
+    windowDowns.set(id, { ...inWin, at: Date.now() });
+    // A press over a sealed button that no sealed page hears is told to press again (sealed-miss.ts); only while a card waits.
+    if (sealed.anyPending()) {
+      missWatch.down(id, inWin);
+      setTimeout(() => void noticeMissedPress(win, id), MISS_BOUND_MS + 30).unref?.();
+    }
   });
   win.webContents.on("did-frame-navigate", (_event, _url, _code, _text, _main, frameProcessId, frameRoutingId) => {
     // A frame that navigated is a document of its own from now on (the review's S2): its old record must not serve it.
     keys.forget(`${frameProcessId}:${frameRoutingId}`);
+    sends.forgetFrame(`${frameProcessId}:${frameRoutingId}`);
   });
   win.webContents.on("render-process-gone", () => {
     // A renderer gone takes its frames' records with it; its new render starts empty.
     const gone = keyFrames.get(id);
     if (gone !== undefined) {
-      for (const frameId of gone) keys.forget(frameId);
+      for (const frameId of gone) { keys.forget(frameId); sends.forgetFrame(frameId); }
       keyFrames.delete(id);
     }
   });
   win.webContents.on("unresponsive", () => void diagnoseHang(win));
   win.webContents.on("responsive", () => hangs.responsive(id));
-  // A drag ends when the window loses focus too, not only on the release (which may go to another window).
-  win.on("blur", () => dragEnd(id));
+  // A drag ends when the window loses focus too, not only on the release (which may go to another window). So does a held key binding.
+  win.on("blur", () => {
+    dragEnd(id);
+    heldKeyLost(id, false);
+  });
   win.on("closed", () => {
+    heldKeyLost(id, true);
     menus.forget(id);
     sends.forget(id);
-    listens?.closeWindow(id);
     windowDrags.forget(id);
     cursors.delete(id);
     pointers.forget(id);
@@ -2179,7 +3326,7 @@ function watchWindow(win: BrowserWindow): void {
 }
 
 /** The menu broker's last step: a native menu at the point, in the window the asking frame is in. A headless run
- *  never shows it: it answers with `CLOVER_TEST_MENU_PICK` (the tests), else nothing. */
+ *  never shows it: it answers with `MOSS_TEST_MENU_PICK` (the tests), else nothing. */
 async function popupMenu(windowId: number, items: MenuItem[], point: { x: number; y: number }): Promise<string | null> {
   const win = BrowserWindow.fromId(windowId);
   if (win === null || win.isDestroyed()) return null;
@@ -2191,7 +3338,7 @@ async function popupMenu(windowId: number, items: MenuItem[], point: { x: number
   try {
     if (headless || !win.isVisible()) {
       log(`menu: ${items.length} item(s) at ${point.x},${point.y} (not shown: headless)`);
-      return process.env.CLOVER_TEST_MENU_PICK ?? null;
+      return process.env.MOSS_TEST_MENU_PICK ?? null;
     }
     return await nativeMenu(win, items, point);
   } finally {
@@ -2214,6 +3361,44 @@ function nativeMenu(win: BrowserWindow, items: MenuItem[], point: { x: number; y
   });
 }
 
+/** Each window's press that its held key binding went down with (the send gate's record of that key down). */
+const heldPresses = new Map<number, Hold>();
+/** Each window's held-binding calls, in order: a binding's up goes only once its down's call has settled. */
+const heldCalls = new Map<number, Promise<unknown>>();
+
+/** A held key binding's down, up or cancel (`commands[].hold`, §5.4) goes to its command: `command.run` with `held`, on the
+ *  app's own connection, the one route the core takes a held command from (its handler gets `{ key: <phase> }`). The user's
+ *  release (`up`) gives the binding's owner its documents in this window the send allowance of the press (`creditHeld`: one
+ *  `user.send`, 30 s); a `cancel` (the window lost the focus or closed, or a stale hold ended) gives nothing. */
+function heldKey(windowId: number, step: HoldStep): void {
+  const { binding: b, phase } = step;
+  if (phase === undefined) return;
+  if (phase === "down") {
+    const press = sends.newest(windowId);
+    if (press !== undefined) heldPresses.set(windowId, press);
+    else heldPresses.delete(windowId);
+  } else {
+    const press = heldPresses.get(windowId);
+    heldPresses.delete(windowId);
+    if (phase === "up" && press !== undefined) sends.creditHeld(windowId, press, runtime.heldKeyFrames(windowId, b.pluginId));
+  }
+  log(`keys: ${b.name} ${phase} from its key`);
+  const next = (heldCalls.get(windowId) ?? Promise.resolve())
+    .then(() => pair.client?.request("command.run", { name: b.name, held: phase }, 30_000))
+    .catch((err: unknown) => log(`keys: ${b.name} ${phase} failed: ${why(err)}`));
+  heldCalls.set(windowId, next);
+}
+
+/** A window that lost the focus or closed ends its held binding with no release of the user's. */
+function heldKeyLost(windowId: number, closed: boolean): void {
+  const step = pluginKeys.cancel(windowId);
+  if (step !== undefined) heldKey(windowId, step);
+  if (closed) {
+    heldPresses.delete(windowId);
+    heldCalls.delete(windowId);
+  }
+}
+
 /** The app's shortcuts, ahead of every layer (`shortcuts.ts`). */
 function shortcut(event: Electron.Event, input: Input, win: BrowserWindow): void {
   const which = appShortcut(input, process.platform);
@@ -2221,9 +3406,24 @@ function shortcut(event: Electron.Event, input: Input, win: BrowserWindow): void
     // The app's own keys won above; a plugin command's default key runs that command as the user (the press is theirs).
     // Not while a sealed card or the key dialog's secret field has the focus: the key goes where the focus is.
     const frame = win.webContents.focusedFrame;
-    const command = !keysMayRun({ frameUrl: frame === null || frame.detached ? undefined : frame.url, secureOpen: keyTarget !== undefined }) ? undefined : pluginKeys.match({ type: input.type, key: input.key, code: input.code, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift, isAutoRepeat: input.isAutoRepeat });
+    const mayRun = keysMayRun({ frameUrl: frame === null || frame.detached ? undefined : frame.url, secureOpen: keyTarget !== undefined });
+    const press = { type: input.type, key: input.key, code: input.code, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift, isAutoRepeat: input.isAutoRepeat };
+    // A held binding (`commands[].hold`) hears its key's down and its release; its repeats and its key's up are kept from the page.
+    const held = pluginKeys.hold(win.id, press, mayRun);
+    if (held !== undefined) {
+      if (held.consume) event.preventDefault();
+      heldKey(win.id, held);
+      if (held.passOn !== true) return;
+    }
+    // A test-marked or acceptance build says which up passed a held binding by (the harness reads it).
+    if (input.type === "keyUp" && pluginKeys.holding(win.id) !== undefined && (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string")) {
+      log(`keys: an up of ${JSON.stringify(input.key)} (${input.code}; ${[input.control && "ctrl", input.shift && "shift", input.alt && "alt", input.meta && "meta"].filter(Boolean).join("+") || "no modifier"}) is not ${pluginKeys.holding(win.id)}'s`);
+    }
+    const bound = mayRun ? pluginKeys.binding(press) : undefined;
+    // A held binding's chord pressed while another is held is not a press of it.
+    const command = bound?.hold === true ? undefined : bound?.name;
     // A test-marked or acceptance build says which chord an unbound press made (the harness reads it); a release never does.
-    if (command === undefined && (input.type === "keyDown" || input.type === "rawKeyDown") && (input.meta || input.control) && (typeof __CLOVER_TEST_BUILD__ === "string" || typeof __CLOVER_ACCEPTANCE_BUILD__ === "string")) {
+    if (command === undefined && (input.type === "keyDown" || input.type === "rawKeyDown") && (input.meta || input.control) && (typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string")) {
       log(`keys: an unbound ${input.type} made ${pluginKeys.chordOf({ key: input.key, code: input.code, control: input.control, meta: input.meta, alt: input.alt, shift: input.shift }) ?? "no chord"}`);
     }
     if (command !== undefined) {
@@ -2251,6 +3451,8 @@ function setMenu(): void {
         { role: "about" },
         { type: "separator" },
         { label: "Settings…", accelerator: "Command+,", click: () => void show({ kind: "settings" }) },
+        // The setup guide again, whenever the person wants it (core, like the guide itself).
+        { label: translate(runtime.coreStrings(), "moss.core.welcome.menu"), click: () => void openPage("welcome") },
         { type: "separator" },
         { role: "hide" },
         { role: "hideOthers" },
@@ -2271,7 +3473,7 @@ function setMenu(): void {
 
 function report(facts: Record<string, unknown>): void {
   const line = JSON.stringify(facts);
-  const out = process.env.CLOVER_SMOKE_OUT;
+  const out = process.env.MOSS_SMOKE_OUT;
   if (out !== undefined && out !== "") {
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, `${line}\n`);
@@ -2280,7 +3482,7 @@ function report(facts: Record<string, unknown>): void {
 }
 
 async function smoke(): Promise<void> {
-  const deadline = Date.now() + Number(process.env.CLOVER_SMOKE_DEADLINE_MS ?? "45000");
+  const deadline = Date.now() + Number(process.env.MOSS_SMOKE_DEADLINE_MS ?? "45000");
   const win = await openMainWindow();
   if (win === undefined) return report({ ok: false, reason: "no window" });
   // A sealed run delivers real input into out-of-process frames: CDP input routes through the browser's compositor
@@ -2289,7 +3491,7 @@ async function smoke(): Promise<void> {
   // starts every frame compositing long before the press, so the router can target the sealed frame. Test-only like
   // the presses themselves; headless otherwise stays hidden, and under CI's virtual display no human screen is
   // touched.
-  if ((process.env.CLOVER_SMOKE_SEALED_CLICK !== undefined || process.env.CLOVER_SMOKE_SEALED_FALLBACK === "1") && ((typeof __CLOVER_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless })) && !win.isVisible()) {
+  if ((SMOKE_SEALED_CLICK !== undefined || SMOKE_SEALED_FALLBACK) && ((typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless })) && !win.isVisible()) {
     showInvisible(win);
     log(`window: shown invisible while headless (the sealed smoke's input routing: opacity 0, ignores the mouse)`);
     log(`sealed-click: main window shown invisible for input routing`);
@@ -2297,18 +3499,18 @@ async function smoke(): Promise<void> {
   const probe = `(() => ({
     origin: location.origin,
     node: typeof require !== "undefined" || typeof process !== "undefined",
-    bridge: typeof window.cloverLayer,
+    bridge: typeof window.mossLayer,
     shell: !!document.querySelector(".cl-window"),
     sidebar: !!document.querySelector(".cl-window__sidebar *"),
     conversation: !!document.querySelector(".cl-bot-tab__conversation *"),
     composer: !!document.querySelector(".cl-bot-tab__composer textarea, .cl-bot-tab__composer [contenteditable], .cl-bot-tab__composer iframe"),
     frames: document.querySelectorAll("iframe").length,
-    rendered: !!document.getElementById("clover-root")?.firstElementChild,
-    accent: getComputedStyle(document.documentElement).getPropertyValue("--clover-color-accent").trim(),
-    insetTop: getComputedStyle(document.documentElement).getPropertyValue("--clover-frame-inset-top").trim(),
-    sheets: document.querySelectorAll("style[data-clover-sheet]").length,
+    rendered: !!document.getElementById("moss-root")?.firstElementChild,
+    accent: getComputedStyle(document.documentElement).getPropertyValue("--moss-color-accent").trim(),
+    insetTop: getComputedStyle(document.documentElement).getPropertyValue("--moss-frame-inset-top").trim(),
+    sheets: document.querySelectorAll("style[data-moss-sheet]").length,
     themed: getComputedStyle(document.documentElement).textRendering,
-    text: (document.body.innerText || "").slice(0, location.protocol === "clover-core:" ? 2000 : 600),
+    text: (document.body.innerText || "").slice(0, location.protocol === "moss-core:" ? 2000 : 600),
   }))()`;
   type Probe = { origin: string; node: boolean; bridge: string; shell: boolean; sidebar: boolean; conversation: boolean; composer: boolean; frames: number; rendered: boolean; accent: string; insetTop: string; sheets: number; themed: string; text: string };
   type Probed = Probe & { url: string; osPid: number };
@@ -2343,50 +3545,54 @@ async function smoke(): Promise<void> {
   }));
   // Texts the run waits for, all of them (`|` between), and mounts it waits for (per kind, "kind:n" each, `,` between):
   // a part's frames are placed a beat after its document draws, so a test that counts mounts waits for its own counts.
-  const waitTexts = (process.env.CLOVER_SMOKE_WAIT_TEXT ?? "").split("|").filter((t) => t !== "");
-  const waitMounts = Object.fromEntries((process.env.CLOVER_SMOKE_WAIT_MOUNTS ?? "").split(",").filter((t) => t.includes(":")).map((t) => [t.slice(0, t.indexOf(":")), Number(t.slice(t.indexOf(":") + 1))])) as Partial<Record<"root" | "frame" | "inline" | "web", number>>;
+  const waitTexts = (process.env.MOSS_SMOKE_WAIT_TEXT ?? "").split("|").filter((t) => t !== "");
+  // A surface the run waits to see open and then close again (its id), as a setting turns it off.
+  const waitGone = process.env.MOSS_SMOKE_WAIT_SURFACE_GONE;
+  let goneSeen = false;
+  const waitMounts = Object.fromEntries((process.env.MOSS_SMOKE_WAIT_MOUNTS ?? "").split(",").filter((t) => t.includes(":")).map((t) => [t.slice(0, t.indexOf(":")), Number(t.slice(t.indexOf(":") + 1))])) as Partial<Record<"root" | "frame" | "inline" | "web", number>>;
   let hung = false;
   let dropped = false;
   // The UI test's user on the core's own pages (unpackaged runs only): a page to open once everything has drawn, and
   // steps in the root, one a turn, each once its element is there (a click, a tick, text typed into a field).
-  const smokePage = process.env.CLOVER_SMOKE_PAGE;
+  const smokePage = process.env.MOSS_SMOKE_PAGE;
   let pageOpened = false;
   type Step = { click?: string; check?: string; fill?: string; value?: string };
-  const steps: Step[] = !app.isPackaged ? (JSON.parse(process.env.CLOVER_SMOKE_ROOT_STEPS ?? "[]") as Step[]) : [];
+  const steps: Step[] = !app.isPackaged ? (JSON.parse(process.env.MOSS_SMOKE_ROOT_STEPS ?? "[]") as Step[]) : [];
   while (Date.now() < deadline) {
     frames = await probeWindow(win);
     surfaceFacts = [];
-    for (const [id, s] of surfaces) if (!s.win.isDestroyed()) surfaceFacts.push({ id, visible: s.win.isVisible(), bounds: s.win.getBounds(), frames: await probeWindow(s.win) });
-    const shell = frames.find((f) => f.origin === "clover-plugin://clover");
-    const wanted = Number(process.env.CLOVER_SMOKE_LAYERS ?? "0");
-    const layers = frames.filter((f) => f.origin.startsWith("clover-plugin://"));
-    const others = new Set(layers.filter((f) => f.origin !== "clover-plugin://clover").map((f) => f.origin));
+    for (const s of surfaces.values()) if (!s.win.isDestroyed()) surfaceFacts.push({ id: s.id, visible: s.win.isVisible(), bounds: s.win.getBounds(), frames: await probeWindow(s.win) });
+    const shell = frames.find((f) => f.origin === "moss-plugin://moss");
+    const wanted = Number(process.env.MOSS_SMOKE_LAYERS ?? "0");
+    const layers = frames.filter((f) => f.origin.startsWith("moss-plugin://"));
+    const others = new Set(layers.filter((f) => f.origin !== "moss-plugin://moss").map((f) => f.origin));
     webFacts = await probeWeb();
     const texts = [...[...frames, ...surfaceFacts.flatMap((x) => x.frames)].map((f) => f.text), ...webFacts.map((w) => w.text)];
     const drawn = shell?.shell === true && shell.composer && others.size >= wanted && layers.every((f) => f.rendered);
-    // The compositor case (`CLOVER_SMOKE_UNRESPONSIVE=1`): the main window is said to be unresponsive while every
+    // The compositor case (`MOSS_SMOKE_UNRESPONSIVE=1`): the main window is said to be unresponsive while every
     // document in it answers.
-    if (drawn && !hung && process.env.CLOVER_SMOKE_UNRESPONSIVE === "1") {
+    if (drawn && !hung && process.env.MOSS_SMOKE_UNRESPONSIVE === "1") {
       hung = true;
       win.webContents.emit("unresponsive");
     }
     // Every layer's part has drawn, as many other layers as the run expects are there, and any text it waits for.
     // A sealed run (E-M3) breaks once its click landed, even if the shell's composer never draws: the click needs
     // only the fixture layer's sealed frames laid out, not the shell.
-    const sealedWait = process.env.CLOVER_SMOKE_SEALED_CLICK !== undefined || process.env.CLOVER_SMOKE_SEALED_FALLBACK === "1";
+    const sealedWait = SMOKE_SEALED_CLICK !== undefined || SMOKE_SEALED_FALLBACK;
     if (sealedWait && sealedClicked) break;
-    if (drawn && waitTexts.every((w) => texts.some((t) => t.includes(w))) && Object.entries(waitMounts).every(([k, v]) => Number((runtime.stats() as Record<string, unknown>)[k] ?? 0) >= v) && (!sealedWait || sealedClicked)) break;
-    // The hang test (`CLOVER_SMOKE_HANG=<surface>`): once everything has drawn and the named surface's own layer has
+    if (waitGone !== undefined && surfaceFacts.some((x) => x.id === waitGone)) goneSeen = true;
+    if (drawn && (waitGone === undefined || (goneSeen && !surfaceFacts.some((x) => x.id === waitGone))) && waitTexts.every((w) => texts.some((t) => t.includes(w))) && Object.entries(waitMounts).every(([k, v]) => Number((runtime.stats() as Record<string, unknown>)[k] ?? 0) >= v) && (!sealedWait || sealedClicked)) break;
+    // The hang test (`MOSS_SMOKE_HANG=<surface>`): once everything has drawn and the named surface's own layer has
     // rendered (its frames aren't in the main window's, so `drawn` doesn't wait for it), the surface's layer is made
     // to hang (its own mouse-down handler never returns), then the window is told it went unresponsive. Chromium says
     // so only after its hang timeout with input waiting for that frame, and input doesn't reach a hidden window's
     // out-of-process frames, so the test raises the event itself; everything after it is the app's own path.
-    const hangOn = process.env.CLOVER_SMOKE_HANG;
-    const target = hangOn === undefined ? undefined : surfaces.get(hangOn)?.win;
+    const hangOn = process.env.MOSS_SMOKE_HANG;
+    const target = hangOn === undefined ? undefined : [...surfaces.values()].find((x) => x.id === hangOn)?.win;
     const targetFact = hangOn === undefined ? undefined : surfaceFacts.find((x) => x.id === hangOn);
-    const targetLayer = targetFact?.frames.find((f) => f.url.startsWith("clover-plugin://"));
+    const targetLayer = targetFact?.frames.find((f) => f.url.startsWith("moss-plugin://"));
     if (drawn && !hung && target !== undefined && !target.isDestroyed() && targetLayer !== undefined && targetLayer.rendered) {
-      const layer = target.webContents.mainFrame.framesInSubtree.find((f) => f.url.startsWith("clover-plugin://"));
+      const layer = target.webContents.mainFrame.framesInSubtree.find((f) => f.url.startsWith("moss-plugin://"));
       if (layer !== undefined) {
         hung = true;
         void layer.executeJavaScript("document.querySelector('[data-fixture=spin]')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))", true).catch(() => undefined);
@@ -2416,45 +3622,122 @@ async function smoke(): Promise<void> {
     // frame, not the root document, so offsets are summed up through each frame. Gated on the sealed frames
     // themselves, not the shell's composer (which a sealed run never needs).
     if (!sealedClicked) {
-      const spec = process.env.CLOVER_SMOKE_SEALED_CLICK;
+      const spec = SMOKE_SEALED_CLICK;
       if (spec !== undefined) {
         try {
           const {
-            cardId, element, cover, opacity, doubleClick,
+            cardId, element, cover, opacity, doubleClick, coverLead, parentCoverLead, pulse, classicBars, missFirst,
           } = JSON.parse(spec) as {
-            cardId?: string; element?: string; cover?: boolean; opacity?: number; doubleClick?: boolean;
+            cardId?: string; element?: string; cover?: boolean; opacity?: number; doubleClick?: boolean; coverLead?: number; parentCoverLead?: number; pulse?: number;
+            /** Classic scroll bars on the sealed page's own document (macOS "Show scroll bars: Always"): space-taking bars wherever it can scroll. */
+            classicBars?: boolean;
+            /** The first press goes to the document that embeds the sealed frame (its iframe takes no pointer for it), as Chromium
+             *  sometimes delivers one under load: the card must say "press again", and the next press lands. */
+            missFirst?: boolean;
           };
-          const frame: Electron.WebFrameMain | undefined = win.webContents.mainFrame.framesInSubtree.find((f) =>
-            f.url.startsWith("clover-sealed://") &&
+          // The sealed frame of this card as it is now: a redraw can hide and show its iframe, replace or reload it, so the
+          // steps that depend on it look again instead of holding the one found first.
+          const findSealedFrame = (): Electron.WebFrameMain | undefined => win.webContents.mainFrame.framesInSubtree.find((f) =>
+            f.url.startsWith("moss-sealed://") &&
             (cardId === undefined || f.url.includes(cardId)) &&
             (element === undefined || f.url.includes(element) || (element !== undefined && f.url.includes(encodeURIComponent(element)))));
-          if (frame !== undefined) {
+          const firstFrame = findSealedFrame();
+          if (firstFrame !== undefined) {
+            let frame: Electron.WebFrameMain = firstFrame;
             // URLs carry single-use tokens (?token=, ?mount=): the logs keep origin and path only, never the token.
             log(`sealed-click: frame found ${frame.url.split("?")[0]!.slice(0, 80)}`);
-            // Optionally cover the button or dim it, to test that covered / semi-transparent presses don't answer.
-            if (cover === true) {
-              await frame.executeJavaScript(`(() => {
-                const b = document.querySelector('.seal-button');
-                if (!b) return;
-                const c = document.createElement('div');
-                c.style.position = 'absolute';
-                c.style.inset = '0';
-                c.style.zIndex = '9999';
-                b.parentElement?.insertBefore(c, b);
-              })()`, true).catch(() => undefined);
+            // Classic bars: a style in the sealed document (idempotent), read back; `inject: false` only reads. A rejection says why.
+            const barsIn = async (f: Electron.WebFrameMain, inject: boolean): Promise<{ held: boolean; client: string; why: string }> => {
+              try {
+                const r = await f.executeJavaScript(`(() => { let s = document.getElementById("__classicBars"); if (!s && ${inject ? "true" : "false"}) { s = document.createElement("style"); s.id = "__classicBars"; s.textContent = "::-webkit-scrollbar { width: 15px; height: 15px; background: #888 } ::-webkit-scrollbar-thumb { background: #444 }"; document.head.append(s); } const d = document.documentElement; return { held: !!s && s.isConnected, client: d.clientWidth + "x" + d.clientHeight + " of " + innerWidth + "x" + innerHeight }; })()`, true) as { held?: unknown; client?: unknown } | null;
+                const held = r !== null && typeof r === "object" && r.held === true;
+                return { held, client: String(r?.client ?? ""), why: held ? "" : "the style is not in the document" };
+              } catch (e) {
+                return { held: false, client: "", why: String((e as { message?: unknown } | null)?.message ?? e).split("\n")[0]!.slice(0, 160) };
+              }
+            };
+            if (classicBars === true) {
+              // Set on the frame that is there and read back; a frame replaced or reloaded meanwhile is looked for again.
+              const barsEnd = Date.now() + 15_000;
+              for (let tries = 1; ; tries++) {
+                const r = await barsIn(frame, true);
+                if (r.held) { log(`sealed-click: classic scroll bars on the sealed page (client ${r.client})`); break; }
+                const now = findSealedFrame();
+                log(`sealed-click: classic scroll bars couldn't be set (try ${tries}: ${r.why}; ${now === undefined ? "no sealed frame now" : now === frame ? "the same frame" : "another frame than the one first found"})`);
+                if (Date.now() >= barsEnd) break;
+                await new Promise((res) => setTimeout(res, 100));
+                frame = findSealedFrame() ?? frame;
+              }
             }
+            // Optionally cover the button or dim it, to test that covered / semi-transparent presses don't answer.
+            // The covered run's own fact: whether the button had been reported visible BEFORE the cover went on (the page's last
+            // verdict), so the press below waits for the verdict to flip, never for a delay.
+            let coverToken: string | null = null;
+            try { coverToken = new URL(frame.url).searchParams.get("token"); } catch { coverToken = null; }
+            const visibleBeforeCover = cover === true && coverToken !== null && sealed.isTokenVisible(coverToken);
+            const coverAt = Date.now();
+            if (cover === true) {
+              // Once the page has its button (a frame found before it is parsed has none yet): said, so a cover that never went on shows.
+              const put = await frame.executeJavaScript(`new Promise((res) => {
+                const end = Date.now() + 5000;
+                const go = () => {
+                  const b = document.querySelector('.seal-button');
+                  if (!b) { if (Date.now() < end) setTimeout(go, 50); else res(false); return; }
+                  const c = document.createElement('div');
+                  c.style.position = 'absolute';
+                  c.style.inset = '0';
+                  c.style.zIndex = '9999';
+                  b.parentElement?.insertBefore(c, b);
+                  res(true);
+                };
+                go();
+              })`, true).catch(() => false);
+              log(`sealed-click: cover put over the button: ${put === true}`);
+            }
+            // The dim, set on the page's button and read back (computed): a frame found before its button is parsed, or replaced or reloaded
+            // meanwhile, is looked for again, so the press below is never made on a page that was never dimmed (run 44297022845: the dim
+            // was set before the button existed, silently, and an undimmed button's press was answered).
+            const dimIn = async (f: Electron.WebFrameMain): Promise<{ held: boolean; why: string }> => {
+              try {
+                const r = await f.executeJavaScript(`(() => { const b = document.querySelector('.seal-button'); if (!b) return "no button yet"; b.style.opacity = ${JSON.stringify(String(Number(opacity)))}; return getComputedStyle(b).opacity === ${JSON.stringify(String(Number(opacity)))} ? "held" : "not held: " + getComputedStyle(b).opacity; })()`, true) as unknown;
+                return { held: r === "held", why: String(r) };
+              } catch (e) {
+                return { held: false, why: String((e as { message?: unknown } | null)?.message ?? e).split("\n")[0]!.slice(0, 160) };
+              }
+            };
+            const visibleBeforeDim = opacity !== undefined && coverToken !== null && sealed.isTokenVisible(coverToken);
             if (opacity !== undefined) {
-              await frame.executeJavaScript(`(() => {
-                const b = document.querySelector('.seal-button');
-                if (!b) return;
-                b.style.opacity = ${Number(opacity)};
-              })()`, true).catch(() => undefined);
+              const dimEnd = Date.now() + 15_000;
+              for (let tries = 1; ; tries++) {
+                const r = await dimIn(frame);
+                if (r.held) { log(`sealed-click: dimmed the button to opacity ${Number(opacity)} (read back; try ${tries})`); break; }
+                if (Date.now() >= dimEnd) { log(`sealed-click: the button couldn't be dimmed (${r.why})`); break; }
+                await new Promise((res) => setTimeout(res, 100));
+                frame = findSealedFrame() ?? frame;
+              }
+              // A verdict the page gave before the dim stands until its next reading: the press waits for the dim's own (never a delay).
+              if (visibleBeforeDim && coverToken !== null) {
+                const stop = Date.now() + 10_000;
+                while (sealed.isTokenVisible(coverToken) && Date.now() < stop) await new Promise((r) => setTimeout(r, 50));
+                log(`sealed-click: dim verdict ${sealed.isTokenVisible(coverToken) ? "never flipped" : "not visible"} after ${Date.now() - coverAt} ms (was visible before the dim)`);
+              }
             }
             // Let the layout settle, then wait for the button's own visibility verdict (its IOv2 report through the
             // sealed-visible channel) before the press: on a slow runner the first verdict lands after any fixed
             // sleep, and the page refuses presses it hasn't seen yet (its 500 ms visible gate starts at the verdict,
             // so a seen verdict waits out a further beat). Caps at ~10 s; a button that never reports (covered,
             // dimmed) still gets its press on timeout, which the page refuses.
+            if (cover === true && coverToken !== null) {
+              // A button the page had already reported visible keeps that verdict until its next IOv2 report: the press waits for the report
+              // that the cover hides it (the app's own record of what covers a sealed card), up to 10 s, and says how long it took.
+              if (visibleBeforeCover) {
+                const stop = Date.now() + 10_000;
+                while (sealed.isTokenVisible(coverToken) && Date.now() < stop) await new Promise((r) => setTimeout(r, 50));
+                log(`sealed-click: cover verdict ${sealed.isTokenVisible(coverToken) ? "never flipped" : "not visible"} after ${Date.now() - coverAt} ms (was visible before the cover)`);
+              } else {
+                log(`sealed-click: cover verdict never visible (not reported visible before the cover)`);
+              }
+            }
             await new Promise((r) => setTimeout(r, 800));
             let seenToken: string | null = null;
             try {
@@ -2521,7 +3804,7 @@ async function smoke(): Promise<void> {
             if (!chainOk) log(`sealed-click: no offset chain for ${frame.url.split("?")[0]!.slice(0, 80)}`);
             // Report how the label renders, so the markup case proves text, not HTML (check 3).
             const labelRaw = await frame.executeJavaScript(
-              `(() => { const s = document.querySelector('.seal-button .label'); if (!s) return null; return { html: s.innerHTML.slice(0, 200), hasBold: s.querySelector('b') !== null, sealed: typeof window.cloverSealed, btn: typeof document.querySelector('.seal-button') }; })()`, true).catch(() => null) as { html: string; hasBold: boolean } | null;
+              `(() => { const s = document.querySelector('.seal-button .label'); if (!s) return null; return { html: s.innerHTML.slice(0, 200), hasBold: s.querySelector('b') !== null, sealed: typeof window.mossSealed, btn: typeof document.querySelector('.seal-button') }; })()`, true).catch(() => null) as { html: string; hasBold: boolean } | null;
             if (labelRaw !== null && typeof labelRaw === "object") log(`sealed-click: label html=${String((labelRaw as { html?: unknown }).html ?? "")} hasBold=${String((labelRaw as { hasBold?: unknown }).hasBold ?? "")} sealed=${String((labelRaw as { sealed?: unknown }).sealed ?? "")}`);
             if (buttonRect !== null && chainOk) {
               if (buttonRect.width <= 0 || buttonRect.height <= 0) {
@@ -2531,24 +3814,30 @@ async function smoke(): Promise<void> {
               const centerY = Math.round(offsetY + buttonRect.y + buttonRect.height / 2);
               log(`sealed-click: button rect=${buttonRect.x},${buttonRect.y} ${buttonRect.width}x${buttonRect.height} offset=${offsetX},${offsetY}`);
               log(`sealed-click: press sent at ${centerX},${centerY}`);
+              if (opacity !== undefined) {
+                // The page the press goes to is still dimmed: read now, on the frame as it is now.
+                const now = findSealedFrame() ?? frame;
+                const r = await now.executeJavaScript(`(() => { const b = document.querySelector('.seal-button'); return b ? getComputedStyle(b).opacity : "no button"; })()`, true).catch(() => "unread");
+                log(`sealed-click: the button's opacity at the press: ${String(r)}${now === frame ? "" : " (another frame than the one dimmed)"}`);
+              }
               const hit = await win.webContents.executeJavaScript(
                 `(() => { const els = document.elementsFromPoint(${Math.round(centerX)}, ${Math.round(centerY)}); return JSON.stringify(els.slice(0, 5).map((el) => { const tag = el.tagName; const src = el.tagName === "IFRAME" ? el.src.split("?")[0].slice(0, 60) : (el.className !== undefined ? String(el.className).slice(0, 40) : null); const r = el.getBoundingClientRect(); const pe = getComputedStyle(el).pointerEvents; return { tag, src, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), pe }; })); })()`, true).catch(() => null) as string | null;
               log(`sealed-click: root hit-test: ${String(hit ?? "failed").slice(0, 600)}`);
-              const cloverFrame = win.webContents.mainFrame.framesInSubtree.find((f) => f.url.startsWith("clover-plugin://clover/"));
-              if (cloverFrame !== undefined) {
-                const cloverHit = await cloverFrame.executeJavaScript(
+              const mossFrame = win.webContents.mainFrame.framesInSubtree.find((f) => f.url.startsWith("moss-plugin://moss/"));
+              if (mossFrame !== undefined) {
+                const mossHit = await mossFrame.executeJavaScript(
                   `(() => { const els = document.elementsFromPoint(${Math.round(centerX)}, ${Math.round(centerY)}); return JSON.stringify(els.slice(0, 4).map((el) => ({ tag: el.tagName, src: el.tagName === "IFRAME" ? el.src.split("?")[0].slice(0, 60) : null }))); })()`, true).catch(() => null) as string | null;
-                log(`sealed-click: clover hit-test: ${String(cloverHit ?? "failed").slice(0, 400)}`);
-                await cloverFrame.executeJavaScript(`(() => { window.__cloverPresses = []; document.addEventListener('pointerdown', (e) => window.__cloverPresses.push([e.clientX, e.clientY, e.isTrusted]), true); })()`, true).catch(() => null);
-                const cloverPe = await cloverFrame.executeJavaScript(`(() => { const f = document.querySelector('iframe'); return f ? getComputedStyle(f).pointerEvents : "no-iframe"; })()`, true).catch(() => null) as string | null;
-                log(`sealed-click: clover iframe pointer-events: ${String(cloverPe ?? "failed")}`);
+                log(`sealed-click: moss hit-test: ${String(mossHit ?? "failed").slice(0, 400)}`);
+                await mossFrame.executeJavaScript(`(() => { window.__mossPresses = []; document.addEventListener('pointerdown', (e) => window.__mossPresses.push([e.clientX, e.clientY, e.isTrusted]), true); })()`, true).catch(() => null);
+                const mossPe = await mossFrame.executeJavaScript(`(() => { const f = document.querySelector('iframe'); return f ? getComputedStyle(f).pointerEvents : "no-iframe"; })()`, true).catch(() => null) as string | null;
+                log(`sealed-click: moss iframe pointer-events: ${String(mossPe ?? "failed")}`);
               }
               await frame.executeJavaScript(`(() => { window.__sealedPresses = []; document.addEventListener('pointerdown', (e) => window.__sealedPresses.push([e.clientX, e.clientY, e.isTrusted]), true); })()`, true).catch(() => null);
               await win.webContents.executeJavaScript(`(() => { window.__rootPresses = []; document.addEventListener('pointerdown', (e) => window.__rootPresses.push([e.clientX, e.clientY, e.isTrusted]), true); })()`, true).catch(() => null);
               // Drive the press over CDP input (unpackaged smoke only): sendInputEvent's mouse path does not reach
               // out-of-process sealed iframes in this Electron, while CDP-dispatched input is still trusted. Test-only
               // on every axis (B1): a packaged app never attaches the debugger, whatever env vars it started with.
-              const inputAllowed = (typeof __CLOVER_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless });
+              const inputAllowed = (typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless });
               let cdp = false;
               if (inputAllowed) {
                 try {
@@ -2563,7 +3852,58 @@ async function smoke(): Promise<void> {
                   : async (kind: "mouseMoved" | "mousePressed" | "mouseReleased") => { void win.webContents.sendInputEvent({ type: kind === "mouseMoved" ? "mouseMove" : kind === "mousePressed" ? "mouseDown" : "mouseUp", x: centerX, y: centerY, ...(kind === "mouseMoved" ? {} : { button: "left" as const }) }); };
               log(`sealed-click: input via ${!inputAllowed ? "refused" : cdp ? "cdp" : "sendInputEvent"}`);
               await dispatch("mouseMoved");
+              if (missFirst === true && frame.parent !== null) {
+                // The embedding document takes this one press (the sealed iframe ignores the pointer for it).
+                const parentOf = frame.parent;
+                const setPe = (v: string) => parentOf.executeJavaScript(`(() => { const f = [...document.querySelectorAll("iframe")].find((x) => x.src.includes(${JSON.stringify(new URL(frame.url).searchParams.get("token") ?? "")})); if (f) f.style.pointerEvents = ${JSON.stringify(v)}; return !!f; })()`, true).catch(() => false);
+                log(`sealed-click: missed press set up ${String(await setPe("none"))}`);
+                // Its hit-test data follows the next frames the compositor draws.
+                await new Promise((r) => setTimeout(r, 300));
+                await dispatch("mousePressed");
+                await dispatch("mouseReleased");
+                await new Promise((r) => setTimeout(r, 1000));
+                const said = await frame.executeJavaScript(`(() => { const s = document.querySelector(".state"); return s ? s.textContent : null; })()`, true).catch(() => null);
+                log(`sealed-click: after the missed press state=${String(said ?? "")}`);
+                await setPe("");
+                // The notice's own time passes before the real press (1.8 s), so the page reads the next press afresh.
+                await new Promise((r) => setTimeout(r, 1900));
+                await dispatch("mouseMoved");
+              }
               await new Promise((r) => setTimeout(r, 120));
+              if (typeof pulse === "number") {
+                // The "press again" pulse of an earlier refused press is running (its animation started `pulse` ms ago): the press must still land.
+                await frame.executeJavaScript(`(() => { const b = document.querySelector('.seal-button'); if (b) b.dataset.again = 'yes'; return new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(() => r(true))); setTimeout(() => r(false), 1500); }); })()`, true).catch(() => undefined);
+                await new Promise((r) => setTimeout(r, Math.max(0, Math.min(1500, pulse))));
+                log(`sealed-click: press ${Math.round(pulse)} ms into the pulse`);
+              }
+              if (typeof parentCoverLead === "number") {
+                // The cover an embedder would draw: a click-through, see-through element in the window's own (root) document over the sealed
+                // iframe, `parentCoverLead` ms before the press. The page's own document holds nothing of it.
+                const left = Math.round(offsetX + buttonRect.x);
+                const top = Math.round(offsetY + buttonRect.y);
+                // Lead 0: the cover is sent and the press follows at once, without waiting for the cover's own call to come back.
+                const putCover = win.webContents.mainFrame.executeJavaScript(`(() => { const c = document.createElement('div'); c.id = '__parentCover'; c.style.cssText = 'position:fixed;left:${left}px;top:${top}px;width:${Math.round(buttonRect.width)}px;height:${Math.round(buttonRect.height)}px;z-index:2147483647;pointer-events:none;background:rgba(255,0,0,0.25)'; document.body.appendChild(c); return new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(() => r(true))); setTimeout(() => r(false), 1500); }); })()`, true).catch(() => undefined);
+                if (parentCoverLead > 0) await putCover;
+                if (parentCoverLead > 0) await new Promise((r) => setTimeout(r, Math.min(2000, parentCoverLead)));
+                log(`sealed-click: press ${Math.round(parentCoverLead)} ms after the parent cover`);
+              }
+              if (typeof coverLead === "number") {
+                // The lead counts from the frame that drew the cover (two animation frames after it went in), never from when the call returned, so a loaded machine does not shorten it. A cover drawn `coverLead` ms before the press, on a button the page has long reported ready: the press must not land.
+                await frame.executeJavaScript(`(() => { const b = document.querySelector('.seal-button'); if (!b) return; const c = document.createElement('div'); c.style.position = 'absolute'; c.style.inset = '0'; c.style.zIndex = '9999'; c.style.pointerEvents = 'none'; b.parentElement?.insertBefore(c, b); return new Promise((r) => { requestAnimationFrame(() => requestAnimationFrame(() => r(true))); setTimeout(() => r(false), 1500); }); })()`, true).catch(() => undefined);
+                await new Promise((r) => setTimeout(r, Math.max(0, Math.min(2000, coverLead))));
+                log(`sealed-click: press ${Math.round(coverLead)} ms after the cover`);
+              }
+              if (classicBars === true) {
+                // The press goes only to the frame that is there with the style in it, read back now; otherwise no press this
+                // time and the loop looks again (the test's claim, a real press under classic bars, is unchanged).
+                const here = findSealedFrame();
+                const r = here === frame ? await barsIn(frame, false) : { held: false, client: "", why: "the sealed frame was replaced" };
+                if (!r.held) {
+                  if (cdp) { try { win.webContents.debugger.detach(); } catch { /* quitting soon anyway */ } }
+                  log(`sealed-click: classic scroll bars not on the frame that would take the press (${r.why}); no press this time, looking again`);
+                  throw new Error("sealed frame moved");
+                }
+              }
               await dispatch("mousePressed");
               await dispatch("mouseReleased");
               if (doubleClick === true) {
@@ -2585,10 +3925,10 @@ async function smoke(): Promise<void> {
               const rootAfter = await win.webContents.executeJavaScript(
                 `(() => ({ presses: (window.__rootPresses ?? []).slice(0, 4) }))()`, true).catch(() => null) as { presses: unknown } | null;
               if (rootAfter !== null && typeof rootAfter === "object") log(`sealed-click: root presses=${JSON.stringify((rootAfter as { presses?: unknown }).presses ?? [])}`);
-              if (cloverFrame !== undefined) {
-                const cloverAfter = await cloverFrame.executeJavaScript(
-                  `(() => ({ presses: (window.__cloverPresses ?? []).slice(0, 4) }))()`, true).catch(() => null) as { presses: unknown } | null;
-                if (cloverAfter !== null && typeof cloverAfter === "object") log(`sealed-click: clover presses=${JSON.stringify((cloverAfter as { presses?: unknown }).presses ?? [])}`);
+              if (mossFrame !== undefined) {
+                const mossAfter = await mossFrame.executeJavaScript(
+                  `(() => ({ presses: (window.__mossPresses ?? []).slice(0, 4) }))()`, true).catch(() => null) as { presses: unknown } | null;
+                if (mossAfter !== null && typeof mossAfter === "object") log(`sealed-click: moss presses=${JSON.stringify((mossAfter as { presses?: unknown }).presses ?? [])}`);
               }
               }
             } else {
@@ -2597,16 +3937,16 @@ async function smoke(): Promise<void> {
           } else {
             log(`sealed-click: no sealed frame`);
           }
-        } catch { /* bad spec: no click */ }
+        } catch { /* bad spec, or a sealed frame that moved before the press (logged): no click this time */ }
       }
     }
     // The fallback card: if no sealed frame was clicked and the fallback run is enabled, click the fallback window's
     // Approve button so its answer rides `card.answer` to the fake daemon (unpackaged runs only). Gated on the
     // fallback window itself, not the shell.
-    if (!sealedClicked && process.env.CLOVER_SMOKE_SEALED_FALLBACK === "1") {
+    if (!sealedClicked && SMOKE_SEALED_FALLBACK) {
       for (const w of BrowserWindow.getAllWindows()) {
         if (w === win || w.isDestroyed()) continue;
-        if (!w.webContents.getURL().startsWith("clover-sealed://")) continue;
+        if (!w.webContents.getURL().startsWith("moss-sealed://")) continue;
         log(`sealed-click: fallback frame found ${w.webContents.getURL().split("?")[0]!.slice(0, 80)}`);
         const frame = w.webContents.mainFrame;
         const fallbackRaw = await frame.executeJavaScript(
@@ -2623,7 +3963,7 @@ async function smoke(): Promise<void> {
           // press covers a first one lost while the page still loaded. CDP input (like the part path): sendInputEvent
           // does not reach the page here. Test-only on every axis (B1): a packaged app never attaches the debugger,
           // whatever env vars it started with.
-          const fbInputAllowed = (typeof __CLOVER_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless });
+          const fbInputAllowed = (typeof __MOSS_TEST_BUILD__ === "string" && headless) || sealedInputAllowed({ packaged: app.isPackaged, headless });
           let fbCdp = false;
           if (fbInputAllowed) {
             try {
@@ -2662,7 +4002,7 @@ async function smoke(): Promise<void> {
     }
     // The UI test's user: once everything has drawn (so a part asking for a menu before has been refused), a Shift
     // press in each window, which the menu gate counts as the user's input.
-    if (drawn && process.env.CLOVER_SMOKE_INPUT === "1") {
+    if (drawn && process.env.MOSS_SMOKE_INPUT === "1") {
       for (const w of [win, ...[...surfaces.values()].map((x) => x.win)]) {
         if (w.isDestroyed()) continue;
         w.webContents.sendInputEvent({ type: "keyDown", keyCode: "Shift" });
@@ -2672,7 +4012,7 @@ async function smoke(): Promise<void> {
     // The UI test's user, for a page that needs the user's click (a file picker): a left click at the top left of each surface
     // window, every beat, until what the test waits for has drawn. The page decides what a click means.
     let clickSaid = false;
-    if (drawn && process.env.CLOVER_SMOKE_INPUT === "click") {
+    if (drawn && process.env.MOSS_SMOKE_INPUT === "click") {
       // A hidden window takes no input events of its own, so the click goes by the debugger (the sealed fallback's way), and
       // the main process counts it as the user's (the SendGate) as `before-mouse-event` would.
       for (const w of [...surfaces.values()].map((x) => x.win)) {
@@ -2686,15 +4026,15 @@ async function smoke(): Promise<void> {
         } catch (err) { if (!clickSaid) { clickSaid = true; log(`smoke click: ${String(err).slice(0, 120)}`); } }
       }
     }
-    // The UI test's drop (an unpackaged run only): the file at CLOVER_SMOKE_DROP dropped, once, at the top left of each surface window,
+    // The UI test's drop (an unpackaged run only): the file at MOSS_SMOKE_DROP dropped, once, at the top left of each surface window,
     // by the debugger's drag events (they carry real files, with paths, as a person's drop does).
-    if (drawn && !dropped && !app.isPackaged && process.env.CLOVER_SMOKE_DROP !== undefined) {
+    if (drawn && !dropped && !app.isPackaged && process.env.MOSS_SMOKE_DROP !== undefined) {
       dropped = true;
       for (const w of [...surfaces.values()].map((x) => x.win)) {
         if (w.isDestroyed()) continue;
         try {
           if (!w.webContents.debugger.isAttached()) w.webContents.debugger.attach("1.3");
-          const data = { items: [], files: [process.env.CLOVER_SMOKE_DROP], dragOperationsMask: 1 };
+          const data = { items: [], files: [process.env.MOSS_SMOKE_DROP], dragOperationsMask: 1 };
           for (const type of ["dragEnter", "dragOver", "drop"]) void w.webContents.debugger.sendCommand("Input.dispatchDragEvent", { type, x: 24, y: 24, data }).catch(() => undefined);
           log("smoke drop: sent to a surface window");
         } catch (err) { log(`smoke drop: ${String(err).slice(0, 120)}`); }
@@ -2703,10 +4043,10 @@ async function smoke(): Promise<void> {
     await new Promise((r) => setTimeout(r, 250));
   }
   // Time for what the parts set going to happen (the DNS probe's lookups).
-  const settle = Number(process.env.CLOVER_SMOKE_SETTLE_MS ?? "0");
+  const settle = Number(process.env.MOSS_SMOKE_SETTLE_MS ?? "0");
   if (settle > 0) await new Promise((r) => setTimeout(r, Math.min(settle, 10_000)));
   const metrics = app.getAppMetrics();
-  const shellFrame = frames.find((f) => f.origin === "clover-plugin://clover");
+  const shellFrame = frames.find((f) => f.origin === "moss-plugin://moss");
   let captured: string | undefined;
   if (args.capture !== undefined) {
     try {
@@ -2737,6 +4077,8 @@ async function smoke(): Promise<void> {
     frames: frames.map((f) => ({ ...f, sandboxed: metrics.find((m) => m.pid === f.osPid)?.sandboxed ?? null })),
     mounts: runtime.stats(),
     surfaces: surfaceFacts,
+    // The hidden windows of the background parts that run now (`app.background`), each its own.
+    backgrounds: [...backgrounds.keys()],
     web: webFacts,
     housing: (() => {
       if (screens === null) screens = loadScreens(join(here, "native", "screen.node"), log);
@@ -2744,6 +4086,6 @@ async function smoke(): Promise<void> {
     })(),
     captured,
   });
-  if (process.env.CLOVER_SMOKE_KEEP === "1") return;
+  if (process.env.MOSS_SMOKE_KEEP === "1") return;
   await requestQuit("smoke");
 }

@@ -20,7 +20,7 @@
 // * **Who it runs as:** the session that made the call (R7), so the API calls the hook makes act for that session.
 // * A `command` hook (Claude Code's hook protocol) needs a process in lane C's sandbox; until that lands it is skipped,
 //   reported once per entry.
-import { topPluginIdOf, type Caller } from "@waifucave/clover-protocol";
+import { topPluginIdOf, type Caller } from "@waifucave/moss-protocol";
 import { claudeEventNameOf, hookMatchesTool, hookOrder, HOOK_DEFAULT_TIMEOUT_MS, HOOK_RETURNS, type HookEvent, type HookInput, type TurnOutcome } from "../../../../plugin-sdk/src/catalogs/hooks";
 import type { TurnEnd } from "../../contracts/session-host";
 import type { PluginHost } from "../../contracts/plugin-host";
@@ -55,7 +55,7 @@ export interface HookSession {
    *  carries the bot that started the first one). */
   bot?: string;
   computer: string;
-  /** An agent's backend (`claude-code`, …), for plugins' `onlyBackends`; absent, Clover's own (`clover`). */
+  /** An agent's backend (`claude-code`, …), for plugins' `onlyBackends`; absent, MOSS's own (`moss`). */
   backend?: string;
 }
 
@@ -83,8 +83,12 @@ export interface TurnHooks {
   turnEnd(s: HookSession, text?: string, outcome?: TurnOutcome): Promise<void>;
   compactBefore(s: HookSession): Promise<void>;
   compactAfter(s: HookSession): Promise<void>;
-  /** Whether any hook is on for `message.out` (replies show only after it runs, §5.3). */
+  /** Whether any hook that may rewrite a reply is on for `message.out` (replies show only after it runs, §5.3); an
+   *  `observe` hook never counts. */
   rewritesReplies(): boolean;
+  /** A bot's reply, once stored: told to the `message.out` hooks that only observe (`observe: true`), never awaited
+   *  and never inline, so the reply streams as it would with no hook. */
+  hearReply?(s: HookSession, text: string): void;
 }
 
 /** No hooks at all. */
@@ -110,6 +114,8 @@ interface HookEntryValue {
   args?: readonly string[];
   timeoutMs?: number;
   scope?: "bots" | "agents" | "both" | "own-bot";
+  /** Only hears its events: its answer is ignored and it holds nothing up. */
+  observe?: boolean;
 }
 
 export interface PluginHooksOptions {
@@ -147,21 +153,33 @@ export function servesSession(scope: PluginScope, s: Pick<HookSession, "kind" | 
 export function pluginHooks(o: PluginHooksOptions): TurnHooks {
   const reportedCommand = new Set<string>();
 
-  const hooksFor = (event: HookEvent, s: HookSession, tool?: string): { pluginId: string; entry: HookEntryValue }[] => {
+  const hooksFor = (event: HookEvent, s: HookSession, tool?: string, observers = false): { pluginId: string; entry: HookEntryValue }[] => {
     const active = o.registry.entries("hooks").filter((c) => c.state === "active");
     const matching = active.filter((c) => {
       const v = c.value as HookEntryValue;
-      return Array.isArray(v.on) && v.on.includes(event) && servesSession(scopeOf(o.registry, c.pluginId, (c.value as HookEntryValue).scope), s, c.pluginId) && servesBackend(o.registry, c.pluginId, s.kind, s.backend) && (tool === undefined || hookMatchesTool(v.tools, tool));
+      return Array.isArray(v.on) && v.on.includes(event) && (v.observe === true) === observers && servesSession(scopeOf(o.registry, c.pluginId, (c.value as HookEntryValue).scope), s, c.pluginId) && servesBackend(o.registry, c.pluginId, s.kind, s.backend) && (tool === undefined || hookMatchesTool(v.tools, tool));
     });
     return hookOrder(matching.map((c) => ({ pluginId: c.pluginId, entry: c.value as HookEntryValue })));
   };
 
   /** Runs each hook in order; `step` folds its (allowed) output into the running value. */
-  async function run<T>(event: HookEvent, s: HookSession, input: Omit<HookInput, "event" | "session" | "bot" | "computer">, initial: T, step: (acc: T, out: Record<string, unknown>, hook: { pluginId: string; id: string }) => { value: T; stop?: boolean }, signal?: AbortSignal, tool?: string): Promise<T> {
+  async function run<T>(event: HookEvent, s: HookSession, input: Omit<HookInput, "event" | "session" | "bot" | "computer">, initial: T, step: (acc: T, out: Record<string, unknown>, hook: { pluginId: string; id: string }) => { value: T; stop?: boolean }, signal?: AbortSignal, tool?: string, observers = false): Promise<T> {
     let acc = initial;
-    for (const { pluginId, entry } of hooksFor(event, s, tool)) {
+    // The hooks that only observe hear the event after the others ran, never awaited (a `message.out` observer hears
+    // each stored reply through `hearReply` instead, once).
+    if (!observers && event !== "message.out" && hooksFor(event, s, tool, true).length > 0) {
+      const heard = (v: T) => void run<T>(event, s, input, v, (a) => ({ value: a }), undefined, tool, true).catch(() => undefined);
+      const r = await runChanging(acc);
+      heard(r);
+      return r;
+    }
+    return runChanging(acc);
+
+    async function runChanging(start: T): Promise<T> {
+    acc = start;
+    for (const { pluginId, entry } of hooksFor(event, s, tool, observers)) {
       const failClosed = (why: string): boolean => {
-        if (!BLOCKING_EVENTS.has(event)) return false;
+        if (observers || !BLOCKING_EVENTS.has(event)) return false;
         const reason = sanitizeReason(`the hook "${entry.id}" of plugin "${pluginId}" ${why}, so the action was refused`);
         const next = step(acc, { deny: { reason } }, { pluginId, id: entry.id });
         acc = next.value;
@@ -202,7 +220,7 @@ export function pluginHooks(o: PluginHooksOptions): TurnHooks {
           if (failClosed("couldn't run (the plugin has no folder on this computer)")) break;
           continue;
         }
-        // Clover's input with Claude Code's names beside it, so a wrapped Claude Code hook reads what it expects.
+        // MOSS's input with Claude Code's names beside it, so a wrapped Claude Code hook reads what it expects.
         const stdin = JSON.stringify({ ...args, ...claudeHookInput(event, s, folder, args) });
         if (Buffer.byteLength(stdin, "utf8") > COMMAND_HOOK_STDIN_MAX) {
           o.onSkipped?.({ pluginId, hook: entry.id, event, reason: "its input is too large to hand to a command hook" });
@@ -241,7 +259,7 @@ export function pluginHooks(o: PluginHooksOptions): TurnHooks {
         if (r.code === 2) {
           // Exit 2: a hook that can deny denies, with its stderr; on any other event it's an error, reported.
           const said = sanitizeReason(r.stderr) || "a plugin's hook refused it";
-          if (!BLOCKING_EVENTS.has(event)) {
+          if (observers || !BLOCKING_EVENTS.has(event)) {
             o.onSkipped?.({ pluginId, hook: entry.id, event, reason: sanitizeReason(`exited 2: ${said}`) });
             continue;
           }
@@ -296,11 +314,13 @@ export function pluginHooks(o: PluginHooksOptions): TurnHooks {
       const allowed = HOOK_RETURNS[event];
       const filtered: Record<string, unknown> = {};
       for (const k of allowed) if (k in out) filtered[k] = out[k];
+      if (observers) continue;
       const next = step(acc, filtered, { pluginId, id: entry.id });
       acc = next.value;
       if (next.stop === true) break;
     }
     return acc;
+    }
   }
 
   const text = (event: "message.in" | "message.out") => (s: HookSession, t: string, signal?: AbortSignal) =>
@@ -341,7 +361,11 @@ export function pluginHooks(o: PluginHooksOptions): TurnHooks {
     async compactAfter(s) {
       await run<null>("compact.after", s, {}, null, (acc) => ({ value: acc }));
     },
-    rewritesReplies: () => o.registry.entries("hooks").some((c) => c.state === "active" && (c.value as HookEntryValue).on?.includes("message.out")),
+    rewritesReplies: () => o.registry.entries("hooks").some((c) => c.state === "active" && (c.value as HookEntryValue).on?.includes("message.out") && (c.value as HookEntryValue).observe !== true),
+    hearReply(s, t) {
+      if (hooksFor("message.out", s, undefined, true).length === 0) return;
+      void run<string>("message.out", s, {}, t, (acc) => ({ value: acc }), undefined, undefined, true).catch(() => undefined);
+    },
   };
 }
 
@@ -362,7 +386,7 @@ function claudeHookInput(event: HookEvent, s: HookSession, cwd: string, args: Ho
   return out;
 }
 
-/** A command hook's output in Clover's shape: Clover's own fields as they are, and Claude Code's mapped onto them
+/** A command hook's output in MOSS's shape: MOSS's own fields as they are, and Claude Code's mapped onto them
  *  (its hooks reference). On `tool.before`: `decision: "block"` and `continue: false` deny (with `reason` /
  *  `stopReason`); `hookSpecificOutput.permissionDecision` `deny` denies and `ask` asks, with its
  *  `permissionDecisionReason`, while `allow` is ignored (a hook never allows, §5.3); `hookSpecificOutput.updatedInput`
@@ -385,12 +409,12 @@ export function fromClaudeHookOutput(event: HookEvent, out: Record<string, unkno
 }
 
 /** A command hook's whole environment: nothing of the core's is inherited (no key, no token), only what a hook
- *  written for Claude Code expects to find, under Clover's names and Claude Code's. */
+ *  written for Claude Code expects to find, under MOSS's names and Claude Code's. */
 export function commandHookEnv(pluginId: string, folder: string, s: Pick<HookSession, "id">, platform: NodeJS.Platform = process.platform, from: Readonly<Record<string, string | undefined>> = process.env): Record<string, string> {
   const env: Record<string, string> = {
-    CLOVER_PLUGIN_ID: pluginId,
-    CLOVER_SESSION_ID: s.id,
-    CLOVER_PLUGIN_ROOT: folder,
+    MOSS_PLUGIN_ID: pluginId,
+    MOSS_SESSION_ID: s.id,
+    MOSS_PLUGIN_ROOT: folder,
     CLAUDE_PLUGIN_ROOT: folder,
   };
   if (platform === "win32") {

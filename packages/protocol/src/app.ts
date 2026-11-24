@@ -1,4 +1,4 @@
-// Clover protocol area: the app and the pair (spec §3.1, §5.5, §5.8, §6.6). Owners: lane E (the app's side, the UI
+// MOSS protocol area: the app and the pair (spec §3.1, §5.5, §5.8, §6.6). Owners: lane E (the app's side, the UI
 // settings the app reads), lane C (the daemon's side of the pair, C-M1), lane D (voice), lane G (desktop
 // notifications), lane M (updates). Pinned by lane B at M0; spike S7 (lane L) measured the pair on all three OSes,
 // and spike S9 (lane E, layers) is still running, so the UI settings here are the least the spec needs.
@@ -10,6 +10,7 @@ import { z } from "zod";
 import { utf16 } from "./strings";
 import { AnyPluginId, BotId, CardId, ChangeResult, Empty, Ok, SessionId, Text, Timestamp } from "./common";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { WindowProgram } from "./surfaces";
 
 /** What stops if this computer quits now (§3.1). */
 export const PairStatus = z.object({
@@ -24,6 +25,10 @@ export const PairStatus = z.object({
 });
 export type PairStatus = z.infer<typeof PairStatus>;
 
+/** Files one message to a bot may carry (`user.send`'s `files`), and the most one of them may weigh: past either, a plain refusal. */
+export const BOT_FILES_MAX = 10;
+export const BOT_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
 /** A reference to one UI entry: `<plugin-id>` or `<plugin-id>#<entry-id>` (§5.5 `prefer`). */
 export const EntryRef = utf16(300, 2).regex(/^[a-z][a-z0-9/-]*(#[A-Za-z0-9._-]+)?$/);
 /** A theme, `<plugin-id>#<theme-id>` (§5.1 "Entry ids"). */
@@ -36,7 +41,7 @@ export const UiSettings = z.object({
   /** Order and hidden entries of list spots; `shown`, entries the user keeps though a plugin's `hide` names them. On
    *  `bot.tab` (for one bot, or every bot), `hidden` is the layout patches the user switched off there (`<plugin>#<entry>`). */
   lists: z.array(z.object({ spot: utf16(128), bot: BotId.optional(), order: z.array(EntryRef).max(1000), hidden: z.array(EntryRef).max(1000), shown: z.array(EntryRef).max(1000).optional() })).max(1000),
-  /** The base theme for bot tabs and the global theme; unset means `clover`'s base theme (§5.5). */
+  /** The base theme for bot tabs and the global theme; unset means `moss`'s base theme (§5.5). */
   baseTheme: ThemeRef.optional(),
   globalTheme: ThemeRef.optional(),
   /** The user's own overrides, the top of the theme stack. They pass the same checks as any theme (review minor):
@@ -50,9 +55,6 @@ export const UiSettings = z.object({
   textSize: z.enum(["small", "default", "large"]).optional(),
   /** A pack chosen for a language when two translate the same keys (§5.5). */
   packs: z.record(z.string(), AnyPluginId).optional(),
-  /** Voice (§6.6). `speakReplies`: a bot that has a voice speaks each reply of its main conversation aloud when its turn
-   *  ends (`voice.play`); `false` is the app's one mute. Unset is on. Set with `ui.set` (the whole `voice` object). */
-  voice: z.object({ speakReplies: z.boolean().optional() }).optional(),
 });
 export type UiSettings = z.infer<typeof UiSettings>;
 
@@ -164,7 +166,97 @@ export const AppRenderResult = z.object({
 });
 export type AppRenderResult = z.infer<typeof AppRenderResult>;
 
+/** A place `app.show` opens in a program's window. */
+export const AppShowWhat = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("window") }),
+  z.object({ kind: z.literal("bot"), bot: BotId }),
+  z.object({ kind: z.literal("session"), session: SessionId }),
+  z.object({ kind: z.literal("card"), card: CardId }),
+  /** Settings at a section, and an item in it (a device, a plugin; lane E's ask). */
+  z.object({ kind: z.literal("settings"), section: utf16(128).optional(), item: utf16(256).optional() }),
+  z.object({ kind: z.literal("url"), url: z.string().url() }),
+]);
+export type AppShowWhat = z.infer<typeof AppShowWhat>;
+
+/** What each program's window opens from another program (`app.openIn`, spec revision 20, §9.5): MOSS a bot's
+ *  conversation (its window shows bots), MOSS Code a session's tab. Anything else is refused there, never guessed. */
+export const OPEN_IN_PLACES: Readonly<Record<WindowProgram, readonly AppShowWhat["kind"][]>> = {
+  moss: ["window", "bot"],
+  code: ["window", "session"],
+};
+
+/** `app.openIn`'s answer: `opened` once the program's window took it; `started` when the engine had to start the program
+ *  first (it was not running); `refused` with why (a place that program doesn't open, one the caller may not read). */
+export const AppOpenInResult = z.union([
+  z.object({ opened: z.literal(true), started: z.boolean() }),
+  z.object({ opened: z.literal(false), refused: utf16(300) }),
+]);
+export type AppOpenInResult = z.infer<typeof AppOpenInResult>;
+
+/** The app's own folder dialog (`ui.pick`, its door for parts; spec §9.4, revision 20 §9.5). `use` names the one call that
+ *  may redeem the token; `recent: true` answers the folders the person started in last (the engine's `agent.recent`) as
+ *  tokens too, with no dialog when `dialog: false`. A path never reaches the page: only a token and the folder's name. */
+export const UiPickParams = z.strictObject({
+  kind: z.enum(["folder", "file"]),
+  use: utf16(64, 1),
+  recent: z.boolean().optional(),
+  dialog: z.boolean().optional(),
+});
+export type UiPickParams = z.infer<typeof UiPickParams>;
+export const UiPickToken = z.object({ token: utf16(128, 1), name: utf16(255) });
+export const UiPickResult = z.object({
+  /** The folder the person chose in the dialog; absent when they cancelled it or none was opened. */
+  picked: UiPickToken.optional(),
+  /** With `recent`: the folders started in last, newest first, each a token for the same `use`. */
+  recent: z.array(UiPickToken).max(8).optional(),
+});
+export type UiPickResult = z.infer<typeof UiPickResult>;
+
+// MCP Apps (spec §5.5; the extension `io.modelcontextprotocol/ui`, 2026-01-26): the app's main process asks the engine
+// for the page a tool's result names and relays what the page's frame says; the engine decides everything (`mcp-apps/`).
+/** The page's HTML, in UTF-16 units: a bigger resource is refused when read. */
+export const MCP_APP_HTML_MAX = 1_000_000;
+/** One JSON-RPC message from a page, in UTF-16 units once serialised; bigger is refused by the app and the engine. */
+export const MCP_APP_MESSAGE_MAX = 1_000_000;
+/** How tall a page's view may grow, in CSS pixels. */
+export const MCP_APP_HEIGHT_MAX = 1_200;
+export const McpAppOpen = z.strictObject({
+  /** The `Content-Security-Policy` header value for the page's document, built from its declared domains. */
+  csp: utf16(8_000, 1),
+  html: utf16(MCP_APP_HTML_MAX, 1),
+  prefersBorder: z.boolean().optional(),
+  maxHeight: z.number().int().positive().max(MCP_APP_HEIGHT_MAX),
+});
+export type McpAppOpen = z.infer<typeof McpAppOpen>;
+export const McpAppReply = z.strictObject({
+  /** JSON-RPC messages for the page, in order: the answer to its request, then any the host sends at this moment. */
+  messages: z.array(z.record(z.string(), z.unknown())).max(8),
+  /** The page's latest size, from its `ui/notifications/size-changed` (height clamped to `MCP_APP_HEIGHT_MAX`). */
+  size: z.strictObject({ width: z.number().int().nonnegative().max(10_000), height: z.number().int().nonnegative().max(MCP_APP_HEIGHT_MAX) }).optional(),
+  /** An address the page asked to open (`ui/open-link`, http or https): the app opens it for the user, once per press in the page. */
+  openLink: utf16(2_048, 1).optional(),
+});
+export type McpAppReply = z.infer<typeof McpAppReply>;
+
 export const APP_METHODS = {
+  mcpAppOpen: defineMethod({
+    name: "mcpApp.open", owner: "E", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({ session: SessionId, callId: utf16(128, 1) }),
+    result: McpAppOpen,
+    doc: "The page an MCP tool's result names (its `ui://` resource, read from its own server), with the content policy its declared domains allow, for the window's isolated view.",
+  }),
+  mcpAppRequest: defineMethod({
+    name: "mcpApp.request", owner: "E", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({
+      session: SessionId, callId: utf16(128, 1), message: z.unknown(),
+      /** Set by the app's main process alone, never taken from the page: the person's own press (a click or a key) landed in
+       *  THIS view just before, and this message is the one that press pays for. A page's `ui/message` and `ui/open-link` are
+       *  refused without it. */
+      pressed: z.boolean().optional(),
+    }),
+    result: McpAppReply,
+    doc: "One JSON-RPC message from the page's frame (the MCP Apps bridge): the engine answers it, or refuses it, under the approvals every tool call gets.",
+  }),
   appOpen: defineMethod({
     name: "app.open", owner: "D", roles: ["cli"], userOnly: true,
     params: AppOpenParams, result: AppOpenResult,
@@ -195,6 +287,9 @@ export const APP_METHODS = {
     params: AppCaptureParams, result: AppCaptureResult,
     doc: "The daemon asks the app's main process for `app.capture`'s answer, one window's picture at a time.",
   }),
+  // `pair.*` is the always-on pair of app and daemon (C2), retired by spec revision 19 (§3.1, items 98 and 112: the engine
+  // and the background host are the always-on part, quitting an app stops nothing, "Hand over and quit" goes): lane HS
+  // replaces it with `host.*` (host.ts).
   pairStatus: defineMethod({
     name: "pair.status", owner: "C", roles: ["app", "cli"],
     params: Empty, result: PairStatus,
@@ -212,19 +307,17 @@ export const APP_METHODS = {
   }),
   appShow: defineMethod({
     name: "app.show", owner: "E", roles: ["app"], direction: "from-daemon",
-    params: z.object({
-      what: z.discriminatedUnion("kind", [
-        z.object({ kind: z.literal("window") }),
-        z.object({ kind: z.literal("bot"), bot: BotId }),
-        z.object({ kind: z.literal("session"), session: SessionId }),
-        z.object({ kind: z.literal("card"), card: CardId }),
-        /** Settings at a section, and an item in it (a device, a plugin; lane E's ask). */
-        z.object({ kind: z.literal("settings"), section: utf16(128).optional(), item: utf16(256).optional() }),
-        z.object({ kind: z.literal("url"), url: z.string().url() }),
-      ]),
-    }),
+    params: z.object({ what: AppShowWhat }),
     result: Ok,
-    doc: "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `clover open`).",
+    doc: "The daemon asks the app to open a window or a place in it (a sign-in page, a card from the CLI's `moss open`, a place another program asked for with `app.openIn`).",
+  }),
+  appOpenIn: defineMethod({
+    /** From a window's main process on the person's own press in a part (its door: `shell.control`, and the read of what
+     *  it names: a bot needs `bots.read`, a session its kind's read). Never the host, never a layer by itself. */
+    name: "app.openIn", owner: "CA", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.strictObject({ program: WindowProgram, what: AppShowWhat }),
+    result: AppOpenInResult,
+    doc: "Opens a place in the other program of the pair (\"Open in MOSS\": a bot's conversation; \"Open in MOSS Code\": a session): the engine sends that program's window `app.show`, starting the program first when it isn't running (§9.5).",
   }),
   appPing: defineMethod({
     name: "app.ping", owner: "E", roles: ["app"], direction: "from-daemon",
@@ -249,79 +342,13 @@ export const APP_METHODS = {
   uiSet: defineMethod({
     name: "ui.set", owner: "E", roles: ["app", "layer"], userOnly: true, change: "core",
     params: z.object({ patch: UiSettings.partial() }), result: ChangeResult,
-    doc: "Changes the user's UI choices; from a layer other than `clover`'s it becomes a card (§5.5).",
+    doc: "Changes the user's UI choices; from a layer other than `moss`'s it becomes a card (§5.5).",
   }),
-  voiceListen: defineMethod({
-    name: "voice.listen", owner: "D", roles: ["app"], userOnly: true,
-    params: z.object({
-      bot: BotId, utterance: utf16(128, 1), seq: z.number().int().nonnegative(),
-      /** Audio the app recorded while push-to-talk was held (or listening was on), base64. */
-      audio: utf16(2_000_000), format: z.enum(["pcm16-16k", "opus"]), final: z.boolean(),
-    }),
-    result: z.object({ text: utf16(100_000).optional() }),
-    doc: "Push-to-talk audio for a bot's listening voice plugin, on the computer the user talks on (§6.6).",
-  }),
-  /** Whether a `voice.listen` for the bot would be taken now: the bot has a voice, its voice plugin is installed and on,
-   *  and that entry listens. The app shows its hold-to-talk control only when it does. It reads the same entry the
-   *  listening itself does, so the control and the call never disagree; it asks nothing of the plugin and never a card. */
-  voiceStatus: defineMethod({
-    name: "voice.status", owner: "D", roles: ["app"],
-    params: z.object({ bot: BotId }),
-    result: z.object({ listens: z.boolean() }),
-    doc: "Whether the bot's voice listens now (the app shows hold-to-talk only then) (§6.6).",
-  }),
-  /** One piece of a bot's spoken reply, to every app connection. The contract the app's player codes against:
-   *  * `utterance` names one reply's speech; its pieces come in order, `seq` 0, 1, 2…, each `audio` base64 of at most
-   *    2 MB (about 1.5 MB of samples). The last piece has `final: true` and empty `audio`: the utterance is complete.
-   *  * `format` is `pcm16-24k` in this build (16-bit little-endian signed mono samples at 24 kHz, no header, a piece
-   *    ends on a whole sample); `mp3` and `opus` are reserved. A new utterance of the same bot replaces the one playing.
-   *  * The user stops a bot's speech with `voice.stop` (the core ends the utterance; the app stops its own playback). */
-  voicePlay: defineMethod({
-    name: "voice.play", owner: "D", roles: ["app"], direction: "from-daemon",
-    params: z.object({
-      bot: BotId, session: SessionId, utterance: utf16(128, 1), seq: z.number().int().nonnegative(),
-      audio: utf16(2_000_000), format: z.enum(["pcm16-24k", "mp3", "opus"]), final: z.boolean(),
-    }),
-    result: Ok,
-    doc: "Speech for the app to play, which the avatar lip-syncs to (§6.6).",
-  }),
-  /** The app's player says an utterance it was sent has ended on this device: played out, stopped, cut by a newer one
-   *  of the same bot, or dropped while muted. The core ignores an utterance it didn't send to this app; the report only
-   *  lets the active voice mode's queue go on sooner (its next sound waits for it, or for a deadline when no report
-   *  comes), and never starts a sound. Sent by the app's own shell, never by a plugin. */
-  voicePlayed: defineMethod({
-    name: "voice.played", owner: "D", roles: ["app"],
-    params: z.object({ bot: BotId, utterance: utf16(128, 1) }),
-    result: Ok,
-    doc: "The app's player says an utterance it was sent has ended (§6.6): the voice mode's queue goes on.",
-  }),
-  voiceStop: defineMethod({
-    name: "voice.stop", owner: "D", roles: ["app"], userOnly: true,
-    params: z.object({ bot: BotId }),
-    result: Ok,
-    doc: "The user stops a bot's speech: the core ends its utterance now (no more `voice.play` pieces, the last one `final`) and the app stops what it is playing. Speaking again waits for the bot's next reply (§6.6).",
-  }),
-  /** The user asks to hear one past reply of a bot (the speak button under a reply), by its click:
-   *  * `seq` is the reply's own: the `seq` of an `assistant_message` event in that bot's MAIN conversation's log. The core
-   *    reads the text from the log, never from the caller; anything else is refused (`invalid`).
-   *  * It replaces whatever that bot is speaking, and it speaks with `voice.speakReplies` off too (the mute is for the
-   *    automatic speaking of new replies; this is the user asking). The pieces come as `voice.play`, as for any reply.
-   *  * `speaking: true` once the first piece went (or the voice is still making it after a while); `speaking: false`
-   *    with a `note` when nothing will be spoken (no voice, a voice plugin that isn't installed or doesn't speak, no
-   *    key, the user's no to its provider, a voice that failed): a short sentence the part shows as is.
-   *  * It never waits on a card: when the voice's provider needs the user's OK (a card raised or pending), it answers
-   *    at once (`speaking: false`, "Answer the card to let <voice> speak.") and speaks that reply when they say yes. */
-  voiceSpeak: defineMethod({
-    name: "voice.speak", owner: "D", roles: ["app"], userOnly: true,
-    params: z.object({ session: SessionId, seq: z.number().int().nonnegative() }),
-    result: z.object({ speaking: z.boolean(), note: utf16(500).optional() }),
-    doc: "The user asks to hear one past reply of a bot's main conversation, by its seq; the core takes the text from the log and speaks it with the bot's voice, over whatever it was saying, also when replies are muted; a note says why when nothing is spoken. It never waits on a card: a provider that needs the user's OK answers at once with a note and speaks when they say yes (§6.6).",
-  }),
-  pillSend: defineMethod({
-    /** From the app's main process only, never a layer (#179's review, S2): the runtime calls it for a `clover`-tree
-     *  surface's `useUserSend` inside the key press or click that sends (its transient user activation), so a script
-     *  can't speak as the user. A layer's own sends are `conversation.send`, whose turns are the plugin's. */
-    name: "pill.send", owner: "G", roles: ["app"], userOnly: true,
+  userSend: defineMethod({
+    /** From the app's main process only, never a layer (#179's review, S2): the runtime calls it for a part's `useUserSend`
+     *  (a composer entry's own session, or any part whose plugin holds the `user.send` capability) inside the key press or click
+     *  that sends (its transient user activation), so a script can't speak as the user. A layer's own sends are `conversation.send`, whose turns are the plugin's. */
+    name: "user.send", owner: "G", roles: ["app"], userOnly: true,
     params: z.object({
       /** A bot's main conversation, a session, or a `pill.target` entry by its ref (`<plugin-id>#<entry-id>`). */
       to: z.union([
@@ -332,6 +359,14 @@ export const APP_METHODS = {
       text: utf16(1_000_000),
       /** Pictures the user made or chose (an annotated screenshot from the browser view's strip), base64. */
       images: z.array(z.object({ mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]), data: utf16(10_000_000, 1) })).max(4).optional(),
+      /** Files the user chose or dropped, for a BOT's conversation only (§6, §8.5 "other attachments are passed as folder-tree
+       *  paths"): each is an absolute path on the computer the app runs on, picked by the app's own dialog or drop, never
+       *  by a script. The file stays where it is and the bot is given its folder-tree path; one outside the user's home
+       *  folder, which the tree doesn't name, is copied into the bot's scratch folder first. A refusal (typed
+       *  `file_reference_invalid`, `INVALID_PARAMS`) carries a plain sentence in `message` for the window to show as it is:
+       *  more than `BOT_FILES_MAX`, a file over `BOT_FILE_MAX_BYTES`, a folder, a file that can't be read, a file inside
+       *  MOSS's own folder, or a target that isn't a bot. */
+      files: z.array(z.strictObject({ path: utf16(4096, 1) })).max(100).optional(),
       /** The client's id for this message, so a resend is not a second message. */
       clientMessageId: utf16(128, 1),
     }),

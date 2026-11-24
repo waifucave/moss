@@ -28,13 +28,18 @@ export type FakeAcpStep =
   | { mcp: { server: string; tool: string; input?: unknown; ask?: boolean } }
   /** Runs a real `sleep` as an `execute` call, for the stall watchdog and the stop sequence. */
   | { exec: { seconds: number; id?: string } }
-  /** A hostile agent (review 12): calls a client method Clover didn't offer (`fs/*`, `terminal/*`), and reports how
+  /** A hostile agent (review 12): calls a client method MOSS didn't offer (`fs/*`, `terminal/*`), and reports how
    *  it was answered. */
   | { clientCall: { method: string; params?: unknown } }
   /** Opens this many permission requests at once and reports each answer. */
   | { flood: number }
   /** Says the bridge's token, as read from its server entry at `session/new`. */
-  | { sayBridgeToken: true };
+  | { sayBridgeToken: true }
+  /** Reports how much of its context it uses (ACP's `usage_update`: `used` of `size` tokens). */
+  | { context: { used: number; size: number } }
+  /** Sends these `session/update` updates as they are, `_meta` and all: an adapter's own frames, as recorded or as read
+   *  from its code (Claude Code's subagent calls, §9.5). */
+  | { raw: Record<string, unknown>[] };
 
 export interface FakeAcpConfig {
   quirks: AgentQuirks;
@@ -46,6 +51,18 @@ export interface FakeAcpConfig {
   report: string;
   /** The "user's own settings": where a persisting model choice lands. */
   selection: string;
+  /** The models its session offers (the `model` option's values; `fake-model-a` and `fake-model-b` when not given). */
+  modelValues?: string[];
+  /** What its list command prints (`<program> <config> models`): the models as JSON, one `{ slug, display_name,
+   *  visibility, levels }` each; the agent's own model list, as a real one's list command gives it. */
+  modelsList?: { slug: string; display_name?: string; visibility?: string; levels?: { effort: string }[] }[];
+  /** The id the effort option is reported and set under, when it is not the name the quirks give (a real agent's option
+   *  has an id of its own beside its category: Codex's effort is `reasoning_effort` in the category `thought_level`).
+   *  A set under any other id is refused as invalid params, as the real agent does. */
+  effortId?: string;
+  /** A third selectable config option the agent reports (not MOSS's: no category), the first value current; a set is
+   *  reported as `{type:"config", option:<its id>, value}`. */
+  extraOption?: { id: string; name: string; values: string[] };
   /** A `mode` config option with these values (Cursor's `agent`, `plan`, `ask`), the first one current. */
   modes?: string[];
   /** ACP's session modes (`modes` at `session/new`, `session/set_mode`, `current_mode_update`), the first current. */
@@ -58,13 +75,18 @@ export interface FakeAcpConfig {
   askDuringReplay?: boolean;
   /** Variables every MCP server it starts gets, whatever its quirks pass on. A run on a test-marked core gives the
    *  test's keychain file's variable here: that core refuses to start (as the bridge too) without it, and an agent's
-   *  own environment never carries a CLOVER_ variable (buildAgentEnv). */
+   *  own environment never carries a MOSS_ variable (buildAgentEnv). */
   mcpEnv?: Record<string, string>;
 }
 
 const [configPath, mode] = process.argv.slice(2);
 const cfg = JSON.parse(readFileSync(configPath!, "utf8")) as FakeAcpConfig;
 const q = cfg.quirks;
+
+if (mode === "models") {
+  process.stdout.write(`${JSON.stringify({ models: cfg.modelsList ?? [] })}\n`);
+  process.exit(0);
+}
 
 if (mode === "--version") {
   process.stdout.write(`${cfg.version}\n`);
@@ -123,11 +145,13 @@ function configOptions(): unknown[] {
   } catch {
     // No selection yet.
   }
-  if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: [{ value: "fake-model-a", name: "A" }, { value: "fake-model-b", name: "B" }] });
-  if (q.config.effortOption) out.push({ id: q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
+  if (q.config.modelOption) out.push({ id: q.config.modelOption, name: "Model", category: "model", type: "select", currentValue: current.model ?? sel.model ?? "fake-model-a", options: (cfg.modelValues ?? ["fake-model-a", "fake-model-b"]).map((v) => ({ value: v, name: v })) });
+  if (q.config.effortOption) out.push({ id: cfg.effortId ?? q.config.effortOption, name: "Effort", category: "thought_level", type: "select", currentValue: current.effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) });
   if (cfg.modes?.length) out.push({ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: current.mode ?? cfg.modes[0], options: cfg.modes.map((v) => ({ value: v, name: v })) });
+  if (cfg.extraOption) out.push({ id: cfg.extraOption.id, name: cfg.extraOption.name, type: "select", currentValue: extra ?? cfg.extraOption.values[0], options: cfg.extraOption.values.map((v) => ({ value: v, name: v.toUpperCase() })) });
   return out;
 }
+let extra: string | undefined;
 const current: { model?: string; effort?: string; mode?: string } = {};
 
 function startMcpServers(servers: unknown): void {
@@ -142,7 +166,7 @@ function startMcpServers(servers: unknown): void {
     Object.assign(env, cfg.mcpEnv ?? {});
     for (const kv of e.env ?? []) env[kv.name] = kv.value;
     for (const kv of e.env ?? []) {
-      if (kv.name !== "CLOVER_BRIDGE_TOKEN") continue;
+      if (kv.name !== "MOSS_BRIDGE_TOKEN") continue;
       bridgeToken = kv.value;
       bridgeName = e.name;
     }
@@ -232,7 +256,13 @@ async function handle(method: string, params: Record<string, unknown>): Promise<
     case "session/set_config_option": {
       const id = String(params["configId"]);
       const value = String(params["value"]);
-      const option = id === q.config.modelOption ? "model" : id === q.config.effortOption ? "effort" : id === "mode" && cfg.modes?.length ? "mode" : undefined;
+      if (cfg.extraOption && id === cfg.extraOption.id) {
+        if (!cfg.extraOption.values.includes(value)) throw new RpcError(-32602, `no value ${value} for ${id}`);
+        extra = value;
+        report({ type: "config", option: id, value });
+        return { configOptions: configOptions() };
+      }
+      const option = id === q.config.modelOption ? "model" : id === (cfg.effortId ?? q.config.effortOption) ? "effort" : id === "mode" && cfg.modes?.length ? "mode" : undefined;
       if (!option) throw new RpcError(-32602, `no config option ${id}`);
       current[option] = value;
       report({ type: "config", option, value });
@@ -323,6 +353,8 @@ async function runTurn(params: Record<string, unknown>): Promise<unknown> {
     }
     else if ("think" in step) update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: step.think } });
     else if ("usage" in step) usage = step.usage;
+    else if ("context" in step) update({ sessionUpdate: "usage_update", used: step.context.used, size: step.context.size });
+    else if ("raw" in step) for (const u of step.raw) update(u);
     else if ("wait" in step) {
       await waitWake("wait");
       if (t.cancelled) return finish("cancelled");

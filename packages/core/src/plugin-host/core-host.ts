@@ -2,7 +2,7 @@
 // It runs no plugin code: it starts host halves in the plugin-host processes over their links (`RpcPeer`), times every
 // call, applies the crash rules, binds each API call's caller (R7) and serves the plugin API's router.
 //
-// * The process a plugin runs in is the core's choice from its install record (`hostProcessFor`): the `clover`
+// * The process a plugin runs in is the core's choice from its install record (`hostProcessFor`): the `moss`
 //   process, the shared one, or one of its own; `connect` gives the link to it (a process of the plugin's own per
 //   plugin). A link answers only for the plugins the core started on it: an API call naming another is refused by
 //   `guardApiRouter` in front of the router.
@@ -14,11 +14,11 @@
 //   until the user's restart.
 // * Reload: calls in flight get `RELOAD_GRACE_MS`, then fail interrupted (`cancelled`), and the new module starts.
 // * R7: every call into a plugin opens an invocation (`InvocationTable`) for the API calls made inside it; an MCP
-//   request sent `as` a caller gets a fresh id under `_meta["clover/invocation"]` (any id it carried is replaced, and
+//   request sent `as` a caller gets a fresh id under `_meta["moss/invocation"]` (any id it carried is replaced, and
 //   one sent with no caller has it removed), and the invocation ends with the server's answer to that request.
-import { topPluginIdOf } from "@waifucave/clover-protocol";
+import { topPluginIdOf } from "@waifucave/moss-protocol";
 import { randomUUID } from "node:crypto";
-import type { Caller, HostProcess } from "@waifucave/clover-protocol";
+import type { Caller, HostProcess } from "@waifucave/moss-protocol";
 import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import {
@@ -253,6 +253,7 @@ export class CorePluginHost implements PluginHost {
             args: req.args, caller: req.caller, ...(req.session === undefined ? {} : { session: req.session }),
             timeoutMs: Math.min(limit, PLUGIN_CALL_MAX_TIMEOUT_MS), deadline: clock.now() + limit,
             ...(stream ? { stream: true } : {}), ...(input === undefined ? {} : { input: true }),
+            ...(req.streamId === undefined ? {} : { streamId: req.streamId }),
           });
           if (input !== undefined) void this.#feed(peer, callId, input, () => settled);
           const { result } = (await answer) as { result: unknown };
@@ -422,7 +423,9 @@ export class CorePluginHost implements PluginHost {
         if (params?._meta !== undefined) delete params._meta[MCP_INVOCATION_META];
         if (as !== undefined && typeof copy.method === "string" && "id" in copy) {
           const invocation = `call_${randomUUID()}`;
-          const end = this.invocations.open(invocation, { pluginId, caller: as, ...(as.kind === "session" ? { session: as.sessionId } : {}) });
+          // A tool call: the server it runs on and its name, from the request itself (the core made it), for a live picture.
+          const named = copy.method === "tools/call" ? (copy.params as { name?: unknown } | undefined)?.name : undefined;
+          const end = this.invocations.open(invocation, { pluginId, caller: as, ...(as.kind === "session" ? { session: as.sessionId } : {}), server, ...(typeof named === "string" ? { tool: named } : {}) });
           pending.set(copy.id, () => {
             pending.delete(copy.id);
             end();

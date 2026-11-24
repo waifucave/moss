@@ -1,4 +1,4 @@
-// A fake clover-core for the app's tests, until lane C's daemon side of the pair (C-M1) lands. It speaks the pair's
+// A fake moss-core for the app's tests, until lane C's daemon side of the pair (C-M1) lands. It speaks the pair's
 // part of the protocol as agreed with lane C (src/main/pair/*.ts): `protocol.hello` with the `app` token from
 // `<home>/run/app.token`, `events.subscribe`, `pair.status`, `pair.quit`, `pair.exiting`, `plugin.ui`, `ui.settings`,
 // `layer.token`, and the daemon's own requests to the app (`app.quit`, `app.show`). As a program it is also lane C's
@@ -10,11 +10,15 @@ import { createHmac, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { CardAnswerProof, Card } from "@waifucave/clover-protocol";
+import { CardAnswerProof, Card } from "@waifucave/moss-protocol";
 import { daemonEndpoint } from "../../src/main/protocol/client";
 
 export interface FakeOptions {
   home: string;
+  /** `plugin.settings.get`'s answers, by plugin and key (none: no settings). */
+  pluginSettings?: Record<string, Record<string, unknown>>;
+  /** One setting changed a while after the app connects: the value set and `plugin_settings_changed` (its key) sent. */
+  pluginSettingsLater?: { afterMs: number; pluginId: string; key: string; value: unknown };
   /** `plugin.ui`'s answer. */
   ui?: unknown[];
   /** `ui.settings`'s answer. */
@@ -40,6 +44,9 @@ export interface FakeOptions {
   /** Events to send to each newly authed connection (app or layer) right after its hello, as raw JSON-RPC
    *  notifications. Used to deliver `card_pending` to layers before they open their own channel. */
   events?: readonly unknown[];
+  /** The release check (RL): `behind` refuses an app's hello with `RELEASE_REFUSED` and what it needs; `ahead` serves it
+   *  the release door only (`release.bring`, `events.subscribe`); an app that names no release counts as behind. */
+  release?: { engine: string; mode: "behind" | "ahead" };
 }
 
 export interface FakeModel {
@@ -85,6 +92,9 @@ export function readCalls(home: string): { event: string; [k: string]: unknown }
   return readFileSync(file, "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as { event: string });
 }
 
+/** The fake's one code session: MOSS's own coding agent in a folder of the laptop's home, idle. */
+export const FAKE_CODE_SESSION = { id: "s_fakecode0001", kind: "coding", computer: "Laptop", title: "Fake work", status: "idle", startedAt: 1_781_270_000_000, updatedAt: 1_781_270_000_000, backend: "moss-code", model: "fake/model", root: "home/Laptop/fake-work" } as const;
+
 const DEFAULT_STATUS = { bots: [], routines: 0, agents: 0, canHandOver: false, safeMode: false };
 
 /** `card.answer`'s有自己的 verdicts (consume in order) and the answers the fake saw, per fake's options root. Each
@@ -115,10 +125,12 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
   let resolveQuit!: (p: { handOver: boolean }) => void;
   const quitRequested = new Promise<{ handOver: boolean }>((r) => (resolveQuit = r));
   const authed = new WeakSet<Socket>();
+  const doorOnly = new WeakSet<Socket>();
   const signedIn = new Set<string>();
   const layerTokens = new Map<string, string>();
   const layerOf = new WeakMap<Socket, string>();
   let terminals = 0;
+  let watches = 0;
   const off = new Set<string>();
   const removed = new Set<string>();
   const summary = (id: string, name: string, source: string) => ({
@@ -148,7 +160,7 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
       if (opts.prove === "refuse") return fail(-32601, "no protocol.prove");
       if (opts.prove === "peak") return fail(-32020, "the pid at this end of the pipe is ambiguous");
       const pid = typeof opts.prove === "number" ? opts.prove : process.pid;
-      const proof = createHmac("sha256", opts.prove === "wrong" ? "not-the-token" : token).update(`clover-daemon-proof\0${String(params.nonce)}\0${pid}`).digest("base64url");
+      const proof = createHmac("sha256", opts.prove === "wrong" ? "not-the-token" : token).update(`moss-daemon-proof\0${String(params.nonce)}\0${pid}`).digest("base64url");
       return reply({ proof, pid });
     }
     if (method === "protocol.hello") {
@@ -161,9 +173,22 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
         return reply({ ok: true, serverVersion: "fake", protocolVersion: 1, caller: { kind: "plugin", pluginId: params.pluginId }, device: "devfake0000000001", features: [] });
       }
       if (params.role !== "app" || params.token !== token) return fail(-32001, "unauthorized");
+      if (opts.release?.mode === "behind" || (opts.release !== undefined && params.release === undefined)) {
+        if (id !== undefined) send(s, { jsonrpc: "2.0", id, error: { code: -32022, message: "behind", data: { standing: "behind", engine: opts.release.engine, client: String(params.release ?? "0.0.0"), needs: opts.release.engine } } });
+        return;
+      }
       authed.add(s);
+      if (opts.release?.mode === "ahead") doorOnly.add(s);
+      const later = opts.pluginSettingsLater;
+      if (later !== undefined) {
+        setTimeout(() => {
+          opts.pluginSettings = { ...opts.pluginSettings, [later.pluginId]: { ...opts.pluginSettings?.[later.pluginId], [later.key]: later.value } };
+          send(s, { jsonrpc: "2.0", method: "core.event", params: { type: "plugin_settings_changed", ts: Date.now(), pluginId: later.pluginId, key: later.key } });
+          record(opts.home, "setting-changed", { pluginId: later.pluginId, key: later.key });
+        }, later.afterMs);
+      }
       void sendInitialEvents(s);
-      return reply({ ok: true, serverVersion: "fake", protocolVersion: 1, caller: { kind: "user", via: "app" }, device: "devfake0000000001", features: [] });
+      return reply({ ok: true, serverVersion: "fake", protocolVersion: 1, caller: { kind: "user", via: "app" }, device: "devfake0000000001", features: [], ...(opts.release !== undefined ? { release: { standing: "ahead", engine: opts.release.engine } } : {}) });
     }
     // A layer's calls: what the fake knows a layer may ask (the terminal's, events), answered as that plugin.
     const layer = layerOf.get(s);
@@ -185,11 +210,28 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
         return bot === undefined ? fail(-32004, "no such bot") : reply({ bot });
       }
       if (method === "session.list") return reply({ sessions: [] });
+      // MOSS Code's window opens on the newest code session (lane MC: no bots in it): the fake has one, with nothing said
+      // yet, through a part's own plugin API calls (`sessions.read`) and its watches (which never fire here).
+      if (method === "plugin.layer.call") {
+        const call = String(params.call);
+        const args = Array.isArray(params.args) ? params.args : [];
+        if (call === "sessions.list") return reply({ result: [FAKE_CODE_SESSION] });
+        if (call === "sessions.get") return args[0] === FAKE_CODE_SESSION.id ? reply({ result: FAKE_CODE_SESSION }) : fail(-32004, "no such session");
+        if (call === "sessions.history") return reply({ result: { events: [], hasMore: false } });
+        return fail(-32003, `a layer doesn't call ${call} here`);
+      }
+      if (method === "plugin.layer.watch") return String(params.call).startsWith("sessions.") ? reply({ watch: `w_${++watches}` }) : fail(-32003, `a layer doesn't watch ${String(params.call)} here`);
+      if (method === "plugin.layer.unwatch") return reply({});
       if (method === "computer.list") return reply({ computers: [] });
       if (method === "device.list") return reply({ devices: [] });
       return fail(-32003, `a layer doesn't call ${method} here`);
     }
     if (!authed.has(s)) return fail(-32001, "hello required first");
+    if (doorOnly.has(s)) {
+      if (method === "events.subscribe") return reply({ ok: true });
+      if (method === "release.bring") return reply({ state: params.now === true ? "switching" : "waiting" });
+      return fail(-32001, "this app is newer than the engine: wait for release.bring");
+    }
     switch (method) {
       case "events.subscribe":
         return reply({ ok: true });
@@ -205,6 +247,9 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
         // A channel minted for one card's sealed frame; a fake's own count of the only shape it holds.
         return reply({ channel: `fake-card-${String(params.id).slice(-8)}-${randomBytes(8).toString("hex")}` });
       case "card.answer": {
+        // Computer use acting on this computer: the core refuses an app's answer at the answer itself (lane RT), and it
+        // doesn't land.
+        if (opts.acting === true) return reply({ accepted: false, reason: "computer use is acting right now" });
         // The protocol's own contracts first (the review's own ask), then the fake's own verdict.
         const proof = CardAnswerProof.safeParse(params.proof);
         if (!proof.success) return fail(-32602, `card.answer's proof isn't one: ${proof.error.issues[0]?.message ?? "no proof"}`);
@@ -226,6 +271,8 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
         return reply({ to: null });
       case "plugin.ui":
         return reply({ plugins: opts.ui ?? [] });
+      case "plugin.settings.get":
+        return reply({ settings: Object.entries(opts.pluginSettings?.[String(params.id)] ?? {}).map(([key, value]) => ({ key, value })) });
       case "ui.settings":
         return reply({ picks: [], lists: [], ...opts.settings });
       case "layer.token": {
@@ -350,8 +397,8 @@ export async function startFakeDaemon(opts: FakeOptions): Promise<FakeDaemon> {
 
 /** The fake as a program: `daemon` runs it; `autostart status|enable|start` is the login command. */
 async function main(argv: string[]): Promise<void> {
-  const home = process.env.CLOVER_HOME;
-  if (home === undefined || home === "") throw new Error("CLOVER_HOME must be set");
+  const home = process.env.MOSS_HOME;
+  if (home === undefined || home === "") throw new Error("MOSS_HOME must be set");
   const [cmd, sub] = argv;
   const registered = join(fakeDir(home), "registered");
   if (cmd === "autostart") {
@@ -370,7 +417,7 @@ async function main(argv: string[]): Promise<void> {
       // "Through the OS": a detached process of its own, never the caller's child for long.
       const self = process.argv[1] !== undefined && process.argv[1].endsWith(".ts") ? [process.argv[1]] : [];
       // The app that asked is the daemon's other end: the fake's `protocol.prove` names it, as the real one sees it.
-      const child = spawn(process.execPath, [...self, "daemon"], { detached: true, stdio: "ignore", env: { ...process.env, CLOVER_FAKE_APP_PID: String(process.ppid) }, windowsHide: true });
+      const child = spawn(process.execPath, [...self, "daemon"], { detached: true, stdio: "ignore", env: { ...process.env, MOSS_FAKE_APP_PID: String(process.ppid) }, windowsHide: true });
       child.unref();
       return;
     }
@@ -378,14 +425,14 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   if (cmd === "daemon") {
-    const uiFile = process.env.CLOVER_FAKE_UI;
-    const ui = uiFile !== undefined && existsSync(uiFile) ? (JSON.parse(readFileSync(uiFile, "utf8")) as { plugins?: unknown[]; status?: Record<string, unknown>; settings?: Record<string, unknown>; models?: FakeModel[]; listPlugins?: boolean }) : {};
+    const uiFile = process.env.MOSS_FAKE_UI;
+    const ui = uiFile !== undefined && existsSync(uiFile) ? (JSON.parse(readFileSync(uiFile, "utf8")) as { plugins?: unknown[]; status?: Record<string, unknown>; settings?: Record<string, unknown>; models?: FakeModel[]; listPlugins?: boolean; pluginSettings?: FakeOptions["pluginSettings"]; pluginSettingsLater?: FakeOptions["pluginSettingsLater"] }) : {};
     let fake: FakeDaemon;
     // The pid first, for the tests that stop it.
     mkdirSync(fakeDir(home), { recursive: true });
     writeFileSync(join(fakeDir(home), "daemon.pid"), String(process.pid));
     try {
-      fake = await startFakeDaemon({ home, ui: ui.plugins ?? [], ...(ui.status ? { status: ui.status } : {}), ...(ui.settings ? { settings: ui.settings } : {}), ...(ui.models ? { models: ui.models } : {}), ...(ui.listPlugins ? { listPlugins: true } : {}), prove: process.env.CLOVER_FAKE_PROVE === "refuse" || process.env.CLOVER_FAKE_PROVE === "wrong" ? process.env.CLOVER_FAKE_PROVE : Number(process.env.CLOVER_FAKE_APP_PID ?? process.pid) });
+      fake = await startFakeDaemon({ home, ui: ui.plugins ?? [], ...(ui.status ? { status: ui.status } : {}), ...(ui.settings ? { settings: ui.settings } : {}), ...(ui.models ? { models: ui.models } : {}), ...(ui.listPlugins ? { listPlugins: true } : {}), ...(ui.pluginSettings ? { pluginSettings: ui.pluginSettings } : {}), ...(ui.pluginSettingsLater ? { pluginSettingsLater: ui.pluginSettingsLater } : {}), prove: process.env.MOSS_FAKE_PROVE === "refuse" || process.env.MOSS_FAKE_PROVE === "wrong" ? process.env.MOSS_FAKE_PROVE : Number(process.env.MOSS_FAKE_APP_PID ?? process.pid) });
     } catch (err) {
       record(home, "listen-failed", { error: String(err) });
       process.exit(0);

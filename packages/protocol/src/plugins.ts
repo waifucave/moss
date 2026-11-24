@@ -1,14 +1,14 @@
-// Clover protocol area: plugins (spec §5.1–§5.6, §5.9, §6.8). Owner: lane B (plan §4: the registry B-M1, the plugin
+// MOSS protocol area: plugins (spec §5.1–§5.6, §5.9, §6.8). Owner: lane B (plan §4: the registry B-M1, the plugin
 // host and its API B-M2, getting plugins in B-M3).
 //
-// The registry's view for clients (Settings, the plugin index browser, `clover plugin …`), commands for any client
+// The registry's view for clients (Settings, the plugin index browser, `moss plugin …`), commands for any client
 // (`command.list`, `command.run`, §5.4), and the plugin host's channel to the daemon (§5.2). A plugin's own manifest,
-// formats and catalogs are the plugin SDK's (`@waifucave/clover-plugin-sdk`); here a manifest travels as JSON.
+// formats and catalogs are the plugin SDK's (`@waifucave/moss-plugin-sdk`); here a manifest travels as JSON.
 import { z } from "zod";
 import { utf16 } from "./strings";
 import {
   AnyPluginId, BotId, Caller, MAX_CHILD_PLUGINS, CardId, ChangeResult, ComputerName, Empty, HostProcess, Ok, Scope, SemverVersion, Text,
-  SessionId, Timestamp, TopPluginId, TreeHash,
+  SessionId, SessionKind, Timestamp, TopPluginId, TreeHash,
 } from "./common";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
 
@@ -19,7 +19,7 @@ import { coreEvent, defineEvent, defineMethod } from "./rpc";
 /** What Settings shows for each plugin, with the reason (§5.1 "States"). */
 export const PLUGIN_STATES = ["found", "refused", "invalid", "off", "waiting", "running", "stopped"] as const;
 export const PluginState = z.enum(PLUGIN_STATES);
-/** The reason the registry gives a plugin of Clover's own that this build can't run yet (its manifest's
+/** The reason the registry gives a plugin of MOSS's own that this build can't run yet (its manifest's
  *  `availability: { status: "not-yet" }`): its state is `off`, and it can't be switched. */
 export const NOT_AVAILABLE_YET = "not available in this build yet";
 export type PluginState = z.infer<typeof PluginState>;
@@ -40,7 +40,7 @@ export const PluginProvenance = z.object({
   bot: BotId.optional(),
   /** `by: "plugin"`: the plugin whose component asked for the install (`plugins.install`); its OK card names it. */
   plugin: AnyPluginId.optional(),
-  /** A plugin the core generated around a bare item: what it was, and the parts of it Clover has no point for yet,
+  /** A plugin the core generated around a bare item: what it was, and the parts of it MOSS has no point for yet,
    *  which stay in the folder unused and which the OK names (§5.1). The core's own record, never the manifest's.
    *  `network: "any"`: the owner's ruling for a server the user brought (2026-11-10, §5.3): its local servers and hooks
    *  reach any host, fenced for files as any plugin, until its manifest declares `network:` hosts, when it is held to
@@ -64,7 +64,7 @@ export type PluginProvenance = z.infer<typeof PluginProvenance>;
 export const PluginClass = z.enum(["data", "web", "code"]);
 export type PluginClass = z.infer<typeof PluginClass>;
 
-/** One finding of the plugin SDK's validator (`validateManifest`, `clover plugin validate --json`). `refuses` says
+/** One finding of the plugin SDK's validator (`validateManifest`, `moss plugin validate --json`). `refuses` says
  *  what the finding stops: the whole plugin, one contribution (a key of `contributes`), one entry of it, or nothing
  *  (a warning). `path` is a JSON pointer into the file. */
 export const ValidationIssue = z.object({
@@ -161,6 +161,8 @@ export const CommandView = z.object({
     z.object({ state: z.literal("bare") }),
     z.object({ state: z.literal("clash"), with: z.array(utf16(128)).max(64) }),
   ]).optional(),
+  /** Its key binding asks for the key's release too (§5.4 `hold`): run only from its key, with `{ key: "down" | "up" | "cancel" }`. */
+  hold: z.literal(true).optional(),
   runsOn: z.enum(["each", "main", "chosen"]).optional(),
 });
 export type CommandView = z.infer<typeof CommandView>;
@@ -184,6 +186,21 @@ export const PointView = z.object({
 });
 export type PointView = z.infer<typeof PointView>;
 
+/** An entry of a one-at-a-time point by its plugin and entry id (§5.4 "One at a time"). */
+export const ActiveFillerRef = z.object({ pluginId: AnyPluginId, entryId: utf16(256, 1) });
+/** A one-at-a-time point as Settings' picker shows it: its title, its fillers (the entries of plugins on and running,
+ *  in the registry's order), the one active, and the user's choice when they made one (when it isn't the active one,
+ *  it isn't running and the default stands in). */
+export const OneAtATimeView = z.object({
+  point: utf16(128, 1),
+  title: Text,
+  declaredBy: z.union([z.literal("core"), AnyPluginId]),
+  fillers: z.array(z.object({ pluginId: AnyPluginId, entryId: utf16(256, 1), name: utf16(200) })).max(1000),
+  active: ActiveFillerRef.optional(),
+  chosen: ActiveFillerRef.optional(),
+});
+export type OneAtATimeView = z.infer<typeof OneAtATimeView>;
+
 /** One of a plugin's settings as Settings shows it (§5.4 "Settings", review S16): the manifest's field and its value.
  *  A `secret` field never carries its value over the wire, only whether one is stored. */
 export const PluginSettingView = z.object({
@@ -193,6 +210,8 @@ export const PluginSettingView = z.object({
   description: Text.optional(),
   scope: z.enum(["account", "device", "bot"]),
   required: z.boolean(),
+  /** The plugin's own state: still readable and writable by it, never listed in Settings (the manifest's `hidden`). */
+  hidden: z.literal(true).optional(),
   /** An `enum` field's choices, as the manifest lists them: a value, or a value with its title (lane F's ask). */
   options: z.array(z.union([utf16(256, 1), z.object({ value: utf16(256, 1), title: Text })])).max(256).optional(),
   /** A `number` field's bounds, as the manifest sets them. */
@@ -228,21 +247,20 @@ export type PluginAuthView = z.infer<typeof PluginAuthView>;
  *  are the app runtime's scheme, which the daemon fills from `assetBase`. */
 /** What a layer needs of a plugin (lane E's asks). The registry always sends `source`, `enabledAt`, `capabilities`,
  *  `css` and `networkHosts`; a view without them (an older daemon, a test's fake) means none of each. */
-/** A model format a renderer plugin declares (`avatar.formats`), as the app needs it to serve a model's files: the extensions
- *  its entry file may have, and the kinds of file a model is made of, each with its extensions, its closed kind (`json`,
- *  `binary`, `image`, `audio`, `text`: each served as one fixed, inert media type) and a cap already clamped by the core. */
-export const AvatarFormatView = z.object({
-  format: utf16(32, 1),
-  extensions: z.array(utf16(32, 2)).max(8),
+/** Files that come with a plugin's entries on a point that declares them (`files` on a point's declaration, the SDK's
+ *  `catalogs/data-files.ts`): a folder of the plugin's (relative to `assetBase`, `""` for its root) whose files of the
+ *  listed kinds, that folder and below, the app serves to every layer, each as its kind's one fixed, inert media type
+ *  (`json`, `binary`, `image`, `audio`, `text`), with a cap the core already clamped. Only for active entries of a
+ *  running declaration. */
+export const DataFilesView = z.object({
+  folder: utf16(4096),
   kinds: z.array(z.object({
     ext: z.array(utf16(32, 2)).max(16),
     type: z.enum(["json", "binary", "image", "audio", "text"]),
     maxBytes: z.number().int().min(1).max(128 * 1024 * 1024),
   })).max(16),
-  find: z.enum(["folder", "cubism-model3"]),
-  maxFiles: z.number().int().min(1).max(512).optional(),
 });
-export type AvatarFormatView = z.infer<typeof AvatarFormatView>;
+export type DataFilesView = z.infer<typeof DataFilesView>;
 
 export const UiPluginView = z.object({
   pluginId: AnyPluginId,
@@ -259,18 +277,16 @@ export const UiPluginView = z.object({
   css: z.array(utf16(4096, 1)).max(32).optional(),
   /** The hosts its `network:` capabilities declare, for the layer's CSP and `Connection-Allowlist`. */
   networkHosts: z.array(utf16(300, 1)).max(256).optional(),
-  /** For a bot's plugin: the bot's name, the theme its tab wears (one of `themes`), the layout file its tab is
-   *  arranged by (a file in its folder) and the avatar its manifest names (a file in its folder and its format), which
-   *  the app reads to serve a Live2D model's own JSON files to that bot only. `userLayout` is the user's own layout for
-   *  the tab (the user layer's `layout`, a layout file's JSON), which the app makes last, over the bot's and any
-   *  plugin's patches. */
-  bot: z.object({ name: Text, theme: utf16(4096).optional(), layout: utf16(4096).optional(), userLayout: utf16(4096).optional(), avatar: z.object({ file: utf16(4096, 1), format: utf16(32, 1) }).optional() }).optional(),
-  /** The model formats this plugin draws (its `avatar.formats`): what the app serves of a bot's model files, by kind. */
-  avatarFormats: z.array(AvatarFormatView).max(16).optional(),
-  /** The layer's origin label: the id with `/` written `--` (§5.5). Everything under `clover` shares `clover`. */
+  /** For a bot's plugin: the bot's name, the theme its tab wears (one of `themes`) and the layout file its tab is
+   *  arranged by (a file in its folder). `userLayout` is the user's own layout for the tab (the user layer's `layout`, a
+   *  layout file's JSON), which the app makes last, over the bot's and any plugin's patches. */
+  bot: z.object({ name: Text, theme: utf16(4096).optional(), layout: utf16(4096).optional(), userLayout: utf16(4096).optional() }).optional(),
+  /** The files that come with its entries on points that declare them (`DataFilesView`). */
+  dataFiles: z.array(DataFilesView).max(64).optional(),
+  /** The layer's origin label: the id with `/` written `--` (§5.5). Everything under `moss` shares `moss`. */
   layer: utf16(128),
-  /** Its picture for lists (the Plugins page): the manifest's `icon` (svg, png or webp), else a bot's avatar portrait;
-   *  a file in its folder, which the app serves as an image only (`/_t/`). */
+  /** Its picture for lists (the Plugins page): the manifest's `icon` (svg, png or webp), a file in its folder, which
+   *  the app serves as an image only (`/_t/`). */
   icon: utf16(4096).optional(),
   assetBase: utf16(2048),
   /** The built ES module the layer loads (`CLIENT_BARE_IMPORTS` only as bare imports), under `assetBase`: the
@@ -348,6 +364,31 @@ export const GrantAccess = z.enum(["read", "write"]);
 export const PluginGrantView = z.object({ token: GrantToken, path: utf16(4096, 1), kind: GrantKind, access: GrantAccess, addedAt: Timestamp });
 export type PluginGrantView = z.infer<typeof PluginGrantView>;
 
+// -------------------------------------------------------------------------------------------------
+// The tool setting (spec revision 19, §6.7, item 103, G10; owner lane TS, shapes pinned by lane SP)
+// -------------------------------------------------------------------------------------------------
+
+/** What the user sets for each plugin tool, beside its permission (always block, ask, always allow), in one list
+ *  (`tool.permissions`): `off` (no bot or agent sees it), `on-demand` (found and loaded through `Glossary`, or an ACP
+ *  agent's own tool search when it has one) or `always` (preloaded). Not the engine's built-in shell and file tools. */
+export const TOOL_AVAILABILITIES = ["off", "on-demand", "always"] as const;
+export const ToolAvailability = z.enum(TOOL_AVAILABILITIES);
+export type ToolAvailability = z.infer<typeof ToolAvailability>;
+
+/** The default with no value stored: what the plugin declares (`tools` in its server's manifest entry): `preload` is
+ *  always on, `on-demand` is on demand. */
+export function defaultAvailability(declared: "preload" | "on-demand"): ToolAvailability {
+  return declared === "preload" ? "always" : "on-demand";
+}
+
+export const ToolSettingsChangedEvent = coreEvent("tool_settings_changed", {
+  server: utf16(256, 1),
+  /** One tool, or absent for every tool the plugin lists now. */
+  tool: utf16(256, 1).optional(),
+  permission: z.enum(["allow", "ask", "deny"]).optional(),
+  availability: ToolAvailability.optional(),
+});
+
 export const PLUGINS_METHODS = {
   pluginList: defineMethod({
     name: "plugin.list", owner: "B", roles: ["app", "cli"],
@@ -366,7 +407,7 @@ export const PLUGINS_METHODS = {
     /** Switching a `found` plugin on is a sensitive change (§5.5; F-M2's review, S2): it raises the plugin's sealed OK
      *  card (`{ applied: false, card }`) and never loads it directly, from any caller. Switching on a plugin the user
      *  OK'd and only switched off applies at once. Refused for a refused or invalid plugin, and for switching
-     *  the bundled `clover` plugin off (it would turn off Settings itself). */
+     *  the bundled `moss` plugin off (it would turn off Settings itself). */
     name: "plugin.setEnabled", owner: "B", roles: ["app", "cli", "layer"], userOnly: true, change: "core",
     params: z.object({
       id: AnyPluginId, enabled: z.boolean(),
@@ -430,7 +471,7 @@ export const PLUGINS_METHODS = {
     name: "plugin.grant.add", owner: "A", roles: ["app"], userOnly: true,
     params: z.object({ pluginId: AnyPluginId, token: GrantToken, path: utf16(4096, 1), kind: GrantKind, access: GrantAccess }),
     result: z.object({ grant: PluginGrantView }),
-    doc: "The app's main process registers a file or folder the user picked in a plugin's page (lane G's pickers), before the page gets its token: that plugin alone then reaches exactly it (§5.4). Refused, with a sentence to show, for the whole disk or home folder, Clover's own folder, a secret place, a fenced place, or a folder holding one.",
+    doc: "The app's main process registers a file or folder the user picked in a plugin's page (lane G's pickers), before the page gets its token: that plugin alone then reaches exactly it (§5.4). Refused, with a sentence to show, for the whole disk or home folder, MOSS's own folder, a secret place, a fenced place, or a folder holding one.",
   }),
   pluginGrantRemove: defineMethod({
     name: "plugin.grant.remove", owner: "A", roles: ["app"], userOnly: true,
@@ -462,6 +503,10 @@ export const PLUGINS_METHODS = {
           permission: z.enum(["allow", "ask", "deny"]),
           /** A tool that was not listed when the user last set a value for this plugin: it starts at `ask`. */
           isNew: z.boolean().optional(),
+          /** The tool setting (§6.7, lane TS): this computer's value, and what the manifest declares, which gives the
+           *  default. Absent from an engine that doesn't serve the setting yet. */
+          availability: ToolAvailability.optional(),
+          declared: z.enum(["preload", "on-demand"]).optional(),
           /** What a card's "Always allow" saved for one bot, on which computers: taken back one bot at a time. */
           cardRules: z.array(z.object({ bot: BotId, computers: z.array(ComputerName).max(64) })).max(256),
         })).max(1024),
@@ -479,6 +524,17 @@ export const PLUGINS_METHODS = {
     }),
     result: Ok,
     doc: "Always allow (no card, whatever the call is given), Ask (what the approval level decides) or Always block (refused, with no card, and the bot is told the user blocked it in Settings), for every bot on this computer. Takes effect on the next call. Only the user sets it.",
+  }),
+  toolSetAvailability: defineMethod({
+    name: "tool.setAvailability", owner: "TS", roles: ["app", "cli"], userOnly: true,
+    params: z.object({
+      server: utf16(256, 1),
+      /** One tool, or absent for every tool the plugin lists now (a tool added later starts at its declared default). */
+      tool: utf16(256, 1).optional(),
+      availability: ToolAvailability,
+    }),
+    result: Ok,
+    doc: "Off, on demand (behind Glossary, or an ACP agent's own tool search) or always on, for every bot and agent on this computer; the next turn uses it. Only the user sets it.",
   }),
   toolTakeBackRule: defineMethod({
     name: "tool.takeBackRule", owner: "A", roles: ["app", "cli"], userOnly: true,
@@ -555,7 +611,7 @@ export const PLUGINS_METHODS = {
       pluginId: AnyPluginId,
       /** The model a review sends the plugin's files to (the `reviewer.model` role's), by its tag. */
       model: utf16(200).optional(),
-      /** Plain text, Clover's own last line saying it is a model's reading of the plugin's files. */
+      /** Plain text, MOSS's own last line saying it is a model's reading of the plugin's files. */
       report: utf16(6000).optional(),
       why: utf16(400).optional(),
     }),
@@ -593,8 +649,13 @@ export const PLUGINS_METHODS = {
   }),
   pluginConfirmAdult: defineMethod({
     name: "plugin.confirmAdult", owner: "B", roles: ["app", "cli"], userOnly: true,
-    params: Empty, result: Ok,
-    doc: "The user confirms they are 18 or older, so adult plugins may be switched on (§5.7).",
+    params: z.object({
+      /** Ask on a sealed card first (the app sets it for every part's call, F2: one press in a plugin's frame never
+       *  declares the user's age). */
+      card: z.literal(true).optional(),
+    }),
+    result: z.union([Ok, z.object({ applied: z.literal(false), card: CardId })]),
+    doc: "The user confirms they are 18 or older, so adult plugins may be switched on (§5.7). With `card`, only their yes on a sealed card confirms it.",
   }),
   pluginDevList: defineMethod({
     name: "plugin.dev.list", owner: "B", roles: ["app", "cli"],
@@ -684,9 +745,7 @@ export const PLUGINS_METHODS = {
        *  own settings' values, a `secret` field only as `{ set }`; `settings.set`, a change to one of its own plain
        *  settings with no card (§5.4: never a secret, a bot value or a setting written into what it runs or reaches);
        *  `points.entries`, the entries of a point its own tree declares (§5.4: the declarer reads them), as its host
-       *  half reads them. The settings and points calls only while the plugin is on and running. `avatar.cue`,
-       *  `avatar.catalogue` and `avatar.box`: its own bot's figure (the plugin's top-level id is the bot), each by its
-       *  capability; `avatar.report`: the bundled stage telling the core which renderer drew, its names and its box.
+       *  half reads them. The settings and points calls only while the plugin is on and running.
        *  `confirm` and `confirmCard`: a question to the user on the app's own sealed card naming the plugin (§5.4);
        *  `plugins.install`: an install through the user's door, behind its OK card (capability `plugins.install`). */
       //
@@ -708,7 +767,7 @@ export const PLUGINS_METHODS = {
     name: "plugin.layer.watch", owner: "A", roles: ["layer"],
     params: z.object({
       /** A member that takes a listener the catalog gives components (`files.watch`, `logs.follow`, `usage.watch`,
-       *  `conversation.follow`, `audio.onRecording` …): the core calls it as the plugin from the `ui` side, with its own
+       *  `conversation.follow` …): the core calls it as the plugin from the `ui` side, with its own
        *  listener in the listener's place, after the same capability and fence checks as a host half's. */
       call: utf16(128, 1),
       /** The member's parameters in order, the listener's place `null`. */
@@ -728,6 +787,17 @@ export const PLUGINS_METHODS = {
     params: Empty, result: z.object({ points: z.array(PointView) }),
     doc: "Every extension point, the core's and those plugins declare, with occupants and waiting entries.",
   }),
+  pointActiveList: defineMethod({
+    name: "point.active.list", owner: "B", roles: ["app", "cli"], userOnly: true,
+    params: Empty, result: z.object({ points: z.array(OneAtATimeView).max(256) }),
+    doc: "Every point that takes one filler at a time (§5.4 \"One at a time\"), with its fillers, the active one and the user's choice: Settings draws a picker for each with two or more fillers, titled by the point's own title. The user's own view.",
+  }),
+  pointActiveSet: defineMethod({
+    name: "point.active.set", owner: "B", roles: ["app", "cli"], userOnly: true,
+    params: z.object({ point: utf16(128, 1), entry: ActiveFillerRef }),
+    result: Ok,
+    doc: "The user picks which filler of a one-at-a-time point is active (Settings' picker): one of its fillers running now. Kept with the registry's records; when it stops, the default stands in until it runs again. Only the user sets it: no plugin's call or setting does.",
+  }),
   commandList: defineMethod({
     name: "command.list", owner: "B", roles: ["app", "cli", "remote"],
     params: Empty, result: z.object({ commands: z.array(CommandView) }),
@@ -737,7 +807,8 @@ export const PLUGINS_METHODS = {
     name: "command.run", owner: "B", roles: ["app", "cli", "remote", "layer"],
     /** A plugin caller needs `call:<the target's top-level id>`, which its OK lists (§5.4). */
     capability: "call:*",
-    params: z.object({ name: utf16(128, 3), args: z.unknown().optional() }),
+    /** `held`: a held key binding's down, release or cancel (§5.4 `hold`), the app's own alone (main sends it from the key). */
+    params: z.object({ name: utf16(128, 3), args: z.unknown().optional(), held: z.enum(["down", "up", "cancel"]).optional() }),
     result: z.object({ result: z.unknown() }),
     doc: "Runs `<namespace>.<name>` at once, with no model turn; the handler is told who called (§5.4).",
   }),
@@ -753,12 +824,12 @@ export const PLUGINS_METHODS = {
 
   // -----------------------------------------------------------------------------------------------
   // The plugin host's channel (§5.2). One connection per plugin-host process, over the pipe the daemon started it
-  // with and bound by its token to that process (`HostProcess`): the bundled `clover` tree's, the shared one every
+  // with and bound by its token to that process (`HostProcess`): the bundled `moss` tree's, the shared one every
   // other plugin's host halves share, and a Node or native plugin's own (the owner's answer to S4). The plugin host
   // speaks only this channel (review S3): a host half's plugin-API calls all go through `pluginHost.api`, whose
   // `pluginId` the host stamps from its own worker table (the worker that sent the call, never a value a worker
   // gives). The daemon refuses a call naming a plugin it didn't start in that connection's process
-  // (`CLOVER_ERR.PROCESS_REFUSED`: a third-party worker presenting a `clover/*` id), checks it against the plugin
+  // (`MOSS_ERR.PROCESS_REFUSED`: a third-party worker presenting a `moss/*` id), checks it against the plugin
   // SDK's `API_CALLS`, the one gate, then acts as that plugin: the fence's `as`, a `plugin_message`'s `from`, a hold's
   // owner. A watch's values come back as `pluginHost.deliver`;
   // streams go by `pluginHost.chunk` (to the daemon) and `pluginHost.feed` (to a call's handler). Lane B fills in the
@@ -842,7 +913,7 @@ export const PLUGINS_METHODS = {
       stream: z.boolean().optional(),
       timeoutMs: z.number().int().min(1).max(600_000).optional(),
       /** The open call it was made while serving (R7): the `callId` of a `pluginHost.invoke`, or the id the daemon put
-       *  on an MCP request (`_meta["clover/invocation"]`, which the host takes off before the plugin sees it). Stamped
+       *  on an MCP request (`_meta["moss/invocation"]`, which the host takes off before the plugin sees it). Stamped
        *  by the host from the handler's own context, never from the plugin. The daemon binds the caller from its own
        *  record of that call, so the call acts as that call's session, and refuses an id that isn't an open call to
        *  this plugin. Absent: the call acts as the plugin. */
@@ -975,7 +1046,13 @@ export const PluginUiChangedEvent = coreEvent("plugin_ui_changed", { pluginIds: 
 export const PluginLogEvent = coreEvent("plugin_log", { id: AnyPluginId, line: utf16(4000) });
 /** A plugin's host half sent its components a message (`ui.send`): the app gives it to the components that listen
  *  (`host.on(event)`). */
-export const PluginUiMessageEvent = coreEvent("plugin_ui_message", { pluginId: AnyPluginId, event: utf16(128, 1), value: z.unknown() });
+/** A host half's message to its own components (`ui.send`). Sent while it serves a session's call (a tool call), it says
+ *  whose (`call`: the core's own record of that call, never anything the plugin wrote), so a component can act for that
+ *  session or bot only. */
+export const PluginUiMessageEvent = coreEvent("plugin_ui_message", {
+  pluginId: AnyPluginId, event: utf16(128, 1), value: z.unknown(),
+  call: z.object({ session: SessionId, kind: SessionKind, bot: BotId.optional() }).optional(),
+});
 export const PluginStoreChangedEvent = coreEvent("plugin_store_changed", { pluginId: AnyPluginId, key: utf16(256, 1) });
 /** A watch's value (`plugin.layer.watch`): a component's listener member (`files.watch`, `logs.follow`, `usage.watch`
  *  …) called on its own layer connection; each value the core's listener got, as JSON (bytes as `{ $bytes }`), for that
@@ -1001,6 +1078,11 @@ export const PluginFoundEvent = coreEvent("plugin_found", { id: TopPluginId, fol
 export const PluginCardNoteEvent = coreEvent("plugin_card_note", { card: CardId, change: utf16(64, 1), note: utf16(500, 1) });
 
 export const PLUGINS_EVENTS = {
+  toolSettingsChanged: defineEvent({
+    type: "tool_settings_changed", owner: "TS", roles: ["app", "cli", "layer"], capability: "tools.permissions", schema: ToolSettingsChangedEvent,
+    fixture: { type: "tool_settings_changed", ts: 1781270000000, server: "blender", tool: "Render", availability: "on-demand" },
+    doc: "A plugin tool's permission or availability changed on this computer.",
+  }),
   pluginChanged: defineEvent({
     type: "plugin_changed", owner: "B", roles: ["app", "cli", "layer"], capability: "plugins.watch", schema: PluginChangedEvent,
     fixture: { type: "plugin_changed", ts: 1781270000000, id: "luna/tarot-panel", state: "waiting", enabled: true, reason: "waiting for `island.tab`", waitingFor: ["island.tab"] },
@@ -1013,12 +1095,12 @@ export const PLUGINS_EVENTS = {
   }),
   pluginFound: defineEvent({
     type: "plugin_found", owner: "B", roles: ["app", "cli", "layer"], capability: "plugins.watch", schema: PluginFoundEvent,
-    fixture: { type: "plugin_found", ts: 1781270000000, id: "luna", folder: "/Users/me/.clover/plugins/luna", card: "card_0a1b2c3d" },
+    fixture: { type: "plugin_found", ts: 1781270000000, id: "luna", folder: "/Users/me/.moss/plugins/luna", card: "card_0a1b2c3d" },
     doc: "A new folder in the plugins directory waits for the user's OK.",
   }),
   pluginAuthChanged: defineEvent({
     type: "plugin_auth_changed", owner: "A", roles: ["app", "cli"], schema: PluginAuthChangedEvent,
-    fixture: { type: "plugin_auth_changed", ts: 1781270000000, id: "clover/model-openai", auth: { index: 0, method: "api-key", secret: "openai", state: "signed-in" } },
+    fixture: { type: "plugin_auth_changed", ts: 1781270000000, id: "moss/model-openai", auth: { index: 0, method: "api-key", secret: "openai", state: "signed-in" } },
     doc: "One of a plugin's sign-ins changed state.",
   }),
   pluginUiChanged: defineEvent({
@@ -1042,9 +1124,9 @@ export const PLUGINS_EVENTS = {
     doc: "A value of one of a component's watches (`plugin.layer.watch`): only the layer connection that opened it gets it, and `ended` once when the watch is over.",
   }),
   pluginSettingsChanged: defineEvent({
-    type: "plugin_settings_changed", owner: "B", roles: ["layer"], schema: PluginSettingsChangedEvent, transient: true,
+    type: "plugin_settings_changed", owner: "B", roles: ["layer", "app"], schema: PluginSettingsChangedEvent, transient: true,
     fixture: { type: "plugin_settings_changed", ts: 1781270000000, pluginId: "luna", key: "deck" },
-    doc: "One of a plugin's settings changed (its key, never its value): only that plugin's own layer connection gets it (`PLUGIN_OWN_EVENTS`), for its parts' `settings.watch`.",
+    doc: "One of a plugin's settings changed (its key, never its value): of the plugins, only that plugin's own layer connection gets it (`PLUGIN_OWN_EVENTS`), for its parts' `settings.watch`; the app's main process gets it too, to open or close a surface entry whose `when.setting` names it.",
   }),
   pluginStoreChanged: defineEvent({
     type: "plugin_store_changed", owner: "D", roles: ["layer"], schema: PluginStoreChangedEvent, transient: true,

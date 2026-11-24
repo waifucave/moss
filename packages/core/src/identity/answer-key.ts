@@ -15,11 +15,11 @@
 // This module is for the app's main process (lane E): it makes or loads the key through storage the app provides,
 // proves it to the core (`registration`, which `FileDeviceRegistry.setOwnAnswerKey` checks), and signs answers.
 // Receivers rebuild the card and compare hashes before they check the signature (`verifySignedAnswer`).
-import type { AnswerKeyHolder, AnswerKeyProtections, Os } from "@waifucave/clover-protocol";
-import { answerKeyHolderFor } from "@waifucave/clover-protocol";
+import type { AnswerKeyHolder, AnswerKeyProtections, Os } from "@waifucave/moss-protocol";
+import { answerKeyHolderFor } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import type { Secret } from "../contracts/secret-store";
-import { cardAnswerSigningInput, userMessageHashInput, userMessageSigningInput } from "@waifucave/clover-protocol";
+import { cardAnswerSigningInput, userMessageHashInput, userMessageSigningInput } from "@waifucave/moss-protocol";
 import { createHash } from "node:crypto";
 import { fromBase64, toBase64, utf8 } from "./bytes";
 import { type Ed25519Key, ed25519FromSeed, generateEd25519 } from "./keys";
@@ -40,6 +40,7 @@ export interface AnswerKeyStorage {
   save(seed: Secret): Promise<void>;
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 export class AnswerKey {
   readonly held: AnswerKeyHolder;
   readonly #key: Ed25519Key;

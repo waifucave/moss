@@ -11,7 +11,7 @@
 // with reduced motion or her stage effects off (and no confetti then). A frame moves the meadow's sprites (a transform and
 // an opacity each) and draws the canvas only when it has something on it; nothing animates on its own.
 import { useEffect, useRef, useState } from "react";
-import { usePluginApi } from "@waifucave/clover-plugin-sdk/ui";
+import { usePluginApi } from "@waifucave/moss-plugin-sdk/ui";
 import { useStageState, type Mood } from "./stage-store";
 import { drawsMeadow } from "./meadow-art";
 import { Grass } from "./grass";
@@ -192,8 +192,9 @@ export function AlphaScene({ props }: { props: { bot: { id: string; name: string
       live.current.effects = v === "off" || v === "subtle" ? v : "full";
       live.current.kick();
     }, () => undefined);
-    read();
+    // Subscribe first, then read: a change between the read's answer and the subscription taking effect would be lost.
     const stop = api.settings.watch("effects", read);
+    read();
     return () => { on = false; stop(); };
   }, [api]);
 

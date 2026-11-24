@@ -2,7 +2,7 @@
 // on loopback). A stream opened at the `screenshots` priority gets a window of `LIVE_STREAM_WINDOW` each way, chosen at
 // open and carried in the stream's header: the sender's core holds at most that much unacknowledged, its sidecar at
 // most that much queued for QUIC, and the receiver's sidecar reads at most that much ahead of its core. Over real
-// sidecars on loopback (no relay, nothing published), as lane H's sidecar tests run; skipped when `clover-link` isn't
+// sidecars on loopback (no relay, nothing published), as lane H's sidecar tests run; skipped when `moss-link` isn't
 // built, and required in CI.
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync } from "node:fs";
@@ -13,12 +13,12 @@ import { MemorySecretStore } from "../../contracts/fakes/secret-store";
 import { FileDeviceRegistry } from "../../devices/registry";
 import { DeviceKey } from "../../identity/device-key";
 import { SidecarWire, STREAM_WINDOW } from "../sidecar-wire";
-import { CloverLinkTransport } from "../transport";
+import { MossLinkTransport } from "../transport";
 import { LIVE_STREAM_WINDOW } from "../wire";
 
-const BIN = process.env.CLOVER_LINK_BIN ?? join(import.meta.dir, "../../../../../native/link/target/release/clover-link");
+const BIN = process.env.MOSS_LINK_BIN ?? join(import.meta.dir, "../../../../../native/link/target/release/moss-link");
 const built = existsSync(BIN);
-if (!built && process.env.CLOVER_LINK_REQUIRE_BINARY === "1") throw new Error(`CLOVER_LINK_REQUIRE_BINARY=1, but there is no clover-link at ${BIN}`);
+if (!built && process.env.MOSS_LINK_REQUIRE_BINARY === "1") throw new Error(`MOSS_LINK_REQUIRE_BINARY=1, but there is no moss-link at ${BIN}`);
 const clock = new SystemClock();
 let stops: (() => unknown)[] = [];
 afterEach(async () => {
@@ -29,7 +29,7 @@ afterEach(async () => {
 async function device(name: string) {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
-  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-int-live-")), key, clock, self: { name } });
+  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-int-live-")), key, clock, self: { name } });
   const wire = await SidecarWire.start({ binary: BIN, key, relay: "disabled", n0Lookup: false, bind: "127.0.0.1:0" });
   stops.push(() => wire.close());
   const report = await wire.settledReport();
@@ -133,7 +133,7 @@ describe.skipIf(!built)("a live stream's window (L-M3)", () => {
     await allowEach(a, b);
     const peers = new Map([[a.key.id, a], [b.key.id, b]]);
     const transport = (d: Dev) => {
-      const t = new CloverLinkTransport({
+      const t = new MossLinkTransport({
         self: d.key.id, wire: d.wire, registry: d.registry, clock,
         directory: { target: (id) => { const p = peers.get(id); return p ? { key: p.key.publicKey, direct: p.direct } : undefined; } },
       });

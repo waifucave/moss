@@ -1,4 +1,4 @@
-// Clover's release (plan §4 M-M2): the update channels and feeds, the artifacts each OS's release holds, and the
+// MOSS's release (plan §4 M-M2): the update channels and feeds, the artifacts each OS's release holds, and the
 // signing and notarization commands, as pure functions the release scripts (build.ts, publish.ts) and their tests
 // share. Nothing here reads a secret; `writeServedCopies` and `writeBuildCommit` are its only writes, into a build's
 // output, and `writeBuildCommit` its only command (git).
@@ -13,11 +13,11 @@
 // electron-updater reads `<channel>-mac.yml`, `<channel>.yml` (Windows), `<channel>-linux.yml` and
 // `<channel>-linux-arm64.yml` from the newest release its channel allows.
 //
-// A server's daemon (a `clover-core server install`, no app) updates itself from the same releases: each OS's build
-// also leaves its daemon as `clover-core-<version>-<target>` and the daemon's update file `<channel>-core-<target>.yml`
+// A server's daemon (a `moss-core server install`, no app) updates itself from the same releases: each OS's build
+// also leaves its daemon as `moss-core-<version>-<target>` and the daemon's update file `<channel>-core-<target>.yml`
 // (version, file, sha512, size; packages/update-feed's `formatCoreFeed`), and the owner's release step signs both.
-// Beside them go plain Bun for plugins (`clover-plugin-bun-<bun version>-<target>`, `<channel>-plugin-bun-<target>.yml`)
-// and the bundled plugins (`clover-plugins-<version>-<target>.tar.gz`, `<channel>-plugins-<target>.yml`: exactly the
+// Beside them go plain Bun for plugins (`moss-plugin-bun-<bun version>-<target>`, `<channel>-plugin-bun-<target>.yml`)
+// and the bundled plugins (`moss-plugins-<version>-<target>.tar.gz`, `<channel>-plugins-<target>.yml`: exactly the
 // tree that target's core embeds the manifest of, packed from the built app's resources/plugins).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -29,39 +29,25 @@ import {
 } from "../../packages/update-feed/src/index";
 import { PLUGIN_BUN, RESTRICTED_SIGN_OPTIONS } from "../bundled-binaries";
 import { carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL } from "../test-build";
+import { CHANNELS, CORE_TARGET, channelsServed, feedFile, installersOf, type Channel, type ReleaseOs } from "./artifacts";
 
-export const CHANNELS = ["latest", "beta"] as const;
-export type Channel = (typeof CHANNELS)[number];
+// The artifact table (scripts/release/artifacts.ts) is the one place that names what a release holds; the release scripts and
+// their tests read it through here.
+/** The engine's file name in an app (`.exe` on Windows); the other release scripts take it from here. */
+export const ENGINE_NAME = "moss-core";
+export const engineFile = (os: "mac" | "win" | "linux"): string => (os === "win" ? `${ENGINE_NAME}.exe` : ENGINE_NAME);
+
+export {
+  CHANNELS, CORE_TARGET, RELEASE_OSES, appFeedFile, channelsServed, coreArtifacts, engineArtifacts, expectedArtifacts, feedFile, pluginBunArtifacts, pluginsArtifacts,
+  type Channel, type ReleaseOs,
+} from "./artifacts";
 
 /** The feed, as electron-builder.yml's `publish` names it. */
-export const FEED = { provider: "github", owner: "waifucave", repo: "clover" } as const;
+export const FEED = { provider: "github", owner: "waifucave", repo: "moss" } as const;
 
-export type ReleaseOs = "mac" | "win" | "linux-x64" | "linux-arm64";
-
-/** The update file electron-updater reads for `os` on `channel`. */
-export function feedFile(channel: Channel, os: ReleaseOs): string {
-  switch (os) {
-    case "mac": return `${channel}-mac.yml`;
-    case "win": return `${channel}.yml`;
-    case "linux-x64": return `${channel}-linux.yml`;
-    case "linux-arm64": return `${channel}-linux-arm64.yml`;
-  }
-}
-
-/** The channels a release on `channel` writes update files for: a full release serves beta users too. */
-export function channelsServed(channel: Channel): Channel[] {
-  return channel === "latest" ? ["latest", "beta"] : ["beta"];
-}
-
-/** The installers a release holds for `os` (electron-builder.yml's artifact names; the cask and winget use them). */
+/** The installers a release holds for `os`, both apps' (the table's rows: electron-builder.yml's artifact names; the casks and winget use them). */
 export function installers(version: string, os: ReleaseOs): string[] {
-  switch (os) {
-    case "mac": return [`Clover-${version}.dmg`, `Clover-${version}-mac.zip`];
-    case "win": return [`Clover-Setup-${version}.exe`];
-    case "linux-x64": return [`clover_${version}_amd64.deb`, `clover-${version}.x86_64.rpm`, `Clover-${version}-x86_64.AppImage`];
-    // electron-builder spells the architecture per format: the rpm's file says arm64 where the package says aarch64.
-    case "linux-arm64": return [`clover_${version}_arm64.deb`, `clover-${version}.arm64.rpm`, `Clover-${version}-arm64.AppImage`];
-  }
+  return installersOf(version, os);
 }
 
 /** The file a build leaves saying which commit it was built from (publish.ts tags the release at it). */
@@ -93,7 +79,7 @@ export function dirtyEntries(porcelain: string): string[] {
 
 /** The mark a sign-only build's BUILD-COMMIT carries on its second line (`build.ts --sign --no-notarize`): Developer
  *  ID signed, never notarized or stapled, for the Mac that built it. Nothing in the code carries it; only that file. */
-export const SIGN_ONLY_LABEL = "CLOVER-SIGN-ONLY-BUILD";
+export const SIGN_ONLY_LABEL = "MOSS-SIGN-ONLY-BUILD";
 
 /** What a build's BUILD-COMMIT says it is beyond its commit: a test-marked build, a sign-only one, or (none) a release. */
 export type BuildMark = "test" | "sign-only";
@@ -120,31 +106,6 @@ export function signOnlyCommitProblem(name: string, text: string): string | unde
     : undefined;
 }
 
-/** The daemon's target each OS's release build makes (scripts/build-daemon.ts's). */
-export const CORE_TARGET: Readonly<Record<ReleaseOs, CoreTarget>> = { mac: "darwin-arm64", win: "windows-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64" };
-
-/** The daemon's files in `os`'s release: its binary and its update file for each channel served. */
-export function coreArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [coreBinaryFile(version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => coreFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** Plain Bun for plugins in `os`'s release, for a server install (scripts/bundled-binaries.ts): its binary, named by
- *  the daemon's Bun version, and its update file for each channel served. */
-export function pluginBunArtifacts(os: ReleaseOs, channel: Channel): string[] {
-  return [pluginBunBinaryFile(PLUGIN_BUN.version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => pluginBunFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** The bundled plugins in `os`'s release, for a server install: the tarball and its update file for each channel. */
-export function pluginsArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [pluginsTarballFile(version, CORE_TARGET[os]), ...channelsServed(channel).map((c) => pluginsFeedFile(c, CORE_TARGET[os]))];
-}
-
-/** Every file `os`'s release build must leave: its installers, its update files for each channel served, the
- *  daemon's (`coreArtifacts`), plugin Bun's (`pluginBunArtifacts`) and the bundled plugins' (`pluginsArtifacts`). */
-export function expectedArtifacts(version: string, os: ReleaseOs, channel: Channel): string[] {
-  return [...installers(version, os), ...channelsServed(channel).map((c) => feedFile(c, os)), ...coreArtifacts(version, os, channel), ...pluginBunArtifacts(os, channel), ...pluginsArtifacts(version, os, channel)];
-}
-
 /** Every regular file under `dir` with its executable bit, for the tarball; a symlink or anything else throws. */
 export function tarballFilesOf(dir: string): TarballFile[] {
   const out: TarballFile[] = [];
@@ -162,7 +123,7 @@ export function tarballFilesOf(dir: string): TarballFile[] {
 }
 
 /** After the build: the bundled plugins the app ships (`pluginsDir`, its resources/plugins, already held to the core's
- *  manifest) packed as `clover-plugins-<version>-<target>.tar.gz`, and its update file for each channel served. */
+ *  manifest) packed as `moss-plugins-<version>-<target>.tar.gz`, and its update file for each channel served. */
 export function writePluginsAssets(outDir: string, version: string, os: ReleaseOs, channel: Channel, pluginsDir: string): string[] {
   const file = pluginsTarballFile(version, CORE_TARGET[os]);
   const bytes = packTarball(tarballFilesOf(pluginsDir));
@@ -184,7 +145,7 @@ export function checkPluginsFeed(text: string, version: string, read: (name: str
 }
 
 /** After the build: plugin Bun (`binary`, the one beside the daemon in the app, signed with it on a signed macOS
- *  build) copied as `clover-plugin-bun-<bun version>-<target>`, and its update file for each channel served. */
+ *  build) copied as `moss-plugin-bun-<bun version>-<target>`, and its update file for each channel served. */
 export function writePluginBunAssets(outDir: string, os: ReleaseOs, channel: Channel, binary: string): string[] {
   const file = pluginBunBinaryFile(PLUGIN_BUN.version, CORE_TARGET[os]);
   copyFileSync(binary, join(outDir, file));
@@ -212,7 +173,7 @@ export function checkPluginBunFeed(text: string, read: (name: string) => Uint8Ar
 
 /**
  * After the build: the daemon `binary` (the one inside the app, signed with it on a signed macOS build) copied as
- * `clover-core-<version>-<target>`, and its update file for each channel served. Returns the files written.
+ * `moss-core-<version>-<target>`, and its update file for each channel served. Returns the files written.
  */
 export function writeCoreAssets(outDir: string, version: string, os: ReleaseOs, channel: Channel, binary: string): string[] {
   const file = coreBinaryFile(version, CORE_TARGET[os]);
@@ -349,28 +310,28 @@ export function identityTeam(identity: string): string {
 }
 
 /**
- * The binaries Clover's own build puts in the app's resources, which it signs itself (electron-builder.yml's
+ * The binaries MOSS's own build puts in the app's resources, which it signs itself (electron-builder.yml's
  * `signIgnore` leaves them to it): each with the hardened runtime, a secure timestamp, its own identifier, and
  * only the entitlements it needs. The daemon is Bun, whose JIT needs `allow-jit` and, until the SIP-on check drops
- * it, `allow-unsigned-executable-memory` (scripts/clover-core.entitlements); the link sidecar is Rust and needs none;
+ * it, `allow-unsigned-executable-memory` (scripts/moss-core.entitlements); the link sidecar is Rust and needs none;
  * plugin Bun also loads plugins' native addons; the process holder is C on libSystem and needs none. All of them are
  * inside the app that notarization submits, so each is notarized with it.
  *
  * `restrict` adds the code-signing `restrict` flag (CS_RESTRICT) to the hardened runtime. Without it any process of the
  * same user reads a non-platform process's environment through sysctl KERN_PROCARGS2 (what `ps -E` shows), and no
  * Seatbelt rule stops that without crashing Bun; with it the kernel hands such a reader no environment. The daemon and
- * the plugin Bun carry what they're started with in their environment (CLOVER_PLUGIN_TOKEN, the socket, a plugin's
+ * the plugin Bun carry what they're started with in their environment (MOSS_PLUGIN_TOKEN, the socket, a plugin's
  * own variables), so both are restricted (scripts/verify-fd-receiver-compiled.ts, step 4, measures it on a build).
  * The flag protects SIP-on Macs and does nothing with SIP off (the kernel then hands over the environment anyway).
  * dyld already ignores DYLD_ variables for both under the hardened runtime with SIP on; `restrict` keeps that.
  */
 export const RESOURCE_BINARIES = [
-  { file: "clover-core", identifier: "com.waifucave.clover.core", entitlements: "scripts/clover-core.entitlements", restrict: true },
-  { file: "clover-link", identifier: "com.waifucave.clover.link", entitlements: undefined, restrict: false },
+  { file: ENGINE_NAME, identifier: "com.waifucave.moss.core", entitlements: "scripts/moss-core.entitlements", restrict: true },
+  { file: "moss-link", identifier: "com.waifucave.moss.core.link", entitlements: undefined, restrict: false },
   // The binaries that run code not the core's own (scripts/bundled-binaries.ts), never under the core's identifier:
   // plain Bun for plugins (JIT, bun:ffi, native addons), and lane A's process holder (none).
-  { file: "clover-plugin-bun", identifier: "com.waifucave.clover.plugin-bun", entitlements: "scripts/clover-plugin-bun.entitlements", restrict: true },
-  { file: "clover-process-holder", identifier: "com.waifucave.clover.process-holder", entitlements: undefined, restrict: false },
+  { file: "moss-plugin-bun", identifier: "com.waifucave.moss.core.plugin-bun", entitlements: "scripts/moss-plugin-bun.entitlements", restrict: true },
+  { file: "moss-process-holder", identifier: "com.waifucave.moss.core.process-holder", entitlements: undefined, restrict: false },
 ] as const;
 
 /** codesign's `--options` for a binary: the hardened runtime, and `restrict` where `RESOURCE_BINARIES` asks it. */
@@ -387,7 +348,7 @@ export function codesignArgs(path: string, identity: string, identifier: string,
  * The owner's dev-signed alpha (`release/build.ts --sign-dev`): the same binaries signed with the owner's Apple
  * Development identity (by its SHA-1, so two same-named certificates can't make codesign guess), with the hardened
  * runtime and each binary's own identifier and entitlements, but no secure timestamp (nothing notarizes it) and an
- * explicit designated requirement on Clover's team, `identifier "<id>" and anchor apple generic and certificate
+ * explicit designated requirement on MOSS's team, `identifier "<id>" and anchor apple generic and certificate
  * leaf[subject.OU] = "<team>"`. That is the requirement the Keychain items and plugin Bun's check hold the binary to,
  * and a later Developer ID build of the same identifier satisfies it too (an Apple Development certificate's default
  * requirement names the person's certificate instead, which a Developer ID build would not meet).
@@ -397,12 +358,12 @@ export function codesignDevArgs(path: string, identityHash: string, identifier: 
   return ["codesign", "--force", "--sign", identityHash, "--options", signOptions(o), "--timestamp=none", "--identifier", identifier,
     `-r=designated => ${teamRequirement(identifier, teamId)}`,
     ...(entitlements === undefined ? [] : ["--entitlements", entitlements]),
-    // A keychain named for this build only (CLOVER_MAC_DEV_KEYCHAIN): the identity is looked up there, and the user's
+    // A keychain named for this build only (MOSS_MAC_DEV_KEYCHAIN): the identity is looked up there, and the user's
     // keychain search list is never changed for it.
     ...(keychain === undefined ? [] : ["--keychain", keychain]), path];
 }
 
-/** A binary's requirement on Clover's team: its identifier, Apple's chain, the team's certificate. */
+/** A binary's requirement on MOSS's team: its identifier, Apple's chain, the team's certificate. */
 export function teamRequirement(identifier: string, teamId: string): string {
   return `identifier "${identifier}" and anchor apple generic and certificate leaf[subject.OU] = "${teamId}"`;
 }

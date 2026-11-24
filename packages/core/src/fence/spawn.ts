@@ -10,8 +10,8 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync } fr
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { AgentJob } from "../platform/win-job";
-import { noteSpawned } from "../auth/clover-caller";
-import type { Caller, Os } from "@waifucave/clover-protocol";
+import { noteSpawned } from "../auth/moss-caller";
+import type { Caller, Os } from "@waifucave/moss-protocol";
 
 export interface FencedRun {
   /** A shell command line, run by the platform's shell: `/bin/sh -c` on macOS and Linux; on Windows Git Bash
@@ -27,6 +27,17 @@ export interface FencedRun {
   readonly stdin?: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
+  /** Windows: the shell the command runs in, Git Bash (the default) or Windows PowerShell (the PowerShell tool).
+   *  macOS and Linux run `/bin/sh` whatever this says. */
+  readonly shell?: "bash" | "powershell";
+  /** Windows: the runtime sandbox settings this run is held to, when the caller has them (a bot's Bash and PowerShell:
+   *  the very settings its runtime's Seatbelt or bubblewrap get on macOS and Linux, `botSandboxSettings`). Without
+   *  them the run's sandbox is drawn from the fence's policy for `who`. macOS and Linux ignore it. */
+  readonly sandbox?: import("@waifucave/clover-agent-sdk").SandboxSettingsConfig;
+  /** Windows: a command the person approved to leave the sandbox (a bot's escape, past its card): it runs as the
+   *  escape account, which reaches the network but the cloud metadata address (`escapeMember`). macOS and Linux
+   *  ignore it (their escape is the runtime's own). */
+  readonly network?: boolean;
   /** Whose run it is: the fence's set, the home default-deny's allows, and the network rule are this caller's. */
   readonly who: {
     readonly caller: Caller; readonly hook?: string;
@@ -190,7 +201,7 @@ export async function runCommand(r: FencedRun, how: { shell: RunShell; argv: rea
   // only this run uses, the child's next fd.
   let status: { dir: string; file: string; fd: number } | undefined;
   if (how.descendants?.kind === "holder") {
-    const dir = mkdtempSync(join(tmpdir(), "clover-holder-"));
+    const dir = mkdtempSync(join(tmpdir(), "moss-holder-"));
     const file = join(dir, "status");
     const fd = openSync(file, "w", 0o600);
     status = { dir, file, fd };

@@ -1,12 +1,12 @@
 // The test-marked release build (`scripts/release/build.ts --test-build`): a Developer ID signed, never notarized
-// Clover.app whose core and app take a throwaway keychain file and a temp home, so an agent can run the acceptance
+// MOSS Code.app whose core and app take a throwaway keychain file and a temp home, so an agent can run the acceptance
 // script against a packaged build without the login keychain.
 //
-// The marker is COMPILE-TIME only: the `__CLOVER_TEST_BUILD__` define, which every release build passes, `false` for a
+// The marker is COMPILE-TIME only: the `__MOSS_TEST_BUILD__` define, which every release build passes, `false` for a
 // real build and the label for a test one (the core's `bun build` steps through scripts/build-daemon.ts, the app's
 // main process through apps/desktop/scripts/build.ts). Nothing at run time (an environment variable, an argument, a
 // file, a setting, a plugin) can set it. Each test-only branch tests the define in its own module
-// (`typeof __CLOVER_TEST_BUILD__ === "string"`), which Bun folds, so in a real build the branch and every function only
+// (`typeof __MOSS_TEST_BUILD__ === "string"`), which Bun folds, so in a real build the branch and every function only
 // it calls are gone from the bytes. `testBuildMarkerProblems` proves that on every build: a real one carries neither
 // the label (which only the define puts there) nor the sentinel (a phrase only the test-only code says), and a test
 // one carries both.
@@ -15,30 +15,42 @@
 // reach a binary only through the define.
 
 /** The define's value in a test build: one token, no spaces or quotes beyond the JSON string's own. */
-export const TEST_BUILD_LABEL = "CLOVER-TEST-BUILD";
+export const TEST_BUILD_LABEL = "MOSS-TEST-BUILD";
 
 /** A phrase only the test-only code says (its refusals and its version line): the dead-code half of the gate. */
 export const TEST_BUILD_SENTINEL = "test-marked build";
 
 /** The define's name. */
-export const TEST_BUILD_DEFINE_NAME = "__CLOVER_TEST_BUILD__";
+export const TEST_BUILD_DEFINE_NAME = "__MOSS_TEST_BUILD__";
 
 /** The source acceptance's own build of the app (apps/desktop/scripts/build.ts --acceptance): its define and label,
  *  `false` in every other build, a release's and the test twin's included. */
-export const ACCEPTANCE_BUILD_DEFINE_NAME = "__CLOVER_ACCEPTANCE_BUILD__";
-export const ACCEPTANCE_BUILD_LABEL = "CLOVER-ACCEPTANCE-BUILD";
+export const ACCEPTANCE_BUILD_DEFINE_NAME = "__MOSS_ACCEPTANCE_BUILD__";
+export const ACCEPTANCE_BUILD_LABEL = "MOSS-ACCEPTANCE-BUILD";
 export function acceptanceBuildDefine(acceptance: boolean): Record<string, string> {
   return { [ACCEPTANCE_BUILD_DEFINE_NAME]: acceptance ? JSON.stringify(ACCEPTANCE_BUILD_LABEL) : "false" };
 }
 
+/** The live preview's own build of the app (apps/desktop/scripts/build.ts --preview, which only scripts/preview/run.ts
+ *  passes): its define and label, `false` in every other build, a release's, the test twin's and the acceptance build's
+ *  included. What it guards (the one-window preview on a throwaway home) is compiled out of every other build. */
+export const PREVIEW_BUILD_DEFINE_NAME = "__MOSS_PREVIEW_BUILD__";
+export const PREVIEW_BUILD_LABEL = "MOSS-PREVIEW-BUILD";
+export function previewBuildDefine(preview: boolean): Record<string, string> {
+  return { [PREVIEW_BUILD_DEFINE_NAME]: preview ? JSON.stringify(PREVIEW_BUILD_LABEL) : "false" };
+}
+/** What only the preview build's code reads (the environment variables the preview command hands its app). Every other
+ *  build's app code carries none of them, nor the label. */
+export const PREVIEW_ONLY_APP_STRINGS = ["MOSS_PREVIEW_RELOAD_FILE", "MOSS_PREVIEW_APPEARANCE", "MOSS_PREVIEW_BANNER", "moss-preview-line", "the window's files changed; reloading it", "MOSS_PREVIEW_CONTROL_SOCKET", "MOSS_PREVIEW_CONTROL_TOKEN", "moss-preview-control", "an answer names the card, its hash and the option", "this preview is headless: it has no window to bring forward"] as const;
+
 /** The release build's own define (apps/desktop/scripts/build.ts --release, which release/build.ts passes for every
- *  build but the test twin): `__CLOVER_RELEASE_BUILD__`, the label in a release-shaped build (signed, sign-only,
+ *  build but the test twin): `__MOSS_RELEASE_BUILD__`, the label in a release-shaped build (signed, sign-only,
  *  dev-signed, CI's unsigned), `false` in a test twin, an acceptance build and a dev build. It is for the app's
  *  "packaged" decision, which must not rest on the executable's name alone (Electron's `app.isPackaged` is false for an
  *  executable named `electron`); until that helper reads it, the main bundle carries the label in a leading comment
  *  (`RELEASE_BUILD_BANNER`), so the gate below can see that the release build reached the main process. */
-export const RELEASE_BUILD_DEFINE_NAME = "__CLOVER_RELEASE_BUILD__";
-export const RELEASE_BUILD_LABEL = "CLOVER-RELEASE-BUILD";
+export const RELEASE_BUILD_DEFINE_NAME = "__MOSS_RELEASE_BUILD__";
+export const RELEASE_BUILD_LABEL = "MOSS-RELEASE-BUILD";
 export function releaseBuildDefine(release: boolean): Record<string, string> {
   return { [RELEASE_BUILD_DEFINE_NAME]: release ? JSON.stringify(RELEASE_BUILD_LABEL) : "false" };
 }
@@ -59,7 +71,12 @@ export function releaseMarkerProblems(what: string, bytes: Uint8Array, release: 
 
 /** What only the test-only code of the app reads: the environment variables that pick the kept test answer key and
  *  allow the offscreen press. A real build's app code carries none of them (nor the acceptance label). */
-export const TEST_ONLY_APP_STRINGS = ["CLOVER_TEST_MAIN_FRONT_FILE", "CLOVER_TEST_ANSWER_KEY", "CLOVER_TEST_SEALED_PRESS", "CLOVER_TEST_PICK", "CLOVER_TEST_PICK_AVATAR", "CLOVER_TEST_PICK_FILES", "CLOVER_TEST_APPEARANCE_FILE", "CLOVER_TEST_WINDOW_SIZE_FILE", "CLOVER_TEST_KEY_FILE", "CLOVER_TEST_SLEEP_AFTER_MS"] as const;
+export const TEST_ONLY_APP_STRINGS = ["MOSS_TEST_MAIN_FRONT_FILE", "MOSS_TEST_WINDOW_FILE", "MOSS_TEST_ANSWER_KEY", "MOSS_TEST_SEALED_PRESS", "MOSS_TEST_PICK", "MOSS_TEST_PICK_FILES", "MOSS_TEST_APPEARANCE_FILE", "MOSS_TEST_WINDOW_SIZE_FILE", "MOSS_TEST_KEY_FILE", "MOSS_TEST_SLEEP_AFTER_MS", "MOSS_TEST_APP_RELEASE", "MOSS_TEST_APP_BUNDLE", "MOSS_TEST_UPDATE_OUTCOME", "MOSS_TEST_RELEASE_RETRY_MS", "MOSS_SMOKE_SEALED_CLICK", "MOSS_SMOKE_SEALED_FALLBACK", "MOSS_SMOKE_DROP_FRESH", "MOSS_SMOKE_PIN_VISIBLE", "MOSS_TEST_VIEWPORT_PRESS_FILE", "MOSS_TEST_HOST_ENGINE_GONE_MS", "MOSS_TEST_SCREEN_FILE"] as const;
+
+/** The same for MOSS's own app (`apps/moss`): names only ITS test-only code reads. MOSS Code's test build reads none of
+ *  them, so they are a list of their own (`apps/moss/test/main-markers.test.ts` holds it to MOSS's real and test builds);
+ *  the release gate looks for both lists in either app. */
+export const TEST_ONLY_MOSS_APP_STRINGS = ["MOSS_TEST_BOT", "MOSS_TEST_CARDS", "MOSS_TEST_FRONT", "MOSS_TEST_PRESSES", "MOSS_RENDER_MEASURE", "MOSS_RENDER_SCENES", "MOSS_TEST_GLASS"] as const;
 
 /** The `bun build --define` argument for a shell line: `false` in a real build (no quotes, so cmd.exe takes it), the
  *  label as a JSON string in a test build (macOS only, /bin/sh). */
@@ -101,7 +118,7 @@ export function testBuildMarkerProblems(what: string, bytes: Uint8Array, test: b
 /** What only the core's test-only code reads: the acceptance's hold on a stopping daemon and its cut stop bound
  *  (packages/cli/src/main.ts), and its outside world on loopback (packages/core/src/daemon.ts, the plugins' pinned
  *  fetch). A real build's core carries none of them. */
-export const TEST_ONLY_CORE_STRINGS = ["CLOVER_TEST_STOP_HOLD_FILE", "CLOVER_TEST_STOP_BUDGET_MS", "CLOVER_TEST_OUTSIDE_WORLD"] as const;
+export const TEST_ONLY_CORE_STRINGS = ["MOSS_TEST_STOP_HOLD_FILE", "MOSS_TEST_STOP_BUDGET_MS", "MOSS_TEST_OUTSIDE_WORLD", "MOSS_TEST_ENGINE_RELEASE", "MOSS_TEST_ENGINE_COPY_CHECK", "MOSS_TEST_APP_PEER_PID"] as const;
 
 interface AsarNode { files?: Record<string, AsarNode>; size?: number; offset?: string; unpacked?: boolean }
 
@@ -139,17 +156,24 @@ export function asarMarkerProblems(what: string, bytes: Uint8Array, test: boolea
   const code = [...files].filter(([path]) => !path.endsWith(".map"));
   const label = contains(bytes, TEST_BUILD_LABEL);
   const sentinel = code.some(([, b]) => contains(b, TEST_BUILD_SENTINEL));
+  // The live preview's build: neither a real build nor the test twin carries its label or the names only it reads.
+  const preview = [
+    ...(contains(bytes, PREVIEW_BUILD_LABEL) ? [`${what} carries the preview build's label ${PREVIEW_BUILD_LABEL}: only scripts/preview/run.ts's own build does, never a real build or the test twin`] : []),
+    ...PREVIEW_ONLY_APP_STRINGS.filter((t) => code.some(([, b]) => contains(b, t))).map((t) => `${what}'s code reads ${t}: the preview's path must be compiled out of a real build and the test twin`),
+  ];
   if (test) {
     return [
       ...(label ? [] : [`${what} is a test build but doesn't carry the label ${TEST_BUILD_LABEL} (the define didn't reach it)`]),
       ...(sentinel ? [] : [`${what} is a test build but its code doesn't carry the test-only branch ("${TEST_BUILD_SENTINEL}")`]),
+      ...preview,
     ];
   }
-  const testOnly = TEST_ONLY_APP_STRINGS.filter((t) => code.some(([, b]) => contains(b, t)));
+  const testOnly = [...TEST_ONLY_APP_STRINGS, ...TEST_ONLY_MOSS_APP_STRINGS].filter((t) => code.some(([, b]) => contains(b, t)));
   return [
     ...(label ? [`${what} carries the test-build label ${TEST_BUILD_LABEL}: a real build never does`] : []),
     ...(sentinel ? [`${what}'s code carries the test-only branch ("${TEST_BUILD_SENTINEL}"): a real build's must be compiled out`] : []),
     ...(contains(bytes, ACCEPTANCE_BUILD_LABEL) ? [`${what} carries the acceptance build's label ${ACCEPTANCE_BUILD_LABEL}: a real build never does`] : []),
     ...testOnly.map((t) => `${what}'s code reads ${t}: a real build's test-only path must be compiled out`),
+    ...preview,
   ];
 }

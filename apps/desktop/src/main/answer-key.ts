@@ -27,7 +27,7 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { answerKeyHolderFor, ERR, type AnswerKeyHolder } from "@waifucave/clover-protocol";
+import { answerKeyHolderFor, ERR, programAnswerKeyStatement, type AnswerKeyHolder } from "@waifucave/moss-protocol";
 import { CLIENT_ERR } from "./protocol/client";
 
 /** Where the key's private half is kept: the current key, and a replacement staged while its card waits. */
@@ -139,7 +139,7 @@ export function memoryVault(held: AnswerKeyHolder = "none"): KeyVault {
   };
 }
 
-/** A test run's kept key (`CLOVER_TEST_ANSWER_KEY`, the acceptance's file beside its throwaway keychain FILE): the
+/** A test run's kept key (`MOSS_TEST_ANSWER_KEY`, the acceptance's file beside its throwaway keychain FILE): the
  *  key in a plain file (0600) and its staged replacement beside it, so a test app that quits and opens again, or an
  *  upgraded one, registers the SAME key. Only a test-marked or unpackaged headless app ever takes it (index.ts); the
  *  core hears "none", as from the in-memory vault. Never a release's: there the OS's store holds the key. */
@@ -184,11 +184,13 @@ export function fileVault(file: string, held: AnswerKeyHolder = "none"): KeyVaul
   };
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What the app signs to show the core it holds the key (lane H's `answerKeyStatement`). */
 export function answerKeyStatement(deviceId: string, publicKey: string, held: AnswerKeyHolder): Uint8Array {
   return new TextEncoder().encode(`clover/answer-key/1\n${deviceId}\n${publicKey}\n${held}`);
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What the current key signs to hand this desktop's answer key over to a new one (lane H's `answerKeyRotateStatement`). */
 export function answerKeyRotateStatement(deviceId: string, from: string, to: string, at: number): Uint8Array {
   return new TextEncoder().encode(`clover/answer-key-rotate/1\n${deviceId}\n${from}\n${to}\n${at}`);
@@ -210,7 +212,12 @@ export class AnswerKey {
   private key: KeyObject | undefined;
   private readonly now: () => number;
 
-  constructor(private readonly vault: KeyVault, private readonly log: (line: string) => void = () => {}, opts: { now?: () => number } = {}) {
+  // lane HS: start. A program other than MOSS Code (the background host) registers its own key, `device.programKey.set`
+  // over the program statement (ruling C); MOSS Code keeps the device's single key.
+  program: "host" | "moss" | undefined;
+  // lane HS: end
+  constructor(private readonly vault: KeyVault, private readonly log: (line: string) => void = () => {}, opts: { now?: () => number; program?: "host" | "moss" } = {}) {
+    this.program = opts.program;
     this.now = opts.now ?? Date.now;
   }
 
@@ -356,8 +363,12 @@ export class AnswerKey {
     if (st && (await this.adoptIfHeld(client, deviceId, st.key)) === "held") return { registered: true };
     try {
       const publicKey = this.publicKey();
-      const signature = Buffer.from(this.sign(answerKeyStatement(deviceId, publicKey, this.held))).toString("base64");
-      await client.request("device.answerKey.set", { publicKey, held: this.held, signature }, 10_000);
+      // lane HS: start
+      const program = this.program;
+      const statement = program === undefined ? answerKeyStatement(deviceId, publicKey, this.held) : new TextEncoder().encode(programAnswerKeyStatement({ device: deviceId, program, publicKey, held: this.held }));
+      const signature = Buffer.from(this.sign(statement)).toString("base64");
+      await client.request(program === undefined ? "device.answerKey.set" : "device.programKey.set", { publicKey, held: this.held, signature }, 10_000);
+      // lane HS: end
       this.log(`answer key: registered (${this.held})`);
     } catch (err) {
       const why = err instanceof Error ? err.message.slice(0, 200) : "refused";

@@ -1,7 +1,7 @@
 // The daemon's one plugin host (B-M2; spec §5.2, §5.4): a `CorePluginHost` over the plugin registry, its processes
-// launched on the plugin Bun with Clover's load guard, and the plugin API's router served to them.
+// launched on the plugin Bun with MOSS's load guard, and the plugin API's router served to them.
 //
-// * Processes: one per key, `clover` (the bundled `clover` tree), `shared` (every other Bun plugin) and `own:<id>` (a
+// * Processes: one per key, `moss` (the bundled `moss` tree), `shared` (every other Bun plugin) and `own:<id>` (a
 //   plugin that asks for its own), started when a plugin first needs one and started again after it exits. A Node
 //   plugin's process isn't served yet: starting one fails with why, under the crash rules.
 // * A process gets only a small environment (the path, home, temp folder and locale), never the daemon's: its workers
@@ -16,27 +16,35 @@
 import type { CardOpener } from "../devices/rpc";
 import { wrapperOpensNetwork } from "../registry/wrap";
 import { appendFileSync, mkdirSync, realpathSync, renameSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { topPluginIdOf } from "@waifucave/clover-protocol";
+import { topPluginIdOf } from "@waifucave/moss-protocol";
 import { fencedCommand, fencedSpawn, pluginFenceAvailable, toolCacheEnv, type PluginFenceInput } from "../registry/plugin-fence";
 import { stagedBundledDir } from "../registry/bundled-stage";
-import { API_CALLS, reachesPublicNetwork, type ApiCallPath } from "@waifucave/clover-plugin-sdk";
+import { API_CALLS, reachesPublicNetwork, type ApiCallPath } from "@waifucave/moss-plugin-sdk";
 import { hostAllowed, hostRules, startPluginProxy, type PluginProxy } from "./net-proxy";
 import { dirname, join, sep } from "node:path";
-import type { HostProcess, Platform } from "@waifucave/clover-protocol";
+import type { HostProcess, Platform } from "@waifucave/moss-protocol";
 import { SystemClock } from "../clock/system-clock";
 import { commandOwner, commandsApi } from "../commands/views";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
 import { guardApiRouter, hostProcessFor, isCrashStop, type ApiRouter, type InstallRecord, type PluginHost } from "../contracts/plugin-host";
-import { grantsInForce, type PluginRecord, type PluginRegistry } from "../contracts/plugin-registry";
+import { grantsInForce, RUNNING_STATES, type PluginRecord, type PluginRegistry } from "../contracts/plugin-registry";
+import { TurnQueues } from "../turns/queue";
+import { turnsApi } from "../turns/api";
+import { StreamHub } from "../streams/hub";
+import { activityApi } from "../activity/api";
+import type { EngineActivityFeed } from "../activity/feed";
+import { picturesApi, type PictureSessions } from "../pictures/api";
+import type { EngineLivePictures } from "../pictures/live-pictures";
+import { streamsApi } from "../streams/api";
 import type { SecretStore, SecretValue } from "../contracts/secret-store";
 import { areasParts, type AreaServices } from "./api/areas";
-import { AvatarService } from "./api/avatar";
+import { PointMessages } from "./api/point-messages";
 import { confirmApi } from "./api/confirm";
 import { keysApi } from "./api/keys";
 import { logsApi } from "./api/logs";
+import { noUserHome, outsideApi, outsideReadFolders } from "./api/outside";
 import { pointChanges, pointsApi } from "./api/points";
 import { createApiRouter, handlerOf, type ApiHandlers } from "./api/router";
 import { filePluginSettings, PluginSettings, settingsApi } from "./api/settings";
@@ -52,7 +60,7 @@ const HOST_ENV_KEYS = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "
 
 /** B's gate's network rule for `net.fetch`: a host on the plugin's GRANTED `network:` list, read as its proxy reads it
  *  (`hostRules`/`hostAllowed`, net-proxy.ts: no port means 443 and 80), or, when the granted set holds `network:public`
- *  (bundled only), any host on 443 or 80 (that fetch is keyless, through Clover's web safeguards:
+ *  (any plugin's, after its OK card's warning line), any host on 443 or 80 (that fetch is keyless, through MOSS's web safeguards:
  *  runtime-sdk/model-plugins/public-fetch.ts, which takes https on the default port only). `port` is the URL's, or its
  *  scheme's (the router's `targetOf`). */
 export function pluginNetworkAllowed(caps: readonly string[], host: string, port?: number): boolean {
@@ -61,7 +69,7 @@ export function pluginNetworkAllowed(caps: readonly string[], host: string, port
 }
 
 export interface DaemonPluginHost {
-  /** The one host: processes `clover`, `shared` and `own:<id>`, with the router and API channel inside. */
+  /** The one host: processes `moss`, `shared` and `own:<id>`, with the router and API channel inside. */
   readonly host: PluginHost;
   /** The registry it serves. */
   readonly registry: PluginRegistry;
@@ -129,7 +137,7 @@ export function pluginSecretsOf(store: Pick<SecretStore, "get">): PluginSecrets 
 }
 
 export interface StartPluginHostOptions {
-  /** The Clover home: `plugin-data/`, `settings/plugins/`, `settings/plugin-stores/`, `logs/plugins/`, `run/`. */
+  /** The MOSS home: `plugin-data/`, `settings/plugins/`, `settings/plugin-stores/`, `logs/plugins/`, `run/`. */
   home: string;
   computer: string;
   registry: PluginRegistry;
@@ -164,7 +172,12 @@ export interface StartPluginHostOptions {
   netConnect?: typeof Bun.connect;
   /** Test seam: how the proxies resolve a listed name (default: the system's resolver). */
   netResolve?: (host: string) => Promise<string[]>;
-  /** The user's home the fence denies (default: `os.homedir()`; tests pass a temp one). */
+  /** The activity feed and the live pictures (spec revision 19, §3.6): served on the plugin API (`activity.*`, `pictures.*`)
+   *  when given; `pictureSessions` says a session's kind and bot for the picture a tool call publishes. */
+  activity?: EngineActivityFeed;
+  pictures?: EngineLivePictures;
+  pictureSessions?: PictureSessions;
+  /** The user's home the fence denies (the daemon passes the user's on its default home; absent, an empty stand-in, never the real one). */
   userHome?: string;
   /** How long an added pick waits for a host that runs programs to have no call in flight before its process is
    *  replaced anyway (default `PICK_WAIT_MS`; tests pass less). */
@@ -204,7 +217,7 @@ export function defaultAssetUrl(pluginId: string, encodedPath: string): string {
   if (safe === undefined || safe !== encodedPath) throw new ContractError("invalid", `${JSON.stringify(encodedPath.slice(0, 200))} isn't a path inside ${pluginId}'s folder`);
   const top = pluginId.split("/")[0]!;
   const rest = pluginId.includes("/") ? `${pluginId.slice(top.length + 1)}/` : "";
-  return `clover-plugin://${top}/${rest}${safe}`;
+  return `moss-plugin://${top}/${rest}${safe}`;
 }
 
 /** A plugin's log file's cap: past it, the file moves to `<id>.log.1` (replacing the one before) and a new one starts. */
@@ -226,7 +239,7 @@ export function pluginLogWriter(o: { dir: string; log: (line: string) => void; n
     const out: string[] = [];
     const stamp = new Date(now).toISOString();
     if (w === undefined || now - w.start >= windowMs) {
-      if (w !== undefined && w.dropped > 0) out.push(`${stamp} [clover] ${w.dropped} more lines dropped (over ${perWindow} in ${windowMs / 1000} s)`);
+      if (w !== undefined && w.dropped > 0) out.push(`${stamp} [moss] ${w.dropped} more lines dropped (over ${perWindow} in ${windowMs / 1000} s)`);
       w = { start: now, written: 0, dropped: 0 };
       windows.set(pluginId, w);
     }
@@ -325,7 +338,7 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
   let launch: HostProcessLaunch | Error;
   try {
     launch = typeof o.launch === "function" ? await o.launch()
-      : o.launch ?? await hostProcessLaunch({ runDir: join(o.home, "run", "plugin-host"), computer: o.computer, base, cloverHome: o.home });
+      : o.launch ?? await hostProcessLaunch({ runDir: join(o.home, "run", "plugin-host"), computer: o.computer, base, mossHome: o.home });
   } catch (err) {
     launch = err instanceof Error ? err : new Error(String(err));
     log(`[plugin-host] plugin processes can't start: ${launch.message}`);
@@ -344,14 +357,17 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
   };
   // What an own process's fence holds of programs now: undefined for none, else its picks.
   const programsNow = (pluginId: string) => (runsPrograms(pluginId) ? o.picked?.(pluginId) ?? { read: [], write: [] } : undefined);
-  const fenceKey = (programs: { read: readonly string[]; write: readonly string[] } | undefined) => (programs === undefined ? "no programs" : picksKey(programs));
+  /** P5: the folders its manifest names to read outside its sandbox, as its own process's fence takes them. */
+  const outsideReadsNow = (pluginId: string): string[] => outsideReadFolders(o.registry.get(pluginId), { userHome: o.userHome ?? noUserHome(), mossHome: o.home });
+  const fenceKey = (programs: { read: readonly string[]; write: readonly string[] } | undefined, pluginId?: string) =>
+    `${programs === undefined ? "no programs" : picksKey(programs)}|${pluginId === undefined ? "" : outsideReadsNow(pluginId).join("\u0000")}`;
   // A live own process whose fence no longer says what its plugin's OK'd tree and picks say (it gained or lost
   // `programs`, or its picks changed): it must not serve the plugin again.
   const staleOwn = (pluginId: string): { key: string; live: { peer: RpcPeer; kill(): void } } | undefined => {
     const key = `own:${pluginId}`;
     const live = processes.get(key);
     if (live === undefined || live.peer.closed) return undefined;
-    return startedFence.get(key)?.key === fenceKey(programsNow(pluginId)) ? undefined : { key, live };
+    return startedFence.get(key)?.key === fenceKey(programsNow(pluginId), pluginId) ? undefined : { key, live };
   };
   const endOwn = (s: { key: string; live: { peer: RpcPeer; kill(): void } }) => () => {
     if (processes.get(s.key) === s.live) {
@@ -361,7 +377,7 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     s.live.kill();
   };
   // Each plugin tree's network proxy (2g): what its host process, hooks and MCP servers reach the network through, only
-  // to the hosts the tree's OKs granted (`network:`), read at each connection. The clover tree's is the union of its
+  // to the hosts the tree's OKs granted (`network:`), read at each connection. The moss tree's is the union of its
   // plugins' lists, as they share a process.
   const proxies = new Map<string, PluginProxy>();
   const proxyFor = (pluginId: string): PluginProxy | undefined => {
@@ -380,11 +396,11 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     }
     return p;
   };
-  // The fence for one process (2f): its plugin tree's folder (for `clover`, the verified copy of the bundled plugins),
+  // The fence for one process (2f): its plugin tree's folder (for `moss`, the verified copy of the bundled plugins),
   // its data folder and its own temp folder, with what every host process reads.
   const fencedLaunch = (l: HostProcessLaunch, key: string, top: string, dataOf: string, programs?: { read: readonly string[]; write: readonly string[] }): HostProcessLaunch => {
     if (o.fence === false || !pluginFenceAvailable()) return l;
-    const tree = top === "clover" ? join(stagedBundledDir(o.home), "clover") : o.registry.get(top)?.folder;
+    const tree = top === "moss" ? join(stagedBundledDir(o.home), "moss") : o.registry.get(top)?.folder;
     if (tree === undefined) return l;
     const tmp = join(o.home, "run", "plugin-tmp", key.replace(/[^a-z0-9-]/g, "_"));
     mkdirSync(tmp, { recursive: true, mode: 0o700 });
@@ -394,25 +410,31 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     // The network: its tree's proxy; a wrapper with the grant on its install record, any host (the same fact the
     // stdio servers' and hooks' guard reads, `wrapperOpensNetwork`).
     // A host process may hold a child's code too: open only for a tree that is the top plugin alone.
-    const open = top !== "clover" && !o.registry.list().some((r) => r.id !== top && topPluginIdOf(r.id) === top) && wrapperOpensNetwork(o.registry, top);
+    const open = top !== "moss" && !o.registry.list().some((r) => r.id !== top && topPluginIdOf(r.id) === top) && wrapperOpensNetwork(o.registry, top);
     const proxy = open ? undefined : proxyFor(top);
     const network: PluginFenceInput["network"] = open ? "open" : proxy !== undefined ? { proxyPort: proxy.port } : "none";
     // A host of its own that runs programs (the coordinator's ruling): what its stdio servers get (`toolFence`), any
     // program and forks, the package managers' installs read-only, within the same walls: its tree, its data and temp
     // folders, the files the user picked for it (an open pick read, a save pick or an export folder read and written),
     // its tree's proxy. Every other host runs only its Bun and starts no process.
+    // P5: the folders of the user's its manifest names to read outside its sandbox (`host.outside.read`), read only, for
+    // the process of its own the manifest then has (`host.process: "own"`). The fence's last denies (the Keychain's
+    // files, the tools' credential files) still hold inside them.
+    const userHome = o.userHome ?? noUserHome();
+    const outsideReads = key.startsWith("own:") ? outsideReadsNow(dataOf) : [];
     const fence: PluginFenceInput = programs !== undefined
       ? {
-        cloverHome: o.home, userHome: o.userHome ?? homedir(),
-        read: [tree, ...(l.reads ?? [])], write: [data, tmp, ...programs.write], exec: "any", tools: true, network,
+        mossHome: o.home, userHome,
+        read: [tree, ...(l.reads ?? []), ...outsideReads], write: [data, tmp, ...programs.write], exec: "any", tools: true, network,
         ...(programs.read.length > 0 ? { picked: programs.read } : {}),
       }
       : {
-        cloverHome: o.home, userHome: o.userHome ?? homedir(),
-        read: [tree, ...(l.reads ?? [])], write: [data, tmp], exec: "plugin", execs: [l.cmd[0]!], fork: false, network,
-        ...(key === "clover" ? { noNativeCode: true } : {}),
+        mossHome: o.home, userHome,
+        read: [tree, ...(l.reads ?? []), ...outsideReads], write: [data, tmp], exec: "plugin", execs: [l.cmd[0]!], fork: false, network,
+        ...(key === "moss" ? { noNativeCode: true } : {}),
       };
-    const env = { ...l.env, ...(proxy?.env ?? {}), ...(programs !== undefined ? toolCacheEnv(tmp) : {}), TMPDIR: tmp, TMP: tmp, TEMP: tmp };
+    // A process of its own that reads the user's folders (`host.outside`) is told the one home the door and the fence use.
+    const env = { ...l.env, ...(key.startsWith("own:") ? { HOME: userHome } : {}), ...(proxy?.env ?? {}), ...(programs !== undefined ? toolCacheEnv(tmp) : {}), TMPDIR: tmp, TMP: tmp, TEMP: tmp };
     // Through the spawn trampoline, keeping its link (descriptor 3): its own TCC-responsible process (the controller's
     // ruling after #345). A launch that names no run files (a test's) is fenced without it.
     if (l.files === undefined) return { ...l, cmd: fencedCommand(l.cmd, fence), env };
@@ -430,16 +452,16 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     connect(process: HostProcess, pluginId: string): RpcPeer {
       if (closed) throw new ContractError("cancelled", "the plugin host is closing");
       if (process === "own" && o.registry.get(pluginId)?.manifest?.host?.runtime === "node") {
-        throw new ContractError("refused", `${pluginId} runs on Node, whose plugin processes this Clover doesn't start yet`);
+        throw new ContractError("refused", `${pluginId} runs on Node, whose plugin processes this MOSS doesn't start yet`);
       }
       // One process per plugin tree (the coordinator's ruling on 2f, a change to spec §5.2): a third-party plugin, and
       // its children, never share a process with another plugin, so each process's fence names that plugin's folder
-      // and data only. The bundled `clover` tree keeps its one process. The cost is a Bun process per installed plugin
+      // and data only. The bundled `moss` tree keeps its one process. The cost is a Bun process per installed plugin
       // with host code (about 30 to 50 MB each).
       const top = topPluginIdOf(pluginId);
       // A plugin that asks for a process of its own (`host.process: "own"`, a Node plugin, or a bundled one with native
-      // code, which the clover process doesn't load) gets one by its id; any other third-party tree, one by its top id.
-      const key = process === "clover" ? "clover" : process === "own" ? `own:${pluginId}` : `${process}:${top}`;
+      // code, which the moss process doesn't load) gets one by its id; any other third-party tree, one by its top id.
+      const key = process === "moss" ? "moss" : process === "own" ? `own:${pluginId}` : `${process}:${top}`;
       if (launch instanceof Error) throw new ContractError("failed", `plugin processes can't start here: ${launch.message}`);
       // An own process started with another fence (its plugin gained or lost `programs` meanwhile, or its picks changed
       // while it wasn't serving) ends first: a plugin is never served from a fence its OK doesn't describe.
@@ -449,13 +471,13 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
       }
       const live = processes.get(key);
       if (live !== undefined && !live.peer.closed) return live.peer;
-      // The clover process holds many plugins: none of them runs native code there (B3, its guard's flag).
-      const forKey = process === "clover" ? { ...launch, env: { ...launch.env, CLOVER_PLUGIN_NO_NATIVES: "1" } } : launch;
+      // The moss process holds many plugins: none of them runs native code there (B3, its guard's flag).
+      const forKey = process === "moss" ? { ...launch, env: { ...launch.env, MOSS_PLUGIN_NO_NATIVES: "1" } } : launch;
       const programs = process === "own" ? programsNow(pluginId) : undefined;
-      const fenced = fencedLaunch(forKey, key, process === "clover" ? "clover" : top, process === "own" ? pluginId : top, programs);
+      const fenced = fencedLaunch(forKey, key, process === "moss" ? "moss" : top, process === "own" ? pluginId : top, programs);
       const started = spawnHostProcess({ ...fenced, onOutput: (line) => log(`[plugin-host ${key}] ${line}`) });
       processes.set(key, started);
-      if (process === "own") startedFence.set(key, { key: fenceKey(programs), programs });
+      if (process === "own") startedFence.set(key, { key: fenceKey(programs, pluginId), programs });
       started.peer.onClose(() => {
         if (processes.get(key) === started) {
           processes.delete(key);
@@ -488,15 +510,64 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
   const areas = o.areas !== undefined ? areasParts({ home: o.home, ...o.areas }) : undefined;
   // `logs.*`: a plugin's own tree's log files, as `pluginLog` writes them.
   const logs = logsApi({ home: o.home, granted: (id) => grantsInForce(o.registry.get(id)) });
+  // Turns (§5.4): the one-at-a-time queues, one set for both halves of every plugin. A plugin that stops loses its turns
+  // and its waiting takes; a host half that stops or restarts loses those its host process made.
+  const turns = new TurnQueues({ clock: o.clock ?? new SystemClock(), log });
+  const offTurnsRegistry = o.registry.watch((c) => {
+    if (c.type === "removed") return turns.endPlugin(c.id, "its plugin was removed");
+    if (c.type !== "plugin") return;
+    const r = o.registry.get(c.id);
+    if (r === undefined || !r.enabled || !RUNNING_STATES.has(r.state)) turns.endPlugin(c.id, `its plugin is ${r === undefined ? "gone" : r.enabled ? r.state : "off"}`);
+  });
+  const offTurnsHost = host.watch((s) => {
+    if (s.state === "stopped" || s.state === "restarting" || s.state === "idle") turns.endPlugin(s.pluginId, `its host half is ${s.state}`, (side) => side !== "ui");
+  });
+  // Streams (§5.4): the byte streams between a plugin's halves, one hub for every plugin. A plugin that stops loses its
+  // streams and its acceptors; a host half that stops or restarts loses those its process wrote or read.
+  const streams = new StreamHub({ log });
+  // A live picture ends with its plugin (stopped, off, removed) and with the tool call it was tied to (`endsWithCall`).
+  const offStreamsRegistry = o.registry.watch((c) => {
+    if (c.type === "removed") {
+      o.pictures?.pluginStopped(c.id);
+      return streams.endPlugin(c.id, "its plugin was removed");
+    }
+    if (c.type !== "plugin") return;
+    const r = o.registry.get(c.id);
+    if (r === undefined || !r.enabled || !RUNNING_STATES.has(r.state)) {
+      o.pictures?.pluginStopped(c.id);
+      streams.endPlugin(c.id, `its plugin is ${r === undefined ? "gone" : r.enabled ? r.state : "off"}`);
+    }
+  });
+  const offStreamsHost = host.watch((s) => {
+    if (s.state === "stopped" || s.state === "restarting" || s.state === "idle") {
+      o.pictures?.pluginStopped(s.pluginId);
+      streams.endPlugin(s.pluginId, `its host half is ${s.state}`, (side) => side !== "ui");
+    }
+  });
+  const offCallEnded = o.pictures === undefined ? undefined : host.invocations.onEnded((id) => o.pictures!.callEnded(id));
+  // Point messages (`points.send`, `points.onMessage`): a plugin that stops, goes off or is removed loses its listeners.
+  const pointMessages = new PointMessages({ registry: o.registry });
+  const offMessagesRegistry = o.registry.watch((c) => {
+    if (c.type === "removed") return pointMessages.endPlugin(c.id);
+    if (c.type !== "plugin") return;
+    const r = o.registry.get(c.id);
+    if (r === undefined || !r.enabled || !RUNNING_STATES.has(r.state)) pointMessages.endPlugin(c.id);
+  });
   const handlers: ApiHandlers[] = [
-    pointsApi({ registry: o.registry, host, assetUrl: o.assetUrl ?? defaultAssetUrl }),
+    pointsApi({ registry: o.registry, host, assetUrl: o.assetUrl ?? defaultAssetUrl, streams }),
     storageApi(new SyncedStores(fileSyncedStores(o.home), { changed: storeChanged })),
     settingsApi(settings),
     commandsApi(o.registry, host),
     logs.handlers,
     keysApi({ secrets: o.secrets }),
+    // P5: the programs a plugin's manifest names, run by the daemon outside its sandbox with the user's own access.
+    outsideApi({ userHome: o.userHome ?? noUserHome(), mossHome: o.home, log, writable: (id) => o.picked?.(id)?.write ?? [] }),
     ...(areas !== undefined ? [areas.handlers] : []),
-    new AvatarService((event) => o.emit?.(event)).handlers(),
+    pointMessages.handlers(),
+    turnsApi({ queues: turns, record: (id) => o.registry.get(id) }),
+    streamsApi({ hub: streams }),
+    ...(o.activity !== undefined ? [activityApi(o.activity)] : []),
+    ...(o.pictures !== undefined && o.pictureSessions !== undefined ? [picturesApi({ pictures: o.pictures, hub: streams, sessions: o.pictureSessions, now: () => (o.clock ?? new SystemClock()).now() })] : []),
     ...(o.approvals !== undefined ? [confirmApi(o.approvals)] : []),
     ...(o.handlers ?? []),
     {
@@ -529,7 +600,10 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
         const w = uiSendWindows.get(ctx.pluginId);
         if (w === undefined || now - w.start >= 1000) uiSendWindows.set(ctx.pluginId, { start: now, n: 1 });
         else if (++w.n > UI_SEND_PER_SECOND) throw new ContractError("refused", `${ctx.pluginId} sent more than ${UI_SEND_PER_SECOND} UI messages this second`);
-        o.emit?.({ type: "plugin_ui_message", pluginId: ctx.pluginId, event, value: JSON.parse(text) });
+        // Sent while serving a session's call: whose, from the core's own record of the call (the caller it bound).
+        const c = ctx.caller;
+        const call = c.kind === "session" && c.sessionKind !== undefined ? { session: c.sessionId, kind: c.sessionKind, ...(c.bot !== undefined ? { bot: c.bot } : {}) } : undefined;
+        o.emit?.({ type: "plugin_ui_message", pluginId: ctx.pluginId, event, value: JSON.parse(text), ...(call !== undefined ? { call } : {}) });
       },
     },
   ];
@@ -540,10 +614,10 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
   // `net.fetch` reaches the hosts the plugin's OK granted, read the way its process's proxy reads them (2g): an entry
   // without a port is 443 and 80, one with a port only that port (the router hands every call its URL's port, or its
   // scheme's). A host named by a setting (`${setting:region}`) fails closed. A host outside the list passes only when
-  // the GRANTED set holds `network:public` (the SDK's catalog: bundled only), on 443 or 80: that fetch is keyless,
-  // through Clover's web safeguards (runtime-sdk/model-plugins/public-fetch.ts, which allows https and the default port
+  // the GRANTED set holds `network:public` (any plugin's, after its OK card's warning line), on 443 or 80: that fetch is keyless,
+  // through MOSS's web safeguards (runtime-sdk/model-plugins/public-fetch.ts, which allows https and the default port
   // only).
-  const gate = createApiRouter({ registry: o.registry, handlers, commandOwner: (name) => commandOwner(o.registry, name), allowNetwork: pluginNetworkAllowed, ...(o.userEndpoint !== undefined ? { userEndpoint: o.userEndpoint } : {}) });
+  const gate = createApiRouter({ registry: o.registry, handlers, commandOwner: (name) => commandOwner(o.registry, name), allowNetwork: pluginNetworkAllowed, ...(o.pictures !== undefined ? { pictureKind: (id: string) => o.pictures!.kindOf(id) } : {}), ...(o.userEndpoint !== undefined ? { userEndpoint: o.userEndpoint } : {}) });
   host.serveApi(guardApiRouter(gate, recordOf));
 
   // The registry's changes: a plugin removed or no longer startable (off, refused, its host code gone) is dropped, its
@@ -704,7 +778,7 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
       const r = recordOf(pluginId);
       if (r === undefined) return undefined;
       const p = hostProcessFor(r);
-      const live = processes.get(p === "clover" ? "clover" : p === "own" ? `own:${pluginId}` : `${p}:${topPluginIdOf(pluginId)}`);
+      const live = processes.get(p === "moss" ? "moss" : p === "own" ? `own:${pluginId}` : `${p}:${topPluginIdOf(pluginId)}`);
       return live === undefined || live.peer.closed ? undefined : live.pid;
     },
     settings,
@@ -789,8 +863,16 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
       offSettingsEvents();
       offPointEvents();
       offHost();
+      offTurnsRegistry();
+      offTurnsHost();
+      turns.close();
+      offStreamsRegistry();
+      offMessagesRegistry();
+      offStreamsHost();
+      offCallEnded?.();
+      streams.close();
       const running = o.registry.list().map((p) => p.id);
-      await Promise.allSettled(running.map((id) => host.stop(id, "Clover is stopping")));
+      await Promise.allSettled(running.map((id) => host.stop(id, "MOSS is stopping")));
       for (const p of processes.values()) p.kill();
       for (const p of proxies.values()) p.close();
       proxies.clear();

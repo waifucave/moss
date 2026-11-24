@@ -1,0 +1,234 @@
+From: MOSS Windows lane <moss@example.com>
+Date: Mon, 23 Nov 2026 00:00:00 +0000
+Subject: [PATCH] install --network-open: the network, but not the cloud metadata addresses
+
+---
+
+Upstream: anthropics/sandbox-runtime, tag v0.0.81 (c40cf14), after 0001.
+Reason: MOSS runs a command the person approved to leave the sandbox as
+a pool account of its own, with every other control of the sandbox, and
+the spec gives that command the network but never the cloud metadata
+address. The filter set keyed to the account's user SID blocks every
+connection; this adds an install mode in which that user-keyed BLOCK
+matches only the metadata addresses: the link-local 169.254.0.0/16 (AWS,
+GCP and Azure IMDS), Azure's WireServer 168.63.129.16, Alibaba's
+100.100.100.200, Oracle's 192.0.0.192, AWS's fd00:ec2::254, and each IPv4
+one in its IPv4-mapped IPv6 spelling.
+
+Files: src/wfp.rs, src/cli.rs.
+
+What changes, and nothing else: `install --network-open` installs the
+`block-metadata` filter (user SID AND any metadata address) at each ALE
+connect layer in place of `block-user`; `status` reads either as
+installed. Without the flag every install is as before.
+
+diff --git a/src/wfp.rs b/src/wfp.rs
+--- a/src/wfp.rs
++++ b/src/wfp.rs
+@@ -67,7 +67,8 @@
+     FWP_ACTION_BLOCK, FWP_ACTION_PERMIT, FWP_ACTION_TYPE, FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE,
+     FWP_BYTE_BLOB, FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0, FWP_FILTER_ENUM_OVERLAPPING,
+     FWP_MATCH_EQUAL, FWP_MATCH_RANGE, FWP_RANGE_TYPE, FWP_RANGE0, FWP_SECURITY_DESCRIPTOR_TYPE,
+-    FWP_UINT16, FWP_UINT64, FWP_V4_ADDR_AND_MASK, FWP_V4_ADDR_MASK, FWP_VALUE0, FWP_VALUE0_0,
++    FWP_UINT16, FWP_UINT64, FWP_V4_ADDR_AND_MASK, FWP_V4_ADDR_MASK, FWP_V6_ADDR_AND_MASK,
++    FWP_V6_ADDR_MASK, FWP_VALUE0, FWP_VALUE0_0,
+     FWPM_ACTION0, FWPM_ACTION0_0, FWPM_CONDITION_ALE_USER_ID, FWPM_CONDITION_IP_REMOTE_ADDRESS,
+     FWPM_CONDITION_IP_REMOTE_PORT, FWPM_DISPLAY_DATA0, FWPM_FILTER_CONDITION0,
+     FWPM_FILTER_ENUM_TEMPLATE0, FWPM_FILTER_FLAG_PERSISTENT, FWPM_FILTER0,
+@@ -260,6 +261,19 @@
+     }
+ }
+ 
++fn cond_v6_subnet(field_key: GUID, am: &mut FWP_V6_ADDR_AND_MASK) -> FWPM_FILTER_CONDITION0 {
++    FWPM_FILTER_CONDITION0 {
++        fieldKey: field_key,
++        matchType: FWP_MATCH_EQUAL,
++        conditionValue: FWP_CONDITION_VALUE0 {
++            r#type: FWP_V6_ADDR_MASK,
++            Anonymous: FWP_CONDITION_VALUE0_0 {
++                v6AddrMask: am as *mut _,
++            },
++        },
++    }
++}
++
+ fn cond_v6_addr(field_key: GUID, addr: &mut FWP_BYTE_ARRAY16) -> FWPM_FILTER_CONDITION0 {
+     FWPM_FILTER_CONDITION0 {
+         fieldKey: field_key,
+@@ -359,12 +373,42 @@
+ pub(crate) const KIND_PERMIT_PROXY: &str = "permit-loopback-user";
+ pub(crate) const KIND_PERMIT_OPEN: &str = "permit-loopback-open";
+ pub(crate) const KIND_BLOCK_USER: &str = "block-user";
++/// MOSS patch 0003: the user-keyed BLOCK of the cloud metadata addresses
++/// alone ([`METADATA_V4`], [`METADATA_V6`]), in place of `block-user`, for a
++/// principal installed with `--network-open` (a command the person approved
++/// to leave the sandbox).
++pub(crate) const KIND_BLOCK_METADATA: &str = "block-metadata";
++
++/// The IPv4 metadata addresses a network-open principal never reaches, as
++/// (address, mask) in host order: the whole link-local /16 (AWS, GCP and
++/// Azure IMDS at 169.254.169.254, AWS ECS and others nearby), Azure's
++/// WireServer 168.63.129.16, Alibaba's 100.100.100.200 and Oracle's
++/// 192.0.0.192.
++pub(crate) const METADATA_V4: [(u32, u32); 4] = [
++    (0xA9FE_0000, 0xFFFF_0000),
++    (0xA83F_8110, 0xFFFF_FFFF),
++    (0x6464_64C8, 0xFFFF_FFFF),
++    (0xC000_00C0, 0xFFFF_FFFF),
++];
+ 
++/// The same at the IPv6 layer, as (address, prefix length): AWS's
++/// fd00:ec2::254, and each IPv4 one above in its IPv4-mapped spelling
++/// (::ffff:a.b.c.d), should a dual-stack socket's connect be classified
++/// there.
++pub(crate) const METADATA_V6: [([u8; 16], u8); 5] = [
++    ([0xfd, 0x00, 0x0e, 0xc2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54], 128),
++    ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 169, 254, 0, 0], 112),
++    ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 168, 63, 129, 16], 128),
++    ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 100, 100, 100, 200], 128),
++    ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 0, 192], 128),
++];
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum FilterShape {
+     PermitLoopback((u16, u16)),
+     PermitLoopbackOpen,
+     BlockUser,
++    BlockMetadata,
+ }
+ 
+ /// One filter of the set, as added at EACH ALE connect layer.
+@@ -387,6 +431,13 @@
+ /// The filters [`install_filters`] adds at each ALE connect layer.
+ /// `allow_loopback` adds exactly one PERMIT and changes nothing else.
+ pub(crate) fn filter_specs(proxy_range: (u16, u16), allow_loopback: bool) -> Vec<FilterSpec> {
++    filter_specs_for(proxy_range, allow_loopback, false)
++}
++
++/// [`filter_specs`], and with `network_open` (patch 0003) the BLOCK keyed
++/// to the user matches only the metadata addresses: the principal reaches
++/// every other address, as an unsandboxed process does.
++pub(crate) fn filter_specs_for(proxy_range: (u16, u16), allow_loopback: bool, network_open: bool) -> Vec<FilterSpec> {
+     let mut specs = vec![FilterSpec {
+         kind: KIND_PERMIT_PROXY,
+         weight: W_LOOPBACK,
+@@ -399,10 +450,18 @@
+             shape: FilterShape::PermitLoopbackOpen,
+         });
+     }
+-    specs.push(FilterSpec {
+-        kind: KIND_BLOCK_USER,
+-        weight: W_BLOCK,
+-        shape: FilterShape::BlockUser,
++    specs.push(if network_open {
++        FilterSpec {
++            kind: KIND_BLOCK_METADATA,
++            weight: W_BLOCK,
++            shape: FilterShape::BlockMetadata,
++        }
++    } else {
++        FilterSpec {
++            kind: KIND_BLOCK_USER,
++            weight: W_BLOCK,
++            shape: FilterShape::BlockUser,
++        }
+     });
+     specs
+ }
+@@ -627,9 +686,10 @@
+     sandbox_user_sid: &str,
+     port_range: (u16, u16),
+     allow_loopback: bool,
++    network_open: bool,
+ ) -> Result<()> {
+     debug_assert!(port_range.0 <= port_range.1);
+-    let specs = filter_specs(port_range, allow_loopback);
++    let specs = filter_specs_for(port_range, allow_loopback, network_open);
+     let sd_user = OwnedSd::from_sddl(&sddl_sandbox_user(sandbox_user_sid))
+         .context("build sandbox-user SD")?;
+ 
+@@ -723,6 +783,40 @@
+                             &mut tag,
+                         )?;
+                     }
++                    // The user's connections to a metadata address, and nothing else:
++                    // the user condition AND any one of the addresses (conditions on
++                    // the same field are OR'ed).
++                    FilterShape::BlockMetadata => {
++                        let mut v4s: Vec<FWP_V4_ADDR_AND_MASK> = METADATA_V4
++                            .iter()
++                            .map(|&(addr, mask)| FWP_V4_ADDR_AND_MASK { addr, mask })
++                            .collect();
++                        let mut v6s: Vec<FWP_V6_ADDR_AND_MASK> = METADATA_V6
++                            .iter()
++                            .map(|&(addr, prefixLength)| FWP_V6_ADDR_AND_MASK { addr, prefixLength })
++                            .collect();
++                        let mut c: Vec<FWPM_FILTER_CONDITION0> =
++                            vec![cond_sd(FWPM_CONDITION_ALE_USER_ID, &mut sd_user_blob)];
++                        if v4 {
++                            for am in v4s.iter_mut() {
++                                c.push(cond_v4_subnet(FWPM_CONDITION_IP_REMOTE_ADDRESS, am));
++                            }
++                        } else {
++                            for am in v6s.iter_mut() {
++                                c.push(cond_v6_subnet(FWPM_CONDITION_IP_REMOTE_ADDRESS, am));
++                            }
++                        }
++                        add_filter(
++                            engine.h(),
++                            sublayer,
++                            layer,
++                            &name,
++                            spec.weight,
++                            FWP_ACTION_BLOCK,
++                            &mut c,
++                            &mut tag,
++                        )?;
++                    }
+                     FilterShape::BlockUser => {
+                         let mut c = [cond_sd(FWPM_CONDITION_ALE_USER_ID, &mut sd_user_blob)];
+                         add_filter(
+@@ -896,7 +990,7 @@
+         }
+         return Err(e);
+     }
+-    let have_block = tags.iter().any(|(_, t)| t.kind == KIND_BLOCK_USER);
++    let have_block = tags.iter().any(|(_, t)| t.kind == KIND_BLOCK_USER || t.kind == KIND_BLOCK_METADATA);
+     Ok(WfpStatus {
+         state: if have_block { "installed" } else { "absent" },
+         filters: tags.len(),
+diff --git a/src/cli.rs b/src/cli.rs
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -151,6 +151,14 @@
+         /// with the other mode than the installed one is refused.
+         #[arg(long)]
+         allow_loopback: bool,
++        /// MOSS patch 0003: the account reaches the network; its filter
++        /// blocks only the cloud metadata addresses (the link-local
++        /// 169.254.0.0/16, 168.63.129.16, 100.100.100.200, 192.0.0.192,
++        /// fd00:ec2::254, and the IPv4 ones IPv4-mapped). For the account
++        /// that runs a command the person approved to leave the sandbox;
++        /// every other control is unchanged.
++        #[arg(long)]
++        network_open: bool,
+         /// Name for the sandbox user account. Default:
+         /// `srt-sandbox`. srt-win only manages an account it
+         /// created — a name that already resolves to a principal
+@@ -1349,6 +1357,7 @@
+             sublayer_guid,
+             proxy_port_range,
+             allow_loopback,
++            network_open,
+             sandbox_user,
+             owner_sid,
+             force,
+@@ -1596,7 +1605,7 @@
+                 eprintln!("srt-win: error: mark the loopback mode as changing: {e:#}");
+                 std::process::exit(12);
+             }
+-            if let Err(e) = wfp::install_filters(&sl, &pu.sid, range, allow_loopback) {
++            if let Err(e) = wfp::install_filters(&sl, &pu.sid, range, allow_loopback, network_open) {
+                 eprintln!("srt-win: error: WFP install: {e:#}");
+                 std::process::exit(12);
+             }

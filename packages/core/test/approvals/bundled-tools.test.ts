@@ -1,14 +1,16 @@
-// A bundled tool that only reads runs with no card at the default level on the REAL path: the repository's bundled tree
-// built and staged as a source daemon stages it (`buildDevBundledPlugins`, `stageBundledPlugins`), the real registry
-// over that staged copy, the daemon's own lookup (`bundledToolKind`, the function daemon.ts calls) and the real approval
-// check. A call loaded through Glossary first (an on-demand tool) costs no card for the load either. The 14c acceptance
-// found PluginNew carded: the load through Glossary was judged as an unknown tool, and no test went this way.
+// The build's copy's declared tools on the REAL path: the repository's bundled tree built and staged as a source daemon
+// stages it (`buildDevBundledPlugins`, `stageBundledPlugins`), the real registry over that staged copy, and the
+// daemon's own judges (`builtCopy`, `pluginToolReadOnly`, `pluginWebTool`) over the manifests' `readOnly`, `webSearch`
+// and `webFetch`, never a plugin id the core names (R1, 2026-11-15). The builder's PluginNew is a read with no card at
+// the default level, loaded through Glossary first too (the 14c acceptance found it carded). A folder plugin under
+// another id gets the same from its own manifest once the user OK'd it.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { botApprovalCheck } from "../../src/approvals/bot-check";
-import { bundledToolKind, type OfferedServer } from "../../src/approvals/bundled-tools";
+import { builtCopy, type OfferedServer } from "../../src/approvals/bundled-tools";
+import { pluginToolReadOnly, pluginWebTool } from "../../src/registry/read-only-tools";
 import type { ApprovalRequest } from "../../src/contracts/approval-broker";
 import type { BotSessionContext } from "../../src/bots/service";
 import { FakeApprovalBroker } from "../../src/contracts/fakes/approval-broker";
@@ -41,13 +43,13 @@ function offered(): OfferedServer[] {
 }
 
 beforeAll(async () => {
-  home = mkdtempSync(join(tmpdir(), "clover-bundled-tools-"));
-  await buildDevBundledPlugins({ sources: REPO_PLUGINS, ids: ["alpha", "clover"], cloverHome: home });
+  home = mkdtempSync(join(tmpdir(), "moss-bundled-tools-"));
+  await buildDevBundledPlugins({ sources: REPO_PLUGINS, ids: ["alpha", "moss"], mossHome: home });
   const source = devBundledSource(home)!;
   const s = stageBundledPlugins({ ...source, out: stagedBundledDir(home) });
   staged = { dir: s.dir!, digests: s.digests! };
   mkdirSync(join(home, "plugins"), { recursive: true });
-  opened = await openPluginRegistry({ cloverHome: home, os: "macos", broker: new FakeApprovalBroker({ clock: new FakeClock() }), secrets: new MemorySecretStore(), bundledDirs: [staged.dir], settleMs: 50 });
+  opened = await openPluginRegistry({ mossHome: home, os: "macos", broker: new FakeApprovalBroker({ clock: new FakeClock() }), secrets: new MemorySecretStore(), bundledDirs: [staged.dir], settleMs: 50 });
 }, 240_000);
 
 afterAll(() => {
@@ -55,27 +57,29 @@ afterAll(() => {
   if (home !== "") rmSync(home, { recursive: true, force: true });
 });
 
-describe("bundled tools on the staged tree", () => {
-  test("the builder's PluginNew is a read and the web plugin's tools are theirs, by the daemon's own lookup", () => {
-    const lookup = { servers: offered(), record: (id: string) => opened.registry.get(id), staged };
-    expect(lookup.servers.find((s) => s.plugin === "clover/plugin-builder")).toEqual({ server: "builder", plugin: "clover/plugin-builder", tools: [{ name: "PluginNew" }] });
-    expect(bundledToolKind(lookup, "mcp__builder__PluginNew")).toBe("read");
-    expect(bundledToolKind(lookup, "mcp__web__WebSearch")).toBe("web-search");
-    expect(bundledToolKind(lookup, "mcp__web__WebFetch")).toBe("web-fetch");
-    // Another name, another plugin's server under the same tool name, no staged copy: never a bundled tool.
-    expect(bundledToolKind(lookup, "mcp__builder__Nope")).toBeUndefined();
-    expect(bundledToolKind({ ...lookup, servers: [...lookup.servers, { server: "acme-builder", plugin: "acme", tools: [{ name: "PluginNew" }] }] }, "mcp__acme-builder__PluginNew")).toBeUndefined();
-    expect(bundledToolKind({ ...lookup, staged: undefined }, "mcp__builder__PluginNew")).toBeUndefined();
-    expect(bundledToolKind({ ...lookup, record: (id) => { const r = opened.registry.get(id); return r === undefined ? undefined : { ...r, source: "local" }; } }, "mcp__builder__PluginNew")).toBeUndefined();
+describe("the build's copy's declared tools on the staged tree", () => {
+  const built = () => builtCopy({ record: (id: string) => opened.registry.get(id), staged });
+  test("the builder's PluginNew is a read and the web plugin's tools are a search and a fetch, from their manifests", () => {
+    const reg = opened.registry;
+    expect(offered().find((s) => s.plugin === "moss/plugin-builder")).toEqual({ server: "builder", plugin: "moss/plugin-builder", tools: [{ name: "PluginNew" }] });
+    expect(pluginToolReadOnly(reg, "moss/plugin-builder", "builder", "PluginNew", { built: built() })).toBe(true);
+    expect(pluginWebTool(reg, "moss/web", "web", "WebSearch", { built: built() })).toBe("web-search");
+    expect(pluginWebTool(reg, "moss/web", "web", "WebFetch", { built: built() })).toBe("web-fetch");
+    // Another tool, or the same tools judged without the build's copy (a child of a tree that reaches the network):
+    // never a read or a web tool.
+    expect(pluginToolReadOnly(reg, "moss/plugin-builder", "builder", "Nope", { built: built() })).toBe(false);
+    expect(pluginToolReadOnly(reg, "moss/plugin-builder", "builder", "PluginNew")).toBe(false);
+    expect(pluginWebTool(reg, "moss/web", "web", "WebSearch")).toBeUndefined();
+    expect(pluginToolReadOnly(reg, "moss/plugin-builder", "builder", "PluginNew", { built: builtCopy({ record: (id) => reg.get(id), staged: undefined }) })).toBe(false);
+    expect(pluginToolReadOnly(reg, "moss/plugin-builder", "builder", "PluginNew", { built: builtCopy({ record: (id) => { const r = reg.get(id); return r === undefined ? undefined : { ...r, source: "local" }; }, staged }) })).toBe(false);
   });
 
   test("Alpha's call of PluginNew, loaded through Glossary first, raises no card at the default level", async () => {
     const asked: ApprovalRequest[] = [];
     const broker = { request: async (r: ApprovalRequest) => { asked.push(structuredClone(r)); return { allowed: r.effect === "read", by: r.effect === "read" ? "level" : "card" } as never; } };
-    const lookup = { servers: offered(), record: (id: string) => opened.registry.get(id), staged };
     const check = botApprovalCheck(broker, {
       hostTools: () => ["Glossary", "PluginValidate", "PluginStatus", "PluginInstall", "SendMessage", "ListAgents", "TaskStop", "Agent", "RequestAccess"],
-      bundledTool: (_ctx, tool) => bundledToolKind(lookup, tool),
+      readOnlyTool: (_ctx, tool) => tool === "mcp__builder__PluginNew" && pluginToolReadOnly(opened.registry, "moss/plugin-builder", "builder", "PluginNew", { built: built() }),
       levelOf: () => "ask-risky",
     });
     const ctx = { botId: "alpha", sessionId: "s1", computer: "Studio", paths: { scratch: join(home, "scratch", "alpha") }, caller: { kind: "session", sessionId: "s1", sessionKind: "bot", bot: "alpha" } } as unknown as BotSessionContext;
@@ -87,10 +91,9 @@ describe("bundled tools on the staged tree", () => {
     }
   });
 
-  test("a staged manifest that no longer matches its digest is never a bundled tool", () => {
-    const rec = opened.registry.get("clover/plugin-builder")!;
-    const lookup = { servers: offered(), record: (id: string) => opened.registry.get(id), staged };
-    writeFileSync(join(rec.folder, "clover.json"), "{}\n");
-    expect(bundledToolKind(lookup, "mcp__builder__PluginNew")).toBeUndefined();
+  test("a staged manifest that no longer matches its digest is never the build's copy", () => {
+    const rec = opened.registry.get("moss/plugin-builder")!;
+    writeFileSync(join(rec.folder, "moss.json"), "{}\n");
+    expect(built()("moss/plugin-builder")).toBe(false);
   });
 });

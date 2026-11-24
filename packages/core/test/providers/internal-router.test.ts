@@ -1,5 +1,5 @@
 /**
- * 2026-09-19: the internal-jobs router — Clover's own background calls (titles, the bash reviewer, the
+ * 2026-09-19: the internal-jobs router — MOSS's own background calls (titles, the bash reviewer, the
  * dreamer, the session cleaner) no longer depend on `settings.provider.model`'s provider being one of
  * codex-oauth/openai.
  *
@@ -16,19 +16,22 @@ import { CREDENTIAL_MATERIAL_NAMES, writeCredentialMaterial, clearCredentialMate
 import { createInternalProviderView, staticInternalProviderView, REFRESH_SOON_MIN_MS } from "../../src/providers/internal-view";
 import { createInternalRouter, staticInternalRouter, isInternalRefusal, type InternalRouter } from "../../src/providers/internal-router";
 import { internalWireEffortFor } from "../../src/providers/internal-provider";
-import type { Provider } from "../../src/providers/types";
+import type { Provider, ProviderEvent } from "../../src/providers/types";
 import { internalEligibleProviderIds, CLAUDE_FIRST_PARTY_PROVIDER_IDS, Settings, setModelRole } from "../../src/settings";
 import { SessionStore } from "../../src/sessions/store";
 import { SessionHub } from "../../src/sessions/hub";
 import { SessionTitler } from "../../src/agent/titles";
 import { BashReviewer, ReviewerNoRunnableModel } from "../../src/agent/reviewer";
+import { FakeProvider } from "../../src/agent/fake-provider";
+import { sessionHooksFor } from "../../src/runtime-sdk/hooks";
+import { REVIEW_NO_MODEL } from "../../src/registry/plugin-review";
 import { internalRoleProblemsFor } from "../../src/providers/internal-role-problems";
 import { catalogRoleProblemsFor } from "../../src/providers/catalog-role-problems";
 import { withProblemsForRoles } from "../../src/providers/role-health";
 import { effortToSpendForRole, modelRolesFor } from "../../src/settings";
 
 function secretsStore(): FileSecretStore {
-  return new FileSecretStore(mkdtempSync(join(tmpdir(), "clover-internal-router-secrets-")));
+  return new FileSecretStore(mkdtempSync(join(tmpdir(), "moss-internal-router-secrets-")));
 }
 
 function settingsWith(model: string, extra: Record<string, unknown> = {}): Settings {
@@ -41,11 +44,11 @@ async function routerFor(
 ): Promise<InternalRouter> {
   const view = createInternalProviderView({ secrets, ...(opts.log ? { log: opts.log } : { log: () => {} }) });
   await view.refresh();
-  return createInternalRouter({ view, secrets, ...(opts.testBackendUrl ? { testBackendUrl: opts.testBackendUrl } : {}) });
+  return createInternalRouter({ view, secrets, ...(opts.log ? { log: opts.log } : {}), ...(opts.testBackendUrl ? { testBackendUrl: opts.testBackendUrl } : {}) });
 }
 
 describe("the eligible set", () => {
-  // WS-23: `anthropic` rejoined the eligible set (every model runs on the Clover SDK now), and
+  // WS-23: `anthropic` rejoined the eligible set (every model runs on the MOSS SDK now), and
   // `console` with the live-gate fix; only the reserved `cc` row stays out.
   test("excludes the reserved first-party Claude row and includes anthropic, console plus ordinary token-priced ones", () => {
     const eligible = internalEligibleProviderIds();
@@ -63,7 +66,7 @@ describe("the eligible set", () => {
     // Their credential material is `aws`/`gcp-*`, which `credential-store.ts` refuses typed.
     expect(eligible.has("bedrock")).toBe(false);
     expect(eligible.has("vertex")).toBe(false);
-    // No Clover login door and no inventory slot.
+    // No MOSS login door and no inventory slot.
     expect(eligible.has("xai-oauth")).toBe(false);
   });
 });
@@ -86,7 +89,7 @@ describe("a DeepSeek default with only a DeepSeek key", () => {
       expect(String(call.tag)).toBe("deepseek/deepseek-flash");
       expect(call.model).toBe("deepseek-flash");
 
-      const home = mkdtempSync(join(tmpdir(), "clover-internal-router-home-"));
+      const home = mkdtempSync(join(tmpdir(), "moss-internal-router-home-"));
       const store = new SessionStore(home);
       const hub = new SessionHub(store);
       const titler = new SessionTitler({
@@ -132,22 +135,24 @@ describe("a DeepSeek default with only a DeepSeek key", () => {
 });
 
 describe("a DeepSeek default with a Codex OAuth login", () => {
-  test("the jobs fall back to codex-oauth on its own terra row", async () => {
+  // 2026-11-22 (backlog 498, 521): a job never runs on a provider other than the default's. Was: "the jobs fall back to
+  // codex-oauth on its own terra row"; the person never chose ChatGPT for this work.
+  test("the jobs do NOT move to codex-oauth: DeepSeek is the default's provider and holds no key, so they don't run", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at", refreshToken: "rt" });
     const router = await routerFor(secrets);
-    const call = router.resolve("titles.model", settingsWith("deepseek/deepseek-flash"));
-    expect(isInternalRefusal(call)).toBe(false);
-    if (isInternalRefusal(call)) return;
-    expect(call.providerId).toBe("codex-oauth");
-    expect(String(call.tag)).toBe("codex-oauth/gpt-5.6-terra");
+    for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"] as const) {
+      const call = router.resolve(role, settingsWith("deepseek/deepseek-flash"));
+      expect(isInternalRefusal(call)).toBe(true);
+      if (isInternalRefusal(call)) expect(call.reason).toBe("no-default-model");
+    }
   });
 });
 
 describe("a Claude default", () => {
   // WS-23: `anthropic` is an ordinary eligible provider now, so rung 1 (the session default's own
   // provider, eligible AND credentialed) lands on the user's own Claude model — never a fallback.
-  test("with an Anthropic key: runs on the user's own Claude model, not on a fallback", async () => {
+  test("with an Anthropic key: titles and the dreamer run on Claude's light model, the reviewer on the user's own model, never on a fallback", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at" });
     // An anthropic key is stored too — it is now the session default's own provider, so it wins.
@@ -159,20 +164,24 @@ describe("a Claude default", () => {
       expect(isInternalRefusal(call)).toBe(false);
       if (isInternalRefusal(call)) continue;
       expect(call.providerId).toBe("anthropic");
-      expect(String(call.tag)).toBe("anthropic/claude-sonnet-5");
+      // Light-model ruling (2026-11-21): was `anthropic/claude-sonnet-5`, the user's own model.
+      expect(String(call.tag)).toBe("anthropic/claude-haiku-5-5");
     }
+    // 2026-11-22: the reviewer is a light job too (was `anthropic/claude-sonnet-5`, the user's own model).
+    const reviewer = router.resolve("reviewer.model", claudeDefault);
+    if (isInternalRefusal(reviewer)) throw new Error(reviewer.reason);
+    expect(String(reviewer.tag)).toBe("anthropic/claude-haiku-5-5");
   });
 
-  test("without one: falls back to the credentialed internal provider, never to an uncredentialed Claude row", async () => {
+  // 2026-11-22: was "falls back to the credentialed internal provider"; now it does not run (never another provider).
+  test("without one: the jobs don't run, and never move to another provider or an uncredentialed Claude row", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at" });
     const router = await routerFor(secrets);
     const claudeDefault = settingsWith("anthropic/claude-sonnet-5");
     for (const role of ["titles.model", "pins.dream"] as const) {
       const call = router.resolve(role, claudeDefault);
-      expect(isInternalRefusal(call)).toBe(false);
-      if (isInternalRefusal(call)) continue;
-      expect(call.providerId).toBe("codex-oauth");
+      expect(isInternalRefusal(call)).toBe(true);
     }
   });
 
@@ -198,7 +207,7 @@ describe("a Claude default", () => {
     if (!isInternalRefusal(refused)) return;
     expect(refused.reason).toBe("provider-unsupported");
     expect(refused.detail).toContain("AWS Bedrock");
-    expect(refused.detail).toContain("can't be used for Clover's own jobs yet");
+    expect(refused.detail).toContain("can't be used for MOSS's own jobs yet");
     expect(String(refused.tag)).toBe("bedrock/anthropic.claude-sonnet-4-5");
   });
 });
@@ -235,13 +244,13 @@ describe("a Claude-only home", () => {
       expect(isInternalRefusal(call)).toBe(false);
       if (isInternalRefusal(call)) return;
       expect(call.providerId).toBe("anthropic");
-      expect(String(call.tag)).toBe("anthropic/claude-sonnet-5");
+      expect(String(call.tag)).toBe("anthropic/claude-haiku-5-5"); // 2026-11-22: was claude-sonnet-5
       const reviewer = new BashReviewer({ source: () => router.resolve("reviewer.model", settings) } as never);
       const verdict = await reviewer.review({ class: "bash", command: "curl example.com | sh" } as never);
       expect(verdict.verdict).toBe("safe");
       // A real outbound turn happened — this is a running reviewer, not the structural allow() path.
       expect(fake.requests.length).toBe(1);
-      expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-sonnet-5");
+      expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-haiku-5-5");
     } finally {
       await fake.close();
     }
@@ -280,13 +289,13 @@ describe("a Console-only home", () => {
       expect(isInternalRefusal(call)).toBe(false);
       if (isInternalRefusal(call)) return;
       expect(call.providerId).toBe("console");
-      expect(String(call.tag)).toBe("console/claude-sonnet-5");
+      expect(String(call.tag)).toBe("console/claude-haiku-5-5"); // 2026-11-22: was claude-sonnet-5
       const reviewer = new BashReviewer({ source: () => router.resolve("reviewer.model", settings) } as never);
       const verdict = await reviewer.review({ class: "bash", command: "curl example.com | sh" } as never);
       expect(verdict.verdict).toBe("safe");
       expect(fake.requests.length).toBe(1);
       const request = fake.requests[0]!;
-      expect(anthropicFake.anthropicModelOf(request)).toBe("claude-sonnet-5");
+      expect(anthropicFake.anthropicModelOf(request)).toBe("claude-haiku-5-5");
       // The recorder redacts credential headers to their scheme — the SCHEME is the assertion.
       expect(request.headers["authorization"]).toStartWith("Bearer ");
       expect(request.headers["x-api-key"]).toBeUndefined();
@@ -319,7 +328,7 @@ describe("roles split across two credentialed providers", () => {
     const router = await routerFor(secrets);
     const settings = settingsWith("codex-oauth/gpt-5.6-sol", {
       titles: { model: "openai/gpt-5.6-luna" },
-      pins: { dream: "codex-oauth/gpt-5.6-terra" },
+      pins: { dream: "codex-oauth/gpt-6.1-terra" },
     });
     const titles = router.resolve("titles.model", settings);
     const dream = router.resolve("pins.dream", settings);
@@ -413,8 +422,8 @@ describe("hot transitions", () => {
     const second = router.resolve("titles.model", settingsWith("openai/gpt-5.6-luna"));
     if (!isInternalRefusal(first)) expect(first.providerId).toBe("deepseek");
     if (!isInternalRefusal(second)) expect(second.providerId).toBe("openai");
-    // `openai`'s terra row, not the user's luna default: the family slot wins when the provider has one.
-    if (!isInternalRefusal(second)) expect(String(second.tag)).toBe("openai/gpt-5.6-terra");
+    // The gpt family's light model on `openai` (the user's own default is luna already, which is that light model).
+    if (!isInternalRefusal(second)) expect(String(second.tag)).toBe("openai/gpt-6-luna");
   });
 
   test("changing a role pin moves that role alone on the next call", async () => {
@@ -423,7 +432,7 @@ describe("hot transitions", () => {
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.openai, { kind: "api-key", key: "sk-openai" });
     const router = await routerFor(secrets);
     const base = settingsWith("deepseek/deepseek-flash");
-    const pinned = setModelRole(base, "pins.dream", "openai/gpt-5.6-terra");
+    const pinned = setModelRole(base, "pins.dream", "openai/gpt-6.1-terra");
     const dream = router.resolve("pins.dream", pinned);
     const titles = router.resolve("titles.model", pinned);
     if (!isInternalRefusal(dream)) expect(dream.providerId).toBe("openai");
@@ -462,14 +471,15 @@ describe("hot transitions", () => {
 describe("codex-oauth and openai still work over their own loopback fakes", () => {
   test("codex-oauth", async () => {
     const fake = await codexFake.startCodexFake({
-      scenarios: { "gpt-5.6-terra": [openaiResponsesFake.responsesStream({ text: ["Codex Title"] })] },
+      scenarios: { "gpt-6-luna": [openaiResponsesFake.responsesStream({ text: ["Codex Title"] })] },
     });
     try {
       const secrets = secretsStore();
       await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at", refreshToken: "rt", expiresAt: Date.now() + 3_600_000 });
       const router = await routerFor(secrets, { testBackendUrl: (id) => (id === "codex-oauth" ? fake.url : undefined) });
-      const call = router.resolve("titles.model", settingsWith("codex-oauth/gpt-5.6-terra"));
+      const call = router.resolve("titles.model", settingsWith("codex-oauth/gpt-6.1-terra"));
       if (isInternalRefusal(call)) throw new Error(`refused: ${call.reason} ${call.detail}`);
+      expect(call.model).toBe("gpt-6-luna"); // the title runs on the family's light model
       const out: string[] = [];
       for await (const ev of call.provider.streamTurn({ model: call.model, instructions: "t", input: [{ type: "message", role: "user", content: "hi" }], tools: [], ...(call.effort ? { reasoningEffort: call.effort } : {}) })) {
         if (ev.type === "text_delta") out.push(ev.delta);
@@ -482,7 +492,7 @@ describe("codex-oauth and openai still work over their own loopback fakes", () =
   });
 
   test("openai", async () => {
-    const model = "gpt-5.6-terra";
+    const model = "gpt-6-luna";
     const fake = await openaiResponsesFake.startOpenAiResponsesFake({
       scenarios: { [model]: [openaiResponsesFake.responsesStream({ text: ["OpenAI Title"] })] },
     });
@@ -505,8 +515,9 @@ describe("codex-oauth and openai still work over their own loopback fakes", () =
 });
 
 describe("a user-entered providers.<id>.baseUrl", () => {
-  test("keeps Clover's historically unrestricted BYO-endpoint behaviour — a loopback override streams", async () => {
-    const model = "gpt-5.6-terra";
+  test("keeps MOSS's historically unrestricted BYO-endpoint behaviour — a loopback override streams", async () => {
+    // Light-model ruling (2026-11-21): the title on this default (terra) runs on the gpt family's light model, luna.
+    const model = "gpt-6-luna";
     const fake = await openaiResponsesFake.startOpenAiResponsesFake({
       scenarios: { [model]: [openaiResponsesFake.responsesStream({ text: ["Local Title"] })] },
     });
@@ -515,7 +526,8 @@ describe("a user-entered providers.<id>.baseUrl", () => {
       await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.openai, { kind: "api-key", key: "sk-openai" });
       // NO `testBackendUrl`: the loopback url arrives the way a real user's does, through settings.
       const router = await routerFor(secrets);
-      const call = router.resolve("titles.model", settingsWith(`openai/${model}`, { providers: { openai: { baseUrl: fake.url } } }));
+      const call = router.resolve("titles.model", settingsWith("openai/gpt-6.1-terra", { providers: { openai: { baseUrl: fake.url } } }));
+      if (!isInternalRefusal(call)) expect(call.model).toBe(model);
       if (isInternalRefusal(call)) throw new Error(`refused: ${call.reason} ${call.detail}`);
       const out: string[] = [];
       for await (const ev of call.provider.streamTurn({ model: call.model, instructions: "t", input: [{ type: "message", role: "user", content: "hi" }], tools: [] })) {
@@ -536,18 +548,18 @@ describe("a user-entered providers.<id>.baseUrl", () => {
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 describe("B-1: the snapshot self-heals from an out-of-band credential write", () => {
-  test("`clover login`'s in-process codex write is picked up without a restart", async () => {
+  test("`moss login`'s in-process codex write is picked up without a restart", async () => {
     const secrets = secretsStore();
     let clock = 1_000_000;
     const view = createInternalProviderView({ secrets, log: () => {}, now: () => clock });
     await view.refresh();
     const router = createInternalRouter({ view, secrets });
-    const settings = settingsWith("deepseek/deepseek-flash");
+    const settings = settingsWith("codex-oauth/gpt-6.2-sol"); // 2026-11-22: was a deepseek default; jobs stay on the default's provider
 
     // Inert, and the refusal asked for a background probe.
     expect(isInternalRefusal(router.resolve("titles.model", settings))).toBe(true);
     await Bun.sleep(30); // let that first probe settle — `refreshSoon` coalesces while one is in flight
-    // …the CLI writes the material itself, exactly as `clover login` does.
+    // …the CLI writes the material itself, exactly as `moss login` does.
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at" });
     clock += REFRESH_SOON_MIN_MS + 1; // past the self-heal floor
     router.resolve("titles.model", settings); // fires the probe
@@ -557,7 +569,7 @@ describe("B-1: the snapshot self-heals from an out-of-band credential write", ()
     if (!isInternalRefusal(healed)) expect(healed.providerId).toBe("codex-oauth");
   });
 
-  test("`clover logout`'s in-process clear is picked up too — the jobs go inert, not credential-rejected", async () => {
+  test("`moss logout`'s in-process clear is picked up too — the jobs go inert, not credential-rejected", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at" });
     const view = createInternalProviderView({ secrets, log: () => {} });
@@ -626,7 +638,7 @@ describe("M-1 / D2 follow-up (2026-09-22): an explicit effort of `none`", () => 
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at" });
     const router = await routerFor(secrets);
-    // `codex-oauth/gpt-5.6-terra`'s vocabulary is [low, medium, high, xhigh, max] — no `"none"`, so
+    // `codex-oauth/gpt-6.1-terra`'s vocabulary is [low, medium, high, xhigh, max] — no `"none"`, so
     // `implicitEffortFor` would MISS and fall through to the row's defaultEffort, `"medium"` — an
     // ESCALATION past what a role asking for `"none"` (for speed) wanted. The rule sends the row's
     // lowest declared tier ("low") instead: less reasoning than the escalation, never more, and never
@@ -700,10 +712,10 @@ describe("M-1 / D2 follow-up (2026-09-22): an explicit effort of `none`", () => 
   test("the static test double runs the SAME effort rule production does", () => {
     const view = staticInternalProviderView(["codex-oauth"]);
     const fake: Provider = { id: "fake", models: () => [], streamTurn: () => (async function* () {})() };
-    const router = staticInternalRouter({ view, provider: fake, model: "gpt-5.6-terra", tag: "codex-oauth/gpt-5.6-terra" as never });
+    const router = staticInternalRouter({ view, provider: fake, model: "gpt-6.1-terra", tag: "codex-oauth/gpt-6.1-terra" as never });
     const none = router.resolve("pins.dream", settingsWith("codex-oauth/gpt-5.6-sol", { roleEfforts: { "pins.dream": "none" } }));
     if (isInternalRefusal(none)) throw new Error("expected a live call");
-    expect(none.effort).toBe("low"); // gpt-5.6-terra's own lowest declared tier, not the provider's "medium" default
+    expect(none.effort).toBe("low"); // gpt-6.1-terra's own lowest declared tier, not the provider's "medium" default
     // …and the dreamer's own unmappable constant ("medium", not in this row's vocabulary at all) is still
     // dropped on a deepseek row here — never escalated onto its heavier `high` default (R.1 controller
     // ruling) — unaffected by the `"none"` rule above, since "medium" is never `"none"`.
@@ -721,7 +733,7 @@ describe("M-2: one quota ledger per provider", () => {
     await writeCredentialMaterial(secrets, "deepseek:default", { kind: "api-key", key: "sk-deepseek" });
     const router = await routerFor(secrets);
     const settings = settingsWith("codex-oauth/gpt-5.6-sol", {
-      titles: { model: "codex-oauth/gpt-5.6-terra" },
+      titles: { model: "codex-oauth/gpt-6.1-terra" },
       pins: { dream: "deepseek/deepseek-flash" },
     });
     const codex = router.resolve("titles.model", settings);
@@ -753,52 +765,53 @@ describe("M-2: one quota ledger per provider", () => {
   });
 });
 
-describe("M-3: Clover never guesses a model on a provider the user did not choose", () => {
-  test("a credentialed provider with no family slot and no session-default claim reports no-default-model", async () => {
+describe("M-3: MOSS never guesses a model on a provider the user did not choose", () => {
+  test("a credentialed provider that is not the default's reports no-default-model and runs nothing", async () => {
     const secrets = secretsStore();
-    // `groq` is eligible and credentialed, declares no terra slot, and is NOT provider.model's provider.
     await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
     const router = await routerFor(secrets);
-    // A Claude default with no Anthropic key: rung 1 fails (eligible but uncredentialed), rung 2
-    // fails (no codex/openai key), rung 3 names Groq so the refusal can point at it — but never
-    // invents a model on it.
-    const call = router.resolve("titles.model", settingsWith("anthropic/claude-fable-1"));
-    expect(isInternalRefusal(call)).toBe(true);
-    if (!isInternalRefusal(call)) return;
-    expect(call.reason).toBe("no-default-model");
-    expect(call.detail).toBe("pick a model for this job in Settings › Roles — Clover won't choose one on Groq for you");
-    expect(call.tag).toBeNull();
+    // A Claude default with no Anthropic key: Groq is signed in, but not the default's provider. Never a model on it.
+    for (const role of ["reviewer.model", "titles.model", "pins.cleaner"] as const) {
+      const call = router.resolve(role, settingsWith("anthropic/claude-fable-1"));
+      expect(isInternalRefusal(call)).toBe(true);
+      if (!isInternalRefusal(call)) return;
+      expect(call.reason).toBe("no-default-model");
+      // 2026-11-22: the wording changed with the rule (was "pick a model for this job in Settings › Roles — MOSS won't choose one on Groq for you").
+      expect(call.detail).toBe(role === "reviewer.model"
+        ? "the default model's provider can't be used for the review (Groq is signed in): pick a model for the reviewer in Settings › Roles"
+        : "no light model of your default model's family can be had (Groq is signed in): pick a model for this job in Settings › Roles");
+      expect(call.tag).toBeNull();
+    }
   });
 
-  test("a credentialed OWN provider with no slot still uses the user's own model (the DeepSeek case)", async () => {
+  test("an own provider whose family has no light model there (the default's model on Groq): a chore doesn't run on the default model, the reviewer does", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
+    const router = await routerFor(secrets);
+    const call = router.resolve("titles.model", settingsWith("groq/llama-3.3-70b-versatile"));
+    expect(isInternalRefusal(call)).toBe(true);
+    // The reviewer is a safety gate (the controller's ruling, 2026-11-22): the default model itself, on its own provider.
+    const reviewer = router.resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"));
+    if (isInternalRefusal(reviewer)) throw new Error(`refused: ${reviewer.reason}`);
+    expect(String(reviewer.tag)).toBe("groq/llama-3.3-70b-versatile");
+    expect(reviewer.providerId).toBe("groq");
+  });
+
+  test("a credentialed OWN provider whose family has a light model uses it (the DeepSeek case)", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "deepseek:default", { kind: "api-key", key: "sk-deepseek" });
     const router = await routerFor(secrets);
-    const call = router.resolve("titles.model", settingsWith("deepseek/deepseek-flash"));
+    const call = router.resolve("titles.model", settingsWith("deepseek/deepseek-v4-pro"));
     if (isInternalRefusal(call)) throw new Error(`refused: ${call.reason}`);
     expect(String(call.tag)).toBe("deepseek/deepseek-flash");
   });
 
-  test("the fallback only ever considers codex-oauth/openai — never an alphabetical third party", async () => {
+  test("OpenAI and another third party signed in, the default elsewhere: nothing runs, never the alphabetical or the preferred one", async () => {
     const secrets = secretsStore();
-    // `agentrouter` sorts before `codex-oauth` in inventory order and was what the retired rung picked.
     await writeCredentialMaterial(secrets, "agentrouter:default", { kind: "api-key", key: "sk-ar" });
     await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.openai, { kind: "api-key", key: "sk-openai" });
     const router = await routerFor(secrets);
-    const call = router.resolve("pins.cleaner", settingsWith("anthropic/claude-fable-1"));
-    if (isInternalRefusal(call)) throw new Error(`refused: ${call.reason}`);
-    expect(call.providerId).toBe("openai");
-    expect(String(call.tag)).toBe("openai/gpt-5.6-terra");
-  });
-
-  test("no-default-model when a third-party key is the ONLY one and it IS the session default's sibling", async () => {
-    const secrets = secretsStore();
-    await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
-    const router = await routerFor(secrets);
-    // groq IS provider.model's provider here, so rung 2 of the DEFAULT rule applies: the user's own tag.
-    const own = router.resolve("titles.model", settingsWith("groq/llama-3.3-70b-versatile"));
-    if (isInternalRefusal(own)) throw new Error(`refused: ${own.reason}`);
-    expect(String(own.tag)).toBe("groq/llama-3.3-70b-versatile");
+    for (const role of ["reviewer.model", "pins.cleaner"] as const) expect(isInternalRefusal(router.resolve(role, settingsWith("anthropic/claude-fable-1")))).toBe(true);
   });
 });
 
@@ -822,7 +835,7 @@ describe("the reviewer's pin fallback", () => {
     expect(isInternalRefusal(call)).toBe(false);
     if (isInternalRefusal(call)) return;
     expect(call.providerId).toBe("codex-oauth");
-    expect(String(call.tag)).toBe("codex-oauth/gpt-5.6-terra");
+    expect(String(call.tag)).toBe("codex-oauth/gpt-6-luna"); // 2026-11-22: was gpt-6.1-terra, the default rule's row
     // The pin's issue rides along so the wire can still report it.
     expect(call.pinRefusal?.reason).toBe("no-credential");
     expect(call.pinRefusal?.detail).toBe("no credential is stored for DeepSeek");
@@ -836,9 +849,9 @@ describe("the reviewer's pin fallback", () => {
     const call = router.resolve("reviewer.model", settings, { fallbackToDefault: true });
     expect(isInternalRefusal(call)).toBe(false);
     if (isInternalRefusal(call)) return;
-    expect(String(call.tag)).toBe("codex-oauth/gpt-5.6-terra");
+    expect(String(call.tag)).toBe("codex-oauth/gpt-6-luna"); // 2026-11-22: was gpt-6.1-terra
     expect(call.pinRefusal?.reason).toBe("provider-unsupported");
-    expect(call.pinRefusal?.detail).toBe("AWS Bedrock can't be used for Clover's own jobs yet");
+    expect(call.pinRefusal?.detail).toBe("AWS Bedrock can't be used for MOSS's own jobs yet");
   });
 
   test("a RUNNABLE pin is untouched — no fallback, no pinRefusal", async () => {
@@ -903,7 +916,7 @@ describe("R.1 ruling 1: a tag with no catalog row is an unrunnable pin", () => {
   test("the titler SKIPS its run on it — no provider call, no title", async () => {
     const { router } = await codexAndDeepseekHome();
     const settings = pinnedEverywhere(settingsWith("codex-oauth/gpt-5.6-sol"));
-    const store = new SessionStore(mkdtempSync(join(tmpdir(), "clover-r1-titles-")));
+    const store = new SessionStore(mkdtempSync(join(tmpdir(), "moss-r1-titles-")));
     const hub = new SessionHub(store);
     const titler = new SessionTitler({ source: () => router.resolve("titles.model", settings), store, hub } as never);
     const sessionId = store.createSession("global", { cwd: "/tmp" });
@@ -919,7 +932,7 @@ describe("R.1 ruling 1: a tag with no catalog row is an unrunnable pin", () => {
     const settings = pinnedEverywhere(settingsWith("codex-oauth/gpt-5.6-sol"));
     const call = router.resolve("reviewer.model", settings, { fallbackToDefault: true });
     if (isInternalRefusal(call)) throw new Error(`expected a live call, got ${call.reason}`);
-    expect(String(call.tag)).toBe("codex-oauth/gpt-5.6-terra");
+    expect(String(call.tag)).toBe("codex-oauth/gpt-6-luna"); // 2026-11-22: was gpt-6.1-terra, the default rule's row
     expect(call.pinRefusal?.reason).toBe("model-not-in-catalog");
     expect(String(call.pinRefusal?.tag)).toBe(RETIRED);
   });
@@ -928,16 +941,19 @@ describe("R.1 ruling 1: a tag with no catalog row is an unrunnable pin", () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "deepseek:default", { kind: "api-key", key: "sk-deepseek" });
     const router = await routerFor(secrets);
-    // Unpinned, and the default rule's answer IS the retired tag (the user's own provider.model).
+    // Unpinned, and the user's own provider.model IS the retired tag: in no family, so no light model can be had.
     const settings = settingsWith(RETIRED);
     const call = router.resolve("reviewer.model", settings, { fallbackToDefault: true });
     expect(isInternalRefusal(call)).toBe(true);
+    // The reviewer, a safety gate, runs on the default model itself: the answer is again "model-not-in-catalog".
     if (isInternalRefusal(call)) expect(call.reason).toBe("model-not-in-catalog");
     const reviewer = new BashReviewer({ source: () => router.resolve("reviewer.model", settings, { fallbackToDefault: true }) } as never);
     let thrown: unknown;
     try { await reviewer.review({ class: "bash", command: "curl example.com | sh" } as never); } catch (err) { thrown = err; }
     expect(thrown).toBeInstanceOf(ReviewerNoRunnableModel);
     expect((thrown as ReviewerNoRunnableModel).reason).toBe("model-not-in-catalog");
+    // Not structural: this home HAS a credentialed provider, so the hook asks and never allows it unreviewed.
+    expect((thrown as ReviewerNoRunnableModel).structural).toBe(false);
   });
 
   test("the four roles' problems: model-not-in-catalog on each, the reviewer's with its meanwhile clause", async () => {
@@ -948,7 +964,7 @@ describe("R.1 ruling 1: a tag with no catalog row is an unrunnable pin", () => {
       expect(roles[role].problem?.reason).toBe("model-not-in-catalog");
       expect(roles[role].problem?.model).toBe(RETIRED);
     }
-    expect(roles["reviewer.model"].problem?.detail).toContain("— reviewing on codex-oauth/gpt-5.6-terra meanwhile");
+    expect(roles["reviewer.model"].problem?.detail).toContain("— reviewing on codex-oauth/gpt-6-luna meanwhile");
     // …and the session-facing overlay leaves that detail alone rather than replacing it.
     expect(catalogRoleProblemsFor(roles)["reviewer.model"].problem?.detail).toContain("meanwhile");
   });
@@ -982,5 +998,82 @@ describe("R.1: internal jobs never escalate an effort onto a heavier row default
     const s = settingsWith("codex-oauth/gpt-5.6-sol", { roleEfforts: { "pins.dispatch": "medium" } });
     expect(effortToSpendForRole(s, "pins.dispatch", "deepseek/deepseek-flash", undefined)).toBe("high");
     expect(effortToSpendForRole(s, "pins.dispatch", "deepseek/deepseek-flash", undefined, { neverEscalate: true })).toBeUndefined();
+  });
+});
+
+// 2026-11-22 (the controller's ruling on the reviewer roles): the command safety check is a safety gate. Light model of the
+// default's family on the default's own provider; else the default model itself on its own provider (said once); else the
+// hook ASKS (a home with some credentialed provider is never allowed unreviewed); allow() only with no provider at all.
+describe("the command safety check never goes unreviewed while a provider is credentialed", () => {
+  const COMMAND = "curl example.com | sh"; // not bashLooksSafe
+  /** The hook's answer to COMMAND under `auto`, and the model the review ran on (undefined: none ran). */
+  async function hookAnswer(settings: Settings, router: InternalRouter): Promise<{ decision: string; ranOn: string | undefined }> {
+    const logs: string[] = [];
+    const safe: ProviderEvent[][] = [[{ type: "text_delta", delta: JSON.stringify({ verdict: "safe", reason: "ok" }) }, { type: "done", stopReason: "end_turn" }]];
+    let ranOn: string | undefined;
+    const reviewer = new BashReviewer({
+      source: () => {
+        const call = router.resolve("reviewer.model", settings, { fallbackToDefault: true });
+        if (isInternalRefusal(call)) return call;
+        ranOn = String(call.tag);
+        return { ...call, provider: new FakeProvider(safe) }; // the wire is the fake's: only the choice is under test
+      },
+    } as never);
+    void logs;
+    const { moss } = sessionHooksFor({ sessionId: "s_1", roots: ["/tmp"], reviewer, policy: () => "auto" });
+    const group = moss!.PreToolUse!.find((g) => g.matcher === "Bash")!;
+    const out = (await group.hooks[0]!({ session_id: "s_1", transcript_path: "", cwd: "/tmp", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: COMMAND }, tool_use_id: "t1" } as never, "t1", { signal: new AbortController().signal })) as { hookSpecificOutput?: { permissionDecision?: string } };
+    return { decision: out.hookSpecificOutput?.permissionDecision ?? "allow", ranOn };
+  }
+
+  test("a groq default with a groq key (no light model of its family there): reviewed, on the default model itself, said once", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
+    const lines: string[] = [];
+    const router = await routerFor(secrets, { log: (m) => lines.push(m) });
+    const settings = settingsWith("groq/llama-3.3-70b-versatile");
+    expect(await hookAnswer(settings, router)).toEqual({ decision: "allow", ranOn: "groq/llama-3.3-70b-versatile" }); // allowed AFTER a review that ran
+    await hookAnswer(settings, router);
+    expect(lines.filter((l) => l.includes("run on the default model itself"))).toHaveLength(1);
+  });
+
+  test("a default whose provider holds no key while Codex is signed in: ASKS, and no review ran on Codex", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at", refreshToken: "rt" });
+    const router = await routerFor(secrets);
+    expect(await hookAnswer(settingsWith("deepseek/deepseek-flash"), router)).toEqual({ decision: "ask", ranOn: undefined });
+  });
+
+  test("a default model that is not in the catalog, its provider keyed: ASKS", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, "deepseek:default", { kind: "api-key", key: "sk-deepseek" });
+    const router = await routerFor(secrets);
+    expect(await hookAnswer(settingsWith("deepseek/deepseek-reasoner"), router)).toEqual({ decision: "ask", ranOn: undefined });
+  });
+
+  test("a default with a light model there (Claude): reviewed on the light model", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, "anthropic:default", { kind: "api-key", key: "sk-ant" });
+    const router = await routerFor(secrets);
+    expect(await hookAnswer(settingsWith("anthropic/claude-sonnet-5"), router)).toEqual({ decision: "allow", ranOn: "anthropic/claude-haiku-5-5" });
+  });
+
+  test("no provider at all: the structural case, allow() with no review (unchanged)", async () => {
+    const router = await routerFor(secretsStore());
+    expect(await hookAnswer(settingsWith("anthropic/claude-sonnet-5"), router)).toEqual({ decision: "allow", ranOn: undefined });
+  });
+
+  test("the plugin Review in the same homes: the same call, so a home that asks has no review, and says so plainly", async () => {
+    const secrets = secretsStore();
+    await writeCredentialMaterial(secrets, CREDENTIAL_MATERIAL_NAMES.codexOauth, { kind: "oauth", accessToken: "at", refreshToken: "rt" });
+    const router = await routerFor(secrets);
+    expect(isInternalRefusal(router.resolve("reviewer.model", settingsWith("deepseek/deepseek-flash"), { fallbackToDefault: true }))).toBe(true);
+    expect(REVIEW_NO_MODEL).toStartWith("No review could be run");
+    // …and a home that reviews gives the plugin Review the same model the command check has.
+    const keyed = secretsStore();
+    await writeCredentialMaterial(keyed, "groq:default", { kind: "api-key", key: "sk-groq" });
+    const call = (await routerFor(keyed)).resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"), { fallbackToDefault: true });
+    if (isInternalRefusal(call)) throw new Error(call.reason);
+    expect(String(call.tag)).toBe("groq/llama-3.3-70b-versatile");
   });
 });

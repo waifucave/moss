@@ -114,4 +114,4 @@ None yet: the web companion's page may reach only the handshake (its CSP). CORS 
 
 ## Testing against it
 
-`@waifucave/clover-service-accounts/harness`: `startAccountService({authUrl, anonKey, tokenTtlSeconds?})` runs the service on wrangler's local runtime against a sign-in stack such as lane M's stub. It answers `{url, issuer, jwks, stop}`, the same as the core's `startFakeAccountService`, with a signing key made in memory for the run.
+`@waifucave/moss-service-accounts/harness`: `startAccountService({authUrl, anonKey, tokenTtlSeconds?})` runs the service on wrangler's local runtime against a sign-in stack such as lane M's stub. It answers `{url, issuer, jwks, stop}`, the same as the core's `startFakeAccountService`, with a signing key made in memory for the run.

@@ -1,5 +1,5 @@
 // The ACP backends plugins contribute (spec §5.3 `agentBackends`, the controller's alignment for K-M3): every backend is
-// a plugin's entry, the bundled ones included (`plugins/clover/plugins/agent-<id>/`), and the core keeps only the ACP
+// a plugin's entry, the bundled ones included (`plugins/moss/plugins/agent-<id>/`), and the core keeps only the ACP
 // client, the manager, the OK and the sandbox logic. An entry names its quirks file (`quirks`), a JSON file in the
 // plugin's folder holding the backend's `AgentQuirks`, its read-only mode where it acts without asking, and where the
 // row comes from. A third-party plugin adds an ACP backend the same way and goes through the same OK.
@@ -10,13 +10,13 @@
 //   checked against the descriptor's shape; a file that fails leaves that backend out, with the reason logged.
 // * The program is the entry's `command` and `args`, on every OS (what the plugin's OK covers); on Windows the PATH
 //   lookup finds its `.exe` or `.cmd`. The file holds everything else about the backend.
-// * What the core grants by backend id stays with Clover's own plugin: a sandbox admitted for `cursor` (S8) or Claude
-//   Code's placement of plugin parts applies only when the entry is the bundled `clover/agent-<id>`, so another plugin
+// * What the core grants by backend id stays with MOSS's own plugin: a sandbox admitted for `cursor` (S8) or Claude
+//   Code's placement of plugin parts applies only when the entry is the bundled `moss/agent-<id>`, so another plugin
 //   that takes the id once the bundled one is off gets neither.
-// * Ids (#233's review): the core's own backends' ids (`clover-code`, `clover`) are never a plugin's; while Clover's
-//   bundled `clover/agent-<id>` is on, no other plugin's entry takes that id; among other plugins the first claim, in
+// * Ids (#233's review): the core's own backends' ids (`moss-code`, `moss`) are never a plugin's; while MOSS's
+//   bundled `moss/agent-<id>` is on, no other plugin's entry takes that id; among other plugins the first claim, in
 //   the registry's order, wins. Every entry left out is logged.
-// * A plugin that isn't Clover's own is taken at its word for nothing that loosens: its backend counts as acting
+// * A plugin that isn't MOSS's own is taken at its word for nothing that loosens: its backend counts as acting
 //   without asking (`unasked-actions`, so at read-only it needs a declared read-only mode or doesn't start), and its
 //   `envAllow` may not name anything that looks like a secret (the daemon's environment is passed by name).
 import { readFileSync, realpathSync } from "node:fs";
@@ -24,9 +24,12 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import type { AgentBackend, AgentQuirks } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
+import { RESERVED_ENV } from "@waifucave/moss-plugin-sdk";
+import { AdapterDeclSchema, LockFileSchema, type AdapterDecl, type AdapterDeclFile } from "./adapter/types";
+import { ModelListDeclSchema, type ModelListDecl } from "./model-list";
 
-/** The bundled plugin that holds a backend's row: `clover/agent-<id>`. */
-export const bundledAgentPluginId = (id: string): string => `clover/agent-${id}`;
+/** The bundled plugin that holds a backend's row: `moss/agent-<id>`. */
+export const bundledAgentPluginId = (id: string): string => `moss/agent-${id}`;
 
 const Strings = z.array(z.string().max(4096)).max(256);
 const Mark = z.enum(["stores-plain-text", "passes-environment", "no-deny-list", "unsandboxed", "unasked-actions", "persists-model-choice"]);
@@ -38,6 +41,9 @@ export const AgentQuirksSchema = z.strictObject({
     envAllow: Strings,
     envSet: z.record(z.string().max(256), z.string().max(4096)),
     versions: z.string().max(256),
+    /** The program is an adapter MOSS provides (agents/adapter, spec §9.3): read out of the launch block by
+     *  `readQuirksFile` into `QuirksFile.adapter`, so the descriptor the client reads keeps the spine's shape. */
+    adapter: AdapterDeclSchema.optional(),
   }),
   capabilities: z.strictObject({ snakeCaseDuplicates: z.boolean(), httpMcpUnadvertised: z.boolean() }),
   mcp: z.strictObject({
@@ -47,6 +53,8 @@ export const AgentQuirksSchema = z.strictObject({
     instructionsReachPrompt: z.union([z.boolean(), z.literal("unknown")]),
     systemPromptChannel: z.enum(["_meta.antigravity.systemPrompt.append", "acp.systemPrompt", "_meta.systemPrompt"]).nullable(),
     tellsConversationId: z.boolean(),
+    toolListChanges: z.enum(["live", "next-turn", "next-session"]).optional(),
+    toolSearch: z.enum(["own", "host"]).optional(),
   }),
   sessions: z.strictObject({
     load: z.strictObject({ supported: z.boolean(), replays: z.boolean() }),
@@ -74,6 +82,13 @@ export const AgentQuirksSchema = z.strictObject({
   progress: z.strictObject({ countsChildProcesses: z.boolean() }),
   placement: z.enum(["local", "cloud"]),
   marks: z.array(Mark).max(16),
+  // §9.5 "Subagents": which tool call starts a subagent of the agent's own; null or left out: none known.
+  subagents: z.strictObject({
+    toolNameAt: z.string().min(1).max(128),
+    tools: z.array(z.string().min(1).max(64)).min(1).max(8),
+    name: z.array(z.string().min(1).max(64)).max(8),
+    model: z.string().min(1).max(64).optional(),
+  }).nullable().optional(),
 });
 
 /** A quirks file: the descriptor, the read-only mode of an agent that acts without asking, and where the row comes from. */
@@ -81,6 +96,10 @@ export const QuirksFileSchema = z.strictObject({
   notes: z.string().max(8192).optional(),
   source: z.string().max(256),
   readOnlyMode: z.strictObject({ option: z.string().max(128), values: z.array(z.string().max(128)).min(1).max(8) }).optional(),
+  /** Where the agent keeps its own model list (its list command, or one file of its own folder), read before any session
+   *  exists (`agents/model-list.ts`). Only MOSS's bundled plugin's is acted on (`ContributedBackend.modelList`): another
+   *  plugin's would run a program of its choosing, or read a file of the user's home, with no OK. */
+  modelList: ModelListDeclSchema.optional(),
   quirks: AgentQuirksSchema,
 });
 
@@ -91,6 +110,9 @@ export interface QuirksFile {
   notes?: string;
   source: string;
   readOnlyMode?: { option: string; values: readonly string[] };
+  modelList?: ModelListDecl;
+  /** `launch.adapter`: the program is an adapter MOSS provides (the lock not read yet: `readAdapter`). */
+  adapter?: AdapterDeclFile;
   quirks: FileQuirks;
 }
 
@@ -100,21 +122,39 @@ export function quirksWithCommand(q: FileQuirks, command: { program: string; acp
   return { ...q, launch: { ...q.launch, command: { macos: argv, linux: argv, windows: argv } } };
 }
 
-/** Reads and checks a quirks file inside a plugin's folder; throws with the reason. */
-export function readQuirksFile(folder: string, path: string): QuirksFile {
-  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`the quirks file ${JSON.stringify(path)} isn't a path inside the plugin`);
+/** A file's text, read from inside a plugin's folder only (no `..`, no absolute path, no link out of it). */
+function readInside(folder: string, path: string, what: string): string {
+  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`the ${what} ${JSON.stringify(path)} isn't a path inside the plugin`);
   const root = realpathSync(folder);
   const real = realpathSync(join(root, path));
   const rel = relative(root, real);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) throw new Error(`the quirks file ${JSON.stringify(path)} leads out of the plugin`);
-  const raw: unknown = JSON.parse(readFileSync(real, "utf8"));
-  const parsed = QuirksFileSchema.safeParse(raw);
-  if (!parsed.success) throw new Error(`the quirks file doesn't hold a backend's quirks: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "file"}: ${i.message}`).join("; ")}`);
-  return parsed.data as QuirksFile;
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) throw new Error(`the ${what} ${JSON.stringify(path)} leads out of the plugin`);
+  return readFileSync(real, "utf8");
 }
 
-/** The core's own backends' ids: Clover's coding agent and lane A's in-process subagents. No plugin contributes them. */
-export const RESERVED_BACKEND_IDS: ReadonlySet<string> = new Set(["clover-code", "clover"]);
+/** Reads and checks a quirks file inside a plugin's folder; throws with the reason. */
+export function readQuirksFile(folder: string, path: string): QuirksFile {
+  const raw: unknown = JSON.parse(readInside(folder, path, "quirks file"));
+  const parsed = QuirksFileSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`the quirks file doesn't hold a backend's quirks: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "file"}: ${i.message}`).join("; ")}`);
+  const file = parsed.data as QuirksFile & { quirks: { launch: { adapter?: AdapterDeclFile } } };
+  // The adapter leaves the launch block: the client's descriptor keeps the spine's shape.
+  const { adapter, ...launch } = file.quirks.launch;
+  return { ...file, quirks: { ...file.quirks, launch } as FileQuirks, ...(adapter === undefined ? {} : { adapter }) };
+}
+
+/** An adapter declaration with its lock read from inside the plugin's folder; throws with the reason. A lock that names
+ *  the adapter's own path, or that doesn't parse, refuses the declaration (the backend is left out). */
+export function readAdapter(folder: string, decl: AdapterDeclFile): AdapterDecl {
+  if (decl.lock === undefined) return { ...decl, packages: [] };
+  const parsed = LockFileSchema.safeParse(JSON.parse(readInside(folder, decl.lock, "adapter lock")));
+  if (!parsed.success) throw new Error(`the adapter lock ${JSON.stringify(decl.lock)} isn't a lock file: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "file"}: ${i.message}`).join("; ")}`);
+  if (parsed.data.packages.some((p) => p.path === `node_modules/${decl.package}`)) throw new Error(`the adapter lock ${JSON.stringify(decl.lock)} locks the adapter itself, whose integrity the declaration names`);
+  return { ...decl, packages: parsed.data.packages };
+}
+
+/** The core's own backends' ids: MOSS's coding agent and lane A's in-process subagents. No plugin contributes them. */
+export const RESERVED_BACKEND_IDS: ReadonlySet<string> = new Set(["moss-code", "moss"]);
 
 /** Segments of an environment name (split at `_`, any case) that mark a secret. */
 const SECRET_SEGMENTS: ReadonlySet<string> = new Set([
@@ -156,13 +196,20 @@ export interface ContributedBackend {
   id: string;
   pluginId: string;
   name: string;
-  /** The bundled `clover/agent-<id>`: what the core grants by backend id applies. */
+  /** The bundled `moss/agent-<id>`: what the core grants by backend id applies. */
   bundled: boolean;
   file: QuirksFile;
   /** The entry's program and its ACP arguments. */
   command: { program: string; acpArgs: readonly string[] };
   /** The file's quirks with that command. */
   quirks: AgentQuirks;
+  /** The program is an adapter MOSS provides, with its lock read (`launch.adapter`). */
+  adapter?: AdapterDecl;
+  /** Where the agent's own model list is read from (`agents/model-list.ts`): MOSS's bundled plugin's declaration only. */
+  modelList?: ModelListDecl;
+  /** Its look as the entry gives it (spec revision 20, §9.5): an icon file in the plugin's folder and its colours. Read
+   *  by `BackendLooks`, never here: a bad icon never keeps a backend out. */
+  look: { icon?: string; iconDark?: string; color?: string; color2?: string };
 }
 
 /** The `agentBackends` entries that are on, read into backends' rows; an entry whose file fails is left out. */
@@ -170,7 +217,7 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
   const candidates: ContributedBackend[] = [];
   for (const c of registry.entries("agentBackends")) {
     if (c.state !== "active") continue;
-    const v = c.value as { id?: string; name?: string; protocol?: string; command?: string; args?: string[]; quirks?: string };
+    const v = c.value as { id?: string; name?: string; protocol?: string; command?: string; args?: string[]; quirks?: string; icon?: string; iconDark?: string; color?: string; color2?: string };
     const id = v.id ?? c.entryId;
     if (!id || v.protocol !== "acp" || !v.command) continue;
     const record = registry.get(c.pluginId);
@@ -187,12 +234,12 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
       continue;
     }
     if (RESERVED_BACKEND_IDS.has(id)) {
-      log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: that id is one of Clover's own backends`);
+      log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: that id is one of MOSS's own backends`);
       continue;
     }
     const bundled = c.pluginId === bundledAgentPluginId(id) && record.provenance.by === "bundled";
-    if (!bundled && /^\s*clover/i.test(v.name ?? id)) {
-      log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: only Clover's own backends are named Clover`);
+    if (!bundled && /^\s*moss/i.test(v.name ?? id)) {
+      log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: only MOSS's own backends are named MOSS`);
       continue;
     }
     if (!bundled) {
@@ -202,20 +249,37 @@ export function contributedBackends(registry: Pick<PluginRegistry, "entries" | "
         continue;
       }
     }
+    let adapter: AdapterDecl | undefined;
+    if (file.adapter !== undefined) {
+      try {
+        const reserved = (file.adapter.uses ?? []).find((u) => RESERVED_ENV.test(u.env));
+        if (reserved !== undefined) throw new Error(`it hands a program's path in ${reserved.env}, a name only MOSS sets`);
+        adapter = readAdapter(record.folder, file.adapter);
+      } catch (err) {
+        log?.(`agents: ${c.pluginId}'s backend ${id} isn't offered: its adapter declaration is refused: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    }
     const command = { program: v.command, acpArgs: v.args ?? [] };
     // Another plugin's backend counts as acting without asking, whatever its file says.
     const fileQuirks: FileQuirks = bundled || file.quirks.marks.includes("unasked-actions") ? file.quirks : { ...file.quirks, marks: [...file.quirks.marks, "unasked-actions"] };
     // Another plugin's backend is listed with its plugin's id beside its name.
     const name = bundled ? (v.name ?? id) : `${v.name ?? id} (${c.pluginId})`;
-    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command) });
+    const look = { ...(typeof v.icon === "string" ? { icon: v.icon } : {}), ...(typeof v.iconDark === "string" ? { iconDark: v.iconDark } : {}), ...(typeof v.color === "string" ? { color: v.color } : {}), ...(typeof v.color2 === "string" ? { color2: v.color2 } : {}) };
+    const declared = file.modelList;
+    // Only MOSS's own bundled plugin's declaration is honoured: another plugin's is dropped whole, its agent's models then
+    // come from its sessions.
+    if (!bundled && declared !== undefined) log?.(`agents: ${c.pluginId}'s backend ${id} declares a model list, which only MOSS's own plugins may; its models come from its sessions`);
+    const modelList = bundled ? declared : undefined;
+    candidates.push({ id, pluginId: c.pluginId, name, bundled, file, command, quirks: quirksWithCommand(fileQuirks, command), look, ...(modelList === undefined ? {} : { modelList }), ...(adapter === undefined ? {} : { adapter }) });
   }
-  // One entry per id: Clover's bundled one while it is on, else the first claim.
+  // One entry per id: MOSS's bundled one while it is on, else the first claim.
   const out: ContributedBackend[] = [];
   const bundledIds = new Set(candidates.filter((c) => c.bundled).map((c) => c.id));
   const taken = new Map<string, string>();
   for (const c of candidates) {
     if (bundledIds.has(c.id) && !c.bundled) {
-      log?.(`agents: ${c.pluginId}'s backend ${c.id} isn't offered: Clover's own ${bundledAgentPluginId(c.id)} has that id`);
+      log?.(`agents: ${c.pluginId}'s backend ${c.id} isn't offered: MOSS's own ${bundledAgentPluginId(c.id)} has that id`);
       continue;
     }
     const first = taken.get(c.id);
@@ -240,7 +304,7 @@ export class ContributedBackendCache<B extends AgentBackend> {
     for (const c of contributedBackends(registry, log)) {
       // Keyed by plugin and id: one object per entry while its plugin's tree and row hold, so a session keeps its backend.
       const slot = `${c.pluginId}\u0000${c.id}`;
-      const key = `${registry.get(c.pluginId)?.treeHash ?? ""}\u0000${JSON.stringify(c.file)}\u0000${JSON.stringify(c.command)}\u0000${c.bundled}`;
+      const key = `${registry.get(c.pluginId)?.treeHash ?? ""}\u0000${JSON.stringify(c.file)}\u0000${JSON.stringify(c.command)}\u0000${c.bundled}\u0000${JSON.stringify(c.adapter ?? null)}`;
       seen.add(slot);
       const had = this.#built.get(slot);
       if (had && had.key === key) {

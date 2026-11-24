@@ -11,14 +11,14 @@ import { advanceAndSettle, FakeClock, flush } from "../../contracts/fakes/clock"
 import { runSessionHostConformance, type SessionHostHarness } from "../../contracts/conformance/session-host";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import type { DeliveredInput, SessionDriver, SessionRecord, TurnControl, TurnEnd, TurnInput, UserInput } from "../../contracts/session-host";
-import { DurableSessionHost, INTERRUPT_GRACE_MS, PUMP_RETRY_MS } from "../durable-host";
+import { DurableSessionHost, INTERRUPT_GRACE_MS, PUMP_RETRY_MS, WROTE_BOTS_MAX } from "../durable-host";
 import { projectRecords } from "../wire";
 import { MAX_RECORD_BYTES } from "../event-log";
 import { sessionLogPath, sessionMetaPath } from "../ids";
 
 const homes: string[] = [];
 function tempHome(): string {
-  const home = mkdtempSync(join(tmpdir(), "clover-d-sessions-"));
+  const home = mkdtempSync(join(tmpdir(), "moss-d-sessions-"));
   homes.push(home);
   return home;
 }
@@ -46,6 +46,7 @@ runSessionHostConformance((opts): SessionHostHarness => {
     subscribe: (id, fn) => host.subscribe(id, fn),
     watch: (fn) => host.watch(fn),
     setAsleep: (id, asleep) => host.setAsleep(id, asleep),
+    botsThatWrote: (id) => host.botsThatWrote(id),
   };
 });
 
@@ -481,12 +482,48 @@ describe("DurableSessionHost when things go wrong", () => {
     expect(seqs).toEqual(seqs.map((_, i) => i));
   });
 
-  test("a meta written by a newer Clover stops the start rather than be skipped", async () => {
+  test("which bots have written to a session survives a restart, lasts the session's life, and is read back only as bot ids; an ended bot's record stays", async () => {
+    const { home, clock, host } = durable();
+    host.open({ id: "b_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, new FakeSessionDriver());
+    host.open({ id: "b_luna", kind: "bot", bot: "luna", computer: "Studio" }, new FakeSessionDriver());
+    host.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", root: "home/Studio/project1" }, new FakeSessionDriver());
+    expect(host.botsThatWrote("s_code")).toEqual([]);
+    await host.deliver("s_code", { from: "session", session: "b_alpha", text: "first word" });
+    await host.deliver("s_code", { from: "session", session: "b_alpha", text: "again" });
+    expect(host.botsThatWrote("s_code")).toEqual(["alpha"]);
+    await host.close();
+
+    // A restart: the fact is on disk (the session's meta), not in a model's memory or the process.
+    const again = new DurableSessionHost({ home, clock });
+    again.open({ id: "b_luna", kind: "bot", bot: "luna", computer: "Studio" }, new FakeSessionDriver());
+    again.open({ id: "s_code", kind: "coding", computer: "Studio", backend: "claude-code", root: "home/Studio/project1" }, new FakeSessionDriver());
+    expect(again.botsThatWrote("s_code")).toEqual(["alpha"]);
+    // A second bot adds to it; the first bot's conversation need not be open: its record is the session's own.
+    await again.deliver("s_code", { from: "session", session: "b_luna", text: "hello" });
+    expect(again.botsThatWrote("s_code")).toEqual(["alpha", "luna"]);
+    await again.close();
+
+    // A forged or damaged meta: anything but a short list of strings reads as no record, and a list is capped and de-duplicated.
+    const path = sessionMetaPath(home, undefined, "s_code");
+    const meta = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    for (const bad of ["alpha", { alpha: true }, [1, null, {}], 7]) {
+      writeFileSync(path, JSON.stringify({ ...meta, wroteBy: bad }));
+      const h = new DurableSessionHost({ home, clock, warn: () => {} });
+      expect([JSON.stringify(bad), h.botsThatWrote("s_code")]).toEqual([JSON.stringify(bad), []]);
+      await h.close();
+    }
+    writeFileSync(path, JSON.stringify({ ...meta, wroteBy: ["alpha", "alpha", ...Array.from({ length: 200 }, (_, i) => `bot${i}`)] }));
+    const capped = new DurableSessionHost({ home, clock, warn: () => {} }).botsThatWrote("s_code");
+    expect(capped.length).toBeLessThanOrEqual(WROTE_BOTS_MAX);
+    expect(new Set(capped).size).toBe(capped.length);
+  });
+
+  test("a meta written by a newer MOSS stops the start rather than be skipped", async () => {
     const { home, clock, host } = durable();
     open(host);
     await host.close();
     writeFileSync(sessionMetaPath(home, "alpha", "b_alpha"), JSON.stringify({ meta: 2, id: "b_alpha" }));
-    expect(() => new DurableSessionHost({ home, clock })).toThrow("newer Clover");
+    expect(() => new DurableSessionHost({ home, clock })).toThrow("newer MOSS");
   });
 
   test("when the disk refuses a turn's start, the input stays first in line and runs once the disk is back", async () => {
@@ -634,6 +671,68 @@ describe("DurableSessionHost when things go wrong", () => {
   });
 });
 
+describe("a coding session whose turn failed stays open", () => {
+  test("every failure kind: the session is idle with the failure on its view, the queue is cleared, and the next message runs a turn; a turn that ends well clears the failure; and it reads open after a restart", async () => {
+    const t = durable();
+    for (const failure of ["error", "sign-in", "stalled", "crashed"] as const) {
+      const d = new FakeSessionDriver();
+      const id = `agent_${failure}`;
+      t.host.open({ id, kind: "coding", computer: "Studio", backend: "moss-code" }, d);
+      await t.host.sendUser(id, user("first"));
+      await t.host.sendUser(id, user("second, queued"));
+      await flush();
+      d.end({ reason: "failed", failure, text: "why" });
+      await flush();
+      expect(t.host.get(id)).toMatchObject({ status: "idle", failure });
+      // The queued message went with the failed turn (it was never answered; the person sends again).
+      expect(d.turns).toHaveLength(1);
+      await t.host.sendUser(id, user("again"));
+      await flush();
+      expect(d.turns).toHaveLength(2);
+      d.end({ reason: "end_turn", text: "ok" });
+      await flush();
+      expect(t.host.get(id)!.status).toBe("idle");
+      expect(t.host.get(id)!.failure).toBeUndefined();
+    }
+  });
+
+  test("a failed turn, then a restart: the session is open (not ended on disk), and still answers; one the person stopped stays stopped", async () => {
+    const t = durable();
+    const d = new FakeSessionDriver();
+    t.host.open({ id: "agent_a", kind: "coding", computer: "Studio", backend: "moss-code" }, d);
+    t.host.open({ id: "agent_b", kind: "coding", computer: "Studio", backend: "moss-code" }, new FakeSessionDriver());
+    await t.host.sendUser("agent_a", user("go"));
+    await flush();
+    d.end({ reason: "failed", failure: "crashed" });
+    await flush();
+    await t.host.stop("agent_b");
+    await t.host.close();
+    const again = new DurableSessionHost({ home: t.home, clock: t.clock });
+    expect(again.get("agent_a")!.status).not.toBe("failed");
+    expect(again.get("agent_a")!.status).not.toBe("stopped");
+    expect(again.get("agent_b")!.status).toBe("stopped");
+    const d2 = new FakeSessionDriver();
+    again.open({ id: "agent_a", kind: "coding", computer: "Studio", backend: "moss-code" }, d2);
+    await again.sendUser("agent_a", user("hello again"));
+    await flush();
+    expect(d2.turns).toHaveLength(1);
+    expect(isContractError(await again.sendUser("agent_b", user("x")).catch((e: unknown) => e), "closed")).toBe(true);
+  });
+
+  test("a card pending when the turn fails is cancelled, never orphaned", async () => {
+    const cancelled: string[] = [];
+    const host = new DurableSessionHost({ home: tempHome(), clock: new FakeClock(), approvals: { withdrawSession: () => 0, cancelSession: (id: string) => (cancelled.push(id), 1) } });
+    const d = new FakeSessionDriver();
+    host.open({ id: "agent_c", kind: "coding", computer: "Studio", backend: "moss-code" }, d);
+    await host.sendUser("agent_c", user("go"));
+    await flush();
+    d.end({ reason: "failed", failure: "crashed" });
+    await flush();
+    expect(cancelled).toEqual(["agent_c"]);
+    expect(host.get("agent_c")!.status).toBe("idle");
+  });
+});
+
 describe("Try again: resendFailedTurn", () => {
   const by = { device: "app0000000000000000" };
   async function failed(first: (host: DurableSessionHost) => Promise<unknown>) {
@@ -673,6 +772,21 @@ describe("Try again: resendFailedTurn", () => {
     await flush();
     // The second turn failed too: it is a new failed turn, and the first one's resend is no longer the latest.
     expect((await t.host.resendFailedTurn("b_alpha", by)).disposition).toBe("turn");
+  });
+
+  test("a coding session's turn that failed on the agent's sign-in is sent again as a new message, and a side thread or a bot's background agent is still refused", async () => {
+    const t = durable();
+    const d = new FakeSessionDriver();
+    t.host.open({ id: "agent_code", kind: "coding", computer: "Studio", backend: "codex" }, d);
+    t.host.open({ id: "agent_bg", kind: "agent", computer: "Studio", backend: "codex" }, new FakeSessionDriver());
+    await t.host.sendUser("agent_code", user("hello"));
+    await flush();
+    d.end({ reason: "failed", failure: "sign-in" });
+    await flush();
+    expect((await t.host.resendFailedTurn("agent_code", by)).disposition).toBe("turn");
+    await flush();
+    expect(d.turns.at(-1)).toMatchObject({ origin: "user", input: { from: "user", text: "hello", device: by.device } });
+    await refused(t.host.resendFailedTurn("agent_bg", by), /only a bot's own conversation or a coding session/);
   });
 
   test("no failed turn: refused. Failed and then succeeded: refused. A turn running: refused", async () => {
@@ -738,9 +852,9 @@ describe("Try again: resendFailedTurn", () => {
     expect(t.host.length("b_alpha")).toBe(before);
   });
 
-  test("a side thread, an agent and a coding session are refused", async () => {
+  test("a side thread and an agent are refused", async () => {
     const t = durable();
-    for (const [id, kind] of [["t_1", "side-thread"], ["a_1", "agent"], ["c_1", "coding"]] as const) {
+    for (const [id, kind] of [["t_1", "side-thread"], ["a_1", "agent"]] as const) {
       t.host.open({ id, kind, bot: "alpha", parent: "b_alpha", computer: "Studio" }, new FakeSessionDriver());
       await refused(t.host.resendFailedTurn(id, by), /only a bot's own conversation/);
     }

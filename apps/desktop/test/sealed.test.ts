@@ -2,8 +2,8 @@
 // to their own frames, and one answer per button — a `{via:"device", device, at, signature}` proof, marks resolved at
 // the core's own answer (spec §5.5).
 import { describe, expect, test } from "bun:test";
-import { cardAnswerSigningInput } from "@waifucave/clover-protocol";
-import { SealedFrames, type AnswerSigner, type SealedCard } from "../src/main/sealed";
+import { cardAnswerSigningInput } from "@waifucave/moss-protocol";
+import { FRESH_MAX_AGE_MS, SealedFrames, type AnswerSigner, type SealedCard } from "../src/main/sealed";
 
 const CARD: SealedCard = {
   id: "card_0a1b2c3d",
@@ -113,6 +113,20 @@ describe("the sealed frames' store", () => {
     expect(store.buildAnswer(made.token, "allow_once", undefined, "p:100:200", signer, "dev_a")).not.toMatchObject({ error: expect.anything() });
     store.confirmedAnswer(CARD.id, true);
     expect(store.buildAnswer(made.token, "allow_once", undefined, "p:100:200", signer, "dev_a")).toMatchObject({ error: "no such sealed button" });
+  });
+
+  test("a card is answering from the moment its answer is built until the core's word (the fallback card stays down meanwhile)", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    const made = store.mint(CARD.id, "button:allow_once", parent)!;
+    expect(store.isAnswering(CARD.id)).toBe(false);
+    expect(store.buildAnswer(made.token, "allow_once", undefined, "p:100:200", signer, "dev_a")).not.toMatchObject({ error: expect.anything() });
+    expect(store.isAnswering(CARD.id)).toBe(true);
+    store.confirmedAnswer(CARD.id, false);
+    expect(store.isAnswering(CARD.id)).toBe(false);
+    expect(store.buildAnswer(made.token, "allow_once", undefined, "p:100:200", signer, "dev_a")).not.toMatchObject({ error: expect.anything() });
+    store.confirmedAnswer(CARD.id, true);
+    expect(store.isAnswering(CARD.id)).toBe(false);
   });
 
   test("a refused answer's channel isn't put back once the card resolved, or once a newer mint replaced it", () => {
@@ -244,5 +258,59 @@ describe("the sealed frames' store", () => {
     expect(store.buildAnswer(made.token, "deny", undefined, "p:100:200", signer, "dev_a")).toMatchObject({ error: "no such sealed button" });
     const out = store.buildAnswer(made.token, "allow_once", undefined, "m:1:2", signer, "dev_aaaatestdev01");
     expect(out).not.toMatchObject({ error: expect.anything() });
+  });
+});
+
+describe("the fresh report a press asks for", () => {
+  test("it is single use, covered says covered, a missing or stale one says none", () => {
+    let t = 0;
+    const f = new SealedFrames(() => t);
+    expect(f.takeFresh("tok")).toBe("none");
+    f.noteFresh("tok", true);
+    expect(f.takeFresh("tok")).toBe("ok");
+    expect(f.takeFresh("tok")).toBe("none"); // spent
+    f.noteFresh("tok", false);
+    expect(f.takeFresh("tok")).toBe("covered");
+    f.noteFresh("tok", true);
+    t += FRESH_MAX_AGE_MS + 1;
+    expect(f.takeFresh("tok")).toBe("none"); // stale
+  });
+});
+
+describe("lane RT, S1: what today's app signs", () => {
+  test("its proof names no program and is signed over the single key's input (moss/card-answer/2): the core takes it against the desktop's single key only", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    const token = store.mint(CARD.id, "button:allow_once", parent)!.token;
+    const seen: string[] = [];
+    const out = store.buildAnswer(token, "allow_once", undefined, "p:100:200", { sign: (m) => { seen.push(new TextDecoder().decode(m)); return new Uint8Array([1]); } }, "dev_a", 1234);
+    expect("error" in out).toBe(false);
+    if ("error" in out) return;
+    expect(out.proof).toEqual({ via: "device", device: "dev_a", at: 1234, signature: "AQ==" });
+    expect("program" in out.proof).toBe(false);
+    expect(seen).toEqual([cardAnswerSigningInput({ id: CARD.id, hash: CARD.hash, option: "allow_once", at: 1234, children: [] })]);
+  });
+});
+
+describe("a fresh reading that never came in time is 'late', not 'covered' (lane HS's host run: layers loading again around a press)", () => {
+  test("late, covered and ok are told apart; a late one is spent like any other", () => {
+    let t = 0;
+    const store = new SealedFrames(() => t);
+    store.noteFresh("tok_late", false, true);
+    store.noteFresh("tok_covered", false, false);
+    store.noteFresh("tok_ok", true, true);
+    expect(store.takeFresh("tok_late")).toBe("late");
+    expect(store.takeFresh("tok_late")).toBe("none");
+    expect(store.takeFresh("tok_covered")).toBe("covered");
+    expect(store.takeFresh("tok_ok")).toBe("ok");
+    t += FRESH_MAX_AGE_MS + 1;
+  });
+
+  test("the page reads a reading that didn't come within the limit as 'late' and shows 'press again', never a cover", async () => {
+    const { buttonPage, PRESS_AGAIN_TEXT, FRESH_LIMIT_MS } = await import("../src/main/sealed-pages");
+    const b = buttonPage({ cardId: "card_x", token: "t".repeat(43), option: "allow_once", label: "Allow", kind: "approve" });
+    expect(b).toContain('say(ok === null ? "late" : "covered")');
+    expect(b).toContain(`resolve(null); }, ${FRESH_LIMIT_MS})`);
+    expect(b).toContain(JSON.stringify(PRESS_AGAIN_TEXT));
   });
 });

@@ -47,6 +47,7 @@ export interface TicketClaims {
 
 let macKey: { secret: string; key: Promise<CryptoKey> } | null = null;
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 function ticketKey(secret: string): Promise<CryptoKey> {
   if (macKey?.secret !== secret) {
     macKey = {

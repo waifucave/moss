@@ -16,7 +16,7 @@
 // can't (Linux, and Windows without a TPM), the owner accepted the risk: "any desktop may answer; a
 // compromised plugin on a Windows or Linux computer could approve actions on other computers". A server, a cloud
 // computer and a browser never sign: their only key is the core's, or they may answer no card (`mayAnswerCards`).
-import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs } from "@waifucave/clover-protocol";
+import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
 import { isStrictEd25519Point, isStrictEd25519Signature } from "../identity/ed25519-strict";
 import type { Unsubscribe } from "./common";
 
@@ -26,9 +26,9 @@ export interface DeviceRecord {
   kind: DeviceKind;
   /** A computer's OS, or a phone's `ios`. */
   os?: DeviceOs;
-  /** Runs clover-core: a computer in the tree that can take over (§6.4, §9.1). */
+  /** Runs moss-core: a computer in the tree that can take over (§6.4, §9.1). */
   runsCore: boolean;
-  /** Its folder-tree name, for a device that runs clover-core. */
+  /** Its folder-tree name, for a device that runs moss-core. */
   computer?: string;
   hasDisplay?: boolean;
   /** Its Ed25519 public key, raw 32 bytes, base64: the core's link key on a computer. */
@@ -40,6 +40,9 @@ export interface DeviceRecord {
    *  names its answer key here too: it never answers with its link key (`publicKey`), so a phone without one answers
    *  no card. */
   answerKey?: { publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg };
+  /** A desktop's answer keys per program (spec revision 19, ruling C; `program-keys.ts`, lane RT): MOSS, MOSS Code and the
+   *  background host each register their own. `answerKey` above stays the `code` program's until lane RT moves it here. */
+  answerKeys?: Partial<Record<"moss" | "code" | "host", { publicKey: string; held: AnswerKeyHolder; alg?: AnswerKeyAlg }>>;
   /** Its X25519 box key, raw 32 bytes as base64url (H-M1's ask), which account-scope boxes are sealed to (lane I's);
    *  absent until the device has published one. A revoked device's is never used. */
   boxKey?: string;
@@ -58,6 +61,9 @@ export type PairingProof =
   | { via: "code"; card: string }
   /** The user added it in their own terminal (§5.1: no card). */
   | { via: "terminal" }
+  /** A cloud computer MOSS made from its own image after the person's create card (§9.2): no words were compared and no
+   *  card was asked for the pairing itself; the create card was the OK. `computer` is the VM it was made for. */
+  | { via: "cloud"; computer: string }
   /** This device itself, at install. */
   | { via: "self" };
 

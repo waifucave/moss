@@ -6,10 +6,11 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appRequirement, CLOVER_APP_IDENTIFIER, CLOVER_TEAM_ID, DEVELOPER_ID_CLAUSES } from "../../src/bundled-identities";
+import { PROGRAM_IDENTIFIERS } from "@waifucave/moss-protocol";
+import { appRequirement, MOSS_APP_IDENTIFIER, MOSS_PROGRAM_IDENTIFIERS, MOSS_TEAM_ID, DEVELOPER_ID_CLAUSES } from "../../src/bundled-identities";
 import { socketFd, type PeerFacts } from "../../src/platform/caller-probe";
 import { peerHandle, type PeerHandle } from "../../src/platform/peer-handle";
-import { appPeerByRequirement, appPeerRequirement, auditTokenSatisfies, defaultAppPeerCheck, OPENING_ENTITLEMENTS, type AppPeerCheck } from "../../src/platform/peer-signature";
+import { appPeerByRequirement, appPeerProgram, appPeerRequirement, auditTokenSatisfies, defaultAppPeerCheck, OPENING_ENTITLEMENTS, type AppPeerCheck } from "../../src/platform/peer-signature";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { darwinTest } from "../helpers/darwin-only";
 
@@ -77,18 +78,40 @@ function signedCopy(plain: string, dir: string, name: string, o: { runtime: bool
 describe("the app peer-image check", () => {
   test("the requirement per profile: dist names a Developer ID Application leaf, dev Apple's chain and the team", () => {
     expect(DEVELOPER_ID_CLAUSES).toBe("certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13]");
-    expect(DIST).toBe(`identifier "com.waifucave.clover" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "${CLOVER_TEAM_ID}"`);
-    expect(DEV).toBe(`identifier "com.waifucave.clover.dev" and anchor apple generic and certificate leaf[subject.OU] = "${CLOVER_TEAM_ID}"`);
-    expect(CLOVER_APP_IDENTIFIER).toEqual({ dist: "com.waifucave.clover", dev: "com.waifucave.clover.dev" });
+    expect(DIST).toBe(`identifier "com.waifucave.moss.code" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "${MOSS_TEAM_ID}"`);
+    expect(DEV).toBe(`identifier "com.waifucave.moss.code.dev" and anchor apple generic and certificate leaf[subject.OU] = "${MOSS_TEAM_ID}"`);
+    expect(MOSS_APP_IDENTIFIER).toEqual({ dist: "com.waifucave.moss.code", dev: "com.waifucave.moss.code.dev" });
     expect(() => appRequirement("dist", 'X" or anchor apple')).toThrow();
     // A daemon that is itself Developer ID signed holds the app to Developer ID; one that isn't (the owner's
     // --sign-dev alpha, a checkout) to Apple's chain and the team, so it doesn't refuse its own app.
     expect(appPeerRequirement("dist", () => true)).toBe(DIST);
-    expect(appPeerRequirement("dist", () => false)).toBe(appRequirement("dist", CLOVER_TEAM_ID, false));
+    expect(appPeerRequirement("dist", () => false)).toBe(appRequirement("dist", MOSS_TEAM_ID, false));
     expect(appPeerRequirement("dev", () => true)).toBe(DEV);
     // The real app's entitlements open none of it.
     const ents = readFileSync(join(import.meta.dir, "..", "..", "..", "..", "packaging", "macos", "entitlements.mac.plist"), "utf8");
     for (const e of OPENING_ENTITLEMENTS) expect(ents).not.toContain(e);
+  });
+
+  test("one requirement per program, the same identifiers as the protocol's, each tried in turn and named", () => {
+    expect(MOSS_PROGRAM_IDENTIFIERS as unknown).toEqual(PROGRAM_IDENTIFIERS);
+    for (const program of ["code", "moss", "host"] as const) {
+      const ids = MOSS_PROGRAM_IDENTIFIERS[program];
+      expect(appPeerRequirement("dist", () => true, program)).toBe(`identifier "${ids.dist}" and anchor apple generic and ${DEVELOPER_ID_CLAUSES} and certificate leaf[subject.OU] = "${MOSS_TEAM_ID}"`);
+      expect(appPeerRequirement("dist", () => false, program)).toBe(`identifier "${ids.dist}" and anchor apple generic and certificate leaf[subject.OU] = "${MOSS_TEAM_ID}"`);
+      expect(appPeerRequirement("dev", () => true, program)).toBe(`identifier "${ids.dev}" and anchor apple generic and certificate leaf[subject.OU] = "${MOSS_TEAM_ID}"`);
+    }
+    // A peer is each program's requirement in turn: the first that holds names it; none holding is false.
+    const asked: string[] = [];
+    const only = (id: string) => appPeerProgram("dist", { selfDeveloperId: () => true, satisfies: (req) => () => { asked.push(req); return req.includes(`"${id}"`); } });
+    const peer = facts(undefined);
+    expect(only("com.waifucave.moss.code")(peer)).toBe("code");
+    expect(only("com.waifucave.moss")(peer)).toBe("moss");
+    expect(only("com.waifucave.moss.host")(peer)).toBe("host");
+    expect(only("com.example.other")(peer)).toBe(false);
+    expect(asked.filter((r) => r.includes('"com.waifucave.moss.host"')).length).toBe(2);
+    // The dev profile names the dev forms only: a dist-signed program is no dev program.
+    expect(appPeerProgram("dev", { satisfies: (req) => () => req.includes('"com.waifucave.moss.host.dev"') })(peer)).toBe("host");
+    expect(appPeerProgram("dev", { satisfies: (req) => () => req.includes('"com.waifucave.moss.host"') })(peer)).toBe(false);
   });
 
   test("Linux and Windows make no check (none is faked, and it is named); macOS does", () => {
@@ -107,7 +130,7 @@ describe("the app peer-image check", () => {
     expect(auditTokenSatisfies(new Uint8Array(32), NC, { hardened: false })).toBe(false); // a token the kernel never gave
   });
 
-  darwinTest("an Apple-signed peer: its own requirement matches, Clover's never; unhardened, it is refused; once gone, nothing", async () => {
+  darwinTest("an Apple-signed peer: its own requirement matches, MOSS's never; unhardened, it is refused; once gone, nothing", async () => {
     const { child, handle, stop } = await connected((path) => ["/usr/bin/nc", "-U", path]);
     try {
       expect(handle?.via).toBe("token");
@@ -139,13 +162,13 @@ describe("the app peer-image check", () => {
       expect(auditTokenSatisfies(handle!.auditToken, own, { hardened: false })).toBe(true);
       // Hardened, but with disable-library-validation and allow-dyld-environment-variables: refused.
       expect(auditTokenSatisfies(handle!.auditToken, own)).toBe(false);
-      expect(auditTokenSatisfies(handle!.auditToken, own.replace(bunTeam, CLOVER_TEAM_ID), { hardened: false })).toBe(false);
+      expect(auditTokenSatisfies(handle!.auditToken, own.replace(bunTeam, MOSS_TEAM_ID), { hardened: false })).toBe(false);
       expect(auditTokenSatisfies(handle!.auditToken, DIST, { hardened: false })).toBe(false);
       expect(auditTokenSatisfies(handle!.auditToken, DEV, { hardened: false })).toBe(false);
     } finally { stop(); }
   });
 
-  darwinTest("hardening: only the hardened runtime with no opening entitlement passes; ad hoc never passes Clover's", async () => {
+  darwinTest("hardening: only the hardened runtime with no opening entitlement passes; ad hoc never passes MOSS's", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lane-c-ps-bin-"));
     const plain = adHocClient(dir);
     const cases: [string, { runtime: boolean; entitlements?: readonly string[] }, boolean][] = [
@@ -169,17 +192,23 @@ describe("the app peer-image check", () => {
     }
   });
 
-  darwinTest("an ad hoc peer that names itself com.waifucave.clover, hardened, is refused by Clover's requirements", async () => {
+  darwinTest("an ad hoc peer that names itself as any of the three programs, hardened, is refused by MOSS's requirements", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lane-c-ps-bin-"));
     const plain = adHocClient(dir);
-    for (const id of [CLOVER_APP_IDENTIFIER.dist, CLOVER_APP_IDENTIFIER.dev]) {
+    for (const id of Object.values(MOSS_PROGRAM_IDENTIFIERS).flatMap((p) => [p.dist, p.dev])) {
       const bin = signedCopy(plain, dir, id, { runtime: true });
       const { handle, stop } = await connected((path) => [bin, path]);
       try {
         expect(auditTokenSatisfies(handle!.auditToken, `identifier "${id}"`)).toBe(true); // the identifier alone matches
         expect(auditTokenSatisfies(handle!.auditToken, DIST)).toBe(false);
         expect(auditTokenSatisfies(handle!.auditToken, DEV)).toBe(false);
-        expect(auditTokenSatisfies(handle!.auditToken, appRequirement("dist", CLOVER_TEAM_ID, false))).toBe(false);
+        expect(auditTokenSatisfies(handle!.auditToken, appRequirement("dist", MOSS_TEAM_ID, false))).toBe(false);
+        for (const program of ["code", "moss", "host"] as const) {
+          expect(auditTokenSatisfies(handle!.auditToken, appRequirement("dist", MOSS_TEAM_ID, false, program))).toBe(false);
+          expect(auditTokenSatisfies(handle!.auditToken, appRequirement("dev", MOSS_TEAM_ID, false, program))).toBe(false);
+        }
+        expect(check(defaultAppPeerCheck("darwin", "dist"))(facts(handle!))).toBe(false);
+        expect(check(defaultAppPeerCheck("darwin", "dev"))(facts(handle!))).toBe(false);
       } finally { stop(); }
     }
   });

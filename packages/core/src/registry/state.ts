@@ -1,4 +1,4 @@
-// The registry's own records (spec §5.1, §8.5; review S8), in the fenced `plugins-state/` folder of the Clover home:
+// The registry's own records (spec §5.1, §8.5; review S8), in the fenced `plugins-state/` folder of the MOSS home:
 // * `installed.json`: the synced list, in its order (which plugin keeps a clashing entry id or a namespace), with
 //   each plugin's switch, source and who installed it, the tree hash last OK'd or refused, and development folders;
 // * `oks/<id>.json`: what each OK'd tree held (`OkSnapshot`), so a later change can be told apart (§5.6);
@@ -23,7 +23,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { z } from "zod";
-import { PluginProvenance as PluginProvenanceSchema, PluginSource as PluginSourceSchema, type PluginProvenance, type PluginSource } from "@waifucave/clover-protocol";
+import { PluginProvenance as PluginProvenanceSchema, PluginSource as PluginSourceSchema, type PluginProvenance, type PluginSource } from "@waifucave/moss-protocol";
 import type { OkSnapshot } from "./changes";
 
 export interface PluginState {
@@ -33,6 +33,8 @@ export interface PluginState {
   provenance?: PluginProvenance;
   /** The tree hash the user last OK'd. */
   okHash?: string;
+  /** The catalog revision that OK was given at (`GRANT_REVISION`); absent for one from before revisions were kept. */
+  okRevision?: number;
   /** The tree hash the user refused; it stays off until its folder changes. */
   refusedHash?: string;
   /** A card-styling change waits for its OK (§5.5). */
@@ -58,6 +60,9 @@ export interface RegistryStateFile {
   order: string[];
   plugins: Record<string, PluginState>;
   dev: DevFolderState[];
+  /** The user's choice for each one-at-a-time point (§5.4 "One at a time"): the entry they picked in Settings. Kept
+   *  while its plugin has a record here; absent, the point's default is the active one. */
+  active?: Record<string, { pluginId: string; entryId: string }>;
 }
 
 /** An index the user added (§5.1): its https URL. */
@@ -129,6 +134,7 @@ const StoredPlugin = z.object({
   source: PluginSourceSchema.optional(),
   provenance: PluginProvenanceSchema.optional(),
   okHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  okRevision: z.number().int().nonnegative().optional(),
   refusedHash: z.string().optional(),
   cardHeld: z.boolean().optional(),
   appParts: z.literal(false).optional(),
@@ -138,11 +144,13 @@ const StateSchema = z.object({
   order: z.array(z.string()),
   plugins: z.record(z.string(), StoredPlugin),
   dev: z.array(z.object({ path: z.string().min(1), by: z.enum(["cli", "app"]), addedAt: z.number(), expiresAt: z.number() })),
+  active: z.record(z.string().max(256), z.object({ pluginId: z.string().min(1).max(200), entryId: z.string().min(1).max(256) })).optional(),
 });
 const Fingerprint = z.object({
   class: z.enum(["data", "web", "code"]), capabilities: z.array(z.string()), networkHosts: z.array(z.string()), helperPermissions: z.array(z.string()),
   hookEvents: z.array(z.string()), fetchesCode: z.array(z.string()), addons: z.boolean(), adult: z.boolean(), runs: z.string(), defaults: z.string(),
   reaches: z.string(), dynamicHosts: z.boolean(), label: z.string().optional(), agentBackends: z.string().optional(), agentDefinitions: z.string().optional(),
+  fillsDecl: z.string().optional(),
 });
 const OkSchema = z.object({
   okHash: z.string(),
@@ -150,6 +158,7 @@ const OkSchema = z.object({
   plugins: z.record(z.string(), Fingerprint),
   cards: z.string(),
   codePaths: z.array(z.string()), okLines: z.array(z.string().max(8000)).max(2000).optional(),
+  fills: z.array(z.string().max(1000)).max(256).optional(),
 });
 const AdultSchema = z.object({ confirmedAt: z.number() });
 // Not strict: a file an earlier build wrote (with its signed-index records: keys, accepted, overrides, removedBlocks)
@@ -176,7 +185,7 @@ interface Envelope {
   mac?: string;
 }
 
-/** The records on disk, under `<cloverHome>/plugins-state/`. With `macKey` (32 bytes from the secret store) every file
+/** The records on disk, under `<mossHome>/plugins-state/`. With `macKey` (32 bytes from the secret store) every file
  *  is signed, and one whose MAC doesn't verify, or that fails its schema, reads as absent (`onTampered` says which). */
 export interface RegistryStoreOptions {
   /** 32 bytes from the secret store; required where the daemon opens the registry (`openPluginRegistry`). */
@@ -188,6 +197,7 @@ export interface RegistryStoreOptions {
   onTampered?: (file: string) => void;
 }
 
+// Keeps its old spelling on purpose: signed or derived state on disk carries this value over from the old install.
 export function fileRegistryStore(stateDir: string, opts: RegistryStoreOptions = {}): RegistryStore {
   const installed = join(stateDir, "installed.json");
   const ok = (id: string) => join(stateDir, "oks", `${fileId(id)}.json`);
@@ -217,8 +227,8 @@ export function fileRegistryStore(stateDir: string, opts: RegistryStoreOptions =
     if (opts.macKey) {
       const name = nameOf(file);
       // The counter the secret store kept for this name: an older copy put back has an older one, and is refused. A
-      // newer one is Clover's own last write whose counter didn't reach the secret store before the core stopped (the
-      // counter is kept after the file, `onCounters`): its MAC (below) says Clover wrote it, so it is taken and its
+      // newer one is MOSS's own last write whose counter didn't reach the secret store before the core stopped (the
+      // counter is kept after the file, `onCounters`): its MAC (below) says MOSS wrote it, so it is taken and its
       // counter adopted. No one without the key can write one ahead.
       const held = counters[name] ?? 0;
       if (typeof env.gen !== "number" || !Number.isSafeInteger(env.gen) || env.gen < 1 || env.gen < held) return bad();

@@ -13,7 +13,7 @@ import { toBase64 } from "../../identity/bytes";
 import { generateEd25519 } from "../../identity/keys";
 import { answerKeyRotateStatement, answerKeyStatement, computerNameFor, FileDeviceRegistry, peerUpdateStatement } from "../registry";
 
-const home = () => mkdtempSync(join(tmpdir(), "clover-h-registry-"));
+const home = () => mkdtempSync(join(tmpdir(), "moss-h-registry-"));
 
 runDeviceRegistryConformance(async (opts) => {
   const key = await DeviceKey.loadOrCreate(new MemorySecretStore());

@@ -12,7 +12,7 @@
 // 1. Changes, `confirm`, plugin OKs, elicitations and the person's browser (R10) are always cards (§5.5, S5 §7), and none of them offers an
 //    "always", whatever `ruleKey` or `options` the requester passes: each is answered on its own (`ALWAYS_CARD_KINDS`).
 // 2. An agent's request that exactly names the session's bridge server and one of the bridge's own tools is answered
-//    at once: the bridge applies Clover's approval itself when the call arrives (S5 edit 7). Never read from the title.
+//    at once: the bridge applies MOSS's approval itself when the call arrives (S5 edit 7). Never read from the title.
 // 3. A request that touches a fenced path is always a card, at every level, and no saved rule covers it (§9.3). One
 //    that would write (edit, move, delete) where a file runs later outside any sandbox (`RUN_LATER_KINDS`: shell start
 //    files, login items, the coding agents' installs and settings) is refused without a card (`by: "fence"`), at every
@@ -37,7 +37,7 @@
 //    The owner's decision, recorded here: any desktop may answer; a compromised plugin on a Windows or Linux computer
 //    could approve actions on other computers.
 // 8. An agent never gets an "always": `acpOutcomeFor` picks `allow_once` or `reject_once`, and a card's "always" is
-//    saved as Clover's own rule instead (S5 edit 5).
+//    saved as MOSS's own rule instead (S5 edit 5).
 // 9. A request that binds one call (`binds`: a level raise's `computer.setLevel`, the answer key's hand-over, a call
 //    for another computer) is always a card, at every level, past any saved rule, the bridge and the reviewer, and
 //    never offers an "always": the card is the proof, so it is answered on its own. Read-only's deny and rule 3's
@@ -50,10 +50,10 @@
 //    proves another.
 import {
   type Card, type CardAnswerProof, type CardFieldName, type CardKind, type CardMeta, type CardOption, type CardOutcome,
-  type ChangeSubject, type CloverRole, type DeviceKind, type Level, LEVELS, type SealedValue, type SignedCardAnswer,
+  type ChangeSubject, type MossRole, type DeviceKind, type Level, LEVELS, type SealedValue, type SignedCardAnswer,
   type CallBinding, type CardContent, type TurnOrigin, TREE_TRANSFER, answerTimeOk, callBindingInput, cardAnswerSigningInput, cardContentInput,
-  cardHashInput, isUserTurn,
-} from "@waifucave/clover-protocol";
+  cardHashInput, isUserTurn, programCardAnswerSigningInput,
+} from "@waifucave/moss-protocol";
 import { fromBase64, type Unsubscribe } from "./common";
 import { mayAnswerCards, type DeviceRegistry } from "./device-registry";
 import { RUN_LATER_KINDS, type Fence } from "./fence";
@@ -131,9 +131,9 @@ export interface ApprovalRequest {
   /** A fetch or a tool call that stays inside what the fence and the sandbox already confine (§9.1, the owner's
    *  "bots act on their own for what isn't risky"): a page whose address the session already saw, an admitted agent's
    *  start, a message to another of the user's sessions, a command its sandbox holds (no network, writes to its roots
-   *  only, never outside it). Only Clover's own requesters set it; at ask for risky actions
+   *  only, never outside it). Only MOSS's own requesters set it; at ask for risky actions
    *  it runs without asking (`levelDecision`). For an edit or a move it is never read: the broker decides from the
-   *  paths itself (`CloverApprovalBrokerOptions.pathClass`). */
+   *  paths itself (`MossApprovalBrokerOptions.pathClass`). */
   contained?: boolean;
   /** Real paths the action touches, for rule 3. */
   paths?: readonly string[];
@@ -145,6 +145,9 @@ export interface ApprovalRequest {
   change?: ChangeSubject;
   /** A plugin's `confirm` or OK: whose. */
   pluginId?: string;
+  /** A call to a plugin's tool: the plugin whose server the router binds it to (set by the core's approval check, never
+   *  from a call's words). The card's `ownedBy` names it, so that plugin's plain `approvals` hears and places the card. */
+  toolPlugin?: string;
   children?: Card["children"];
   /** Defaults to approve and deny, plus "always" when there is a `ruleKey` (never on a bound card, rule 9). */
   options?: CardOption[];
@@ -197,7 +200,7 @@ export interface ApprovalDecision {
   level?: Level;
   cardId?: string;
   optionId?: string;
-  /** The user picked an "always" option: Clover saved its own rule. */
+  /** The user picked an "always" option: MOSS saved its own rule. */
   remembered?: boolean;
   /** An approved bound card's binding, as the card sealed it (rule 9). */
   binds?: CallBinding;
@@ -205,7 +208,7 @@ export interface ApprovalDecision {
    *  children it covers, so the asking computer can hand the binding's computer a `SignedCardAnswer` (the card itself
    *  is `get(cardId)`'s). Absent for an answer through a sealed frame (the app without an answer key), for a deny and
    *  for an unbound card: a taker that needs the signature fails closed without it. */
-  signed?: { device: string; at: number; signature: string; children?: string[] };
+  signed?: { device: string; at: number; signature: string; children?: string[]; program?: "moss" | "code" | "host" };
 }
 
 /** The approved card record behind a bound decision (rule 9), for a `{ via: "card" }` proof: only when a card decided,
@@ -230,7 +233,7 @@ export type AnswerResult =
 /** Where an answer arrived from, as the connection says, never as the answer does: its role, and for a device link
  *  (`remote`, `peer`), the device the link authenticated. */
 export interface AnswerOrigin {
-  role: CloverRole;
+  role: MossRole;
   device?: string;
   /** A test-marked build only (scripts/test-build.ts): the `cli` connection the harness token authenticated, outside
    *  any session (the acceptance run's driver). Its sealed-frame answer counts as the app's (broker.ts); every other
@@ -371,6 +374,7 @@ export function cardMetaOf(card: Card): CardMeta {
     ...(card.session === undefined ? {} : { session: card.session }),
     ...(card.bot === undefined ? {} : { bot: card.bot }),
     ...(card.pluginId === undefined ? {} : { pluginId: card.pluginId }),
+    ...(card.ownedBy === undefined ? {} : { ownedBy: [...card.ownedBy] }),
     origin: card.origin,
     issuedAt: card.issuedAt,
     expiresAt: card.expiresAt,
@@ -378,21 +382,36 @@ export function cardMetaOf(card: Card): CardMeta {
   };
 }
 
+/** The per-program answer keys (lane RT's `ProgramKeyTable`), as the answer check uses them. */
+export type ProgramAnswerVerifier = { verify(device: string, program: "moss" | "code" | "host", data: Uint8Array, signature: Uint8Array): Promise<boolean> };
+
 /** What a verifier needs of the device registry. */
 /** The device registry, as the answer checks use it: the record and the answer key's signature check. */
 export type AnswerDevices = Pick<DeviceRegistry, "get" | "verifyAnswer">;
 
-/** Builds the verifier for device answers: the signing device may answer cards (`mayAnswerCards`), and its answer
- *  key's Ed25519 signature covers `cardAnswerSigningInput` with the option and children. The signature holds end to
+/** Builds the verifier for device answers. A proof naming a program: the device exists, isn't revoked, is a desktop or a
+ *  phone, and that program's key (`programs`) signed `programCardAnswerSigningInput`. A proof naming none: the device may
+ *  answer cards (`mayAnswerCards`, its single key), and that key's Ed25519 signature covers `cardAnswerSigningInput` with
+ *  the option and children. The signature holds end to
  *  end, so any computer may relay it (review N4); a sealed-frame proof never reaches this (the broker checks those). */
-export function deviceProofVerifier(devices: AnswerDevices): ProofVerifier {
+export function deviceProofVerifier(devices: AnswerDevices, programs?: ProgramAnswerVerifier): ProofVerifier {
   return async (card, answer) => {
     const proof = answer.proof;
     if (proof.via !== "device") return false;
     const device = devices.get(proof.device);
-    if (!device || !mayAnswerCards(device)) return false;
     const signature = fromBase64(proof.signature);
-    if (!signature) return false;
+    if (!device || !signature) return false;
+    // One rule for every program (lane RT, ruling C): a proof that names its program verifies with that program's key alone,
+    // over the input that names the program, so one program's signature never passes as another's, nor as the device's
+    // single key. The device must exist, not be revoked, and be a desktop or a phone; the program's key may be one the
+    // program table alone holds (a home where only MOSS has run has no single key). The single key (`mayAnswerCards`)
+    // belongs only to the path with no program named.
+    if (proof.program !== undefined) {
+      if (programs === undefined || (device.kind !== "desktop" && device.kind !== "phone") || device.revokedAt !== undefined) return false;
+      const signed = programCardAnswerSigningInput({ program: proof.program, id: card.id, hash: card.hash, option: answer.optionId, at: proof.at, children: answer.children ?? [] });
+      return programs.verify(proof.device, proof.program, new TextEncoder().encode(signed), signature);
+    }
+    if (!mayAnswerCards(device)) return false;
     const input = cardAnswerSigningInput({ id: card.id, hash: card.hash, option: answer.optionId, at: proof.at, children: answer.children ?? [] });
     return devices.verifyAnswer(proof.device, new TextEncoder().encode(input), signature);
   };

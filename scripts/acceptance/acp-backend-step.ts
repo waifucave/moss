@@ -1,25 +1,33 @@
 // An agent backend from a plugin (checklist 1.51 and 4.25), with a fake in place of a vendor's CLI. The fixture
 // (scripts/acceptance/fixtures/acceptance-acp) is a plugin whose `agentBackends` entry is an ACP backend; its program is
 // the fake ACP agent the core's backend conformance suite runs (packages/core/src/agents/testing/fake-acp-agent.ts),
-// a real process speaking ACP over stdio, scripted to say one line and call the Clover server it is given.
+// a real process speaking ACP over stdio, scripted to say one line and call the MOSS server it is given.
 //
 // 1. Installed from its folder (the run writes the program's and the config's absolute paths in first, as the echo fixture
 //    gets its targets): its OK card pressed in the window, it runs, and `agent.backends` lists the backend: installed,
 //    named beside its plugin, marked as acting without asking (a third party's) and as not sandboxed.
 // 2. A coding session started on it the way the app starts one (`agent.start`, no bot): the fake agent's reply is in the
-//    session's conversation, and the agent's own report shows what crossed the wire: the prompt, and the Clover server
+//    session's conversation, and the agent's own report shows what crossed the wire: the prompt, and the MOSS server
 //    it was given at `session/new`, which it started and called (`Glossary`, the one tool a coding session the user
 //    drives is given); the call's answer is in the session too.
 // Removed afterwards, whatever happened.
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, leave, until, type ExampleCtx } from "./example-steps";
+import { adapterRow } from "./acp-adapter-row";
 
-export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the Clover server, which it started and called";
+export const ACP_BACKEND_STEP = "an agent backend from a plugin (ACP, a fake agent in place of a vendor's CLI): the fixture plugin installs from its folder behind its OK card, pressed in the window, and agent.backends lists its backend; a coding session started on it from the app's own method gets the fake agent's reply, and the agent was given the MOSS server, which it started and called; the models its first session reported are what agent.options offers before another session (a third-party plugin's declared list is never run), a session started on one of its models and efforts has them set before its first prompt, models.list for that session lists the agent's models, a pick through session.setModel reaches the agent, the agent's third option is a picker of the session that session.setConfig sets and the agent hears (MOSS's own options refused), and agent.recent keeps that agent's own last choice; and a plugin whose backend declares an adapter MOSS provides (an npm package on the run's fake registry): a start raises one sealed card naming it, the NO leaves the agent unavailable with a plain line and nothing asked of the registry, a tampered tarball is refused at its fingerprint with nothing kept, and the real one, after a press in the window, is fetched, verified, kept under the home, started on MOSS's own runtime with its closed flags and its turn runs, a second start asking nothing";
 
 export const ACP_ID = "acceptance-acp";
 export const ACP_NAME = "Acceptance ACP";
 export const ACP_REPLY = "ACCEPTANCE-ACP-REPLY: hello from the fake agent";
+/** The fake agent's own models: what its list command prints and what its session reports (the second one is hidden from
+ *  the list: a list command may name models a person isn't offered). */
+export const ACP_MODELS = [
+  { slug: "acp-model-one", display_name: "ACP One", visibility: "list", levels: [{ effort: "low" }, { effort: "high" }] },
+  { slug: "acp-model-two", display_name: "ACP Two", visibility: "list", levels: [{ effort: "low" }, { effort: "high" }] },
+  { slug: "acp-model-hidden", display_name: "ACP Hidden", visibility: "hide" },
+];
 export const ACP_PROMPT = "ACCEPTANCE-ACP-PROMPT: say hello and list your tools";
 const FIXTURE = resolve(import.meta.dir, "fixtures", ACP_ID);
 /** The fake agent the core's backend conformance suite runs. */
@@ -44,16 +52,19 @@ export function agentConfig(quirksFile: string, o: { report: string; selection: 
   return JSON.stringify({
     quirks: file.quirks,
     version: "fake-agent 1.0.0",
+    modelsList: ACP_MODELS,
+    modelValues: ACP_MODELS.filter((m) => m.visibility === "list").map((m) => m.slug),
+    extraOption: { id: "verbosity", name: "Verbosity", values: ["terse", "normal", "chatty"] },
     report: o.report,
     selection: o.selection,
     ...(o.mcpEnv !== undefined ? { mcpEnv: o.mcpEnv } : {}),
-    // One turn: its reply, then the Clover server's Glossary (no permission asked of the client: the call is the
+    // One turn: its reply, then the MOSS server's Glossary (no permission asked of the client: the call is the
     // bridge's own, judged by the daemon), then its closing words.
     script: [[{ say: ACP_REPLY }, { mcp: { server: "$bridge", tool: "Glossary", input: { query: "tool" }, ask: false } }, { say: " Done." }]],
   });
 }
 
-const reportOf = (file: string): { type: string; [k: string]: unknown }[] => {
+export const reportOf = (file: string): { type: string; [k: string]: unknown }[] => {
   try {
     return readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type: string });
   } catch {
@@ -80,11 +91,11 @@ async function run(ctx: ExampleCtx): Promise<string> {
   // The fixture with the run's paths in, and the fake agent's config beside it (outside the plugin's folder).
   mkdirSync(dirname(config), { recursive: true });
   cpSync(FIXTURE, folder, { recursive: true });
-  const written = fixtureWith({ "clover.json": readFileSync(join(folder, "clover.json"), "utf8"), "quirks.json": readFileSync(join(folder, "quirks.json"), "utf8") }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config });
+  const written = fixtureWith({ "moss.json": readFileSync(join(folder, "moss.json"), "utf8"), "quirks.json": readFileSync(join(folder, "quirks.json"), "utf8") }, { bun: process.execPath, fake: FAKE_ACP_AGENT, config });
   for (const [name, body] of Object.entries(written)) writeFileSync(join(folder, name), body);
-  // The Clover server the agent starts is this core's own binary: a test-marked one (a packaged run's) refuses to start
+  // The MOSS server the agent starts is this core's own binary: a test-marked one (a packaged run's) refuses to start
   // without the run's keychain file's variable, which no agent's environment carries.
-  writeFileSync(config, agentConfig(written["quirks.json"]!, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { CLOVER_TEST_KEYCHAIN: ctx.keychainFile } }));
+  writeFileSync(config, agentConfig(written["quirks.json"]!, { report, selection: join(work, "agent", "selection.json"), mcpEnv: { MOSS_TEST_KEYCHAIN: ctx.keychainFile } }));
 
   // 1. Installed; its OK card pressed in the window; its backend listed.
   const installed = await rpc.request<{ id: string; card?: string }>("plugin.install", { source: { from: "folder", path: folder } }, 60_000);
@@ -136,18 +147,83 @@ async function run(ctx: ExampleCtx): Promise<string> {
   if (prompt === undefined || !String(prompt.text).includes(ACP_PROMPT)) fail(`the agent never got the prompt (report: ${r.map((x) => x.type).join(", ")})`);
   const made = r.find((x) => x.type === "session");
   const servers = Array.isArray(made?.servers) ? (made!.servers as string[]) : [];
-  const clover = servers.find((s) => /clover/i.test(s));
-  if (clover === undefined) fail(`the agent was given no Clover server at session/new (servers: ${servers.join(", ") || "none"})`);
-  const spawned = r.find((x) => x.type === "mcp-started" && x.server === clover);
-  if (spawned === undefined) fail(`the agent never started the ${clover} server (report: ${r.map((x) => x.type).join(", ")})`);
-  const result = await until("the agent's call of the Clover server", 60_000, async () => reportOf(report).find((x) => x.type === "mcp-result"));
-  if (result.isError === true) fail(`the Clover server's Glossary answered an error: ${String(result.text).slice(0, 300)}`);
+  const moss = servers.find((s) => /moss/i.test(s));
+  if (moss === undefined) fail(`the agent was given no MOSS server at session/new (servers: ${servers.join(", ") || "none"})`);
+  const spawned = r.find((x) => x.type === "mcp-started" && x.server === moss);
+  if (spawned === undefined) fail(`the agent never started the ${moss} server (report: ${r.map((x) => x.type).join(", ")})`);
+  const result = await until("the agent's call of the MOSS server", 60_000, async () => reportOf(report).find((x) => x.type === "mcp-result"));
+  if (result.isError === true) fail(`the MOSS server's Glossary answered an error: ${String(result.text).slice(0, 300)}`);
   const text = String(result.text);
-  if (!text.includes('"kind": "tool"')) fail(`the Clover server's Glossary listed no tool: "${text.replace(/\s+/g, " ").slice(0, 300)}"`);
+  if (!text.includes('"kind": "tool"')) fail(`the MOSS server's Glossary listed no tool: "${text.replace(/\s+/g, " ").slice(0, 300)}"`);
   // The session's own conversation carries the call too (the agent's tool call, completed).
   const finished = await until("the turn to end", 60_000, async () => ((await history()).some((e) => e.type === "turn_completed") ? true : undefined),
     async () => `events: ${(await history()).slice(-6).map((e) => String(e.type)).join(", ")}`);
   void finished;
-  done.push(`2 agent.start on it (session ${session}): the fake agent's reply "${ACP_REPLY.slice(0, 40)}…" is in the conversation; its report shows the prompt, the server "${clover}" given at session/new, started, and its Glossary call answered ("${text.replace(/\s+/g, " ").slice(0, 120)}")`);
+  const step2 = `2 agent.start on it (session ${session}): the fake agent's reply "${ACP_REPLY.slice(0, 40)}…" is in the conversation; its report shows the prompt, the server "${moss}" given at session/new, started, and its Glossary call answered ("${text.replace(/\s+/g, " ").slice(0, 120)}")`;
+  done.push(step2);
+  done.push(await modelsRow(ctx, { computer: computer!, report }));
+  // 4. An agent whose program is an adapter MOSS provides (acp-adapter-row.ts).
+  done.push(await adapterRow(ctx));
   return done.join("; ");
+}
+
+type Models = { models: { id: string; name: string; provider?: string; efforts: string[] }[]; options?: { id: string; name?: string; current?: string; values: { value: string; name?: string }[] }[] };
+
+/** 3. The agent's own models (lane MS). This plugin is a third party's, so no list command of its own is run: what the
+ *  session of step 2 reported is what `agent.options` offers (source `session`); a session started on one of them has it set before its first prompt; the
+ *  session's own `models.list` names the agent's models; a pick reaches the agent; the person's choice is kept for this agent. */
+async function modelsRow(ctx: ExampleCtx, o: { computer: string; report: string }): Promise<string> {
+  const { rpc } = ctx;
+  const ids = ACP_MODELS.filter((m) => m.visibility === "list").map((m) => m.slug);
+  const options = await rpc.request<{ known: boolean; source: string; models: { id: string; name: string; efforts: string[] }[] }>("agent.options", { backend: ACP_ID });
+  if (!options.known || options.source !== "session") fail(`agent.options for ${ACP_ID} isn't what its first session reported: ${JSON.stringify(options).slice(0, 300)}`);
+  if (JSON.stringify(options.models.map((m) => m.id)) !== JSON.stringify(ids)) fail(`agent.options lists ${options.models.map((m) => m.id).join(", ")}, not the models the agent reported (${ids.join(", ")})`);
+  // A session on the second model at its highest effort, with the prompt: the model and effort are set before the prompt reaches the agent.
+  const seen = reportOf(o.report).length;
+  const started = await rpc.request<{ session: string }>("agent.start", { backend: ACP_ID, computer: o.computer, root: `home/${o.computer}/acp-work`, prompt: ACP_PROMPT, model: ids[1]!, effort: "high" }, 60_000);
+  const session = started.session;
+  const answered = new Set<string>();
+  const mine = () => reportOf(o.report).slice(seen);
+  await until("the agent's prompt", 90_000, async () => {
+    for (const c of (await rpc.request<{ cards: Card[] }>("card.list")).cards) {
+      if (c.session !== session || answered.has(c.id)) continue;
+      answered.add(c.id);
+      await ctx.approveCard(c.id);
+    }
+    return mine().find((x) => x.type === "prompt");
+  }, async () => `the agent's report: ${mine().map((x) => `${x.type}${x.option ? `:${String(x.option)}=${String(x.value)}` : ""}`).join(", ") || "none"}`);
+  const order = mine();
+  const at = (type: string, option?: string) => order.findIndex((x) => x.type === type && (option === undefined || x.option === option));
+  const modelAt = at("config", "model");
+  const effortAt = at("config", "effort");
+  const promptAt = at("prompt");
+  if (modelAt < 0 || order[modelAt]!.value !== ids[1]) fail(`the agent was never set to ${ids[1]} (report: ${order.map((x) => `${x.type}${x.option ? `:${String(x.option)}=${String(x.value)}` : ""}`).join(", ")})`);
+  if (effortAt < 0 || order[effortAt]!.value !== "high") fail("the agent was never set to the effort the person picked");
+  if (!(modelAt < promptAt && effortAt < promptAt)) fail(`the model or effort was set after the first prompt (model at ${modelAt}, effort at ${effortAt}, prompt at ${promptAt})`);
+  await until("the turn to end", 60_000, async () => ((await ctx.history(session).catch(() => [])).some((e) => e.type === "turn_completed") ? true : undefined));
+  // The session's own picker: the agent's models, under the agent's backend id.
+  const own = await rpc.request<Models>("models.list", { session });
+  if (JSON.stringify(own.models.map((m) => m.id)) !== JSON.stringify(ids) || own.models.some((m) => m.provider !== ACP_ID)) fail(`models.list for the session lists ${JSON.stringify(own.models.map((m) => [m.id, m.provider]))}, not the agent's models under ${ACP_ID}`);
+  // A pick takes: the agent is set to it, and the session says so.
+  await rpc.request("session.setModel", { id: session, model: ids[0]!, effort: "low" });
+  const after = await until("the agent set to the pick", 30_000, async () => mine().filter((x) => x.type === "config" && x.option === "model" && x.value === ids[0])[0]);
+  void after;
+  const view = (await rpc.request<{ session: { model?: string; effort?: string } }>("session.get", { id: session })).session;
+  if (view.model !== ids[0] || view.effort !== "low") fail(`the session says ${view.model}/${view.effort} after the pick`);
+  // The agent's third option is the session's own picker (MOSS's model and effort have theirs): named as the agent names it,
+  // set by the person through session.setConfig, and heard by the agent; MOSS's own options and unlisted values are refused.
+  const withOptions = await rpc.request<Models>("models.list", { session });
+  const third = withOptions.options ?? [];
+  if (third.length !== 1 || third[0]!.id !== "verbosity" || third[0]!.name !== "Verbosity" || third[0]!.values.map((v) => v.value).join() !== "terse,normal,chatty") fail(`models.list lists the options ${JSON.stringify(third)}, not the agent's one other option`);
+  await rpc.request("session.setConfig", { id: session, option: "verbosity", value: "chatty" });
+  await until("the agent set to chatty", 30_000, async () => mine().find((x) => x.type === "config" && x.option === "verbosity" && x.value === "chatty"));
+  for (const bad of [{ option: "model", value: ids[1]! }, { option: "verbosity", value: "loud" }, { option: "nope", value: "x" }]) {
+    const refused = await rpc.request("session.setConfig", { id: session, ...bad }).then(() => false, () => true);
+    if (!refused) fail(`session.setConfig took ${JSON.stringify(bad)}, which it must refuse`);
+  }
+  // The person's last choice for this agent, theirs only: the agent's own row holds what they started on.
+  const recent = await rpc.request<{ byBackend?: { backend: string; model?: string; effort?: string }[] }>("agent.recent", {});
+  const row = recent.byBackend?.find((b) => b.backend === ACP_ID);
+  if (row === undefined || row.model !== ids[1] || row.effort !== "high") fail(`agent.recent keeps ${JSON.stringify(row)} for ${ACP_ID}, not the model and effort the person started on`);
+  return `3 agent.options lists the models the agent's first session reported (${ids.join(", ")}); a session started on ${ids[1]} at high had both set before its first prompt; models.list for it names the agent's models under ${ACP_ID}; session.setModel to ${ids[0]} reached the agent and the session; agent.recent keeps the agent's own last choice`;
 }

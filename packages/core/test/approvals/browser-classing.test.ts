@@ -1,11 +1,10 @@
-// The bundled Browser tool through a bot's approval check: looking verbs are reads (no card at any level), acting verbs
+// A Browser tool (any plugin's `browserTools`, while it holds `browser`; F5) through a bot's approval check: looking verbs are reads (no card at any level), acting verbs
 // (click, type, key, select) are screen control that cards once per bot and site, are remembered per bot and site,
 // card every call at "ask", run at automatic, and are refused at read-only.
 import { expect, test } from "bun:test";
-import type { Card, Level } from "@waifucave/clover-protocol";
+import type { Card, Level } from "@waifucave/moss-protocol";
 import { botApprovalCheck, BROWSER_ACTING_VERBS, BROWSER_LOOKING_VERBS } from "../../src/approvals/bot-check";
-import { CloverApprovalBroker } from "../../src/approvals/broker";
-import { bundledToolKind } from "../../src/approvals/bundled-tools";
+import { MossApprovalBroker } from "../../src/approvals/broker";
 import type { BotSessionContext } from "../../src/bots/service";
 import { FakeClock } from "../../src/contracts/fakes/clock";
 
@@ -13,7 +12,7 @@ const ctxOf = (bot: string) => ({ botId: bot, sessionId: `s-${bot}`, kind: "bot"
 const run = { signal: new AbortController().signal, toolUseID: "t", requestId: "r" };
 const TOOL = "mcp__browser__Browser";
 
-function answerNext(b: CloverApprovalBroker, optionId: string): Promise<Card> {
+function answerNext(b: MossApprovalBroker, optionId: string): Promise<Card> {
   return new Promise((resolve) => {
     const off = b.watch((e) => {
       if (e.type !== "requested") return;
@@ -23,21 +22,15 @@ function answerNext(b: CloverApprovalBroker, optionId: string): Promise<Card> {
   });
 }
 
-function setup(level: () => Level, site: () => string | undefined = () => "example.com") {
-  const broker = new CloverApprovalBroker({ clock: new FakeClock(), levels: level, localComputer: "Studio" });
-  const check = botApprovalCheck(broker, { bundledTool: (_c, tool) => (tool === TOOL ? "browser" : undefined), browserHost: async () => site(), levelOf: () => level() });
+function setup(level: () => Level, site: () => string | undefined = () => "example.com", plugin: () => string | undefined = () => "moss/browser") {
+  const broker = new MossApprovalBroker({ clock: new FakeClock(), levels: level, localComputer: "Studio" });
+  const check = botApprovalCheck(broker, { bundledTool: (_c, tool) => (tool === TOOL ? "browser" : undefined), toolPlugin: () => plugin(), browserHost: async () => site(), levelOf: () => level() });
   return { broker, check };
 }
 
 test("the verbs are split into looking and acting, with none in both", () => {
   expect([...BROWSER_ACTING_VERBS].sort()).toEqual(["click", "key", "select", "type"]);
   for (const v of BROWSER_ACTING_VERBS) expect(BROWSER_LOOKING_VERBS.has(v)).toBe(false);
-});
-
-test("only the staged bundled browser plugin's Browser tool is the browser kind", () => {
-  const lookup = { servers: [{ server: "browser", plugin: "clover/browser", tools: [{ name: "Browser" }, { name: "Other" }] }, { server: "evil", plugin: "acme/browser", tools: [{ name: "Browser" }] }], record: () => undefined, staged: undefined };
-  expect(bundledToolKind(lookup, TOOL)).toBeUndefined(); // no staged copy: judged as any tool
-  expect(bundledToolKind(lookup, "mcp__evil__Browser")).toBeUndefined();
 });
 
 test("looking verbs raise no card at any level, read-only included", async () => {
@@ -145,9 +138,9 @@ test("a bot's delegated agent has no Always of its own: it falls under its bot's
 
 
 test("the card's act is words from the session's last read, never a bare ref; a secure field's text is not shown", async () => {
-  const broker = new CloverApprovalBroker({ clock: new FakeClock(), levels: () => "ask", localComputer: "Studio" });
+  const broker = new MossApprovalBroker({ clock: new FakeClock(), levels: () => "ask", localComputer: "Studio" });
   const elements = new Map([["e12", { role: "button", name: "Say hello", secure: false }], ["e3", { role: "textbox", name: "Password", secure: true }], ["e4", { role: "textbox", name: "Email", secure: false }]]);
-  const check = botApprovalCheck(broker, { bundledTool: (_c, tool) => (tool === TOOL ? "browser" : undefined), browserHost: async () => "example.com", browserElement: (_c, ref) => elements.get(ref), levelOf: () => "ask" });
+  const check = botApprovalCheck(broker, { bundledTool: (_c, tool) => (tool === TOOL ? "browser" : undefined), toolPlugin: () => "moss/browser", browserHost: async () => "example.com", browserElement: (_c, ref) => elements.get(ref), levelOf: () => "ask" });
   const commandOf = async (input: Record<string, unknown>): Promise<string> => {
     const asked = answerNext(broker, "deny");
     await check(ctxOf("alpha"), () => "user")(TOOL, input, run);
@@ -160,4 +153,31 @@ test("the card's act is words from the session's last read, never a bare ref; a 
   expect(await commandOf({ verb: "type", ref: "e3", text: "hunter2" })).toBe('Type into the field "Password"');
   expect(await commandOf({ verb: "type", ref: "e99", text: "hunter2" })).toBe("Type into an element the page showed");
   expect(await commandOf({ verb: "key", key: "Enter" })).toBe("Press Enter");
+});
+
+test("browser-press 4: the kept yes is keyed with the serving plugin: a third party's server and tool of the same names asks again", async () => {
+  let plugin = "moss/browser";
+  const { broker, check } = setup(() => "ask-risky", () => "example.com", () => plugin);
+  const always = answerNext(broker, "always");
+  expect((await check(ctxOf("alpha"), () => "user")(TOOL, { verb: "click", ref: "e1" }, run))?.behavior).toBe("allow");
+  await always;
+  expect(broker.rules().map((r) => r.ruleKey)).toContain("tool:mcp__browser__Browser@moss/browser(example.com)");
+  // The bundled tool's next click runs; the same names served by another plugin raise a card again.
+  const before = broker.cards().length;
+  expect((await check(ctxOf("alpha"), () => "user")(TOOL, { verb: "click", ref: "e1" }, run))?.behavior).toBe("allow");
+  expect(broker.cards().length).toBe(before);
+  plugin = "acme/browser";
+  const asked = answerNext(broker, "deny");
+  expect((await check(ctxOf("alpha"), () => "user")(TOOL, { verb: "click", ref: "e1" }, run))?.behavior).toBe("deny");
+  expect((await asked).id).toBeDefined();
+});
+
+test("browser-press 4: with no plugin to name, an acting call cards every time (no kept answer to inherit or leave)", async () => {
+  const { broker, check } = setup(() => "ask-risky", () => "example.com", () => undefined);
+  const asked = new Promise<Card>((resolve) => { const off = broker.watch((e) => { if (e.type === "requested") { off(); resolve(e.card); } }); });
+  const run2 = check(ctxOf("alpha"), () => "user")(TOOL, { verb: "click", ref: "e1" }, run);
+  const card = await asked;
+  expect(card.options.map((o) => o.id)).not.toContain("always");
+  await broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: { via: "sealed-frame", frame: broker.frameChannel(card.id)!, input: "click", at: 1 } }, { role: "app" });
+  expect((await run2)?.behavior).toBe("deny");
 });

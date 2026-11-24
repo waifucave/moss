@@ -25,24 +25,35 @@
 //    is refused `PluginStatus` on the plugin, and its `Edit` of the plugin's file is refused with no card (the fence:
 //    only the bot that built a plugin writes in it); the file is unchanged.
 // 6b. While her tool's card waits in her conversation, the peer bot's AppScreenshot of her tab draws the card as
-//    placeholders (clover-sealed://placeholder), never a live card frame, and the app logs no sealed ask for a render
+//    placeholders (moss-sealed://placeholder), never a live card frame, and the app logs no sealed ask for a render
 //    window; her card is then pressed in the user's own window.
 // 7. Alpha edits a throw into the plugin's host code: it reloads, crashes until the crash rules stop it, and Alpha (its
 //    builder) is told in her conversation ("… stopped: … PluginStatus ws-greeter has the log."); she edits the throw
 //    back out, and the changed tree starts it again with no card: running, and its tool answers.
 // 8. The drop (row 3.8): Alpha writes a second plugin into her scratch and moves it into the plugins folder with one
-//    `Bash` `mv`, with no card; it lands found behind its OK card, which names her ("Built by Alpha…"); pressed, it
+//    `Bash` `mv`, with no card; it lands found behind its OK card, which names her ("Built by MOSS…"); pressed, it
 //    runs and its tool answers.
+// 9. A bot builds a bot (the owner's "can I tell Alpha to create another bot?"): there is no call that makes a bot, a
+//    bot is a plugin with a `bot` entry. Alpha takes `PluginNew`'s `bot` template, writes it with instructions of her
+//    own, validates and installs it, with no card; its OK card names her and is pressed. Its bot is then in `bot.list`
+//    and in the sidebar under Bots; its row opens its tab (its composer), and, on the model the user gives it (the
+//    bot editor's, as step 6's peer), one turn there gets the fake's reply, drawn in the window, with her instructions
+//    in its prompt. Her edit of its instructions applies with no card: the plugin reloads, and its very next turn's
+//    prompt has the new words and not the old (an edit reaches the next turn however short the conversation; no
+//    compaction is needed). The user removes the plugin, and the bot leaves bot.list and its sidebar row goes
+//    within a few seconds (the sidebar follows `bot_removed`).
 //
 // Each step's failure starts with its number and clause, so a red row names the step.
+import { partElsewhere } from "./elsewhere-parts";
 import { ownTurnCompleted } from "./turn-end";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { templateFiles } from "../../packages/plugin-sdk/src/templates/index";
-import { fail, installFromPage, leave, sleep, until, type ExampleCtx } from "./example-steps";
+import { escape, fail, frames, installFromPage, leave, sleep, toSessionTab, treeDocs, until, type ExampleCtx } from "./example-steps";
+import { clickShown } from "./window-open";
 
-export const WORKSHOP_STEP = "the workshop: Alpha builds a plugin in her own conversation at the default level: PluginNew, Write into her scratch and PluginValidate with no card; PluginInstall lands it found behind its OK card (\"Built by Alpha…\"), pressed, and its tool answers; PluginStatus says running; Glossary loads it by id with its tool, and lists it to her as waiting for the OK while its card waits; AppScreenshot draws the Plugins page wide and narrow in a window the user never sees, no card; an Edit in place applies about 2 s later with no card; an edit that adds a capability pauses it behind its OK card, and OK'd it runs with the grant; a request answered No keeps it off until edited back out; another bot can't read its status or edit it; a look at her tab while her card waits draws the card as placeholders, never a live card frame; made to crash, it stops and Alpha is told, and her fix starts it again; a plugin she moves into the plugins folder with her shell (the drop) lands found behind its OK card naming her, and OK'd its tool answers";
+export const WORKSHOP_STEP = "the workshop: MOSS builds a plugin in her own conversation at the default level: PluginNew, Write into her scratch and PluginValidate with no card; PluginInstall lands it found behind its OK card (\"Built by MOSS…\"), pressed, and its tool answers; PluginStatus says running; Glossary loads it by id with its tool, and lists it to her as waiting for the OK while its card waits; AppScreenshot draws the Plugins page wide and narrow in a window the user never sees, no card; an Edit in place applies about 2 s later with no card; an edit that adds a capability pauses it behind its OK card, and OK'd it runs with the grant; a request answered No keeps it off until edited back out; another bot can't read its status or edit it; a look at her tab while her card waits draws the card as placeholders, never a live card frame; made to crash, it stops and MOSS is told, and her fix starts it again; a plugin she moves into the plugins folder with her shell (the drop) lands found behind its OK card naming her, and OK'd its tool answers; a bot she makes the same way (a plugin from PluginNew's bot template, with her own instructions) lands behind its OK card naming her, and OK'd it is in bot.list and the sidebar under Bots, its tab opens and answers a turn with her instructions in its prompt; her edit of its instructions applies with no card at its next turn; removed, it leaves bot.list";
 
 /** The plugin Alpha builds: the SDK's tool template, its tool renamed so no other server's tool ends the same way. */
 export const WORKSHOP_ID = "ws-greeter";
@@ -52,7 +63,7 @@ export const PEER_ID = "acceptance-workshop-peer";
 const FIXTURES = resolve(import.meta.dir, "fixtures");
 
 /** The source line of a bot-built plugin's OK card (registry/folders.ts `builtByText`), for Alpha. */
-export const BUILT_BY_ALPHA = "Built by Alpha. Alpha can change its code later without asking, within what this card lists.";
+export const BUILT_BY_ALPHA = "Built by MOSS. MOSS can change its code later without asking, within what this card lists.";
 
 /** The files Alpha writes: the tool template's (what `PluginNew` gives), with its tool `hello` renamed. */
 export function workshopFiles(): Record<string, string> {
@@ -79,6 +90,20 @@ export function dropFiles(): Record<string, string> {
 
 /** The one shell command that drops it: a move from her scratch into the plugins folder. */
 export const dropCommand = (scratchFolder: string, pluginsFolder: string) => `mv ${JSON.stringify(scratchFolder)} ${JSON.stringify(pluginsFolder)}/`;
+
+/** The bot Alpha makes (9): a plugin from the SDK's bot template, under an id and name of the run's. */
+export const BOT_ID = "ws-sprout";
+export const BOT_NAME = "Workshop sprout";
+/** Her instructions for it, and her later edit of them: the words each turn's prompt must (and must not) hold. */
+export const BOT_WORDS = { first: "keep a garden journal", second: "keep a herb journal" } as const;
+export const BOT_INSTRUCTIONS = `You are ${BOT_NAME}, a bot Alpha made. You help the user ${BOT_WORDS.first}, one short line at a time.\n`;
+
+/** The files Alpha writes for it: the bot template's (what `PluginNew` gives), with her own instructions. */
+export function botFiles(): Record<string, string> {
+  const made = templateFiles("bot", { id: BOT_ID, name: BOT_NAME });
+  if ("error" in made) throw new Error(made.error);
+  return { ...made.files, "bot/instructions.md": BOT_INSTRUCTIONS };
+}
 
 /** The greeting the tool answers with, as its code says it (the template's), and the two edits of it. */
 export const GREETING = { first: "Hello, ${who}!", second: "Hi again, ${who}!" } as const;
@@ -140,10 +165,11 @@ export async function workshopStep(ctx: ExampleCtx, session: string): Promise<st
   } finally {
     // Whatever happened: the card step 5 leaves waiting is answered no, and both plugins go, so no step after this one
     // runs with them.
-    for (const c of await cardsOf(ctx).catch(() => [] as Card[])) if (c.pluginId === WORKSHOP_ID || c.pluginId === PEER_ID || c.pluginId === DROP_ID) await ctx.denyCard(c.id).catch(() => undefined);
+    for (const c of await cardsOf(ctx).catch(() => [] as Card[])) if (c.pluginId === WORKSHOP_ID || c.pluginId === PEER_ID || c.pluginId === DROP_ID || c.pluginId === BOT_ID) await ctx.denyCard(c.id).catch(() => undefined);
     await leave(ctx, WORKSHOP_ID);
     await leave(ctx, PEER_ID);
     await leave(ctx, DROP_ID);
+    await leave(ctx, BOT_ID);
   }
 }
 
@@ -250,7 +276,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     hashAtOk = (await pluginOf(ctx, WORKSHOP_ID))?.treeHash ?? "";
     const g = await greet(ctx, session);
     if (!g.result.text.includes(answerFor(GREETING.first))) fail(`its tool answered "${g.result.text.slice(0, 200)}", not "${answerFor(GREETING.first)}"`);
-    done.push(`2 found; OK card "Built by Alpha…" pressed; running; tool answered`);
+    done.push(`2 found; OK card "Built by MOSS…" pressed; running; tool answered`);
   });
 
   // 3. Status.
@@ -289,7 +315,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
       if (png === undefined || png.length < 1000 || png.readUInt32BE(0) !== 0x89504e47) fail(`${file} isn't a PNG (${png?.length ?? 0} bytes)`);
       const [pw, ph] = [png!.readUInt32BE(16), png!.readUInt32BE(20)];
       if (pw !== w || ph !== h) fail(`${file} is ${pw}x${ph}, not ${w}x${h}`);
-      if (!/^Frames \(\d+\):$/m.test(s.result.text) || !s.result.text.includes("clover-plugin://clover")) fail(`AppScreenshot ${size} listed no frames of the page ("${s.result.text.slice(0, 300)}")`);
+      if (!/^Frames \(\d+\):$/m.test(s.result.text) || !s.result.text.includes("moss-plugin://moss")) fail(`AppScreenshot ${size} listed no frames of the page ("${s.result.text.slice(0, 300)}")`);
       if (!ctx.requests().slice(seen).some((r) => (r.toolResult?.images ?? 0) >= 1)) fail(`AppScreenshot ${size}'s picture didn't reach the model as an image`);
       said.push(`${size} ${pw}x${ph} ${png!.length} bytes`);
     }
@@ -335,7 +361,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
 
   // 5. An edit that asks for more pauses the plugin behind its OK card at once; OK'd, it runs again with the grant.
   await own(() => stepOf("5. an edit that adds a capability pauses it behind its OK card; OK'd, it runs with the grant", async () => {
-    const manifest = join(installed, "clover.json");
+    const manifest = join(installed, "moss.json");
     await ok(ctx, session, "Read", { file_path: manifest });
     await ok(ctx, session, "Edit", { file_path: manifest, old_string: ADD_CAPABILITY.old, new_string: ADD_CAPABILITY.new });
     const card = await askedCard(ctx, "notify", NOTIFY_LINE);
@@ -355,7 +381,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
 
   // 5b. A second request answered No: it stays off; the bot takes the request back out and it runs again with no card.
   await own(() => stepOf("5b. a second request answered No keeps it off; edited back out, it runs again with no card", async () => {
-    const manifest = join(installed, "clover.json");
+    const manifest = join(installed, "moss.json");
     await ok(ctx, session, "Read", { file_path: manifest });
     await ok(ctx, session, "Edit", { file_path: manifest, old_string: SECOND_REQUEST.old, new_string: SECOND_REQUEST.new });
     const card = await askedCard(ctx, "devices.read", DEVICES_LINE);
@@ -382,16 +408,14 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
   // 6. Another bot: no status, no edit.
   let peerSession: string | undefined;
   await own(() => stepOf("6. another bot can't read its status or edit it", async () => {
-    await installFromPage(ctx, join(FIXTURES, PEER_ID), PEER_ID);
-    const peer = await until("the peer bot in bot.list", 60_000, async () => (await ctx.rpc.request<{ bots: { id: string; mainSession?: string }[] }>("bot.list", {})).bots.find((b) => b.id === PEER_ID && b.mainSession !== undefined));
-    const other = peer.mainSession!;
-    peerSession = other;
-    // The model the user gives it, as in the bot editor: Alpha's (the run's one keyed model). A new bot starts on the
-    // user's default, which this home doesn't have signed in.
+    // No plugin ships a bot (G8): the other bot is one the person makes (bot.create), on Alpha's model (the run's one keyed
+    // model; a new bot starts on the person's default, which this home doesn't have signed in).
     const alphaModel = (await ctx.rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha")?.model;
     if (alphaModel === undefined) fail("bot.list gives Alpha no model to give the peer");
-    const set = await ctx.rpc.request<{ applied: boolean; card?: string }>("bot.setUserLayer", { id: PEER_ID, patch: { model: alphaModel } });
-    if (!set.applied && set.card !== undefined) await ctx.approveCard(set.card);
+    await ctx.rpc.request("bot.create", { name: "Workshop peer", model: alphaModel });
+    const peer = await until("the peer bot in bot.list", 60_000, async () => (await ctx.rpc.request<{ bots: { id: string; name?: string; mainSession?: string }[] }>("bot.list", {})).bots.find((b) => b.name === "Workshop peer" && b.mainSession !== undefined));
+    const other = peer.mainSession!;
+    peerSession = other;
     const status = await callOnce(ctx, other, "PluginStatus", { id: WORKSHOP_ID });
     if (!status.result!.isError) fail(`the other bot's PluginStatus answered "${status.result!.text.slice(0, 200)}"`);
     const hostFile = join(installed, "host", "index.ts");
@@ -406,10 +430,12 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
   }));
 
   // 6b. The render window's rule, on the real app: while her tool's card waits in her conversation, the peer bot's look
-  // at her tab draws the card as placeholders: every card frame in the render window is clover-sealed://placeholder,
-  // none clover-sealed://card, and the app logs no sealed ask for a render window. Then her card is pressed in the
+  // at her tab draws the card as placeholders: every card frame in the render window is moss-sealed://placeholder,
+  // none moss-sealed://card, and the app logs no sealed ask for a render window. Then her card is pressed in the
   // user's own window as usual.
-  await own(() => stepOf("6b. while her card waits, a look at her tab draws it as placeholders, never a live card frame", async () => {
+  const away6b = partElsewhere("workshop", "6b");
+  if (away6b !== undefined) done.push(`6b runs elsewhere (${away6b.owner === "MOSS" ? "lane MA's moss unit" : away6b.owner}): ${away6b.why}`);
+  else await own(() => stepOf("6b. while her card waits, a look at her tab draws it as placeholders, never a live card frame", async () => {
     if (peerSession === undefined) fail("no peer session (step 6 didn't make one)");
     let look: { text: string; isError: boolean } | undefined;
     const looking: ExampleCtx = {
@@ -483,7 +509,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     for (const [path, content] of Object.entries(dropFiles())) await ok(ctx, session, "Write", { file_path: join(from, path), content });
     const mv = await ok(ctx, session, "Bash", { command: dropCommand(from, join(home, "plugins")), description: "Install the plugin by moving it into the plugins folder" });
     if (/not permitted|denied/i.test(mv.result.text)) fail(`the move was refused: "${mv.result.text.slice(0, 200)}"`);
-    if (!existsSync(join(home, "plugins", DROP_ID, "clover.json"))) fail(`after the move there's no ${DROP_ID} in the plugins folder (Bash: "${mv.result.text.slice(0, 200)}")`);
+    if (!existsSync(join(home, "plugins", DROP_ID, "moss.json"))) fail(`after the move there's no ${DROP_ID} in the plugins folder (Bash: "${mv.result.text.slice(0, 200)}")`);
     const card = mv.raised.find((c) => c.kind === "plugin-ok" && c.pluginId === DROP_ID)
       ?? await until("its OK card", 30_000, async () => (await cardsOf(ctx)).find((c) => c.kind === "plugin-ok" && c.pluginId === DROP_ID), async () => `no OK card for ${DROP_ID}; it is ${(await pluginOf(ctx, DROP_ID))?.state ?? "not in the registry"}`);
     const state = (await pluginOf(ctx, DROP_ID))?.state;
@@ -494,7 +520,125 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     await until(`${DROP_ID} running after its OK`, 60_000, async () => ((await pluginOf(ctx, DROP_ID))?.state === "running" ? true : undefined));
     const g = await ok(ctx, session, DROP_TOOL, { name: "Acceptance" }, () => true);
     if (!g.result.text.includes(answerFor(GREETING.first))) fail(`its tool answered "${g.result.text.slice(0, 200)}", not "${answerFor(GREETING.first)}"`);
-    done.push(`8 drop: ${Object.keys(dropFiles()).length} Writes and one Bash mv with no card; found, OK card "Built by Alpha…" pressed; running; tool answered`);
+    done.push(`8 drop: ${Object.keys(dropFiles()).length} Writes and one Bash mv with no card; found, OK card "Built by MOSS…" pressed; running; tool answered`);
+  }));
+
+  // 9. A bot builds a bot: a plugin with a `bot` entry, made, installed and edited as her tool plugin was.
+  const away9 = partElsewhere("workshop", "9");
+  if (away9 !== undefined) done.push(`9 runs elsewhere (${away9.owner === "MOSS" ? "lane MA's moss unit" : away9.owner}): ${away9.why}`);
+  else await own(() => stepOf("9. a bot plugin she makes lands behind its OK card naming her; its bot is listed, in the sidebar, its tab answers a turn; her edit of its instructions applies with no card; removed, it leaves bot.list", async () => {
+    const said: string[] = [];
+    const from = join(scratch, BOT_ID);
+    const made = await ok(ctx, session, "PluginNew", { template: "bot", id: BOT_ID, name: BOT_NAME });
+    if (!made.result.text.startsWith(`Made a bot plugin, ${BOT_ID}: 3 files.`)) fail(`PluginNew answered "${made.result.text.slice(0, 160)}"`);
+    for (const [path, content] of Object.entries(botFiles())) await ok(ctx, session, "Write", { file_path: join(from, path), content });
+    const checked = await ok(ctx, session, "PluginValidate", { folder: BOT_ID });
+    if (!/\bvalid\b/.test(checked.result.text) || /invalid/.test(checked.result.text)) fail(`PluginValidate said "${checked.result.text.slice(0, 300)}"`);
+    const inst = await ok(ctx, session, "PluginInstall", { folder: BOT_ID });
+    const card = inst.raised.find((c) => c.kind === "plugin-ok" && c.pluginId === BOT_ID)
+      ?? await until("its OK card", 30_000, async () => (await cardsOf(ctx)).find((c) => c.kind === "plugin-ok" && c.pluginId === BOT_ID), async () => `no OK card for ${BOT_ID}; it is ${(await pluginOf(ctx, BOT_ID))?.state ?? "not in the registry"}`);
+    const text = JSON.stringify((await ctx.rpc.request<{ card: unknown }>("card.get", { id: card.id })).card);
+    if (!text.includes(BUILT_BY_ALPHA)) fail(`its OK card doesn't say "${BUILT_BY_ALPHA}" (card: ${text.slice(0, 500)})`);
+    await ctx.pressCard("its OK card", (c) => c.id === card.id);
+    said.push(`PluginNew bot, ${Object.keys(botFiles()).length} Writes, PluginValidate, PluginInstall with no card; OK card "Built by MOSS…" pressed`);
+
+    // Its bot: a plugin with no code of its own is on once OK'd (running or enabled), and its bot comes with it.
+    type BotRow = { id: string; mainSession?: string; model?: string };
+    const listed = async () => (await ctx.rpc.request<{ bots: BotRow[] }>("bot.list", {})).bots;
+    const isMine = (b: BotRow) => b.id === BOT_ID || b.id === `${BOT_ID}/bot`;
+    const bot = await until("its bot in bot.list", 60_000, async () => (await listed()).find((b) => isMine(b) && b.mainSession !== undefined), async () => `it is ${(await pluginOf(ctx, BOT_ID))?.state ?? "gone"}; bot.list: ${(await listed()).map((b) => b.id).join(", ")}`);
+    const its = bot.mainSession!;
+    const state = (await pluginOf(ctx, BOT_ID))?.state;
+    if (state !== "running" && state !== "enabled") fail(`after its OK it is ${state ?? "gone"}`);
+    // The model the user gives it, as in the bot editor (step 6's peer): a new bot starts on the user's default, which
+    // this home doesn't have signed in.
+    const alphaModel = (await listed()).find((b) => b.id === "alpha")?.model;
+    if (alphaModel === undefined) fail("bot.list gives Alpha no model to give her bot");
+    const set = await ctx.rpc.request<{ applied: boolean; card?: string }>("bot.setUserLayer", { id: bot.id, patch: { model: alphaModel } });
+    if (!set.applied && set.card !== undefined) await ctx.approveCard(set.card);
+    said.push(`${state}; bot.list has ${bot.id} (its conversation ${its})`);
+
+    // The sidebar: its row under Bots, which opens its tab (its conversation's composer, "Message to <name>").
+    const row = `.cl-sidebar__section[aria-label="Bots"] .cl-sidebar__bot`;
+    await escape(ctx.cdp);
+    await clickShown(ctx, `its row under Bots in the sidebar`, row, BOT_NAME, 30_000);
+    const label = `Message to ${BOT_NAME}`;
+    await until("its tab (its composer)", 20_000, async () => {
+      for (const d of await treeDocs(ctx.cdp)) if ((await ctx.cdp.evaluate(d.session, `[...document.querySelectorAll('.cl-composer textarea')].some((e) => e.getAttribute('aria-label') === ${JSON.stringify(label)})`).catch(() => false)) === true) return true;
+      return undefined;
+    }, () => frames(ctx.cdp));
+    said.push(`its row under Bots in the sidebar opened its tab ("${label}")`);
+
+    // One turn in its conversation: the fake's reply, drawn in the window, and her instructions in its prompt.
+    const promptOf = (since: number, tag: string) => {
+      const r = ctx.requests().slice(since).filter((x) => x.lastUserText.includes(tag)).at(-1);
+      return r === undefined ? undefined : JSON.stringify(r.body ?? "");
+    };
+    const talk = async (what: string): Promise<{ prompt: string; reply: string }> => {
+      const tag = `ACCEPTANCE-TAG-${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+      const reply = `ACCEPTANCE-REPLY-OK ${tag}`;
+      const seen = ctx.requests().length;
+      const t = await ctx.turn(its, tag, 120_000);
+      if (t.cards.length > 0) fail(`${what} raised ${t.cards.join("; ")}`);
+      if (!JSON.stringify(t.events).includes(reply)) fail(`${what} didn't end with the fake's reply "${reply}" (events: ${[...new Set(t.events.map((e) => String(e.type)))].join(", ")})`);
+      const prompt = promptOf(seen, tag);
+      if (prompt === undefined) fail(`${what} reached the fake with no request carrying ${tag}`);
+      return { prompt: prompt!, reply };
+    };
+    const first = await talk("its first turn");
+    if (!first.prompt.includes(BOT_WORDS.first)) fail(`its first turn's prompt doesn't hold her instructions ("${BOT_WORDS.first}")`);
+    await until("its reply drawn on its tab", 20_000, async () => {
+      for (const d of await ctx.cdp.documents()) if ((await ctx.cdp.evaluate(d.session, `!!(document.body && document.body.innerText.includes(${JSON.stringify(first.reply)}))`).catch(() => false)) === true) return true;
+      return undefined;
+    }, () => frames(ctx.cdp));
+    said.push(`a turn on its tab: the fake's reply drawn, her instructions in its prompt`);
+
+    // Her edit of its instructions: no card; the plugin reloads; its very next turn's prompt has the new words.
+    const file = join(home, "plugins", BOT_ID, "bot", "instructions.md");
+    const hash = (await pluginOf(ctx, BOT_ID))?.treeHash;
+    await ok(ctx, session, "Read", { file_path: file });
+    const e = await ok(ctx, session, "Edit", { file_path: file, old_string: BOT_WORDS.first, new_string: BOT_WORDS.second });
+    if (e.raised.some((c) => c.pluginId === BOT_ID)) fail(`her edit raised a card for it (${e.raised.map((c) => c.kind).join(", ")})`);
+    if (!readFileSync(file, "utf8").includes(BOT_WORDS.second)) fail("her edit didn't land in its installed instructions");
+    let last: { state?: string; treeHash?: string } | undefined;
+    await until("her edit to apply (its tree hash to change)", 20_000, async () => {
+      if ((await cardsOf(ctx)).some((c) => c.pluginId === BOT_ID)) fail("a card for it appeared after her edit");
+      last = await pluginOf(ctx, BOT_ID);
+      return (last?.state === "running" || last?.state === "enabled") && last.treeHash !== undefined && last.treeHash !== hash ? true : undefined;
+    }, async () => `its state is ${last?.state ?? "gone"}; its tree hash ${last?.treeHash === hash ? "never changed" : "changed"}`);
+    if (!(await listed()).some(isMine)) fail("after her edit its bot left bot.list");
+    // Its next turn, the conversation still one exchange long (inside any compaction's retention window): no
+    // compaction, and the prompt has her new words.
+    const second = await talk("its turn after her edit");
+    if (!second.prompt.includes(BOT_WORDS.second)) fail(`its next turn after her edit doesn't hold her new words in its prompt ("${BOT_WORDS.second}")`);
+    if (second.prompt.includes(BOT_WORDS.first)) fail(`its next turn after her edit still holds the old words in its prompt ("${BOT_WORDS.first}")`);
+    if ((await cardsOf(ctx)).some((c) => c.pluginId === BOT_ID)) fail("a card for it is waiting after her edit applied");
+    said.push("her Edit of its instructions: no card, reloaded; its very next turn's prompt has the new words, not the old (no compaction)");
+
+    // Its tab showing when it is removed: the shell must leave it, so a removed bot's tab isn't the one on the screen.
+    const tabShown = async (): Promise<boolean> => {
+      for (const d of await treeDocs(ctx.cdp)) if ((await ctx.cdp.evaluate(d.session, `[...document.querySelectorAll('.cl-composer textarea')].some((e) => e.getAttribute('aria-label') === ${JSON.stringify(label)})`).catch(() => false)) === true) return true;
+      return false;
+    };
+    await escape(ctx.cdp);
+    await clickShown(ctx, `its row under Bots in the sidebar (to have its tab showing)`, row, BOT_NAME, 30_000);
+    await until("its tab showing before the removal", 20_000, async () => ((await tabShown()) ? true : undefined), () => frames(ctx.cdp));
+    // Removed by the user (its removal card pressed in the window): its bot leaves bot.list.
+    const r = await ctx.rpc.request<{ card?: string }>("plugin.remove", { id: BOT_ID });
+    if (r.card !== undefined) await ctx.pressCard("its removal card", (c) => c.id === r.card);
+    await until("its bot out of bot.list", 30_000, async () => (!(await listed()).some(isMine) ? true : undefined), async () => `bot.list: ${(await listed()).map((b) => b.id).join(", ")}`);
+    // Its sidebar row goes with it, within a few seconds and with no reload: the sidebar and the shell follow `bot_removed`
+    // (the SDK's `bots.watch` tells them), and the tab it was showing is left.
+    const rowShown = async (): Promise<boolean> => {
+      for (const d of await treeDocs(ctx.cdp)) if ((await ctx.cdp.evaluate(d.session, `[...document.querySelectorAll(${JSON.stringify(row)})].some((e) => (e.innerText || '').split('\\n').some((l) => l.trim() === ${JSON.stringify(BOT_NAME)}))`).catch(() => false)) === true) return true;
+      return false;
+    };
+    await until("its row out of the sidebar", 8_000, async () => ((await rowShown()) ? undefined : true), async () => "its row is still under Bots in the sidebar (bot_removed should drop it)");
+    await until("its tab left", 8_000, async () => ((await tabShown()) ? undefined : true), async () => "its tab (its composer) is still the one showing after its bot was removed");
+    said.push("removed: out of bot.list and, within seconds and with no reload, out of the sidebar, and its tab (showing at the time) was left");
+    // Her tab again, for the rows after this one in the same window.
+    await toSessionTab(ctx);
+    done.push(`9 a bot builds a bot: ${said.join("; ")}`);
   }));
 
   if (failed.length > 0) fail(`${failed.join(" | ")} (passed: ${done.map((d) => d.split(" ")[0]).join(", ")})`);

@@ -34,6 +34,8 @@ export interface ListenerArg {
 /** Every member that takes a listener (a function argument), where it is. */
 export const LISTENER_ARGS = {
   "points.watch": { at: 1 },
+  "points.onActive": { at: 1 },
+  "points.onMessage": { at: 1 },
   "host.on": { at: 1 },
   "storage.synced.watch": { at: 0 },
   "settings.watch": { at: 1 },
@@ -51,10 +53,23 @@ export const LISTENER_ARGS = {
   "shell.watch": { at: 0 },
   "usage.watch": { at: 0 },
   "logs.follow": { at: 1 },
-  "avatar.watch": { at: 0 },
-  "audio.onRecording": { at: 0 },
-  "voices.speak": { at: 2 },
-  "voices.listen": { at: 2 },
+  // A take is a watch on the wire (its events are its listener's; ending the watch leaves the queue or ends the turn),
+  // whose `Turn` the SDK's own `take` makes in both halves.
+  "turns.take": { at: 2 },
+  "turns.watch": { at: 1 },
+  // A stream's ends are watches (their events are the listener's; ending the watch ends the stream), whose Web streams
+  // the SDK's own `open`, `accept` and `points.stream` make in both halves.
+  "streams.open": { at: 2 },
+  "streams.accept": { at: 1 },
+  "points.stream": { at: 5 },
+  // A live picture's two ends are watches too (the same Web streams, the SDK's `openPicture` and `publishPicture`), and the
+  // reads by kind are plain watches.
+  "pictures.open": { at: 2 },
+  "pictures.publish": { at: 1 },
+  "pictures.watch": { at: 1 },
+  "activity.watch": { at: 1 },
+  "sessions.watch": { at: 0 },
+  "sessions.follow": { at: 1 },
 } as const satisfies Partial<Record<ApiCallPath, ListenerArg>>;
 
 /** The members whose arguments include a function, by the API's own signatures. */
@@ -64,8 +79,13 @@ type ListenerPaths = { [P in ApiCallPath]: TakesListener<P> }[ApiCallPath];
 /** The members `PluginApi` types as absent (`NotYet`: `browser.watch` and `browser.onCdpEvent`, the person's panel's):
  *  their listener place is the table's word alone. */
 type Untyped = { [P in ApiCallPath]: unknown[] extends ApiCallArgs<P> ? P : never }[ApiCallPath];
+/** The members with an `unknown` argument (`points.stream`'s `args`): the argument types collapse to `unknown`, so no
+ *  function can be read among them, and the table's word is all there is. */
+type Open = { [P in ApiCallPath]: unknown extends ApiCallArgs<P>[number] ? P : never }[ApiCallPath];
 type Missing = Exclude<ListenerPaths, keyof typeof LISTENER_ARGS>;
-type Extra = Exclude<keyof typeof LISTENER_ARGS, ListenerPaths | Untyped>;
+/** The two ends of a live picture: Web streams the SDK makes from a watch, typed without a function argument. */
+type Streamed = "pictures.open" | "pictures.publish";
+type Extra = Exclude<keyof typeof LISTENER_ARGS, ListenerPaths | Untyped | Open | Streamed>;
 const _listenersInStep: [Missing, Extra] extends [never, never] ? true : { missing: Missing; extra: Extra } = true;
 void _listenersInStep;
 

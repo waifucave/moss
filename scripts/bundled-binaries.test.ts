@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { deflateRawSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { engineSidecars } from "../packages/core/src/bundled-identities";
+import { RESOURCE_BINARIES } from "./release/lib";
 import { BUNDLED_IDENTIFIERS, bundledBinaryProblems, bundledFiles, CORE_IDENTIFIERS, HOLDER_FILE, holderCompileArgs, PLUGIN_BUN, PLUGIN_BUN_ENTITLEMENTS, pluginBunZip, unpackPluginBun, zipEntry } from "./bundled-binaries";
 
 const ROOT = join(import.meta.dir, "..");
@@ -17,10 +19,24 @@ describe("the binaries beside the core", () => {
     }
   });
 
-  test("every target ships clover-plugin-bun; only macOS ships the holder", () => {
-    expect(bundledFiles("darwin-arm64")).toEqual(["clover-plugin-bun", "clover-process-holder"]);
-    expect(bundledFiles("linux-x64")).toEqual(["clover-plugin-bun"]);
-    expect(bundledFiles("windows-x64")).toEqual(["clover-plugin-bun.exe"]);
+  test("every target ships moss-plugin-bun; only macOS ships the holder", () => {
+    expect(bundledFiles("darwin-arm64")).toEqual(["moss-plugin-bun", "moss-process-holder"]);
+    expect(bundledFiles("linux-x64")).toEqual(["moss-plugin-bun"]);
+    expect(bundledFiles("windows-x64")).toEqual(["moss-plugin-bun.exe"]);
+  });
+
+  test("the files the engine copy places beside the core are the files the release signs beside it, under the same identifiers", () => {
+    // `engineSidecars` (bundled-identities.ts) is what `placeEngine` copies and checks on macOS; `RESOURCE_BINARIES` is what the
+    // release build signs into the app's daemon/ folder. A file in one and not the other is a file that is shipped and not placed
+    // (the engine would run from the home without it) or placed and not shipped (the copy would refuse every bundle).
+    const signed = RESOURCE_BINARIES.filter((b) => b.identifier !== CORE_IDENTIFIERS[0]);
+    expect(engineSidecars("darwin").map((s) => s.file).sort()).toEqual(signed.map((b) => b.file).sort());
+    for (const s of engineSidecars("darwin")) expect(signed.find((b) => b.file === s.file)?.identifier as string | undefined).toBe(s.identifier.dist);
+    // The dev identifiers are the dist ones with `.dev`, which the dev daemon signs its own copies under.
+    for (const s of engineSidecars("darwin")) expect(s.identifier.dev).toBe(`${s.identifier.dist}.dev`);
+    // Windows and Linux ship the plugin Bun and the link sidecar, not the holder.
+    expect(engineSidecars("linux").map((s) => s.file)).toEqual(["moss-plugin-bun", "moss-link"]);
+    expect(engineSidecars("win32").map((s) => s.file)).toEqual(["moss-plugin-bun.exe", "moss-link.exe"]);
   });
 
   test("each has its own identifiers, none of them the core's", () => {
@@ -38,30 +54,30 @@ describe("the binaries beside the core", () => {
 });
 
 describe("the package gate", () => {
-  const dir = mkdtempSync(join(tmpdir(), "clover-bundled-gate-"));
+  const dir = mkdtempSync(join(tmpdir(), "moss-bundled-gate-"));
   const put = (f: string) => writeFileSync(join(dir, f), "x");
   test("a missing holder fails the build, naming the fallback it would cause", () => {
-    put("clover-plugin-bun");
-    const p = bundledBinaryProblems(dir, "darwin-arm64", { identifierOf: () => "com.waifucave.clover.plugin-bun" });
+    put("moss-plugin-bun");
+    const p = bundledBinaryProblems(dir, "darwin-arm64", { identifierOf: () => "com.waifucave.moss.core.plugin-bun" });
     expect(p).toEqual([`${HOLDER_FILE} is missing from ${dir} (a bot's commands would fall back to process-group tracking)`]);
   });
   test("one signed as the core fails, and a release wants exactly its own identifier", () => {
     put(HOLDER_FILE);
-    expect(bundledBinaryProblems(dir, "darwin-arm64", { identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.clover.core" : "com.waifucave.clover.plugin-bun") })).toEqual([`${HOLDER_FILE} is signed as the core (com.waifucave.clover.core): the Keychain items would trust it`]);
-    expect(bundledBinaryProblems(dir, "darwin-arm64", { kind: "dist", identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.clover.process-holder" : "bun") })).toEqual(["clover-plugin-bun is signed as bun, not com.waifucave.clover.plugin-bun"]);
-    expect(bundledBinaryProblems(dir, "darwin-arm64", { kind: "dist", identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.clover.process-holder" : "com.waifucave.clover.plugin-bun") })).toEqual([]);
+    expect(bundledBinaryProblems(dir, "darwin-arm64", { identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.moss.core" : "com.waifucave.moss.core.plugin-bun") })).toEqual([`${HOLDER_FILE} is signed as the core (com.waifucave.moss.core): the Keychain items would trust it`]);
+    expect(bundledBinaryProblems(dir, "darwin-arm64", { kind: "dist", identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.moss.core.process-holder" : "bun") })).toEqual(["moss-plugin-bun is signed as bun, not com.waifucave.moss.core.plugin-bun"]);
+    expect(bundledBinaryProblems(dir, "darwin-arm64", { kind: "dist", identifierOf: (p) => (p.endsWith(HOLDER_FILE) ? "com.waifucave.moss.core.process-holder" : "com.waifucave.moss.core.plugin-bun") })).toEqual([]);
     expect(bundledBinaryProblems(dir, "darwin-arm64", { identifierOf: () => undefined })).toHaveLength(2);
   });
   test("Linux and Windows need plugin Bun beside the core", () => {
     expect(bundledBinaryProblems(dir, "linux-x64")).toEqual([]);
-    expect(bundledBinaryProblems(dir, "windows-x64")).toEqual([`clover-plugin-bun.exe is missing from ${dir} (plugins could not run)`]);
+    expect(bundledBinaryProblems(dir, "windows-x64")).toEqual([`moss-plugin-bun.exe is missing from ${dir} (plugins could not run)`]);
     rmSync(dir, { recursive: true, force: true });
   });
 });
 
 describe("plain Bun's zip", () => {
   test("a download that doesn't match the pinned SHA-256 is refused and never cached", async () => {
-    const cache = mkdtempSync(join(tmpdir(), "clover-bun-cache-"));
+    const cache = mkdtempSync(join(tmpdir(), "moss-bun-cache-"));
     try {
       await expect(pluginBunZip("linux-x64", async () => new TextEncoder().encode("not bun"), cache)).rejects.toThrow("nothing staged");
       expect(() => readFileSync(join(cache, PLUGIN_BUN.version, "zips", "bun-linux-x64.zip"))).toThrow();
@@ -70,7 +86,7 @@ describe("plain Bun's zip", () => {
     }
   });
   test("a cached zip with the pinned digest is used without a download", async () => {
-    const cache = mkdtempSync(join(tmpdir(), "clover-bun-cache-"));
+    const cache = mkdtempSync(join(tmpdir(), "moss-bun-cache-"));
     try {
       const bytes = new TextEncoder().encode("pretend zip");
       const pinned = { ...PLUGIN_BUN.assets["linux-x64"] };
@@ -138,14 +154,14 @@ describe("plain Bun's zip is unpacked in-process (no tar: Git Bash's GNU tar rea
   });
 
   test("the checked bytes are what unpacks: no tar or unzip on PATH, and no second read of the file", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "clover-plugin-bun-unpack-"));
+    const dir = mkdtempSync(join(tmpdir(), "moss-plugin-bun-unpack-"));
     const zip = zipOf({ "bun-windows-x64/bun.exe": "the windows bun", "bun-linux-x64/bun": "the linux bun" });
     const pins = PLUGIN_BUN.assets as unknown as Record<string, { asset: string; sha256: string }>;
     const real = pins["windows-x64"]!.sha256;
     const path = process.env.PATH;
     try {
       // The cache is a `C:\Users\…` folder: a drive path on Windows, and elsewhere the shape GNU tar read as host:path.
-      const cache = join(dir, "C:\\Users\\runner\\AppData\\Local\\clover-bun");
+      const cache = join(dir, "C:\\Users\\runner\\AppData\\Local\\moss-bun");
       pins["windows-x64"]!.sha256 = createHash("sha256").update(zip).digest("hex");
       const file = join(cache, PLUGIN_BUN.version, "zips", "bun-windows-x64.zip");
       mkdirSync(join(file, ".."), { recursive: true });
@@ -154,11 +170,11 @@ describe("plain Bun's zip is unpacked in-process (no tar: Git Bash's GNU tar rea
       const checked = await pluginBunZip("windows-x64", async () => { throw new Error("no download"); }, cache);
       // A same-user process swaps the file after the check: what unpacks is still what was checked.
       writeFileSync(file, zipOf({ "bun-windows-x64/bun.exe": "SWAPPED" }));
-      unpackPluginBun(checked, "windows-x64", join(dir, "out", "clover-plugin-bun.exe"));
-      expect(readFileSync(join(dir, "out", "clover-plugin-bun.exe"), "utf8")).toBe("the windows bun");
-      unpackPluginBun(checked, "linux-x64", join(dir, "out", "clover-plugin-bun"));
-      expect(readFileSync(join(dir, "out", "clover-plugin-bun"), "utf8")).toBe("the linux bun");
-      if (process.platform !== "win32") expect(statSync(join(dir, "out", "clover-plugin-bun")).mode & 0o777).toBe(0o755);
+      unpackPluginBun(checked, "windows-x64", join(dir, "out", "moss-plugin-bun.exe"));
+      expect(readFileSync(join(dir, "out", "moss-plugin-bun.exe"), "utf8")).toBe("the windows bun");
+      unpackPluginBun(checked, "linux-x64", join(dir, "out", "moss-plugin-bun"));
+      expect(readFileSync(join(dir, "out", "moss-plugin-bun"), "utf8")).toBe("the linux bun");
+      if (process.platform !== "win32") expect(statSync(join(dir, "out", "moss-plugin-bun")).mode & 0o777).toBe(0o755);
       expect(() => unpackPluginBun(checked, "darwin-arm64", join(dir, "out", "x"))).toThrow("holds no bun-darwin-aarch64/bun");
     } finally {
       pins["windows-x64"]!.sha256 = real;

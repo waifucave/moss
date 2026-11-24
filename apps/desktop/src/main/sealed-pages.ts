@@ -1,5 +1,5 @@
 /** What a sealed frame's own page says. Each card's field and each button is a frame of its own from the app's sealed
- *  scheme (`clover-sealed://<card id>/<element>?<token>`, spec §5.5): the field inside it is the field's text in the
+ *  scheme (`moss-sealed://<card id>/<element>?<token>`, spec §5.5): the field inside it is the field's text in the
  *  part's own `card.*` tokens, or a button with the card's own label. The page carries everything the user sees; the
  *  plugin's page carries the frames alone, and what it says next to them is the plugin's own words, on its own OK.
  *  An escaped control character and a bidirectional mark show as visible escapes (§5.5 "Wherever a sealed field is
@@ -10,12 +10,106 @@
  * identifier another frame could use (the token is the frame's own; the scheme's other requests carry it in the URL,
  * where a parsable page sees only its own). */
 
-import type { TokenValue } from "@waifucave/clover-plugin-sdk";
+import type { TokenValue } from "@waifucave/moss-plugin-sdk";
 import type { SealedValue } from "./sealed";
 import type { CardSummary, PreviewBlock } from "./card-summary";
 
 /** What a sealed page says of a press, one word each: taken, or why not (the app logs it with the card's id). */
-export const SEALED_PRESS_WORDS: readonly string[] = ["received", "untrusted", "answering", "not-visible", "opening", "settling", "no-pointer"];
+/** How long a press waits for the visibility report it asks for (a new observer made at the press) before it is refused as not checked:
+ *  FRESH_LIMIT_MS (below); the report itself takes about a frame. */
+/** A test build's switch (`MOSS_SMOKE_PIN_VISIBLE`, set by index.ts only in a test or acceptance build): the island button page's periodic verdict
+ *  stays "visible" once seen, so a press reaches the fresh-report check and not the page's older gate. Off in every real build. */
+export const pinVisible = { on: false };
+
+/** How long a press waits for the reading it asks for before the page says "late" ("Not ready yet — press again": the page was too busy to read
+ *  the button, which is "not ready", never "covered"). The reading is two (the first, then one FRESH_SETTLE_MS after the press), each a frame
+ *  and an IntersectionObserver report; on the GitHub macOS runners 608 presses (three full CI runs) took 5 to 373 ms (median about 140, p95 about
+ *  210; the longest were 373, 360 and 351), and 400 ms cost a real press its answer once (a `moss` row, run 44210352605). 800 ms is twice the longest of those
+ *  and about 6 times the median, so a busy Mac rarely reaches it, and it stays well inside FRESH_MAX_AGE_MS (sealed.ts: 1,500 ms from the report
+ *  to its answer). It decides only when a reading that has not come is given up: a reading that comes in the extra time passes the same two
+ *  checks (both readings after the press, none between them that says the button didn't show), so a longer wait can only turn a "late" into a
+ *  verdict: a cover that appears during it still spoils the press, and it never takes a press whose readings did not both say the button showed. The missed-press watch (sealed-miss.ts)
+ *  counts to the page's `received` word, which comes at the press, so it doesn't move with this. */
+export const FRESH_LIMIT_MS = 800;
+
+/** How long after the press the second reading is taken (lane SV). A reading made right after a press can be computed before an
+ *  embedder's cover drawn a few ms before it has reached this page: the cover's occlusion passes down through each document above
+ *  the frame (the window's, the shell's, the part's), a frame and a process hop each, and a page that already had a frame ready reads
+ *  the state from before it (GitHub run 44189476546: a cover 2 ms before the press read "uncovered" 2 ms after it and the answer was
+ *  taken). So the press needs two readings: the first, as before, and a second taken at least this long after the press, with no
+ *  "not showing" entry between them. Covered readings came 1 to 24 ms after the press on the runners; this is the bound: a cover
+ *  whose occlusion takes longer than it to reach the page is still missed. */
+export const FRESH_SETTLE_MS = 100;
+
+/** The page's way of asking for it, for every sealed page: the pressed button observed afresh, whose first report (made after the
+ *  press, never an older timer-driven one) says whether the button shows whole, uncovered and at its size; then, FRESH_SETTLE_MS after
+ *  the press, observed afresh again. The press counts only if both say it shows and nothing between them said it didn't, so it
+ *  takes only presses the single reading also took. One report goes to the app (the verdict, with the time since the press) before
+ *  the answer does, and the app takes the answer only on it; no verdict within the limit counts as not checked. */
+const FRESH_SCRIPT = `
+  const askFresh = (btn) => new Promise((resolve) => {
+    const t0 = performance.now();
+    let done = false;
+    let o = null;
+    let timer = 0;
+    let settle = 0;
+    // "first": waiting for the first reading; "between": until the second is asked, every entry must still say it shows; "second".
+    let phase = "first";
+    let spoiled = false;
+    let from = t0;
+    const shows = (e) => { const r = btn.getBoundingClientRect(); return e.intersectionRatio >= 1 && e.isVisible === true && r.width >= 24 && r.height >= 24; };
+    const own = typeof freshWatch !== "undefined";
+    const stop = () => { clearTimeout(timer); clearTimeout(settle); if (own) freshWatch = null; try { if (o !== null) o.disconnect(); } catch (e) { /* going */ } };
+    const finish = (seen) => {
+      if (done) return;
+      done = true;
+      stop();
+      try { b.fresh?.(seen, Math.round(performance.now() - t0)); } catch (e) { /* going */ }
+      resolve(seen);
+    };
+    const onEntries = (entries) => {
+      if (done) return;
+      const after = entries.filter((x) => typeof x.time === "number" && x.time >= from);
+      if (after.length === 0) return;
+      if (phase === "between") { if (after.some((x) => !shows(x))) spoiled = true; return; }
+      const seen = shows(after[after.length - 1]);
+      if (phase === "first") {
+        if (!seen || after.some((x) => !shows(x))) { finish(false); return; }
+        phase = "between";
+        settle = setTimeout(() => { if (done) return; phase = "second"; from = performance.now(); look(); }, Math.max(0, t0 + ${FRESH_SETTLE_MS} - performance.now()));
+        return;
+      }
+      finish(seen && !spoiled);
+    };
+    // No reading within the limit: the page was too busy to read the button (a renderer starved, layers loading again around the
+    // press), which is "not ready", never "covered": it resolves null, and the press is said as "late".
+    timer = setTimeout(() => { if (done) return; done = true; stop(); try { b.fresh?.(false, Math.round(performance.now() - t0)); } catch (e) { /* going */ } resolve(null); }, ${FRESH_LIMIT_MS});
+    // Observed afresh, its first report is a new reading. The page's own observer reads the button where there is one (no second
+    // observer watches the same button); otherwise one of its own.
+    const look = () => {
+      if (own) { io.unobserve(btn); io.observe(btn); return; }
+      o.unobserve(btn); o.observe(btn);
+    };
+    if (own) freshWatch = onEntries;
+    else o = new IntersectionObserver(onEntries, { threshold: [0, 1], trackVisibility: true, delay: 100 });
+    look();
+  });`;
+
+/** The app's notice for a press this page never got (sealed-miss.ts): main saw a mouse-down over this page's button and no
+ *  word from the page, so it asks the page to say "press again" on that button. It only shows words; it answers nothing and
+ *  spends nothing (a page script calling it shows the same words on its own card, no more). */
+const notReadyScript = (): string => `window.__mossNotReady = (option) => {
+    const all = [...document.querySelectorAll(".seal-button")];
+    const btn = all.find((x) => x instanceof HTMLElement && x.dataset.option === option) ?? all[0];
+    if (!(btn instanceof HTMLElement)) return false;
+    const st = document.querySelector(".state");
+    btn.dataset.again = "yes"; btn.title = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+    if (st !== null) st.textContent = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+    setTimeout(() => { delete btn.dataset.again; btn.removeAttribute("title"); if (st !== null && st.textContent === ${JSON.stringify(PRESS_AGAIN_TEXT)}) st.textContent = ""; }, 1800);
+    return true;
+  };`;
+
+export const SEALED_PRESS_WORDS: readonly string[] = ["received", "untrusted", "answering", "not-visible", "opening", "settling", "no-pointer", "covered", "late"];
 
 /** The card's own tokens as the page's custom properties: `card.*` alone (§5.5 "sealed frames take only these"), and
  *  only values of the kinds the catalog lets a card take. Anything else — tags, `/*` comments, `url(`/`var(`, values
@@ -29,7 +123,7 @@ function tokenCss(tokens: Readonly<Record<string, TokenValue>> | undefined): str
     const value = cssSafe(raw);
     if (value === undefined) continue;
     if (!readable(name, value)) continue;
-    lines.push(`  --clover-${name.replaceAll(".", "-")}: ${value};`);
+    lines.push(`  --moss-${name.replaceAll(".", "-")}: ${value};`);
   }
   return lines.length === 0 ? "" : `:root {\n${lines.join("\n")}\n}\n`;
 }
@@ -130,7 +224,7 @@ export function fieldPage(input: { cardId: string; token: string; field: string;
 /** A field page tells its own frame how tall its words are (`postMessage`, numbers only), so the part's frame fits the
  *  words and nothing sealed is cut unseen; the document that placed the frame learns a size, never a word. */
 const SIZE_SCRIPT = `(() => {
-  const send = () => { try { parent.postMessage({ cloverSealedSize: { height: Math.ceil(document.body.getBoundingClientRect().height) } }, "*"); } catch (e) { /* no parent */ } };
+  const send = () => { try { parent.postMessage({ mossSealedSize: { height: Math.ceil(document.body.getBoundingClientRect().height) } }, "*"); } catch (e) { /* no parent */ } };
   addEventListener("DOMContentLoaded", () => { new ResizeObserver(send).observe(document.body); send(); });
   addEventListener("load", send);
 })();`;
@@ -204,22 +298,33 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
 </button>
 <p class="state" data-state="waiting" role="status"></p>`;
   const script = `(() => {
-  const b = window.cloverSealed;
+  const b = window.mossSealed;
   if (b === undefined) return;
+  ${notReadyScript()}
   let answering = false;
   // The whole button, uncovered (IOv2), since enough time to have been seen (S4).
   let visible = false;
   let visibleAt = 0;
+  // The press's own readings (FRESH_SCRIPT): while a press is being read, every entry this observer delivers goes to it too; it
+  // takes only entries computed AFTER the press (on the entry's own clock), never one queued before it.
+  let freshWatch = null;
+  const readOf = (e) => {
+    const whole = e.intersectionRatio >= 1;
+    const enough = e.target instanceof HTMLElement && e.target.getBoundingClientRect().width >= 24 && e.target.getBoundingClientRect().height >= 24;
+    return whole === true && e.isVisible === true && enough === true;
+  };
   const io = new IntersectionObserver((entries) => {
     const e = entries[entries.length - 1];
     if (e === undefined) return;
-    const whole = e.intersectionRatio >= 1;
-    const enough = e.target instanceof HTMLElement && e.target.getBoundingClientRect().width >= 24 && e.target.getBoundingClientRect().height >= 24;
-    const seen = whole === true && e.isVisible === true && enough === true;
-    if (seen && !visible) visibleAt = Date.now();
-    visible = seen;
-    // Report visibility to the main process so it can disarm the fallback once all of a card's buttons show (S1).
-    if (b !== undefined) b.visible?.(seen);
+    const seen = readOf(e);
+    // A test build's pin (never set in a real one) holds the PERIODIC verdict at "visible"; the press's own reading below is never pinned.
+    if (!(${pinVisible.on} && visible)) {
+      if (seen && !visible) visibleAt = Date.now();
+      visible = seen;
+      // Report visibility to the main process so it can disarm the fallback once all of a card's buttons show (S1).
+      if (b !== undefined) b.visible?.(seen);
+    }
+    if (freshWatch !== null) freshWatch(entries);
   }, { threshold: [0, 0.25, 0.5, 0.75, 1], trackVisibility: true, delay: 200 });
   // A part that takes its card's frames away (the island folding a card back into its strip) leaves nothing showing: the
   // page says so as it goes, so the fallback's timer runs again.
@@ -231,7 +336,7 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
   // The button's own size, for a part that gives a labelled button the room it takes (numbers only).
   // A reading of no size is no reading (the page is laid out in a frame that starts at nothing, and a first look can find the
   // button without a box): it is said again when the button takes its size, so the frame is never left at nothing.
-  const send = () => { const r = document.querySelector(".seal-button"); if (r === null) return; const q = r.getBoundingClientRect(); if (q.width <= 0 || q.height <= 0) return; try { parent.postMessage({ cloverSealedSize: { width: Math.ceil(q.width), height: Math.ceil(q.height) } }, "*"); } catch (e) { /* no parent */ } };
+  const send = () => { const r = document.querySelector(".seal-button"); if (r === null) return; const q = r.getBoundingClientRect(); if (q.width <= 0 || q.height <= 0) return; try { parent.postMessage({ mossSealedSize: { width: Math.ceil(q.width), height: Math.ceil(q.height) } }, "*"); } catch (e) { /* no parent */ } };
   window.addEventListener("DOMContentLoaded", () => { const r = document.querySelector(".seal-button"); if (r !== null) new ResizeObserver(send).observe(r); send(); });
   window.addEventListener("load", send);
   // A click inside the button only, the renderer's own handed-over press (a page's own dispatch's isTrusted reads
@@ -261,7 +366,7 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
   });
   mark();
   // Each press is told to the app by one word (never a text), so a press that did nothing leaves a line in its log: why.
-  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };
+  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };${FRESH_SCRIPT}
   window.addEventListener("pointerdown", (e) => {
     if (answering) { say("answering"); return; }
     if (!e.isTrusted) { say("untrusted"); return; }
@@ -282,13 +387,26 @@ export function buttonPage(input: { cardId: string; token: string; option: strin
     say("received");
     answering = true;
     const state = document.querySelector(".state");
-    if (state !== null) state.textContent = "…";
-    document.body.dataset.answering = "yes";
+    // Nothing on the page changes before the fresh reading (a status line growing could move the button, and a button that moved is not
+    // read as showing): the "…" and the answering mark come after it.
     // A refused answer says so on the card and the button answers again: never a "…" that stays.
-    const refused = (r) => { answering = false; document.body.dataset.answered = "no"; delete document.body.dataset.answering; const said = r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; if (state !== null) state.textContent = said; closest.title = said; };
-    b.answer(option).then((r) => {
-      if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; delete document.body.dataset.answering; answering = false; if (state !== null) state.textContent = ""; }
-      else refused(r);
+    const refused = (r) => { answering = false; document.body.dataset.answered = "no"; delete document.body.dataset.answering; const said = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; if (state !== null) state.textContent = said; closest.title = said; };
+    // The press counts only if the report that follows it says the button shows uncovered: asked for now, not read from the last one.
+    askFresh(closest).then((ok) => {
+      if (!ok) {
+        say(ok === null ? "late" : "covered");
+        answering = false;
+        closest.dataset.again = "yes"; closest.title = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+        if (state !== null) state.textContent = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+        setTimeout(() => { delete closest.dataset.again; closest.removeAttribute("title"); if (state !== null && state.textContent === ${JSON.stringify(PRESS_AGAIN_TEXT)}) state.textContent = ""; }, 1800);
+        return null;
+      }
+      if (state !== null) state.textContent = "…";
+      document.body.dataset.answering = "yes";
+      return b.answer(option).then((r) => {
+        if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; delete document.body.dataset.answering; answering = false; if (state !== null) state.textContent = ""; }
+        else refused(r);
+      });
     }).catch(() => refused(null));
   }, { capture: true });
 })();`;
@@ -307,7 +425,7 @@ const GLYPHS = {
  *  preview of the change, and its buttons; the whole of what the card holds (every sealed field, verbatim) is one
  *  press away under "Show everything this approves", and a preview that leaves anything out says so. Any other card
  *  shows its fields in the core's own order. The buttons' answers ride the same frame channel as a part's
- *  (`clover:sealed-answer`), minted per option with the `own` element, and their own gates ride this page's checks
+ *  (`moss:sealed-answer`), minted per option with the `own` element, and their own gates ride this page's checks
  *  (S3's fix: a beat after shown, a trusted press in the button, and about the same visible-and-uncovered run). */
 export function ownCardPage(input: {
   cardId: string; token: string; origin: string; issuedAt: number; expiresAt: number | null;
@@ -372,8 +490,9 @@ export function ownCardPage(input: {
     ? `<section class="review" data-review="idle"><div class="review-row"><button type="button" class="review-button">${esc(REVIEW_BUTTON_TEXT)}</button><span class="review-note">${esc(REVIEW_NOTE_TEXT)}</span></div><h3 class="review-head" hidden>${esc(REVIEW_HEAD_TEXT)}</h3><pre class="review-report" role="status" aria-live="polite"></pre></section>`
     : "";
   const script = `(() => {
-  const b = window.cloverSealed;
+  const b = window.mossSealed;
   if (b === undefined) return;
+  ${notReadyScript()}
   // About a second after the page is shown (showInactive): the 1 s wait restarts when the window is shown or moved,
   // never on mouse movement, and the pointer must have entered the window after it showed, so a timed "click here"
   // prompt can't land on Approve (S3, check 3). The page is placed before it is shown, so shown is load time here.
@@ -397,7 +516,7 @@ export function ownCardPage(input: {
   // Hidden and shown again: the pointer must come in again and a second pass, as on a fresh page.
   document.addEventListener("visibilitychange", () => { openedAt = Date.now(); pointerEntered = false; mark(); });
   mark();
-  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };
+  const say = (w) => { try { b.pressed?.(w); } catch (e) { /* going */ } };${FRESH_SCRIPT}
   document.addEventListener("click", (e) => {
     if (!e.isTrusted) { say("untrusted"); return; }
     const b2 = e.target !== null && e.target instanceof Element ? e.target.closest(".seal-button") : null;
@@ -417,10 +536,20 @@ export function ownCardPage(input: {
     const state = document.querySelector(".state");
     if (state !== null) state.textContent = "…";
     // A refused answer says so on the card, and its buttons answer again.
-    const refused = (r) => { document.body.dataset.answered = "no"; if (state !== null) state.textContent = r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; };
-    void b.answer(b2.dataset.option).then((r) => {
-      if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; if (state !== null) state.textContent = ""; }
-      else refused(r);
+    const refused = (r) => { document.body.dataset.answered = "no"; if (state !== null) state.textContent = r !== null && typeof r === "object" && typeof r.covered === "string" ? (${JSON.stringify(WINDOW_OVER_TEXTS)}[r.covered] ?? ${JSON.stringify(WINDOW_OVER_TEXTS.ours)}) : r !== null && typeof r === "object" && r.again === true ? ${JSON.stringify(PRESS_AGAIN_TEXT)} : r !== null && typeof r === "object" && r.key === "changed" ? ${JSON.stringify(KEY_CHANGED_TEXT)} : r !== null && typeof r === "object" && r.key === "fault" ? ${JSON.stringify(KEY_FAULT_TEXT)} : ${JSON.stringify(REFUSED_TEXT)}; };
+    // The same rule as a part's button: the press counts only if the report that follows it says the button shows uncovered.
+    void askFresh(b2).then((ok) => {
+      if (!ok) {
+        say(ok === null ? "late" : "covered");
+        b2.dataset.again = "yes"; b2.title = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+        if (state !== null) state.textContent = ${JSON.stringify(PRESS_AGAIN_TEXT)};
+        setTimeout(() => { delete b2.dataset.again; b2.removeAttribute("title"); if (state !== null && state.textContent === ${JSON.stringify(PRESS_AGAIN_TEXT)}) state.textContent = ""; }, 1800);
+        return null;
+      }
+      return b.answer(b2.dataset.option).then((r) => {
+        if (r !== null && typeof r === "object" && r.accepted === true) { document.body.dataset.answered = "yes"; if (state !== null) state.textContent = ""; }
+        else refused(r);
+      });
     }).catch(() => refused(null));
   }, { capture: true });
   // The Review: the app's own fetch for this page; its report goes in as text, never markup, and it never answers.
@@ -481,6 +610,19 @@ const SHIELD = `<svg class="shield" viewBox="0 0 16 16" width="18" height="18" a
  *  registered yet): the card stays, and its buttons answer again. */
 /** Said on a card when a real press came before the page was ready to take it (shown a beat, then cleared). */
 export const PRESS_AGAIN_TEXT = "Not ready yet — press again.";
+/** Why main didn't take a press whose fresh reading said the button wasn't whole and uncovered (most often it was only just
+ *  drawn), or that came with no reading: the press didn't count, and pressing again will. The page shows PRESS_AGAIN_TEXT. */
+export const NOT_SHOWN_REASON = "the button wasn't fully showing yet: press it again";
+export const NOT_CHECKED_REASON = "the press wasn't checked just now: press it again";
+/** What the card says when a window of one of MOSS's programs lay over the button at the press (R12, the OS's own window list),
+ *  by what covers it, each a thing the person can do (main says which: `covered`). */
+export const WINDOW_OVER_TEXTS: Readonly<Record<"this" | "moss" | "code" | "host" | "ours", string>> = {
+  this: "Another MOSS Code window is over this button — answer or close it, then press again.",
+  moss: "MOSS's window is over this button — move it aside or minimise it, then press again.",
+  code: "MOSS Code's window is over this button — move it aside or minimise it, then press again.",
+  host: "A plugin's on-screen part is over this button — it steps aside while a card waits, so press again in a moment.",
+  ours: "Another MOSS window is over this button — move it aside or close it, then press again.",
+};
 /** The Review on a plugin's OK or update card (the owner's ruling, 2026-11-13). */
 export const REVIEW_BUTTON_TEXT = "Review";
 export const REVIEW_NOTE_TEXT = "Review sends this plugin's files to a model. It's advice: it doesn't answer this card.";
@@ -492,24 +634,24 @@ export const REVIEW_RUNNING_TEXT = "Reviewing… you can answer the card meanwhi
 export const REVIEW_FAILED_TEXT = "The review didn't finish.";
 export const REFUSED_TEXT = "Couldn't confirm — try again.";
 
-/** What a card says when Clover holds a different answer key for this desktop than the app has (one made by an
+/** What a card says when MOSS holds a different answer key for this desktop than the app has (one made by an
  *  earlier build or another app on this home): trying again can't help, so the card doesn't ask for it. */
-export const KEY_CHANGED_TEXT = "Couldn't confirm: this computer's answer key isn't the one Clover has for it, so answers from here can't be checked.";
+export const KEY_CHANGED_TEXT = "Couldn't confirm: this computer's answer key isn't the one MOSS has for it, so answers from here can't be checked.";
 
-/** What a card says when Clover couldn't take this desktop's answer key at all (its answers told nothing, again and
+/** What a card says when MOSS couldn't take this desktop's answer key at all (its answers told nothing, again and
  *  again): reconnecting starts a fresh registration, so the card says that may help. */
-export const KEY_FAULT_TEXT = "Couldn't confirm: Clover couldn't take this computer's key. Reconnecting may help: a reconnect registers it again.";
+export const KEY_FAULT_TEXT = "Couldn't confirm: MOSS couldn't take this computer's key. Reconnecting may help: a reconnect registers it again.";
 
 /** What a render window (`app.window.render`: a bot's AppScreenshot) gets where a card's sealed frame would be: the
  *  real page's layout with every word hidden and no script of its own, under a plain box that says "approval button"
  *  or "card field", so it takes the room the frame would and the picture shows where the card goes. It has no token,
- *  no answer bridge (the preload gives `cloverSealed` to `clover-sealed://card/` alone) and no visibility report: it
+ *  no answer bridge (the preload gives `mossSealed` to `moss-sealed://card/` alone) and no visibility report: it
  *  tells its frame its size (numbers only) and nothing else, so there is never a second live approval control. */
 export function placeholderPage(real: string, kind: "button" | "field"): string {
   const words = kind === "button" ? "approval button" : "card field";
   const size = kind === "button"
-    ? `const r = document.querySelector(".seal-button"); if (r === null) return; const q = r.getBoundingClientRect(); try { parent.postMessage({ cloverSealedSize: { width: Math.ceil(q.width), height: Math.ceil(q.height) } }, "*"); } catch (e) { /* no parent */ }`
-    : `try { parent.postMessage({ cloverSealedSize: { height: Math.ceil(document.body.getBoundingClientRect().height) } }, "*"); } catch (e) { /* no parent */ }`;
+    ? `const r = document.querySelector(".seal-button"); if (r === null) return; const q = r.getBoundingClientRect(); try { parent.postMessage({ mossSealedSize: { width: Math.ceil(q.width), height: Math.ceil(q.height) } }, "*"); } catch (e) { /* no parent */ }`
+    : `try { parent.postMessage({ mossSealedSize: { height: Math.ceil(document.body.getBoundingClientRect().height) } }, "*"); } catch (e) { /* no parent */ }`;
   const script = `(() => {
   const send = () => { ${size} };
   addEventListener("DOMContentLoaded", () => { new ResizeObserver(send).observe(document.body); send(); });
@@ -544,7 +686,7 @@ ${body}
 `;
 }
 
-/** The sealed pages' look: the card's own tokens first (a part's), then Clover's own base theme (light and dark) where
+/** The sealed pages' look: the card's own tokens first (a part's), then MOSS's own base theme (light and dark) where
  *  a token is not given, so a frame or the fallback card reads like the rest of the app. A diff's colours are the text
  *  colour mixed toward the mark's own, so they hold on the island's black as on a window's white. */
 const PAGE_CSS = `
@@ -559,10 +701,10 @@ const PAGE_CSS = `
 }
 html, body { margin: 0; background: transparent; }
 body {
-  font-family: var(--clover-card-font-family, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", "Noto Sans", Ubuntu, Cantarell, sans-serif);
-  font-size: var(--clover-card-font-size, 14px);
+  font-family: var(--moss-card-font-family, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", "Noto Sans", Ubuntu, Cantarell, sans-serif);
+  font-size: var(--moss-card-font-size, 14px);
   line-height: 1.38;
-  color: var(--clover-card-text, var(--seal-text));
+  color: var(--moss-card-text, var(--seal-text));
   padding: 0;
   overflow-wrap: anywhere;
 }
@@ -573,26 +715,26 @@ body {
 .ask .target { font-weight: 700 }
 .ask .by { font-weight: 700 }
 .always { margin: 0 0 8px; font-size: 0.92em; line-height: 1.35 }
-.ask .note, .always { color: var(--clover-card-muted, var(--seal-muted)); font-weight: 500 }
-.diff, .codeblock, .plainblock, .rowsblock { margin: 0; font-family: var(--seal-mono); font-size: 0.93em; line-height: 1.45; border-radius: 8px; padding: 6px 8px; background: color-mix(in srgb, var(--clover-card-text, var(--seal-text)) 8%, transparent); }
+.ask .note, .always { color: var(--moss-card-muted, var(--seal-muted)); font-weight: 500 }
+.diff, .codeblock, .plainblock, .rowsblock { margin: 0; font-family: var(--seal-mono); font-size: 0.93em; line-height: 1.45; border-radius: 8px; padding: 6px 8px; background: color-mix(in srgb, var(--moss-card-text, var(--seal-text)) 8%, transparent); }
 .plainblock { font-family: inherit }
 .line { display: flex; gap: 6px; white-space: pre-wrap; overflow-wrap: anywhere }
 .line .sign { flex: none; width: 1ch; opacity: 0.8 }
-.line.del { color: color-mix(in srgb, var(--clover-card-text, var(--seal-text)) 45%, #E5484D); background: color-mix(in srgb, #E5484D 14%, transparent) }
-.line.add { color: color-mix(in srgb, var(--clover-card-text, var(--seal-text)) 45%, #30A46C); background: color-mix(in srgb, #30A46C 14%, transparent) }
+.line.del { color: color-mix(in srgb, var(--moss-card-text, var(--seal-text)) 45%, #E5484D); background: color-mix(in srgb, #E5484D 14%, transparent) }
+.line.add { color: color-mix(in srgb, var(--moss-card-text, var(--seal-text)) 45%, #30A46C); background: color-mix(in srgb, #30A46C 14%, transparent) }
 .rowsblock { font-family: inherit }
 .row { display: flex; gap: 8px; }
-.row .k { flex: none; color: var(--clover-card-muted, var(--seal-muted)) }
+.row .k { flex: none; color: var(--moss-card-muted, var(--seal-muted)) }
 .row .v { min-width: 0; font-family: var(--seal-mono) }
-.label-line { margin: 0 0 4px; color: var(--clover-card-muted, var(--seal-muted)); font-size: 0.9em }
-.more { margin: 4px 0 0; color: var(--clover-card-muted, var(--seal-muted)); font-size: 0.9em }
+.label-line { margin: 0 0 4px; color: var(--moss-card-muted, var(--seal-muted)); font-size: 0.9em }
+.more { margin: 4px 0 0; color: var(--moss-card-muted, var(--seal-muted)); font-size: 0.9em }
 .more.shortened { font-style: italic }
 .seal-button {
   appearance: none;
-  border: 1px solid var(--clover-card-button-rim, transparent);
-  border-radius: var(--clover-card-button-radius, 10px);
-  background: var(--clover-card-approve-background, var(--seal-accent));
-  color: var(--clover-card-approve-text, var(--seal-accent-text));
+  border: 1px solid var(--moss-card-button-rim, transparent);
+  border-radius: var(--moss-card-button-radius, 10px);
+  background: var(--moss-card-approve-background, var(--seal-accent));
+  color: var(--moss-card-approve-text, var(--seal-accent-text));
   font: inherit;
   font-weight: 500;
   padding: 6px 14px;
@@ -606,14 +748,27 @@ body {
 body[data-answering="yes"] .seal-button.glyph { opacity: 0.6 }
 body[data-answered="no"] .seal-button.glyph { outline: 2px solid #E5484D; outline-offset: -2px }
 body:has(.seal-button.glyph) { overflow: hidden }
+/* A button page fits its frame whole and never shows a scroll bar (lane RT): with classic scroll bars (macOS "Show scroll bars:
+   Always", or a mouse with no scroll surface) a page that overflowed its frame got space-taking bars, the button showed half of
+   itself, and every press was refused. The part sizes the frame to the button (the page's size report), so the button takes its
+   own box (its unwrapped width, capped where the part caps a frame, 1200 px, then wrapping), and the status line takes only the
+   room left over (none in a frame of the button's size: the button's title says the same). */
+.seal-approve, .seal-deny { overflow: hidden; scrollbar-width: none }
+.seal-approve body, .seal-deny body { box-sizing: border-box; height: 100vh; overflow: hidden; display: flex; flex-direction: column; align-items: flex-start }
+.seal-approve .seal-button:not(.glyph), .seal-deny .seal-button:not(.glyph) { flex: none; box-sizing: border-box; width: max-content; max-width: 1200px; white-space: normal }
+.seal-approve .state, .seal-deny .state { flex: 1 1 0; min-height: 0; overflow: hidden; align-self: stretch }
+/* The own card (the fallback card, the window's strip) may run taller than its window (the window's cap); it scrolls under its
+   sticky buttons with no bar taking room, so its buttons never move or get cut by one. */
+.seal-own { scrollbar-width: none; overflow-x: hidden }
+.own .seal-button { box-sizing: border-box; max-width: 100%; white-space: normal }
 body:has(.seal-button.glyph) .state { display: none }
 .seal-button:disabled { opacity: 0.5; cursor: wait }
-.seal-button.quiet { background: color-mix(in srgb, var(--clover-card-text, var(--seal-text)) 14%, transparent); color: var(--clover-card-text, var(--seal-text)) }
-.seal-title body, .seal-computer body, .seal-expires body, .seal-source body { font-size: 0.87em; font-weight: 600; color: var(--clover-card-muted, var(--seal-muted)) }
-.seal-deny .seal-button { background: var(--clover-card-deny-background, var(--seal-control)); color: var(--clover-card-deny-text, var(--seal-text)) }
+.seal-button.quiet { background: color-mix(in srgb, var(--moss-card-text, var(--seal-text)) 14%, transparent); color: var(--moss-card-text, var(--seal-text)) }
+.seal-title body, .seal-computer body, .seal-expires body, .seal-source body { font-size: 0.87em; font-weight: 600; color: var(--moss-card-muted, var(--seal-muted)) }
+.seal-deny .seal-button { background: var(--moss-card-deny-background, var(--seal-control)); color: var(--moss-card-deny-text, var(--seal-text)) }
 .seal-button[data-again] { animation: seal-again 600ms ease-out 2 }
 @keyframes seal-again { 0% { box-shadow: 0 0 0 0 var(--seal-muted, #8888) } 100% { box-shadow: 0 0 0 6px transparent } }
-.state { margin: 0; font-size: 0.85em; color: var(--clover-card-muted, var(--seal-muted)); min-height: 1.2em }
+.state { margin: 0; font-size: 0.85em; color: var(--moss-card-muted, var(--seal-muted)); min-height: 1.2em }
 .hidden { visibility: hidden }
 /* The app's own card. */
 /* The card is the window: a frameless transparent window holds one rounded card with a hairline rim, as the island's card is, in the

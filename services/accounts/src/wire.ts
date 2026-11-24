@@ -13,6 +13,7 @@ export interface RegisterFields {
   os?: string;
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 /**
  * A registration's statement: lane H's `clover-account-v2 register`, the deterministic CBOR array (the core's
  * links/codec) of the account, every field of the device as sent (`os` null when absent) and `t`. Binding the
@@ -21,6 +22,7 @@ export interface RegisterFields {
 export const registerStatement = (account: string, d: RegisterFields, t: number): Uint8Array =>
   cborArray(["clover-account-v2 register", account, d.id, d.publicKey, d.boxKey, d.name, d.kind, d.os ?? null, t]);
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 export const mintStatement = (account: string, audience: string, device: string, t: number): Uint8Array =>
   utf8(["clover-account-v1 mint", account, audience, device, String(t)].join("\n"));
 

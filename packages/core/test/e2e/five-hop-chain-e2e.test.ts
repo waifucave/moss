@@ -6,13 +6,13 @@
 // suggested workaround was tried and does NOT work either): `session.create`/`session.setModel` can
 // NEVER route to `deepseek` or `zai` (GLM) on this daemon build, REGARDLESS of loopback wiring.
 // `providerSelectionFor` (`src/runtime-sdk/provider-selection.ts:69-98`) refuses any model whose
-// provider has no row in `CLOVER_CREDENTIAL_INVENTORY` (`src/runtime-sdk/keychain.ts:115-127`) — a
+// provider has no row in `MOSS_CREDENTIAL_INVENTORY` (`src/runtime-sdk/keychain.ts:115-127`) — a
 // FIXED array with exactly THREE rows (`openai`, `codex-oauth`, `anthropic`). review-lane-d2.md
 // suggested pushing a `deepseek`/`zai` row into that array at test runtime (it is a real, mutable JS
 // array despite its `readonly` TYPE) plus writing matching credential material — TRIED, SAFELY
 // (no real network reached): this DOES get `session.create`/`setModel` to route the record to
 // `winter-agent`/`deepseek` (the daemon's OWN bookkeeping succeeds), but the REAL spawned `dist/
-// clover` child still refuses outright: `"...no credential is configured for provider \"deepseek\"
+// moss` child still refuses outright: `"...no credential is configured for provider \"deepseek\"
 // — an OpenAI-compatible endpoint that is not a declared local installation needs one"` — a clean,
 // typed refusal, not a network attempt. Root cause: `session-driver.ts`'s `optionsFor` builds a
 // `connection`/local-declaration object for the child ONLY when `selection?.providerId === "openai"`
@@ -35,7 +35,7 @@
 //   2. The chain's LAST prompt (gpt -> claude) against a REAL session (part 2).
 //
 // WS-23: the official `claude` leg this file's Claude hops once ran on is retired — every hop,
-// Claude's included, runs on the Clover runtime, and the retired cross-runtime parity files that
+// Claude's included, runs on the MOSS runtime, and the retired cross-runtime parity files that
 // parts 1 and 2 used to lean on are gone with it.
 //
 // WS-23 (reasoning-state, decision 9 — SDK b5a79db): W18-19's prompt rule ("prompts appear exactly at
@@ -48,7 +48,7 @@
 // can reach: a conversation the chain's own GLM cannot hold.
 //
 // RESOLVED (WS-19, Lane P): the finding above is a HISTORICAL RECORD, accurate for when it was
-// written — it is no longer this daemon's current state. W19-1 derives `CLOVER_CREDENTIAL_INVENTORY`
+// written — it is no longer this daemon's current state. W19-1 derives `MOSS_CREDENTIAL_INVENTORY`
 // from the catalog (deepseek/zai/openrouter are now real, routable rows) and W19-6 gives
 // `session-driver.ts`'s `optionsFor` a connection seam for any provider with a
 // `settings.providers.<id>.baseUrl`, not just `openai`. Part 3 below now proves the FULL chain,
@@ -60,14 +60,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifySwitch, type ContinuityEndpoint } from "@waifucave/clover-provider-runtime";
 import { openaiChatFake, openaiResponsesFake, startFake, type FakeServer } from "@waifucave/clover-provider-conformance/fakes";
-import { LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, ConnWriter, type WritableSocket, type SessionEvent } from "@waifucave/clover-protocol";
+import { LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, ConnWriter, type WritableSocket, type SessionEvent } from "@waifucave/moss-protocol";
 import { FileSecretStore } from "../../src/auth/secret-store";
 import { CREDENTIAL_MATERIAL_NAMES, writeCredentialMaterial } from "../../src/auth/credential-material";
 import { startDaemon, type RunningDaemon } from "../../src/daemon";
 import { ANTHROPIC_CREDENTIAL_SECRET_NAME } from "../../src/runtime-sdk/keychain";
 import { daemonResolveEndpoint } from "../../src/providers/registry";
 import { describeWithEmbeddedRuntime } from "../helpers/embedded-runtime";
-import { carriesReasoning, opaqueLeaks, outOfOrder } from "../helpers/carriage";
+import { opaqueLeaks, outOfOrder, reasoningLeaks } from "../helpers/carriage";
 import type { anthropicFake as AnthropicFakeModule } from "@waifucave/clover-provider-conformance";
 
 type AnthropicTurnScript = Parameters<typeof AnthropicFakeModule.anthropicTurnResponse>[0];
@@ -198,7 +198,7 @@ class TestClient {
   close(): void { try { this.socket.end(); } catch { /* closed */ } }
 }
 
-// WS-23: Claude runs on the Clover runtime too now — the Anthropic fake is reached through
+// WS-23: Claude runs on the MOSS runtime too now — the Anthropic fake is reached through
 // `settings.providers.anthropic.baseUrl`, the same per-provider door every other hop uses.
 describeWithEmbeddedRuntime("A-5 part 2: the chain's LAST hop (gpt -> claude) is silent against a real session; a hop the target cannot hold prompts", () => {
   describe("gpt -> claude", () => {
@@ -304,7 +304,7 @@ describeWithEmbeddedRuntime("A-5 part 2: the chain's LAST hop (gpt -> claude) is
 // Part 3 — THE WHOLE CHAIN, BODY-LEVEL ON EVERY HOP (WS-19, Lane P).
 //
 // This file's header records, accurately for when it was written, why the two middle hops were
-// structurally unreachable: `CLOVER_CREDENTIAL_INVENTORY` was a four-row literal so
+// structurally unreachable: `MOSS_CREDENTIAL_INVENTORY` was a four-row literal so
 // `providerSelectionFor` could never name `deepseek` or `zai`, and `session-driver.ts`'s
 // `optionsFor` built a provider connection ONLY for `providerId === "openai"`, so even the
 // reviewer's own suggested workaround (injecting an inventory row at runtime) left the real child
@@ -322,16 +322,17 @@ describeWithEmbeddedRuntime("A-5 part 2: the chain's LAST hop (gpt -> claude) is
 //   (b) the prior model's REASONING is carried as data with its own provenance, where W18-19 says it
 //       should be: `kind="summary"` off a hidden-reasoning source (Claude, GPT), `kind="exposed"`
 //       off DeepSeek and GLM — including on ROW 4, the Claude destination (the official leg's
-//       until WS-23; the Clover runtime's Anthropic adapter since);
+//       until WS-23; the MOSS runtime's Anthropic adapter since);
 //   (c) NO OPAQUE STATE crosses — no `signature`, `encrypted_content` or `redacted_thinking` in the
 //       conversation, and the Claude turn's own scripted signature value appears in no body at all.
 //
-// The carriage TAG's form is per-adapter and is MEASURED, not assumed — see `test/helpers/carriage.ts`
-// for both renderings and why asserting only the angle-bracket one would have made every
-// chat-completions hop read as a defect.
+// SDK 0.0.83 (the owner's rule: "when reasoning cant be carried natively across models and providers we just remove it"):
+// an earlier model's reasoning is sent only where the destination takes it natively (the same model on the same provider),
+// so no hop's request holds another model's reasoning, tag or labelled prefix (`reasoningLeaks`, test/helpers/carriage.ts).
+// The visible text of every turn still carries, in order; Claude's own signed thinking comes back to Claude at hop 4.
 //
 // ── A W18-19 ROW-4 CONTINUITY FINDING, MEASURED 2026-09-15 (review N4) — CLOSED BY WS-23 ─────────
-// (On the Clover runtime the Claude destination replays hop 0's thinking natively, signature and all;
+// (On the MOSS runtime the Claude destination replays hop 0's thinking natively, signature and all;
 // the account below is the official leg's, kept as the record of what it did.)
 // Hop 4's Claude-destination body carries the WHOLE conversation from hop 0 in order — every user
 // turn and every assistant reply, including the Claude turn the chain started with — and it carries
@@ -456,10 +457,10 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       // D1 round 4 evicts it, so every hop below changes provider on its own. If that eviction
       // regressed, the destination fake would simply never be reached and these assertions fail.
 
-      // HOP 0 — claude (on the Clover runtime since WS-23).
+      // HOP 0 — claude (on the MOSS runtime since WS-23).
       const { sessionId } = await client.call<{ sessionId: string }>(METHODS.sessionCreate, { scope: "e2e", mode: "code", model: CATALOG_CLAUDE_MODEL, cwd });
       await client.call(METHODS.sessionAttach, { sessionId, fromSeq: 0 });
-      expect(daemon!.clover!.legOf(sessionId)).toBe("winter");
+      expect(daemon!.moss!.legOf(sessionId)).toBe("winter");
       await client.call(METHODS.sessionSend, { sessionId, text: "hop 0, on claude" });
       await client.waitFor(() => turns() >= 1, 120_000);
       expect(anthropicFakeServer!.requests.some((r) => r.path === "/v1/messages")).toBe(true);
@@ -468,17 +469,15 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       // SILENT (part 1's table) — Claude's signed thinking stays in the sidecar for Claude, and hop 4
       // proves it comes back. No `confirmLossy`: a prompt here throws and fails the test.
       await client.call(METHODS.sessionSetModel, { sessionId, model: CATALOG_DEEPSEEK_MODEL });
-      expect(daemon!.clover!.legOf(sessionId)).toBe("winter");
+      expect(daemon!.moss!.legOf(sessionId)).toBe("winter");
       await client.call(METHODS.sessionSend, { sessionId, text: "hop 1, on deepseek" });
       await client.waitFor(() => turns() >= 2, 120_000);
       expect(deepseek!.models).toContain("deepseek-v4-pro");
       const deepseekBody = deepseek!.bodies.at(-1)!;
       expect(outOfOrder(deepseekBody, ["hop 0, on claude", "hello from claude", "hop 1, on deepseek"])).toEqual([]);
-      // (b) the Claude turn's thinking, carried as data with its own provenance — the readable part of
-      // it, as the capped decoration WS-23 keeps (decision 2). DeepSeek is
-      // full-exposed, so this hop takes the THINKING-CHANNEL door, which renders no `kind`: the
-      // `kind` half of W18-19's table is proven on hop 3, whose destination takes the tag door.
-      expect(carriesReasoning(deepseekBody, { kind: "summary", provider: "anthropic", text: CLAUDE_THINKING })).toBe(true);
+      // (b) SDK 0.0.83, the owner's rule: Claude's reasoning cannot be carried natively to DeepSeek, so it is left out. The
+      // request holds none of it (no text, no tag, no labelled prefix); the visible text and the order above carry.
+      expect(reasoningLeaks(deepseekBody, [CLAUDE_THINKING])).toEqual([]);
       // (c) ...and the signature that made it opaque stays behind.
       expect(opaqueLeaks(deepseekBody, [CLAUDE_SIGNATURE])).toEqual([]);
 
@@ -489,11 +488,9 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       expect(glm!.models).toContain("glm-5");
       const glmBody = glm!.bodies.at(-1)!;
       expect(outOfOrder(glmBody, ["hop 0, on claude", "hello from claude", "hop 1, on deepseek", "hello from deepseek", "hop 2, on glm"])).toEqual([]);
-      // BOTH prior models' reasoning is still travelling — the chain accumulates, it does not
-      // replace, which is what "keeps one conversation" means five hops in. GLM is full-exposed too,
-      // so this is the thinking-channel door again and carries no `kind`.
-      expect(carriesReasoning(glmBody, { kind: "summary", provider: "anthropic", text: CLAUDE_THINKING })).toBe(true);
-      expect(carriesReasoning(glmBody, { kind: "exposed", provider: "deepseek", text: "reasoning on the deepseek hop" })).toBe(true);
+      // Neither earlier model's reasoning travels to GLM (0.0.83): it is not native to GLM, so it is left out. The
+      // conversation (the visible text of every hop, in order) is what "keeps one conversation" means now.
+      expect(reasoningLeaks(glmBody, [CLAUDE_THINKING, "reasoning on the deepseek hop"])).toEqual([]);
       expect(opaqueLeaks(glmBody, [CLAUDE_SIGNATURE])).toEqual([]);
 
       // HOP 3 — GLM -> gpt. Still SILENT: the exposed state carries as a tag on a hidden-reasoning
@@ -505,12 +502,9 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       expect(gptRequests.length).toBeGreaterThan(0);
       const gptBody = gptRequests.at(-1)!.body;
       expect(outOfOrder(gptBody, ["hop 0, on claude", "hello from claude", "hop 1, on deepseek", "hello from deepseek", "hop 2, on glm", "hello from glm", "hop 3, on gpt"])).toEqual([]);
-      // THE LITERAL W18-19 TAG: `openai` rides the `openai-responses` adapter, which renders the
-      // angle-bracket form — all THREE prior models, each with its own kind and provenance.
-      expect(gptBody).toContain(`<recovered_reasoning kind=\\"summary\\" provider=\\"anthropic\\"`);
-      expect(gptBody).toContain(`<recovered_reasoning kind=\\"exposed\\" provider=\\"deepseek\\"`);
-      expect(gptBody).toContain(`<recovered_reasoning kind=\\"exposed\\" provider=\\"zai\\"`);
-      expect(carriesReasoning(gptBody, { kind: "exposed", provider: "zai", text: "reasoning on the glm hop" })).toBe(true);
+      // 0.0.83: no `<recovered_reasoning>` tag any more, and none of the three earlier models' reasoning (Claude's,
+      // DeepSeek's, GLM's) reaches `openai`: none of it is native to it.
+      expect(reasoningLeaks(gptBody, [CLAUDE_THINKING, "reasoning on the deepseek hop", "reasoning on the glm hop"])).toEqual([]);
       expect(opaqueLeaks(gptBody, [CLAUDE_SIGNATURE])).toEqual([]);
 
       // HOP 4 — gpt -> claude. WS-23: SILENT, like every hop before it (part 2 measures the same
@@ -518,7 +512,7 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       // `readableState` is not full-exposed, so it takes the TAG door.
       const anthropicTurnsBefore = anthropicFakeServer!.requests.filter((r) => r.path === "/v1/messages").length;
       await client.call(METHODS.sessionSetModel, { sessionId, model: CATALOG_CLAUDE_MODEL });
-      expect(daemon!.clover!.legOf(sessionId)).toBe("winter");
+      expect(daemon!.moss!.legOf(sessionId)).toBe("winter");
       await client.call(METHODS.sessionSend, { sessionId, text: "hop 4, back on claude" });
       await client.waitFor(() => turns() >= 5, 120_000);
       const claudeRequests = anthropicFakeServer!.requests.filter((r) => r.path === "/v1/messages");
@@ -529,17 +523,14 @@ describeWithEmbeddedRuntime("A-5 part 3: claude -> deepseek -> GLM -> gpt -> cla
       expect(outOfOrder(claudeBody, ["hop 0, on claude", "hello from claude", "hop 1, on deepseek", "hello from deepseek", "hop 2, on glm", "hello from glm", "hop 3, on gpt", "hop 4, back on claude"])).toEqual([]);
       // ...AND hop 0's own THINKING, replayed NATIVELY — a `thinking` block carrying its signature,
       // same-domain replay. MEASURED 2026-09-25 (WS-23): the row-4 gap this block's header records
-      // was the retired official leg's; the Clover runtime's Anthropic adapter closes it. Pinned as
+      // was the retired official leg's; the MOSS runtime's Anthropic adapter closes it. Pinned as
       // carried, so a regression has to come here and say so.
       expect(claudeBody).toContain(`{"type":"thinking","thinking":"${CLAUDE_THINKING}","signature":"${CLAUDE_SIGNATURE}"}`);
-      // THE TAG DOOR, all three prior families: GPT is hidden-reasoning, so its readable SUMMARY is
-      // what carries (`kind="summary"`); DeepSeek and GLM are full-exposed sources, so theirs carry
-      // as `kind="exposed"`.
-      expect(carriesReasoning(claudeBody, { kind: "summary", provider: "openai", text: GPT_SUMMARY })).toBe(true);
-      expect(carriesReasoning(claudeBody, { kind: "exposed", provider: "deepseek", text: "reasoning on the deepseek hop" })).toBe(true);
-      expect(carriesReasoning(claudeBody, { kind: "exposed", provider: "zai", text: "reasoning on the glm hop" })).toBe(true);
+      // 0.0.83: the three FOREIGN families' reasoning (GPT's readable summary, DeepSeek's, GLM's) is not native to Claude
+      // and is left out: no text, no tag, no labelled prefix. Only Claude's own, above, comes back.
+      expect(reasoningLeaks(claudeBody, [GPT_SUMMARY, "reasoning on the deepseek hop", "reasoning on the glm hop"])).toEqual([]);
       // ...and GPT's OPAQUE half stays behind. `encrypted_content` is what the Responses leg calls
-      // it and `itemJson` is what Clover's own `reasoning_item` calls it; neither the field names nor
+      // it and `itemJson` is what MOSS's own `reasoning_item` calls it; neither the field names nor
       // the blob itself may cross a family boundary.
       expect(claudeBody).not.toContain(GPT_ENCRYPTED);
       expect(claudeBody).not.toContain("itemJson");

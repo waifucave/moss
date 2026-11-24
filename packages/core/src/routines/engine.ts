@@ -22,9 +22,9 @@
 //   (last fires, last runs) in `<home>/transcripts/routines/state.json`; the OKs with the core's settings, in the fenced
 //   set (`<home>/settings/routine-oks.json`), so a bot can't approve its own raise.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, watch, writeFileSync, writeSync, type FSWatcher } from "node:fs";
+import { appendFileSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, watch, writeFileSync, writeSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { isAnyPluginId, levelAbove, pluginIdFromSegment, type Level, type RoutineRunView, type RoutineView } from "@waifucave/clover-protocol";
+import { isAnyPluginId, levelAbove, pluginIdFromSegment, type Level, type RoutineRunView, type RoutineView } from "@waifucave/moss-protocol";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -34,9 +34,9 @@ import { botSegment, transcriptsDir } from "../sessions/ids";
 import type { SideThreadRun } from "../bots/service";
 import { settingsDir } from "../bots/gate";
 import { readOwnFile } from "../bots/own-file";
-import { parseRoutine, routineHash, triggerSummary, withId, withPaused, ROUTINE_FILE_MAX_BYTES, type RoutineFile, type RoutineTrigger } from "./file";
+import { parseRoutine, patchRoutine, routineFileName, routineHash, triggerSummary, withId, withPaused, ROUTINE_FILE_MAX_BYTES, type RoutineFile, type RoutinePatch, type RoutineTrigger } from "./file";
 import { firesBetween, nextRunInZone } from "./zone";
-import { isLate, untrusted, WEBHOOK_LATE_MS } from "../../../../plugins/clover/plugins/trigger-webhook/src/webhook";
+import { isLate, untrusted, WEBHOOK_LATE_MS } from "../../../../plugins/moss/plugins/trigger-webhook/src/webhook";
 
 export { untrusted, WEBHOOK_LATE_MS };
 
@@ -73,6 +73,65 @@ function replaceFile(path: string, text: string): void {
   }
 }
 
+/** A routine's edit under a new name, with no moment in which two files hold its id: the new text replaces the file
+ *  under its old name (atomically, `replaceFile`), then that one file is renamed to the new name, refused if a file is
+ *  there. Stopped between the two (a crash: `between` throws in the test), the one file has the new text under the old
+ *  name, and the next edit or scan carries on from it. */
+export function moveRoutineFile(from: string, to: string, text: string, between: () => void = () => {}): void {
+  if (existsSync(to)) throw new ContractError("conflict", `${basename(to)} is another file in the bot's routines; choose another name`);
+  replaceFile(from, text);
+  between();
+  // A hard link refuses a name that is taken (EEXIST: never over a file that appeared there meanwhile), then the old name
+  // goes. Stopped between the two, both names are the same file: the next scan keeps the new name (dropLeftoverLink).
+  try {
+    linkSync(from, to);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new ContractError("conflict", `${basename(to)} appeared meanwhile; the routine keeps its old file name`);
+    throw err;
+  }
+  unlinkSync(from);
+}
+
+/** A rename stopped between its link and its unlink (moveRoutineFile) leaves one file under two names in one bot's folder,
+ *  which a routine read refuses (a file with two links is never read as a bot's own). Before the folder is read: two
+ *  `.md` names in it that are one file, no other link to it, whose routine's name gives one of the two names: the other
+ *  name goes. Returns the names dropped. */
+export function dropLeftoverLinks(folder: string): string[] {
+  const byFile = new Map<string, string[]>();
+  for (const name of readdirSync(folder).filter((n) => n.endsWith(".md"))) {
+    try {
+      const st = lstatSync(join(folder, name));
+      if (!st.isFile() || st.nlink !== 2) continue;
+      const key = `${st.dev}:${st.ino}`;
+      byFile.set(key, [...(byFile.get(key) ?? []), name]);
+    } catch { /* gone meanwhile */ }
+  }
+  const dropped: string[] = [];
+  for (const names of byFile.values()) {
+    if (names.length !== 2) continue;
+    const text = readFileSync(join(folder, names[0]!), "utf8").slice(0, ROUTINE_FILE_MAX_BYTES);
+    const parsed = parseRoutine(text, basename(names[0]!, ".md"));
+    if (!parsed.ok) continue;
+    const wanted = `${routineFileName(parsed.routine.name)}.md`;
+    const drop = names[0] === wanted ? names[1] : names[1] === wanted ? names[0] : undefined;
+    if (drop === undefined) continue;
+    unlinkSync(join(folder, drop));
+    dropped.push(drop);
+  }
+  return dropped;
+}
+
+/** Whether two names are one file (a case-only rename on a case-insensitive disk). */
+function sameFile(a: string, b: string): boolean {
+  try {
+    const x = lstatSync(a);
+    const y = lstatSync(b);
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
+}
+
 export function routinesDir(home: string): string {
   return join(home, "routines");
 }
@@ -89,7 +148,7 @@ export interface RoutineEngineOptions {
   bots: {
     has(id: string): boolean;
     runSideThread(id: string, run: SideThreadRun): Promise<RoutineRunView>;
-    /** A note of Clover's in the bot's conversation, which starts no turn (a routine it paused). */
+    /** A note of MOSS's in the bot's conversation, which starts no turn (a routine it paused). */
     note?(id: string, label: string, text: string): Promise<void>;
     onEvent?(fn: (event: { type: string }) => void): Unsubscribe;
   };
@@ -142,7 +201,7 @@ interface EngineState {
   deliveries?: Record<string, number>;
   /** The routines whose webhook key the user has been shown (`routine.webhookKey` shows it once). */
   keysShown?: Record<string, number>;
-  /** Why Clover paused a routine (a plugin's trigger over `PLUGIN_FIRES_PER_HOUR`), by id, while its file says paused. */
+  /** Why MOSS paused a routine (a plugin's trigger over `PLUGIN_FIRES_PER_HOUR`), by id, while its file says paused. */
   pausedWhy?: Record<string, string>;
 }
 
@@ -258,6 +317,51 @@ export class RoutineEngine {
         if (run.outcome === "skipped") reject(new ContractError("refused", run.summary ?? "the run was skipped"));
       }, reject);
     });
+  }
+
+  /** A routine of the bot with its instructions as its file has them now (`routine.get`, the person's edit view). */
+  read(id: string, bot: string): { routine: RoutineView; instructions: string } {
+    const l = this.#loaded.get(id);
+    if (!l || l.bot !== bot) throw new ContractError("not_found", `no routine ${id} of this bot on this computer`);
+    const read = readOwnFile(this.#o.home, l.path, { maxBytes: ROUTINE_FILE_MAX_BYTES, whole: true });
+    if (!read.ok) throw new ContractError("refused", `${basename(l.path)} can't be read (${read.why})`);
+    const parsed = parseRoutine(read.data.toString("utf8"), basename(l.path, ".md"));
+    if (!parsed.ok) throw new ContractError("invalid", `${basename(l.path)} doesn't read: ${parsed.reason}`);
+    if (parsed.routine.id !== id) throw new ContractError("conflict", `${basename(l.path)} now holds another routine (${parsed.routine.id}); list the routines again`);
+    return { routine: this.#view(l), instructions: parsed.routine.body };
+  }
+
+  /** The user's edit (`routine.edit`, §7): that routine's own file, read again from disk (the file is the truth: a hand
+   *  edit since the last scan is what is patched, and the last write wins), rewritten as the `Routine` tool writes it,
+   *  then loaded again. A new name renames the file inside the bot's own folder, never over another file; a name
+   *  another routine of the bot has is refused. A routine of another bot is not found through this bot. */
+  async edit(id: string, bot: string, patch: RoutinePatch): Promise<RoutineView> {
+    const l = this.#loaded.get(id);
+    if (!l || l.bot !== bot) throw new ContractError("not_found", `no routine ${id} of this bot on this computer`);
+    if (l.state === "duplicate") throw new ContractError("refused", `the routine ${id} has a copy with the same id here; choose one first`);
+    const read = readOwnFile(this.#o.home, l.path, { maxBytes: ROUTINE_FILE_MAX_BYTES, whole: true });
+    if (!read.ok) throw new ContractError("refused", read.why === "too-large" ? `${basename(l.path)} is too large to edit` : `${basename(l.path)} can't be edited (${read.why})`);
+    const fileName = basename(l.path, ".md");
+    const out = patchRoutine(read.data.toString("utf8"), fileName, patch);
+    if (!out.ok) throw new ContractError("invalid", out.reason);
+    if (out.routine.id !== id) throw new ContractError("conflict", `${basename(l.path)} now holds another routine (${out.routine.id}); list the routines again`);
+    const folder = dirname(l.path);
+    let path = l.path;
+    if (patch.name !== undefined) {
+      const wanted = out.routine.name.toLocaleLowerCase();
+      const taken = [...this.#loaded.values()].find((o) => o.bot === bot && o.routine.id !== id && o.routine.name.toLocaleLowerCase() === wanted);
+      if (taken) throw new ContractError("conflict", `the bot has a routine named ${taken.routine.name} already`);
+      const next = join(folder, `${routineFileName(out.routine.name)}.md`);
+      if (dirname(next) !== folder) throw new ContractError("invalid", "a routine's file stays in its bot's folder");
+      if (next !== l.path && existsSync(next) && !sameFile(next, l.path)) throw new ContractError("conflict", `${basename(next)} is another file in the bot's routines; choose another name`);
+      path = next;
+    }
+    if (path === l.path || sameFile(path, l.path)) replaceFile(l.path, out.text);
+    else moveRoutineFile(l.path, path, out.text);
+    await this.rescan();
+    const view = this.get(id);
+    if (!view) throw new ContractError("not_found", `the routine ${id} didn't load again after the edit`);
+    return view;
   }
 
   /** The routine's webhook URL and key, minting the key the first time, or a new one with `rotate` (the old one stops
@@ -383,7 +487,7 @@ export class RoutineEngine {
     if (o.detach !== true) await run;
   }
 
-  /** Clover pauses a routine (a plugin's trigger over its hourly cap): `paused: true` in its file, as a user would write
+  /** MOSS pauses a routine (a plugin's trigger over its hourly cap): `paused: true` in its file, as a user would write
    *  it, so the user's ordinary resume (taking it out) resumes it; the why shows in the list until then; one note in the
    *  bot's conversation. */
   #pauseForFires(l: Loaded, why: string): void {
@@ -428,7 +532,7 @@ export class RoutineEngine {
       if (before && before.hash === f.hash && before.path === f.path && before.state === this.#stateOf(f) && before.level === this.#levelOf(f)) continue;
       if (before) this.#disarm(before);
       const l: Loaded = { ...f, state: this.#stateOf(f), level: this.#levelOf(f), timers: [] };
-      // The user resumed a routine Clover paused (took `paused` out of its file): the why goes, and the hour's count.
+      // The user resumed a routine MOSS paused (took `paused` out of its file): the why goes, and the hour's count.
       if (!f.routine.paused && this.#state.pausedWhy?.[f.routine.id] !== undefined) {
         delete this.#state.pausedWhy[f.routine.id];
         this.#pluginFires.delete(f.routine.id);
@@ -479,11 +583,12 @@ export class RoutineEngine {
       if (!folder.isDirectory()) continue;
       const bot = pluginIdFromSegment(folder.name);
       if (!isAnyPluginId(bot) || botSegment(bot) !== folder.name) continue;
+      for (const drop of dropLeftoverLinks(join(root, folder.name))) this.#warn(`${folder.name}/${drop} was a second name of a routine file (a rename cut short); it is dropped`);
       for (const file of readdirSync(join(root, folder.name)).filter((n) => n.endsWith(".md")).sort()) {
         const path = join(root, folder.name, file);
         try {
           // Never through a link the bot left (toward another bot's routine or data, the fence review): the folder and
-          // the file are read as the bot's own, from the Clover home down.
+          // the file are read as the bot's own, from the MOSS home down.
           const read = readOwnFile(this.#o.home, path, { maxBytes: ROUTINE_FILE_MAX_BYTES, whole: true });
           if (!read.ok) {
             if (read.why === "too-large") this.#warn(`${path} is larger than ${ROUTINE_FILE_MAX_BYTES} bytes; it isn't loaded`);
@@ -741,7 +846,7 @@ export class RoutineEngine {
     const last = this.#state.lastRunAt[l.routine.id];
     return {
       id: l.routine.id, name: l.routine.name.slice(0, 200), bot: l.bot, computer: this.#o.computer,
-      file: `home/${this.#o.computer}/.clover/routines/${botSegment(l.bot)}/${basename(l.path)}`,
+      file: `home/${this.#o.computer}/.moss/routines/${botSegment(l.bot)}/${basename(l.path)}`,
       triggers: l.routine.triggers.map((t) => (t.type === "webhook" && !this.webhooksAvailable() ? { type: "webhook", summary: WEBHOOK_NOT_AVAILABLE_NOTE } : triggerSummary(t))),
       level: l.level, state: l.state,
       ...(l.state === "paused" && this.#state.pausedWhy?.[l.routine.id] !== undefined ? { pausedWhy: this.#state.pausedWhy[l.routine.id]!.slice(0, 300) } : {}),

@@ -1,0 +1,265 @@
+/* The gallery page around the stories (not the canvas's own look: that is client/styles.css over the theme tokens). */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--moss-color-canvas);
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+}
+
+.g-bare {
+  display: flex;
+  height: 100vh;
+}
+
+.g-page {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100vh;
+}
+
+.g-nav {
+  padding: 18px 14px;
+  overflow: auto;
+  border-right: 1px solid var(--moss-color-hairline);
+  background: var(--moss-color-surface);
+  font-size: 13px;
+}
+
+.g-nav__title {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.g-nav__intro {
+  margin: 0 0 12px;
+  color: var(--moss-color-text-muted);
+  line-height: 1.4;
+}
+
+.g-nav ul {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.g-nav a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.g-nav a[aria-current] {
+  background: var(--moss-color-selected);
+}
+
+.g-theme {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 8px;
+}
+
+.g-theme button {
+  padding: 4px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.g-theme button[aria-pressed="true"] {
+  background: var(--moss-color-text);
+  color: var(--moss-color-surface);
+}
+
+.g-story {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.g-story__head {
+  padding: 12px 18px 8px;
+}
+
+.g-story__head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.g-story__head p {
+  margin: 4px 0 0;
+  color: var(--moss-color-text-muted);
+  font-size: 13px;
+}
+
+.g-frame {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 18px 18px;
+  overflow: hidden;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 10px;
+}
+
+.g-live {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.g-live__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--moss-color-hairline);
+  background: var(--moss-color-surface);
+  color: var(--moss-color-text-muted);
+  font-size: 12px;
+}
+
+.g-live__bar button {
+  padding: 3px 10px;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 7px;
+  background: var(--moss-color-surface);
+  color: var(--moss-color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.g-live__canvas {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.g-tab {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--moss-color-surface);
+}
+
+.g-tab__title {
+  font-weight: 600;
+}
+
+/* `#freeze=1` (the pictures only): headless captures don't advance CSS animations, so each is pinned part-way: the light
+   a third of the way round, the dashes moved on. */
+[data-freeze] .cv-ring::before {
+  animation-delay: -0.9s;
+  animation-play-state: paused;
+}
+
+[data-freeze] .cv-march__rect {
+  animation-delay: -0.6s;
+  animation-play-state: paused;
+}
+
+/* `#t=<seconds>` (the frame strips): every animation pinned at that moment since the scene began. Until the pin is set
+   every light holds where it began (a capture's timeline moves even though its pictures don't). */
+[data-trip-pending] .cv-ring::before {
+  animation-play-state: paused;
+}
+
+[data-trip-at] .cv-ring::before {
+  animation-delay: calc(0s - var(--trip-t));
+  animation-play-state: paused;
+}
+
+[data-trip-at] .cv-ring[data-handover]::before {
+  animation-delay: calc(var(--ring-delay) - var(--trip-t)), calc(var(--ring-delay) - var(--trip-t));
+}
+
+[data-trip-at] .cv-mlight,
+[data-trip-at] .cv-dotflash,
+[data-trip-at] .cv-react__from,
+[data-trip-at] .cv-react__to {
+  animation-delay: calc(var(--delay) - var(--trip-t));
+  animation-play-state: paused;
+}
+
+[data-trip-at] .cv-msg__timer {
+  animation-play-state: paused;
+}
+
+.g-cases {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.g-case {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--moss-color-hairline-raised);
+  border-radius: 10px;
+}
+
+.g-case__head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--moss-color-hairline);
+  font-size: 12px;
+}
+
+.g-case__head span {
+  color: var(--moss-color-text-muted);
+}
+
+.g-case__canvas {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cv-face-real {
+  display: block;
+}
+
+/* A stand-in for the window around the canvas: the shell's frosted bar over its top (its tint and blur, as the base
+   theme has them), the canvas running up under it. */
+.g-window {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.g-window__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  height: 45px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--moss-color-hairline-raised);
+  background: color-mix(in srgb, var(--moss-color-surface) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.6);
+}

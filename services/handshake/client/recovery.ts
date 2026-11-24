@@ -6,6 +6,7 @@ import { fromB64u } from "../../shared/encoding";
 import { type Signer, signerFromSeed } from "./signer";
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 const INFO = "clover handshake v1 recovery";
 
 /** A new code's 16 bytes. */

@@ -13,8 +13,8 @@
 // self-expires with a mint's own band (a reader takes their time), and the core's own `card.answer` decides the
 // card's fate, not a local guess (S5, S6).
 import { randomBytes } from "node:crypto";
-import { cardAnswerSigningInput } from "@waifucave/clover-protocol";
-import type { TokenValue } from "@waifucave/clover-plugin-sdk";
+import { cardAnswerSigningInput, programCardAnswerSigningInput } from "@waifucave/moss-protocol";
+import type { TokenValue } from "@waifucave/moss-plugin-sdk";
 
 /** What the app hears of a card: the whole sealed one (`card_requested`, or `card.get`'s re-read for a resolved one a
  *  plugin still shows). The store keeps `hash` and the fields verbatim from the core; nothing else ships anywhere. */
@@ -27,6 +27,9 @@ export interface SealedCard {
   session?: string;
   bot?: string;
   pluginId?: string;
+  /** The plugins whose own card this is, as the core wrote it (a call to that plugin's tool, its moved bot's): a part with
+   *  plain `approvals` places these alone. */
+  ownedBy?: readonly string[];
   origin: string;
   issuedAt: number;
   expiresAt: number | null;
@@ -97,6 +100,10 @@ const SERVE_TTL_MS = 60_000;
  *  (a reader takes their time, S5: the serve's ttl is the scheme's alone). */
 const ANSWER_TTL_MS = 60 * 60_000;
 
+/** How long after a press's fresh visibility report the answer that rides on it may still be taken (the page sends the report, then
+ *  the answer at once; this is only the slack for a starved main process). */
+export const FRESH_MAX_AGE_MS = 1_500;
+
 /** The app's own fallback card's channel element: the page answers with the user's pick, checked like any button's. */
 export const OWN_ELEMENT = "own";
 
@@ -117,6 +124,7 @@ export class SealedFrames {
   /** The frame tokens whose page has reported itself visible (IOv2), for the fallback rule (§5.5: only show the
    *  fallback when no plugin has both buttons visible within 2 s). */
   private readonly visible = new Set<string>();
+  private readonly fresh = new Map<string, { seen: boolean; at: number; late?: true }>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -126,7 +134,7 @@ export class SealedFrames {
     if (c === null || typeof c !== "object" || typeof c.id !== "string" || typeof c.hash !== "string" || !Array.isArray(c.options)) return;
     this.cards.set(c.id, {
       id: c.id, kind: String(c.kind ?? "tool"), ...(typeof c.change === "string" ? { change: c.change } : {}), computer: c.computer ?? null, session: c.session, bot: c.bot,
-      pluginId: c.pluginId, origin: String(c.origin ?? "user"), issuedAt: Number(c.issuedAt ?? this.now()),
+      pluginId: c.pluginId, ...(Array.isArray(c.ownedBy) ? { ownedBy: c.ownedBy.filter((x): x is string => typeof x === "string") } : {}), origin: String(c.origin ?? "user"), issuedAt: Number(c.issuedAt ?? this.now()),
       expiresAt: c.expiresAt == null ? null : Number(c.expiresAt), hash: c.hash, fields: c.fields ?? {}, options: c.options,
     });
   }
@@ -143,6 +151,31 @@ export class SealedFrames {
     return false;
   }
 
+  /** lane HS (the reviewer's S): after a reconnect's list, the cards this store knew before the connection that the engine no
+   *  longer holds (answered, expired or withdrawn while the connection was down: their `card_resolved` reached no one) are
+   *  dropped as withdrawn. A card first heard during the connect is never in `before`, so a card raised then stays. */
+  dropUnlisted(before: readonly string[], listed: readonly string[]): string[] {
+    const keep = new Set(listed);
+    const gone = before.filter((id) => !keep.has(id) && this.isPending(id));
+    for (const id of gone) this.resolvedOutcome(id, "withdrawn");
+    return gone;
+  }
+
+  /** The earliest expiry still ahead among the pending cards (the stand-down is decided again then). */
+  nextExpiry(): number | undefined {
+    let next: number | undefined;
+    for (const [id, c] of this.cards) if (this.isPending(id) && c.expiresAt !== null && (next === undefined || c.expiresAt < next)) next = c.expiresAt;
+    return next;
+  }
+
+  /** lane HS (R12): the still-pending cards a window holds sealed frames of. A frame alone proves nothing about who draws the
+   *  card (a plugin mints frames of its own bot's cards anywhere): `drawerExempt` (host-stacking.ts) decides with the placement. */
+  pendingHeldIn(windowId: number): string[] {
+    const out = new Set<string>();
+    for (const ch of this.channels.values()) if (ch.windowId === windowId && this.isPending(ch.cardId)) out.add(ch.cardId);
+    return [...out];
+  }
+
   /** Every card that still waits, oldest first (known, not answered or resolved, not past its expiry). */
   pendingIds(): string[] {
     return [...this.cards.keys()].filter((id) => this.isPending(id));
@@ -152,6 +185,11 @@ export class SealedFrames {
   isPending(id: string): boolean {
     const c = this.cards.get(id);
     return c !== undefined && !this.resolved.has(id) && !this.answered.has(id) && (c.expiresAt === null || c.expiresAt > this.now());
+  }
+
+  /** Whether an answer to this card is on its way to the core (`buildAnswer` went out, `confirmedAnswer` has not come back). */
+  isAnswering(id: string): boolean {
+    return this.pending.has(id);
   }
 
   /** One card, pending or resolved. */
@@ -229,6 +267,22 @@ export class SealedFrames {
     else this.visible.delete(token);
   }
 
+  /** The report a press asked for (a new observer the page made at the press): whether the button showed whole and uncovered
+   *  right then. One per press: `takeFresh` spends it, and one older than FRESH_MAX_AGE_MS counts for nothing. */
+  noteFresh(token: string, seen: boolean, late = false): void {
+    if (this.fresh.size > 256) this.fresh.delete(this.fresh.keys().next().value!);
+    this.fresh.set(token, { seen, at: this.now(), ...(late && !seen ? { late: true } : {}) });
+  }
+
+  /** Spends the press's fresh report: "ok" if it said the button showed uncovered, "covered" if it said otherwise (or the
+   *  page's limit ran out), "none" if no report came with the press or it is stale. */
+  takeFresh(token: string): "ok" | "covered" | "late" | "none" {
+    const f = this.fresh.get(token);
+    this.fresh.delete(token);
+    if (f === undefined || this.now() - f.at > FRESH_MAX_AGE_MS) return "none";
+    return f.seen ? "ok" : f.late === true ? "late" : "covered";
+  }
+
   /** Whether a frame's page has reported itself visible (its IOv2 verdict): what the smoke run waits for before it
    *  presses, since the page refuses presses it hasn't seen yet. */
   isTokenVisible(token: string): boolean {
@@ -285,7 +339,8 @@ export class SealedFrames {
    *  the answer on the store's own books until the core's own answer (`confirmedAnswer`) reads it: a lost `card.answer`
    *  call doesn't kill the card (S6's fix — the mark goes on accepted answers only). `frameKey` is the sender's own
    *  key, checked against the mint's binding (B4: the token's own sender, always). */
-  buildAnswer(token: string, option: string | undefined, children: readonly string[] | undefined, frameKey: string, signer: AnswerSigner, device: string, at = this.now()): { proof: { via: "device"; device: string; at: number; signature: string }; card: SealedCard; kids?: readonly string[] } | { error: string } {
+  // lane HS: `program`, for a program with its own key (the background host): its proof names it and signs card-answer/3.
+  buildAnswer(token: string, option: string | undefined, children: readonly string[] | undefined, frameKey: string, signer: AnswerSigner, device: string, at = this.now(), program?: "host" | "moss"): { proof: { via: "device"; device: string; at: number; signature: string; program?: "host" | "moss" }; card: SealedCard; kids?: readonly string[] } | { error: string } {
     const ch = this.channels.get(token);
     const card = ch !== undefined ? this.cards.get(ch.cardId) : undefined;
     if (ch === undefined || card === undefined || this.now() - ch.at > ANSWER_TTL_MS || ch.bound !== frameKey) return { error: "no such sealed button" };
@@ -301,9 +356,14 @@ export class SealedFrames {
     this.channels.delete(token);
     this.spent.set(card.id, [token, ch]);
     const kids = children === undefined ? undefined : [...children];
-    const sig = signer.sign(new TextEncoder().encode(cardAnswerSigningInput({ id: card.id, hash: card.hash, option: pick, at, children: kids })));
+    // lane HS: start
+    const input = program === undefined
+      ? cardAnswerSigningInput({ id: card.id, hash: card.hash, option: pick, at, children: kids })
+      : programCardAnswerSigningInput({ program, id: card.id, hash: card.hash, option: pick, at, children: kids });
+    const sig = signer.sign(new TextEncoder().encode(input));
     this.pending.set(card.id, pick);
-    return { proof: { via: "device", device, at, signature: Buffer.from(sig).toString("base64") }, card, ...(kids !== undefined ? { kids } : {}) };
+    return { proof: { via: "device", device, at, signature: Buffer.from(sig).toString("base64"), ...(program !== undefined ? { program } : {}) }, card, ...(kids !== undefined ? { kids } : {}) };
+    // lane HS: end
   }
 
   /** The core's own answer marked the card's fate: its frames' business ends either way, and the store's own pending

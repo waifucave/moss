@@ -1,15 +1,16 @@
-// Clover's packages (plan §4 M1): the installers' hooks against packaging/installer-hooks.ts, electron-builder.yml's
+// MOSS's packages (plan §4 M1): the installers' hooks against packaging/installer-hooks.ts, electron-builder.yml's
 // Linux packages and Windows installer against packaging/, winget's manifests, the Homebrew cask, and
 // build-packages.ts's pure parts. The packages themselves are built and opened by CI's packages job.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUTOSTART_SUBCOMMAND, INSTALLER_HOOKS, LAUNCHD_LABEL, autostartArgs } from "../packaging/installer-hooks";
 import { linkBinaryName } from "../packages/core/src/links/sidecar-binary";
-import { AFTER_INSTALL_MARK, checkPackage, electronBuilderArgs, LINK_BUILD, LINK_OUTPUT, packageArchNames, parseBuildPackagesArgs, parseListing, REQUIRED_FILES } from "./build-packages";
+import { AFTER_INSTALL_MARK, checkPackage, electronBuilderArgs, executablesOf, LINK_BUILD, LINK_OUTPUT, packageArchNames, parseBuildPackagesArgs, parseListing, REQUIRED_FILES, requiredFiles } from "./build-packages";
 import { caskFrom } from "./release-lib";
+import { windowsInstallFolder } from "./release/install-check";
 import { BUNDLED_PLUGIN_IDS, BUNDLED_PLUGINS_DIR, STAGED_PLUGINS } from "./release/bundled-plugins";
 import { renderWinget, wingetInstallerUrl } from "./winget";
 
@@ -24,7 +25,7 @@ function codeLines(text: string, comment: string): string[] {
 }
 
 /** electron-builder's Linux script macros, as FpmTarget fills them. */
-const MACROS: Record<string, string> = { executable: "clover", sanitizedProductName: "Clover", productFilename: "Clover" };
+const MACROS: Record<string, string> = { executable: "moss-code", sanitizedProductName: "moss-code", productFilename: "moss-code" };
 function renderLinux(rel: string): string {
   return read(rel).replace(/\$\{([a-zA-Z]+)\}/g, (_, name: string) => {
     if (!(name in MACROS)) throw new Error(`${rel}: electron-builder knows no macro ${name}`);
@@ -48,20 +49,20 @@ describe("the installers' hooks", () => {
   });
 
   test("the Homebrew cask's uninstall removes it through the daemon, as the user, and goes on without the app", () => {
-    const code = codeLines(read("packaging/clover.rb.tmpl"), "#").join("\n");
+    const code = codeLines(read("packaging/moss-code.rb.tmpl"), "#").join("\n");
     // Through /bin/sh, so a binary already gone (the app in the Trash) exits 0: Homebrew refuses a missing executable.
     expect(code).toContain('executable:   "/bin/sh"');
-    expect(code).toContain(`args:         ["-c", '[ -x "$1" ] || exit 0; exec "$1" ${autostartArgs("remove").join(" ")}', "sh", "#{appdir}/Clover.app/Contents/Resources/daemon/clover-core"]`);
+    expect(code).toContain(`args:         ["-c", '[ -x "$1" ] || exit 0; exec "$1" ${autostartArgs("remove").join(" ")}', "sh", "#{appdir}/MOSS Code.app/Contents/Resources/daemon/moss-core"]`);
     expect(code).toContain("sudo:         false");
     // Homebrew fails an uninstall whose script fails unless told otherwise; the app may already be gone.
     expect(code).toContain("must_succeed: false");
-    // The fallback for a deleted app, Clover's own label only.
+    // The fallback for a deleted app, MOSS's own label only.
     expect(code).toContain(`uninstall launchctl: "${LAUNCHD_LABEL}"`);
     // The guard itself: a missing binary exits 0 without running anything; a present one gets `autostart remove`.
     if (process.platform !== "win32") {
       const guard = '[ -x "$1" ] || exit 0; exec "$1" autostart remove';
-      const dir = mkdtempSync(join(tmpdir(), "clover-cask-guard-"));
-      const fake = join(dir, "clover-core");
+      const dir = mkdtempSync(join(tmpdir(), "moss-cask-guard-"));
+      const fake = join(dir, "moss-core");
       expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake], { encoding: "utf8" }).status).toBe(0);
       writeFileSync(fake, `#!/bin/sh\necho "ran: $*"\n`, { mode: 0o755 });
       expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake], { encoding: "utf8" }).stdout).toBe("ran: autostart remove\n");
@@ -69,23 +70,23 @@ describe("the installers' hooks", () => {
   });
 
   test("the cask's zap takes exactly the caches, the preferences, the logs and the login item (the owner's rule)", () => {
-    const code = codeLines(read("packaging/clover.rb.tmpl"), "#").join("\n");
+    const code = codeLines(read("packaging/moss-code.rb.tmpl"), "#").join("\n");
     const zap = code.slice(code.indexOf("zap trash: ["), code.indexOf("]", code.indexOf("zap trash: [")));
     const paths = [...zap.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    expect(paths).toEqual(["~/Library/Caches/@waifucaveclover-desktop-updater", "~/Library/Caches/com.waifucave.clover", "~/Library/Caches/com.waifucave.clover.ShipIt",
-      `~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`, "~/Library/Logs/Clover", "~/Library/Preferences/com.waifucave.clover.plist"]);
+    expect(paths).toEqual(["~/Library/Caches/@waifucavemoss-desktop-updater", "~/Library/Caches/com.waifucave.moss.code", "~/Library/Caches/com.waifucave.moss.code.ShipIt",
+      `~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`, "~/Library/Logs/MOSS Code", "~/Library/Preferences/com.waifucave.moss.code.plist"]);
   });
 
   test("the Windows uninstaller removes it through the daemon, without a console window, and not on an upgrade", () => {
     const code = codeLines(read("packaging/windows/installer.nsh"), ";");
     expect(code).toContain("!macro customUnInstall");
     expect(code).toContain("${ifNot} ${isUpdated}");
-    expect(code).toContain(`nsExec::ExecToLog '"$INSTDIR\\resources\\daemon\\clover-core.exe" ${autostartArgs("remove").join(" ")}'`);
+    expect(code).toContain(`nsExec::ExecToLog '"$INSTDIR\\resources\\daemon\\moss-core.exe" ${autostartArgs("remove").join(" ")}'`);
     expect(code).not.toContain("ExecWait");
   });
 
   test("none reaches systemctl or Task Scheduler itself, launchctl only in the cask's fallback, and none turns it on", () => {
-    for (const [rel, comment] of [["packaging/clover.rb.tmpl", "#"], ["packaging/windows/installer.nsh", ";"], ["packaging/linux/after-install.sh", "#"], ["packaging/linux/after-remove.sh", "#"]] as const) {
+    for (const [rel, comment] of [["packaging/moss-code.rb.tmpl", "#"], ["packaging/windows/installer.nsh", ";"], ["packaging/linux/after-install.sh", "#"], ["packaging/linux/after-remove.sh", "#"]] as const) {
       const code = codeLines(read(rel), comment).filter((l) => !(rel.endsWith(".rb.tmpl") && l === `uninstall launchctl: "${LAUNCHD_LABEL}",`)).join("\n");
       expect(code, rel).not.toMatch(/\b(launchctl|systemctl|schtasks)\b/);
       expect(code, rel).not.toContain(`${AUTOSTART_SUBCOMMAND} enable`);
@@ -104,14 +105,14 @@ describe("the Linux packages (electron-builder.yml and packaging/linux)", () => 
   });
 
   test("the packages name the owner's contact as their maintainer", () => {
-    expect(builder.linux.maintainer).toBe("Clover <w@waifucave.com>");
+    expect(builder.linux.maintainer).toBe("MOSS <w@waifucave.com>");
   });
 
-  test("the deb and the rpm are named clover, file and package, with no folder in the name", () => {
-    expect(builder.deb.packageName).toBe("clover");
-    expect(builder.rpm.packageName).toBe("clover");
-    expect(builder.deb.artifactName).toBe("clover_${version}_${arch}.${ext}");
-    expect(builder.rpm.artifactName).toBe("clover-${version}.${arch}.${ext}");
+  test("the deb and the rpm are named moss-code, file and package, with no folder in the name", () => {
+    expect(builder.deb.packageName).toBe("moss-code");
+    expect(builder.rpm.packageName).toBe("moss-code");
+    expect(builder.deb.artifactName).toBe("moss-code_${version}_${arch}.${ext}");
+    expect(builder.rpm.artifactName).toBe("moss-code-${version}.${arch}.${ext}");
     for (const name of [builder.deb.artifactName, builder.rpm.artifactName, builder.appImage.artifactName] as string[]) expect(name).not.toMatch(/[/@]|\$\{name\}/);
   });
 
@@ -129,16 +130,16 @@ describe("the Linux packages (electron-builder.yml and packaging/linux)", () => 
     }
   });
 
-  test("after-install links `clover` to the daemon's command line and loads the AppArmor profile; after-remove undoes both", () => {
+  test("after-install links `moss` to the daemon's command line and loads the AppArmor profile; after-remove undoes both", () => {
     const install = renderLinux("packaging/linux/after-install.sh");
     expect(install).toContain(`CLI='${AFTER_INSTALL_MARK}'`);
-    expect(install).toContain("update-alternatives --install '/usr/bin/clover' 'clover' \"$CLI\" 100");
-    expect(install).toContain("APPARMOR_PROFILE_TARGET='/etc/apparmor.d/clover'");
+    expect(install).toContain("update-alternatives --install '/usr/bin/moss' 'moss' \"$CLI\" 100");
+    expect(install).toContain("APPARMOR_PROFILE_TARGET='/etc/apparmor.d/moss-code'");
     expect(install).toContain("apparmor_parser --replace");
     // The install marker beside the daemon: a package's daemon never updates itself.
     expect(install).toContain(`printf '{"kind":"package"}\\n' > "$(dirname "$CLI")/install.json"`);
     const remove = renderLinux("packaging/linux/after-remove.sh");
-    expect(remove).toContain("update-alternatives --remove 'clover' \"$CLI\"");
+    expect(remove).toContain("update-alternatives --remove 'moss' \"$CLI\"");
     expect(remove).toContain('rm -f "$(dirname "$CLI")/install.json"');
     expect(remove).toContain("apparmor_parser --remove");
   });
@@ -150,22 +151,22 @@ describe("the Linux packages (electron-builder.yml and packaging/linux)", () => 
     expect(plugins.to).toBe(BUNDLED_PLUGINS_DIR);
     expect(plugins.filter).toEqual(["**/*", "!**/.env", "!**/.env.*", "!**/.DS_Store"]);
     // The repository's plugins/ is what gets staged: each top-level subfolder a plugin, each with its manifest.
-    for (const id of BUNDLED_PLUGIN_IDS) expect(existsSync(join(ROOT, "plugins", id, "clover.json"))).toBe(true);
+    for (const id of BUNDLED_PLUGIN_IDS) expect(existsSync(join(ROOT, "plugins", id, "moss.json"))).toBe(true);
     // The Linux packages must hold each manifest.
-    for (const id of BUNDLED_PLUGIN_IDS) expect(REQUIRED_FILES as readonly string[]).toContain(`/opt/Clover/resources/${BUNDLED_PLUGINS_DIR}/${id}/clover.json`);
+    for (const id of BUNDLED_PLUGIN_IDS) expect(REQUIRED_FILES as readonly string[]).toContain(`/opt/moss-code/resources/${BUNDLED_PLUGINS_DIR}/${id}/moss.json`);
   });
 
   test("the AppArmor profile grants user namespaces to the app's executable alone", () => {
     const profile = renderLinux("packaging/linux/apparmor-profile");
     expect(builder.linux.executableName).toBe(MACROS.executable);
-    expect(profile).toContain("profile clover /opt/Clover/clover flags=(unconfined) {");
+    expect(profile).toContain("profile moss-code /opt/moss-code/moss-code flags=(unconfined) {");
     expect(profile).toContain("  userns,");
   });
 
   test("the daemon and its link sidecar go in every package's resources, side by side, from where build-packages.ts stages them", () => {
-    expect(builder.extraResources[0]).toEqual({ from: "out/daemon", to: "daemon", filter: ["clover-core", "clover-core.exe", "clover-link", "clover-link.exe", "clover-plugin-bun", "clover-plugin-bun.exe", "clover-process-holder"] });
+    expect(builder.extraResources[0]).toEqual({ from: "out/daemon", to: "daemon", filter: ["moss-core", "moss-core.exe", "moss-link", "moss-link.exe", "moss-plugin-bun", "moss-plugin-bun.exe", "moss-process-holder"] });
     // Beside the daemon, where the core looks for it (packages/core/src/links/sidecar-binary.ts).
-    expect(REQUIRED_FILES as readonly string[]).toContain(`/opt/Clover/resources/daemon/${linkBinaryName("linux")}`);
+    expect(REQUIRED_FILES as readonly string[]).toContain(`/opt/moss-code/resources/daemon/${linkBinaryName("linux")}`);
     expect(LINK_OUTPUT.endsWith(`/${linkBinaryName("linux")}`)).toBe(true);
     expect(LINK_BUILD.join(" ")).toBe("cargo build --release --locked --manifest-path native/link/Cargo.toml");
   });
@@ -173,7 +174,7 @@ describe("the Linux packages (electron-builder.yml and packaging/linux)", () => 
   test("the deb's and the rpm's launcher entry carries Quit, which runs the app with --quit (no tray on stock GNOME)", () => {
     for (const format of ["deb", "rpm"]) {
       expect(builder[format].desktop.entry.Actions, format).toBe("Quit;");
-      expect(builder[format].desktop.desktopActions.Quit, format).toEqual({ Name: "Quit Clover", Exec: `/opt/Clover/${builder.linux.executableName} --quit` });
+      expect(builder[format].desktop.desktopActions.Quit, format).toEqual({ Name: "Quit MOSS Code", Exec: `/opt/moss-code/${builder.linux.executableName} --quit` });
     }
   });
 
@@ -192,21 +193,21 @@ describe("winget", () => {
 
   test("three manifests, one package, one version, every slot filled", () => {
     const manifests = renderWinget(ROOT, values);
-    expect(Object.keys(manifests)).toEqual(["waifucave.Clover.installer.yaml", "waifucave.Clover.locale.en-US.yaml", "waifucave.Clover.yaml"]);
+    expect(Object.keys(manifests)).toEqual(["waifucave.MOSSCode.installer.yaml", "waifucave.MOSSCode.locale.en-US.yaml", "waifucave.MOSSCode.yaml"]);
     const parsed = Object.fromEntries(Object.entries(manifests).map(([k, v]) => [k, Bun.YAML.parse(v) as Record<string, any>]));
     for (const m of Object.values(parsed)) {
-      expect(m.PackageIdentifier).toBe("waifucave.Clover");
+      expect(m.PackageIdentifier).toBe("waifucave.MOSSCode");
       expect(m.PackageVersion).toBe("1.111.1");
       expect(m.ManifestVersion).toBe("1.10.0");
     }
-    expect(parsed["waifucave.Clover.yaml"]!.ManifestType).toBe("version");
-    expect(parsed["waifucave.Clover.locale.en-US.yaml"]!.ManifestType).toBe("defaultLocale");
-    const installer = parsed["waifucave.Clover.installer.yaml"]!;
+    expect(parsed["waifucave.MOSSCode.yaml"]!.ManifestType).toBe("version");
+    expect(parsed["waifucave.MOSSCode.locale.en-US.yaml"]!.ManifestType).toBe("defaultLocale");
+    const installer = parsed["waifucave.MOSSCode.installer.yaml"]!;
     expect(installer.ManifestType).toBe("installer");
     expect(installer.InstallerType).toBe("nsis");
     expect(installer.Scope).toBe("user");
     expect(installer.ReleaseDate).toBe("2026-12-01");
-    expect(installer.Installers).toEqual([{ Architecture: "x64", InstallerUrl: "https://github.com/waifucave/clover/releases/download/v1.111.1/Clover-Setup-1.111.1.exe", InstallerSha256: "AB".repeat(32) }]);
+    expect(installer.Installers).toEqual([{ Architecture: "x64", InstallerUrl: "https://github.com/waifucave/moss/releases/download/v1.111.1/MOSS-Code-Setup-1.111.1.exe", InstallerSha256: "AB".repeat(32) }]);
   });
 
   test("bad values are refused, never written", () => {
@@ -218,12 +219,12 @@ describe("winget", () => {
 });
 
 describe("the Homebrew cask", () => {
-  test("renders with every slot filled, and keeps the user's ~/.clover out of zap", () => {
-    const cask = caskFrom(read("packaging/clover.rb.tmpl"), { version: "1.111.1", sha256: "ab".repeat(32), url: "unused" });
+  test("renders with every slot filled, and keeps the user's ~/.moss out of zap", () => {
+    const cask = caskFrom(read("packaging/moss-code.rb.tmpl"), { version: "1.111.1", sha256: "ab".repeat(32), url: "unused" });
     expect(cask).not.toMatch(/\{\{\w+\}\}/);
     expect(cask).toContain('version "1.111.1"');
     const zap = cask.slice(cask.indexOf("zap trash:"));
-    expect(zap).not.toContain("~/.clover");
+    expect(zap).not.toContain("~/.moss");
   });
 });
 
@@ -232,7 +233,7 @@ describe("build-packages.ts", () => {
     expect(parseBuildPackagesArgs([], "x64")).toEqual({ arches: ["x64"], formats: ["deb", "rpm", "AppImage"], channel: "latest", check: false, dryRun: false });
     expect(parseBuildPackagesArgs(["--arch", "arm64", "--formats=deb", "--channel", "beta", "--check"], "arm64")).toEqual({ arches: ["arm64"], formats: ["deb"], channel: "beta", check: true, dryRun: false });
     expect(() => parseBuildPackagesArgs(["--channel", "nightly"], "x64")).toThrow(/latest or beta/);
-    // One machine builds its own architecture (clover-link builds natively); a dry run may print any.
+    // One machine builds its own architecture (moss-link builds natively); a dry run may print any.
     expect(() => parseBuildPackagesArgs(["--arch", "x64,arm64"], "x64")).toThrow(/build arm64 on a machine of that architecture/);
     expect(parseBuildPackagesArgs(["--arch", "x64,arm64", "--dry-run"], "x64").arches).toEqual(["x64", "arm64"]);
     expect(() => parseBuildPackagesArgs([], "ia32")).toThrow(/--arch/);
@@ -241,34 +242,34 @@ describe("build-packages.ts", () => {
   });
 
   test("electron-builder packages one architecture at a time and never publishes", () => {
-    expect(electronBuilderArgs("arm64", ["deb", "rpm"])).toEqual(["electron-builder", "--linux", "deb", "rpm", "--arm64", "--publish", "never", "-c.publish.channel=latest"]);
-    expect(electronBuilderArgs("x64", ["AppImage"], "beta")).toEqual(["electron-builder", "--linux", "AppImage", "--x64", "--publish", "never", "-c.publish.channel=beta"]);
+    expect(electronBuilderArgs("arm64", ["deb", "rpm"])).toEqual(["electron-builder", "--linux", "deb", "rpm", "--arm64", "--publish", "never", "-c.productName=moss-code", "-c.publish.channel=latest"]);
+    expect(electronBuilderArgs("x64", ["AppImage"], "beta")).toEqual(["electron-builder", "--linux", "AppImage", "--x64", "--publish", "never", "-c.productName=moss-code", "-c.publish.channel=beta"]);
     expect(packageArchNames("x64")).toEqual({ deb: "amd64", rpm: "x86_64", appImage: "x86_64" });
     expect(packageArchNames("arm64")).toEqual({ deb: "arm64", rpm: "aarch64", appImage: "arm64" });
   });
 
   test("a package is checked for the daemon, the link sidecar, plugin Bun, the AppArmor profile and packaging/linux's after-install", () => {
     const debListing = [
-      "drwxr-xr-x root/root 0 2026-11-05 12:00 ./opt/Clover/",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/clover",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-core",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-link",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-plugin-bun",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/apparmor-profile",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/plugins/clover/clover.json",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/plugins/alpha/clover.json",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/chrome-sandbox",
-      "lrwxrwxrwx root/root 0 2026-11-05 12:00 ./opt/Clover/libvk.so -> libvulkan.so.1",
+      "drwxr-xr-x root/root 0 2026-11-05 12:00 ./opt/moss-code/",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/moss-code",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-core",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-link",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-plugin-bun",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/apparmor-profile",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/plugins/moss/moss.json",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/plugins/alpha/moss.json",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/chrome-sandbox",
+      "lrwxrwxrwx root/root 0 2026-11-05 12:00 ./opt/moss-code/libvk.so -> libvulkan.so.1",
     ].join("\n");
     const scripts = `CLI='${AFTER_INSTALL_MARK}'\napparmor_parser --replace x`;
     expect(checkPackage("deb", debListing, scripts)).toEqual([]);
     const rpmListing = [
-      "-rwxr-xr-x    1 root     root          100 Nov  5 12:00 /opt/Clover/clover",
-      "-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/Clover/resources/apparmor-profile",
+      "-rwxr-xr-x    1 root     root          100 Nov  5 12:00 /opt/moss-code/moss-code",
+      "-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/moss-code/resources/apparmor-profile",
     ].join("\n");
-    expect(checkPackage("rpm", rpmListing, scripts)).toEqual(["rpm: /opt/Clover/resources/daemon/clover-core is missing", "rpm: /opt/Clover/resources/daemon/clover-link is missing", "rpm: /opt/Clover/resources/daemon/clover-plugin-bun is missing",
-      "rpm: /opt/Clover/resources/plugins/clover/clover.json is missing", "rpm: /opt/Clover/resources/plugins/alpha/clover.json is missing"]);
-    expect(checkPackage("deb", debListing, "ln -sf /opt/Clover/clover /usr/bin/clover")).toEqual([
+    expect(checkPackage("rpm", rpmListing, scripts)).toEqual(["rpm: /opt/moss-code/resources/daemon/moss-core is missing", "rpm: /opt/moss-code/resources/daemon/moss-link is missing", "rpm: /opt/moss-code/resources/daemon/moss-plugin-bun is missing",
+      "rpm: /opt/moss-code/resources/plugins/moss/moss.json is missing", "rpm: /opt/moss-code/resources/plugins/alpha/moss.json is missing"]);
+    expect(checkPackage("deb", debListing, "ln -sf /opt/moss-code/moss-code /usr/bin/moss")).toEqual([
       `deb: its after-install script is not packaging/linux/after-install.sh (no ${AFTER_INSTALL_MARK})`,
       "deb: its scripts never load the AppArmor profile",
     ]);
@@ -276,44 +277,44 @@ describe("build-packages.ts", () => {
 
   test("and for its file modes: the app, the daemon and the sidecar 0755 and root's, nothing world-writable, nothing set-user-ID", () => {
     const base = [
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/clover",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-core",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/apparmor-profile",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-link",
-      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-plugin-bun",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/plugins/clover/clover.json",
-      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/plugins/alpha/clover.json",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/moss-code",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-core",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/apparmor-profile",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-link",
+      "-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-plugin-bun",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/plugins/moss/moss.json",
+      "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/plugins/alpha/moss.json",
     ];
     const scripts = `CLI='${AFTER_INSTALL_MARK}'\napparmor_parser --replace x`;
     const swap = (i: number, line: string) => base.map((l, j) => (j === i ? line : l)).join("\n");
-    expect(checkPackage("deb", swap(1, "-rwxrwxr-x root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-core"), scripts))
-      .toEqual(["deb: /opt/Clover/resources/daemon/clover-core is -rwxrwxr-x root/root, not -rwxr-xr-x root/root"]);
-    expect(checkPackage("deb", swap(0, "-rwxr-xr-x builder/builder 100 2026-11-05 12:00 ./opt/Clover/clover"), scripts))
-      .toEqual(["deb: /opt/Clover/clover is -rwxr-xr-x builder/builder, not -rwxr-xr-x root/root"]);
-    expect(checkPackage("deb", swap(3, "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/Clover/resources/daemon/clover-link"), scripts))
-      .toEqual(["deb: /opt/Clover/resources/daemon/clover-link is -rw-r--r-- root/root, not -rwxr-xr-x root/root"]);
-    expect(checkPackage("deb", [...base, "-rw-rw-rw- root/root 1 2026-11-05 12:00 ./opt/Clover/resources/app.asar"].join("\n"), scripts))
-      .toEqual(["deb: /opt/Clover/resources/app.asar is world-writable (-rw-rw-rw-)"]);
-    expect(checkPackage("deb", [...base, "-rwsr-xr-x root/root 1 2026-11-05 12:00 ./opt/Clover/chrome-sandbox"].join("\n"), scripts))
-      .toEqual(["deb: /opt/Clover/chrome-sandbox is set-user-ID or set-group-ID (-rwsr-xr-x)"]);
+    expect(checkPackage("deb", swap(1, "-rwxrwxr-x root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-core"), scripts))
+      .toEqual(["deb: /opt/moss-code/resources/daemon/moss-core is -rwxrwxr-x root/root, not -rwxr-xr-x root/root"]);
+    expect(checkPackage("deb", swap(0, "-rwxr-xr-x builder/builder 100 2026-11-05 12:00 ./opt/moss-code/moss-code"), scripts))
+      .toEqual(["deb: /opt/moss-code/moss-code is -rwxr-xr-x builder/builder, not -rwxr-xr-x root/root"]);
+    expect(checkPackage("deb", swap(3, "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss-code/resources/daemon/moss-link"), scripts))
+      .toEqual(["deb: /opt/moss-code/resources/daemon/moss-link is -rw-r--r-- root/root, not -rwxr-xr-x root/root"]);
+    expect(checkPackage("deb", [...base, "-rw-rw-rw- root/root 1 2026-11-05 12:00 ./opt/moss-code/resources/app.asar"].join("\n"), scripts))
+      .toEqual(["deb: /opt/moss-code/resources/app.asar is world-writable (-rw-rw-rw-)"]);
+    expect(checkPackage("deb", [...base, "-rwsr-xr-x root/root 1 2026-11-05 12:00 ./opt/moss-code/chrome-sandbox"].join("\n"), scripts))
+      .toEqual(["deb: /opt/moss-code/chrome-sandbox is set-user-ID or set-group-ID (-rwsr-xr-x)"]);
     // rpm -qlvp's spelling, a link among them: a link's lrwxrwxrwx is not a world-writable file.
     const rpm = [
-      "-rwxr-xr-x    1 root     root          100 Nov  5 12:00 /opt/Clover/clover",
-      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/Clover/resources/daemon/clover-core",
-      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/Clover/resources/daemon/clover-link",
-      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/Clover/resources/daemon/clover-plugin-bun",
-      "-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/Clover/resources/apparmor-profile",
-      "lrwxrwxrwx    1 root     root           14 Nov  5 12:00 /opt/Clover/libvk.so -> libvulkan.so.1",
-      "-rwxr-sr-x    1 root     root          100 Nov  5 12:00 /opt/Clover/helper",
+      "-rwxr-xr-x    1 root     root          100 Nov  5 12:00 /opt/moss-code/moss-code",
+      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/moss-code/resources/daemon/moss-core",
+      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/moss-code/resources/daemon/moss-link",
+      "-rwxr-xr-x    1 root     root          100 Nov  5  2026 /opt/moss-code/resources/daemon/moss-plugin-bun",
+      "-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/moss-code/resources/apparmor-profile",
+      "lrwxrwxrwx    1 root     root           14 Nov  5 12:00 /opt/moss-code/libvk.so -> libvulkan.so.1",
+      "-rwxr-sr-x    1 root     root          100 Nov  5 12:00 /opt/moss-code/helper",
     ].join("\n");
-    expect(parseListing("rpm", rpm).map((e) => e.path)).toEqual(["/opt/Clover/clover", "/opt/Clover/resources/daemon/clover-core", "/opt/Clover/resources/daemon/clover-link", "/opt/Clover/resources/daemon/clover-plugin-bun", "/opt/Clover/resources/apparmor-profile", "/opt/Clover/libvk.so", "/opt/Clover/helper"]);
-    const plugins = ["clover", "alpha"].map((id) => `-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/Clover/resources/plugins/${id}/clover.json`);
-    expect(checkPackage("rpm", [rpm, ...plugins].join("\n"), scripts)).toEqual(["rpm: /opt/Clover/helper is set-user-ID or set-group-ID (-rwxr-sr-x)"]);
+    expect(parseListing("rpm", rpm).map((e) => e.path)).toEqual(["/opt/moss-code/moss-code", "/opt/moss-code/resources/daemon/moss-core", "/opt/moss-code/resources/daemon/moss-link", "/opt/moss-code/resources/daemon/moss-plugin-bun", "/opt/moss-code/resources/apparmor-profile", "/opt/moss-code/libvk.so", "/opt/moss-code/helper"]);
+    const plugins = ["moss", "alpha"].map((id) => `-rw-r--r--    1 root     root          100 Nov  5 12:00 /opt/moss-code/resources/plugins/${id}/moss.json`);
+    expect(checkPackage("rpm", [rpm, ...plugins].join("\n"), scripts)).toEqual(["rpm: /opt/moss-code/helper is set-user-ID or set-group-ID (-rwxr-sr-x)"]);
   });
 
   test("after-remove acts on a removal only, never on an upgrade (the rpm runs it after the new version's after-install)", () => {
     if (process.platform === "win32") return;
-    const dir = mkdtempSync(join(tmpdir(), "clover-after-remove-"));
+    const dir = mkdtempSync(join(tmpdir(), "moss-after-remove-"));
     const log = join(dir, "calls.log");
     writeFileSync(join(dir, "update-alternatives"), `#!/bin/sh\necho "update-alternatives $*" >> '${log}'\n`, { mode: 0o755 });
     const run = (arg: string): string => {
@@ -323,6 +324,161 @@ describe("build-packages.ts", () => {
       return readFileSync(log, "utf8");
     };
     for (const arg of ["upgrade", "failed-upgrade", "1", "2"]) expect(run(arg), arg).toBe("");
-    for (const arg of ["remove", "purge", "0"]) expect(run(arg), arg).toBe(`update-alternatives --remove clover ${AFTER_INSTALL_MARK}\n`);
+    for (const arg of ["remove", "purge", "0"]) expect(run(arg), arg).toBe(`update-alternatives --remove moss ${AFTER_INSTALL_MARK}\n`);
+  });
+});
+
+// ---- MOSS, the second app (the release wave, lane RP): its Linux packages, Windows installer, cask and winget package ----
+
+const mossBuilder = Bun.YAML.parse(read("apps/moss/electron-builder.yml")) as Record<string, any>;
+
+describe("MOSS's Linux packages (apps/moss/electron-builder.yml and packaging/linux, shared with MOSS Code's)", () => {
+  test("the deb and the rpm are `moss`, file and package, the folder /opt/moss, the program moss-app", () => {
+    expect(mossBuilder.deb.packageName).toBe("moss");
+    expect(mossBuilder.rpm.packageName).toBe("moss");
+    expect(mossBuilder.deb.artifactName).toBe("moss_${version}_${arch}.${ext}");
+    expect(mossBuilder.rpm.artifactName).toBe("moss-${version}.${arch}.${ext}");
+    expect(mossBuilder.appImage.artifactName).toBe("MOSS-${version}-${arch}.AppImage");
+    expect(mossBuilder.linux.executableName).toBe("moss-app");
+    expect(electronBuilderArgs("x64", ["deb"], "latest", "moss")).toContain("-c.productName=moss");
+    expect(electronBuilderArgs("x64", ["deb"], "latest")).toContain("-c.productName=moss-code");
+    expect(mossBuilder.linux.icon).toBe("build/icons");
+    for (const n of [16, 24, 32, 48, 64, 128, 256, 512]) expect(existsSync(join(ROOT, "apps", "moss", "build", "icons", `${n}x${n}.png`)), `${n}`).toBe(true);
+  });
+
+  test("they run the same scripts and profile as MOSS Code's, with the same dependencies, and their own launcher entry with Quit", () => {
+    for (const format of ["deb", "rpm"] as const) {
+      for (const k of ["afterInstall", "afterRemove", "appArmorProfile", "depends"] as const) expect(mossBuilder[format][k], `${format} ${k}`).toEqual(builder[format][k]);
+      expect(mossBuilder[format].desktop.entry).toEqual({ Name: "MOSS", Actions: "Quit;" });
+      expect(mossBuilder[format].desktop.desktopActions.Quit).toEqual({ Name: "Quit MOSS", Exec: "/opt/moss/moss-app --quit" });
+    }
+    expect(mossBuilder.deb.recommends).toEqual(builder.deb.recommends);
+    expect(mossBuilder.deb.depends).toContain("bubblewrap");
+    expect(mossBuilder.deb.depends).toContain("libsecret-1-0");
+  });
+
+  test("a package of MOSS is checked for what it holds: the daemon, the sidecar, plugin Bun, the profile, the tree AND the host", () => {
+    expect(requiredFiles("moss")).toEqual(expect.arrayContaining(["/opt/moss/resources/daemon/moss-core", "/opt/moss/resources/daemon/moss-link", "/opt/moss/moss-app", "/opt/moss/resources/host/moss-host", "/opt/moss/resources/host/resources/app.asar"]));
+    expect(requiredFiles("code")).toEqual([...REQUIRED_FILES]);
+    expect(requiredFiles("code")).not.toContain("/opt/moss/resources/host/moss-host");
+    const listing = [
+      ...requiredFiles("moss").map((f) => `${executablesOf("moss").includes(f) ? "-rwxr-xr-x" : "-rw-r--r--"} root/root 100 2026-11-05 12:00 .${f}`),
+    ].join("\n");
+    const scripts = "ln -sf /opt/moss/resources/daemon/moss-core /usr/bin/moss; apparmor_parser --replace";
+    expect(checkPackage("deb", listing, scripts, "moss")).toEqual([]);
+    // MOSS Code's package must not pass for MOSS's, nor the other way round.
+    expect(checkPackage("deb", listing, scripts, "code").length).toBeGreaterThan(0);
+    expect(checkPackage("deb", listing.replace("-rwxr-xr-x root/root 100 2026-11-05 12:00 ./opt/moss/resources/host/moss-host", "-rw-r--r-- root/root 100 2026-11-05 12:00 ./opt/moss/resources/host/moss-host"), scripts, "moss"))
+      .toEqual(["deb: /opt/moss/resources/host/moss-host is -rw-r--r-- root/root, not -rwxr-xr-x root/root"]);
+    expect(checkPackage("deb", listing.split("\n").filter((l) => !l.includes("/resources/host/")).join("\n"), scripts, "moss"))
+      .toEqual(["deb: /opt/moss/resources/host/moss-host is missing", "deb: /opt/moss/resources/host/resources/app.asar is missing"]);
+    expect(checkPackage("deb", listing, "ln -sf /opt/moss-code/resources/daemon/moss-core /usr/bin/moss; apparmor_parser", "moss")).toEqual(["deb: its after-install script is not packaging/linux/after-install.sh (no /opt/moss/resources/daemon/moss-core)"]);
+  });
+
+  test("the shared scripts never take another package's `moss` link, and give it back when the owner is removed", () => {
+    const install = read("packaging/linux/after-install.sh");
+    // The fallback without update-alternatives links only when nothing is there; with it, a failed registration never overwrites a link.
+    expect(install).toContain("[ -e '/usr/bin/moss' ] || ln -sf \"$CLI\" '/usr/bin/moss'");
+    expect(install).not.toMatch(/^\s*ln -sf "\$CLI" '\/usr\/bin\/moss'\s*$/m);
+    const remove = read("packaging/linux/after-remove.sh");
+    expect(remove).toContain(`[ "$(readlink '/usr/bin/moss' 2>/dev/null)" = "$CLI" ]`);
+    expect(remove).toContain("/opt/moss-code/resources/daemon/moss-core /opt/moss/resources/daemon/moss-core");
+    // The host's sandbox helper too (MOSS carries MOSS Code's app, with its own chrome-sandbox).
+    expect(install).toContain("/opt/${sanitizedProductName}/resources/host/chrome-sandbox");
+  });
+
+  test("the scripts, run on a stand-in filesystem without update-alternatives, leave `moss` working through either removal order", () => {
+    if (process.platform === "win32") return;
+    // The scripts' own link logic, run as written: only the paths are the stand-in's (the macros filled, then each fixed path replaced once).
+    if (spawnSync("bash", ["-c", "command -v update-alternatives"], { env: { PATH: "/usr/bin:/bin" } }).status === 0) return; // Debian's own: CI's Fedora container covers this branch
+    const work = mkdtempSync(join(tmpdir(), "moss-after-scripts-"));
+    try {
+      const codeCli = join(work, "opt", "moss-code", "daemon", "moss-core"), mossCli = join(work, "opt", "moss", "daemon", "moss-core");
+      const link = join(work, "usr-bin-moss");
+      for (const f of [codeCli, mossCli]) { mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(f, "#!/bin/sh\necho moss\n", { mode: 0o755 }); }
+      const prepare = (rel: string, cli: string): string => renderLinux(rel)
+        .replaceAll("'/usr/bin/moss'", `'${link}'`)
+        .replaceAll("/opt/moss-code/resources/daemon/moss-core /opt/moss/resources/daemon/moss-core", `${codeCli} ${mossCli}`)
+        .replace(`CLI='/opt/moss-code/resources/daemon/moss-core'`, `CLI='${cli}'`);
+      const head = (text: string, upTo: string): string => text.slice(0, text.indexOf(upTo));
+      const install = (cli: string): void => {
+        expect(spawnSync("bash", ["-c", head(prepare("packaging/linux/after-install.sh", cli), "# The SUID Chromium sandbox helper")], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).status).toBe(0);
+      };
+      const remove = (cli: string): void => {
+        rmSync(cli); // the package's files go before its after-remove runs (dpkg's postrm, rpm's %postun)
+        // Past the script's `case` (it acts on a removal only): the link logic, from `CLI=` to the profile.
+        const text = prepare("packaging/linux/after-remove.sh", cli);
+        const body = text.slice(text.indexOf("CLI="), text.indexOf("APPARMOR_PROFILE_DEST="));
+        expect(spawnSync("bash", ["-c", body], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).status).toBe(0);
+      };
+      install(codeCli);
+      install(mossCli);
+      expect(readlinkSync(link)).toBe(codeCli); // the first owns the link; the second never overwrote it
+      remove(codeCli); // the owner goes: the link moves to the other app's daemon
+      expect(readlinkSync(link)).toBe(mossCli);
+      remove(mossCli);
+      expect(existsSync(link)).toBe(false);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  test("the AppArmor profile grants user namespaces to the app's executable and to the host MOSS carries", () => {
+    const profile = renderLinux("packaging/linux/apparmor-profile");
+    expect(profile).toContain("profile moss-code-host /opt/moss-code/resources/host/moss-host flags=(unconfined) {");
+    expect(profile.match(/userns,/g)?.length).toBe(2);
+    const forMoss = read("packaging/linux/apparmor-profile").replaceAll("${executable}", "moss-app").replaceAll("${sanitizedProductName}", "moss");
+    expect(forMoss).toContain("profile moss-app /opt/moss/moss-app flags=(unconfined) {");
+    expect(forMoss).toContain("profile moss-app-host /opt/moss/resources/host/moss-host flags=(unconfined) {");
+  });
+});
+
+describe("MOSS's Windows installer and Homebrew cask: removing one app leaves the other's engine and login start", () => {
+  test("the NSIS installer is per user and carries installer-moss.nsh, whose uninstall hook skips login start while MOSS Code is installed", () => {
+    expect(mossBuilder.nsis.perMachine).toBe(false);
+    expect(resolve(ROOT, "apps", "moss", mossBuilder.nsis.include)).toBe(join(ROOT, "packaging", "windows", "installer-moss.nsh"));
+    const code = codeLines(read("packaging/windows/installer-moss.nsh"), ";");
+    expect(code).toContain("!macro customUnInstall");
+    expect(code).toContain("${ifNot} ${isUpdated}");
+    expect(code).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\@waifucavemoss-desktop\\MOSS Code.exe"');
+    expect(code).toContain(`nsExec::ExecToLog '"$INSTDIR\\resources\\daemon\\moss-core.exe" ${autostartArgs("remove").join(" ")}'`);
+    // The other way: MOSS Code's hook leaves it to MOSS while MOSS is installed.
+    expect(codeLines(read("packaging/windows/installer.nsh"), ";")).toContain('${ifNot} ${FileExists} "$LOCALAPPDATA\\Programs\\@waifucavemoss-moss\\MOSS.exe"');
+    // The folder names are the package names, as the NSIS installer made them on the Windows runner (CI's install-check proves it).
+    expect(windowsInstallFolder("code")).toBe("@waifucavemoss-desktop");
+    expect(windowsInstallFolder("moss")).toBe("@waifucavemoss-moss");
+    for (const f of ["packaging/windows/installer.nsh", "packaging/windows/installer-moss.nsh"]) expect(codeLines(read(f), ";").join("\n"), f).not.toMatch(/\b(schtasks|systemctl|launchctl)\b/);
+  });
+
+  test("the cask's uninstall removes login start only when MOSS Code is not installed, and links no second `moss` command", () => {
+    const code = codeLines(read("packaging/moss.rb.tmpl"), "#").join("\n");
+    expect(code).toContain('cask "moss" do');
+    expect(code).not.toMatch(/^\s*binary /m);
+    expect(code).not.toContain("launchctl");
+    expect(code).toContain("must_succeed: false");
+    expect(code).toContain("sudo:         false");
+    expect(code).toContain('quit:   "com.waifucave.moss"');
+    expect(code).toContain(`"#{appdir}/MOSS.app/Contents/Resources/daemon/moss-core", "#{appdir}/MOSS Code.app"]`);
+    if (process.platform !== "win32") {
+      const guard = '[ -x "$1" ] || exit 0; [ -d "$2" ] && exit 0; exec "$1" autostart remove';
+      const dir = mkdtempSync(join(tmpdir(), "moss-cask-guard-"));
+      const fake = join(dir, "moss-core"), other = join(dir, "MOSS Code.app");
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).status).toBe(0);
+      writeFileSync(fake, `#!/bin/sh\necho "ran: $*"\n`, { mode: 0o755 });
+      // MOSS Code is installed: nothing is removed.
+      spawnSync("mkdir", ["-p", other]);
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).stdout).toBe("");
+      // It is not: login start goes, through the daemon's own command.
+      rmSync(other, { recursive: true });
+      expect(spawnSync("/bin/sh", ["-c", guard, "sh", fake, other], { encoding: "utf8" }).stdout).toBe("ran: autostart remove\n");
+    }
+  });
+
+  test("the cask's zap takes the caches, the preferences and the logs of MOSS, never ~/.moss or the shared login item", () => {
+    const code = codeLines(read("packaging/moss.rb.tmpl"), "#").join("\n");
+    const zap = code.slice(code.indexOf("zap trash: ["), code.indexOf("]", code.indexOf("zap trash: [")));
+    expect([...zap.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(["~/Library/Caches/@waifucavemoss-moss-updater", "~/Library/Caches/com.waifucave.moss", "~/Library/Caches/com.waifucave.moss.ShipIt", "~/Library/Logs/MOSS", "~/Library/Preferences/com.waifucave.moss.plist"]);
+    expect(zap).not.toContain("LaunchAgents");
+    expect(zap).not.toContain("~/.moss");
   });
 });

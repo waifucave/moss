@@ -16,7 +16,7 @@
 // report, a background task's notification, a wake, another bot's message or a continuation, any of which a bot can
 // bring about itself. It is one budget per conversation: a session the bot started under it (`rootOf`) draws on its
 // root's; a routine's run is its own root, so it gets the budget once per scheduled run.
-import type { TurnOrigin } from "@waifucave/clover-protocol";
+import type { TurnOrigin } from "@waifucave/moss-protocol";
 import type { TurnInput } from "../contracts/session-host";
 import { originOf } from "../contracts/session-host";
 
@@ -174,6 +174,15 @@ export class SeenUrls {
   input(sessionId: string, input: TurnInput): void {
     if (input.from !== "user" || originOf(input) !== "user") return;
     for (const u of urlsIn(input.text)) this.#of(sessionId).add(u);
+  }
+
+  /** An agent or coding session's turn (agents/manager.ts `turnStarted`): only the user's own message there (never a bot's
+   *  brief, which a bot can send whenever it likes) counts its addresses and starts its root's budget again. A bot's agent
+   *  is charged to the bot's conversation (`rootOf`), so a turn the bot brought about never resets that budget. */
+  agentTurn(sessionId: string, input: TurnInput, origin: TurnOrigin | undefined): void {
+    if (input.from !== "user" || originOf(input) !== "user") return;
+    this.turnStarted(sessionId, origin);
+    this.input(sessionId, input);
   }
 
   /** A web search's result (the bundled plugin's, as the tool returned it, before any hook): its hits' addresses. */

@@ -18,7 +18,7 @@ import { HandshakeClient, openPairBox, pairKeyRef, pairSecretRef, sealPairBox } 
 import { type FakeHandshake, startFakeHandshake } from "../handshake-fake";
 import { MemoryNetwork } from "../memory-wire";
 import { formatCode, MemoryRendezvous, PairingService, parseCode } from "../pairing";
-import { CloverLinkTransport } from "../transport";
+import { MossLinkTransport } from "../transport";
 
 const clock = new SystemClock();
 let cleanup: (() => Promise<void> | void)[] = [];
@@ -30,7 +30,7 @@ afterEach(async () => {
 async function device(net: MemoryNetwork, name: string, opts: { hs?: FakeHandshake; rendezvous?: MemoryRendezvous; account?: string; kind?: "phone"; clockOffsetMs?: number } = {}) {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
-  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-h-pair-")), key, clock, self: { name, os: "macos", ...(opts.kind ? { kind: opts.kind } : {}) } });
+  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-pair-")), key, clock, self: { name, os: "macos", ...(opts.kind ? { kind: opts.kind } : {}) } });
   const wire = net.endpoint(key.publicKey);
   const handshake = opts.hs ? new HandshakeClient({ baseUrl: opts.hs.url, clock }) : undefined;
   const devClock = opts.clockOffsetMs ? { ...clock, now: () => clock.now() + opts.clockOffsetMs!, monotonic: () => clock.monotonic(), setTimeout: clock.setTimeout.bind(clock), clearTimeout: clock.clearTimeout.bind(clock), status: () => clock.status() } : clock;
@@ -262,9 +262,9 @@ describe("pairing", () => {
     await waitFor(() => hs.groups.get(group)?.members.size === 3);
     expect(hs.pairs.size).toBe(2);
 
-    const transports = new Map<string, CloverLinkTransport>();
+    const transports = new Map<string, MossLinkTransport>();
     for (const d of [a, b, c]) {
-      const t = new CloverLinkTransport({
+      const t = new MossLinkTransport({
         self: d.key.id, wire: d.wire, registry: d.registry, clock,
         directory: { target: (id) => { const r = d.registry.get(id); return r ? { key: Buffer.from(r.publicKey, "base64") as unknown as Uint8Array<ArrayBuffer>, relay: "https://relay.test/" } : undefined; } },
       });
@@ -298,7 +298,7 @@ describe("the pair door and the words' commitment (S2, S6.3 of H-M1's review)", 
     const net = new MemoryNetwork();
     const store = new MemorySecretStore();
     const key = await DeviceKey.loadOrCreate(store);
-    const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-h-pair-")), key, clock, self: { name: "Studio" } });
+    const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-pair-")), key, clock, self: { name: "Studio" } });
     const pairing = new PairingService({
       self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, door: { firstFrameMs: 50 },
     });

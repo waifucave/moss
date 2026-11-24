@@ -4,13 +4,14 @@
 // plugin host reports after crashes. The catalog's declarations come in as `catalog` (the plugin SDK's
 // `catalogPointDecl`), since the contracts don't import the SDK at run time.
 import { createHash } from "node:crypto";
-import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/clover-protocol";
+import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/moss-protocol";
 import { ContractError, Listeners, type Unsubscribe } from "../common";
 import {
   type ApproveResult, type Contribution, type InstallFrom, type PluginRecord, type PluginRegistry, type RegisteredPoint, type RegistryChange,
   type SwitchResult,
 } from "../plugin-registry";
 import type { CoreEntries, Manifest, PointDecl } from "../sdk-types";
+import { GRANT_REVISION } from "@waifucave/moss-protocol";
 import { EMPTY_SNAPSHOT, computeRegistry, parentOf, registryChanges, type RegistryPlugin, type RegistrySnapshot } from "../plugin-registry-rules";
 
 export interface FakePluginInput {
@@ -39,13 +40,9 @@ export interface FakePluginInput {
 
 export interface FakePluginRegistryOptions {
   /** The catalog's declaration of a well-known name, or undefined for any other: the plugin SDK's `catalogPointDecl`. */
-  catalog: (name: string) => PointDecl | undefined;
+  catalog: (name: string) => (PointDecl & { platform?: boolean }) | undefined;
   plugins?: FakePluginInput[];
   adultConfirmed?: boolean;
-  /** Whether a plugin may hold a capability (the plugin SDK's `mayHoldCapability`, which the real registry always
-   *  applies). The fake can't import the SDK: a test that checks bundled-only grants passes it; absent, every
-   *  capability may be held. */
-  mayHold?: (capability: string, plugin: { id: string; source: string }) => boolean;
 }
 
 interface Held {
@@ -66,18 +63,19 @@ const manifestHash = (m: Manifest) => `sha256:${createHash("sha256").update(JSON
 export class FakePluginRegistry implements PluginRegistry {
   readonly #plugins = new Map<string, Held>();
   readonly #listeners = new Listeners<RegistryChange>();
-  readonly #catalog: (name: string) => PointDecl | undefined;
+  readonly #treeListeners = new Listeners<{ id: string }>();
+  readonly #catalog: (name: string) => (PointDecl & { platform?: boolean }) | undefined;
   /** The OK cards raised, by top-level plugin: the card and the tree it shows. */
   readonly #okCards = new Map<string, { card: string; treeHash: string }>();
+  /** The user's one-at-a-time choices, by point. */
+  readonly #chosen = new Map<string, { pluginId: string; entryId: string }>();
   #okSeq = 0;
   #adultConfirmed: boolean;
   #snap: RegistrySnapshot = EMPTY_SNAPSHOT;
 
-  readonly #mayHold: (capability: string, plugin: { id: string; source: string }) => boolean;
 
   constructor(opts: FakePluginRegistryOptions) {
     this.#catalog = opts.catalog;
-    this.#mayHold = opts.mayHold ?? (() => true);
     this.#adultConfirmed = opts.adultConfirmed ?? false;
     // The plugins a test seeds are installed and OK'd already, unless one says `approved: false`; a plugin put later
     // for the first time waits for its OK unless it says `approved: true` (nothing is approved by default).
@@ -116,7 +114,7 @@ export class FakePluginRegistry implements PluginRegistry {
       this.#update();
       return { applied: true };
     }
-    if (id === BUNDLED_ROOT_PLUGIN && held.input.source === "bundled" && !enabled) throw new ContractError("refused", "Clover's own plugin holds Settings; it stays on");
+    if (id === BUNDLED_ROOT_PLUGIN && held.input.source === "bundled" && !enabled) throw new ContractError("refused", "MOSS's own plugin holds Settings; it stays on");
     if (state === "refused" || state === "invalid") throw new ContractError("refused", `${id} is ${state}; it can't be switched`);
     // A found plugin's switch is its sealed OK card (S2): nothing loads until the user's yes on it.
     if (enabled && state === "found") return { applied: false, card: this.#raiseOk(parentOf(id) ?? id) };
@@ -179,6 +177,24 @@ export class FakePluginRegistry implements PluginRegistry {
     return this.#listeners.add(fn);
   }
 
+  /** A plugin's tree changed under its id (its tree hash or version) while nothing `watch` reports changed with it, as
+   *  the registry core reports it (registry/core.ts `watchTrees`). */
+  watchTrees(fn: (changed: { id: string }) => void): Unsubscribe {
+    return this.#treeListeners.add(fn);
+  }
+
+  /** The user's choice for a one-at-a-time point (§5.4 "One at a time"); a removed plugin's go with it. */
+  chosen(point: string): { pluginId: string; entryId: string } | undefined {
+    const r = this.#chosen.get(point);
+    return r === undefined ? undefined : { ...r };
+  }
+
+  choose(point: string, ref: { pluginId: string; entryId: string } | undefined): void {
+    if (ref === undefined) this.#chosen.delete(point);
+    else this.#chosen.set(point, { pluginId: ref.pluginId, entryId: ref.entryId });
+    this.#listeners.emit({ type: "entries", point });
+  }
+
   /** A folder appeared or changed. A refused plugin is asked about again once its folder changes (§5.1). */
   put(input: FakePluginInput): void {
     this.#hold(input);
@@ -188,6 +204,7 @@ export class FakePluginRegistry implements PluginRegistry {
   /** A folder went away; its children go with it. */
   remove(id: string): void {
     for (const key of [...this.#plugins.keys()]) if (key === id || parentOf(key) === id) this.#plugins.delete(key);
+    for (const [point, r] of [...this.#chosen]) if (!this.#plugins.has(r.pluginId)) this.#chosen.delete(point);
     this.#update();
   }
 
@@ -253,7 +270,15 @@ export class FakePluginRegistry implements PluginRegistry {
   #update(): void {
     const before = this.#snap;
     this.#snap = this.#compute();
-    for (const change of registryChanges(before, this.#snap)) this.#listeners.emit(change);
+    const changes = registryChanges(before, this.#snap);
+    for (const change of changes) this.#listeners.emit(change);
+    // A plugin whose tree changed under the same id and is still there, when the changes above didn't name it (the
+    // registry core's rule).
+    const named = new Set(changes.flatMap((c) => (c.type === "plugin" ? [c.id] : [])));
+    for (const [id, rec] of this.#snap.records) {
+      const was = before.records.get(id);
+      if (was !== undefined && !named.has(id) && (was.treeHash !== rec.treeHash || was.version !== rec.version)) this.#treeListeners.emit({ id });
+    }
   }
 
   #compute(): RegistrySnapshot {
@@ -264,6 +289,8 @@ export class FakePluginRegistry implements PluginRegistry {
       if (!h.appParts) p.appParts = false;
       if (i.source !== undefined) p.source = i.source;
       if (h.okHash !== undefined) p.okHash = h.okHash;
+      // The fake's OKs are all given now: at the catalog revision the split's reads by kind need (the real core's records keep it).
+      if (h.approved) p.okRevision = GRANT_REVISION;
       if (i.invalid !== undefined) p.invalid = i.invalid;
       if (h.stopped !== undefined) p.stopped = h.stopped;
       if (i.folder !== undefined) p.folder = i.folder;
@@ -273,6 +300,6 @@ export class FakePluginRegistry implements PluginRegistry {
       if (i.dev !== undefined) p.dev = i.dev;
       plugins.set(id, p);
     }
-    return computeRegistry(plugins, { catalog: this.#catalog, adultConfirmed: this.#adultConfirmed, mayHold: this.#mayHold });
+    return computeRegistry(plugins, { catalog: this.#catalog, adultConfirmed: this.#adultConfirmed });
   }
 }

@@ -1,4 +1,4 @@
-// A tab of the Clover Browser in the app's main process (spec §12.1, the owner's decisions 92–94). Two kinds:
+// A tab of the MOSS Browser in the app's main process (spec §12.1, the owner's decisions 92–94). Two kinds:
 // * `OffscreenTab` (design B, every bot tab by default): an offscreen `BrowserWindow` that is never shown, drawing at
 //   the rate the app sets, its frames CPU bitmaps (stock Electron; GPU frames come later, S7 §7.1). The person sees
 //   it through the viewport (`viewport.ts`), and it never reloads to be shown or hidden.
@@ -113,6 +113,8 @@ export abstract class BrowserTab {
       viewport: { ...this.viewport },
       loading: destroyed ? false : c.isLoading(),
       heldByUser: false,
+      // lane HS: the view it is shown in, so a report never takes it away (the window half of the browser follows it).
+      ...(this.place === "shown" && this.view !== undefined ? { view: this.view } : {}),
     };
   }
 
@@ -187,7 +189,7 @@ export class OffscreenTab extends BrowserTab {
       width: AGENT_VIEWPORT.width,
       height: AGENT_VIEWPORT.height,
       useContentSize: true,
-      title: "Clover",
+      title: "MOSS Code",
       skipTaskbar: true,
       webPreferences: tabWebPreferences(partitionFor(owner), true),
     });

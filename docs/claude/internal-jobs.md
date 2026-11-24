@@ -1,6 +1,6 @@
 # Internal jobs
 
-> **Reference: Winter's code.** This file describes Winter's code as it stood at the `winter-before-clover` tag, before the Clover rename (C0). Where it describes code that C0 renamed, read `winter-core` as `clover-core`, `WINTER_*` as `CLOVER_*` and `~/.winter` as `~/.clover`. For Clover itself, [the spec](../clover-spec.md) is the source of truth, then [the plan](../clover-plan.md).
+> **Reference: Winter's code.** This file describes Winter's code as it stood at the `winter-before-moss` tag, before the MOSS rename (C0). Where it describes code that C0 renamed, read `winter-core` as `moss-core`, `WINTER_*` as `MOSS_*` and `~/.winter` as `~/.moss`. For MOSS itself, [the spec](../moss-spec.md) is the source of truth, then [the plan](../moss-plan.md).
 
 *Read this before touching titles, the bash safety reviewer, the dreamer or the session cleaner — how they pick a model, effort or credential.*
 
@@ -14,9 +14,11 @@
 
 Catalog-derived, never a hand list: (1) `permittedProviders()`'s floor; (2) not in `CLAUDE_FIRST_PARTY_PROVIDER_IDS` (only `cc`); (3) a slot in `credentialInventory()`; (4) an adapter family in `providers/internal-adapters.ts`'s table (bedrock/vertex/xai-oauth are out — its header says why). `anthropic` and `console` ARE eligible: `buildInternalProvider` (`providers/internal-provider.ts`) names `connection.providerId` + the slot's locator ([providers-and-credentials](./providers-and-credentials.md)). Exclusion is by provider ID, never adapter family.
 
-## Which model — `internalRoleEffectiveTag` (settings.ts)
+## Which model — `internalRoleEffectiveTag` (settings.ts), the rule of 2026-11-22
 
-Never a model on a provider the user did not choose: (1) an explicit pin, reported verbatim even when unrunnable (its reason rides `problem`); (2) else `settings.provider.model`'s provider if eligible AND credentialed — its `terra`/`luna` slot, else `provider.model` itself; (3) else a credentialed `codex-oauth`/`openai` (`INTERNAL_PROVIDER_IDS`' only role, plus the preference-order head); (4) else NO default — `no-default-model`, inert until pinned. `cc` answers no rung.
+An internal job runs on a model the person chose for that kind of work and never on a costlier one than the light model of the default model's family: (1) an explicit pin, reported verbatim even when unrunnable (its reason rides `problem`); (2) else `internalRoleLight`: the light model of `settings.provider.model`'s family (`FAMILY_LIGHT_MODELS`) as the default's OWN provider serves it, when that provider is eligible and credentialed; (3) else NOTHING: the job does not run, the refusal is `no-default-model` ("no light model of your default model's family can be had... pick a model for this job in Settings › Roles"), said once in the log (`sayOnce` in `internal-router.ts`). All four roles (titles, dreamer, cleaner, the bash safety reviewer and plugin Review) follow it. Never the default model, never another provider than the default's (no preference order, no `codex-oauth`/`openai` head). A title of a session (`lightOf`) uses its own provider's light model, or is refused when the model is one the catalog knows; a model it doesn't know (an outside agent's own name) is the job's own answer, the default's family. A light model the endpoint then says it doesn't serve is a failed job (logged once), not a call on the default. `cc` answers no rung.
+
+The reviewer (the command safety check and the plugin Review) is a safety gate and has one more rung (the controller's ruling, 2026-11-22): where the default's family has no light model on the default's own provider it runs on the DEFAULT MODEL ITSELF on that provider (`internalRoleOwnDefault`, said once in the log); where even that cannot run (the provider holds no key, the default is not in the catalog) the hook ASKS on a card and the plugin Review says no review could be run. `allow()` stays only for a home with no provider at all (`ReviewerNoRunnableModel.structural`, the reason `no-internal-credential`). It never crosses to another provider.
 
 ## Effort
 

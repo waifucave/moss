@@ -1,12 +1,36 @@
 // A small Chrome DevTools protocol client for the UI steps of the acceptance run: it attaches to every page and every
 // frame of the headless, offscreen desktop app (out-of-process frames included), records each frame's console messages
 // and uncaught errors, and lets a step evaluate, type and click inside any of them. The dev app takes the debugging
-// port only behind CLOVER_DEV_DEBUG=1 (apps/desktop/src/main/debug-guard.ts); a packaged app never does.
+// port only behind MOSS_DEV_DEBUG=1 (apps/desktop/src/main/debug-guard.ts); a packaged app never does.
+import { scaled } from "./time-scale";
 
+
+/** The address of the app's main window page. */
+export const MAIN_PAGE_URL = "moss-core://app/";
 export interface ConsoleEntry { session: string; url: string; level: string; text: string }
 export interface FrameInfo { session: string; url: string; type: string; targetId?: string }
 
+/** What `Cdp.over` needs of a door: `send`, `close`, and `message` events carrying the protocol's JSON text. */
+export interface WsLike {
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: "message", fn: (m: { data: unknown }) => void): void;
+}
+
 type Pending = { method: string; resolve(v: any): void; reject(e: Error): void };
+
+/** In-page source of `clippedAway(el, x, y)`: whether the point lies outside the visible box of the page or of any ancestor that clips
+ *  (overflow auto, scroll, hidden or clip), as a press there would land on something else or on nothing. */
+export const CLIPPED_AWAY_JS = `const clippedAway = (el, x, y) => {
+  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return true;
+  for (let a = el.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+    const cs = getComputedStyle(a);
+    if (!/(auto|scroll|hidden|clip)/.test(cs.overflowX + cs.overflowY)) continue;
+    const ar = a.getBoundingClientRect();
+    if (x < ar.left || x > ar.right || y < ar.top || y > ar.bottom) return true;
+  }
+  return false;
+};`;
 
 export class Cdp {
   private seq = 0;
@@ -31,6 +55,10 @@ export class Cdp {
     await cdp.send("Target.setDiscoverTargets", { discover: true });
     return cdp;
   }
+
+  /** A client over a door that is shaped like a WebSocket (it sends a line of text and hands back messages): the preview's control door,
+   *  which relays the same protocol to the app's own window. The caller names the page's session itself (it is not discovered). */
+  static over(ws: WsLike): Cdp { return new Cdp(ws as unknown as WebSocket); }
 
   close(): void { try { this.ws.close(); } catch { /* gone */ } }
 
@@ -114,16 +142,20 @@ export class Cdp {
 
   /** Waits until `probe` is truthy for some document, polling; the document that satisfied it. */
   async waitFor(what: string, timeoutMs: number, probe: (d: { session: string; url: string; text: string }) => boolean): Promise<{ session: string; url: string; text: string }> {
-    const end = Date.now() + timeoutMs;
+    const long = scaled(timeoutMs);
+    const end = Date.now() + long;
     for (;;) {
       for (const d of await this.documents()) if (probe(d)) return d;
-      if (Date.now() > end) throw new Error(`${what}: not within ${Math.round(timeoutMs / 1000)} s`);
+      if (Date.now() > end) throw new Error(`${what}: not within ${Math.round(long / 1000)} s`);
       await new Promise((r) => setTimeout(r, 400));
     }
   }
 
   /** A trusted click at a point of a session's viewport (CSS pixels). */
   async click(session: string, x: number, y: number): Promise<void> {
+    // A press outside the window lands on nothing: it is refused here, loudly, so a target that was not on screen is caught at once.
+    const size = (await this.evaluate(session, "[window.innerWidth, window.innerHeight]").catch(() => undefined)) as [number, number] | undefined;
+    if (size !== undefined && (x < 0 || y < 0 || x > size[0] || y > size[1])) throw new Error(`the target is not on screen (a press at ${Math.round(x)},${Math.round(y)} in a ${size[0]}x${size[1]} window)`);
     // A window under load (a shard at a high load average) can leave one of the three events unanswered for 20 s: the press is
     // made again, twice at most, only for that answer's absence.
     for (let attempt = 0; ; attempt++) {
@@ -140,27 +172,86 @@ export class Cdp {
 
   /** The centre of the first element matching `selector` (or whose text contains `text`) in a session, in that session's viewport
    *  (scrolled into view first when it lies outside it). */
+  /** `text` is matched as a substring of the element's text; written `=Name` it must be one whole line of it, or its aria-label. */
   async centerOf(session: string, selector: string, text?: string): Promise<{ x: number; y: number } | undefined> {
     const v = await this.evaluate(session, `(() => {
+      ${CLIPPED_AWAY_JS}
       const els = [...document.querySelectorAll(${JSON.stringify(selector)})].filter((e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0; });
-      const el = ${text === undefined ? "els[0]" : `els.find((e) => (e.innerText || e.getAttribute('aria-label') || '').includes(${JSON.stringify(text)}))`};
+      const el = ${text === undefined ? "els[0]" : `els.find((e) => ${text.startsWith("=") ? `(e.innerText || '').split('\\n').some((l) => l.trim() === ${JSON.stringify(text.slice(1))}) || e.getAttribute('aria-label') === ${JSON.stringify(text.slice(1))}` : `(e.innerText || e.getAttribute('aria-label') || '').includes(${JSON.stringify(text)})`})`};
       if (!el) return null;
       let r = el.getBoundingClientRect();
       // Below the fold (a long list: the Installed tab on a home with many plugins), a press at its place would land
       // outside the view and do nothing: it is scrolled into view first, as a person does.
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) {
+      // The same when something else is at the point: a button just inside the bottom edge has a classic scroll bar (a runner has no pointing
+      // device, so its bars are always drawn) over its centre, and a press there lands on the bar and does nothing.
+      const there = document.elementFromPoint(Math.min(Math.max(cx, 0), window.innerWidth - 1), Math.min(Math.max(cy, 0), window.innerHeight - 1));
+      const covered = there === null || !(there === el || el.contains(there) || there.contains(el));
+      // elementFromPoint looks through a scroll bar (it names the button under it), so the bars are read directly: the point must lie in
+      // the area without bars (the client box) of the page and of every scrolling ancestor; a button at the end of a long pane sits there
+      // until it is scrolled to the middle (or as far as the pane goes, which clears the bar).
+      const de = document.documentElement;
+      let underBar = cx > de.clientWidth || cy > de.clientHeight;
+      for (let a = el.parentElement; a && a !== document.body && a !== de && !underBar; a = a.parentElement) {
+        const cs = getComputedStyle(a);
+        if (!/(auto|scroll)/.test(cs.overflowX + cs.overflowY)) continue;
+        const ar = a.getBoundingClientRect();
+        if (cx > ar.left + a.clientLeft + a.clientWidth || cy > ar.top + a.clientTop + a.clientHeight) underBar = true;
+      }
+      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight || covered || underBar) {
         el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         r = el.getBoundingClientRect();
       }
+      // Still clipped by a pane it sits in (it doesn't scroll to the target): not a place a press can land.
+      if (clippedAway(el, r.left + r.width / 2, r.top + r.height / 2)) return null;
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
     })()`);
-    return v === null || v === undefined ? undefined : (v as { x: number; y: number });
+    // Still outside the window after the scroll (its pane doesn't scroll to it): not a place a press can land, so not an answer.
+    const at = v as { x: number; y: number } | null | undefined;
+    if (at === null || at === undefined) return undefined;
+    const size = (await this.evaluate(session, "[window.innerWidth, window.innerHeight]").catch(() => undefined)) as [number, number] | undefined;
+    if (size !== undefined && (at.x < 0 || at.y < 0 || at.x > size[0] || at.y > size[1])) return undefined;
+    return at;
+  }
+
+  /** The centre of a code session's row in the window's sidebar, ready to press: the row's project group unfolded when it is folded,
+   *  and the row scrolled into the list's view (one helper for every row that presses a session row; `id` undefined: the first one).
+   *  `id` is the session's id, matched on the row's `data-session` (what never changes as its title lands), or a text the row
+   *  shows. Undefined when this document has no such row. */
+  async sessionRowCenter(session: string, id?: string): Promise<{ x: number; y: number } | undefined> {
+    const v = await this.evaluate(session, `(() => {
+      const id = ${JSON.stringify(id ?? null)};
+      const rows = () => [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => id === null || e.getAttribute("data-session") === id || (e.textContent || "").includes(id));
+      if (rows().length === 0 && document.querySelector(".cl-sidebar")) {
+        // A folded project group hides its rows: a person opens it (the toggle), and the row is there.
+        for (const t of document.querySelectorAll(".cl-sidebar__project-toggle[aria-expanded=false]")) t.click();
+      }
+      return null;
+    })()`).catch(() => undefined);
+    void v;
+    await new Promise((r) => setTimeout(r, 150));
+    // The first row (or the one named) that a press would reach: scrolled into the list's view, with the row itself (or what it holds)
+    // under its centre. A row something else sits over (the list's own header, a sheet) is passed over, as a person presses the next one.
+    const at = (await this.evaluate(session, `(() => {
+      ${CLIPPED_AWAY_JS}
+      const id = ${JSON.stringify(id ?? null)};
+      const rows = [...document.querySelectorAll(".cl-sidebar .cl-sidebar__agent .cl-sidebar__row")].filter((e) => (id === null || e.getAttribute("data-session") === id || (e.textContent || "").includes(id)) && e.getBoundingClientRect().width > 0);
+      for (const el of rows) {
+        el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (clippedAway(el, x, y)) continue;
+        const hit = document.elementFromPoint(x, y);
+        if (hit !== null && (el === hit || el.contains(hit))) return { x, y };
+      }
+      return null;
+    })()`).catch(() => undefined)) as { x: number; y: number } | null | undefined;
+    return at ?? undefined;
   }
 
   /** The main window's pixels (a top-level target only: a frame's session can't capture). */
   async screenshot(): Promise<Buffer> {
-    const main = [...this.frames.values()].find((f) => f.type === "page" && f.url === "clover-core://app/");
+    const main = [...this.frames.values()].find((f) => f.type === "page" && f.url === MAIN_PAGE_URL);
     if (main === undefined) throw new Error("no main window target");
     const r = await this.send<{ data: string }>("Page.captureScreenshot", { format: "png" }, main.session);
     return Buffer.from(r.data, "base64");

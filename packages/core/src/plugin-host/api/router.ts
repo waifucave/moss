@@ -1,6 +1,6 @@
 // The plugin API's router in the core (spec §5.4 "The plugin API" and "Capabilities"; the PluginHost contract's
 // `ApiRouter`). Every call a plugin's host half makes comes here, after `guardApiRouter` has checked that the plugin
-// runs in the process the call came from and that a `clover`-only call came from the `clover` process (S4).
+// runs in the process the call came from and that a `moss`-only call came from the `moss` process (S4).
 //
 // The router is the one capability gate (fails closed):
 // * a path that isn't in the plugin SDK's `API_CALLS` doesn't exist (`refused`), whatever the plugin declared;
@@ -15,8 +15,8 @@
 //
 // The handlers get the caller the core bound (R7): the session whose tool call the plugin is serving, or the plugin
 // itself, and never anything the plugin wrote.
-import { apiCallAllowed, API_CALLS, type ApiCallInfo, type ApiCallPath } from "@waifucave/clover-plugin-sdk";
-import type { Caller, HostProcess } from "@waifucave/clover-protocol";
+import { apiCallAllowed, API_CALLS, withImplied, type ApiCallInfo, type ApiCallPath } from "@waifucave/moss-plugin-sdk";
+import { isKindFamily, kindCapability, type Caller, type DataKind, type HostProcess } from "@waifucave/moss-protocol";
 import { ContractError } from "../../contracts/common";
 import type { ApiRouter } from "../../contracts/plugin-host";
 import { RUNNING_STATES, type PluginRecord, type PluginRegistry } from "../../contracts/plugin-registry";
@@ -30,6 +30,9 @@ export interface ApiCallContext {
   path: ApiCallPath;
   /** A component's call: the session it shows. */
   session?: string;
+  /** The core's own record of the call this one was made inside, when it was made inside one (`InvocationTable`): its
+   *  id, and for a tool call the `host` MCP server and tool it runs. A live picture is keyed to it. */
+  invocation?: { id: string; server?: string; tool?: string };
 }
 
 export type ApiHandler = (ctx: ApiCallContext, args: readonly unknown[]) => unknown;
@@ -48,6 +51,9 @@ export interface ApiRouterOptions {
    *  user-endpoint.ts), read at each call: the plugin's `net.fetch` reaches that origin as if its OK listed it, beside
    *  the hosts its OK does list. */
   userEndpoint?: (pluginId: string) => string | undefined;
+  /** The kind (`sessions` or `bots`) of a live picture by its id: `pictures.open` is gated by the kind of the picture it
+   *  opens (`picture.read.<kind>`), never by anything the call says. A picture that isn't there has none. */
+  pictureKind?: (id: string) => DataKind | undefined;
 }
 
 /** The states in which a plugin's host half may use the API (`grantsInForce`'s, for its other connections). */
@@ -74,27 +80,21 @@ export function createApiRouter(o: ApiRouterOptions): ApiRouter {
     if (!record.enabled || !LIVE.has(record.state)) {
       throw new ContractError("plugin_stopped", `${call.pluginId} is ${record.enabled ? record.state : "off"}${record.reason ? `: ${record.reason}` : ""}`);
     }
-    const target = targetOf(path, call.args, o.commandOwner);
+    const target = targetOf(path, call.args, o.commandOwner, o.pictureKind);
     // A plugin runs its own tree's commands with no `call:` (§5.4: `call:<plugin-id>` is for another plugin's).
     const ownCommand = path === "commands.run" && target?.plugin !== undefined && target.plugin.split("/")[0] === call.pluginId.split("/")[0];
     // The user's own endpoint for this plugin's provider counts as a granted host, for that origin's host and port.
     const userOrigin = path === "net.fetch" && target?.host !== undefined ? o.userEndpoint?.(call.pluginId) : undefined;
     let granted = userOrigin !== undefined && userOrigin === originOf(call.args[0]) ? [...record.granted, `network:${hostEntryOf(target!.host!, target!.port)}`] : record.granted;
-    // A voice mode holds `voices.use` by being one (§6.6): its OK card says it uses your voice providers.
-    if (path.startsWith("voices.") && !granted.includes("voices.use") && isVoiceMode(record)) granted = [...granted, "voices.use"];
+    // A capability that is another's for more things (`plugins.manage` reads too) carries that other with it.
+    granted = withImplied(granted);
     if (!ownCommand && !apiCallAllowed(path, call.process, granted, target, o.allowNetwork)) {
       throw new ContractError("refused", refusal(path, call.process, target), { call: path });
     }
     const fn = handlerOf(o.handlers, path);
     if (fn === undefined) throw new ContractError("refused", `${path} is not served on this computer`, { call: path });
-    return await fn({ pluginId: call.pluginId, process: call.process, caller: call.caller, record, path, ...(call.session !== undefined ? { session: call.session } : {}) }, call.args);
+    return await fn({ pluginId: call.pluginId, process: call.process, caller: call.caller, record, path, ...(call.session !== undefined ? { session: call.session } : {}), ...(call.invocation !== undefined ? { invocation: call.invocation } : {}) }, call.args);
   };
-}
-
-/** Whether a plugin's manifest makes it a voice mode (`contributes.voiceModes`). */
-function isVoiceMode(record: PluginRecord): boolean {
-  const modes = (record.manifest as { contributes?: { voiceModes?: unknown } } | undefined)?.contributes?.voiceModes;
-  return Array.isArray(modes) && modes.length > 0;
 }
 
 /** A URL's origin, or undefined. */
@@ -114,7 +114,17 @@ function hostEntryOf(host: string, port: number | undefined): string {
 }
 
 /** The target a capability is checked against: a command's plugin, a URL's host. */
-function targetOf(path: ApiCallPath, args: readonly unknown[], commandOwner?: (name: string) => string | undefined): { plugin?: string; host?: string; port?: number } | undefined {
+function targetOf(path: ApiCallPath, args: readonly unknown[], commandOwner?: (name: string) => string | undefined, pictureKind?: (id: string) => DataKind | undefined): { plugin?: string; host?: string; port?: number; kind?: DataKind } | undefined {
+  // A family by kind (`activity.read.*`, `picture.read.*`): the kind the call reaches. A call naming none has no target,
+  // and the capability check refuses it (`apiCallAllowed`).
+  if (path === "activity.list" || path === "activity.watch" || path === "pictures.list" || path === "pictures.watch") {
+    return args[0] === "sessions" || args[0] === "bots" ? { kind: args[0] } : undefined;
+  }
+  if (path === "pictures.open") {
+    const kind = typeof args[0] === "string" ? pictureKind?.(args[0]) : undefined;
+    if (kind === undefined) throw new ContractError("not_found", "no such live picture");
+    return { kind };
+  }
   if (path === "commands.run") {
     const name = args[0];
     if (typeof name !== "string") return undefined;
@@ -137,13 +147,16 @@ function targetOf(path: ApiCallPath, args: readonly unknown[], commandOwner?: (n
   return undefined;
 }
 
-function refusal(path: ApiCallPath, process: HostProcess | "ui", target?: { plugin?: string; host?: string }): string {
+function refusal(path: ApiCallPath, process: HostProcess | "ui", target?: { plugin?: string; host?: string; kind?: DataKind }): string {
   const info: ApiCallInfo = API_CALLS[path];
   if (info.where === "ui" && process !== "ui") return `${path} exists only in components`;
   if (process === "ui" && info.where !== "both" && info.where !== "ui") return `${path} exists only in a plugin's host code`;
   if (info.where === "own" && process !== "own") return `${path} exists only in a process of the plugin's own`;
-  if (info.where === "clover" && process !== "clover") return `${path} exists only in the clover plugin host`;
-  const capability = info.capability === "call:*" ? `call:${target?.plugin ?? "<plugin>"}` : info.capability === "network:*" ? `network:${target?.host ?? "<host>"}` : info.capability;
+  if (info.where === "moss" && process !== "moss") return `${path} exists only in the moss plugin host`;
+  // A family by kind names the capability of the kind the call reaches, or both when it named none.
+  const family = info.capability !== undefined && isKindFamily(info.capability) ? info.capability : undefined;
+  const capability = info.capability === "call:*" ? `call:${target?.plugin ?? "<plugin>"}` : info.capability === "network:*" ? `network:${target?.host ?? "<host>"}`
+    : family !== undefined ? (target?.kind !== undefined ? [target.kind] : (["bots", "sessions"] as const)).map((k) => kindCapability(family, k)).join(" or ") : info.capability;
   return `${path} needs the capability ${capability}, which this plugin's OK doesn't list`;
 }
 

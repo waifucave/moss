@@ -15,20 +15,18 @@
 //   (#334's review). `conversation.*` and `bots.*` reach every bot once granted: there is no per-bot grant yet.
 // * `bots.*`, `devices.*`: the services' own views; a watch gets each changed view (a removal carries none).
 // * Limits: a plugin has at most WATCHES_PER_PLUGIN watches open across the areas; a note or message is at most
-//   MESSAGE_MAX characters; `files.grep` returns at most GREP_LIMIT_MAX matches; terminal input is at most
-//   TERMINAL_INPUT_MAX characters a call, and a size is 2 to 1000 columns and rows.
+//   MESSAGE_MAX characters; `files.grep` returns at most GREP_LIMIT_MAX matches; a terminal's size is 2 to 1000 columns
+//   and rows.
 // * `computers.*`, `files.*`: J's adapters (`computers/api.ts`); files are always the plugin's, fenced by the tree.
-// * `terminal.*`: a terminal opened by a plugin is that plugin's, and only it writes to, resizes, reads or closes it.
+// * `terminal.*`: a terminal opened by a plugin is that plugin's, and only it resizes, reads or closes it. Nothing the
+//   plugin chooses is written to it: its input is the user's own key presses and pastes, which the app hands over.
 //   Its output reaches a component as the `terminal_output` core event for the app, carrying the opener's `pluginId`
 //   so the app delivers it to that plugin's layer only (a listener can't cross the layer path), and a host half's
 //   `onData` listener directly. A plugin's terminals close when it stops or is removed (`forget`).
 import type { grantFiles } from "../../fence/plugin-grants";
-import { foldTitle, ROUTINE_FIRE_PAYLOAD_MAX } from "@waifucave/clover-plugin-sdk";
-import { topPluginIdOf, USAGE_METHODS, type BotView, type Caller, type DeviceView, type PlanReading, type SessionView } from "@waifucave/clover-protocol";
+import { foldTitle, ROUTINE_FIRE_PAYLOAD_MAX } from "@waifucave/moss-plugin-sdk";
+import { dataKindOfSession, topPluginIdOf, USAGE_METHODS, type BotView, type DataKind, type Caller, type DeviceView, type PlanReading, type SessionView } from "@waifucave/moss-protocol";
 import type { UsageLedger } from "../../usage/ledger";
-import { PIECE_BYTES, type VoicePlay } from "../../voices/service";
-import { mainSessionIdFor } from "../../sessions/ids";
-import { randomUUID } from "node:crypto";
 import { listMemory, readMemory } from "../../bots/memory";
 import { botPaths } from "../../bots/paths";
 import { existsSync } from "node:fs";
@@ -42,15 +40,17 @@ import { deviceView } from "../../devices/rpc";
 import type { DeviceLinks } from "../../links/node";
 import type { TerminalOutput } from "../../tree/terminals";
 import { projectRecord, projectRecords, readsSealed, transientFor, type WireEvent } from "../../sessions/wire";
-import { listenerArg, stringArg, type ApiCallContext, type ApiHandlers } from "./router";
+import { listenerArg, stringArg, type ApiCallContext, type ApiHandler, type ApiHandlers } from "./router";
 
 /** Where each service is, read when a call arrives (undefined while it isn't running here). */
 export interface AreaServices {
   bots(): BotSide | undefined;
   node(): ComputerNode | undefined;
   links(): DeviceLinks | undefined;
-  /** The Clover Browser (the bundled Browser tool's `browser.*`), once the daemon's parts have started it. */
+  /** The MOSS Browser (the bundled Browser tool's `browser.*`), once the daemon's parts have started it. */
   browser?(): BrowserService | undefined;
+  /** The Browser tool drove a tab (`browser.open`, `navigate`, `screenshot`, `cdp`): its live picture follows (`browser/picture-bridge.ts`). */
+  browserDrives?(ctx: ApiCallContext, tabId: string): void;
   /** Sends a core event to the app's connections (a layer's terminal output). */
   emitToApp?(event: { type: string; [key: string]: unknown }): void;
   now?(): number;
@@ -59,10 +59,8 @@ export interface AreaServices {
   grants?(): ReturnType<typeof grantFiles> | undefined;
   /** `usage.*`: lane D's ledger (with the bot side) and this computer's plan readings, each absent where not running. */
   usage?(): { ledger?: Pick<UsageLedger, "rows" | "summary" | "watch">; plans?(): Promise<PlanReading[]> };
-  /** The Clover home (`memory.*` reads `<home>/bots/<bot>/memory/`). */
+  /** The MOSS home (`memory.*` reads `<home>/bots/<bot>/memory/`). */
   home?: string;
-  /** Sends one piece of speech to this computer's app (`voice.play`), for `audio.play`. Absent: not served here. */
-  voicePlay?(p: VoicePlay): Promise<void> | void;
 }
 
 const HISTORY_PAGE_MAX = 500;
@@ -76,17 +74,8 @@ export const ROUTINE_RUNS_MAX = 200;
 /** A page of usage rows, at most, and the usage watches one plugin may hold. */
 export const USAGE_ROWS_MAX = 1000;
 export const USAGE_WATCHES_PER_PLUGIN = 8;
-/** One `audio.play` call's audio, at most; an utterance left without its last piece ends after AUDIO_IDLE_MS; at most
- *  AUDIO_UTTERANCES_MAX play at once across plugins. */
-export const AUDIO_PIECE_MAX = 8 * 1024 * 1024;
-export const AUDIO_IDLE_MS = 30_000;
-export const AUDIO_UTTERANCES_MAX = 64;
-/** One plugin's (its whole tree's) utterances playing at once, under AUDIO_UTTERANCES_MAX: one plugin can't fill them
- *  for everyone. */
-export const AUDIO_UTTERANCES_PER_PLUGIN = 8;
 export const MESSAGE_MAX = 16_000;
 export const GREP_LIMIT_MAX = 1000;
-export const TERMINAL_INPUT_MAX = 64 * 1024;
 /** Output held while a terminal opens, before its id is known, in characters (any terminal's; ours is kept, the rest
  *  let go). Past it only exits are held, without their data. */
 export const EARLY_OUTPUT_BYTES = 1_000_000;
@@ -94,12 +83,12 @@ export const EARLY_OUTPUT_BYTES = 1_000_000;
 /** A size in columns or rows, as the peer schema takes it: an integer from 2 to 1000. */
 const termSize = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? Math.min(1000, Math.max(2, Math.round(v))) : fallback);
 
-/** A note's label (#334's review): one line, no control characters, never reading as Clover or the system, and
+/** A note's label (#334's review): one line, no control characters, never reading as MOSS or the system, and
  *  always the plugin's own: it starts with the plugin's id. */
 export function noteLabel(pluginId: string, raw: unknown): string {
   const clean = typeof raw === "string" ? raw.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) : "";
   const folded = foldTitle(clean);
-  if (clean === "" || ["clover", "system", "waifucave"].some((w) => folded.includes(foldTitle(w)))) return pluginId;
+  if (clean === "" || ["moss", "system", "waifucave"].some((w) => folded.includes(foldTitle(w)))) return pluginId;
   return clean.startsWith(`${pluginId}`) ? clean : `${pluginId}: ${clean}`;
 }
 
@@ -122,8 +111,6 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
   const ledger = () => s.usage?.().ledger ?? notRunning("the usage ledger");
   const engine = () => side().routines ?? notRunning("the routine engine");
   const usageWatches = new Map<string, number>();
-  /** The utterances plugins are playing now, by id: whose, which bot's figure, and the next piece. */
-  const playing = new Map<string, { pluginId: string; bot: string; session: string; utterance: string; next: number; format?: string; idle?: ReturnType<typeof setTimeout> }>();
   /** The memory folder of `bot`, if the caller may read it: its own bot's always, any bot's with `memory.read`. */
   /** Whether `bot` is the plugin's own LIVE bot: its id is the plugin's top-level id and the bot side has it now. A
    *  folder or routine a removed bot left is no plugin's own (a plugin installed later under the same id doesn't
@@ -215,35 +202,31 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
     return t;
   };
 
-  // ---- the voice slot's sink and the providers' endpoints (§6.6; `voices/slot.ts`) ----
-  let slotHandlers: { slot: unknown; handlers: ApiHandlers } | undefined;
-  const slotRoute = (path: keyof ApiHandlers) => (ctx: ApiCallContext, args: readonly unknown[]) => {
-    const slot = side().voiceSlot ?? notRunning("the voice slot");
-    if (slotHandlers?.slot !== slot) slotHandlers = { slot, handlers: slot.apiHandlers() };
-    const h = slotHandlers.handlers[path] ?? notRunning(`${path}`);
-    return h(ctx, args);
-  };
-
-  const handlers: ApiHandlers = {
-    "speech.piece": slotRoute("speech.piece"), "speech.play": slotRoute("speech.play"), "speech.stop": slotRoute("speech.stop"), "speech.modes": slotRoute("speech.modes"),
-    "voices.providers": slotRoute("voices.providers"), "voices.speak": slotRoute("voices.speak"), "voices.listen": slotRoute("voices.listen"), "voices.feed": slotRoute("voices.feed"),
-    "conversation.list": (_ctx, args) => {
+  /** The sessions of one kind only (`dataKindOfSession`): a session of the other kind is `not_found`. */
+  const readsOf = (kind: DataKind): Record<"list" | "get" | "watch" | "history" | "follow", ApiHandler> => {
+    const sessionOfKind = (id: string) => {
+      const v = sessionOf(id);
+      if (dataKindOfSession(v) !== kind) throw new ContractError("not_found", `no session ${id}`);
+      return v;
+    };
+    return {
+    list: (_ctx, args) => {
       const f = opt(args[0]);
       const kinds = Array.isArray(f.kinds) ? (f.kinds as string[]) : undefined;
-      return side().host.list(typeof f.bot === "string" ? { bot: f.bot } : {}).filter((v) => kinds === undefined || kinds.includes(v.kind));
+      return side().host.list(typeof f.bot === "string" ? { bot: f.bot } : {}).filter((v) => dataKindOfSession(v) === kind && (kinds === undefined || kinds.includes(v.kind)));
     },
-    "conversation.get": (_ctx, args) => sessionOf(stringArg(args, 0, "the session")),
-    "conversation.watch": (ctx, args) => {
+    get: (_ctx, args) => sessionOfKind(stringArg(args, 0, "the session")),
+    watch: (ctx, args) => {
       const listener = listenerArg<SessionView>(args, 0);
       const host = side().host;
-      return watch(ctx, () => host.watch((view) => listener(view)));
+      return watch(ctx, () => host.watch((view) => { if (dataKindOfSession(view) === kind) listener(view); }));
     },
-    "conversation.history": (ctx, args) => {
+    history: (ctx, args) => {
       const id = stringArg(args, 0, "the session");
       const page = opt(args[1]);
       const limit = typeof page.limit === "number" && page.limit >= 1 ? Math.min(Math.floor(page.limit), HISTORY_PAGE_MAX) : 50;
       const host = side().host;
-      const v = sessionOf(id);
+      const v = sessionOfKind(id);
       const opts = { kind: v.kind, sealed: sealedFor(ctx) };
       const eventsIn = (start: number, end: number) => projectRecords(host.history(id, { afterSeq: start - 1, limit: end - start }), opts);
       let end = Math.min(typeof page.before === "number" ? page.before : host.length(id), host.length(id));
@@ -270,13 +253,13 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
     // `since` (an integer, -1 for everything) replays after the watch opens, a page at a time with a yield between
     // pages, at most the latest REPLAY_MAX events; what lands meanwhile, records and transient events alike, waits for
     // the replay and then follows in the order it came (#333/#334's review: a transient never overtakes the replay).
-    "conversation.follow": (ctx, args) => {
+    follow: (ctx, args) => {
       const id = stringArg(args, 0, "the session");
       const listener = listenerArg<WireEvent>(args, 1);
       const since = opt(args[2]).since;
       if (since !== undefined && !(Number.isInteger(since) && (since as number) >= -1)) throw new ContractError("invalid", "since is an event's seq, or -1 for every event");
       const host = side().host;
-      const v = sessionOf(id);
+      const v = sessionOfKind(id);
       const opts = { kind: v.kind, sealed: sealedFor(ctx) };
       const me = asPlugin(ctx);
       // The whole watch, its slot included, for a replay that fails (set once `watch` returns, before any page runs).
@@ -358,6 +341,15 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
       });
       return unsubscribe;
     },
+    };
+  };
+
+  const handlers: ApiHandlers = {
+    // The reads of a conversation, by kind (§3.6): `conversation.*` serves bots' conversations (`conversation.read`) and
+    // `sessions.*` code sessions (`sessions.read`), each the same code over the sessions of its kind; a session of the
+    // other kind answers `not_found`, as a session that isn't there does.
+    ...Object.fromEntries(Object.entries(readsOf("bots")).map(([k, v]) => [`conversation.${k}`, v])),
+    ...Object.fromEntries(Object.entries(readsOf("sessions")).map(([k, v]) => [`sessions.${k}`, v])),
     "conversation.note": async (ctx, args) => {
       const id = stringArg(args, 0, "the session");
       const n = opt(args[1]);
@@ -411,7 +403,7 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
     "computers.releaseHold": route(computers, "computers.releaseHold"),
     "computers.setUserWorking": route(computers, "computers.setUserWorking"),
     "computers.setActionRunning": route(computers, "computers.setActionRunning"),
-    "computers.cloverWindows": route(computers, "computers.cloverWindows"),
+    "computers.mossWindows": route(computers, "computers.mossWindows"),
     "computers.watch": (ctx, args) => {
       const listener = listenerArg<unknown>(args, 0);
       const registry = node().registry;
@@ -445,65 +437,6 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
         offLinks();
       };
       });
-    },
-
-    // ---- audio (the app's player and push-to-talk, through lane D's voices; `audio`) ----
-    // `audio.play`: audio the app plays as a bot's speech (its figure lip-syncs to it), the plugin's own bot's unless
-    // `opts.bot` names another; a whole clip in one call, or (from a host half, whose API sends a stream that way) a
-    // piece at a time under one utterance, the last `final`. `audio.onRecording`: each piece of the user's push-to-talk
-    // audio, as it comes, whichever bot it is for (the OK says the plugin "hears what you say to your bots with push-to-talk, and can play sound, including as your bots' voices").
-    "audio.play": async (ctx, args) => {
-      const a = opt(args[0]);
-      if (a.format !== "pcm16-24k" && a.format !== "mp3" && a.format !== "opus") throw new ContractError("invalid", "audio.play's format is pcm16-24k, mp3 or opus");
-      if (!(a.data instanceof Uint8Array)) throw new ContractError("invalid", "audio.play's data is bytes (a Uint8Array) or, from a host half, an async iterable of them");
-      if (a.data.length > AUDIO_PIECE_MAX) throw new ContractError("invalid", `one piece of audio is at most ${AUDIO_PIECE_MAX} bytes`);
-      // Through the voice slot when there is one (§6.6): the active voice mode plays it in its turn, so nothing talks
-      // over it; a core with no slot (a test of this area alone) hands it to the player as before.
-      const slot = s.bots()?.voiceSlot;
-      const send = slot !== undefined ? (p: VoicePlay) => slot.offerPiece(ctx.pluginId, p) : s.voicePlay ?? notRunning("the app's player");
-      const piece = opt(args[2]);
-      const named = typeof piece.utterance === "string" && /^pa_[0-9a-f-]{36}$/.test(piece.utterance) ? piece.utterance : undefined;
-      let u = named === undefined ? undefined : playing.get(named);
-      if (u !== undefined && u.pluginId !== ctx.pluginId) throw new ContractError("refused", "that utterance is another plugin's");
-      if (u === undefined) {
-        const bot = typeof opt(args[1]).bot === "string" ? (opt(args[1]).bot as string) : topPluginIdOf(ctx.pluginId);
-        if (!side().bots.has(bot)) throw new ContractError("not_found", `no bot ${bot} to speak it (opts.bot names the bot whose figure plays it)`);
-        u = { pluginId: ctx.pluginId, bot, session: mainSessionIdFor(bot), utterance: named ?? `pa_${randomUUID()}`, next: 0 };
-        if (playing.size >= AUDIO_UTTERANCES_MAX) throw new ContractError("refused", "too many utterances are playing; let one end first");
-        const tree = topPluginIdOf(ctx.pluginId);
-        if ([...playing.values()].filter((x) => topPluginIdOf(x.pluginId) === tree).length >= AUDIO_UTTERANCES_PER_PLUGIN) {
-          throw new ContractError("refused", `${tree} has ${AUDIO_UTTERANCES_PER_PLUGIN} utterances playing, the most one plugin may; let one end first`);
-        }
-        playing.set(u.utterance, u);
-      }
-      const now = u;
-      if (now.idle !== undefined) clearTimeout(now.idle);
-      const format = a.format;
-      now.format = format;
-      for (let at = 0; at < a.data.length; at += PIECE_BYTES) {
-        await send({ bot: now.bot, session: now.session, utterance: now.utterance, seq: now.next++, audio: Buffer.from(a.data.subarray(at, at + PIECE_BYTES)).toString("base64"), format, final: false });
-      }
-      // The last piece (a whole clip's, or the stream's own last) ends the utterance for the app; a stream left
-      // hanging ends by itself after AUDIO_IDLE_MS.
-      const end = async () => {
-        playing.delete(now.utterance);
-        await send({ bot: now.bot, session: now.session, utterance: now.utterance, seq: now.next++, audio: "", format, final: true });
-      };
-      if (named === undefined || piece.final === true) await end();
-      else {
-        now.idle = setTimeout(() => { if (playing.get(now.utterance) === now) void Promise.resolve(end()).catch(() => {}); }, AUDIO_IDLE_MS);
-        (now.idle as { unref?: () => void }).unref?.();
-      }
-      return { utterance: now.utterance };
-    },
-    "audio.onRecording": (ctx, args) => {
-      const listener = listenerArg<{ utterance: string; format: string; data: Uint8Array; final: boolean }>(args, 0);
-      const voices = side().voices ?? notRunning("the bots' voices");
-      // An inactive voice mode hears nothing (§6.6: only the active voice hears the user), judged at each piece.
-      return watch(ctx, () => voices.onRecording((p) => {
-        if (s.bots()?.voiceSlot?.inactiveMode(ctx.pluginId) === true) return;
-        listener({ utterance: p.utterance, format: p.format, data: p.data, final: p.final });
-      }));
     },
 
     // ---- memory (lane D's memory folder, read-only) ----
@@ -667,16 +600,13 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
       for (const o of held) handle(o);
       return { terminalId };
     },
-    // The bytes a keydown makes, or a paste's text (the app's runtime turns the DOM event into these, lane E).
-    "terminal.input": async (ctx, args) => {
-      const id = stringArg(args, 0, "the terminal");
-      own(ctx, id);
-      const e = opt(args[1]);
-      const text = e.type === "paste" ? e.text : e.data;
-      if (typeof text === "string" && text.length > TERMINAL_INPUT_MAX) throw new ContractError("invalid", `terminal input is at most ${TERMINAL_INPUT_MAX} characters a call`);
-      if (e.type === "paste" && typeof e.text === "string") return node().terminals.write(id, e.text, { paste: true });
-      if (typeof e.data === "string") return node().terminals.write(id, e.data);
-      throw new ContractError("invalid", "terminal input is { data } for keys, or { type: \"paste\", text }");
+    // F5: no plugin call writes to a terminal. What reaches one is only the user's own key press or paste, which the app's
+    // main process saw come to the frame and hands over itself (`terminal.write` on the plugin's connection, a call the
+    // general door never passes: layer-links.ts `MAIN_ONLY`). This member is the component SDK's name for that path; a
+    // call that reaches the core here, with bytes of the plugin's own choosing, is refused.
+    "terminal.input": async () => {
+      // Refused whichever terminal it names, its own included (one opened over `terminal.open` on its connection too).
+      throw new ContractError("refused", "a terminal takes only the user's own key presses and pastes, which the app hands over itself; a plugin's call writes nothing to it");
     },
     "terminal.onData": (ctx, args) => {
       const id = stringArg(args, 0, "the terminal");
@@ -702,23 +632,9 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
     },
   };
   return {
-    // The Browser tool's `browser.*` (bundled `clover` tree, `browser` capability): the browser read at each call.
-    handlers: { ...handlers, ...browserApiHandlers(() => s.browser?.()) },
+    // The Browser tool's `browser.*` (bundled `moss` tree, `browser` capability): the browser read at each call.
+    handlers: { ...handlers, ...browserApiHandlers(() => s.browser?.(), s.browserDrives) },
     async forget(pluginId) {
-      // Its utterances end now (their last piece, as the idle timer would send it 30 s later): its sound stops and
-      // their slots free as it stops or is removed.
-      for (const [id, u] of [...playing]) {
-        if (u.pluginId !== pluginId) continue;
-        if (u.idle !== undefined) clearTimeout(u.idle);
-        playing.delete(id);
-        try {
-          const piece = { bot: u.bot, session: u.session, utterance: u.utterance, seq: u.next++, audio: "", format: (u.format ?? "pcm16-24k") as never, final: true };
-          const slot = s.bots()?.voiceSlot;
-          await (slot !== undefined ? slot.offerPiece(u.pluginId, piece) : s.voicePlay?.(piece));
-        } catch {
-          // the app's player is gone: nothing is playing there
-        }
-      }
       for (const [id, t] of [...terminals]) {
         if (t.pluginId !== pluginId) continue;
         t.stop?.();

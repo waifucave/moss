@@ -4,7 +4,11 @@
 //
 //   scripts/pinned-bun scripts/acceptance/upgrade.ts [--from <commit>]       source: tree <commit> (default: the newest
 //                                                                            try-* tag) built in a temp worktree, then
-//                                                                            this checkout
+//                                                                            this checkout. A tree from before the
+//                                                                            rename (3a3e247e3, the last one) runs its
+//                                                                            own harness and leaves the old install's
+//                                                                            home; this checkout's run then takes the
+//                                                                            one-time copy (COPY_UPGRADE_STEPS)
 //   scripts/pinned-bun scripts/acceptance/upgrade.ts --from-app <old.app> --app <new.app>
 //                                                                            the test-marked packaged twins (run them
 //                                                                            under lane M's watchdog)
@@ -20,6 +24,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } fr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { holdMachine } from "./exclusive";
+import { nameLeftovers, reap } from "./reaper";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const HARNESS = join(REPO, "scripts", "acceptance");
@@ -56,9 +61,9 @@ function lastTry(): string {
 
 const pinnedBun = join(REPO, "scripts", "pinned-bun");
 /** One acceptance run; its table (stdout) comes back, its progress goes to stderr. */
-function run(label: string, script: string, args: string[], cwd: string): { code: number; table: string } {
+function run(label: string, script: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): { code: number; table: string } {
   console.error(`upgrade: ${label}: ${[script, ...args].join(" ")}`);
-  const r = spawnSync(pinnedBun, [script, ...args, ...(verbose ? ["--verbose"] : [])], { cwd, stdio: ["ignore", "pipe", "inherit"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(pinnedBun, [script, ...args, ...(verbose ? ["--verbose"] : [])], { cwd, env, stdio: ["ignore", "pipe", "inherit"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status ?? 2, table: (r.stdout ?? "").trim() };
 }
 
@@ -68,10 +73,24 @@ let tree: string | undefined;
 let fromLabel = "";
 let code = 2;
 const tables: string[] = [];
+/** Lane HV: whatever of the pair's is still running from its own temp folders (the old tree's app and engine, anything under
+ *  the state dir) is ended, and named: each half's run reaps its own, but an old tree's harness may have no reaper. */
+async function reapPair(): Promise<string | undefined> {
+  const r = await reap({ roots: [state, ...(tree !== undefined ? [tree] : [])], groups: [] });
+  return r.leftovers.length === 0 ? undefined : `${r.leftovers.length} process(es) the pair started outlived it (ended now): ${nameLeftovers(r.leftovers)}${r.survivors.length > 0 ? `; still alive after SIGKILL: ${nameLeftovers(r.survivors)}` : ""}`;
+}
+// Interrupted: each half's run hears the same signal (one group) and cleans up; then the pair's own leftovers go.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(sig, () => {
+    void reapPair().then((p) => { if (p !== undefined) console.error(`upgrade: FAIL: ${p}`); process.exit(130); });
+  });
+}
 try {
   let oldScript = join(HARNESS, "run.ts");
   let oldCwd = REPO;
   const oldArgs: string[] = ["--keep-state", state];
+  // A tree from before the rename knows the machine's hold by its own name: this run holds it, so it doesn't wait for it.
+  let oldEnv: NodeJS.ProcessEnv = process.env;
   if (packaged) {
     fromLabel = fromApp!;
     oldArgs.unshift("--app", fromApp!);
@@ -86,23 +105,30 @@ try {
     console.error(`upgrade: the old tree ${fromLabel} in ${tree}; installing its dependencies`);
     const installed = spawnSync(pinnedBun, ["install", "--frozen-lockfile"], { cwd: tree, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 900_000 });
     if (installed.status !== 0) throw new Error(`bun install in the old tree failed: ${(installed.stderr ?? "").trim().split("\n").pop()?.slice(0, 300)}`);
-    // This checkout's harness over the old tree's, but the old core's own daemon seam.
     const into = join(tree, "scripts", "acceptance");
-    for (const f of readdirSync(HARNESS)) if (f !== "daemon.ts") cpSync(join(HARNESS, f), join(into, f), { recursive: true });
-    if (!readFileSync(join(into, "daemon.ts"), "utf8").includes("pluginFetch")) {
-      console.error("upgrade: the old tree's daemon has no fake web seam: its run skips the web turns");
-      oldArgs.push("--skip-web-turns");
-    }
-    // An app that can't draw a card offscreen for the run's real press (before int/card-press): its cards go over RPC.
-    if (!readFileSync(join(tree, "apps", "desktop", "src", "main", "index.ts"), "utf8").includes("CLOVER_TEST_SEALED_PRESS")) {
-      console.error("upgrade: the old tree's app can't take the real press: its run answers cards over RPC");
-      oldArgs.push("--no-press");
+    if (!existsSync(join(tree, "packages", "core", "src", "moss-dir.ts"))) {
+      // A tree from before the rename (the one-time copy's pair): its own harness, on its own names, makes the old
+      // install's home in the run's user home; this build's run then offers the copy (steps.ts COPY_UPGRADE_STEPS).
+      console.error("upgrade: the old tree is from before the rename: its own harness makes the old install's home");
+      oldEnv = { ...process.env, CLOVER_HEAVY_EXCLUSIVE: process.env.MOSS_HEAVY_EXCLUSIVE ?? "" };
+    } else {
+      // This checkout's harness over the old tree's, but the old core's own daemon seam.
+      for (const f of readdirSync(HARNESS)) if (f !== "daemon.ts") cpSync(join(HARNESS, f), join(into, f), { recursive: true });
+      if (!readFileSync(join(into, "daemon.ts"), "utf8").includes("pluginFetch")) {
+        console.error("upgrade: the old tree's daemon has no fake web seam: its run skips the web turns");
+        oldArgs.push("--skip-web-turns");
+      }
+      // An app that can't draw a card offscreen for the run's real press (before int/card-press): its cards go over RPC.
+      if (!readFileSync(join(tree, "apps", "desktop", "src", "main", "index.ts"), "utf8").includes("MOSS_TEST_SEALED_PRESS")) {
+        console.error("upgrade: the old tree's app can't take the real press: its run answers cards over RPC");
+        oldArgs.push("--no-press");
+      }
     }
     oldScript = join(into, "run.ts");
     oldCwd = tree;
   }
   if (keepLogs !== undefined) oldArgs.push("--keep-logs", join(keepLogs, "old"));
-  const old = run(`the old build (${fromLabel}) keeps its state`, oldScript, oldArgs, oldCwd);
+  const old = run(`the old build (${fromLabel}) keeps its state`, oldScript, oldArgs, oldCwd, oldEnv);
   tables.push(`== the old build: ${fromLabel}, --keep-state (exit ${old.code})\n${old.table}`);
   if (!existsSync(join(state, "state.json"))) throw new Error("the old run left no state.json (its table above says why)");
 
@@ -116,6 +142,8 @@ try {
   code = 2;
 } finally {
   console.log(tables.join("\n\n"));
+  const left = await reapPair();
+  if (left !== undefined) { console.error(`upgrade: FAIL: ${left}`); code = code === 0 ? 1 : code; }
   if (keep) {
     console.error(`upgrade: kept the state dir ${state}${tree !== undefined ? ` and the old tree ${tree}` : ""}`);
   } else {

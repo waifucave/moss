@@ -10,7 +10,7 @@ import { splitTag, type ModelTag } from "../runtime-sdk/model-tag";
 
 /** LEGACY raw record — migration source only (`auth/credential-material.ts`'s
  *  `readOpenAiApiKey`/`migrateLegacyCredentialMaterial`). Writers use `writeOpenAiApiKey`, which
- *  writes ONLY the `openai:default` JSON material record the spawned Clover child reads. Defined
+ *  writes ONLY the `openai:default` JSON material record the spawned MOSS child reads. Defined
  *  in the leaf `auth/legacy-secret-names.ts` (hotfix review r1, m1 — breaks the import cycle with
  *  `auth/credential-material.ts`) and re-exported here verbatim so every existing importer of
  *  `OPENAI_API_KEY_SECRET` from this module keeps working unchanged. */
@@ -65,12 +65,14 @@ function statMtimeOrZero(path: string): number {
  *  BARE modelId half of `settings.provider.model`'s tag, verbatim (see `liveModel`'s doc comment
  *  above for why no rewrite/fallback happens here any more). */
 function resolveSelection(settings: Settings, providerId: string): LiveModelSelection {
+  // No default model yet: an empty model, which the internal provider's callers already treat as nothing to run.
+  if (settings.provider === undefined) return { model: "", providerId };
   const { model, reasoningEffort } = settings.provider;
   return { model: splitTag(model).modelId, providerId, ...(reasoningEffort ? { reasoningEffort } : {}) };
 }
 
 /** Builds the `liveModel` resolver for `createProvider`. `settingsPath` is optional — omitted
- *  (e.g. tests, `clover provider-smoke`) means the resolver just keeps returning the boot-time
+ *  (e.g. tests, `moss provider-smoke`) means the resolver just keeps returning the boot-time
  *  selection forever (no re-read possible without a path). `providerId` is the BOOT-time catalog
  *  id (`createProvider`'s own `providerId` local) — passed in rather than re-derived from each
  *  live read, because the provider IDENTITY is fixed at boot (this function's own doc comment). */
@@ -126,7 +128,7 @@ export function buildLiveModelResolver(
  *
  * 2026-09-19 — THAT FOLLOW-UP LANDED, and this function is no longer on any production path.
  * `providers/internal-router.ts` + `internal-provider.ts` build one internal `Provider` per
- * CREDENTIALED catalog provider and resolve it per ROLE, so Clover's own background jobs no longer
+ * CREDENTIALED catalog provider and resolve it per ROLE, so MOSS's own background jobs no longer
  * depend on `settings.provider.model` at all and `INTERNAL_PROVIDER_IDS` no longer gates them. This
  * builder (and `createRebindableProvider`/`SwappableProvider`/`internalModelFor`/
  * `internalRoleEffortFor` below) survives ONLY for the tests that still construct it directly and for
@@ -147,6 +149,8 @@ export async function createProvider(
    */
   existingQuota?: QuotaManager,
 ): Promise<ActiveProvider | null> {
+  // No default model yet (a fresh home): no internal provider to bind; the internal-jobs router runs MOSS's own jobs.
+  if (settings.provider === undefined) return null;
   const providerId = splitTag(settings.provider.model).providerId;
   if (!(INTERNAL_PROVIDER_IDS as readonly string[]).includes(providerId)) return null;
   const quota = existingQuota ?? new QuotaManager();
@@ -155,7 +159,7 @@ export async function createProvider(
     // P8c lane 5: onto the `@waifucave/clover-provider-runtime` codex-oauth adapter — credential
     // resolution (and, on a 401, refresh write-back) goes through `credential-store.ts`'s
     // `CredentialStore`, which reads/writes the SAME `codex-oauth:default` material record the
-    // spawned Clover child does (`runtime-provider.ts`'s own header). No eager credential check
+    // spawned MOSS child does (`runtime-provider.ts`'s own header). No eager credential check
     // here — matches the pre-8c `CodexOAuthProvider` construction (deleted, Phase 8d task 2.4:
     // superseded by this adapter and never re-added), which never touched the secret store at construction time
     // either; a missing/invalid credential surfaces as a typed `auth` error from the FIRST
@@ -167,14 +171,14 @@ export async function createProvider(
     // Fail-fast, unchanged: `createProvider` itself throws before anything is constructed when no
     // key is stored (manager.test.ts pins this exact message).
     const apiKey = await readOpenAiApiKey(secrets);
-    if (!apiKey) throw new Error("no API key stored — run: clover login --api-key");
+    if (!apiKey) throw new Error("no API key stored — run: moss login --api-key");
     // providerBaseUrlFor's own doc comment: "ABSENT IS THE NORMAL CASE" — an empty string is the
     // same "no override" signal `createOpenAiCompatibleRuntimeProvider`'s `connection.baseUrl` has
     // always accepted (the adapter falls back to its own generated default).
     inner = createOpenAiCompatibleRuntimeProvider(secrets, providerBaseUrlFor(settings, providerId) ?? "");
   }
   const liveModel = buildLiveModelResolver(settings, settingsPath, providerId);
-  return { provider: withQuota(inner, quota), model: splitTag(settings.provider.model).modelId, quota, liveModel };
+  return { provider: withQuota(inner, quota), model: splitTag(settings.provider!.model).modelId, quota, liveModel };
 }
 
 /**
@@ -280,7 +284,8 @@ export async function createRebindableProvider(settings: Settings, secrets: Secr
   const active = await createProvider(settings, secrets, settingsPath);
   if (active === null) return null;
   const swappable = new SwappableProvider(active.provider);
-  let boundProviderId = splitTag(settings.provider.model).providerId;
+  // `createProvider` answered null above for a home with no default model, so there is one here.
+  let boundProviderId = splitTag(settings.provider!.model).providerId;
   const self: RebindableProvider = {
     provider: swappable,
     model: active.liveModel().model,
@@ -289,6 +294,7 @@ export async function createRebindableProvider(settings: Settings, secrets: Secr
     async refresh(nextSettings, nextSecrets, nextSettingsPath) {
       let nextProviderId: string;
       try {
+        if (nextSettings.provider === undefined) return false; // the default taken away: keep the handle as it is
         nextProviderId = splitTag(nextSettings.provider.model).providerId;
       } catch {
         return false; // malformed tag — Settings.parse would already have refused this file; never rebind on it
@@ -301,7 +307,7 @@ export async function createRebindableProvider(settings: Settings, secrets: Secr
         // the last provider that actually worked". Logged on every attempt while stuck here (this
         // function's own doc comment) — the OLD backend is left in place, always.
         console.error(
-          `provider: settings.provider.model now names "${nextProviderId}" — the daemon's internal provider only rebuilds for ${INTERNAL_PROVIDER_IDS.join("/")}, so this RETIRED single-instance handle stays on "${boundProviderId}" (Clover's own background jobs are unaffected — they run through providers/internal-router.ts)`,
+          `provider: settings.provider.model now names "${nextProviderId}" — the daemon's internal provider only rebuilds for ${INTERNAL_PROVIDER_IDS.join("/")}, so this RETIRED single-instance handle stays on "${boundProviderId}" (MOSS's own background jobs are unaffected — they run through providers/internal-router.ts)`,
         );
         return false;
       }

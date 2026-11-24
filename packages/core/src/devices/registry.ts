@@ -15,8 +15,8 @@
 //   devices, which H-M2's lease uses);
 // * the guided rotation a revocation starts: the synced keys the revoked device held, to be rotated (§8.1).
 import { join } from "node:path";
-import type { DeviceKind, DeviceOs } from "@waifucave/clover-protocol";
-import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/clover-protocol";
+import type { DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import {
@@ -147,6 +147,7 @@ const MAX_ROTATIONS = 256;
 const NAME_RE = /^[^\u0000-\u001f\u007f]{1,63}$/u;
 const KINDS: readonly DeviceKind[] = ["desktop", "server", "cloud", "phone", "browser"];
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What a device's app signs to show it holds an answer key. The statement covers the key's algorithm (B's #187): a
  *  P-256 key's is `clover/answer-key/2` with `alg` last; an Ed25519 key's stays `clover/answer-key/1`. */
 export function answerKeyStatement(deviceId: string, publicKey: string, held: string, alg: AnswerKeyAlg = "ed25519"): Uint8Array {
@@ -155,6 +156,7 @@ export function answerKeyStatement(deviceId: string, publicKey: string, held: st
     : utf8(`clover/answer-key/2\n${deviceId}\n${publicKey}\n${held}\n${alg}`);
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What the current answer key signs to hand over to the next one. */
 export function answerKeyRotateStatement(deviceId: string, from: string, to: string, at: number): Uint8Array {
   return utf8(`clover/answer-key-rotate/1\n${deviceId}\n${from}\n${to}\n${at}`);
@@ -184,7 +186,7 @@ function provesAnswerKey(id: string, from: { publicKey: string; alg?: AnswerKeyA
 }
 
 export interface FileDeviceRegistryOptions {
-  /** The Clover home; the registry is `devices/registry.json` in it. */
+  /** The MOSS home; the registry is `devices/registry.json` in it. */
   home: string;
   key: DeviceKey;
   self: { name: string; kind?: DeviceKind; os?: DeviceOs; computer?: string; hasDisplay?: boolean };
@@ -622,6 +624,7 @@ export interface PeerUpdate {
   at: number;
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** The update as signed: canonical CBOR, so no field's value can read as another's or as "no change". */
 export function peerUpdateStatement(id: string, update: { name?: string; computer?: string; answerKey?: { publicKey: string; held: string; alg?: AnswerKeyAlg } | null; at: number }): Uint8Array {
   // A P-256 key's algorithm is signed too (B's #187); an Ed25519 key's update reads as before.

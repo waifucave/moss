@@ -9,7 +9,7 @@ import { join } from "node:path";
 export const SECRETS = ["SECRET-PROMPT-7f3a", "SECRET-ANSWER-91bc", "SecretProjectName", "SECRET-INSTRUCTIONS-c0de", "sk-decoy-6e1d", "DECOY_TOKEN_VALUE"];
 
 export function tempDir(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), `clover-usage-${prefix}-`));
+  return mkdtempSync(join(tmpdir(), `moss-usage-${prefix}-`));
 }
 
 /** The service's probe root under a test home (`<home>/usage`, created): each probe makes its own dir in it. */
@@ -92,6 +92,8 @@ export function fakeExecutable(dir: string, name: string, body: string): { path:
 const fs = require("node:fs");
 const log = (o) => process.stdout.write((typeof o === "string" ? o : JSON.stringify(o)) + "\\n");
 const mark = (s) => fs.appendFileSync(${JSON.stringify(markerPath)}, s + "\\n");
+// \`--version\` is how a source tells one build of the program from another: its answer sits in \`<path>.version\`.
+if (process.argv[2] === "--version") { try { log(fs.readFileSync(${JSON.stringify(path + ".version")}, "utf8").trim()); } catch { log("fake 1.0.0"); } process.exit(0); }
 mark(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), pid: process.pid, env: Object.keys(process.env).sort() }));
 ${body}
 `);

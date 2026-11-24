@@ -1,0 +1,177 @@
+# MOSS, the app for bots, packaged by electron-builder (lane MA). `bun run dist` builds the unsigned, unpacked app
+# (`--dir`). It is a second build of the product, with its own identity (spec §2, item 120: `com.waifucave.moss`, named
+# "MOSS"), its own fixed window and no plugin UI runtime. Like MOSS Code it carries the engine (spec §3.1: each app carries
+# a copy of the engine and runs alone), and the background host (lane PK). One release for everything (R4): MOSS is built only
+# beside MOSS Code, by the one release build (scripts/release/build.ts), from the SAME stage: the engine and its sidecars
+# (apps/desktop/out/daemon), the bundled tree (apps/desktop/out/plugins) and MOSS Code's host helper (afterPack below). A plain
+# `bun run dist` stages none and packages the app alone. Nothing here holds a secret, and nothing is ever published from a build.
+appId: com.waifucave.moss
+productName: MOSS
+copyright: Copyright © 2026 waifucave
+directories:
+  output: out/dist
+  buildResources: build
+files:
+  - out/main/**
+  - out/renderer/**
+  - package.json
+asar: true
+# The screen add-on (the overlap check's window list, apps/moss/scripts/build.ts) stays OUT of the asar, so it is signed with the
+# app (a Mach-O packed inside is loaded from a temporary copy with its build-time signature, which library validation refuses);
+# the release build refuses a MOSS with any Mach-O left inside the asar, as MOSS Code's.
+asarUnpack:
+  - out/main/native/*.node
+# The same fuses as MOSS Code's (spec §3.1, the apps' peer image): the engine takes MOSS's `app` hello only from the signed
+# program, which is worth something only while that binary runs nothing but its own sealed code.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
+  grantFileProtocolExtraPrivileges: false
+# The engine and its sidecars, and the bundled tree: MOSS Code's stage, the very files MOSS Code packs (one release: the same
+# engine binary and the same tree in both apps; the release build checks they are byte for byte the same after packaging).
+extraResources:
+  - from: ../desktop/out/daemon
+    to: daemon
+    filter:
+      - moss-core
+      - moss-core.exe
+      - moss-link
+      - moss-link.exe
+      - moss-plugin-bun
+      - moss-plugin-bun.exe
+      - moss-process-holder
+  - from: ../desktop/out/plugins
+    to: plugins
+    filter:
+      - "**/*"
+      - "!**/.env"
+      - "!**/.env.*"
+      - "!**/.DS_Store"
+# The background host's helper, MOSS Code's own (apps/moss/scripts/host-helper.mjs): put in before MOSS is signed, so it is
+# sealed with MOSS; the engine starts the host from it when MOSS is the newest app that carries one (or the only one).
+afterPack: scripts/host-helper.mjs
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+publish:
+  provider: github
+  owner: waifucave
+  repo: moss
+mac:
+  target:
+    - target: dmg
+      arch: arm64
+    - target: zip
+      arch: arm64
+  category: public.app-category.productivity
+  artifactName: MOSS-${version}-mac.${ext}
+  # MOSS's icon (the owner's choice, 2026-11-20): the default bot as the whole tile, in the living-bots kit's coral with two ink
+  # eyes. build/icon.svg is its source.
+  icon: build/icon.icns
+  identity: null
+  notarize: false
+  hardenedRuntime: true
+  entitlements: ../../packaging/macos/entitlements.mac.plist
+  entitlementsInherit: ../../packaging/macos/entitlements.mac.plist
+  signIgnore:
+    - Contents/Resources/daemon/
+    - Contents/Resources/plugins/
+  # Unlike MOSS Code, MOSS keeps its Dock icon while it runs (no LSUIElement): it has no menu-bar icon of its own (the host owns
+  # the one, spec item 112), and macOS keeps MOSS running when its window closes (quit.ts), so without the Dock icon and its
+  # menu a MOSS whose window was closed could be neither reopened nor quit when no host runs. It adds nothing to the Dock and
+  # registers no login item of its own: the engine's (`moss-core autostart`) is the only one, and at login no app window opens
+  # by itself (§3.1). It opens no microphone (its talk key runs the voice plugin's command on the host, voice.ts), so it asks
+  # no entitlement beyond MOSS Code's shared file.
+win:
+  target:
+    - target: nsis
+      arch: x64
+linux:
+  target:
+    - target: dir
+  category: Utility
+  # The PNG set, 16 to 512 px, named <n>x<n>.png (build/icons, drawn from build/icon.svg).
+  icon: build/icons
+  # The app's own executable, /opt/moss/moss-app: `moss` on the PATH is the daemon's command line (packaging/linux/after-install.sh,
+  # shared with MOSS Code's package: the same daemon, one command, update-alternatives keeps one link while either is installed).
+  executableName: moss-app
+  synopsis: Bots that live on your computers
+  maintainer: MOSS <w@waifucave.com>
+# MOSS's Linux packages (the release wave, lane RP: both apps ship on all three systems, spec §3.1 and item 120), built beside MOSS
+# Code's by scripts/build-packages.ts, from the same stage. Like MOSS Code's they install the AppArmor profile Electron's sandbox
+# needs on Ubuntu (the shared packaging/linux/apparmor-profile: its second profile is for the host tree below), and need
+# bubblewrap and libsecret. The package is `moss` (apt and dnf's `install moss`, packaging/linux/README.md); the build runs with
+# `-c.productName=moss` so electron-builder installs under /opt/moss (a name with a space would make a folder of that name), and the
+# launcher entry's own Name stays "MOSS". No file is in both packages: MOSS carries the engine, the tree and the host (MOSS Code's
+# app, in /opt/moss/resources/host/) in its own folder.
+deb:
+  packageName: moss
+  artifactName: moss_${version}_${arch}.${ext}
+  desktop:
+    entry:
+      Name: MOSS
+      Actions: Quit;
+    desktopActions:
+      Quit:
+        Name: Quit MOSS
+        Exec: /opt/moss/moss-app --quit
+  afterInstall: ../../packaging/linux/after-install.sh
+  afterRemove: ../../packaging/linux/after-remove.sh
+  appArmorProfile: ../../packaging/linux/apparmor-profile
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - bubblewrap
+  recommends:
+    - libappindicator3-1
+    - gnome-keyring
+rpm:
+  packageName: moss
+  # Both apps ship the same Electron and engine binaries, so their build-id links (/usr/lib/.build-id/..) would collide when
+  # both rpms are installed; no links, no conflict.
+  fpm:
+    - --rpm-rpmbuild-define=_build_id_links none
+  artifactName: moss-${version}.${arch}.${ext}
+  desktop:
+    entry:
+      Name: MOSS
+      Actions: Quit;
+    desktopActions:
+      Quit:
+        Name: Quit MOSS
+        Exec: /opt/moss/moss-app --quit
+  afterInstall: ../../packaging/linux/after-install.sh
+  afterRemove: ../../packaging/linux/after-remove.sh
+  appArmorProfile: ../../packaging/linux/apparmor-profile
+  depends:
+    - gtk3
+    - libnotify
+    - nss
+    - libXScrnSaver
+    - (libXtst or libXtst6)
+    - xdg-utils
+    - at-spi2-core
+    - (libuuid or libuuid1)
+    - libsecret
+    - bubblewrap
+# The AppImage is the fallback, as MOSS Code's: it can't install the AppArmor profile.
+appImage:
+  artifactName: MOSS-${version}-${arch}.AppImage
+dmg:
+  artifactName: MOSS-${version}.${ext}
+nsis:
+  artifactName: MOSS-Setup-${version}.${ext}
+  oneClick: true
+  perMachine: false
+  # Its uninstall hook (packaging/windows/installer-moss.nsh): login start is removed only when MOSS Code is not installed.
+  include: ../../packaging/windows/installer-moss.nsh

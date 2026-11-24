@@ -8,6 +8,7 @@
 // | the user's input                         | the inherited `user_message`, with `device` and `sentAt`       |
 // | another bot's message                    | `bot_message`                                                  |
 // | an agent's message                       | `agent_message`                                                |
+// | another session's message (no bot's)     | `session_message` (§9.5: the sender session and the words)     |
 // | a task notification                      | `agent_finished`                                               |
 // | a routine's input in a bot's conversation| `routine_result` (its short result, §7)                        |
 // | a routine's input in a side thread       | `note` from the core, labelled with the routine's name (the run's instructions) |
@@ -15,7 +16,7 @@
 // | a note                                   | `note`                                                         |
 // | a turn starting / ending                 | the inherited `turn_started` / `turn_completed`                |
 // | a status change                          | none: it reaches clients as `session_changed`                  |
-// | the runtime's own event                  | itself, when it is a `SessionEvent` or a Clover session event  |
+// | the runtime's own event                  | itself, when it is a `SessionEvent` or a MOSS session event  |
 // |                                          | the host doesn't project itself (`HOST_EVENT_TYPES`)           |
 // | an ACP agent's record (lane K's driver)  | the inherited event it reads as (`ACP_RECORDS`), so an agent's |
 // |                                          | live tab reads like a code session's (item 90)                 |
@@ -24,8 +25,9 @@
 // and never leave the daemon. For any reader but the user's own app and devices (a plugin's `conversation.read`, a
 // session, the CLI a bot can run), the sealed parts of approval and elicitation events are left out (§5.4: "sealed card
 // fields never reach it"), and of the streaming events only the reply's text is sent.
-import { CloverSessionEvent, SessionEvent, type Caller, type SessionKind } from "@waifucave/clover-protocol";
+import { MossSessionEvent, SessionEvent, ToolApp, type Caller, type SessionKind } from "@waifucave/moss-protocol";
 import type { SessionRecord, TurnEnd } from "../contracts/session-host";
+import { toolDisplay, toolDisplayTitle } from "../runtime-sdk/tool-display";
 import { contextTokensOf } from "./compaction";
 import { CORE_ONLY_EVENT_TYPES } from "./durable-host";
 
@@ -34,15 +36,25 @@ export type WireEvent = { type: string; seq: number; sessionId: string; ts: numb
 /** The `type`s a runtime event may have to reach clients. */
 export const WIRE_EVENT_TYPES: ReadonlySet<string> = new Set([
   ...SessionEvent.options.map((o) => o.shape.type.value as string),
-  ...CloverSessionEvent.options.map((o) => o.shape.type.value as string),
+  ...MossSessionEvent.options.map((o) => o.shape.type.value as string),
 ]);
 
 /** The types the host projects from its own records. A runtime event of one of them is an echo (or a forgery: a
  *  driver's `user_message` would read as the user's) and never reaches clients. */
 export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "user_message", "turn_started", "turn_completed", "bot_message", "agent_message", "agent_finished", "routine_result",
-  "note", "plugin_message",
+  "note", "plugin_message", "session_message",
 ]);
+
+/** A call to an agent session's bridge (`mcp__moss_<16 hex>__<server>__<tool>`, the session's own server name), shown under
+ *  the tool's own name (`mcp__<server>__<tool>`), the name a bot's call to it has: a plugin's `tool.result` view and the
+ *  tool's phrases find it by that name. Its first word only (a runtime titles a call by its name, then a path or an
+ *  address from its input); any other title as it is. */
+export function bridgeToolName(title: string | undefined): string | undefined {
+  if (title === undefined) return undefined;
+  const m = /^mcp__moss_[0-9a-f]{16}__(\S+)/.exec(title);
+  return m === null ? title : `mcp__${m[1]}`;
+}
 
 /** How lane K's ACP driver's records read on the wire (item 90's live tab): its text as the assistant's message, a
  *  tool call as a tool call, a call's end as its result. Thoughts and usage stay in the daemon. */
@@ -51,9 +63,11 @@ export function acpRecordEvent(event: { type: string; [key: string]: unknown }):
   switch (event.type) {
     case "agent_text":
       return s("text") === undefined ? undefined : { type: "assistant_message", text: s("text") };
+    case "agent_notice":
+      return s("text") === undefined ? undefined : { type: "hook_notice", text: s("text"), level: "notice" };
     case "agent_tool_call": {
       const id = s("id");
-      const name = s("title") || s("kind");
+      const name = bridgeToolName(s("title")) || s("kind");
       if (!id || !name) return undefined;
       let argsJson = "{}";
       try {
@@ -61,14 +75,25 @@ export function acpRecordEvent(event: { type: string; [key: string]: unknown }):
       } catch {
         // A raw input that doesn't serialize shows as none.
       }
-      return { type: "tool_call", callId: id, name, argsJson };
+      // A plugin tool's declared title, as a bot's call carries it (display only; the driver read it from the bridge),
+      // made plain and bounded again here (a log may come from elsewhere).
+      const displayTitle = toolDisplayTitle(event["displayTitle"]);
+      return { type: "tool_call", callId: id, name, argsJson, ...(displayTitle === undefined ? {} : { displayTitle }) };
     }
     case "agent_tool_call_update": {
       const id = s("id");
       const status = s("status");
       if (!id || (status !== "completed" && status !== "failed")) return undefined;
-      const output = status === "completed" ? "" : event["refused"] === true ? "Refused." : "Failed.";
-      return { type: "tool_result", callId: id, output, isError: status === "failed" };
+      const told = typeof event["output"] === "string" ? event["output"] : undefined;
+      // A call MOSS closed when the agent's turn was cancelled (it left the call open) reads as interrupted.
+      if (event["closedByMoss"] === true) return { type: "tool_result", callId: id, output: told ?? "Interrupted.", isError: true, interrupted: true };
+      const output = told ?? (status === "completed" ? "" : event["refused"] === true ? "Refused." : "Failed.");
+      // What a plugin tool's successful result showed (`ToolDisplay`, already plain and bounded), as a bot's carries it.
+      const display = status === "completed" ? toolDisplay(event["display"]) : undefined;
+      // MCP Apps: the page a plugin tool's successful result named (the driver stamped it; a log may come from elsewhere, so
+      // it is parsed again here).
+      const app = status === "completed" ? ToolApp.safeParse(event["app"]) : undefined;
+      return { type: "tool_result", callId: id, output, isError: status === "failed", ...(display === undefined ? {} : { display }), ...(app?.success ? { app: app.data } : {}) };
     }
     default:
       return undefined;
@@ -130,7 +155,7 @@ export function projectRecord(record: SessionRecord, opts: ProjectOptions): Wire
         case "user":
           return {
             type: "user_message", ...envelope, threadId, text: input.text,
-            // The inherited event names the client; Clover's user input carries the device it came from instead.
+            // The inherited event names the client; MOSS's user input carries the device it came from instead.
             clientName: input.device, device: input.device, sentAt: input.sentAt,
             ...(input.images !== undefined && input.images.length > 0 ? { images: input.images } : {}),
             ...(input.files !== undefined && input.files.length > 0 ? { files: input.files } : {}),
@@ -139,6 +164,8 @@ export function projectRecord(record: SessionRecord, opts: ProjectOptions): Wire
           return { type: "bot_message", ...envelope, from: input.bot, fromSession: input.session, text: input.text };
         case "agent":
           return { type: "agent_message", ...envelope, agent: input.agent, text: input.text };
+        case "session":
+          return { type: "session_message", ...envelope, fromSession: input.session, text: input.text };
         case "task-notification":
           return {
             type: "agent_finished", ...envelope, agent: input.agent, backend: input.backend, stopReason: input.stopReason,

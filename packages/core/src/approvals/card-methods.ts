@@ -1,5 +1,5 @@
 // The protocol's card methods (`APPROVALS_METHODS`: card.list, card.get, card.frame, card.answer) over lane C's broker,
-// for the Clover server. The broker comes up with the daemon's parts (the bot side and the agents) and goes with them,
+// for the MOSS server. The broker comes up with the daemon's parts (the bot side and the agents) and goes with them,
 // so each call reads it through a getter; until it is up, and after it stops, a call is refused, never answered by a
 // second broker. The server has checked the role and the params against the method's spec before a handler runs.
 //
@@ -12,15 +12,15 @@
 // only: a device proof naming another device is refused there. A paired computer (a `peer` caller, which reaches this
 // through `peer.call` as `remote`) may relay another device's signed answer, which holds end to end (the broker's
 // `deviceProofVerifier`).
-import { APPROVALS_METHODS, CLOVER_ERR, ERR, type Card, type CardAnswerProof, type CloverRole } from "@waifucave/clover-protocol";
-import { isTheUsersOwn } from "../auth/clover-caller";
+import { APPROVALS_METHODS, MOSS_ERR, ERR, type Card, type CardAnswerProof, type MossRole } from "@waifucave/moss-protocol";
+import { isTheUsersOwn } from "../auth/moss-caller";
 import type { AnswerOrigin, AnswerResult, ApprovalBroker } from "../contracts/approval-broker";
-import { CloverRpcError, type CloverConn, type CloverHandler } from "../ipc/clover";
+import { MossRpcError, type MossConn, type MossHandler } from "../ipc/moss";
 import { cardMetaOf } from "../contracts/approval-broker";
 import { cardAudience } from "./core-events";
 
 /** The test-marked build's label (scripts/test-build.ts): `false` in every real build, a string only in a test one. */
-declare const __CLOVER_TEST_BUILD__: string | false | undefined;
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
 
 type CardBroker = Pick<ApprovalBroker, "cards" | "get" | "frameChannel" | "answer">;
 
@@ -35,21 +35,30 @@ const REASONS: Record<Exclude<AnswerResult, "accepted">, string> = {
   "bad-time": "the answer's time is too far from this computer's",
 };
 
-function notRunning(): CloverRpcError {
-  return new CloverRpcError(ERR.RETRY, "Clover's approval broker isn't running on this computer yet: try again in a moment");
+function notRunning(): MossRpcError {
+  return new MossRpcError(ERR.RETRY, "MOSS's approval broker isn't running on this computer yet: try again in a moment");
 }
 
 /** The device a device link (`remote`, `peer`) authenticated; none for a connection on this computer. */
-function linkDevice(role: CloverRole, caller: { kind: string; device?: string }): string | undefined {
+function linkDevice(role: MossRole, caller: { kind: string; device?: string }): string | undefined {
   if (role !== "remote" && role !== "peer") return undefined;
   return caller.kind === "user" || caller.kind === "peer" ? caller.device : undefined;
 }
 
-function usersOwn(conn: CloverConn, method: string): void {
-  if (!isTheUsersOwn(conn.caller)) throw new CloverRpcError(CLOVER_ERR.NOT_THE_USER, `${method} is read for the user alone`);
+function usersOwn(conn: MossConn, method: string): void {
+  if (!isTheUsersOwn(conn.caller)) throw new MossRpcError(MOSS_ERR.NOT_THE_USER, `${method} is read for the user alone`);
 }
 
-export function cardMethods(broker: () => CardBroker | undefined): Record<string, CloverHandler> {
+/** What `card.answer` checks on this computer's own app connections before the broker (lane RT, spec revision 19 §3.5,
+ *  §5.5): where the router placed the card (`surfaces/routing.ts`'s `cardPressGate`: the press is taken only by the
+ *  program and window, or the island, drawing it), and whether computer use is acting here, read at the answer itself
+ *  rather than by a round trip from the app before it (a 3 s request at the press, refused under load). */
+export interface AnswerGates {
+  press?(conn: MossConn, cardId: string): string | undefined;
+  acting?(): boolean;
+}
+
+export function cardMethods(broker: () => CardBroker | undefined, capabilitiesOf: (pluginId: string) => readonly string[] | undefined = () => undefined, gates: AnswerGates = {}): Record<string, MossHandler> {
   const up = (): CardBroker => {
     const b = broker();
     if (!b) throw notRunning();
@@ -64,7 +73,7 @@ export function cardMethods(broker: () => CardBroker | undefined): Record<string
       usersOwn(conn, APPROVALS_METHODS.cardGet.name);
       const { id } = params as { id: string };
       const r = up().get(id);
-      if (!r) throw new CloverRpcError(ERR.NOT_FOUND, `no card ${id}`);
+      if (!r) throw new MossRpcError(ERR.NOT_FOUND, `no card ${id}`);
       return {
         card: r.card,
         ...(r.outcome === undefined ? {} : { outcome: r.outcome }),
@@ -73,17 +82,18 @@ export function cardMethods(broker: () => CardBroker | undefined): Record<string
         ...(r.resolvedAt === undefined ? {} : { resolvedAt: r.resolvedAt }),
       };
     },
-    // A layer's own list of what waits, scoped like the events it hears: its plugin's bot's cards (the bundled `clover`
-    // tree: all), ids and places, never a card's text. A caller that is no plugin hears none.
+    // A layer's own list of what waits, scoped like the events it hears (`cardAudience`): the cards its plugin's own tools' calls
+    // raised and its moved bot's (a plugin with `approvals.all`: all), ids and places, never a card's text. A caller that is no
+    // plugin hears none.
     [APPROVALS_METHODS.cardPending.name]: async (conn) => {
       const mine = conn.caller.kind === "plugin" ? conn.caller.pluginId : undefined;
       if (mine === undefined) return { cards: [] };
-      return { cards: up().cards().filter((c) => cardAudience(c.bot)(mine)).map(cardMetaOf) };
+      return { cards: up().cards().filter((c) => cardAudience(c)(mine, capabilitiesOf(mine) ?? [])).map(cardMetaOf) };
     },
     [APPROVALS_METHODS.cardFrame.name]: async (_conn, params) => {
       const { id } = params as { id: string };
       const channel = up().frameChannel(id);
-      if (channel === undefined) throw new CloverRpcError(ERR.NOT_FOUND, `no pending card ${id}`);
+      if (channel === undefined) throw new MossRpcError(ERR.NOT_FOUND, `no pending card ${id}`);
       return { channel };
     },
     [APPROVALS_METHODS.cardAnswer.name]: async (conn, params) => {
@@ -93,13 +103,23 @@ export function cardMethods(broker: () => CardBroker | undefined): Record<string
       // broker may take its sealed-frame answer as the app's; a real build compiles this out.
       const from: AnswerOrigin = {
         role: conn.role, ...(device === undefined ? {} : { device }),
-        ...(typeof __CLOVER_TEST_BUILD__ === "string" && conn.role === "cli" && conn.caller.kind === "user" ? { testHarness: true as const } : {}),
+        ...(typeof __MOSS_TEST_BUILD__ === "string" && conn.role === "cli" && conn.caller.kind === "user" ? { testHarness: true as const } : {}),
       };
       // A user's own device link answers for itself: its device must be the one whose key signed. A paired computer
       // (a `peer` caller, through `peer.call`) may relay another device's signed answer, which binds that device end to end.
       if (conn.caller.kind === "user" && conn.role === "remote" && p.proof.via === "device" && p.proof.device !== device) {
         up();
         return { accepted: false, reason: REASONS["bad-origin"] };
+      }
+      if (conn.role === "app") {
+        up();
+        // A click counts only while no computer-use action runs on this computer (§5.5).
+        if (gates.acting?.() === true) return { accepted: false, reason: "computer use is acting right now" };
+        // No press is forwarded from one program to another: a proof names the key of the program whose connection
+        // sends it (MOSS Code's may still use the device's single key, which is its own).
+        if (p.proof.via === "device" && conn.program !== undefined && (p.proof.program ?? "code") !== conn.program) return { accepted: false, reason: REASONS["bad-origin"] };
+        const placed = gates.press?.(conn, p.id);
+        if (placed !== undefined) return { accepted: false, reason: placed };
       }
       const result = await up().answer(p.id, { optionId: p.option, hash: p.hash, proof: p.proof, ...(p.children ? { children: p.children } : {}) }, from);
       return result === "accepted" ? { accepted: true } : { accepted: false, reason: REASONS[result] };

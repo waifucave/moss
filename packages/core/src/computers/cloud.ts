@@ -6,7 +6,7 @@
 // * Only the main computer acts: the one whose lease (lane H's) lets it act now (`CloudAuthority`). Its tenure (the
 //   lease's scope and epoch) is taken when a change starts and looked at again after the user's card answer and
 //   right before each provider call: an answer that comes after this computer lost the lease does nothing.
-// * The cloud is the source of truth. Every VM carries the `clover-computer` label with its folder's id; before a VM
+// * The cloud is the source of truth. Every VM carries the `moss-computer` label with its folder's id; before a VM
 //   is made, the provider is asked for one with that label, and one that exists is adopted, never made twice. A new
 //   main finds every VM the same way. `cloud.json` is only a cache: a `creating` entry, with its label, is written
 //   before the provider is asked to create, and settled from the provider afterwards. A resize or a delete names the
@@ -21,11 +21,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { COMPUTER_NAME_RE, pluginIdToSegment } from "@waifucave/clover-protocol";
+import { COMPUTER_NAME_RE, pluginIdToSegment } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 
 /** The label every cloud computer's VM carries, with its folder's id (`/` written `--`). */
-export const CLOUD_LABEL = "clover-computer";
+export const CLOUD_LABEL = "moss-computer";
 
 /** The label value for a folder: its id, `/` written `--`, which both clouds take as a label value (lower case,
  *  digits and `-`); one over their 63 characters is written `h-` and the first 40 hex digits of its SHA-256. */
@@ -50,7 +50,7 @@ export interface CloudFolder {
 /** A VM as its provider lists it. */
 export interface CloudInstance {
   serverId: string;
-  /** Its `clover-computer` label. */
+  /** Its `moss-computer` label. */
   label: string;
   region: string;
   size?: string;
@@ -62,9 +62,9 @@ export interface CloudInstance {
  *  `create` and `list` names the instance by its id and its label, and the plugin acts only when the instance there
  *  carries that label. */
 export interface CloudProviderHandler {
-  /** Creates the VM with `userData` (cloud-init), the `clover-computer` label set to `label`, and no cloud identity. */
+  /** Creates the VM with `userData` (cloud-init), the `moss-computer` label set to `label`, and no cloud identity. */
   create(args: { name: string; size: string; region: string; image?: string; userData: string; label: string }, ctx?: { signal?: AbortSignal }): Promise<{ serverId: string; address?: string }>;
-  /** The VMs carrying the `clover-computer` label: with that value, or any value when `label` is left out. */
+  /** The VMs carrying the `moss-computer` label: with that value, or any value when `label` is left out. */
   list(args: { label?: string }, ctx?: { signal?: AbortSignal }): Promise<CloudInstance[]>;
   resize(args: { serverId: string; label: string; region: string; size: string }, ctx?: { signal?: AbortSignal }): Promise<void>;
   delete(args: { serverId: string; label: string; region: string }, ctx?: { signal?: AbortSignal }): Promise<void>;
@@ -79,15 +79,26 @@ export interface CloudAuthority {
   canAct(): boolean;
   /** `<scope>:<epoch>` while this computer holds the lease; undefined otherwise. */
   tenure(): string | undefined;
+  /** How many times this computer has stopped holding the lease since it started (a hand-over). A token made while this
+   *  computer was alone (scope `-`) is accepted after the group is founded only while this is unchanged: the founding is
+   *  no hand-over, a hand-over and a return is. Absent, 0 always. */
+  handovers?(): number;
 }
+
+/** How a card ended: `true` the user approved, `false` the user declined, `"unanswered"` nobody answered (the card was
+ *  withdrawn, closed as stale, or the daemon stopped). Only a decline is the user's "no": a card that was never
+ *  answered is asked again on a later pass and never read as "keep this VM", which would leave a billed VM hidden for
+ *  good (the controller's ruling on #290; `approvals/cloud-cards.ts`). */
+export type CloudAnswer = boolean | "unanswered";
 
 /** The cards the user answers (lane C's broker shows them; any of the user's devices). */
 export type CloudCard =
-  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string }
-  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string }
+  | { kind: "cloud-create"; name: string; provider: string; size: string; region: string; folder: string; image?: string }
+  | { kind: "cloud-resize"; name: string; provider: string; from: string; to: string; image?: string }
   | { kind: "cloud-delete"; name: string; provider: string; why: "folder-removed" | "asked" }
-  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed" }
-  | { kind: "cloud-make-main"; name: string };
+  | { kind: "cloud-repair"; name: string; provider: string; why: "token-expired" | "main-changed"; image?: string }
+  | { kind: "cloud-make-main"; name: string }
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
 
 /** A VM's own state, as this main last saw it: a cache, settled from the provider. */
 export interface CloudVm {
@@ -111,7 +122,7 @@ export interface CloudState {
   /** Labels of VMs whose folder went and that the user chose to keep, or whose folder said `keep`. */
   kept: string[];
   /** Pairing tokens, by hash: never the token itself. */
-  tokens: { hash: string; computer: string; expiresAt: number; tenure: string }[];
+  tokens: { hash: string; computer: string; expiresAt: number; tenure: string; handovers?: number }[];
 }
 
 export interface CloudStateStore {
@@ -119,14 +130,18 @@ export interface CloudStateStore {
   save(state: CloudState): void;
 }
 
+/** What a VM of a custom image (not MOSS's own) is handed: nothing of MOSS's, no join ticket and no install. The person
+ *  pairs it themselves, with the four words; MOSS never confirms such a pairing for them. */
+export const CUSTOM_IMAGE_USER_DATA = "#cloud-config\n{}\n";
+
 const EMPTY: CloudState = { vms: [], kept: [], tokens: [] };
 
-/** `<Clover home>/computers/cloud.json`, 0600, written whole: names, ids, labels and token hashes, never a credential
+/** `<MOSS home>/computers/cloud.json`, 0600, written whole: names, ids, labels and token hashes, never a credential
  *  or a token. */
 export class FileCloudStateStore implements CloudStateStore {
   readonly #path: string;
-  constructor(cloverHome: string) {
-    this.#path = join(cloverHome, "computers", "cloud.json");
+  constructor(mossHome: string) {
+    this.#path = join(mossHome, "computers", "cloud.json");
   }
   load(): CloudState {
     try {
@@ -164,18 +179,25 @@ export class PairingTokens {
   }
 
   /** A new token for `computer` under `tenure`; any earlier one for it stops working. */
-  mint(computer: string, tenure = ""): string {
+  mint(computer: string, tenure = "", handovers = 0): string {
     const s = this.#state();
     s.tokens = s.tokens.filter((t) => t.computer !== computer);
     const token = randomBytes(32).toString("base64url");
-    s.tokens.push({ hash: hash(token), computer, expiresAt: this.#clock.now() + this.#ttlMs, tenure });
+    s.tokens.push({ hash: hash(token), computer, expiresAt: this.#clock.now() + this.#ttlMs, tenure, handovers });
     this.#save();
     return token;
   }
 
+  /** Takes back every token for `computer` (the VM it was for was never made). */
+  revoke(computer: string): void {
+    const s = this.#state();
+    s.tokens = s.tokens.filter((t) => t.computer !== computer);
+    this.#save();
+  }
+
   /** The computer a token was made for, once, under the same tenure; null for an unknown, used, expired or another
    *  tenure's token. */
-  consume(token: string, tenure = ""): string | null {
+  consume(token: string, tenure = "", handovers = 0): string | null {
     if (typeof token !== "string" || token.length < 32 || token.length > 128) return null;
     const s = this.#state();
     const h = hash(token);
@@ -183,13 +205,22 @@ export class PairingTokens {
     if (i < 0) return null;
     const [t] = s.tokens.splice(i, 1);
     this.#save();
-    return t!.expiresAt >= this.#clock.now() && t!.tenure === tenure ? t!.computer : null;
+    return t!.expiresAt >= this.#clock.now() && this.#tenureHolds(t!, tenure, handovers) ? t!.computer : null;
   }
 
-  /** Whether `computer` has a token still good under `tenure`. */
-  waiting(computer: string, tenure = ""): boolean {
+  /** Whether `computer` has a token still good under `tenure` (the same rule as `consume`). */
+  waiting(computer: string, tenure = "", handovers = 0): boolean {
     const now = this.#clock.now();
-    return this.#state().tokens.some((t) => t.computer === computer && t.expiresAt >= now && t.tenure === tenure);
+    return this.#state().tokens.some((t) => t.computer === computer && t.expiresAt >= now && this.#tenureHolds(t, tenure, handovers));
+  }
+
+  /** A token is bound to the lease it was made under: the same scope and epoch. One exception, for the group's own
+   *  founding: a token made while this computer was alone (no scope, `-:<epoch>`) still holds after the VM's pairing
+   *  founded the group (the scope appears, the epochs start again) as long as this computer has not handed the lease over
+   *  since it was made (`handovers` unchanged): the same holder, with no hand-over in between. A hand-over and a return
+   *  makes the token another tenure's, refused. */
+  #tenureHolds(t: { tenure: string; handovers?: number }, tenure: string, handovers: number): boolean {
+    return t.tenure === tenure || (t.tenure.startsWith("-:") && (t.handovers ?? 0) === handovers);
   }
 }
 
@@ -208,10 +239,19 @@ export interface CloudComputersOptions {
   providerIds: () => string[];
   /** The lease: only the main computer acts (lane H). */
   authority: CloudAuthority;
-  /** Shows the user a card and gives back whether they approved (lane C's broker). */
-  confirm: (card: CloudCard) => Promise<boolean>;
-  /** The official image's cloud-init for a VM (`image.ts`): its name and its pairing token. */
-  userData: (o: { name: string; token: string }) => string;
+  /** Shows the user a card and gives back how it ended (lane C's broker). A plain boolean is the user's answer. */
+  confirm: (card: CloudCard) => Promise<CloudAnswer>;
+  /** The official image's cloud-init for a VM (`image.ts`): its name, and the main's own single-use token for this one
+   *  pairing (it never goes into the VM: it only binds the pairing the cloud-init's ticket opens to this VM). It may
+   *  refuse (throw) when the image can't be made yet (no pinned download); then nothing is created and nothing is billed.
+   *  Called ONLY for MOSS's own image: a folder naming another image gets no ticket (`CUSTOM_IMAGE_USER_DATA`). */
+  userData: (o: { name: string; token: string }) => string | Promise<string>;
+  /** Gives up the join ticket `userData` offered for `name` (cancels its pairing): called on every path where the VM
+   *  that ticket was for will not exist (a create that threw and left no VM, a revoked token, a lost lease). */
+  dropTicket?: (name: string) => void;
+  /** Throws, with a plain reason, when the image can't be made at all in this build (no pinned download): asked BEFORE
+   *  the create card, so the person is never asked to approve a VM that cannot be made. Nothing is billed or begun. */
+  imageReady?: () => void;
   /** Whether a computer of that name is in the tree, paired (lane H's device list). */
   isPaired?: (name: string) => boolean;
   /** Makes a computer the main one (lane H's main election). */
@@ -238,12 +278,15 @@ export class CloudComputers {
   readonly #o: CloudComputersOptions;
   readonly #state: CloudState;
   readonly pairing: PairingTokens;
+  /** The state as last read or written (JSON), to write only a change. */
+  #saved: string;
   /** One change per computer at a time. */
   readonly #busy = new Set<string>();
 
   constructor(o: CloudComputersOptions) {
     this.#o = o;
     this.#state = o.store.load();
+    this.#saved = JSON.stringify(this.#state);
     this.pairing = new PairingTokens({ clock: o.clock, state: () => this.#state, save: () => this.#save() });
   }
 
@@ -310,10 +353,12 @@ export class CloudComputers {
           const vm = this.#adopt(f, label, there.vm, out);
           if (vm.state === "deleting") return;
           if (vm.size !== f.size) {
-            (await this.#resize(vm, f.size, tenure) ? out.resized : out.declined).push(f.name);
+            (await this.#resize(vm, f.size, tenure, f.image) ? out.resized : out.declined).push(f.name);
             return;
           }
-          if (vm.state !== "paired" && !this.pairing.waiting(f.name, tenure)) {
+          // A custom image gets no join ticket and no token (the person pairs it themselves), so "no token waiting" is
+          // not a reason to pair it again.
+          if (vm.state !== "paired" && f.image === undefined && !this.pairing.waiting(f.name, tenure, this.#o.authority.handovers?.() ?? 0)) {
             const why = this.#minted(f.name) ? "token-expired" : "main-changed";
             (await this.#repair(f, vm, why, tenure) ? out.repaired : out.declined).push(f.name);
           }
@@ -334,9 +379,11 @@ export class CloudComputers {
       if (held.has(cached?.folder ?? "") || [...held].some((h) => cloudLabelOf(h) === label)) continue;
       const name = cached?.name ?? label;
       await attempt(name, async () => {
-        if (await this.#delete({ name, label, provider, serverId: vm.serverId, region: vm.region }, "folder-removed", tenure)) out.deleted.push(name);
+        const answer = await this.#delete({ name, label, provider, serverId: vm.serverId, region: vm.region }, "folder-removed", tenure);
+        if (answer === "yes") out.deleted.push(name);
         else {
-          this.#keep(label);
+          // Only the user's "keep it" is remembered; a card nobody answered is asked again on the next pass.
+          if (answer === "no") this.#keep(label);
           out.declined.push(name);
         }
       });
@@ -345,6 +392,15 @@ export class CloudComputers {
     for (const v of [...this.#state.vms]) {
       if (unreachable.has(v.provider) || seen.has(v.label) || found.has(v.label)) continue;
       this.#drop(v.name);
+    }
+    // Machines whose provider isn't there (its plugin is off or gone): MOSS can't manage them, and they may still bill.
+    // Said plainly on every pass, never silently (the controller's ruling: never leave machines billing unannounced).
+    for (const v of this.#state.vms) {
+      if (v.state === "deleting" || !unreachable.has(v.provider) || this.#o.provider(v.provider) !== undefined) continue;
+      const reason = `the provider ${v.provider} isn't installed or is off, so MOSS can no longer manage ${v.name}: it may still be running and billing; delete it in the provider's own console`;
+      const at = out.failed.findIndex((x) => x.name === v.name);
+      if (at >= 0) out.failed[at] = { name: v.name, reason };
+      else out.failed.push({ name: v.name, reason });
     }
     this.#save();
     return out;
@@ -362,7 +418,7 @@ export class CloudComputers {
       this.#save();
       return true;
     }
-    return this.#delete({ name, label: vm.label, provider: vm.provider, serverId: there.serverId, region: there.region }, why, tenure);
+    return (await this.#delete({ name, label: vm.label, provider: vm.provider, serverId: there.serverId, region: there.region }, why, tenure)) === "yes";
   }
 
   /** Lane H's pairing door, when a device presents a VM's token: the computer it was made for, once, under this main's
@@ -373,7 +429,7 @@ export class CloudComputers {
       consume: async (token, device) => {
         const tenure = this.#o.authority.tenure();
         if (!this.#o.authority.canAct() || tenure === undefined) return null;
-        const name = this.pairing.consume(token, tenure);
+        const name = this.pairing.consume(token, tenure, this.#o.authority.handovers?.() ?? 0);
         if (!name) return null;
         const vm = this.#state.vms.find((v) => v.name === name);
         if (!vm) return null;
@@ -385,7 +441,7 @@ export class CloudComputers {
           await p.paired({ serverId: vm.serverId, label: vm.label, region: vm.region }).catch((e: Error) => this.#o.log?.(`cloud computer ${name}: its user-data wasn't cleared (${e.message})`));
         }
         const folder = folders().find((f) => f.name === name);
-        if (folder?.makeMain !== "no" && this.#o.makeMain && (await this.#o.confirm({ kind: "cloud-make-main", name })) && this.#stillMain(tenure)) {
+        if (folder?.makeMain !== "no" && this.#o.makeMain && (await this.#o.confirm({ kind: "cloud-make-main", name })) === true && this.#stillMain(tenure)) {
           await this.#o.makeMain(name);
         }
         return { computer: name };
@@ -418,18 +474,55 @@ export class CloudComputers {
   async #create(f: CloudFolder, label: string, tenure: string): Promise<"created" | "declined" | "exists"> {
     return this.#one(f.name, async () => {
       const p = this.#provider(f.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-create", name: f.name, provider: f.provider, size: f.size, region: f.region, folder: f.folder }))) return "declined";
+      // The image the card shows is the image the create uses: read once, here (a folder naming another image later is a
+      // change that asks again). Only MOSS's own image (none named) gets a join ticket; any other is the person's to pair.
+      const image = f.image;
+      const own = image === undefined;
+      if (own) this.#o.imageReady?.();
+      // THE OK BEFORE ANYTHING IS MADE OR BILLED: no provider call that creates happens unless the user approved this card.
+      if ((await this.#o.confirm({ kind: "cloud-create", name: f.name, provider: f.provider, size: f.size, region: f.region, folder: f.folder, ...(image !== undefined ? { image } : {}) })) !== true) return "declined";
       this.#guard(tenure);
       if ((await p.list({ label })).some((x) => x.label === label && x.state !== "gone")) return "exists";
+      // The VM's image first: when it can't be made (no pinned download yet), nothing is written and nothing is made.
+      const userData = await this.#image(f.name, tenure, own);
       // Written before the provider is asked, with its label, so a crash in between is settled from the cloud.
       const vm: CloudVm = { name: f.name, folder: f.folder, provider: f.provider, label, region: f.region, size: f.size, state: "creating", createdAt: this.#o.clock.now() };
-      this.#state.vms.push(vm);
-      const token = this.pairing.mint(f.name, tenure);
-      this.#save();
-      this.#guard(tenure);
-      await this.#made(p, vm, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData: this.#o.userData({ name: f.name, token }), label }));
+      try {
+        this.#guard(tenure);
+        this.#state.vms.push(vm);
+        this.#save();
+      } catch (e) {
+        this.#unmint(f.name);
+        throw e;
+      }
+      await this.#made(p, vm, () => p.create({ name: f.name, size: f.size, region: f.region, ...(image !== undefined ? { image } : {}), userData, label }));
       return "created";
     });
+  }
+
+  /** The VM's cloud-init with a new single-use pairing token in it. When the image can't be made the token is revoked
+   *  again, so none is left that no VM carries. */
+  async #image(name: string, tenure: string, own = true): Promise<string> {
+    // Not MOSS's own image: no token, no ticket, nothing for the main to confirm by itself (the person pairs it).
+    if (!own) return CUSTOM_IMAGE_USER_DATA;
+    const token = this.pairing.mint(name, tenure, this.#o.authority.handovers?.() ?? 0);
+    try {
+      return await this.#o.userData({ name, token });
+    } catch (e) {
+      this.#unmint(name);
+      throw e;
+    }
+  }
+
+  /** Takes back this VM's token and its join ticket (the pairing the ticket opened is cancelled): one pending pairing
+   *  per VM, and none left when no VM carries it. */
+  #unmint(name: string): void {
+    this.pairing.revoke(name);
+    try {
+      this.#o.dropTicket?.(name);
+    } catch (e) {
+      this.#o.log?.(`cloud computer ${name}: its join ticket wasn't given up (${(e as Error).message})`);
+    }
   }
 
   /** Settles a `creating` entry from the provider's answer. When the create throws, the cloud is asked by label at
@@ -444,6 +537,7 @@ export class CloudComputers {
       if (!there) {
         this.#drop(vm.name);
         this.#save();
+        this.#unmint(vm.name);
       }
       throw e;
     }
@@ -453,9 +547,9 @@ export class CloudComputers {
     this.#save();
   }
 
-  async #resize(vm: CloudVm, size: string, tenure: string): Promise<boolean> {
+  async #resize(vm: CloudVm, size: string, tenure: string, image?: string): Promise<boolean> {
     return this.#one(vm.name, async () => {
-      if (!(await this.#o.confirm({ kind: "cloud-resize", name: vm.name, provider: vm.provider, from: vm.size, to: size }))) return false;
+      if ((await this.#o.confirm({ kind: "cloud-resize", name: vm.name, provider: vm.provider, from: vm.size, to: size, ...(image !== undefined ? { image } : {}) })) !== true) return false;
       this.#guard(tenure);
       await this.#provider(vm.provider).resize({ serverId: vm.serverId!, label: vm.label, region: vm.region, size });
       vm.size = size;
@@ -469,26 +563,39 @@ export class CloudComputers {
   async #repair(f: CloudFolder, vm: CloudVm, why: "token-expired" | "main-changed", tenure: string): Promise<boolean> {
     return this.#one(f.name, async () => {
       const p = this.#provider(f.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-repair", name: f.name, provider: f.provider, why }))) return false;
+      const image = f.image;
+      if ((await this.#o.confirm({ kind: "cloud-repair", name: f.name, provider: f.provider, why, ...(image !== undefined ? { image } : {}) })) !== true) return false;
       this.#guard(tenure);
-      vm.state = "deleting";
-      this.#save();
-      await p.delete({ serverId: vm.serverId!, label: vm.label, region: vm.region });
-      this.#drop(f.name);
-      const fresh: CloudVm = { name: f.name, folder: f.folder, provider: f.provider, label: vm.label, region: f.region, size: f.size, state: "creating", createdAt: this.#o.clock.now() };
-      this.#state.vms.push(fresh);
-      const token = this.pairing.mint(f.name, tenure);
-      this.#save();
-      this.#guard(tenure);
-      await this.#made(p, fresh, () => p.create({ name: f.name, size: f.size, region: f.region, ...(f.image ? { image: f.image } : {}), userData: this.#o.userData({ name: f.name, token }), label: vm.label }));
+      // Made before the empty VM goes: if the image can't be made, the old VM is left as it was.
+      const userData = await this.#image(f.name, tenure, image === undefined);
+      let fresh: CloudVm;
+      try {
+        this.#guard(tenure);
+        vm.state = "deleting";
+        this.#save();
+        await p.delete({ serverId: vm.serverId!, label: vm.label, region: vm.region });
+        this.#drop(f.name);
+        fresh = { name: f.name, folder: f.folder, provider: f.provider, label: vm.label, region: f.region, size: f.size, state: "creating", createdAt: this.#o.clock.now() };
+        this.#state.vms.push(fresh);
+        this.#save();
+        this.#guard(tenure);
+      } catch (e) {
+        this.#unmint(f.name);
+        throw e;
+      }
+      await this.#made(p, fresh, () => p.create({ name: f.name, size: f.size, region: f.region, ...(image !== undefined ? { image } : {}), userData, label: vm.label }));
       return true;
     });
   }
 
-  async #delete(t: { name: string; label: string; provider: string; serverId: string; region: string }, why: "folder-removed" | "asked", tenure: string): Promise<boolean> {
+  /** `yes`: deleted. `no`: the user declined (the VM is kept, and not asked about again). `later`: the card was never
+   *  answered, so nothing is decided: the next pass asks again. */
+  async #delete(t: { name: string; label: string; provider: string; serverId: string; region: string }, why: "folder-removed" | "asked", tenure: string): Promise<"yes" | "no" | "later"> {
     return this.#one(t.name, async () => {
       const p = this.#provider(t.provider);
-      if (!(await this.#o.confirm({ kind: "cloud-delete", name: t.name, provider: t.provider, why }))) return false;
+      const answer = await this.#o.confirm({ kind: "cloud-delete", name: t.name, provider: t.provider, why });
+      if (answer === "unanswered") return "later";
+      if (answer !== true) return "no";
       this.#guard(tenure);
       const vm = this.#state.vms.find((v) => v.label === t.label);
       if (vm) vm.state = "deleting";
@@ -498,7 +605,7 @@ export class CloudComputers {
       this.#state.vms = this.#state.vms.filter((v) => v.label !== t.label);
       this.#unkeep(t.label);
       this.#save();
-      return true;
+      return "yes";
     });
   }
 
@@ -550,7 +657,42 @@ export class CloudComputers {
     }
   }
 
+  /** Written only when it differs from what was last read or written: a person with no cloud computer has no file. */
   #save(): void {
+    const now = JSON.stringify(this.#state);
+    if (now === this.#saved) return;
     this.#o.store.save(this.#state);
+    this.#saved = now;
+  }
+
+  /** A provider plugin is about to be removed (or its folder deleted): while it still has machines, the person is asked
+   *  first, with a card naming them: delete them now (this card is their yes, the provider is still here to do it), or
+   *  keep them and keep paying (they are remembered as kept, and every later pass says plainly that MOSS can no longer
+   *  manage them). A card nobody answered refuses the removal: machines are never left billing without the person's
+   *  word. Resolves to what happened; throws when the removal must not go on. */
+  async retireProvider(providerIds: readonly string[]): Promise<"none" | "deleted" | "kept"> {
+    const tenure = this.#o.authority.tenure();
+    if (!this.#o.authority.canAct() || tenure === undefined) return "none";
+    const mine = this.#state.vms.filter((v) => providerIds.includes(v.provider) && v.state !== "deleting");
+    if (mine.length === 0) return "none";
+    const provider = mine[0]!.provider;
+    const answer = await this.#o.confirm({ kind: "cloud-provider-removal", provider, machines: mine.map((v) => v.name) });
+    if (answer === "unanswered") throw new ContractError("refused", `not removed: ${mine.map((v) => v.name).join(", ")} would be left running and billing, and the question about them wasn't answered`);
+    if (answer !== true) {
+      for (const v of mine) this.#keep(v.label);
+      this.#save();
+      this.#o.log?.(`cloud computers ${mine.map((v) => v.name).join(", ")}: kept; once ${provider} is removed MOSS can no longer manage them and they keep billing until you delete them in the provider's own console`);
+      return "kept";
+    }
+    const p = this.#provider(provider);
+    for (const v of mine) {
+      this.#guard(tenure);
+      const there = (await p.list({ label: v.label })).find((x) => x.label === v.label && x.state !== "gone");
+      if (there) await p.delete({ serverId: there.serverId, label: v.label, region: there.region });
+      this.#state.vms = this.#state.vms.filter((x) => x.label !== v.label);
+      this.#unkeep(v.label);
+      this.#save();
+    }
+    return "deleted";
   }
 }

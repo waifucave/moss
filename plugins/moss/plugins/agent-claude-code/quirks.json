@@ -1,0 +1,120 @@
+{
+  "notes": "Claude Code, through `@agentclientprotocol/claude-agent-acp` 0.100.0 (the Claude Agent SDK underneath). Its fence  goes in `_meta.claudeCode.options` (`settings`, `sandbox`, `disallowedTools`), written once its gates pass. Unmeasured (from docs, `--help` and code, S5 §3): where a row isn't known it takes the cautious value (a reattach by `load` with its replay dropped, MCP names unread, calls a cancel leaves open closed by MOSS), it is held as acting without asking (`unasked-actions`) since it loads the user's own approval settings, and no sandbox is admitted, so it asks for the user's OK. The agent suite's live gates measure each row. The adapter's `--version` may name its package (`@agentclientprotocol/claude-agent-acp <n>`); the older `@zed-industries/claude-agent-acp` (0.23.x) answers nothing and is not started. MOSS provides the adapter itself (`launch.adapter`): 0.100.0 and the 106 packages it needs (`adapter-lock.json`, made by `scripts/agent-adapter-lock.ts` from npm's lockfile; each hash from the public registry's metadata), fetched behind one card, checked against its integrity before it is unpacked, and run on MOSS's own Bun. It drives the user's own `claude`, which MOSS finds and hands it in `CLAUDE_CODE_EXECUTABLE` (the vendor SDK's own 300 MB native binary is not fetched). The user's own installed adapter is the fallback while MOSS's copy isn't there.",
+  "source": "docs and code (S5 §3)",
+  "readOnlyMode": {
+    "option": "mode",
+    "values": [
+      "plan"
+    ]
+  },
+  "quirks": {
+    "capabilities": {
+      "snakeCaseDuplicates": false,
+      "httpMcpUnadvertised": false
+    },
+    "turns": {
+      "refusal": "unknown",
+      "cancelLeavesToolCallsOpen": true,
+      "reportsUsage": true,
+      "quotaErrorsAsText": false
+    },
+    "progress": {
+      "countsChildProcesses": true
+    },
+    "placement": "local",
+    "marks": [
+      "unasked-actions"
+    ],
+    "launch": {
+      "identity": {
+        "versionArgs": [
+          "--version"
+        ],
+        "versionPattern": "^(?:(?:@agentclientprotocol/)?claude-agent-acp\\s+)?v?(\\d+\\.\\d+\\.\\d+)\\s*$"
+      },
+      "envAllow": [],
+      "envSet": {},
+      "versions": ">=0.100.0 <0.200.0",
+      "adapter": {
+        "package": "@agentclientprotocol/claude-agent-acp",
+        "version": "0.100.0",
+        "integrity": "sha512-X+f2M5RiehzSzWRJjDSf0Sbzoc8JK66l85YnYW5TAdHJX53CLQV00v2M72bfCKJ4IZ11qt+WQ/Yg9NVKcuDAhQ==",
+        "size": 596525,
+        "run": "dist/index.js",
+        "runtime": "moss-bun",
+        "lock": "adapter-lock.json",
+        "uses": [
+          {
+            "program": "claude",
+            "env": "CLAUDE_CODE_EXECUTABLE",
+            "identity": {
+              "versionArgs": [
+                "--version"
+              ],
+              "versionPattern": "^\\d+\\.\\d+\\.\\d+ \\(Claude Code\\)"
+            }
+          }
+        ]
+      }
+    },
+    "mcp": {
+      "transports": [
+        "stdio",
+        "http",
+        "sse"
+      ],
+      "storesPlainText": false,
+      "passesEnvironment": false,
+      "instructionsReachPrompt": "unknown",
+      "systemPromptChannel": "_meta.systemPrompt",
+      "tellsConversationId": false,
+      "toolSearch": "own"
+    },
+    "sessions": {
+      "load": {
+        "supported": true,
+        "replays": true
+      },
+      "resume": {
+        "supported": true,
+        "replays": true
+      },
+      "replayKeepsToolCallIds": true,
+      "listFiltersHonestly": false,
+      "close": true
+    },
+    "permissions": {
+      "optionKinds": [
+        "allow_once",
+        "allow_always",
+        "reject_once"
+      ],
+      "neverAsks": [],
+      "mcpNames": null
+    },
+    "config": {
+      "modelOption": "model",
+      "effortOption": null,
+      "effortInModel": false,
+      "choicePersists": false
+    },
+    "auth": {
+      "methods": [],
+      "requiredError": {
+        "code": -32000
+      }
+    },
+    "subagents": {
+      "toolNameAt": "claudeCode.toolName",
+      "tools": [
+        "Task",
+        "Agent"
+      ],
+      "name": [
+        "description",
+        "subagent_type"
+      ],
+      "model": "model"
+    }
+  }
+}

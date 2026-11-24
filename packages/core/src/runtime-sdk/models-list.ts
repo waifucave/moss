@@ -6,16 +6,16 @@
 // * **Every model of a provider plugin that is on,** signed in or not (`signedIn` says which), less blocked and
 //   vendor-retired rows and every row of a blocked provider: a picker never offers what `session.setModel` refuses.
 // * **Only models a session can run:** `llm` providers, and never a row a real turn would refuse tools on
-//   (`toolsRefusedFor`), since every Clover session offers tools.
+//   (`toolsRefusedFor`), since every MOSS session offers tools.
 // * **`plugin`** is the plugin that contributes the provider (the installed one's id from its install record, else the
-//   bundled `clover/model-<provider>`), and **`providerName`** the name its manifest gives (a `Text`, in the user's
+//   bundled `moss/model-<provider>`), and **`providerName`** the name its manifest gives (a `Text`, in the user's
 //   locale), else the catalog's.
 // * **With `session`,** only the models that session's runtime takes: an agent backend lists its own (lane K), a bot or
 //   a coding session on the embedded runtime the whole catalog. An unknown session is `not_found`.
 //
 // Owner: lane A. The method's spec is the protocol's (`SESSIONS_METHODS.modelsList`).
 import { z } from "zod";
-import { ModelListing, SESSIONS_METHODS, Text } from "@waifucave/clover-protocol";
+import { ModelListing, SESSIONS_METHODS, Text, type SessionOption } from "@waifucave/moss-protocol";
 import type { WinterCatalog, WinterModelDescriptor } from "@waifucave/clover-provider-catalog";
 import { ContractError } from "../contracts/common";
 import { handler, type MethodHandler } from "../rpc/handler";
@@ -32,7 +32,7 @@ export type ModelsListResult = z.infer<typeof MODELS_LIST.result>;
 
 /** What a session's runtime takes: the catalog (the embedded runtime: bots, side threads, coding sessions), or its own
  *  list (an agent backend's models, lane K). `undefined`: no such session. */
-export type SessionModels = { kind: "catalog" } | { kind: "own"; models: readonly ModelListing[] };
+export type SessionModels = { kind: "catalog" } | { kind: "own"; models: readonly ModelListing[]; options?: readonly SessionOption[] };
 
 export interface ModelsListDeps {
   /** Which providers hold a credential now (`credentialPresenceFrom(secrets).byProvider`); read per call. */
@@ -40,7 +40,7 @@ export interface ModelsListDeps {
   /** The user's default model (§6.1), a qualified catalog id. */
   defaultModel?(): string | undefined;
   /** What a session's runtime takes (lanes D and K); without it every session takes the catalog. */
-  sessionModels?(session: string): SessionModels | undefined;
+  sessionModels?(session: string): SessionModels | undefined | Promise<SessionModels | undefined>;
   /** Test seam: the catalog. */
   catalog?: () => WinterCatalog;
 }
@@ -127,14 +127,15 @@ export function contributedProviders(records: Iterable<{ enabled?: boolean; mani
 /** `models.list`'s answer. */
 export async function listModels(deps: ModelsListDeps, params: { session?: string }): Promise<ModelsListResult> {
   const def = deps.defaultModel?.();
-  const withDefault = (models: readonly ModelListing[]): ModelsListResult => ({
+  const withDefault = (models: readonly ModelListing[], options?: readonly SessionOption[]): ModelsListResult => ({
     models: models.slice(0, 10_000),
+    ...(options !== undefined && options.length > 0 ? { options: options.slice(0, 32) } : {}),
     ...(def !== undefined && def.length > 0 && def.length <= 200 ? { default: def } : {}),
   });
   if (params.session !== undefined && deps.sessionModels !== undefined) {
-    const takes = deps.sessionModels(params.session);
+    const takes = await deps.sessionModels(params.session);
     if (takes === undefined) throw new ContractError("not_found", `no session ${params.session}`);
-    if (takes.kind === "own") return withDefault(takes.models);
+    if (takes.kind === "own") return withDefault(takes.models, takes.options);
   }
   const catalog = (deps.catalog ?? activeCatalog)();
   return withDefault(catalogModelListings(catalog, await deps.signedIn()));

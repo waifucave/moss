@@ -1,0 +1,13 @@
+{
+  "manifest": 1,
+  "name": { "en": "MOSS's extras", "ja": "MOSSのおまけ" },
+  "description": { "en": "Optional parts of MOSS, off until you turn them on: two more scenes for her stage, and a morning check-in she can set up when you ask.", "ja": "オンにするまで使われないMOSSの追加部分。ステージのシーン二つと、頼めば設定できる朝のチェックイン。" },
+  "enabledByDefault": false,
+  "contributes": {
+    "skills": ["skills/*/SKILL.md"],
+    "alpha.scenes": [
+      { "id": "seaside", "title": "Seaside at dusk" },
+      { "id": "library", "title": "Old library" }
+    ]
+  }
+}

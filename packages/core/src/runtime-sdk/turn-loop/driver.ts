@@ -6,7 +6,7 @@
 //   message that starts it, and what folds in is pushed while the turn runs, so the runtime takes it after its next
 //   tool call (agent SDK 0.0.44's fold, `fold.ts`). A push the runtime didn't fold before its turn ended runs as the
 //   runtime's next turn, which the same host turn covers: the host turn ends once every push has been answered.
-// * **The transcript is the runtime's own,** under the Clover home, keyed by a backend id this driver keeps in
+// * **The transcript is the runtime's own,** under the MOSS home, keyed by a backend id this driver keeps in
 //   `<home>/sessions-runtime/<session>.json`; a new runtime (a restart, a rebuild) resumes it.
 // * **The harness owns the system prompt** (prompt.ts): rebuilt at the first turn, after every compaction, and when the
 //   cached prompt has expired (`cacheCold()`), each time by resuming the transcript under the new prompt. MCP servers
@@ -38,25 +38,28 @@ import { join } from "node:path";
 import { reservedMcpServerNames } from "../../capabilities/names";
 import { query as sdkQuery, requireBrand, type CanUseTool, type HookCallbackMatcher, type McpServerConfig, type Options, type Query, type SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
-import type { Os, TurnOrigin } from "@waifucave/clover-protocol";
+import type { Caller, Os, TurnOrigin } from "@waifucave/moss-protocol";
 import type { Unsubscribe } from "../../contracts/common";
 import type { SessionDriver, TurnControl, TurnEnd, TurnInput } from "../../contracts/session-host";
 import type { BotSessionContext } from "../../bots/service";
 import { writeJsonAtomic } from "../../sessions/atomic-file";
 import { createProjector, type Projector } from "../../projector";
 import { ToolDisplays } from "../tool-display";
+import { ToolApps, type AppSite, type McpAppsService } from "../../mcp-apps/service";
+import type { UiResourceContent } from "../../mcp-apps/resource";
 import { hostInputFoldedCount } from "../fold";
 import { createHostPromptQueue, type HostPromptQueue } from "../prompt-queue";
 import { testProviderNameFor } from "../provider-selection";
 import { modelProviderKey } from "../model-plugins";
-import { cloverSessions } from "../sessions";
+import { mossSessions } from "../sessions";
 import { NO_HOOKS, turnOutcomeOf, type HookSession, type TurnHooks } from "./hooks";
 import { harnessPrompt, mcpChangesSince, mcpFingerprint, type PromptComputer, type PromptMcpServer } from "./prompt";
 import { coreToolsServer, routedMcpServer, type BotMcpServer, type CallIds, type CoreToolDef, type McpRunner } from "./servers";
 import { formatTurnInput, TASK_NOTIFICATION_FRAME } from "./input";
+import { botPageCalls, type PageCallDoors } from "./page-calls";
 import { embeddedSessionOptions, fillProvider } from "./embedded-session";
 import { mergedHooks } from "./hook-merge";
-import { NAMESPACE_RE } from "@waifucave/clover-plugin-sdk";
+import { NAMESPACE_RE } from "@waifucave/moss-plugin-sdk";
 import { GLOSSARY_TOOL_NAME, glossaryTool, type GlossaryDeps } from "./glossary";
 import { partsServe } from "./only-backends";
 import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFlagOf } from "../../approvals/bot-check";
@@ -68,11 +71,19 @@ import { runtimeDenyForms } from "../../fence/runtime-deny-forms";
  *  `TaskStop` and `Agent` are not: the core's take those names. Nor are `Skill` and `ToolSearch` (retired for
  *  `Glossary`), `NotebookEdit`, worktrees and plan mode (the coding agents'), or the web tools (the web plugin's). */
 export const BOT_BUILTIN_TOOLS: readonly string[] = [
-  "Bash", "Read", "Write", "Edit", "Glob", "Grep", "AskUserQuestion",
+  // On Windows the core serves Bash and PowerShell itself (`fence/win-shell-tools.ts`, the daemon's core tools): the
+  // runtime has no Windows sandbox, so its own are left out here and the core's plain names take theirs.
+  ...(process.platform === "win32" ? [] : ["Bash"]), "Read", "Write", "Edit", "Glob", "Grep", "AskUserQuestion",
   "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", "Monitor",
   "ListMcpResourcesTool", "ReadMcpResourceTool",
-  ...(process.platform === "win32" ? ["PowerShell"] : []),
 ];
+
+/** What the runtime was given of the plugins' servers: each server's name and each of its tools with how it loads. A tool turned
+ *  off, preloaded or put behind `Glossary` by the user's tool setting (§6.7) changes it, so the next turn opens the runtime
+ *  again with the list as it is now (the agent SDK takes `mcpServers` only when a runtime opens). */
+function serversSignature(servers: readonly BotMcpServer[]): string {
+  return ["moss_core", ...servers.filter((s) => s.server !== "moss_core").map((s) => `${s.server}\u0001${s.tools.map((t) => `${t.name}:${t.load ?? "on-demand"}`).sort().join("\u0002")}`)].sort().join("\u0000");
+}
 
 /** The built-ins that start on-demand (§6.7 [D]), with what `Glossary` says of them. */
 export const ON_DEMAND_BUILTINS: readonly { name: string; description: string }[] = [
@@ -88,12 +99,12 @@ interface ToolUseInput { tool_name?: string; tool_input?: unknown; tool_use_id?:
  *  in-process agents never run a command unsandboxed (the owner's ruling). */
 export const BOT_SANDBOX = { enabled: true, allowUnsandboxedCommands: false, denyLaunchServices: true } as const;
 
-/** A bot-side session's sandbox (a bot, its side threads and routines, an in-process agent, Clover's coding agent as a
+/** A bot-side session's sandbox (a bot, its side threads and routines, an in-process agent, MOSS's coding agent as a
  *  bot's child): the host's, with `BOT_SANDBOX` set last, and the runtime's file tools held to the same write roots as
  *  the shell (agent SDK 0.0.77's `filesystem.enforceWriteRootsInFileTools`: a Write, Edit or NotebookEdit outside them
  *  runs only on a `canUseTool` allow of that exact, link-free path; a hard-linked file is refused). Hard-link writes
  *  are never allowed here, whatever the host's settings say. Its deny lists go to the runtime spelled so that none can
- *  make its file-tool check refuse every path (`runtimeDenyForms`: a secret place macOS keeps Clover out of, or a name
+ *  make its file-tool check refuse every path (`runtimeDenyForms`: a secret place macOS keeps MOSS out of, or a name
  *  under a file), each still denying the same place; `userHome` names the user's secret places. */
 export function botSandbox(sandbox: SandboxSettingsConfig, o: { userHome?: string; os?: Os } = {}): SandboxSettingsConfig {
   const { allowHardLinkWrites: _never, ...filesystem } = sandbox.filesystem ?? {};
@@ -122,12 +133,17 @@ export const BOT_CONVERSATION_SANDBOX = { ...BOT_SANDBOX, allowUnsandboxedComman
  *  so the call always reaches the approval check and its card), `deny` for any other value present on one (never
  *  passed through unflagged), `deny` for the flag on any other tool but a plugin's or MCP server's (`mcp__…`: the
  *  field means nothing there), and nothing for a call that stays in the sandbox. */
-export function outsideSandboxHookDecision(tool: string, input: unknown): { decision: "ask" | "deny"; reason: string } | undefined {
+export function outsideSandboxHookDecision(tool: string, input: unknown, o: { agentId?: string } = {}): { decision: "ask" | "deny"; reason: string } | undefined {
   if (misplacedSandboxFlag(tool, input)) {
     return { decision: "deny", reason: `${tool} was refused: ${MISPLACED_SANDBOX_FLAG_REFUSAL}.` };
   }
   const flag = outsideSandboxFlagOf(tool, input);
   if (flag === "off") return undefined;
+  // A call made inside a subagent (the hook input's `agent_id`): its commands never leave the sandbox (spec: a subagent's
+  // such call is refused with no card), whatever tool carries the flag.
+  if (typeof o.agentId === "string" && o.agentId.length > 0) {
+    return { decision: "deny", reason: `${tool} was refused: a subagent's commands always run in the sandbox; a command can't run outside it here. Run the command in the sandbox instead.` };
+  }
   if (flag === "escape") {
     return { decision: "ask", reason: "This command asks to run outside the sandbox: the user approves each such command on its own card." };
   }
@@ -146,7 +162,7 @@ export function withSecretReads(sandbox: SandboxSettingsConfig | undefined, fenc
   return { ...base, filesystem: { ...(base.filesystem ?? {}), denyRead: [...new Set([...(base.filesystem?.denyRead ?? []), ...places])] } };
 }
 
-/** The host's sandbox with the Clover home's key places (`BOT_KEY_PATHS`: credentials, the runtimes, the runtime's
+/** The host's sandbox with the MOSS home's key places (`BOT_KEY_PATHS`: credentials, the runtimes, the runtime's
  *  checkpoint store and image copies, …) in its `denyRead` too, when the session's file fence knows the home: the
  *  sandboxed shell can't read them either, as the file tools can't (`botReadDenied`). */
 export function withBotKeyReads(sandbox: SandboxSettingsConfig, fence: Pick<FileFence, "home"> | undefined): SandboxSettingsConfig {
@@ -158,7 +174,7 @@ export function withBotKeyReads(sandbox: SandboxSettingsConfig, fence: Pick<File
 }
 
 /** The daemon's fence for a bot's own Read, Glob and Grep: lane C's fence as the session meets it (`forCaller`), so
- *  inside the Clover home only its own folders are readable (`fileToolFenceRefusal`). */
+ *  inside the MOSS home only its own folders are readable (`fileToolFenceRefusal`). */
 export function botFileFence(fence: Pick<Fence, "forCaller">, home: string, os?: Os, userHome?: string): (ctx: BotSessionContext) => FileFence {
   return (ctx) => {
     const own = fence.forCaller(ctx.caller);
@@ -167,7 +183,7 @@ export function botFileFence(fence: Pick<Fence, "forCaller">, home: string, os?:
 }
 
 export interface BotDriverDeps {
-  /** The Clover home: this driver's state; the runtime's own home (`CLOVER_HOME`) and its transcripts are its store home under it (`storeHomeFor`). */
+  /** The MOSS home: this driver's state; the runtime's own home (`MOSS_HOME`) and its transcripts are its store home under it (`storeHomeFor`). */
   home: string;
   profile?: string;
   /** The embedded runtime's spawn hook (`createEmbeddedSessionHost().spawn`). */
@@ -202,7 +218,12 @@ export interface BotDriverDeps {
    *  (`ComputerNode.mcp`), which runs each call where its server is. */
   /** `settled`: waits (briefly) for the first listing of a server just installed or enabled, so the turn that starts
    *  right after sees its tools (`PluginMcp.settled`). */
-  mcp?: { servers(ctx: BotSessionContext): readonly BotMcpServer[]; runner: McpRunner; settled?(): Promise<void> };
+  mcp?: { servers(ctx: BotSessionContext): readonly BotMcpServer[]; runner: McpRunner; settled?(): Promise<void>;
+    /** MCP Apps: every tool of a server with the page it names (even an app-only one), and `resources/read` of a page on the
+     *  connection that serves the tool (`PluginMcp.uiTools`, `readUi`). */
+    ui?: { tools(server: string, tool: string): { name: string; ui?: { resourceUri?: string; visibility: readonly ("model" | "app")[] } }[]; read(server: string, tool: string, uri: string, as: Caller, o?: { signal?: AbortSignal }): Promise<UiResourceContent[]> } };
+  /** MCP Apps (`mcp-apps/`): a plugin tool that names a page gets it bound here, under the session and the call. */
+  mcpApps?: McpAppsService;
   /** What the model plugins give a session on `provider` now (`modelProviderKey`: its catalog rows and how its adapter
    *  is served, or `absent`). The runtime takes them only when it opens, so a change for the bot's own provider reopens
    *  it at the next turn; another provider's change never does. Default: `modelProviderKey`. */
@@ -226,7 +247,7 @@ export interface BotDriverDeps {
    *  out. Given, it must answer: undefined or a throw fails the turn, never "floor only". Whatever it says, a bot's
    *  commands run sandboxed (`BOT_SANDBOX`). */
   sandbox?(ctx: BotSessionContext): SandboxSettingsConfig | undefined;
-  /** The fence for the session's own Read, Glob and Grep (`fileToolFenceRefusal`): the Clover home's default-deny, as
+  /** The fence for the session's own Read, Glob and Grep (`fileToolFenceRefusal`): the MOSS home's default-deny, as
    *  its Bash meets it in `sandbox`. None without it. */
   fileFence?(ctx: BotSessionContext): FileFence | undefined;
   /** Extra environment for the runtime (never secrets). */
@@ -269,6 +290,8 @@ interface Incarnation {
   query: Query;
   /** What this incarnation's plugin tool results showed, waiting for their `tool_result` (`ToolDisplays`). */
   displays: ToolDisplays;
+  /** The pages their calls named, waiting for the same (`ToolApps`). */
+  apps: ToolApps;
   queue: HostPromptQueue;
   abort: AbortController;
   projector: Projector;
@@ -338,34 +361,34 @@ const PROMPT_HOLD_TIMEOUT_S = Math.floor(2_147_483_647 / 1000);
 /** The most times one host turn goes on after a core tool ended the runtime's turn (`CoreToolResult.endTurn`). */
 export const MAX_CONTINUATIONS = 4;
 
-/** A plugin id's top-level tree (`clover` for `clover/web`). */
+/** A plugin id's top-level tree (`moss` for `moss/web`). */
 const top = (id: string) => (id.includes("/") ? id.slice(0, id.indexOf("/")) : id);
 
-/** Server names the agent runtime keeps for itself: its standing server's (the brand's `mcpServerName`, `clover`, which
+/** Server names the agent runtime keeps for itself: its standing server's (the brand's `mcpServerName`, `moss`, which
  *  the runtime refuses for any configured server and then exits before init) and the daemon's capability servers'
- *  (`clover__<key>`). A plugin server under one is left out of the session, never handed to the runtime. */
+ *  (`moss__<key>`). A plugin server under one is left out of the session, never handed to the runtime. */
 export function runtimeReservedServerNames(): ReadonlySet<string> {
   return new Set([requireBrand().mcpServerName, ...reservedMcpServerNames()]);
 }
 
 /** Names no tree but their own may take, installed or not: the bundled tree's. */
-export const RESERVED_SERVER_NAMES: readonly string[] = ["clover"];
+export const RESERVED_SERVER_NAMES: readonly string[] = ["moss"];
 
-/** Servers that share a name prefix (the bundled tree's children all read `mcp__clover__…`: the browser's, the web
+/** Servers that share a name prefix (the bundled tree's children all read `mcp__moss__…`: the browser's, the web
  *  plugin's) are one server to the runtime, with every tool; a tool name two of them give keeps the first, by plugin
  *  id, as the registry keeps a name (§6.7 "Tool names are unique"). Only one plugin tree may hold a name (§6.7: one
- *  enabled plugin per namespace): the name belongs to the plugin tree whose top-level id it is (`clover` for
- *  `mcp__clover__…`), else to the first tree by plugin id; a server of any other tree under it is left out, never merged
+ *  enabled plugin per namespace): the name belongs to the plugin tree whose top-level id it is (`moss` for
+ *  `mcp__moss__…`), else to the first tree by plugin id; a server of any other tree under it is left out, never merged
  *  in (`onRefused`), so no plugin can slip its tools under another's name. */
 export function mergedServers(servers: readonly BotMcpServer[], onRefused?: (s: BotMcpServer, holder: string) => void, reserved: Iterable<string> | ReadonlyMap<string, string> = RESERVED_SERVER_NAMES): BotMcpServer[] {
   const sorted = [...servers].sort((a, b) => (a.plugin < b.plugin ? -1 : a.plugin > b.plugin ? 1 : 0));
   // Who holds each name, compared without case: an installed tree's namespace is its own even when it gives no server
   // (`reserved`: name → the tree's top-level id; a plain name is its own tree's), else the tree whose top-level id is
-  // the name (`clover` holds `mcp__clover__…`), else the first by plugin id.
+  // the name (`moss` holds `mcp__moss__…`), else the first by plugin id.
   const holder = new Map<string, string>();
   for (const entry of reserved) {
     const [name, tree] = typeof entry === "string" ? [entry, entry] : entry;
-    // The first claim holds: `clover` stays the bundled tree's whatever another tree's id or namespace spells.
+    // The first claim holds: `moss` stays the bundled tree's whatever another tree's id or namespace spells.
     if (!holder.has(name.toLowerCase())) holder.set(name.toLowerCase(), tree);
   }
   const fixed = new Set(holder.keys());
@@ -440,6 +463,12 @@ export class BotSessionDriver implements SessionDriver {
   #builtCatalog: { provider: string; key: string } | undefined;
   /** The provider key a reopen was held back for (background work running), said once. */
   #catalogHeldSaid: string | undefined;
+  /** The bot's instructions the open runtime's prompt carries: the runtime takes the prompt only when it opens, so an
+   *  edit (its plugin's file, or the user layer's) reopens it at the next turn start, resuming the transcript under the
+   *  new prompt, however long or short the conversation (one cache miss per edit). */
+  #builtInstructions: string | undefined;
+  /** The instructions a reopen was held back for (background work running), said once. */
+  #instructionsHeldSaid: string | undefined;
   #builtMcp: Map<string, string> = new Map();
   /** Plugin servers already logged as left out for a runtime-reserved name. */
   readonly #runtimeReservedSaid = new Set<string>();
@@ -489,7 +518,7 @@ export class BotSessionDriver implements SessionDriver {
 
   async #hasTranscript(id: string): Promise<boolean> {
     try {
-      await cloverSessions(this.#d.home).getSessionInfo(id);
+      await mossSessions(this.#d.home).getSessionInfo(id);
       return true;
     } catch {
       return false;
@@ -671,81 +700,89 @@ export class BotSessionDriver implements SessionDriver {
     };
   }
 
+  /** A tool call's PreToolUse, in one place: a MODEL's call reaches it as the runtime's hook, and a PAGE's call (MCP Apps) is
+   *  made to meet this very function (`#appsFor`), so the page gets all the model's call gets: the pause and the lease, the
+   *  plugins' `tool.before` (deny, ask, a rewritten input), the file fence and the sandbox-escape rule. */
+  async #preTool(raw: unknown, toolUseId: string | undefined, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const input = raw as ToolUseInput;
+    const name = input.tool_name ?? "";
+    const callId = input.tool_use_id ?? toolUseId ?? "";
+    this.#dropsBefore(name, callId);
+    const stop = await this.#gate(signal);
+    if (stop !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stop } };
+    const r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
+    if (r.deny !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: r.deny } };
+    // The plugins' hooks take time: the pause may have come on, or the lease gone, meanwhile. A call that asks no
+    // one (a read-only tool) has no later check (`#gatedCanUseTool`), so the gate is asked again here.
+    const after = await this.#gate(signal);
+    if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
+    // The MOSS home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
+    const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
+    const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: changedInput ? r.input : input.tool_input });
+    if (fenced !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: fenced } };
+    // A command asking to leave the sandbox always reaches the approval check: the runtime handles a hook's ask
+    // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
+    // the plugins left it (a hook that strips the flag leaves a sandboxed call, which needs no card; one that
+    // adds it is caught here). Anything but exactly `true` is refused outright, never passed through unflagged.
+    const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input, typeof (raw as { agent_id?: unknown }).agent_id === "string" ? { agentId: (raw as { agent_id: string }).agent_id } : {});
+    if (escape !== undefined) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: escape.decision,
+          permissionDecisionReason: escape.reason,
+          ...(changedInput ? { updatedInput: r.input as Record<string, unknown> } : {}),
+        },
+      };
+    }
+    // The call id the router gets, queued only for a call that goes on; a refusal after this drops it
+    // (`#gatedCanUseTool`, `PostToolUseFailure`), so the next call of the tool never takes a stale one (review S1).
+    if (name.startsWith("mcp__") && callId !== "") {
+      const q = this.#callIds.get(name) ?? [];
+      q.push(callId);
+      this.#callIds.set(name, q);
+    }
+    const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
+    if (r.ask !== undefined || changed) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          ...(r.ask !== undefined ? { permissionDecision: "ask" as const, permissionDecisionReason: r.ask } : {}),
+          ...(changed ? { updatedInput: r.input as Record<string, unknown> } : {}),
+        },
+      };
+    }
+    return {};
+  }
+
+  /** A tool call's PostToolUse, in one place (the model's and a page's, as `#preTool`): the plugins' `tool.after` and the observer. */
+  async #postTool(raw: unknown, toolUseId: string | undefined, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const input = raw as ToolUseInput;
+    const name = input.tool_name ?? "";
+    this.#dropCallId(name, input.tool_use_id ?? toolUseId);
+    this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
+    // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
+    const fenced = this.#fileFence === undefined ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
+    const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
+    try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
+    // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
+    // goes on in a new runtime turn.
+    const stop = this.#continueWith !== undefined ? { continue: false, stopReason: "MOSS continues this turn under a changed sandbox." } : {};
+    if (result === input.tool_response) return stop;
+    return { ...stop, hookSpecificOutput: { hookEventName: "PostToolUse", ...(name.startsWith("mcp__") ? { updatedMCPToolOutput: result } : { updatedToolOutput: result }) } };
+  }
+
   /** The tool hooks: the pause and the lease first, then the plugins' `tool.before`; `tool.after` after the call. */
   #toolHooks(): Partial<Record<"PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit", HookCallbackMatcher[]>> {
     const pre: HookCallbackMatcher = {
       // A hook that breaks must never wave the call through.
       failClosed: true,
       timeout: TOOL_HOOK_TIMEOUT_S,
-      hooks: [async (raw, toolUseId, { signal }) => {
-        const input = raw as ToolUseInput;
-        const name = input.tool_name ?? "";
-        const callId = input.tool_use_id ?? toolUseId ?? "";
-        this.#dropsBefore(name, callId);
-        const stop = await this.#gate(signal);
-        if (stop !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stop } };
-        const r = await this.#hooks.toolBefore(this.#hookSession, { name, callId }, input.tool_input, signal);
-        if (r.deny !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: r.deny } };
-        // The plugins' hooks take time: the pause may have come on, or the lease gone, meanwhile. A call that asks no
-        // one (a read-only tool) has no later check (`#gatedCanUseTool`), so the gate is asked again here.
-        const after = await this.#gate(signal);
-        if (after !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: after } };
-        // The Clover home's default-deny for the session's own file tools, on the input a plugin's hook may have changed.
-        const changedInput = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-        const fenced = this.#fileFenceRefusal({ tool_name: name, tool_input: changedInput ? r.input : input.tool_input });
-        if (fenced !== undefined) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: fenced } };
-        // A command asking to leave the sandbox always reaches the approval check: the runtime handles a hook's ask
-        // before its own allow rules and permission mode, and the check cards every such call. Seen on the input as
-        // the plugins left it (a hook that strips the flag leaves a sandboxed call, which needs no card; one that
-        // adds it is caught here). Anything but exactly `true` is refused outright, never passed through unflagged.
-        const escape = outsideSandboxHookDecision(name, changedInput ? r.input : input.tool_input);
-        if (escape !== undefined) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: escape.decision,
-              permissionDecisionReason: escape.reason,
-              ...(changedInput ? { updatedInput: r.input as Record<string, unknown> } : {}),
-            },
-          };
-        }
-        // The call id the router gets, queued only for a call that goes on; a refusal after this drops it
-        // (`#gatedCanUseTool`, `PostToolUseFailure`), so the next call of the tool never takes a stale one (review S1).
-        if (name.startsWith("mcp__") && callId !== "") {
-          const q = this.#callIds.get(name) ?? [];
-          q.push(callId);
-          this.#callIds.set(name, q);
-        }
-        const changed = r.input !== input.tool_input && r.input !== null && typeof r.input === "object" && !Array.isArray(r.input);
-        if (r.ask !== undefined || changed) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              ...(r.ask !== undefined ? { permissionDecision: "ask" as const, permissionDecisionReason: r.ask } : {}),
-              ...(changed ? { updatedInput: r.input as Record<string, unknown> } : {}),
-            },
-          };
-        }
-        return {};
-      }],
+      hooks: [(raw, toolUseId, { signal }) => this.#preTool(raw, toolUseId, signal)],
     };
     const post: HookCallbackMatcher = {
       timeout: 600,
-      hooks: [async (raw, toolUseId, { signal }) => {
-        const input = raw as ToolUseInput;
-        const name = input.tool_name ?? "";
-        this.#dropCallId(name, input.tool_use_id ?? toolUseId);
-        this.#dropsAfter(input.tool_use_id ?? toolUseId ?? "");
-        // A search's hits through a link out of the session's folders are dropped before anyone sees them, plugins too.
-        const fenced = this.#fileFence === undefined ? undefined : fenceSearchOutput(name, input.tool_response, this.#fileFence, this.#ctx.paths.scratch, input.tool_input);
-        const result = await this.#hooks.toolAfter(this.#hookSession, { name, callId: input.tool_use_id ?? toolUseId ?? "" }, input.tool_input, fenced ?? input.tool_response, signal);
-        try { this.#d.observe?.toolResult?.(this.#ctx, name, input.tool_response, input.tool_input); } catch { /* an observer never fails the call */ }
-        // A core tool asked for the turn to end here (`#continueWith`): the runtime stops after this round, and `turn`
-        // goes on in a new runtime turn.
-        const stop = this.#continueWith !== undefined ? { continue: false, stopReason: "Clover continues this turn under a changed sandbox." } : {};
-        if (result === input.tool_response) return stop;
-        return { ...stop, hookSpecificOutput: { hookEventName: "PostToolUse", ...(name.startsWith("mcp__") ? { updatedMCPToolOutput: result } : { updatedToolOutput: result }) } };
-      }],
+      hooks: [(raw, toolUseId, { signal }) => this.#postTool(raw, toolUseId, signal)],
     };
     const failed: HookCallbackMatcher = {
       hooks: [async (raw, toolUseId) => {
@@ -830,29 +867,31 @@ export class BotSessionDriver implements SessionDriver {
       ...(this.#d.registry === undefined ? {} : { registry: this.#d.registry }),
       // A plugin's skills and agent definitions reach the session its `scope` serves (`servesScope`: an `agents` plugin's
       // no bot's, an `own-bot` one's only its own bot's) and, for an agent's or a coding session, only from plugins whose
-      // `onlyBackends` name Clover's own backend, which runs it (only-backends.ts).
+      // `onlyBackends` name MOSS's own backend, which runs it (only-backends.ts).
       ...(this.#d.registry === undefined ? {} : { serves: (pluginId: string, entryScope?: unknown) => partsServe(this.#d.registry!, pluginId, { kind: ctx.kind, bot: bot.id }, entryScope) }),
       // What each plugin offers (its servers' tools and instructions), and its builder's own stopped plugins.
       servers: () => mergedServers(this.#mcpServers(), undefined, this.#reservedNames()),
       bot: bot.id,
     });
-    mcpServers.clover_core = coreToolsServer(() => [...others(), glossary]);
+    mcpServers.moss_core = coreToolsServer(() => [...others(), glossary]);
     // What the conversation shows of a plugin tool beside its real name (`runtime-sdk/tool-display.ts`): its title, by
     // the runtime's name, and what its successful result showed, by call id. Display only: the cards, the rules and
     // the reviewer read the served name, never these.
     const titles = new Map<string, string>();
     const displays = new ToolDisplays();
+    const apps = new ToolApps();
     if (this.#d.mcp !== undefined) {
       for (const server of merged) {
-        if (server.server === "clover_core" || mcpServers[server.server] !== undefined) continue;
+        if (server.server === "moss_core" || mcpServers[server.server] !== undefined) continue;
         for (const t of server.tools) if (t.title !== undefined) titles.set(`mcp__${server.server}__${t.name}`, t.title);
         mcpServers[server.server] = routedMcpServer({
           server, runner: this.#d.mcp.runner, session: ctx.sessionId, as: ctx.caller, callIds: this.#callIdSource, displays,
+          apps: this.#appsFor(ctx, origin, server, apps),
           ...(this.#d.epoch === undefined ? {} : { epoch: () => this.#d.epoch!() }),
         });
       }
     }
-    this.#builtServers = Object.keys(mcpServers).sort().join("\u0000");
+    this.#builtServers = serversSignature(this.#d.mcp === undefined ? [] : merged);
     const cwd = ctx.paths.scratch;
     mkdirSync(cwd, { recursive: true });
     const queue = createHostPromptQueue();
@@ -863,6 +902,8 @@ export class BotSessionDriver implements SessionDriver {
     this.#builtModel = modelKey(bot);
     this.#builtCatalog = { provider: providerOfModel(bot.model), key: this.#catalogKey(providerOfModel(bot.model)) };
     this.#catalogHeldSaid = undefined;
+    this.#builtInstructions = bot.instructions;
+    this.#instructionsHeldSaid = undefined;
     const base = embeddedSessionOptions(this.#d, { model: bot.model, ...(bot.effort === undefined ? {} : { effort: bot.effort }), cwd });
     const options: Options = {
       ...base,
@@ -890,7 +931,7 @@ export class BotSessionDriver implements SessionDriver {
       // call was already forced to the check by the PreToolUse hook above. Anything else (a side thread, a subagent,
       // the coding agent) keeps `BOT_SANDBOX`: its commands never leave it, and a call asking to is refused by its
       // approval check. Their commands never get launchd to start what the pause can't stop (F8). The user's secret
-      // places and the Clover home's key places are read-denied in it whatever the host gives (`withSecretReads`,
+      // places and the MOSS home's key places are read-denied in it whatever the host gives (`withSecretReads`,
       // `withBotKeyReads`): Read, Grep, Glob and the shell all meet them.
       sandbox: this.#ctx.kind === "bot"
         ? { ...botSandbox(withBotKeyReads(withSecretReads(sandbox, this.#fileFence), this.#fileFence), this.#denyFormsHome()), ...BOT_CONVERSATION_SANDBOX }
@@ -913,11 +954,42 @@ export class BotSessionDriver implements SessionDriver {
       log: { warn: (message, fields) => this.#log(`bot driver ${ctx.sessionId}: ${message} ${fields === undefined ? "" : JSON.stringify(fields)}`.trim()) },
       toolDisplayTitle: (name) => titles.get(name),
       takeToolDisplay: (callId) => displays.take(callId),
+      takeToolApp: (callId) => apps.take(callId),
     });
-    const inc: Incarnation = { query: q, queue, abort, projector, displays, pump: Promise.resolve(), closed: false, tasks: new Set(), stopping: new Set(), ended: [], wakes: [] };
+    const inc: Incarnation = { query: q, queue, abort, projector, displays, apps, pump: Promise.resolve(), closed: false, tasks: new Set(), stopping: new Set(), ended: [], wakes: [] };
     inc.pump = this.#pump(inc);
     this.#rebuild = false;
     return inc;
+  }
+
+  /** MCP Apps: for one plugin server of this session, what happens when a call of its succeeds: a tool that names a page is
+   *  bound (the site: this server's doors only, a page's call asking this session's own gate, hooks and approval). */
+  #appsFor(ctx: BotSessionContext, origin: () => TurnOrigin | undefined, server: BotMcpServer, apps: ToolApps): { put: (callId: string, call: { tool: string; input: Record<string, unknown>; result: { content: unknown[]; isError?: boolean } }) => void; drop: (callId: string) => void } | undefined {
+    const svc = this.#d.mcpApps;
+    const ui = this.#d.mcp?.ui;
+    const runner = this.#d.mcp?.runner;
+    if (svc === undefined || ui === undefined || runner === undefined) return undefined;
+    // The driver's own pieces: a page's call goes through the very functions a model's call does (`page-calls.ts`).
+    const doors: PageCallDoors = {
+      preTool: (raw, id, signal) => this.#preTool(raw, id, signal),
+      postTool: (raw, id, signal) => this.#postTool(raw, id, signal),
+      dropCallId: (name, id) => this.#dropCallId(name, id),
+      canUse: (pageCtx) => this.#gatedCanUseTool(this.#d.canUseTool(pageCtx, origin)),
+    };
+    return {
+      drop: (callId) => apps.drop(callId),
+      put: (callId, call) => {
+        const resourceUri = server.tools.find((t) => t.name === call.tool)?.ui?.resourceUri;
+        if (resourceUri === undefined) return;
+        const site: AppSite = {
+          pluginId: server.plugin, server: server.server, tool: call.tool, resourceUri, input: call.input, result: call.result,
+          listTools: async () => ui.tools(server.server, call.tool).map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { _meta: { ui: t.ui } }) })),
+          readResource: (uri) => ui.read(server.server, call.tool, uri, ctx.caller),
+          ...botPageCalls({ ctx, server, runner, doors }),
+        };
+        apps.put(callId, svc.bind(ctx.sessionId, callId, site));
+      },
+    };
   }
 
   async #pump(inc: Incarnation): Promise<void> {
@@ -954,12 +1026,21 @@ export class BotSessionDriver implements SessionDriver {
         if (event.type === "assistant_message" && typeof event.text === "string") {
           const text = await this.#hooks.messageOut(this.#hookSession, event.text).catch(() => event.text as string);
           ctl.record({ ...event, text });
+          this.#heard(text);
         } else ctl.record(event);
       });
       t.pending = this.#recordChain;
       return;
     }
     t.ctl.record(event);
+    if (event.type === "assistant_message" && typeof event.text === "string") this.#heard(event.text);
+  }
+
+  /** A reply stored: the `message.out` hooks that only observe hear it (with the bot and the session), never awaited. */
+  #heard(text: string): void {
+    try {
+      this.#hooks.hearReply?.(this.#hookSession, text);
+    } catch { /* an observer never fails the turn */ }
   }
 
   #accept(inc: Incarnation, msg: Record<string, unknown>): void {
@@ -1023,6 +1104,7 @@ export class BotSessionDriver implements SessionDriver {
       // The runtime's turn is over: every result it reported has been projected, so a display still waiting belongs to
       // a call that was cancelled, timed out or never reported; it goes now, never onto a later call.
       inc.displays.clear();
+      inc.apps.clear();
       const usage = msg.usage as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
       t.usage.inputTokens += (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
       t.usage.outputTokens += usage?.output_tokens ?? 0;
@@ -1118,10 +1200,28 @@ export class BotSessionDriver implements SessionDriver {
         }
       }
     }
-    if (open && !this.#rebuild && !coldCache && !sandboxChanged && !modelChanged && !serversChanged && !catalogChanged) return this.#inc!;
+    // Its instructions now: an edit reaches the next turn, not only the next compaction (which refuses a conversation
+    // inside its retention window). Held back while background work runs, which a reopen would end.
+    let instructionsChanged = false;
+    if (open && this.#builtInstructions !== undefined) {
+      let now: string | undefined;
+      try {
+        now = this.#ctx.current().instructions;
+      } catch { now = undefined; }
+      if (now !== undefined && now !== this.#builtInstructions) {
+        if (this.#inc!.tasks.size > 0) {
+          if (this.#instructionsHeldSaid !== now) this.#log(`bot driver ${this.#ctx.sessionId}: its instructions changed; it reopens once its background work ends`);
+          this.#instructionsHeldSaid = now;
+        } else {
+          instructionsChanged = true;
+        }
+      }
+    }
+    if (open && !this.#rebuild && !coldCache && !sandboxChanged && !modelChanged && !serversChanged && !catalogChanged && !instructionsChanged) return this.#inc!;
     if (sandboxChanged) this.#log(`bot driver ${this.#ctx.sessionId}: reopening: sandbox changed`);
     if (modelChanged) this.#log(`bot driver ${this.#ctx.sessionId}: reopening: model changed`);
     if (catalogChanged) this.#log(`bot driver ${this.#ctx.sessionId}: reopening: its provider ${this.#builtCatalog?.provider} changed in the model plugins`);
+    if (instructionsChanged) this.#log(`bot driver ${this.#ctx.sessionId}: reopening: its instructions changed`);
     // A rebuild resumes the transcript under the new prompt; the old runtime ends first (one engine per transcript).
     if (this.#inc !== undefined) await this.#closeIncarnation(this.#inc);
     this.#inc = await this.#open({ settings });
@@ -1138,7 +1238,7 @@ export class BotSessionDriver implements SessionDriver {
    *  read throws (`#ensureOpen` fails the turn), never "unchanged". */
   #serversChanged(): boolean {
     if (this.#d.mcp === undefined || this.#builtServers === undefined) return false;
-    const now = ["clover_core", ...mergedServers(this.#mcpServers(), undefined, this.#reservedNames()).map((x) => x.server).filter((n) => n !== "clover_core")].sort().join("\u0000");
+    const now = serversSignature(mergedServers(this.#mcpServers(), undefined, this.#reservedNames()));
     if (now === this.#builtServers) return false;
     this.#log(`bot driver ${this.#ctx.sessionId}: reopening: its MCP servers changed`);
     return true;
@@ -1288,7 +1388,7 @@ export class BotSessionDriver implements SessionDriver {
         break;
       }
       const before = end.usage;
-      end = await this.#runtimeTurn(inc, formatTurnInput({ from: "note", label: "Clover", text: note, by: { kind: "core" } }, this.#ctx.kind), ctl);
+      end = await this.#runtimeTurn(inc, formatTurnInput({ from: "note", label: "MOSS", text: note, by: { kind: "core" } }, this.#ctx.kind), ctl);
       if (before !== undefined) {
         end = { ...end, usage: { inputTokens: before.inputTokens + (end.usage?.inputTokens ?? 0), outputTokens: before.outputTokens + (end.usage?.outputTokens ?? 0), ...(end.usage?.contextTokens === undefined ? {} : { contextTokens: end.usage.contextTokens }) } };
       }
@@ -1304,8 +1404,8 @@ export class BotSessionDriver implements SessionDriver {
   #endTurnAware(t: CoreToolDef): CoreToolDef {
     return {
       ...t,
-      run: async (input) => {
-        const r = await t.run(input);
+      run: async (input, extra) => {
+        const r = await t.run(input, extra);
         if (r.endTurn !== undefined && this.#turn !== undefined && !this.#turn.ended) this.#continueWith = r.endTurn.note;
         return r;
       },

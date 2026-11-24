@@ -1,9 +1,9 @@
 // The plugin API's core side (B-M2): the router's capability gate, `points.*`, storage, settings, `confirm`, the
 // commands and points lists, the caller binding (R7) and the pipe's listener subscriptions.
-import { API_CALLS } from "@waifucave/clover-plugin-sdk";
+import { API_CALLS } from "@waifucave/moss-plugin-sdk";
 import { afterAll, describe, expect, test } from "bun:test";
-import { catalogPointDecl, SYNCED_STORE_LIMIT_BYTES, type Manifest } from "@waifucave/clover-plugin-sdk";
-import type { Caller } from "@waifucave/clover-protocol";
+import { catalogPointDecl, SYNCED_STORE_LIMIT_BYTES, type Manifest } from "@waifucave/moss-plugin-sdk";
+import type { Caller } from "@waifucave/moss-protocol";
 import { existsSync, mkdirSync, mkdtempSync as makeTemp, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +34,7 @@ afterAll(() => {
 });
 
 const API = "^1.0.0";
-const manifest = (m: Partial<Manifest> = {}): Manifest => ({ manifest: 1, name: "P", engines: { clover: API }, ...m }) as Manifest;
+const manifest = (m: Partial<Manifest> = {}): Manifest => ({ manifest: 1, name: "P", engines: { moss: API }, ...m }) as Manifest;
 
 /** `luna` declares `luna.cards` from its host; `tarot` fills it with two cards and has a command; `quiet` has nothing. */
 function plugins(extra: FakePluginInput[] = []): FakePluginInput[] {
@@ -95,7 +95,7 @@ function routerWith(reg: FakePluginRegistry, handlers: ApiHandlers[] = []) {
   });
 }
 
-const call = (router: ReturnType<typeof createApiRouter>, pluginId: string, path: string, args: unknown[] = [], o: { process?: "shared" | "clover" | "own"; caller?: Caller } = {}) =>
+const call = (router: ReturnType<typeof createApiRouter>, pluginId: string, path: string, args: unknown[] = [], o: { process?: "shared" | "moss" | "own"; caller?: Caller } = {}) =>
   router({ pluginId, process: o.process ?? "shared", path, args, caller: o.caller ?? asPlugin(pluginId) });
 
 const failure = (p: Promise<unknown>): Promise<ContractError> => p.then(() => { throw new Error("it didn't fail"); }, (e: ContractError) => e);
@@ -128,15 +128,15 @@ describe("the router: the one capability gate", () => {
     expect([e.code, e.message]).toEqual(["refused", "conversation.list needs the capability conversation.read, which this plugin's OK doesn't list"]);
   });
 
-  test("where a call exists: secrets.get only in a process of the plugin's own, desktop.* and keys.* only in clover's, host.call only in components", async () => {
+  test("where a call exists: secrets.get only in a process of the plugin's own, desktop.* and keys.* only in moss's, host.call only in components", async () => {
     const r = routerWith(registry(), [{ "secrets.get": () => "s", "desktop.show": () => "k", "keys.publicKey": () => "never", "host.call": () => 1 }]);
     expect(await code(call(r, "luna", "secrets.get", ["x"], { process: "shared" }))).toBe("refused");
     expect(await call(r, "luna", "secrets.get", ["x"], { process: "own" })).toBe("s");
     expect(await code(call(r, "luna", "desktop.show", ["f"], { process: "shared" }))).toBe("refused");
-    expect(await call(r, "luna", "desktop.show", ["f"], { process: "clover" })).toBe("k");
+    expect(await call(r, "luna", "desktop.show", ["f"], { process: "moss" })).toBe("k");
     expect(await code(call(r, "luna", "keys.publicKey", ["f"], { process: "own" }))).toBe("refused");
     expect(await code(call(r, "luna", "keys.publicKey", ["f"], { process: "shared" }))).toBe("refused");
-    expect(await call(r, "luna", "keys.publicKey", ["f"], { process: "clover" })).toBe("never");
+    expect(await call(r, "luna", "keys.publicKey", ["f"], { process: "moss" })).toBe("never");
     expect(await code(call(r, "luna", "host.call", ["x"]))).toBe("refused");
   });
 
@@ -172,15 +172,15 @@ describe("points.*", () => {
   const setup = (extra: FakePluginInput[] = []) => {
     const reg = registry(extra);
     const host = hostStub();
-    const r = routerWith(reg, [pointsApi({ registry: reg, host, assetUrl: (id, p) => `clover-asset://${id}/${p}` })]);
+    const r = routerWith(reg, [pointsApi({ registry: reg, host, assetUrl: (id, p) => `moss-asset://${id}/${p}` })]);
     return { reg, host, r };
   };
 
   test("the declarer reads its point's active entries, paths as asset URLs", async () => {
     const { r } = setup();
     expect(await call(r, "luna", "points.entries", ["luna.cards"])).toEqual([
-      { pluginId: "tarot", entryId: "fool", value: { id: "fool", image: "clover-asset://tarot/img/fool.png", draw: "drawFool", title: "The Fool" } },
-      { pluginId: "tarot", entryId: "moon", value: { id: "moon", image: "clover-asset://tarot/img/moon.png", draw: "drawMoon", title: "The Moon" } },
+      { pluginId: "tarot", entryId: "fool", value: { id: "fool", image: "moss-asset://tarot/img/fool.png", draw: "drawFool", title: "The Fool" } },
+      { pluginId: "tarot", entryId: "moon", value: { id: "moon", image: "moss-asset://tarot/img/moon.png", draw: "drawMoon", title: "The Moon" } },
     ]);
   });
 
@@ -193,12 +193,12 @@ describe("points.*", () => {
     const reg = registry([sly]);
     const r = routerWith(reg, [pointsApi({ registry: reg, host: hostStub(), assetUrl: defaultAssetUrl })]);
     const images = ((await call(r, "luna", "points.entries", ["luna.cards"])) as { pluginId: string; value: { image: unknown } }[]).filter((e) => e.pluginId === "sly").map((e) => e.value.image);
-    expect(images).toEqual([...bad.map(() => null), "clover-plugin://sly/art/the%20fool%20%231.png"]);
+    expect(images).toEqual([...bad.map(() => null), "moss-plugin://sly/art/the%20fool%20%231.png"]);
     for (const p of bad) {
       expect(assetPath(p)).toBeUndefined();
       expect(() => defaultAssetUrl("sly", p)).toThrow("isn't a path inside sly's folder");
     }
-    expect(defaultAssetUrl("luna/tarot", "img/moon.png")).toBe("clover-plugin://luna/tarot/img/moon.png");
+    expect(defaultAssetUrl("luna/tarot", "img/moon.png")).toBe("moss-plugin://luna/tarot/img/moon.png");
   });
 
   test("only the declarer's tree reads a point; a core point is the core's; an undeclared one has no entries", async () => {
@@ -295,13 +295,13 @@ describe("storage", () => {
   });
 
   test("on disk: the store in the fenced settings folder, the data folder under plugin-data, owner-only", () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-b2-home-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-b2-home-"));
     const stores = new SyncedStores(fileSyncedStores(home));
-    stores.set("clover/web", "k", 1);
-    expect(JSON.parse(readFileSync(join(home, "settings", "plugin-stores", "clover", "web.json"), "utf8"))).toEqual({ k: 1 });
-    expect(new SyncedStores(fileSyncedStores(home)).get("clover/web", "k")).toBe(1);
-    const data = pluginDataFolder(home, "clover/web");
-    expect(data).toBe(join(home, "plugin-data", "clover", "web"));
+    stores.set("moss/web", "k", 1);
+    expect(JSON.parse(readFileSync(join(home, "settings", "plugin-stores", "moss", "web.json"), "utf8"))).toEqual({ k: 1 });
+    expect(new SyncedStores(fileSyncedStores(home)).get("moss/web", "k")).toBe(1);
+    const data = pluginDataFolder(home, "moss/web");
+    expect(data).toBe(join(home, "plugin-data", "moss", "web"));
     if (process.platform !== "win32") expect(statSync(data).mode & 0o777).toBe(0o700);
     expect(() => pluginDataFolder(home, "../etc")).toThrow("isn't a plugin id");
     expect(existsSync(join(home, "etc"))).toBe(false);
@@ -371,7 +371,7 @@ describe("settings", () => {
   });
 
   test("a file that doesn't parse is kept aside and the read fails loudly; a __proto__ key is refused; a plain value of a field that became a secret moves to the store (#332's review)", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-b2-home-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-b2-home-"));
     mkdirSync(join(home, "settings", "plugins"), { recursive: true });
     writeFileSync(join(home, "settings", "plugins", "luna.json"), "{not json");
     const settings = new PluginSettings({ registry: registry(), backend: filePluginSettings(home) });
@@ -408,6 +408,10 @@ describe("settings", () => {
     await settings.setByUser("luna", "token", "never-shown");
     expect(await settings.layerView("luna", "token")).toEqual({ set: true });
     expect(await settings.layerView("luna", "nick")).toBeUndefined();
+    // F2: a bot's value for the bot the page names, as the host half reads it; a bot id that isn't one is refused.
+    expect(await settings.layerView("luna", "nick", "alpha")).toBe("Lu");
+    expect(await settings.layerView("luna", "nick", "beta")).toBeUndefined();
+    expect(await settings.layerView("luna", "nick", "Not A Bot!").catch((e: ContractError) => e.code)).toBe("invalid");
     const all = (await settings.layerView("luna")) as Record<string, unknown>;
     expect(all).toMatchObject({ greeting: "hello", token: { set: true } });
     expect(all).not.toHaveProperty("nick");
@@ -418,7 +422,7 @@ describe("settings", () => {
     expect(LAYER_SETTING_MAX).toBeGreaterThan(8_192);
   });
 
-  test("what the plugin's own page changes (layerSet), with no card: its own plain settings within the field; never a secret, a bot value, a templated or an unknown key", async () => {
+  test("what the plugin's own page changes (layerSet), with no card: its own plain settings within the field, a bot's for the bot it names; never a secret, a templated or an unknown key", async () => {
     const reg = registry([{ id: "ocean", manifest: manifest({
       id: "ocean", name: "Ocean", host: { entry: "host/index.js" },
       settings: {
@@ -440,19 +444,24 @@ describe("settings", () => {
     expect(changed).toEqual([{ pluginId: "ocean", key: "order" }, { pluginId: "ocean", key: "order" }]);
     const refusal = (key: string, value: unknown) => { try { settings.layerSet("ocean", key, value); return "set"; } catch (e) { return (e as ContractError).code; } };
     expect(refusal("key", "s3cret")).toBe("refused");
-    expect(refusal("nick", "Lu")).toBe("refused");
+    // A bot's value names its bot (F2: as the host half's set does).
+    expect(refusal("nick", "Lu")).toBe("invalid");
     expect(refusal("region", "us")).toBe("refused");
     expect(refusal("nope", 1)).toBe("not_found");
     for (const [k, v] of [["order", "sideways"], ["order", 3], ["size", 99], ["size", "5"]] as const) expect([k, v, refusal(k, v)]).toEqual([k, v, "invalid"]);
     expect(refusal("region", "x".repeat(LAYER_SETTING_MAX + 10))).toBe("invalid");
     // Nothing refused was written, and another plugin's keys are its own (an id is no argument at all).
     expect(changed).toHaveLength(2);
+    settings.layerSet("ocean", "nick", "Lu", "alpha");
+    expect(settings.get("ocean", "nick", "alpha")).toBe("Lu");
+    expect(changed.at(-1)).toEqual({ pluginId: "ocean", key: "nick", bot: "alpha" });
+    changed.pop();
     expect(settings.get("ocean", "region")).toBe("eu");
     expect(() => settings.layerSet("luna", "order", "oldest")).toThrow();
   });
 
   test("on disk, under the fenced settings folder", () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-b2-home-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-b2-home-"));
     const settings = new PluginSettings({ registry: registry(), backend: filePluginSettings(home) });
     settings.set("luna", "tint", "#000000");
     settings.set("luna", "nick", "Lu", "alpha");
@@ -583,9 +592,9 @@ describe("the caller (R7) and the pipe", () => {
 });
 
 describe("the process check in front of the gate (S4)", () => {
-  test("a third-party worker presenting a clover id is refused before the gate; clover's own process passes", async () => {
+  test("a third-party worker presenting a moss id is refused before the gate; moss's own process passes", async () => {
     const { pluginApiRouter } = await import("../index");
-    const reg = registry([{ id: "clover", source: "bundled", manifest: manifest({ id: "clover", name: "Clover", host: { entry: "host/index.js" } } as Partial<Manifest>) }]);
+    const reg = registry([{ id: "moss", source: "bundled", manifest: manifest({ id: "moss", name: "MOSS", host: { entry: "host/index.js" } } as Partial<Manifest>) }]);
     const r = pluginApiRouter({
       registry: reg,
       handlers: [{ "storage.synced.keys": () => ["k"] }],
@@ -594,9 +603,9 @@ describe("the process check in front of the gate (S4)", () => {
         return rec === undefined ? undefined : { id, source: rec.source };
       },
     });
-    expect(await call(r, "clover", "storage.synced.keys", [], { process: "clover" })).toEqual(["k"]);
-    expect(await code(call(r, "clover", "storage.synced.keys", [], { process: "shared" }))).toBe("refused");
-    expect(await code(call(r, "luna", "storage.synced.keys", [], { process: "clover" }))).toBe("refused");
+    expect(await call(r, "moss", "storage.synced.keys", [], { process: "moss" })).toEqual(["k"]);
+    expect(await code(call(r, "moss", "storage.synced.keys", [], { process: "shared" }))).toBe("refused");
+    expect(await code(call(r, "luna", "storage.synced.keys", [], { process: "moss" }))).toBe("refused");
     expect(await call(r, "luna", "storage.synced.keys", [], { process: "shared" })).toEqual(["k"]);
   });
 });

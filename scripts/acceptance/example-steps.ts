@@ -3,13 +3,13 @@
 // between them costs:
 //
 // * example-notes stays inside (no network, no capability). Installed on the Plugins page (main's picker, which the run
-//   points at its folder), its OK card names its cardless tools and nothing of a network; pressed, it runs with its
-//   child bot (Notes keeper). On that bot: `add_note` (contained) and `list_notes` (readOnly) run with no card, and
-//   `delete_note` cards; each tool row carries its title, and a result its display; the own-bot hook counts the bot's
-//   turns only; the skill loads through Glossary; the agent definition starts on Clover's own agent with no card. The
-//   composer's slash menu runs /note as the user. Its page (the sidebar's Notes entry, a TSX client) reads through its
-//   host half and follows its own setting when the page's switch changes it, and when its control on the Plugins page
-//   does (neither asks: the setting feeds nothing the plugin runs or reaches); the bot's tab skins the window. Turned off
+//   points at its folder), its OK card names its cardless tools, its hook and nothing of a network; pressed, it runs (it
+//   brings no bot: G8). In a code session on MOSS's own agent: `add_note` (contained) and `list_notes` (readOnly) run with
+//   no card, and `delete_note` cards; each tool row carries its title, and a result its display; its tool.after hook
+//   counts its own tools' calls only; the skill loads through Glossary; the agent definition starts a code session on
+//   MOSS's own agent with no card. The composer's slash menu runs /note as the user. Its page (the sidebar's Notes entry,
+//   a TSX client) reads through its host half and follows its own setting when the page's switch changes it, and when its
+//   control on the Plugins page does (neither asks: the setting feeds nothing the plugin runs or reaches). Turned off
 //   on the Plugins page, its frames and its layer's connection go; removed on its sealed card, its folder and its synced
 //   store go.
 // * example-weather reaches outside (its own host, notifications). The run copies it and points its host at a local
@@ -22,10 +22,12 @@
 import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Cdp } from "./cdp";
-import type { CloverClient } from "./client";
+import { CLIPPED_AWAY_JS, type Cdp } from "./cdp";
+import type { MossClient } from "./client";
+import { scaled } from "./time-scale";
+import { toolNamed } from "./fake-anthropic";
 
-export const EXAMPLE_NOTES_STEP = "example-notes (stays inside), from its folder on the Plugins page: its OK card names its cardless tools and no network; contained and readOnly tools run with no card, the other cards; hook, skill, agent definition, /note, its TSX page (host.call, its own setting changed with no card from the page and from the Plugins page), the bot's window skin, locales (its page in its Japanese words when the user's language is Japanese, and back); turned off, then removed";
+export const EXAMPLE_NOTES_STEP = "example-notes (stays inside), from its folder on the Plugins page: its OK card names its cardless tools and no network; contained and readOnly tools run with no card, the other cards; its tool.after hook (its own tools only), skill, agent definition, /note, its TSX page (host.call, its own setting changed with no card from the page and from the Plugins page), locales (its page in its Japanese words when the user's language is Japanese, and back); turned off, then removed";
 export const EXAMPLE_WEATHER_STEP = "example-weather (reaches outside), from its folder on the Plugins page: its OK card names its host and notifications and says its tools still ask; its key through the key dialog; each call cards; its forecast reaches its host through its proxy with that key; /rain-alert notifies and a card arriving takes the notification down, and it is refused once muted on the Plugins page";
 
 export const EXAMPLES = resolve(import.meta.dir, "..", "..", "packages", "plugin-sdk", "examples");
@@ -35,7 +37,10 @@ interface Card { id: string; kind: string; change?: string; session?: string; pl
 
 export interface ExampleCtx {
   cdp: Cdp;
-  rpc: CloverClient;
+  /** lane HS: the background host's DevTools when the run starts one: the island and the background parts are its documents
+   *  then; without it they are the window's own (`cdp`). */
+  islandCdp?: Cdp;
+  rpc: MossClient;
   /** The daemon's home (the plugin stores, the plugins' folders). */
   home: string;
   /** The run's temp folder (the weather copy goes here). */
@@ -45,8 +50,9 @@ export interface ExampleCtx {
   /** The run's throwaway keychain file (its path is the value of the variable a test-marked core needs to start). */
   keychainFile: string;
   appLog(): string;
-  requests(): { lastUserText: string; toolUse?: string; toolResult?: { text: string; isError: boolean; images?: number }; tools: string[] }[];
-  /** The user's own `clover-core app <words>` (the target's CLI), where the run has it. */
+  /** The fake's requests: `body` is the request as sent (its prompt, never a key). */
+  requests(): { lastUserText: string; toolUse?: string; toolResult?: { text: string; isError: boolean; images?: number }; tools: string[]; body?: unknown }[];
+  /** The user's own `moss-core app <words>` (the target's CLI), where the run has it. */
   appCli?(words: string[]): Promise<{ code: number; stdout: string; stderr: string }>;
   /** Points main's picker (the test build's) at a folder for the next pick. */
   pick(folder: string): void;
@@ -63,8 +69,13 @@ export interface ExampleCtx {
   denyCard(id: string): Promise<void>;
   /** Sets the app's dark or light for a render (the run's appearance file); only a run that renders gives one. */
   setAppearance?(scheme: "dark" | "light" | "system"): void;
-  /** Says whether Clover's window is in front (the app's test seam: a headless window is never the focused one). */
+  /** Main presses a key chord in the window (`webContents.sendInputEvent`, from a file the build watches): down and up, or
+   *  with `type` one event of a held key (its down, an auto-repeat, its up); only the runs that set the file give one. */
+  pressKey?(key: string, modifiers: string[], type?: "down" | "repeat" | "up"): void;
+  /** Says whether MOSS's window is in front (the app's test seam: a headless window is never the focused one). */
   setMainFront?(front: boolean): void;
+  /** Lets the fake provider's turns `ACCEPTANCE-FAIL-<id>` succeed from now on (Try again, on the conversation copy). */
+  healFake?(id: string): void;
   /** Sends a message in a session and waits for the turn; its events and the cards it raised (answered yes over RPC). */
   turn(session: string, text: string, ms?: number): Promise<{ events: Ev[]; cards: string[]; changes: string[] }>;
   history(session: string): Promise<Ev[]>;
@@ -77,20 +88,21 @@ export const fail = (m: string): never => { throw new Failed(m); };
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function until<T>(what: string, ms: number, probe: () => Promise<T | undefined> | T | undefined, dump?: () => Promise<string>): Promise<T> {
-  const end = Date.now() + ms;
+  const long = scaled(ms);
+  const end = Date.now() + long;
   for (;;) {
     const v = await probe();
     if (v !== undefined) return v;
-    if (Date.now() > end) fail(`${what}: not within ${Math.round(ms / 1000)} s${dump === undefined ? "" : ` (${await dump().catch(() => "?")})`}`);
+    if (Date.now() > end) fail(`${what}: not within ${Math.round(long / 1000)} s${dump === undefined ? "" : ` (${await dump().catch(() => "?")})`}`);
     await sleep(400);
   }
 }
 
-/** The clover tree's documents (the shell, the sidebar, the Plugins page), and Alpha's own frames (her controls). */
-export const treeDocs = async (cdp: Cdp) => (await cdp.documents()).filter((d) => d.url.startsWith("clover-plugin://clover/") || d.url.startsWith("clover-plugin://alpha"));
+/** The moss tree's documents (the shell, the sidebar, the Plugins page), and Alpha's own frames (her controls). */
+export const treeDocs = async (cdp: Cdp) => (await cdp.documents()).filter((d) => d.url.startsWith("moss-plugin://moss/") || d.url.startsWith("moss-plugin://alpha"));
 /** The window's own sidebar's items: the stock sidebar is beside every tab, Alpha's too (Bots doesn't offer a bot the sidebar). */
 export const SIDEBAR_ITEMS = ".cl-sidebar button, .cl-sidebar a, .cl-sidebar [role=link]";
-export const layerDocs = async (cdp: Cdp, id: string) => (await cdp.documents()).filter((d) => d.url.startsWith(`clover-plugin://${id}/`));
+export const layerDocs = async (cdp: Cdp, id: string) => (await cdp.documents()).filter((d) => d.url.startsWith(`moss-plugin://${id}/`));
 export const frames = async (cdp: Cdp) => (await cdp.documents()).map((d) => `${d.url.slice(0, 50)}: ${d.text.replace(/\s+/g, " ").slice(0, 80)}`).join(" || ");
 
 async function clickIn(cdp: Cdp, what: string, docs: () => Promise<{ session: string }[]>, selector: string, text?: string, ms = 20_000): Promise<void> {
@@ -122,11 +134,17 @@ export async function clickExact(cdp: Cdp, what: string, selector: string, text:
   const at = await until(what, ms, async () => {
     for (const d of await treeDocs(cdp)) {
       const c = await cdp.evaluate(d.session, `(() => {
+        ${CLIPPED_AWAY_JS}
         const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => (e.innerText || '').split('\\n').some((l) => l.trim() === ${JSON.stringify(text)}) || e.getAttribute('aria-label') === ${JSON.stringify(text)});
         if (!el) return null;
+        // A long list (the sidebar on a home with many sessions) scrolls: the entry is brought into view first, as a person does,
+        // or its centre lies outside the pane and the press lands on nothing.
+        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
         const r = el.getBoundingClientRect();
+        if (clippedAway(el, r.left + r.width / 2, r.top + r.height / 2)) return { clipped: true };
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      })()`).catch(() => null) as { x: number; y: number } | null;
+      })()`).catch(() => null) as { x: number; y: number; clipped?: boolean } | null;
+      if (c !== null && c !== undefined && c.clipped === true) throw new Error(`${what}: the target is not on screen (it stays outside its pane's visible box after scrolling)`);
       if (c !== null && c !== undefined) return { session: d.session, c };
     }
     return undefined;
@@ -164,9 +182,17 @@ export async function pluginsPage(cdp: Cdp, tab: "Add" | "Installed"): Promise<v
 export async function installFromPage(ctx: ExampleCtx, folder: string, id: string): Promise<{ card: string; text: string }> {
   const { cdp, rpc } = ctx;
   const name = folder.split("/").pop()!;
-  // The window's document can load again (a layer just installed) between the page opening and the picker's answer, which drops the
-  // Add tab: the whole of it is done again, up to three times, until the chosen folder's name stands.
+  // The window's document loads again when a plugin's layer was installed after it was served ("layers: mN loads again", about a second after the
+  // approval of the plugin installed just before, and a second time for its client), which drops the Add tab and what it had chosen. It can come
+  // between the page opening and the picker's answer, or after the chosen folder's name stood and before the Install press landed (`cards` row 58,
+  // run 44867088957: A's OK pressed 04:38:59.98, "m2 loads again" 04:39:00.97, "m20 loads again" 04:39:01.74; B's Install press never reached the
+  // core and the Add page ended with nothing chosen). So the whole of it is done again, up to three times, until the chosen folder's name stands
+  // AND the press reached the core (the plugin's record or its OK card exists within 15 s); a press that did not land with no reload in the app's
+  // log since the attempt began is not done again: the wait below then fails as before and says what the page showed.
+  const reloads = (): number => (ctx.appLog().match(/loads again/g) ?? []).length;
+  const landed = async (): Promise<boolean> => (await rpc.request<{ cards: Card[] }>("card.list").then((r) => r.cards.some((c) => c.kind === "plugin-ok" && c.pluginId === id), () => false)) || (await rpc.request("plugin.get", { id }).then(() => true, () => false));
   for (let attempt = 0; ; attempt++) {
+    const before = reloads();
     ctx.pick(folder);
     await pluginsPage(cdp, "Add");
     await clickTree(cdp, "Choose a folder…", "button", "Choose a folder");
@@ -174,17 +200,34 @@ export async function installFromPage(ctx: ExampleCtx, folder: string, id: strin
       for (const d of await treeDocs(cdp)) if (String(await cdp.evaluate(d.session, "document.body.innerText").catch(() => "")).includes(`Chosen: ${name}`)) return true;
       return undefined;
     }).then(() => true, (err) => { if (attempt >= 2) throw err; return false; });
-    if (chosen) break;
+    if (!chosen) continue;
+    await clickTree(cdp, `Install ${name}`, "button", `Install ${name}`);
+    const reached = await until(`${id}'s Install press reaching the core`, 15_000, async () => ((await landed()) ? true : undefined)).then(() => true, () => false);
+    if (reached || attempt >= 2 || reloads() === before) break;
   }
-  await clickTree(cdp, `Install ${name}`, "button", `Install ${name}`);
-  const card = await until(`${id}'s OK card`, 60_000, async () => (await rpc.request<{ cards: Card[] }>("card.list")).cards.find((c) => c.kind === "plugin-ok" && c.pluginId === id));
+  const card = await until(`${id}'s OK card`, 60_000, async () => (await rpc.request<{ cards: Card[] }>("card.list")).cards.find((c) => c.kind === "plugin-ok" && c.pluginId === id)).catch(async (err: unknown) => {
+    // A card that never came (`cards` row 57: run 44210338753 twice, run 44219354846 once): say what the core held at the end of the wait, which names
+    // the cause: the plugin's record, whether its folder is in the plugins folder, the pending cards. In run 44219354846 it held none of the three: the
+    // press on Install never reached the core, a lost press on the Plugins page (not a slow install), which is not retried here.
+    const said = await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).then((r) => `plugin.get says ${r.plugin.state}`, (e: unknown) => `plugin.get: ${String((e as Error).message).slice(0, 120)}`);
+    const cards = await rpc.request<{ cards: Card[] }>("card.list").then((r) => r.cards.map((c) => `${c.kind}${c.pluginId ? `:${c.pluginId}` : ""}`).join(", ") || "none", () => "card.list failed");
+    // And what the page showed (`cards` row 58, runs 44824696229 and 44844529683, both on the second plugin: the press never reached the core and the page ended on
+    // "Choose a folder…" with nothing chosen): whether the chosen folder and its Install button were still there, and what the page logged.
+    const page: string[] = [];
+    for (const d of await treeDocs(cdp)) {
+      const t = String(await cdp.evaluate(d.session, "document.body.innerText").catch(() => ""));
+      if (t.includes("Choose the folder")) page.push(`${t.includes(`Chosen: ${name}`) ? `still says "Chosen: ${name}"` : "no longer says what was chosen"}, ${(await cdp.evaluate(d.session, `[...document.querySelectorAll('button')].some((b) => (b.textContent || '').includes(${JSON.stringify(`Install ${name}`)}))`).catch(() => false)) === true ? `has its "Install ${name}" button` : `has no "Install ${name}" button`}`);
+    }
+    const logged = cdp.console.filter((e) => e.level === "exception" || e.level === "error").slice(-4).map((e) => e.text.slice(0, 140)).join(" | ");
+    throw new Error(`${(err as Error).message} (at the end of the wait: ${said}; its folder ${existsSync(join(ctx.home, "plugins", id)) ? "is" : "is not"} in the plugins folder; pending cards: ${cards}; the Add page ${page.join("; ") || "was not found"}; the page logged: ${logged || "nothing"})`);
+  });
   const text = JSON.stringify((await rpc.request<{ card: unknown }>("card.get", { id: card.id })).card);
   await ctx.pressCard(`${id}'s OK card`, (c) => c.id === card.id);
   await until(`${id} running after its OK`, 60_000, async () => ((await stateOf(rpc, id)) === "running" ? true : undefined));
   return { card: card.id, text };
 }
 
-const stateOf = async (rpc: CloverClient, id: string) => (await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state;
+const stateOf = async (rpc: MossClient, id: string) => (await rpc.request<{ plugin: { state: string } }>("plugin.get", { id }).catch(() => undefined))?.plugin.state;
 
 /** Opens a plugin's detail on the Plugins page (Installed → its row's Open). */
 export async function openDetail(cdp: Cdp, name: string): Promise<void> {
@@ -212,10 +255,10 @@ export async function callTurn(ctx: ExampleCtx, session: string, tool: string, i
   const text = `ACCEPTANCE-CALL ${tool} ${JSON.stringify(input).replace(/ACCEPTANCE-/g, "ACCEPTANCE\\u002D")}`;
   const t = opts.always === true ? await (ctx.alwaysTurn ?? fail("this run has no turn that answers a card with Always allow"))(session, text, 150_000) : await ctx.turn(session, text, 150_000);
   const mine = ctx.requests().slice(seen);
-  const called = mine.map((r) => r.toolUse).filter((x): x is string => x !== undefined).find((x) => x === tool || x.endsWith(`__${tool}`));
+  const called = mine.map((r) => r.toolUse).filter((x): x is string => x !== undefined).find((x) => toolNamed(x, tool));
   const result = mine.map((r) => r.toolResult).filter((x): x is { text: string; isError: boolean } => x !== undefined).at(-1);
   const said = () => `events: ${[...new Set(t.events.map((e) => String(e.type)))].join(", ") || "none"}; errors: ${t.events.filter((e) => /error/.test(String(e.type)) || e.stopReason === "error").map((e) => String(e.message ?? e.error ?? e.text ?? JSON.stringify(e)).slice(0, 200)).join(" | ") || "none"}; ${mine.length} request(s) reached the model`;
-  if (called === undefined) fail(`no ${tool} was called (offered: ${(mine.find((r) => r.tools.length > 0)?.tools ?? []).filter((x) => x.endsWith(`__${tool}`) || x === tool).join(", ") || "not it"}; ${said()})`);
+  if (called === undefined) fail(`no ${tool} was called (offered: ${(mine.find((r) => r.tools.length > 0)?.tools ?? []).filter((x) => toolNamed(x, tool)).join(", ") || "not it"}; ${said()})`);
   if (result === undefined) fail(`${called} gave no result (cards: ${t.cards.join("; ") || "none"})`);
   return { called: called!, result: result!, cards: t.cards, changes: t.changes, events: t.events };
 }
@@ -225,9 +268,9 @@ const storeOf = (home: string, id: string): Record<string, unknown> => {
 };
 
 /** The notes step. */
-export async function exampleNotesStep(ctx: ExampleCtx, otherSession: string): Promise<string> {
+export async function exampleNotesStep(ctx: ExampleCtx, session: string): Promise<string> {
   try {
-    return await notesSteps(ctx, otherSession);
+    return await notesSteps(ctx, session);
   } finally {
     await leave(ctx, "example-notes");
   }
@@ -243,7 +286,7 @@ export async function leave(ctx: ExampleCtx, id: string): Promise<void> {
   await until(`${id} removed`, 30_000, async () => ((await stateOf(rpc, id)) === undefined ? true : undefined)).catch(() => undefined);
 }
 
-async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string> {
+async function notesSteps(ctx: ExampleCtx, session: string): Promise<string> {
   const { cdp, rpc, home } = ctx;
   const id = "example-notes";
   const folder = join(EXAMPLES, id);
@@ -254,38 +297,46 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
 
   // 1. Installed the user's way; its OK card read before it is pressed.
   const ok = await installFromPage(ctx, folder, id);
-  const wantLines = [
+  // Where the plugin's host is fenced (macOS) the card says its two tools run without asking and its code reaches no host. Where it
+  // is not (Linux and Windows: plugin code runs as the user, spec §5.2 item 58) the card says its host code can reach any host and
+  // says nothing of cardless tools: a forecast of "contained" would be false there, so the tools ask.
+  const fenced = process.platform === "darwin";
+  const wantLines = fenced ? [
     "this tool only reads, so at the default approval level it runs without asking: list_notes",
     "this tool only changes its own display, so at the default level it runs without asking: add_note",
     "Its code reaches no host.",
-    "Its hooks run when its own bot's turns start, end or are compacted, and see no other bot",
-    "It styles the window while its tab shows.",
+    "Its hooks see your conversations: what each tool returns.",
+  ] : [
+    "Its components reach no host; its host code can reach any host.",
+    "Its hooks see your conversations: what each tool returns.",
   ];
   const missing = wantLines.filter((l) => !ok.text.includes(l));
   if (missing.length > 0) fail(`its OK card lacks: ${missing.join(" | ")} (card: ${ok.text.slice(0, 600)})`);
-  const extra = /network|still asks|notifications|any host/i.exec(ok.text);
+  if (!fenced && /runs without asking/.test(ok.text)) fail("its OK card promises a tool that runs without asking, where its host code is not fenced");
+  const extra = fenced ? /network|still asks|notifications|any host/i.exec(ok.text) : null;
   if (extra !== null) fail(`its OK card says "${ok.text.slice(Math.max(0, extra.index - 60), extra.index + 60)}", but the plugin stays inside`);
-  done.push(`installed from its folder on the Plugins page; its OK card ${ok.card} named its cardless tools and no network, pressed`);
+  done.push(`installed from its folder on the Plugins page; its OK card ${ok.card} ${fenced ? "named its cardless tools and no network" : "said its host code can reach any host and promised no cardless tool"}, pressed`);
 
-  // 2. Its child bot is up.
-  const bot = await until("Notes keeper in bot.list", 60_000, async () => (await rpc.request<{ bots: { id: string; name?: string; mainSession?: string }[] }>("bot.list", {})).bots.find((b) => (b.id === `${id}/bot` || b.name === "Notes keeper") && b.mainSession !== undefined));
-  const session = bot.mainSession!;
-  const turnsBefore = Number(storeOf(home, id).turns ?? 0);
-  let notesTurns = 0;
+  // 2. It brings no bot (G8): its tools reach the code session the window shows, already running before the install.
+  const bots = (await rpc.request<{ bots: { id: string; name?: string }[] }>("bot.list", {})).bots;
+  if (bots.some((b) => b.id.startsWith(`${id}/`) || b.name === "Notes keeper")) fail(`a bot came with it: ${JSON.stringify(bots.map((b) => b.id))}`);
+  const usesNow = () => Number(storeOf(home, id).uses ?? 0);
+  const usesBefore = usesNow();
 
-  // 3. Its tools, on its bot: contained and readOnly with no card, the third with a card; the tool rows' titles and a
-  //    result's display (the core's display seam). Notes keeper's first turn asks once before it spends the provider
-  //    its plugin chose (`bot-provider`, a third party's model choice: provider-consent.ts); that is the only card.
-  const added = await callTurn(ctx, session, "add_note", { text: "Buy oat milk" }); notesTurns++;
-  if (added.changes.join() !== "bot-provider") fail(`Notes keeper's first turn raised ${added.changes.join(", ") || "no change card"}, not one bot-provider card (its plugin chose its model)`);
-  if (added.cards.length !== 1) fail(`add_note (contained) raised ${added.cards.join("; ")} at the default level, besides the provider's card`);
+  // 3. Its tools, in the code session: contained and readOnly with no card, the third with a card; the tool rows' titles
+  //    and a result's display (the core's display seam).
+  // (Unfenced, the two tools are not contained or read-only by the registry's own predicates, so each asks.)
+  const added = await callTurn(ctx, session, "add_note", { text: "Buy oat milk" });
+  if (fenced && added.cards.length > 0) fail(`add_note (contained) raised ${added.cards.join("; ")} at the default level`);
+  if (!fenced && added.cards.length === 0) fail("add_note ran with no card, where its host code is not fenced");
   if (added.result.isError || !added.result.text.includes("Noted: Buy oat milk")) fail(`add_note answered "${added.result.text.slice(0, 120)}"`);
-  const second = await callTurn(ctx, session, "add_note", { text: "Water the plants" }); notesTurns++;
-  if (second.cards.length > 0) fail(`the second add_note raised ${second.cards.join("; ")}`);
-  const listed = await callTurn(ctx, session, "list_notes", {}); notesTurns++;
-  if (listed.cards.length > 0) fail(`list_notes (readOnly) raised ${listed.cards.join("; ")} at the default level`);
+  const second = await callTurn(ctx, session, "add_note", { text: "Water the plants" });
+  if (fenced && second.cards.length > 0) fail(`the second add_note raised ${second.cards.join("; ")}`);
+  const listed = await callTurn(ctx, session, "list_notes", {});
+  if (fenced && listed.cards.length > 0) fail(`list_notes (readOnly) raised ${listed.cards.join("; ")} at the default level`);
+  if (!fenced && listed.cards.length === 0) fail("list_notes ran with no card, where its host code is not fenced");
   if (!listed.result.text.includes("Buy oat milk") || !listed.result.text.includes("Water the plants")) fail(`list_notes answered "${listed.result.text.slice(0, 200)}"`);
-  const deleted = await callTurn(ctx, session, "delete_note", { handle: "n2" }); notesTurns++;
+  const deleted = await callTurn(ctx, session, "delete_note", { handle: "n2" });
   if (deleted.cards.length === 0) fail("delete_note (on neither list) ran with no card");
   if (deleted.result.isError || !deleted.result.text.includes("Deleted: Water the plants")) fail(`delete_note, after its card's yes, answered "${deleted.result.text.slice(0, 120)}"`);
   const notesNow = (storeOf(home, id).notes ?? []) as { text: string }[];
@@ -295,44 +346,48 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
   const res = evs.find((e) => e.type === "tool_result" && e.callId === call?.callId);
   if (call?.displayTitle !== "Add a note") fail(`add_note's tool_call carries displayTitle ${JSON.stringify(call?.displayTitle)}, not "Add a note"`);
   if (JSON.stringify(res?.display) !== JSON.stringify({ kind: "note", label: "Noted", value: "Buy oat milk" })) fail(`add_note's tool_result carries display ${JSON.stringify(res?.display)}`);
-  done.push(`add_note and list_notes ran with no card, delete_note on its card (${deleted.cards[0]}); the store holds the one note left; the row's title "Add a note" and its display {note, Noted, Buy oat milk}`);
+  done.push(`add_note and list_notes ran ${fenced ? "with no card" : "on a card each (unfenced)"}, delete_note on its card (${deleted.cards[0]}); the store holds the one note left; the row's title "Add a note" and its display {note, Noted, Buy oat milk}`);
+  const ownCalls = 4;
 
-  // 4. Its skill, through Glossary; its agent definition, on Clover's own agent with no card, its report back.
-  const skill = await callTurn(ctx, session, "Glossary", { load: `${id}:tidy-up` }); notesTurns++;
+  // 4. Its skill, through Glossary; its agent definition, on MOSS's own agent with no card, its report back.
+  const skill = await callTurn(ctx, session, "Glossary", { load: `${id}:tidy-up` });
   if (!skill.result.text.includes(`<skill name="${id}:tidy-up">`)) fail(`Glossary didn't load the skill: ${skill.result.text.slice(0, 200)}`);
   const computer = (await rpc.request<{ computers: { name: string }[] }>("computer.list", {})).computers[0]?.name;
   if (computer === undefined) fail("computer.list lists no computer");
   mkdirSync(join(ctx.userHome, "notes-tidy"), { recursive: true });
   writeFileSync(join(ctx.userHome, "notes-tidy", "notes.md"), "Buy oat milk\nbuy oat milk\nWater the plants\n");
-  const agent = await callTurn(ctx, session, "Agent", { agent: `${id}:tidier`, backend: "clover-code", root: `home/${computer}/notes-tidy`, description: "Tidy notes", prompt: "ACCEPTANCE-CHILD: tidy the notes and say you're done." }); notesTurns++;
-  if (agent.cards.length > 0) fail(`Agent with ${id}:tidier on clover-code raised ${agent.cards.join("; ")}`);
-  if (agent.result.isError || !agent.result.text.includes(`with ${id}'s agent definition tidier`)) fail(`Agent didn't start with the definition: ${agent.result.text.slice(0, 200)}`);
-  const row = await until("the tidier's session row", 30_000, async () => (await rpc.request<{ sessions: { id: string; backend?: string; definition?: string }[] }>("session.list", { kinds: ["agent"] }).catch(() => ({ sessions: [] }))).sessions.find((s) => s.definition === `${id}:tidier`), undefined);
-  await until("the tidier's report in Notes keeper's conversation", 120_000, async () => (JSON.stringify(await ctx.history(session).catch(() => [])).includes(ctx.childReport) ? true : undefined));
-  done.push(`the skill loaded through Glossary; Agent started ${id}:tidier on ${row.backend} with no card and its report came back`);
+  // A code session started from its definition, the user's way (`agent.start` with `definition`, as New session does),
+  // on the model the run's key drives (Alpha's): with none named it runs the home's default, which holds no key here.
+  const model = (await rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {})).bots.find((b) => b.id === "alpha")?.model;
+  if (model === undefined) fail("Alpha has no model to give the tidier's code session");
+  const tidier = (await rpc.request<{ session: string }>("agent.start", { backend: "moss-code", computer, root: `home/${computer}/notes-tidy`, definition: `${id}:tidier`, model, prompt: "ACCEPTANCE-CHILD: tidy the notes and say you're done." }, 60_000)).session;
+  const row = await until("the tidier's session row", 30_000, async () => (await rpc.request<{ sessions: { id: string; backend?: string; definition?: string }[] }>("session.list", { kinds: ["coding", "agent"] }).catch(() => ({ sessions: [] }))).sessions.find((s) => s.id === tidier && s.definition === `${id}:tidier`), undefined);
+  const tidierCards = (await rpc.request<{ cards: Card[] }>("card.list")).cards.filter((c) => c.session === tidier);
+  if (tidierCards.length > 0) fail(`the tidier's session raised ${tidierCards.map((c) => c.kind).join(", ")}`);
+  await until("the tidier's report in its session", 120_000, async () => (JSON.stringify(await ctx.history(tidier).catch(() => [])).includes(ctx.childReport) ? true : undefined));
+  done.push(`the skill loaded through Glossary; ${id}:tidier started a code session on ${row.backend} with no card and its report came back`);
 
   // 5. The command from the composer's slash menu, as the user: nothing of it reaches a bot.
   const tag = `Call the plumber ${randomBytes(2).toString("hex")}`;
-  const ran = await slashCommand(ctx, "note", tag, "Notes", "Notes keeper");
+  const ran = await slashCommand(ctx, "note", tag, "Notes", { session });
   if (!ran.includes(`Noted: ${tag}`)) fail(`/note answered "${ran.slice(0, 120)}"`);
   if (ctx.requests().some((r) => r.lastUserText.includes(tag))) fail("the /note line reached the model");
   done.push(`/note ran from the slash menu: "${ran.slice(0, 60)}"`);
 
-  // 6. The hook (turn.end, own-bot): at least one count per Notes keeper turn (the agent it started, and the turn its
-  //    report wakes, are its own too); a turn of another bot's moves nothing, and one more of its own moves it by one.
-  const countNow = () => Number(storeOf(home, id).turns ?? 0);
+  // 6. The hook (tool.after on its own tools, an observer): one count per call of its tools in the code session (a code
+  //    session runs no turn hooks, only the bridge's tool hooks); Glossary and the slash command moved nothing; one more call
+  //    of its own moves it by one.
+  const countNow = usesNow;
   const settled = await until("the hook's count to settle", 30_000, async () => {
     const a = countNow();
     await sleep(1_500);
-    return a - turnsBefore >= notesTurns && countNow() === a ? a : undefined;
-  }).catch(() => fail(`the own-bot hook counted ${countNow() - turnsBefore} turns, fewer than Notes keeper's ${notesTurns}`));
-  await ctx.turn(otherSession, `ACCEPTANCE-TAG-${randomBytes(3).toString("hex").toUpperCase()} hello`, 150_000);
-  await sleep(2_000);
-  if (countNow() !== settled) fail(`another bot's turn moved the own-bot hook's count (${settled} -> ${countNow()})`);
-  await ctx.turn(session, `ACCEPTANCE-TAG-${randomBytes(3).toString("hex").toUpperCase()} hello`, 150_000);
-  const turns = await until("one more count for one more turn of its own", 20_000, () => (countNow() === settled + 1 ? countNow() : undefined))
-    .catch(() => fail(`one more Notes keeper turn moved the count from ${settled} to ${countNow()}`));
-  done.push(`its own-bot hook counted Notes keeper's turns (${settled - turnsBefore} for its ${notesTurns} and its agent's), none for another bot's, then one more for one more`);
+    return countNow() === a ? a : undefined;
+  });
+  if (settled - usesBefore !== ownCalls) fail(`its tool.after hook counted ${settled - usesBefore} calls, not its tools' ${ownCalls} (Glossary and /note move nothing)`);
+  await callTurn(ctx, session, "list_notes", {});
+  const turns = await until("one more count for one more call of its own", 20_000, () => (countNow() === settled + 1 ? countNow() : undefined))
+    .catch(() => fail(`one more list_notes moved the count from ${settled} to ${countNow()}`));
+  done.push(`its tool.after hook counted its ${ownCalls} tool calls in the code session and nothing else, then one more for one more`);
 
   // 7. Its page: the sidebar's Notes entry; the notes read through its host half, in its locale's words, newest first;
   //    the page's switch writes its setting, and the page follows only once the core says the setting changed.
@@ -340,14 +395,14 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
   await clickExact(cdp, "the sidebar's Notes entry", SIDEBAR_ITEMS, "Notes");
   const page = await until("its page in a frame of its own layer, its notes read", 30_000, async () => {
     for (const d of await layerDocs(cdp, id)) {
-      const v = await cdp.evaluate(d.session, "(() => { const p = document.querySelector('[data-notes=page]'); return p && p.getAttribute('data-loaded') === 'true' ? JSON.stringify({ order: p.getAttribute('data-order'), turns: p.getAttribute('data-turns'), notes: [...p.querySelectorAll('[data-note]')].map((e) => e.getAttribute('data-note')), title: (p.querySelector('h1') || {}).textContent, text: p.innerText }) : null; })()").catch(() => null);
+      const v = await cdp.evaluate(d.session, "(() => { const p = document.querySelector('[data-notes=page]'); return p && p.getAttribute('data-loaded') === 'true' ? JSON.stringify({ order: p.getAttribute('data-order'), turns: p.getAttribute('data-uses'), notes: [...p.querySelectorAll('[data-note]')].map((e) => e.getAttribute('data-note')), title: (p.querySelector('h1') || {}).textContent, text: p.innerText }) : null; })()").catch(() => null);
       if (typeof v === "string") return { session: d.session, ...(JSON.parse(v) as { order: string; turns: string; notes: string[]; title: string; text: string }) };
     }
     return undefined;
   }, () => frames(cdp));
   if (page.notes[0] !== tag || page.notes[1] !== "Buy oat milk" || page.notes.length !== 2) fail(`the page lists ${JSON.stringify(page.notes)}, not the newest first`);
   if (page.title !== "Notes" || !page.text.includes("2 notes") || /example-notes\./.test(page.text)) fail(`the page's words aren't its locale's: "${page.text.slice(0, 160)}"`);
-  if (Number(page.turns) !== turns) fail(`the page shows ${page.turns} turns, the store ${turns}`);
+  if (Number(page.turns) !== turns) fail(`the page shows ${page.turns} tool calls, the store ${turns}`);
   // The user's language (checklist 1.69, 2.4): set to Japanese in the app's UI settings, the page's `t` words come from
   // its ja locale file, its count's interpolation too; back to English, its English words again.
   const wordsIn = async (want: (t: { title: string; text: string }) => boolean, what: string) => until(what, 20_000, async () => {
@@ -414,22 +469,7 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
   if (again[0] !== tag) fail(`after the Plugins page's change the page lists ${JSON.stringify(again)}, not the newest first`);
   done.push("the order changed again from its control on the Plugins page (Newest first), with no card, and its page followed");
 
-  // 8. The window's skin while Notes keeper's tab shows: its bar and accent, never the sidebar (Bots doesn't offer a bot the sidebar).
-  await escape(cdp);
-  await clickTree(cdp, "Notes keeper in the sidebar", SIDEBAR_ITEMS, "Notes keeper");
-  const skin = await until("the window's skin for Notes keeper's tab", 20_000, async () => {
-    for (const d of await treeDocs(cdp)) {
-      const v = await cdp.evaluate(d.session, "(() => { const w = document.querySelector('.cl-window'); return w ? JSON.stringify({ skin: w.getAttribute('data-skin') || '', bar: w.style.getPropertyValue('--cl-skin-bar-text').trim() }) : null; })()").catch(() => null);
-      if (typeof v === "string") {
-        const o = JSON.parse(v) as { skin: string; bar: string };
-        if (o.skin.split(" ").includes("bar") && !o.skin.includes("sidebar") && ["#2B2618", "#F3EDDD"].includes(o.bar.toUpperCase())) return o;
-      }
-    }
-    return undefined;
-  }, async () => String((await Promise.all((await treeDocs(cdp)).map((d) => cdp.evaluate(d.session, "(() => { const w = document.querySelector('.cl-window'); return w ? (w.getAttribute('data-skin') || 'none') + ' ' + w.style.getPropertyValue('--cl-skin-bar-text') : ''; })()").catch(() => "")))).join(" ")));
-  done.push(`Notes keeper's tab skinned the window's bar, not its sidebar (${skin.skin}; bar text ${skin.bar})`);
-
-  // 9. Turned off on the Plugins page: its frames and its layer's connection go, and its bot. Removed on its sealed
+  // 9. Turned off on the Plugins page: its frames and its layer's connection go. Removed on its sealed
   //    card: its folder and its synced store go.
   const closedBefore = (ctx.appLog().match(new RegExp(`layers: ${id}'s layer connection closed`, "g")) ?? []).length;
   await openDetail(cdp, "Notes");
@@ -437,8 +477,6 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
   await until(`${id} off`, 20_000, async () => ((await stateOf(rpc, id)) === "off" ? true : undefined));
   await until("its frames out of the window", 20_000, async () => ((await layerDocs(cdp, id)).length === 0 ? true : undefined), () => frames(cdp));
   await until("its layer's connection closed", 15_000, async () => ((ctx.appLog().match(new RegExp(`layers: ${id}'s layer connection closed`, "g")) ?? []).length > closedBefore ? true : undefined));
-  const botsOff = (await rpc.request<{ bots: { id: string }[] }>("bot.list", {})).bots.map((b) => b.id);
-  if (botsOff.includes(`${id}/bot`)) fail("Notes keeper is still a bot while its plugin is off");
   await clickTree(cdp, "Remove…", "button", "Remove");
   const removal = await ctx.pressCard(`${id}'s removal card`, (c) => c.kind === "change" && c.change === "plugin-remove");
   await until(`${id} removed`, 30_000, async () => ((await rpc.request("plugin.get", { id }).then(() => false, () => true)) ? true : undefined));
@@ -446,36 +484,68 @@ async function notesSteps(ctx: ExampleCtx, otherSession: string): Promise<string
   // Its store goes with it, as its removal card says, so a later plugin under the same id inherits nothing
   // (leftovers.ts `forgetRemovedPlugin`; a data folder would be set aside, and Notes keeps none).
   if (existsSync(join(home, "settings", "plugin-stores", `${id}.json`))) fail("its synced store is still there after removal (a later plugin under its id would inherit it)");
-  done.push(`turned off: its frames and its layer's connection closed, Notes keeper gone; removed on its sealed card ${removal}: its folder and its synced store gone`);
+  done.push(`turned off: its frames and its layer's connection closed; removed on its sealed card ${removal}: its folder and its synced store gone`);
   return done.join("; ");
 }
 
-/** Runs `/<name> <arg>` from the composer's slash menu (a click on its row, the user's gesture) in `bot`'s conversation
- *  (opened from the sidebar first: the composer is a conversation's); the result row's text. */
-async function slashCommand(ctx: ExampleCtx, name: string, arg: string, pluginName: string, bot: string): Promise<string> {
+/** Runs `/<name> <arg>` from the composer's slash menu (a click on its row, the user's gesture) in `bot`'s conversation, or
+ *  in a code session's tab (`{ session }`: MOSS Code's window has no bots), opened from the sidebar first: the composer is a
+ *  conversation's; the result row's text. */
+async function slashCommand(ctx: ExampleCtx, name: string, arg: string, pluginName: string, where: string | { session: string }): Promise<string> {
   const { cdp } = ctx;
   await escape(cdp);
-  await clickExact(cdp, `${bot} in the sidebar`, SIDEBAR_ITEMS, bot);
-  // The composer of that bot's conversation (its box is labelled "Message to <bot>"), once the switch has settled: a
+  let speaker: string;
+  if (typeof where === "string") {
+    speaker = where;
+    await clickExact(cdp, `${where} in the sidebar`, SIDEBAR_ITEMS, where);
+  } else {
+    // A code session's composer is labelled by its agent (the shell's tab names it by its backend's display name, the id for a backend with none).
+    const view = (await ctx.rpc.request<{ session: { backend?: string; title?: string } }>("session.get", { id: where.session })).session;
+    const backends = (await ctx.rpc.request<{ backends: { id: string; name: unknown }[] }>("agent.backends", {})).backends;
+    const shown = backends.find((b) => b.id === view.backend)?.name;
+    speaker = (typeof shown === "string" && shown !== "" ? shown : undefined) ?? view.backend ?? view.title ?? where.session;
+    await toSessionTab(ctx);
+  }
+  // The composer of that conversation (its box is labelled "Message to <speaker>"), once the switch has settled: a
   // box the old view still shows would lose what is typed into it.
-  const label = `Message to ${bot}`;
-  const box = await until(`${bot}'s composer`, 20_000, async () => {
+  const label = `Message to ${speaker}`;
+  const box = await until(`${speaker}'s composer`, 20_000, async () => {
     for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `(document.querySelector('.cl-composer textarea') || {}).getAttribute?.('aria-label') === ${JSON.stringify(label)}`).catch(() => false)) === true) return d.session;
     return undefined;
   }, () => frames(cdp));
   await sleep(500);
-  // A click in the box first, as the user would: after the app's own key dialog the window's focus is still in the app's
-  // page, and text typed then never reaches the composer.
-  const at = await cdp.centerOf(box, ".cl-composer textarea");
-  if (at === undefined) fail("the composer's text box has no place on the page");
-  await cdp.click(box, at!.x, at!.y);
-  await cdp.evaluate(box, "(() => { const t = document.querySelector('.cl-composer textarea'); t.focus(); t.select(); return true; })()");
+  // The island folds away a moment after the card pressed just before is answered, and hiding that window takes the
+  // key focus from this one (the page gets a window blur and its text box loses the focus, ~100 ms after the island's
+  // `visible=false` in the app's log): text typed across that moment is lost, the "/" itself or what follows it. So type
+  // only once the island's page is hidden. Bounded, and nothing fails here: an island that never reports hidden leaves
+  // the step as it was.
+  const islandShowing = async () => {
+    for (const d of await cdp.documents()) {
+      if (!d.url.includes("surface=island")) continue;
+      if ((await cdp.evaluate(d.session, "document.visibilityState").catch(() => "gone")) === "visible") return true;
+    }
+    return false;
+  };
+  for (const end = Date.now() + 15_000; Date.now() < end && (await islandShowing()); ) await sleep(100);
+  await sleep(300);
+  // A click in the box, as the user would: after the app's own key dialog (or a hidden island) the window's focus is not
+  // in the app's page, and text typed then never reaches the composer. Done again before each piece of typing, so a
+  // piece never goes to a box that does not hold the focus.
+  const focusBox = async () => {
+    const at = await cdp.centerOf(box, ".cl-composer textarea");
+    if (at === undefined) fail("the composer's text box has no place on the page");
+    await cdp.click(box, at!.x, at!.y);
+    await cdp.evaluate(box, "(() => { const t = document.querySelector('.cl-composer textarea'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); return true; })()");
+  };
+  await focusBox();
+  await cdp.evaluate(box, "document.querySelector('.cl-composer textarea').select()");
   await cdp.send("Input.insertText", { text: "/" }, box);
   const listShown = async () => String(await cdp.evaluate(box, "(document.querySelector('.cl-composer__slash') || {}).innerText || 'no list'").catch(() => "gone")).replace(/\s+/g, " ").slice(0, 300);
   await until(`the slash menu's /${name}`, 15_000, async () => {
     const rows = JSON.parse(String(await cdp.evaluate(box, "JSON.stringify([...document.querySelectorAll('.cl-composer__slash [role=option]')].map((e) => (e.innerText || '').replace(/\\s+/g, ' ').trim()))"))) as string[];
     return rows.some((t) => t.startsWith(`/${name}`) && t.includes(pluginName)) ? true : undefined;
   }, listShown);
+  await focusBox();
   await cdp.send("Input.insertText", { text: `${name} ${arg}` }, box);
   await sleep(300);
   const typed = String(await cdp.evaluate(box, "document.querySelector('.cl-composer textarea').value").catch(() => "?"));
@@ -521,8 +591,8 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
     // Its copy, pointed at the run's site instead of api.example.com (the run never reaches the real network).
     const folder = join(root, "examples", id);
     cpSync(join(EXAMPLES, id), folder, { recursive: true });
-    const manifest = readFileSync(join(folder, "clover.json"), "utf8");
-    writeFileSync(join(folder, "clover.json"), manifest.replace("https://api.example.com/v1", `http://localhost:${site.port}/v1`).replace("network:api.example.com", `network:localhost:${site.port}`));
+    const manifest = readFileSync(join(folder, "moss.json"), "utf8");
+    writeFileSync(join(folder, "moss.json"), manifest.replace("https://api.example.com/v1", `http://localhost:${site.port}/v1`).replace("network:api.example.com", `network:localhost:${site.port}`));
 
     // 1. Installed the user's way; its card names the host and the notifications, and says its two lists still ask.
     const ok = await installFromPage(ctx, folder, id);
@@ -530,7 +600,7 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
       `localhost:${site.port}`,
       "It sends you notifications",
       "Its server forecast says one tool only reads, but it can reach the network, so it still asks before running",
-      "Its server forecast says one tool only changes its own display, but it can reach the network or do more than read Clover's state, so it still asks before running",
+      "Its server forecast says one tool only changes its own display, but it can reach the network or do more than read MOSS's state, so it still asks before running",
     ];
     const missing = wantLines.filter((l) => !ok.text.includes(l));
     if (missing.length > 0) fail(`its OK card lacks: ${missing.join(" | ")} (card: ${ok.text.slice(0, 600)})`);
@@ -541,17 +611,17 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
     await openDetail(cdp, "Weather");
     await clickTree(cdp, "its key's Enter key…", "button", "Enter key");
     const appRoot = await until("the app's key dialog", 15_000, async () => {
-      for (const d of await cdp.documents()) if (d.url === "clover-core://app/" && (await cdp.evaluate(d.session, "!!document.querySelector('[data-clover-key-field]')").catch(() => false)) === true) return d;
+      for (const d of await cdp.documents()) if (d.url === "moss-core://app/" && (await cdp.evaluate(d.session, "!!document.querySelector('[data-moss-key-field]')").catch(() => false)) === true) return d;
       return undefined;
     });
-    await cdp.evaluate(appRoot.session, "(() => { const f = document.querySelector('[data-clover-key-field]'); f.focus(); return true; })()");
+    await cdp.evaluate(appRoot.session, "(() => { const f = document.querySelector('[data-moss-key-field]'); f.focus(); return true; })()");
     await cdp.send("Input.insertText", { text: key }, appRoot.session);
     await sleep(700); // the dialog takes a press only once it has been seen a moment
-    const save = await cdp.centerOf(appRoot.session, "[data-clover-key-save]");
+    const save = await cdp.centerOf(appRoot.session, "[data-moss-key-save]");
     if (save === undefined) fail("the key dialog has no Save");
     await cdp.click(appRoot.session, save!.x, save!.y);
-    await until("the key dialog to say the key is set", 15_000, async () => ((await cdp.evaluate(appRoot.session, "(document.querySelector('[data-clover-key-state]') || {}).getAttribute?.('data-clover-key-state')").catch(() => "")) === "set" ? true : undefined));
-    const close = await cdp.centerOf(appRoot.session, ".clover-page__close");
+    await until("the key dialog to say the key is set", 15_000, async () => ((await cdp.evaluate(appRoot.session, "(document.querySelector('[data-moss-key-state]') || {}).getAttribute?.('data-moss-key-state')").catch(() => "")) === "set" ? true : undefined));
+    const close = await cdp.centerOf(appRoot.session, ".moss-page__close");
     if (close !== undefined) await cdp.click(appRoot.session, close.x, close.y);
     await sleep(600);
     const keySet = (await rpc.request<{ settings: { key: string; set?: boolean; value?: unknown }[] }>("plugin.settings.get", { id })).settings.find((s) => s.key === "WEATHER_KEY");
@@ -561,6 +631,7 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
 
     // 3. Each call cards (readOnly and contained don't hold for a plugin that reaches the network); the forecast reaches
     //    its host through its proxy, with the key, which never shows in an answer.
+    // Its tools in the code session already running before its install: the new tools reach it at its next turn.
     const saved = await callTurn(ctx, session, "save_place", { place: "Lisbon" });
     if (saved.cards.length === 0) fail("save_place (contained, on a networked plugin) ran with no card");
     if (saved.result.isError || !saved.result.text.includes("Saved your place: Lisbon")) fail(`save_place answered "${saved.result.text.slice(0, 120)}"`);
@@ -574,10 +645,10 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
     // 4. /rain-alert from the slash menu: a notification, which a headless run doesn't show (the app says so).
     const shownLine = /notify: a headless run shows no notification \(([^)]*)\)/g;
     const before = [...ctx.appLog().matchAll(shownLine)].length;
-    const sent = await slashCommand(ctx, "rain-alert", "Lisbon", "Weather", "Alpha");
+    const sent = await slashCommand(ctx, "rain-alert", "Lisbon", "Weather", { session });
     if (!sent.includes("Rain alert sent for Lisbon")) fail(`/rain-alert answered "${sent.slice(0, 160)}"`);
     // On a miss, what the desktop notifier said of it (its own log: never the notification's words).
-    const notifierLog = async () => `the desktop notifier's log: ${((await rpc.request<{ lines: string[] }>("plugin.logs", { id: "clover/notifications", lines: 12 }).catch(() => ({ lines: ["(unreadable)"] }))).lines.join(" | ") || "empty")}`;
+    const notifierLog = async () => `the desktop notifier's log: ${((await rpc.request<{ lines: string[] }>("plugin.logs", { id: "moss/notifications", lines: 12 }).catch(() => ({ lines: ["(unreadable)"] }))).lines.join(" | ") || "empty")}`;
     await until("the app to be asked to show the alert", 15_000, async () => ([...ctx.appLog().matchAll(shownLine)].length > before ? true : undefined), notifierLog);
     const alertId = [...ctx.appLog().matchAll(shownLine)].at(-1)![1]!;
     // A card arriving takes a plugin's banner down (the core's notify service, `desktop.close`; checklist 2.41): the
@@ -592,7 +663,7 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
     await clickTree(cdp, "its notifications switch", `button[role=switch][aria-label=${JSON.stringify("Weather's notifications")}]`);
     await until(`${id} muted`, 15_000, async () => ((await rpc.request<{ muted: string[] }>("notify.mutes", {}).catch(() => ({ muted: [] as string[] }))).muted.includes(id) ? true : undefined));
     const mutedAt = [...ctx.appLog().matchAll(shownLine)].length;
-    const refused = await slashCommand(ctx, "rain-alert", "Lisbon", "Weather", "Alpha");
+    const refused = await slashCommand(ctx, "rain-alert", "Lisbon", "Weather", { session });
     if (!/muted/.test(refused)) fail(`/rain-alert while muted answered "${refused.slice(0, 160)}"`);
     await sleep(1_500);
     if ([...ctx.appLog().matchAll(shownLine)].length > mutedAt) fail("a muted plugin's notification still reached the app");
@@ -611,6 +682,35 @@ export async function exampleWeatherStep(ctx: ExampleCtx, session: string): Prom
 
 export { Failed as ExampleFailed };
 
+/** Puts MOSS Code's window where a row of the shared plugin-app window needs it (lane MC: no bot's tab in it): any plugin OK
+ *  card an earlier row left waiting answered no, dialogs closed (Escape), and a code session's tab shown (its `.cl-agent-tab`
+ *  in main), through the sidebar's first session row when another page is up, or the row `rowText` names (a session's id, matched on
+ *  the row's `data-session`, which a title landing later never changes; or a text it shows): a row that sends its turns to one
+ *  session names it, so the tab it looks at is that session's. */
+export async function toSessionTab(ctx: ExampleCtx, rowText?: string): Promise<void> {
+  const { cdp, rpc } = ctx;
+  const left = (await rpc.request<{ cards: { id: string; kind: string }[] }>("card.list", {}).catch(() => ({ cards: [] }))).cards.filter((c) => c.kind === "plugin-ok");
+  for (const c of left) await ctx.denyCard(c.id).catch(() => undefined);
+  const drawn = async (): Promise<boolean> => {
+    for (const d of await treeDocs(cdp)) if ((await cdp.evaluate(d.session, `!!document.querySelector('.cl-window__content .cl-agent-tab[data-place=main]')${rowText === undefined ? "" : ` && [...document.querySelectorAll('.cl-sidebar [aria-current]')].some((e) => e.getAttribute('data-session') === ${JSON.stringify(rowText)} || (e.textContent || '').includes(${JSON.stringify(rowText)}))`}`).catch(() => false)) === true) return true;
+    return false;
+  };
+  for (let attempt = 0; attempt < 3 && !(await drawn()); attempt++) {
+    for (const d of await treeDocs(cdp)) for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, d.session).catch(() => undefined);
+    await sleep(300);
+    for (const d of await treeDocs(cdp)) {
+      const c = await cdp.sessionRowCenter(d.session, rowText).catch(() => undefined);
+      if (c !== undefined) { await cdp.click(d.session, c.x, c.y); break; }
+    }
+    await until("a code session's tab", 15_000, async () => ((await drawn()) ? true : undefined)).catch(() => undefined);
+  }
+  if (!(await drawn())) {
+    const seen: string[] = [];
+    for (const d of await treeDocs(cdp)) seen.push(String(await cdp.evaluate(d.session, `(() => { const cur = [...document.querySelectorAll('.cl-sidebar [aria-current]')].map((e) => (e.textContent || '').trim().slice(0, 30)); const rows = document.querySelectorAll('.cl-sidebar .cl-sidebar__agent .cl-sidebar__row').length; const tabs = [...document.querySelectorAll('.cl-window__content [class*=tab]')].map((e) => e.className).slice(0, 3); const r0 = document.querySelector('.cl-sidebar .cl-sidebar__agent .cl-sidebar__row'); let at = ''; if (r0) { const b = r0.getBoundingClientRect(); const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); at = ' first row at ' + Math.round(b.left + b.width / 2) + ',' + Math.round(b.top + b.height / 2) + ' (' + innerWidth + 'x' + innerHeight + ') under the point: ' + (e ? e.tagName + '.' + String(e.className).slice(0, 40) + ' ' + (e.textContent || '').slice(0, 30) : 'nothing') + ' main: ' + (document.querySelector('.cl-window__content')?.textContent || '').slice(0, 60); } return 'current=' + JSON.stringify(cur) + ' rows=' + rows + ' tabs=' + JSON.stringify(tabs) + at; })()`).catch(() => "?")));
+    fail(`no code session's tab is up, and the sidebar's session row didn't bring one back (${seen.join(" || ")}; the row asked for: ${rowText ?? "the first"})`);
+  }
+}
+
 /** Puts the app where a row of the shared plugin-app window needs it: any plugin OK card an earlier row left waiting answered
  *  no, dialogs closed (Escape), and Alpha's own tab shown (her controls `.ac` drawn), through the stock sidebar's Alpha row
  *  when another page (the Plugins page an earlier row opened) is up. */
@@ -627,8 +727,9 @@ export async function toAlphasTab(ctx: ExampleCtx): Promise<void> {
     await sleep(300);
     for (const d of await treeDocs(cdp)) {
       const c = await cdp.evaluate(d.session, `(() => {
-        const el = [...document.querySelectorAll(".cl-sidebar button, .cl-sidebar a, .cl-sidebar [role=link]")].find((e) => (e.innerText || "").split("\\n").some((l) => l.trim() === "Alpha") || e.getAttribute("aria-label") === "Alpha");
+        const el = [...document.querySelectorAll(".cl-sidebar button, .cl-sidebar a, .cl-sidebar [role=link]")].find((e) => (e.innerText || "").split("\\n").some((l) => l.trim() === "MOSS") || e.getAttribute("aria-label") === "MOSS");
         if (!el) return null;
+        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
         const r = el.getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       })()`).catch(() => null) as { x: number; y: number } | null;

@@ -1,0 +1,55 @@
+{
+  "manifest": 1,
+  "id": "example-pngtuber",
+  "name": "Picture-swap avatar",
+  "description": "Draws the avatar plugin's figure as a few pictures swapped in turn: one at rest, one while it speaks, one for a blink. A teaching example of a renderer for the avatar plugin: it fills that plugin's renderer spot for a format of its own, declares the format, brings one figure in that format as a pack, and moves its mouth with what MOSS Voice says. It hears nothing and reaches no network.",
+  "icon": "assets/icon.svg",
+  "version": "1.0.0",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx"
+  },
+  "contributes": {
+    "locales": [
+      {
+        "lang": "en",
+        "file": "locales/en.json"
+      }
+    ],
+    "ui": [
+      {
+        "spot": "moss.character.renderer",
+        "id": "pngtuber",
+        "key": "pngtuber",
+        "component": "PngtuberAvatar"
+      }
+    ],
+    "moss.character.formats": [
+      {
+        "id": "pngtuber",
+        "format": "pngtuber",
+        "name": "Picture-swap",
+        "capabilities": [
+          "lipsync",
+          "expressions"
+        ], "entry": [".pngtuber.json"]
+      }
+    ],
+    "moss.character.packs": [
+      {
+        "id": "sunny",
+        "name": "Sunny",
+        "file": "sample-model/sunny.pngtuber.json",
+        "format": "pngtuber",
+        "portrait": "sample-model/idle.png"
+      }
+    ],
+    "moss.voice.speech": [
+      {
+        "id": "mouth"
+      }
+    ]
+  }
+}

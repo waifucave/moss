@@ -6,12 +6,12 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileSecretStore } from "../../auth/secret-store";
 import type { ApprovalDecision, ApprovalRequest } from "../../contracts/approval-broker";
-import { CLOVER_CREDENTIAL_INVENTORY } from "../../runtime-sdk/keychain";
+import { MOSS_CREDENTIAL_INVENTORY } from "../../runtime-sdk/keychain";
 import { botKeyPresence } from "../key-presence";
 import { flush } from "../../contracts/fakes/clock";
 import { projectRecords } from "../../sessions/wire";
 import { agentToolDefs } from "../../agents/tools";
-import { providerGrantKey, providerOfModel, voiceGrantKey } from "../provider-consent";
+import { providerGrantKey, providerOfModel } from "../provider-consent";
 import { measureBundledTree } from "../../bundled-plugins-dir";
 import { stageBundledPlugins, stagedBotChoice, stagedBundledDir } from "../../registry/bundled-stage";
 import { boot, botManifest, pluginFromFolder, removeTemps, tempDir, writePlugin } from "./fixtures";
@@ -22,10 +22,10 @@ const theUser = { kind: "user", client: "app" } as const;
 const user = (text: string) => ({ text, device: "studio0000000000000", sentAt: 1, clientMessageId: `m-${text}` });
 
 /** Luna, whose plugin names `model` (or none), on a side whose broker answers each card with what `answer` says. */
-async function luna(model: string | undefined, opts: { broker?: boolean; hold?: boolean; voice?: Record<string, unknown>; home?: string; hasKeyFor?: (model: string) => boolean } = {}) {
+async function luna(model: string | undefined, opts: { broker?: boolean; hold?: boolean; home?: string; hasKeyFor?: (model: string) => boolean } = {}) {
   const root = tempDir();
   const write = (m: string | undefined) => writePlugin(root, "luna", {
-    "clover.json": botManifest("luna", "Luna", { ...(m === undefined ? {} : { model: { default: m } }), ...(opts.voice === undefined ? {} : { voice: opts.voice }) }),
+    "moss.json": botManifest("luna", "Luna", { ...(m === undefined ? {} : { model: { default: m } }) }),
     "bot/instructions.md": "You are Luna.",
   });
   const asked: ApprovalRequest[] = [];
@@ -72,7 +72,7 @@ describe("a provider the bot's plugin chose", () => {
     await say("hi");
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ kind: "change", change: "bot-provider", session: "b_luna", bot: "luna", computers: [], effect: "other" });
-    // Clover's own words; what the plugin wrote only as code values (#311 B2).
+    // MOSS's own words; what the plugin wrote only as code values (#311 B2).
     expect(asked[0]!.fields.title).toEqual({ type: "text", text: "Let this bot use a provider its plugin chose?" });
     expect(asked[0]!.fields.what).toMatchObject({ type: "text" });
     expect(asked[0]!.fields.source).toEqual({ type: "code", code: "luna" });
@@ -211,7 +211,7 @@ describe("#311's review", () => {
   });
 
   test("B2: a manifest tag that isn't a qualified model id is refused at load; hiding characters never reach the card", async () => {
-    const bad = await luna("Clover checked it");
+    const bad = await luna("MOSS checked it");
     expect(bad.b.bots.has("luna")).toBe(false);
     expect(bad.b.warnings.some((w) => w.includes("isn't a qualified model id"))).toBe(true);
     await bad.b.shutdown();
@@ -269,40 +269,9 @@ describe("#311's review", () => {
     const started: unknown[] = [];
     const manager = { start: async (p: unknown) => (started.push(p), { sessionId: "a_1", transcript: "x" }) } as unknown as Parameters<typeof agentToolDefs>[0];
     const [agent] = agentToolDefs(manager, { bot: "luna", session: "b_luna", origin: "user" }, { checkModel: async () => ({ ok: false, reason: "not allowed" }) });
-    const out = await agent!.run({ prompt: "do it", backend: "clover-code", root: "home/Studio/x", model: "openrouter/qwen-4-max" });
+    const out = await agent!.run({ prompt: "do it", backend: "moss-code", root: "home/Studio/x", model: "openrouter/qwen-4-max" });
     expect(out).toEqual({ text: "not allowed", isError: true });
     expect(started).toHaveLength(0);
-  });
-
-  test("voice: a voice the plugin chose asks once (bot.voice:<provider>); the user's own voice never asks", async () => {
-    const plugin = await luna(undefined, { voice: { provider: "fish-audio", voice: "v1", model: "s2" } });
-    plugin.answers.push({ allowed: true, by: "card", cardId: "card_1" });
-    expect(await plugin.b.bots.checkVoice("luna")).toEqual({ ok: true });
-    expect(plugin.asked[0]).toMatchObject({ kind: "change", change: "bot-provider" });
-    expect(plugin.asked[0]!.fields.title).toEqual({ type: "text", text: "Let this bot use a voice provider its plugin chose?" });
-    expect(plugin.asked[0]!.fields.host).toEqual({ type: "code", code: "fish-audio" });
-    expect(plugin.b.side.grants!.has("b_luna", voiceGrantKey("fish-audio"))).toBe(true);
-    expect(await plugin.b.bots.checkVoice("luna")).toEqual({ ok: true });
-    expect(plugin.asked).toHaveLength(1);
-    await plugin.b.shutdown();
-    const own = await luna(undefined, { voice: { provider: "fish-audio", voice: "v1" } });
-    await own.b.bots.setUserLayer("luna", { voice: { provider: "elevenlabs", voice: "v2" } }, theUser);
-    expect(await own.b.bots.checkVoice("luna")).toEqual({ ok: true });
-    expect(own.asked).toHaveLength(0);
-    await own.b.shutdown();
-  });
-
-  test("voice: the user's own ask is told when the card goes up (voice.speak answers then), and not when nothing asks", async () => {
-    const plugin = await luna(undefined, { voice: { provider: "fish-audio", voice: "v1" }, hold: true });
-    let told = 0;
-    const check = plugin.b.bots.checkVoice("luna", { origin: "user", onAsk: () => { told++; } });
-    await flush();
-    expect([told, plugin.asked.length]).toEqual([1, 1]);
-    plugin.waiting.shift()!({ allowed: true, by: "card", cardId: "card_1" });
-    expect(await check).toEqual({ ok: true });
-    expect(await plugin.b.bots.checkVoice("luna", { origin: "user", onAsk: () => { told++; } })).toEqual({ ok: true });
-    expect(told).toBe(1);
-    await plugin.b.shutdown();
   });
 
   test("the card belongs to the asking session: a side thread's run asks with its own turn's origin", async () => {
@@ -321,7 +290,7 @@ describe("#311's review", () => {
 });
 
 describe("#311's check 2", () => {
-  const slotOf = (provider: string) => CLOVER_CREDENTIAL_INVENTORY.find((x) => x.provider === provider)!.secretName;
+  const slotOf = (provider: string) => MOSS_CREDENTIAL_INVENTORY.find((x) => x.provider === provider)!.secretName;
 
   test("the daemon's hasKeyFor: a plugin's model on a provider with no stored key falls back to the user's default, and nothing asks", async () => {
     const home = tempDir();
@@ -402,35 +371,17 @@ describe("#311's check 2", () => {
     await b.shutdown();
   });
 
-  test("a voice check takes the real origin: speaking in a turn the user didn't start never lifts a held no", async () => {
-    const { b, asked, answers } = await luna(undefined, { voice: { provider: "fish-audio", voice: "v1" } });
-    answers.push({ allowed: false, by: "card", cardId: "card_1" });
-    // Speaking in the main conversation with no turn of the user's: the card is that session's, not the user's turn.
-    expect((await b.bots.checkVoice("luna", { session: "b_luna" })).ok).toBe(false);
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ session: "b_luna" });
-    expect(asked[0]!.origin).not.toBe("user");
-    // Held: speaking again doesn't ask.
-    expect((await b.bots.checkVoice("luna", { session: "b_luna" })).ok).toBe(false);
-    // A session's speech takes that session's own origin, whatever its caller says.
-    expect((await b.bots.checkVoice("luna", { session: "b_luna", origin: "user" })).ok).toBe(false);
-    expect(asked).toHaveLength(1);
-    // The user talking (push-to-talk passes the user's origin) asks again.
-    answers.push({ allowed: true, by: "card", cardId: "card_2" });
-    expect(await b.bots.checkVoice("luna", { origin: "user" })).toEqual({ ok: true });
-    expect(asked).toHaveLength(2);
-    await b.shutdown();
-  });
+
 });
 
-/** Alpha as Clover bundles it: written to a source tree, measured, staged into a temp home's `run/bundled-plugins` as
+/** Alpha as MOSS bundles it: written to a source tree, measured, staged into a temp home's `run/bundled-plugins` as
  *  the daemon stages it, and loaded from the staged copy as a bundled record, with the daemon's own test of a bundled
  *  plugin (daemon.ts `bundledChoice`), whose calls `checks` counts. `plugins` overrides which records the registry
  *  holds. */
-async function bundledAlpha(opts: { broker?: boolean; voice?: Record<string, unknown>; plugins?: (staged: string) => Promise<Parameters<typeof boot>[0]["plugins"]> } = {}) {
+async function bundledAlpha(opts: { broker?: boolean; plugins?: (staged: string) => Promise<Parameters<typeof boot>[0]["plugins"]> } = {}) {
   const src = tempDir();
   writePlugin(src, "alpha", {
-    "clover.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" }, ...(opts.voice === undefined ? {} : { voice: opts.voice }) }),
+    "moss.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" } }),
     "bot/instructions.md": "You are Alpha.",
   });
   const home = tempDir();
@@ -462,7 +413,7 @@ async function bundledAlpha(opts: { broker?: boolean; voice?: Record<string, unk
   return { b, asked, answers, say, driver, folder, stagedDir, digests: staged.digests, checks };
 }
 
-describe("Clover's own bundled plugin (the owner's ruling)", () => {
+describe("MOSS's own bundled plugin (the owner's ruling)", () => {
   test("a bundled bot's own tag asks nothing, like the user's own choice, and its turn runs; even with no broker", async () => {
     const { b, asked, say, driver } = await bundledAlpha();
     expect(b.bots.effective("alpha")).toMatchObject({ model: "anthropic/claude-sonnet-5-5", modelFrom: "plugin", modelBundled: true });
@@ -489,20 +440,12 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
     await b.shutdown();
   });
 
-  test("a bundled bot's voice asks nothing", async () => {
-    const { b, asked } = await bundledAlpha({ voice: { provider: "fish-audio", voice: "v1", model: "s2" } });
-    expect(b.bots.effective("alpha")).toMatchObject({ voiceFrom: "plugin", voiceBundled: true });
-    expect(await b.bots.checkVoice("alpha")).toEqual({ ok: true });
-    expect(asked).toHaveLength(0);
-    await b.shutdown();
-  });
-
   test("a staged manifest whose tag was rewritten after staging is no longer bundled: the card asks", async () => {
     const { b, asked, answers, say, driver, folder } = await bundledAlpha();
     // Something other than staging writes the staged copy (nothing should: run/ is fenced from every runner): the
     // bytes no longer match what staging verified, so the new tag is a third party's choice and asks.
     const rewritten = botManifest("alpha", "Alpha", { model: { default: "openrouter/qwen-4-max" } });
-    writeFileSync(join(folder, "clover.json"), `${JSON.stringify(rewritten, null, 2)}\n`);
+    writeFileSync(join(folder, "moss.json"), `${JSON.stringify(rewritten, null, 2)}\n`);
     b.registry.put({ ...(await pluginFromFolder(folder, { bundled: true })).inputs[0]!, change: "applies" });
     await flush();
     expect(b.bots.effective("alpha")).toMatchObject({ model: "openrouter/qwen-4-max", modelFrom: "plugin" });
@@ -544,7 +487,7 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
     expect(driver().turns).toHaveLength(1);
     expect(checks.n).toBe(loaded);
     // The next load (a registry change) checks the new bytes: rewritten after staging, they no longer verify.
-    writeFileSync(join(folder, "clover.json"), `${JSON.stringify(botManifest("alpha", "Alpha 2", { model: { default: "anthropic/claude-sonnet-5-5" } }), null, 1)}\n`);
+    writeFileSync(join(folder, "moss.json"), `${JSON.stringify(botManifest("alpha", "Alpha 2", { model: { default: "anthropic/claude-sonnet-5-5" } }), null, 1)}\n`);
     b.registry.put({ ...(await pluginFromFolder(folder, { bundled: true })).inputs[0]!, change: "applies" });
     await flush();
     expect(checks.n).toBeGreaterThan(loaded);
@@ -555,10 +498,10 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
   test("a dev-folder (or installed) copy named alpha is not bundled: refused at load, and its tag would ask the card", async () => {
     const dev = tempDir();
     const folder = writePlugin(dev, "alpha", {
-      "clover.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" } }),
+      "moss.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" } }),
       "bot/instructions.md": "You are Alpha.",
     });
-    // Outside the bundled copy, the id is Clover's: the registry refuses the plugin, so it has no bot at all.
+    // Outside the bundled copy, the id is MOSS's: the registry refuses the plugin, so it has no bot at all.
     const plain = await pluginFromFolder(folder);
     expect(plain.inputs).toHaveLength(0);
     expect(plain.report.top.issues.map((i) => i.code)).toContain("id_reserved");
@@ -580,7 +523,7 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
     const elsewhere = tempDir();
     const { b, asked, say } = await bundledAlpha({
       plugins: async (staged) => (await pluginFromFolder(writePlugin(elsewhere, "alpha", {
-        "clover.json": await Bun.file(join(staged, "clover.json")).text(),
+        "moss.json": await Bun.file(join(staged, "moss.json")).text(),
         "bot/instructions.md": "You are Alpha.",
       }), { bundled: true })).inputs,
     });
@@ -590,7 +533,7 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
     await b.shutdown();
     // The service itself requires the registry's bundled source, whatever the daemon's test answers.
     const root = tempDir();
-    const luna3 = writePlugin(root, "luna", { "clover.json": botManifest("luna", "Luna", { model: { default: "anthropic/claude-sonnet-5-5" } }), "bot/instructions.md": "You are Luna." });
+    const luna3 = writePlugin(root, "luna", { "moss.json": botManifest("luna", "Luna", { model: { default: "anthropic/claude-sonnet-5-5" } }), "bot/instructions.md": "You are Luna." });
     const seen: ApprovalRequest[] = [];
     const c = await boot({
       home: tempDir(), askProvider: true, plugins: (await pluginFromFolder(luna3)).inputs, bundledChoice: () => ({ model: "anthropic/claude-sonnet-5-5" }),
@@ -608,21 +551,21 @@ describe("Clover's own bundled plugin (the owner's ruling)", () => {
   test("the staged manifest's choice: inside the staged copy, from the verified bytes only", () => {
     const src = tempDir();
     writePlugin(src, "alpha", {
-      "clover.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" }, voice: { provider: "fish-audio", voice: "v1" } }),
+      "moss.json": botManifest("alpha", "Alpha", { model: { default: "anthropic/claude-sonnet-5-5" } }),
       "bot/instructions.md": "x",
     });
     const home = tempDir();
     const staged = stageBundledPlugins({ root: src, manifest: measureBundledTree(src), out: stagedBundledDir(home) });
     const folder = join(staged.dir!, "alpha");
     const choice = (f: string, d: ReadonlyMap<string, string> | undefined) => stagedBotChoice({ folder: f, stagedDir: staged.dir!, digests: d });
-    expect(choice(folder, staged.digests)).toEqual({ model: "anthropic/claude-sonnet-5-5", voice: { provider: "fish-audio", voice: "v1" } });
+    expect(choice(folder, staged.digests)).toEqual({ model: "anthropic/claude-sonnet-5-5" });
     expect(choice(folder, undefined)).toBeUndefined();
     expect(choice(folder, new Map())).toBeUndefined();
     expect(choice(join(src, "alpha"), staged.digests)).toBeUndefined();
     expect(choice(staged.dir!, staged.digests)).toBeUndefined();
     expect(choice(join(staged.dir!, "missing"), staged.digests)).toBeUndefined();
     expect(stagedBotChoice({ folder: `${staged.dir!}-x/alpha`, stagedDir: staged.dir!, digests: staged.digests })).toBeUndefined();
-    writeFileSync(join(folder, "clover.json"), "{}\n");
+    writeFileSync(join(folder, "moss.json"), "{}\n");
     expect(choice(folder, staged.digests)).toBeUndefined();
   });
 });

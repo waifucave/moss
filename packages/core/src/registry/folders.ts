@@ -8,12 +8,13 @@
 import { shownCode } from "../approvals/strings";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MANIFEST_FILE, PLUGIN_API_VERSION, backgroundOkLines, catalogPointDecl, describeOk, hookOkLines, parseJsonc, treeHash, validateTree, type TreeReport } from "@waifucave/clover-plugin-sdk";
-import type { PluginProvenance, PluginSource, ValidationIssue } from "@waifucave/clover-protocol";
+import { MANIFEST_FILE, PLUGIN_API_VERSION, backgroundOkLines, catalogPointDecl, describeOk, fillsOkLines, hookOkLines, parseJsonc, treeHash, validateTree, type FillsDecl, type FillsOf, type TreeReport } from "@waifucave/moss-plugin-sdk";
+import { canonicalJson, topPluginIdOf } from "@waifucave/moss-protocol";
+import type { PluginProvenance, PluginSource, ValidationIssue } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { parentOf } from "../contracts/plugin-registry-rules";
 import type { Manifest } from "../contracts/sdk-types";
-import { classifyChange, codeFieldsFrom, okSnapshot, updateAddsTrigger, workshopAdds, type CodeFieldsOf, type OkSnapshot } from "./changes";
+import { classifyChange, codeFieldsFrom, fillsAdded, okSnapshot, updateAddsTrigger, workshopAdds, type CodeFieldsOf, type OkSnapshot } from "./changes";
 import type { Leftovers } from "./leftovers";
 
 /** The code fields of the catalog's points; a point the catalog doesn't declare counts as code whole. */
@@ -64,16 +65,16 @@ export const WRAPPED_FROM_TEXT: Readonly<Record<NonNullable<PluginProvenance["wr
   "claude-plugin": "a Claude Code plugin folder",
 };
 
-/** The OK's lines for a wrapped plugin: what Clover made it around, and the parts that stay in its folder unused. */
+/** The OK's lines for a wrapped plugin: what MOSS made it around, and the parts that stay in its folder unused. */
 export function wrappedLines(wrapped: PluginProvenance["wrapped"]): string[] {
   if (wrapped === undefined) return [];
-  const out = [`Clover made this plugin around ${WRAPPED_FROM_TEXT[wrapped.from]}; you can open and edit it in the plugins folder.`];
-  if ((wrapped.unused ?? []).length > 0) out.push(`Left in its folder unused, since Clover has no place for them yet: ${wrapped.unused!.join(", ")}.`);
+  const out = [`MOSS made this plugin around ${WRAPPED_FROM_TEXT[wrapped.from]}; you can open and edit it in the plugins folder.`];
+  if ((wrapped.unused ?? []).length > 0) out.push(`Left in its folder unused, since MOSS has no place for them yet: ${wrapped.unused!.join(", ")}.`);
   // Paths as a card shows a name it didn't write: every character that hides or reorders text as a visible escape.
   const shown = (p: string) => shownCode(p).replace(/[\n\t]/g, (c) => (c === "\n" ? "\\n" : "\\t"));
   if ((wrapped.reads ?? []).length > 0) out.push(`It will read: ${wrapped.reads!.map(shown).join(", ")} (never a .git folder or an .env file in them). Its config runs a program there; it reads it, never writes it.`);
   if ((wrapped.unreadable ?? []).length > 0) {
-    out.push(`It can't read ${wrapped.unreadable!.map(shown).join(", ")}, so its server may not start: Clover never opens your whole home folder, its Documents, Desktop or Downloads folders whole, a place that keeps keys, a .git folder or an .env file. Move the program into a folder of its own and paste the config again. If its server needs a folder beside its own, its log says which.`);
+    out.push(`It can't read ${wrapped.unreadable!.map(shown).join(", ")}, so its server may not start: MOSS never opens your whole home folder, its Documents, Desktop or Downloads folders whole, a place that keeps keys, a .git folder or an .env file. Move the program into a folder of its own and paste the config again. If its server needs a folder beside its own, its log says which.`);
   }
   return out;
 }
@@ -99,7 +100,7 @@ export const PROVENANCE_TEXT: Readonly<Record<PluginProvenance["by"], string>> =
   bot: "A bot added it with its tools.",
   migration: "It came over in the migration from the old app.",
   found: "It was found on disk.",
-  bundled: "It ships with Clover.",
+  bundled: "It ships with MOSS.",
   plugin: "A plugin asked to add it.",
 };
 
@@ -108,7 +109,9 @@ export function askedByPluginText(asker: string, name: string): string {
   return `${asker} wants to add ${name}.`;
 }
 import { TreeProblem, folderReader, treeEntries } from "./tree";
+import { manifestPathIn } from "../old-names";
 import { folderLoaderReach, loaderOutsideIssues } from "./loader-config";
+import { homesOf, outsideHomeIssues } from "./outside-homes";
 
 /** How long a folder must be unchanged before it is read (§5.1). */
 export const SETTLE_MS = 2_000;
@@ -122,14 +125,16 @@ export const DEV_FOLDER_MS = 24 * 60 * 60 * 1000;
 export interface PluginFoldersOptions {
   core: RegistryCore;
   store: RegistryStore;
-  /** `<cloverHome>/plugins`. */
+  /** `<mossHome>/plugins`. */
   pluginsDir: string;
-  /** The app's read-only plugin folders (each subfolder a plugin: `clover`, `alpha`). */
+  /** The app's read-only plugin folders (each subfolder a plugin: `moss`, `alpha`). */
   bundledDirs?: readonly string[];
   /** The plugin API the app has (`PLUGIN_API_VERSION`). */
   apiVersion?: string;
   /** The fields of a plugin point whose format is `program` or `code`. */
   codeFieldsOf?: CodeFieldsOf;
+  /** The `fills` line of a point a plugin declares, as the registry knows it now (its fillers' OK cards show it). */
+  fillsOf?: FillsOf;
   settleMs?: number;
   /** How often the catch-up look runs (`CATCH_UP_MS`; 0: never). */
   catchUpMs?: number;
@@ -153,16 +158,16 @@ const firstError = (issues: readonly ValidationIssue[]) => issues.find((i) => i.
 /** Reads a top-level plugin folder. */
 export async function readPluginFolder(
   folder: string,
-  opts: { source: PluginSource; dev?: boolean; bundled?: boolean; apiVersion?: string; codeFieldsOf?: CodeFieldsOf; provenance?: PluginProvenance },
+  opts: { source: PluginSource; dev?: boolean; bundled?: boolean; apiVersion?: string; codeFieldsOf?: CodeFieldsOf; fillsOf?: FillsOf; provenance?: PluginProvenance; homes?: { userHome: string; mossHome: string } },
 ): Promise<ReadFolder> {
   const name = basename(folder);
   const base = { source: opts.source, folder, ...(opts.dev ? { dev: true } : {}), ...(opts.provenance ? { provenance: opts.provenance } : {}) };
   const placeholder = (): Manifest => ({ manifest: 1, name } as Manifest);
   // A manifest that doesn't parse yet is a write in progress: the folder is left as it was until it does (§5.1).
   let parses = true;
-  if (existsSync(join(folder, MANIFEST_FILE))) {
+  if (existsSync(manifestPathIn(folder, MANIFEST_FILE))) {
     try {
-      parses = parseJsonc(readFileSync(join(folder, MANIFEST_FILE), "utf8")).ok;
+      parses = parseJsonc(readFileSync(manifestPathIn(folder, MANIFEST_FILE), "utf8")).ok;
     } catch {
       parses = false;
     }
@@ -184,8 +189,10 @@ export async function readPluginFolder(
   // folder's code runs in plugin processes too (#234's check 5, K3).
   const judged = opts.bundled !== true;
   const loaderIssues = judged ? loaderOutsideIssues(loader) : [];
-  const topIssues = [...tree.top.issues, ...tree.issues.filter((i) => !i.file.startsWith("plugins/")), ...loaderIssues];
-  const treeOk = tree.ok && loaderIssues.length === 0;
+  // P5: a folder it names outside its sandbox that holds a home makes it invalid here (read 44).
+  const homeIssues = opts.homes !== undefined ? outsideHomeIssues(tree.top.manifest, opts.homes) : [];
+  const topIssues = [...tree.top.issues, ...tree.issues.filter((i) => !i.file.startsWith("plugins/")), ...loaderIssues, ...homeIssues];
+  const treeOk = tree.ok && loaderIssues.length === 0 && homeIssues.length === 0;
   const topInvalid = treeOk ? undefined : (firstError(topIssues) ?? "the plugin doesn't validate");
   const top: RegistryInput = {
     ...base, id, manifest: tree.top.manifest ?? placeholder(), treeHash: hash, class: tree.top.class, issues: topIssues,
@@ -202,7 +209,10 @@ export async function readPluginFolder(
       class: child.report.class, issues, folder: join(folder, "plugins", child.folder), ...(invalid === undefined ? {} : { invalid }),
     });
   }
-  const snapshot = treeOk ? { ...okSnapshot(hash, entries, tree, ownPointsFirst(tree, opts.codeFieldsOf ?? catalogCodeFields), loader.inside), okLines: treeOkLines(folder, tree) } : undefined;
+  // The `fills` lines are what the points it fills give it, in their declarers' words: one it didn't show at its OK asks
+  // again, on an edit, an update, or the declarer's change of its words (`classifyChange`).
+  const fills = treeOk ? fillsOkLines([tree.top, ...tree.children.map((c) => c.report)], opts.fillsOf) : [];
+  const snapshot = treeOk ? { ...okSnapshot(hash, entries, tree, ownPointsFirst(tree, opts.codeFieldsOf ?? catalogCodeFields), loader.inside), okLines: treeOkLines(folder, tree, opts.fillsOf), fills } : undefined;
   return { id, inputs, ...(snapshot ? { snapshot } : {}), parses, tree };
 }
 
@@ -221,10 +231,30 @@ interface Source {
  *  it came from: the lines an update may not add or alter without a new OK (`updateAddsTrigger`). Left out on purpose:
  *  the source line and the wrapper's lines (the install record's, never the tree's; wrappers don't
  *  update), and the per-computer lines (non-macOS logins, no sandbox here, host code held), which follow the class. */
-export function treeOkLines(folder: string, tree: TreeReport): string[] {
+/** A point's `fills` (`FillsOf`) as the registry knows it now: from the active declaration of a point a plugin declares,
+ *  named by its declarer's own name and titled by the declaration's `title` (else the point's name); undefined for a
+ *  point with none, or none declared here. The core's points' come from the catalog (`fillsOkLines`). */
+export function fillsFrom(registry: Pick<RegistryCore, "points" | "get">, point: string): FillsDecl | undefined {
+  const p = registry.points().find((x) => x.name === point && x.active && x.declaredBy !== "core");
+  const fills = p?.decl?.fills;
+  if (p === undefined || p.declaredBy === "core" || fills === undefined) return undefined;
+  const id = p.declaredBy.pluginId;
+  const textOf = (t: unknown): string | undefined => (typeof t === "string" ? t : typeof t === "object" && t !== null && typeof (t as { en?: unknown }).en === "string" ? (t as { en: string }).en : undefined);
+  return {
+    by: textOf(registry.get(id)?.manifest?.name) ?? id,
+    title: textOf(p.decl?.title) ?? point,
+    ok: fills.ok,
+    ...(fills.warns === true ? { warns: true } : {}),
+    tree: topPluginIdOf(id),
+    id,
+  };
+}
+
+export function treeOkLines(folder: string, tree: TreeReport, fillsOf?: FillsOf): string[] {
   const all = [tree.top, ...tree.children.map((c) => c.report)];
   return [
     ...describeOk(tree.top, { restylesCards: tree.restylesCards, treeCapabilities: all.flatMap((m) => m.capabilities) }),
+    ...fillsOkLines(all, fillsOf),
     ...hookOkLines(all),
     ...backgroundOkLines(all),
     ...agentEnvLines(folder, tree),
@@ -266,7 +296,7 @@ export class PluginFolders {
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Who installed a folder just copied in (`plugin.install`), until its record keeps it. */
   readonly #installedBy = new Map<string, PluginProvenance>();
-  /** The drop (the owner's ask on 14c: a bot moves or copies a plugin it built into the plugins folder, and Clover
+  /** The drop (the owner's ask on 14c: a bot moves or copies a plugin it built into the plugins folder, and MOSS
    *  indexes it and asks the OK): each top-level name a bot's session made there, by name, until the registry's first
    *  read records it. A name two bots claimed is nobody's (`#dropConflicts`). */
   readonly #droppedBy = new Map<string, string>();
@@ -274,7 +304,7 @@ export class PluginFolders {
   /** The plugins-folder names a bundled plugin holds that were logged as ignored (once each). */
   readonly #bundledNamesLogged = new Set<string>();
   /** The top-level names in the plugins folder when the watch started: a folder already there at start keeps its card
-   *  on the user's switch; one that appears while Clover runs gets its OK card at once (the coordinator's ruling). */
+   *  on the user's switch; one that appears while MOSS runs gets its OK card at once (the coordinator's ruling). */
   #bootNames: Set<string> | undefined;
   /** An update being applied (`updated`): the tree it brings and its new provenance, until its record keeps them. */
   readonly #updating = new Map<string, { treeHash: string; provenance: PluginProvenance }>();
@@ -340,6 +370,34 @@ export class PluginFolders {
     for (const r of reads) if (r.snapshot) this.#current.set(r.id, r.snapshot);
     this.#o.core.putAll(reads.flatMap((r) => r.inputs), removed);
     this.#armExpiry();
+    await this.#fillsMoved();
+  }
+
+  /** The `fills` lines points declare, by point, as last seen (`#fillsMoved`). */
+  #fillsSeen = new Map<string, string>();
+
+  /** A declarer that added, changed or dropped a point's `fills` line: its fillers are read again, so their OK cards say
+   *  the new words and an OK given without them asks again (`classifyChange`). Also after the first scan, whose fillers
+   *  were read before their declarers were known. */
+  async #fillsMoved(): Promise<void> {
+    if (this.#o.fillsOf === undefined) return;
+    const now = new Map<string, string>();
+    for (const p of this.#o.core.points()) {
+      if (!p.active || p.declaredBy === "core" || p.decl?.fills === undefined) continue;
+      now.set(p.name, canonicalJson({ fills: p.decl.fills, title: p.decl.title ?? null, by: p.declaredBy.pluginId }));
+    }
+    const moved = [...new Set([...now.keys(), ...this.#fillsSeen.keys()])].filter((name) => now.get(name) !== this.#fillsSeen.get(name));
+    this.#fillsSeen = now;
+    const fillers = new Set<string>();
+    for (const point of moved) {
+      const declarer = this.#o.core.points().find((p) => p.name === point && p.declaredBy !== "core")?.declaredBy;
+      const tree = declarer !== undefined && declarer !== "core" ? topPluginIdOf(declarer.pluginId) : undefined;
+      for (const c of this.#o.core.entries(point)) if (topPluginIdOf(c.pluginId) !== tree) fillers.add(topPluginIdOf(c.pluginId));
+    }
+    for (const id of fillers) {
+      const folder = this.#byFolder.get(id);
+      if (folder !== undefined) await this.refresh(folder);
+    }
   }
 
   /** A bot's session made `name` in the plugins folder (its file tools' write, or a shell call it ran): the folder's
@@ -359,7 +417,7 @@ export class PluginFolders {
     return true;
   }
 
-  /** A path Clover's own tools just wrote (a bot's Write or Edit the fence let through): the plugins-folder folder it is
+  /** A path MOSS's own tools just wrote (a bot's Write or Edit the fence let through): the plugins-folder folder it is
    *  in is read once it settles, without waiting for the watch or the catch-up look. Any other path is ignored. */
   touched(path: string): void {
     // As written, or by real paths (the fence hands real ones; the plugins folder may sit under a link, as /var does).
@@ -481,6 +539,7 @@ export class PluginFolders {
     if (ok === undefined) return "it has no OK on this computer yet";
     const r = await readPluginFolder(folder, {
       source: "local", bundled: false, provenance,
+      homes: homesOf(this.#o.pluginsDir),
       ...(this.#o.apiVersion ? { apiVersion: this.#o.apiVersion } : {}),
       ...(this.#o.codeFieldsOf ? { codeFieldsOf: this.#o.codeFieldsOf } : {}),
     });
@@ -507,6 +566,7 @@ export class PluginFolders {
     if (ok === undefined) return "it has no OK on this computer";
     const r = await readPluginFolder(folder, {
       source: provenance.npm !== undefined ? "npm" : "index", bundled: false, provenance,
+      homes: homesOf(this.#o.pluginsDir),
       ...(this.#o.apiVersion ? { apiVersion: this.#o.apiVersion } : {}),
       ...(this.#o.codeFieldsOf ? { codeFieldsOf: this.#o.codeFieldsOf } : {}),
     });
@@ -562,6 +622,8 @@ export class PluginFolders {
     const removed = was !== undefined && was !== r.id ? [was] : [];
     for (const id of removed) this.#wentAway(id);
     this.#o.core.putAll(r.inputs, [...removed, ...this.#staleChildren(r)]);
+    // A point's `fills` line it declares may have changed: its fillers are read again (not awaited: they may be many).
+    void this.#fillsMoved().catch((err: unknown) => this.#o.log?.(`plugins: reading the fillers of ${r.id}'s points again failed: ${(err as Error)?.message ?? String(err)}`));
     // The workshop rule (§5.6, the controller's ruling): a bot's in-place change that asks for more stops the plugin and
     // puts its sealed OK card before the user at once, as an install does; a later change while it waits replaces that
     // card (the core keeps one per plugin).
@@ -569,7 +631,7 @@ export class PluginFolders {
     if (held !== undefined && held.state === "found" && held.okHash !== undefined && held.provenance.by === "bot" && held.source === "local") {
       void this.#o.core.installed(r.id, "bot").catch((err: unknown) => this.#o.log?.(`plugins: ${r.id}'s OK card for its change wasn't raised: ${(err as Error)?.message ?? String(err)}`));
     }
-    // The drop: a folder that appeared in the plugins folder while Clover runs (a bot's `mv` or `cp -R`, its file tools'
+    // The drop: a folder that appeared in the plugins folder while MOSS runs (a bot's `mv` or `cp -R`, its file tools'
     // writes, or the user's own copy) is asked about at once, with the same sealed OK card as an install, once its tree
     // has settled and its manifest is valid. Its card shows the tree as last read: a folder that changes while its card
     // waits gets a new card for the new tree (the core withdraws the old one), so no OK covers a tree the user didn't see.
@@ -601,7 +663,9 @@ export class PluginFolders {
           treeCapabilities: [r.tree.top, ...r.tree.children.map((c) => c.report)].flatMap((m) => m.capabilities),
           wrappedNetwork: r.provenance.wrapped?.network !== undefined,
         }),
-        // What its hooks see of the conversation (the plugin's and its children's), in Clover's words.
+        // What the points it fills give it, in their declarers' words (a point's `fills`).
+        ...fillsOkLines([r.tree.top, ...r.tree.children.map((c) => c.report)], this.#o.fillsOf),
+        // What its hooks see of the conversation (the plugin's and its children's), in MOSS's words.
         ...hookOkLines([r.tree.top, ...r.tree.children.map((c) => c.report)]),
         // What it runs without being asked: its routine triggers, and where its host code runs in the background.
         ...backgroundOkLines([r.tree.top, ...r.tree.children.map((c) => c.report)]),
@@ -652,7 +716,7 @@ export class PluginFolders {
   async addDevFolder(path: string, by: "cli" | "app"): Promise<DevFolderState> {
     // The real path, symlinks resolved, is what reloads and what the fence keeps bots out of (#197's review).
     const abs = realPath(path);
-    if (!existsSync(join(abs, MANIFEST_FILE)) || !statSync(abs).isDirectory()) throw new ContractError("invalid", `${abs} has no ${MANIFEST_FILE}`);
+    if (!existsSync(manifestPathIn(abs, MANIFEST_FILE)) || !statSync(abs).isDirectory()) throw new ContractError("invalid", `${abs} has no ${MANIFEST_FILE}`);
     const plugins = realPath(this.#o.pluginsDir);
     if (abs === plugins || abs.startsWith(plugins + sep) || plugins.startsWith(abs + sep)) {
       throw new ContractError("invalid", "a development folder is kept outside the plugins folder");
@@ -710,12 +774,12 @@ export class PluginFolders {
    *  on this computer; then the bundled plugins and the plugins folder. */
   #sources(): Source[] {
     const out: Source[] = [];
-    for (const d of this.devFolders()) if (existsSync(join(d.path, MANIFEST_FILE))) out.push({ folder: d.path, source: "local", dev: d });
+    for (const d of this.devFolders()) if (existsSync(manifestPathIn(d.path, MANIFEST_FILE))) out.push({ folder: d.path, source: "local", dev: d });
     const bundled = this.#bundledNames();
     for (const dir of this.#o.bundledDirs ?? []) for (const name of listDirs(dir)) out.push({ folder: join(dir, name), source: "bundled", bundled: true });
     for (const name of listDirs(this.#o.pluginsDir)) {
       if (name.startsWith(".")) continue;
-      // A folder named like a plugin Clover ships (`alpha`, `clover`) is not a plugin, whoever put it there (a bot's
+      // A folder named like a plugin MOSS ships (`alpha`, `moss`) is not a plugin, whoever put it there (a bot's
       // `mv`, the user's copy): read, it would take the bundled plugin's place in the registry. Ignored, with a log line
       // once, no card; the bundled plugin stays as it is.
       if (bundled.has(name)) {
@@ -744,9 +808,11 @@ export class PluginFolders {
       ?? (drop !== undefined ? { by: "bot", at: this.#now(), bot: drop } : { by: s.bundled ? "bundled" : "found", at: this.#now() });
     const r = await readPluginFolder(s.folder, {
       source: s.source, bundled: s.bundled ?? false, provenance,
+      homes: homesOf(this.#o.pluginsDir),
       ...(s.dev ? { dev: true } : {}),
       ...(this.#o.apiVersion ? { apiVersion: this.#o.apiVersion } : {}),
       ...(this.#o.codeFieldsOf ? { codeFieldsOf: this.#o.codeFieldsOf } : {}),
+      ...(this.#o.fillsOf ? { fillsOf: this.#o.fillsOf } : {}),
     });
     // A tree new to the records, found on disk (copied in by hand, or there at start): what an earlier plugin under its
     // id left is kept for the same tree or source, else forgotten first; a forget that fails leaves this one unread.
@@ -797,9 +863,17 @@ export class PluginFolders {
           ?? "its code changed, and its OK covers only the tree it was given for";
       this.#o.log?.(`${r.id}: asks again: ${why.replace(/[\r\n]+/g, " ")}`);
     }
+    // Its OK card gained a point's `fills` line (its declarer's new words, or an entry it added): the same tree asks
+    // again, since the OK covered a card without it. Not a bundled tree or a development folder (OK'd as they are).
+    const gained = ok && r.snapshot && !s.bundled && !s.dev ? fillsAdded(ok, r.snapshot) : undefined;
+    if (gained !== undefined && stored?.okHash !== undefined && this.#askedSaid.get(r.id) !== `fills:${gained}`) {
+      this.#askedSaid.set(r.id, `fills:${gained}`);
+      this.#o.log?.(`${r.id}: asks again: its OK card now says: ${gained}`);
+    }
     for (const input of r.inputs) {
       if (approved !== undefined) input.approved = approved;
       if (change !== undefined) input.change = change;
+      if (gained !== undefined) input.asksAgain = true;
       if (workshop) input.workshop = true;
     }
     this.#byFolder.set(r.id, resolve(s.folder));
@@ -807,7 +881,7 @@ export class PluginFolders {
     return r;
   }
 
-  /** The ids of the plugins Clover ships (the bundled folders' names). */
+  /** The ids of the plugins MOSS ships (the bundled folders' names). */
   #bundledNames(): Set<string> {
     return new Set((this.#o.bundledDirs ?? []).flatMap((dir) => listDirs(dir)));
   }

@@ -1,0 +1,29 @@
+{
+  "manifest": 1,
+  "id": "acceptance-canvas",
+  "name": "Acceptance canvas",
+  "description": "The acceptance run's stand-in for a start-page plugin (the session canvas's lane CP supplies the real one): its `main` entry keyed `start` is MOSS Code's start page, listing each agent with its mark and starting a session through the app's door with a model, an effort and a recent folder; its `session.corner` entry is a control that returns to the start page; and a button opens a bot in MOSS.",
+  "version": "0.0.1",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx"
+  },
+  "capabilities": ["sessions.read", "sessions.start", "user.send", "shell.control", "bots.read", "computers.read"],
+  "contributes": {
+    "ui": [
+      {
+        "spot": "main",
+        "key": "start",
+        "component": "CanvasStart"
+      },
+      {
+        "spot": "session.corner",
+        "id": "canvas-corner",
+        "component": "CanvasCorner",
+        "title": "Start page"
+      }
+    ]
+  }
+}

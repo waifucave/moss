@@ -45,9 +45,9 @@ export function coreFeedFile(channel: FeedChannel, target: CoreTarget): string {
   return `${channel}-core-${target}.yml`;
 }
 
-/** The daemon's binary in a release (`clover-core-1.2.3-linux-x64`, `…-windows-x64.exe`). */
+/** The daemon's binary in a release (`moss-core-1.2.3-linux-x64`, `…-windows-x64.exe`). */
 export function coreBinaryFile(version: string, target: CoreTarget): string {
-  return `clover-core-${version}-${target}${target === "windows-x64" ? ".exe" : ""}`;
+  return `moss-core-${version}-${target}${target === "windows-x64" ? ".exe" : ""}`;
 }
 
 /** Plain Bun for plugins' update file for `target` on `channel` (`latest-plugin-bun-linux-x64.yml`): what a server
@@ -56,10 +56,10 @@ export function pluginBunFeedFile(channel: FeedChannel, target: CoreTarget): str
   return `${channel}-plugin-bun-${target}.yml`;
 }
 
-/** Plain Bun for plugins in a release (`clover-plugin-bun-1.4.4-linux-x64`, `…-windows-x64.exe`): named by its Bun
+/** Plain Bun for plugins in a release (`moss-plugin-bun-1.4.4-linux-x64`, `…-windows-x64.exe`): named by its Bun
  *  version, the daemon's. */
 export function pluginBunBinaryFile(bunVersion: string, target: CoreTarget): string {
-  return `clover-plugin-bun-${bunVersion}-${target}${target === "windows-x64" ? ".exe" : ""}`;
+  return `moss-plugin-bun-${bunVersion}-${target}${target === "windows-x64" ? ".exe" : ""}`;
 }
 
 /** The bundled plugins' update file for `target` on `channel` (`latest-plugins-linux-x64.yml`): what a server install
@@ -68,19 +68,25 @@ export function pluginsFeedFile(channel: FeedChannel, target: CoreTarget): strin
   return `${channel}-plugins-${target}.yml`;
 }
 
-/** The bundled plugins in a release (`clover-plugins-1.2.3-linux-x64.tar.gz`): the tree that target's core's manifest
+/** The bundled plugins in a release (`moss-plugins-1.2.3-linux-x64.tar.gz`): the tree that target's core's manifest
  *  names, exactly. */
 export function pluginsTarballFile(version: string, target: CoreTarget): string {
-  return `clover-plugins-${version}-${target}.tar.gz`;
+  return `moss-plugins-${version}-${target}.tar.gz`;
 }
 
 /**
- * The names a signature may cover: the app's update files (a channel and an OS, scripts/release/lib.ts's `feedFile`),
+ * The names a signature may cover: the apps' update files (a channel and an OS, scripts/release/lib.ts's `feedFile`:
+ * MOSS Code's as electron-builder names them, MOSS's with `MOSS_APP_FEED_PREFIX` in front, so neither app's file passes as
+ * the other's: the signed message carries the name),
  * the daemon's (`coreFeedFile`), plugin Bun's (`pluginBunFeedFile`) and the bundled plugins' (`pluginsFeedFile`), and
  * the files they name (`coreBinaryFile`, `pluginBunBinaryFile`, `pluginsTarballFile`), which a server checks before
  * it trusts their bytes.
  */
-export const FEED_NAME = /^(?:(latest|beta)(-mac|-linux|-linux-arm64|-(?:core|plugin-bun|plugins)-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64))?\.yml|clover-(?:core|plugin-bun)-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64\.exe)|clover-plugins-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64)\.tar\.gz)$/;
+export const FEED_NAME = /^(?:(?:moss-)?(?:latest|beta)(?:-mac|-linux|-linux-arm64)?\.yml|(?:latest|beta)-(?:core|plugin-bun|plugins)-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64)\.yml|moss-(?:core|plugin-bun)-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64\.exe)|moss-plugins-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-(?:darwin-arm64|linux-x64|linux-arm64|windows-x64)\.tar\.gz)$/;
+
+/** What MOSS's own update files start with (`moss-latest-mac.yml`, …): MOSS and MOSS Code are two artifacts of the same
+ *  release, each with its own feed in it (spec item 120). MOSS Code's carry no prefix. */
+export const MOSS_APP_FEED_PREFIX = "moss-";
 
 /** The daemon's update file (`coreFeedFile`): one binary, its version, SHA-512 (base64) and size. */
 export interface CoreFeed {
@@ -96,17 +102,17 @@ export function formatCoreFeed(f: CoreFeed): string {
 
 /** A daemon's update file, read strictly: exactly its four fields, each well formed; anything else throws. */
 export function parseCoreFeed(text: string): CoreFeed {
-  return parseBinaryFeed(text, "clover-core-", "daemon");
+  return parseBinaryFeed(text, "moss-core-", "daemon");
 }
 
 /** Plain Bun's update file (`pluginBunFeedFile`): the same four fields, `version` being Bun's. */
 export function parsePluginBunFeed(text: string): CoreFeed {
-  return parseBinaryFeed(text, "clover-plugin-bun-", "plugin Bun");
+  return parseBinaryFeed(text, "moss-plugin-bun-", "plugin Bun");
 }
 
-/** The bundled plugins' update file (`pluginsFeedFile`): the same four fields, naming `clover-plugins-…tar.gz`. */
+/** The bundled plugins' update file (`pluginsFeedFile`): the same four fields, naming `moss-plugins-…tar.gz`. */
 export function parsePluginsFeed(text: string): CoreFeed {
-  return parseBinaryFeed(text, "clover-plugins-", "bundled plugins");
+  return parseBinaryFeed(text, "moss-plugins-", "bundled plugins");
 }
 
 function parseBinaryFeed(text: string, prefix: string, what: string): CoreFeed {
@@ -125,6 +131,7 @@ function parseBinaryFeed(text: string, prefix: string, what: string): CoreFeed {
   return { version, file, sha512, size };
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /**
  * What is signed for an update file: a fixed label, its file name and the SHA-512 of its bytes, each ended by a
  * zero byte (`clover-update-feed-v1\0latest-mac.yml\0<hex>\0`), so the signature holds only for that file under

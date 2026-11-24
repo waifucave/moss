@@ -11,7 +11,7 @@ import { appendFileSync } from "node:fs";
 
 export type CiArea =
   | "workspaces" | "daemon" | "app" | "packages" | "installers" | "gallery" | "typecheck" | "lockfiles"
-  | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo";
+  | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo" | "adapters";
 
 /** A path pattern: `dir/` is a prefix, a `*` matches within one segment, `**` across segments, else an exact path. */
 type Pattern = string;
@@ -29,15 +29,16 @@ const CORE: readonly Pattern[] = ["packages/core/", "packages/protocol/", "packa
 export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // every workspace package's own tests, on all four machines
   workspaces: ["packages/", "apps/", "plugins/", "services/", "native/", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh"],
-  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/clover-core.entitlements"],
-  // the app, and what it loads: Clover's own plugins and the plugin SDK's UI API (E-M1)
-  app: ["apps/", "plugins/clover/", "packages/plugin-sdk/"],
+  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements"],
+  // the app, and what it loads: MOSS's own plugins and the plugin SDK's UI API (E-M1)
+  app: ["apps/", "plugins/moss/", "packages/plugin-sdk/"],
   // the Linux packages: the app, its builder config, packaging/, the scripts that build them, and the daemon and the
-  // link sidecar they carry (the job installs the deb and runs its `clover`)
-  packages: ["apps/desktop/", "packaging/", "scripts/build-packages.ts", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/release/", ...CORE, "packages/cli/", "native/link/"],
+  // link sidecar they carry (the job installs the deb and runs its `moss`)
+  // (MOSS's packages are built beside MOSS Code's: its builder config, its host layout script and its icons)
+  packages: ["apps/desktop/", "apps/moss/electron-builder.yml", "apps/moss/package.json", "apps/moss/scripts/host-helper.mjs", "apps/moss/build/", "packaging/", "scripts/build-packages.ts", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/release/", ...CORE, "packages/cli/", "native/link/"],
   // the macOS and Windows installers (the unsigned release build: dmg, zip, NSIS), on macOS and Windows machines: only
   // what makes them, so a code change alone doesn't spend a macOS job on them (the app and daemon jobs build those)
-  installers: ["apps/desktop/electron-builder.yml", "apps/desktop/package.json", "packaging/", "scripts/release/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts",
+  installers: ["apps/desktop/electron-builder.yml", "apps/desktop/package.json", "apps/moss/electron-builder.yml", "apps/moss/package.json", "apps/moss/scripts/host-helper.mjs", "apps/moss/build/", "packaging/", "scripts/release/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts",
     "scripts/build-packages.ts", "packages/update-feed/"],
   gallery: ["plugins/"],
   typecheck: ["packages/", "apps/", "plugins/", "services/", "examples/", "scripts/", "**/tsconfig*.json"],
@@ -45,7 +46,7 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   extension: ["extensions/"],
   // lane A's model plugins: the core's catalog and generator check reads them; the core's account tests import the
   // services' shared account-token check and the harness's sign-in stub
-  core: [...CORE, "plugins/clover/plugins/model-*/**/*", "services/shared/", "packages/test-harness/src/signin-stub.ts"],
+  core: [...CORE, "plugins/moss/plugins/model-*/**/*", "services/shared/", "packages/test-harness/src/signin-stub.ts"],
   cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
   // repo-wide source scans (the native channel's anti-wiring test reads every package's src/ and scripts/), so any
@@ -54,13 +55,10 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // the scripts' few macOS-only tests (scripts/**/*.darwin.test.ts, on a macOS runner): the scripts themselves only, so
   // a change under apple/ alone takes no macOS runner for them (a push to main still runs every area)
   scriptsmac: ["scripts/"],
-  codegen: ["packages/protocol/", "apple/WinterProtocol/"],
-  // the predecessor's Swift kits, on a macOS runner: their own tree and the protocol's generated fixtures their round
-  // trips read, and nothing else (SWIFT_GLOBAL). WinterKit's tests also start the core's daemon through bun
-  // (apple/WinterKit/Tests/WinterKitTests/support/RealDaemon.swift), but a core, Bun or lockfile change no longer runs
-  // them in a pull request or a merge group: macOS runners are the queue's bottleneck, and a push to main still runs
-  // every area, so such a break shows on main's own run.
-  swift: ["apple/", "Package.swift", "packages/protocol/generated/"],
+  codegen: ["packages/protocol/"],
+  // the browser host's Swift tests (apple/ComputerUse/WinterBrowserHost), on a macOS runner: the apple/ tree and nothing
+  // else (SWIFT_GLOBAL). The old Mac app's kits left this repository.
+  swift: ["apple/"],
   verify: [...CORE, "packages/cli/", "scripts/verify-", "scripts/stage-runtimes.ts", "scripts/fetch-ant.ts", "scripts/build-winter.ts", "VERSIONS.json"],
   // the tree and the computers on Linux and Windows (macOS runs them in the core suite): their code, their tests and
   // lane B's conformance suites for them
@@ -69,13 +67,18 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
     // an agent backend's bare command on PATH (its .exe or .cmd on Windows)
     "packages/core/src/agents/backend.ts", "packages/core/src/agents/process/launch.ts", "packages/core/src/agents/tests/windows-path.test.ts",
     // the bundled agent plugins' manifests, whose bare commands that check is about
-    "plugins/clover/plugins/agent-*/clover.json"],
-  // the link sidecar (clover-link) built on every OS, and the core's link tests over it: the sidecar, the links, and
+    "plugins/moss/plugins/agent-*/moss.json",
+    // the secrets file on Windows (its key in Credential Manager, its ACL), and the store's door
+    "packages/core/src/secrets/", "packages/core/test/secrets/", "packages/core/src/auth/secret-store.ts", "packages/core/test/fence/secrets-file-fence.test.ts"],
+  // the link sidecar (moss-link) built on every OS, and the core's link tests over it: the sidecar, the links, and
   // what they import (the devices and identity the handshake and pairing use, the contracts, the clock, the protocol)
   link: ["native/link/", "packages/core/src/links/", "packages/core/src/devices/", "packages/core/src/identity/",
     "packages/core/src/contracts/", "packages/core/src/clock/", "packages/protocol/"],
   // the Linux repositories' signatures, checked with gpgv and sqv
   linuxrepo: ["scripts/release/linux-repo.ts", "scripts/release/linux-repo-verify.ts"],
+  // the real pinned agent adapters, fetched from the public registry and started on Bun (the `agent adapters` job, and a
+  // step of the macOS job): the agent plugins that declare one, the agents' code, and the lock generator
+  adapters: ["plugins/moss/plugins/agent-*/**/*", "packages/core/src/agents/", "scripts/agent-adapter-lock.ts"],
 };
 
 /** The CI_GLOBAL changes that still run the Swift kits: CI's own definition, not the toolchain or the lockfiles. */

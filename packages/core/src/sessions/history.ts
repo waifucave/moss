@@ -1,4 +1,4 @@
-import { COMPUTER_WAKE_CLIENT_NAME, type SessionEvent } from "@waifucave/clover-protocol";
+import { COMPUTER_WAKE_CLIENT_NAME, type SessionEvent } from "@waifucave/moss-protocol";
 import type { SessionStore } from "./store";
 import { computerWakePhoneLine } from "./wake-phone-line";
 
@@ -23,7 +23,7 @@ import { computerWakePhoneLine } from "./wake-phone-line";
  *  one (advances the cursor -- correct, since it really did consume a daemon seq).
  *
  *  The one place these come to a stop is the phone's own transcript fold (`norma-ios`
- *  `Clover/Code/Transcript.swift`'s `TranscriptBuilder.apply`, `default: break` at the end of its
+ *  `MOSS/Code/Transcript.swift`'s `TranscriptBuilder.apply`, `default: break` at the end of its
  *  switch on `type`) -- an unrecognized type is silently skipped, never rendered, never a crash,
  *  never a dropped connection. So no kit/capability gate is needed here: both types are safe to
  *  allow the moment this file does, on old phones and new alike.
@@ -228,8 +228,9 @@ export function phoneViewOf(event: SessionEvent, log?: () => readonly SessionEve
     const { displayTitle: _withheld, ...rest } = event;
     return rest;
   }
-  if (event.type === "tool_result" && event.display !== undefined) {
-    const { display: _withheld, ...rest } = event;
+  if (event.type === "tool_result" && (event.display !== undefined || event.app !== undefined)) {
+    // An MCP Apps page's address (`app`) is likewise withheld: the phone draws no page, it shows the result's text.
+    const { display: _withheld, app: _page, ...rest } = event;
     return rest;
   }
   if (event.type === "thinking_block") return event.text.length === 0 ? event : { ...event, text: "" };

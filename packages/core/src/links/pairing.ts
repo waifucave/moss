@@ -25,7 +25,7 @@
 // Devices without an account also form one group per user for the lease: the host's group if it has one, else the
 // joiner's, else a new one the host founds; the device not yet in it joins, admitted by the other.
 import { hkdfSync } from "node:crypto";
-import { AnswerKeyHolder, type PairingView as PairingViewSchema } from "@waifucave/clover-protocol";
+import { AnswerKeyHolder, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
 import type { z } from "zod";
 import type { Clock } from "../contracts/clock";
 import { ContractError, isContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -51,6 +51,7 @@ import { ALPN_PAIR, CLOSE_NORMAL, CLOSE_PROTOCOL, type DialTarget, type WireConn
 type PairingView = z.infer<typeof PairingViewSchema>;
 
 export const PAIRING_TTL_MS = 10 * 60_000;
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 const QR_PREFIX = "clover-pair:1:";
 const STEP_TIMEOUT_MS = 30_000;
 /** How long an incoming pairing connection has to send its hello. */
@@ -82,7 +83,7 @@ export class MemoryRendezvous implements PairingRendezvous {
 }
 
 /** How a confirm is approved: in the user's own terminal (no card), or by a sealed card the caller opened. */
-export type PairApproval = { terminal: true } | { card: string; allowed: Promise<boolean> };
+export type PairApproval = { terminal: true } | { card: string; allowed: Promise<boolean> } | { cloud: string };
 
 export type PairingStatus = "waiting" | "words" | "confirmed" | "paired" | "failed" | "cancelled";
 
@@ -182,15 +183,17 @@ export class PairingService {
     return p ? this.#state(p) : undefined;
   }
 
-  /** Shows a code and QR for another device to join (`device.pair.begin`). */
-  async begin(): Promise<PairingView> {
+  /** Shows a code and QR for another device to join (`device.pair.begin`). `ttlMs`: how long this one waits (a cloud
+   *  computer's takes as long as the VM needs to boot, `computers/cloud-join.ts`); the service's own by default.
+   *  `qrOnly`: no short code and no rendezvous slot, only the QR's text (nobody types it). */
+  async begin(opts: { ttlMs?: number; qrOnly?: boolean } = {}): Promise<PairingView> {
     const id = toBase64Url(randomBytes(16));
-    const expiresAt = this.#o.clock.now() + (this.#o.ttlMs ?? PAIRING_TTL_MS);
+    const expiresAt = this.#o.clock.now() + (opts.ttlMs ?? this.#o.ttlMs ?? PAIRING_TTL_MS);
     const target = this.#o.selfTarget();
     let secret: Bytes;
     let code: string | undefined;
     let slot: string | undefined;
-    if (this.#o.rendezvous) {
+    if (this.#o.rendezvous && opts.qrOnly !== true) {
       const raw = randomBytes(15);
       slot = toBase64Url(raw.subarray(0, 5));
       secret = codeSecret(raw.subarray(5));
@@ -292,6 +295,10 @@ export class PairingService {
         throw new ContractError("refused", "the card was denied");
       }
       p.proof = { via: "code", card: approval.card };
+    } else if ("cloud" in approval) {
+      // The main's own confirm for a VM it made from its own image after the create card (`computers/cloud-join.ts`).
+      p.status = "confirmed";
+      p.proof = { via: "cloud", computer: approval.cloud };
     } else {
       p.proof = { via: "terminal" };
     }
@@ -892,10 +899,12 @@ export function parseCode(code: string): Bytes | undefined {
   return out.length === 15 ? own(new Uint8Array(out)) : undefined;
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 function codeSecret(part: Uint8Array): Bytes {
   return own(new Uint8Array(hkdfSync("sha256", part, new Uint8Array(0), utf8("clover/pair-code-secret/1"), 32)));
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 function rendezvousKey(part: Uint8Array): Bytes {
   return own(new Uint8Array(hkdfSync("sha256", part, new Uint8Array(0), utf8("clover/pair-rendezvous/1"), 32)));
 }

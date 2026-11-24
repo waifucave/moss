@@ -1,0 +1,283 @@
+{
+  "manifest": 1,
+  "name": "Shell",
+  "description": "The default shell: the window frame with a translucent title bar, the panel host and its toggles, a session's live tab and the page that starts one. It places every spot it declares: the sidebar, main keyed by route, the panels, the column beside the conversation, the status bar and a dialog layer for Settings.",
+  "engines": {
+    "moss": "^1.0.0"
+  },
+  "client": {
+    "entry": "client/index.tsx",
+    "css": [
+      "client/styles.css"
+    ]
+  },
+  "capabilities": [
+    "approvals",
+    "approvals.all",
+    "computers.read",
+    "sessions.read",
+    "account.read",
+    "sessions.start"
+  ],
+  "contributes": {
+    "ui": [
+      {
+        "spot": "app.root",
+        "component": "Shell",
+        "declares": {
+          "sidebar": {
+            "shape": "single",
+            "props": {
+              "type": "object",
+              "properties": {
+                "route": {
+                  "type": "object",
+                  "properties": {
+                    "route": {
+                      "type": "string"
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "doc": "The sidebar."
+          },
+          "main": {
+            "shape": "keyed",
+            "props": {
+              "type": "object",
+              "properties": {
+                "route": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "barHeight": {
+                  "type": "number"
+                }
+              }
+            },
+            "doc": "The main area, keyed by route: agent (a session's live tab), settings, plugins, the keys app buttons open, and start (MOSS Code's start page: a plugin's entry keyed start fills it; with none the shell draws its own new-session page)."
+          },
+          "page.bar": {
+            "shape": "keyed",
+            "props": {
+              "type": "object",
+              "properties": {
+                "route": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "barHeight": {
+                  "type": "number"
+                }
+              }
+            },
+            "doc": "A page's own line and controls on the top bar, keyed by route as main is: shown only from the plugin whose main entry the window shows, in place of the shell's title. That page runs up under the bar; both get barHeight."
+          },
+          "panel": {
+            "shape": "keyed",
+            "props": {
+              "type": "object",
+              "properties": {
+                "app": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "session"
+            ],
+            "doc": "The panel host, keyed by panel: session, terminal, diff, files, browser, agent. A key no plugin fills shows the host's placeholder."
+          },
+          "panel.view": {
+            "shape": "keyed",
+            "props": {
+              "type": "object",
+              "properties": {
+                "view": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "doc": "The panel's contents."
+          },
+          "status": {
+            "shape": "list",
+            "props": {},
+            "doc": "The status bar under the main column."
+          }
+        }
+      },
+      {
+        "spot": "main",
+        "id": "agent-tab",
+        "key": "agent",
+        "component": "AgentTab",
+        "declares": {
+          "conversation": {
+            "shape": "single",
+            "props": {
+              "type": "object",
+              "properties": {
+                "bot": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "bot"
+            ],
+            "needs": [
+              "sessions.read"
+            ],
+            "doc": "The conversation view."
+          },
+          "composer": {
+            "shape": "single",
+            "props": {
+              "type": "object",
+              "properties": {
+                "bot": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "bot"
+            ],
+            "doc": "The composer."
+          },
+          "session.corner": {
+            "shape": "list",
+            "props": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "session"
+            ],
+            "doc": "Small controls in a session tab's top corner, beside the shell's own."
+          }
+        }
+      },
+      {
+        "spot": "panel",
+        "id": "agent-panel",
+        "key": "agent",
+        "title": "Agent",
+        "component": "AgentTab",
+        "when": {
+          "session": "agent"
+        },
+        "declares": {
+          "conversation": {
+            "shape": "single",
+            "props": {
+              "type": "object",
+              "properties": {
+                "bot": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "bot"
+            ],
+            "needs": [
+              "sessions.read"
+            ],
+            "doc": "The conversation view."
+          },
+          "composer": {
+            "shape": "single",
+            "props": {
+              "type": "object",
+              "properties": {
+                "bot": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "session": {
+                  "type": "string"
+                }
+              }
+            },
+            "context": [
+              "bot"
+            ],
+            "doc": "The composer."
+          }
+        }
+      }
+    ]
+  }
+}

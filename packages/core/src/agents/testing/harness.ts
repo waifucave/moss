@@ -40,7 +40,12 @@ export function readReport(file: string): Report[] {
   } catch {
     return [];
   }
-  return text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Report);
+  // The agent is another process appending one line per `appendFileSync`: a read that lands mid-write sees the line cut short
+  // (a write across a page boundary shows its first page first; review 12's flood on a Linux runner: "Unterminated string").
+  // Only lines whose newline has arrived are read; the cut one comes whole on the next look (the callers poll).
+  const lines = text.split("\n");
+  if (!text.endsWith("\n")) lines.pop();
+  return lines.filter(Boolean).map((l) => JSON.parse(l) as Report);
 }
 
 /** Waits until the agent has reported `n` blocks in all. */
@@ -71,6 +76,8 @@ export function writeFakeAgent(dir: string, c: Omit<FakeAcpConfig, "report" | "s
 export interface HarnessExtra {
   /** Overrides the wire tap per session (the transcript tests). */
   wire?: (sessionId: string) => AgentWire;
+  /** More of the fake agent's own config (a third option, a model list). */
+  fake?: Partial<Omit<FakeAcpConfig, "report" | "selection">>;
 }
 
 let harnessSeq = 0;
@@ -89,6 +96,7 @@ export function acpHarness(dir: string, opts: FakeAgentBackendOptions & { script
     ...(opts.history ? { history: opts.history } : {}),
     ...(opts.signedIn === undefined ? {} : { signedIn: opts.signedIn }),
     version: impostor ? "agent 9.9.9 (not the vendor's)" : "fake-agent 1.0.0",
+    ...(extra.fake ?? {}),
   });
   const workRoot = join(dir, "work");
   mkdirSync(workRoot, { recursive: true });

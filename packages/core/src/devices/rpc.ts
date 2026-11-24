@@ -9,9 +9,9 @@
 // computer, which shows its own card (`mountMainChoiceRequests`), since its main choice is its own to take. The peer
 // methods (`peer.*`, `sync.*`) ride the link and aren't here.
 import {
-  CLOVER_ERR, DEVICES_METHODS, ERR,
+  MOSS_ERR, DEVICES_METHODS, ERR,
   type AccountView, type Caller, type ChangeResult, type DeviceView, type LinkView, type MethodSpec,
-} from "@waifucave/clover-protocol";
+} from "@waifucave/moss-protocol";
 import type { z } from "zod";
 import type { ApprovalBroker, ApprovalRequest } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -63,7 +63,7 @@ function handler<S extends MethodSpec>(spec: S, impl: (params: z.output<S["param
 }
 
 function requireUser(ctx: MethodContext, what: string): void {
-  if (ctx.caller.kind !== "user") throw new MethodError(CLOVER_ERR.NOT_THE_USER, `only the user can ${what}`);
+  if (ctx.caller.kind !== "user") throw new MethodError(MOSS_ERR.NOT_THE_USER, `only the user can ${what}`);
 }
 
 /** The user in their own terminal (§5.1): a sensitive change there needs no card. */
@@ -155,9 +155,9 @@ const ROTATION_REFUSED: Record<AnswerKeyRotationRefusal, string> = {
 export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodHandler> {
   const M = DEVICES_METHODS;
   const { registry, pairing } = deps;
-  const changeCard = (change: "device-add" | "device-revoke", what: string, device: string): ApprovalRequest => ({
+  const changeCard = (change: "device-add" | "device-revoke", what: string, device: string, more: string[] = []): ApprovalRequest => ({
     kind: "change", origin: "user", computers: [], effect: "other", change,
-    fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device] } },
+    fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device, ...more] } },
   });
 
   return {
@@ -175,7 +175,7 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         try {
           await renameRemote(deps.transport, p.id, p.name);
         } catch (err) {
-          if (isContractError(err, "offline")) throw new MethodError(CLOVER_ERR.COMPUTER_OFFLINE, `${d.name} is offline: rename it while it's on`);
+          if (isContractError(err, "offline")) throw new MethodError(MOSS_ERR.COMPUTER_OFFLINE, `${d.name} is offline: rename it while it's on`);
           throw err;
         }
         return { applied: true };
@@ -222,8 +222,19 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
         return { applied: true };
       }
+      // The words the person compares are the engine's own, drawn in the card's sealed frame: a part that holds `devices.manage` hears
+      // them and hands them back here, so its own drawing of them proves nothing. Words that aren't the pairing's fail it at once, with
+      // no card.
+      const real = state.view.words;
+      if (real === undefined || p.words.length !== 4 || p.words.some((w, i) => w.toLowerCase() !== real[i])) {
+        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(false) });
+        throw new MethodError(ERR.INVALID_REQUEST, "the words don't match: pair again");
+      }
       const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
-      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name));
+      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
+        `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
+        `It joins ${registry.self().name}.`,
+      ]));
       if (!opened.card) {
         // Answered before its id was known: still a card's answer, never the user's terminal.
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
@@ -266,14 +277,14 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
       const main = mustMain(deps);
       const d = registry.get(p.device);
       if (!d || d.revokedAt !== undefined) throw new MethodError(ERR.NOT_FOUND, `no device ${p.device}`);
-      if (!d.runsCore) throw new MethodError(ERR.INVALID_PARAMS, `${d.name} doesn't run Clover's core, so it can't be the main computer`);
+      if (!d.runsCore) throw new MethodError(ERR.INVALID_PARAMS, `${d.name} doesn't run MOSS's core, so it can't be the main computer`);
       if (p.device !== registry.self().id) {
         // That computer's choice is its own: it shows its own card (any of the user's devices may answer it).
         try {
           const link = await deps.transport.connect(p.device);
           return await link.request<ChangeResult>(MAIN_CHOOSE, {});
         } catch (err) {
-          if (isContractError(err, "offline")) throw new MethodError(CLOVER_ERR.COMPUTER_OFFLINE, `${d.name} is offline: choose it while it's on`);
+          if (isContractError(err, "offline")) throw new MethodError(MOSS_ERR.COMPUTER_OFFLINE, `${d.name} is offline: choose it while it's on`);
           throw err;
         }
       }
@@ -326,7 +337,7 @@ export function answerKeyMethods(deps: AnswerKeyMethodsDeps): Record<string, Met
     // new one stored.
     [M.deviceAnswerKeySet.name]: handler(M.deviceAnswerKeySet, async (p, ctx): Promise<ChangeResult> => {
       requireUser(ctx, "set this desktop's answer key");
-      if (ctx.caller.kind === "user" && ctx.caller.client !== "app") throw new MethodError(CLOVER_ERR.NOT_THE_USER, "only this desktop's app holds its answer key");
+      if (ctx.caller.kind === "user" && ctx.caller.client !== "app") throw new MethodError(MOSS_ERR.NOT_THE_USER, "only this desktop's app holds its answer key");
       const signature = fromBase64(p.signature);
       if (signature === null) throw new MethodError(ERR.INVALID_PARAMS, "device.answerKey.set: the signature isn't base64");
       const registry = live();

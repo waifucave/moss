@@ -5,13 +5,16 @@
 //
 // `session.setModel` for agents and coding sessions is lane D's method; D's handler calls `AgentManager.setModel`.
 import { randomUUID } from "node:crypto";
-import { AGENTS_METHODS, AgentDefView, ERR, type AgentBackendView, type BackendMark, type Caller, type MethodSpec } from "@waifucave/clover-protocol";
+import { AGENTS_METHODS, AgentDefView, ERR, type AgentBackendView, type BackendMark, type Caller, type MethodSpec } from "@waifucave/moss-protocol";
 import type { z } from "zod";
 import type { AgentBackend } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
 import { ContractError } from "../contracts/common";
 import { MethodError, toMethodError } from "../rpc/handler";
 import type { AgentManager } from "./manager";
+import { agentTaskText, type AgentDefinitionView } from "./tools";
+import type { BackendLook } from "./backend-look";
+import type { AgentStartOptions } from "../contracts/agent-start";
 
 export interface AgentMethodsOptions {
   manager: AgentManager;
@@ -22,9 +25,19 @@ export interface AgentMethodsOptions {
   names?: Readonly<Record<string, string>>;
   /** Agent definitions from plugins (`pluginAgentDefinitions` over B-M2's registry). */
   definitions?: () => AgentDefView[];
+  /** A plugin's agent definition by the name Glossary gives it (`<plugin>:<id>`), among those that reach a code session
+   *  on `backend` (the plugin's scope and `onlyBackends`). As for a bot's `Agent` call it brings words only: its
+   *  instructions go before the user's prompt; the backend, folder, computer, model and effort are the user's. */
+  definition?: (name: string, backend: string) => AgentDefinitionView | undefined;
   /** This computer's device id: the device of a user's call made on this computer (the app or the terminal here), whose
    *  caller names none. */
   localDevice: () => string;
+  /** Each backend's look (`agent.backends`: its icon and colours; spec revision 20, §9.5). Without it none carries one. */
+  looks?: (ids: readonly string[]) => Promise<ReadonlyMap<string, BackendLook>>;
+  /** What a person starts with before a session exists, and what they started last (`agent.options`, `agent.recent`; the
+   *  person's own `agent.start` is remembered through it). Without it neither method is served. */
+  startOptions?: AgentStartOptions;
+  now?: () => number;
 }
 
 export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<unknown>;
@@ -37,12 +50,17 @@ function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"
 }
 
 export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod> {
-  return {
+  const methods: Record<string, AgentMethod> = {
     [AGENTS_METHODS.agentBackends.name]: async (raw) => {
       parse(AGENTS_METHODS.agentBackends, raw);
       const backends: AgentBackendView[] = [];
-      for (const b of o.backends()) {
-        const d = await b.detect().catch(() => ({ installed: false, sandboxed: false, version: undefined }));
+      const list = o.backends();
+      const looks = await o.looks?.(list.map((b) => b.id)).catch(() => undefined);
+      // Every backend is looked at at once: each detection runs the program's `--version`, and one after another a slow one
+      // (an adapter MOSS provides is checked too) held the whole answer, and the names with it, behind the others.
+      const detected = await Promise.all(list.map((b) => b.detect().catch(() => ({ installed: false, sandboxed: false, version: undefined }))));
+      for (const [i, b] of list.entries()) {
+        const d = detected[i]!;
         const marks = new Set<BackendMark>(b.quirks.marks);
         if (d.installed && !d.sandboxed) marks.add("unsandboxed");
         backends.push({
@@ -53,6 +71,11 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
           // own API. Local backends, the in-process ones included, are ACP.
           protocol: b.quirks.placement === "cloud" && Object.keys(b.quirks.launch.command).length === 0 ? "cloud" : "acp",
           placement: b.quirks.placement,
+          userStartable: b.userStartable !== false,
+          ...(looks?.get(b.id)?.icon === undefined ? {} : { icon: looks.get(b.id)!.icon! }),
+          ...(looks?.get(b.id)?.iconDark === undefined ? {} : { iconDark: looks.get(b.id)!.iconDark! }),
+          ...(looks?.get(b.id)?.color === undefined ? {} : { color: looks.get(b.id)!.color! }),
+          ...(looks?.get(b.id)?.color2 === undefined ? {} : { color2: looks.get(b.id)!.color2! }),
           computers: [{
             computer: o.computer, installed: d.installed, sandboxed: d.sandboxed, marks: [...marks],
             ...(d.version === undefined ? {} : { version: d.version.slice(0, 64) }),
@@ -68,15 +91,38 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
     [AGENTS_METHODS.agentStart.name]: async (raw, ctx) => {
       const p = parse(AGENTS_METHODS.agentStart, raw);
       if (ctx.caller.kind !== "user") throw new ContractError("refused", "only the user starts a coding session");
-      if (p.definition !== undefined) throw new ContractError("invalid", "agent definitions come with K-M2");
+      if (o.backends().find((b) => b.id === p.backend)?.userStartable === false) throw new ContractError("refused", `${p.backend.slice(0, 64)} is not an agent a person opens a session with`);
+      const def = p.definition === undefined ? undefined : o.definition?.(p.definition, p.backend);
+      if (p.definition !== undefined && def === undefined) throw new ContractError("not_found", `no agent definition ${p.definition.slice(0, 120)} reaches a code session on ${p.backend.slice(0, 64)} (Glossary lists them as <plugin>:<id>)`);
+      const brief = p.prompt ?? "";
+      // The definition's instructions, then the user's words; with none of the user's, its instructions are the task.
+      const prompt = def === undefined ? brief : brief === "" ? def.prompt : agentTaskText(def, brief);
       const r = await o.manager.start({
         caller: { kind: "user", device: ctx.caller.device ?? o.localDevice(), clientMessageId: randomUUID() },
-        backend: p.backend, computer: p.computer, root: p.root, prompt: p.prompt ?? "",
+        backend: p.backend, computer: p.computer, root: p.root, prompt,
+        ...(def === undefined ? {} : { definition: { pluginId: def.pluginId, id: def.id }, title: def.name }),
         ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }),
       });
+      // The person's last start (never a bot's or a spawn's: only this method, only the user), kept by the engine for the
+      // start page of any client. A first message is not kept; the model and effort are what the person chose.
+      try {
+        o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
+      } catch { /* the start went ahead; the memory is a convenience */ }
       return { session: r.sessionId };
     },
   };
+  if (o.startOptions !== undefined) {
+    const start = o.startOptions;
+    methods[AGENTS_METHODS.agentOptions.name] = async (raw) => {
+      const p = parse(AGENTS_METHODS.agentOptions, raw);
+      return start.options(p.backend, p.computer);
+    };
+    methods[AGENTS_METHODS.agentRecent.name] = async (raw) => {
+      parse(AGENTS_METHODS.agentRecent, raw);
+      return start.recent();
+    };
+  }
+  return methods;
 }
 
 /** What `agentMethods` needs of the agents the daemon runs (`createAgents`'s). */
@@ -104,18 +150,18 @@ export function pluginAgentDefinitions(registry: Pick<PluginRegistry, "entries">
  *  getter, and is refused while none run. A thrown `ContractError` becomes its JSON-RPC code (`toMethodError`). */
 export function lateAgentMethods(
   agents: () => RunningAgents | undefined,
-  o: Pick<AgentMethodsOptions, "localDevice" | "definitions">,
+  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now">,
 ): Record<string, AgentMethod> {
   const made = new WeakMap<RunningAgents, Record<string, AgentMethod>>();
   const methodsOf = (a: RunningAgents): Record<string, AgentMethod> => {
     let m = made.get(a);
-    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}) })));
+    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}) })));
     return m;
   };
-  const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name];
+  const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name, ...(o.startOptions ? [AGENTS_METHODS.agentOptions.name, AGENTS_METHODS.agentRecent.name] : [])];
   return Object.fromEntries(names.map((name) => [name, async (params: unknown, ctx: { caller: Caller }) => {
     const a = agents();
-    if (!a) throw new MethodError(ERR.RETRY, "Clover's agents aren't running on this computer yet: try again in a moment");
+    if (!a) throw new MethodError(ERR.RETRY, "MOSS's agents aren't running on this computer yet: try again in a moment");
     try {
       return await methodsOf(a)[name]!(params, ctx);
     } catch (err) {

@@ -6,13 +6,13 @@
 // 1. The computer is this one, or another of the user's (K-M3, remote.ts): there the other computer's manager runs the
 //    agent, and this one keeps its session, transcript and task notification. The root folder must be on the computer
 //    that runs it. Vendor clouds are listed but not started yet.
-// 2. The root is a folder-tree path, resolved to a real path here; the fence refuses a root that holds the Clover home
+// 2. The root is a folder-tree path, resolved to a real path here; the fence refuses a root that holds the MOSS home
 //    or a development folder (`checkAgentRoot`, §9.3).
 // 3. A new bridge token, the transcript folder, the daemon's own record (records.ts), and a session opened in the
 //    host with an `AgentDriver`. The task is delivered as the session's first input, so `start` returns at once and
 //    the agent starts in its first turn.
 // 4. In that first turn, before anything launches: an agent that isn't sandboxed, or is outside its tested versions,
-//    needs the user's OK, which comes with K-M2's card; until then it isn't started (review 2, §9.3 [D] "Clover never
+//    needs the user's OK, which comes with K-M2's card; until then it isn't started (review 2, §9.3 [D] "MOSS never
 //    quietly runs an unsandboxed agent"). At read-only, an agent that acts without asking starts in its read-only
 //    mode or not at all (§9.3 [P], item 78).
 // 5. The agent's permission requests go to the ApprovalBroker (level, then card), answered `allow_once` or
@@ -20,22 +20,22 @@
 //    answered at once (S5 edit 7), and one touching a fenced path is always a card (the broker's rules 2 and 3). Its
 //    paths are resolved against the root, with their real paths, before the broker sees them (review 8).
 //    Before the broker, the plugins' `tool.before` hooks see each request (`hooks`, the bots' own; best effort): a deny
-//    is the request's `reject_once`. The request is shown under Clover's tool names (`acp-hook-call.ts`: execute →
+//    is the request's `reject_once`. The request is shown under MOSS's tool names (`acp-hook-call.ts`: execute →
 //    Bash, edit → Edit or Write, …), its ACP kind kept as `acpKind`. A plugin's hooks do not govern what an external coding agent does inside its own
-//    session: they see only the calls it asks Clover about, never the ones it runs without asking, and they can't
-//    change its input (an agent's own call isn't Clover's to rewrite). They can refuse starting one: the bot's
+//    session: they see only the calls it asks MOSS about, never the ones it runs without asking, and they can't
+//    change its input (an agent's own call isn't MOSS's to rewrite). They can refuse starting one: the bot's
 //    `Agent` call, with the backend named, meets `tool.before` like any of the bot's calls. In-process delegations
-//    (`clover`) run the hooks in their own runtime (subagent-backend.ts), so they aren't run twice here.
+//    (`moss`) run the hooks in their own runtime (subagent-backend.ts), so they aren't run twice here.
 // 6. A reattach after a restart trusts the host's view and the daemon's own record, never the bot's folder, and
 //    checks the root again (review 1).
 //
-// The bridge's server name is `clover_` and a random suffix, new for each session (review 14), so no MCP server of
+// The bridge's server name is `moss_` and a random suffix, new for each session (review 14), so no MCP server of
 // the user's own can share it. The bridge's methods land here too: `SendMessage` from an agent folds into its bot's
 // conversation (§9.3), and only into another session of the same bot.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { extname, isAbsolute, join, relative } from "node:path";
-import type { Level, Os, SealedValue, SessionView, TurnOrigin } from "@waifucave/clover-protocol";
+import { BRIDGE_TOOLS_CHANGED_NOTIFICATION, type Level, type Os, type SealedValue, type SessionView, type TurnOrigin } from "@waifucave/moss-protocol";
 import type { AgentBackend, AgentPermissionAnswer, AgentPermissionAsk, AgentSession } from "../contracts/agent-backend";
 import { type ActionEffect, type ApprovalBroker, type ApprovalRequest, acpOutcomeFor } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -49,11 +49,17 @@ import { acpHookCall } from "./acp-hook-call";
 import { BridgeTokens } from "./bridge/tokens";
 import type { BridgeHandlers } from "./bridge/handlers";
 import { BRIDGE_ENV } from "./bridge/server";
-import { NO_PLUGIN_TOOLS, bridgeInstructions, bridgeOwnTools, type AgentSessionFacts, type BridgeToolSource } from "./bridge/tools";
+import { exposureOf, listChangeModeOf } from "./exposure";
+import { NO_PLUGIN_TOOLS, BRIDGE_OWN_TOOLS, bridgeInstructions, type AgentSessionFacts, type BridgeCallContext, type GlossaryAnswer, type BridgeToolDef, type BridgeToolSource } from "./bridge/tools";
 import { AgentDriver } from "./driver";
+import { AgentToolDisplays } from "./tool-shows";
 import { MemoryAgentOks, programHash, type AgentOks } from "./sandbox/oks";
+import { adapterDeclinedLine, adapterFailedLine, isAdapterBackend, type AdapterBackend, type AdapterOffer, type AdapterPlaced, type AdapterStartFacts } from "./adapter/types";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 import { inProcessBridgeServer } from "./bridge/in-process";
+import { EXCHANGE_DEPTH_LIMIT, EngineSessionMessenger, sendSlots, type SendSlots } from "./bridge/messenger";
+import type { ExchangeDepths } from "../sessions/exchange-depth";
+import { formatSessionMessage, PAGE_MESSAGE_FRAME } from "../runtime-sdk/turn-loop/input";
 import { agentPaths, namesUnlistedPaths } from "./paths";
 import { agentPolicyOf, homeReach, withHomeDenied, withSecretsDenied } from "./memory";
 import { type DaemonAgentRecord, readAgentRecord, removeAgentRecord, writeAgentRecord } from "./records";
@@ -70,10 +76,10 @@ const hostOsOf = (): "macos" | "windows" | "linux" => (process.platform === "dar
 
 /** The in-process backend's id (`IN_PROCESS_BACKEND_ID`, subagent-backend.ts): its delegations run the plugins' hooks
  *  in their own runtime. Named here, not imported, so the manager doesn't load the embedded runtime's modules. */
-export const HOOKED_IN_RUNTIME_BACKEND = "clover";
+export const HOOKED_IN_RUNTIME_BACKEND = "moss";
 
 export interface AgentManagerOptions {
-  /** The Clover home: transcripts go under `<home>/bots/<bot>/agents/`. */
+  /** The MOSS home: transcripts go under `<home>/bots/<bot>/agents/`. */
   home: string;
   /** The plugins' turn hooks (the bots' `pluginHooks`), read at each request (`HookSource`): an agent's permission
    *  requests meet `tool.before` before the broker; refused while the hooks are expected and not up; straight to the
@@ -97,11 +103,15 @@ export interface AgentManagerOptions {
   clock: Clock;
   pluginTools?: BridgeToolSource;
   /** `Glossary` on the bridge: the plugins' skills, agent definitions and tools in the session's scope. */
-  glossary?: (sessionId: string, q: { query?: string | string[]; load?: string | string[] }, session?: AgentSessionFacts) => Promise<{ results: unknown[]; loaded: unknown[] }>;
+  glossary?: (sessionId: string, q: { query?: string | string[]; load?: string | string[] }, session?: AgentSessionFacts) => Promise<GlossaryAnswer>;
   /** The user's OKs for agents with no admitted sandbox (sandbox/oks.ts): `FileAgentOks` in the daemon. */
   oks?: AgentOks;
   /** The plugins' skills, agent definitions and hooks per session (B-M2's registry); none until then. */
   pluginParts?: PluginPartsSource;
+  /** Tells the manager the set of tools a session may see could have changed (an install, an update, a removal, an
+   *  enable or disable, the user's tool setting): `refreshBridgeTools` then runs, once the changes settle. Defaults to
+   *  `pluginParts.watch`. */
+  watchTools?: (fn: () => void) => () => void;
   /** A computer's level (§9.1), for an agent that acts without asking; read-only when it isn't known. */
   levelOf?: (computer: string) => Level | undefined;
   /** Tells the manager the levels changed (the computer registry's `watch`), so running sessions follow straight away
@@ -120,6 +130,17 @@ export interface AgentManagerOptions {
   /** Whether a bot's agent's file change to `path` is a run-later place (agents/bot-child.ts `botChildRunsLater`):
    *  refused before any card, as the bot's own. Without it the run-later names alone are refused. */
   childRunsLater?: (child: { bot: string; rootPath: string; level: Level | undefined; fence: SandboxPolicy }, path: string) => boolean;
+  /** An agent session started: what it reported of its models (lane MS's per-agent memory, `agents/model-list.ts`). */
+  modelsReported?: (backend: AgentBackend, session: AgentSession) => void;
+  /** A turn of an agent or coding session starts from `input` (what the conversation saw, as a bot's turn reports it:
+   *  the addresses the user's own message gave, a turn of the user's resetting the fetch budget). */
+  turnStarted?: (sessionId: string, input: TurnInput, origin: TurnOrigin | undefined) => void;
+  /** The host's exchange depths (`DurableSessionHost.depths`), shared with the bots' `SendMessage`; else the manager keeps its own. */
+  depths?: ExchangeDepths;
+  /** Counts each session's `SendMessage`s (spec §9.5: at most 20 a minute per sending session, refused sends counting); the
+   *  manager's own when absent. A session sends through the bridge alone, over the socket or in process, so one counter
+   *  here covers both; the bots' own tools have theirs. */
+  sendSlots?: SendSlots;
   log?: (line: string) => void;
 }
 
@@ -141,10 +162,11 @@ const PAUSE_POLL_MS = 1_000;
 export interface AgentSessionHooks {
   agents: { list(): SessionView[] };
   setAgentModel(id: string, model: string, effort?: string): Promise<void>;
+  setAgentOption(id: string, option: string, value: string): Promise<void>;
   reattach(views: SessionView[]): void;
 }
 
-/** Who asks for an agent: a bot from one of its sessions, or the user (a coding session, `clover code`). */
+/** Who asks for an agent: a bot from one of its sessions, or the user (a coding session, `moss code`). */
 export type AgentCaller =
   | { kind: "bot"; bot: string; session: string; origin: TurnOrigin; level?: Level }
   | { kind: "user"; device: string; sentAt?: number; clientMessageId: string };
@@ -167,12 +189,19 @@ export interface AgentRequest {
   definition?: { pluginId: string; id: string };
 }
 
+/** What one adapter ask came to: `stop` set, the start ends there with that line (a combined card's no). */
+interface AdapterAsk {
+  stop?: string;
+}
+
 interface Entry {
   id: string;
-  /** Admitted with a sandbox Clover counts on, at a tested version (`#admit`): its commands are held by that sandbox
+  /** Admitted with a sandbox MOSS counts on, at a tested version (`#admit`): its commands are held by that sandbox
    *  (no unsandboxed command, its writes to the agent's root), so at ask for risky actions one runs without asking (R5). */
   sandboxHeld?: boolean;
   backend: AgentBackend;
+  /** The on-demand tools this session has loaded through the bridge's Glossary (their bridge names; `exposure: "list"`). */
+  loaded?: Set<string>;
   /** Its title (the bot's description, or its definition's name): how its cards name it. */
   title?: string;
   bot?: string;
@@ -188,6 +217,21 @@ interface Entry {
   token: string;
   serverName: string;
   bridgeTools: string[];
+  /** What its plugin tools' calls show in the conversation (their titles, their results' displays). */
+  shows: AgentToolDisplays;
+  /** What the agent holds of the bridge's tools (`toolsSignature`): the list it started with, or was last told of. */
+  toolsSig?: string;
+  /** The tool names the agent holds, for saying what changed. */
+  toolNames?: string[];
+  /** The session's live bridge connection (stdio bridge only), where `bridge.toolsChanged` goes. */
+  bridgeLink?: { connId: number; notify(method: string, params: unknown): void };
+  /** The list changed and this agent takes it only by being opened again before its next turn. */
+  toolsRestart?: boolean;
+  /** The list changed and this agent takes it at its next session only: the names it had when the person was last told. */
+  toolsUntold?: string[] | undefined;
+  /** The agent has produced something in this session (text, a thought, a tool call, usage): its history exists, so a new
+   *  process can resume it. Before that there is nothing to resume, and a `session/resume` of it dies before init. */
+  heard?: boolean;
   unwatch?: () => void;
   /** The bot's copy (`agent.json`) and the daemon's own (records.ts). */
   record: AgentRecordFile;
@@ -239,11 +283,20 @@ export interface RemoteAgentEntry {
   gone(): void;
 }
 
+/** What an agent holds of the bridge: its tools (name, words, input, loading) and the instructions, as one string. Two
+ *  views with the same signature are the same list to the agent; the order of the tools is not part of it. */
+export function toolsSignature(v: { tools: readonly BridgeToolDef[]; instructions: string }): string {
+  const tools = [...v.tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map((t) => [t.name, t.description, t.inputSchema, t.preload === true]);
+  return JSON.stringify([tools, v.instructions]);
+}
+
 /** How long the plugins' changes settle before the running sessions' parts are placed again. */
 const PARTS_SETTLE_MS = 250;
+/** How long a turn waits at its start for a plugin server just installed or enabled to list its tools (the bots' wait, `MCP_FIRST_LISTING_WAIT_MS`). */
+const MCP_SETTLE_WAIT_MS = 5_000;
 
 /** The bridge's server name starts with this; a random suffix follows, new for each session. */
-export const BRIDGE_SERVER_PREFIX = "clover_";
+export const BRIDGE_SERVER_PREFIX = "moss_";
 const MAX_CARD_CODE = 60_000;
 
 export class AgentManager {
@@ -252,19 +305,39 @@ export class AgentManager {
   /** Agents this computer's bots placed on other computers. */
   readonly #remote = new Map<string, RemoteAgentEntry>();
   readonly #oks: AgentOks;
+  /** One card and one fetch per adapter package and version, however many sessions start while it is open. */
+  readonly #adapterFlights = new Map<string, Promise<AdapterAsk>>();
+  /** The one door behind `SendMessage` and `ListSessions` for every session (messenger.ts): the protocol's `reachRefusal` decides. */
+  readonly #messenger: EngineSessionMessenger;
   #peers: AgentPeers | undefined;
   #offPeerPause: (() => void) | undefined;
 
   readonly #unpause: (() => void) | undefined;
   readonly #unwatchLevels: (() => void) | undefined;
+  readonly #unwatchCards: (() => void) | undefined;
   readonly #unwatchParts: (() => void) | undefined;
   #partsTimer: ReturnType<typeof setTimeout> | undefined;
+  #refreshing: Promise<void> = Promise.resolve();
 
   constructor(opts: AgentManagerOptions) {
     this.#o = opts;
     this.#oks = opts.oks ?? new MemoryAgentOks();
+    this.#messenger = new EngineSessionMessenger({
+      sessions: () => opts.host.list(),
+      deliver: (to, input) => opts.host.deliver(to, input),
+      botsThatWrote: (session) => opts.host.botsThatWrote(session),
+      // The session graph hears a delivery through the host (lane CG's `session_link`); nothing to tell it here.
+      now: () => opts.clock.now(),
+    }, opts.sendSlots ?? sendSlots(() => opts.clock.now()), opts.depths);
+    // The person's answer to a session's card puts that session back to depth 0 (the loop brake): only an answer they gave counts,
+    // never a card that expired or was cancelled.
+    this.#unwatchCards = opts.approvals.watch?.((e) => {
+      if (e.type !== "resolved" || (e.outcome !== "approved" && e.outcome !== "denied")) return;
+      const session = opts.approvals.get(e.cardId)?.card.session;
+      if (session !== undefined) this.#messenger.personSpoke(session);
+    });
     // The ruling (K-M2 review 4): the moment the switch says paused, a busy agent that acts without asking is cancelled,
-    // since Clover can't hold what it isn't asked about. Without `watch`, it is cancelled at its next tool call.
+    // since MOSS can't hold what it isn't asked about. Without `watch`, it is cancelled at its next tool call.
     this.#unpause = opts.pause?.watch?.(() => {
       if (opts.pause!.mayAct()) return;
       for (const e of this.#entries.values()) this.#cancelForPause(e);
@@ -272,18 +345,25 @@ export class AgentManager {
     this.#unwatchLevels = opts.watchLevels?.(() => this.levelsChanged());
     // A plugin turned on, off, removed or updated: the running sessions' placed skills and agent definitions follow,
     // once the changes settle (a tree's OK switches several plugins at once).
-    this.#unwatchParts = opts.pluginParts?.watch?.(() => {
-      if (this.#partsTimer !== undefined) return;
+    // The tools each running session may see follow the same changes (`refreshBridgeTools`), in the same settle: one
+    // install is one notification.
+    this.#unwatchParts = (opts.watchTools ?? opts.pluginParts?.watch)?.(() => {
+      // Trailing: each change waits for the ones right behind it (an install is several), so it is one refresh.
+      if (this.#partsTimer !== undefined) clearTimeout(this.#partsTimer);
       this.#partsTimer = setTimeout(() => {
         this.#partsTimer = undefined;
         void this.placePartsAgain();
+        void this.refreshBridgeTools().catch((err) => this.#o.log?.(`[agents] bridge tools weren't refreshed: ${err instanceof Error ? err.message : String(err)}`));
       }, PARTS_SETTLE_MS);
     });
   }
 
   /** What decides which plugins reach the session, and where its calls are judged. */
   #facts(e: Entry): AgentSessionFacts {
-    return { id: e.id, kind: e.bot === undefined ? "coding" : "agent", backend: e.backend.id, ...(e.bot === undefined ? {} : { bot: e.bot }), computer: e.computer, root: e.rootPath };
+    return {
+      id: e.id, kind: e.bot === undefined ? "coding" : "agent", backend: e.backend.id, ...(e.bot === undefined ? {} : { bot: e.bot }), computer: e.computer, root: e.rootPath,
+      exposure: exposureOf(e.backend.quirks), loaded: e.loaded ?? new Set<string>(),
+    };
   }
 
   /** The plugins' skills and agent definitions for each running session, read again and placed again where its backend
@@ -346,11 +426,14 @@ export class AgentManager {
     return join(this.#o.home, "run", "agents", sessionId);
   }
 
-  #serverNameFor(): string {
-    return this.#o.bridge.serverName ?? `${BRIDGE_SERVER_PREFIX}${randomBytes(8).toString("hex")}`;
+  /** The name of a session's bridge server: the host's own when it fixes one, else the name the session already has (its
+   *  record: the agent's history holds the tools it was offered under it, so a session reattached after a restart must go
+   *  on under it), else a new random one, so no MCP server of the user's own can share it (review 14). */
+  #serverNameFor(daemon?: Pick<DaemonAgentRecord, "bridge">): string {
+    return this.#o.bridge.serverName ?? daemon?.bridge ?? `${BRIDGE_SERVER_PREFIX}${randomBytes(8).toString("hex")}`;
   }
 
-  /** A root's real path: a folder in this computer's home that holds none of Clover's own folders, resolved ONCE here
+  /** A root's real path: a folder in this computer's home that holds none of MOSS's own folders, resolved ONCE here
    *  (every link followed) and used everywhere after: the backend's working folder, the folders its sandbox's denies are
    *  drawn under, the bot's root checks and whether the bot holds it (the review's blocker on cb5bac9a6: the tree's
    *  join is lexical, and a link inside a granted folder would otherwise stand for a folder outside it). A root whose
@@ -358,7 +441,7 @@ export class AgentManager {
   #rootPath(root: string): string {
     const asked = this.#rootAsAsked(root);
     const verdict = this.#o.fence.checkAgentRoot(asked);
-    if (!verdict.allowed) throw new ContractError("fenced", `an agent's root may not hold Clover's own folders (${verdict.reason})`, { path: verdict.path });
+    if (!verdict.allowed) throw new ContractError("fenced", `an agent's root may not hold MOSS's own folders (${verdict.reason})`, { path: verdict.path });
     let real: string;
     try {
       real = realpathSync.native(asked);
@@ -367,7 +450,7 @@ export class AgentManager {
     }
     if (real !== asked) {
       const where = this.#o.fence.checkAgentRoot(real);
-      if (!where.allowed) throw new ContractError("fenced", `an agent's root may not hold Clover's own folders (${where.reason})`, { path: where.path });
+      if (!where.allowed) throw new ContractError("fenced", `an agent's root may not hold MOSS's own folders (${where.reason})`, { path: where.path });
     }
     return real;
   }
@@ -409,7 +492,7 @@ export class AgentManager {
     // there, are settled before a cloud backend ships, by the agent suite's live gates. Until then it is listed, never
     // started.
     if (backend.quirks.placement !== "local") {
-      throw new ContractError("refused", `${req.backend} runs in its vendor's cloud, which doesn't start yet: whether Clover's bridge reaches a cloud session, and what the root folder means there, are still to be settled`);
+      throw new ContractError("refused", `${req.backend} runs in its vendor's cloud, which doesn't start yet: whether MOSS's bridge reaches a cloud session, and what the root folder means there, are still to be settled`);
     }
     const rootPath = this.#rootPath(req.root);
     // A root a bot names (model text) holds to `botRootRefusal`: a folder of the user's own, never their whole home.
@@ -445,7 +528,7 @@ export class AgentManager {
     }, entry.driver);
     try {
       // A coding session the user opens with no prompt waits for their first message; the agent starts with it.
-      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt });
+      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt, depth: this.#spawnDepth(req.caller.session) });
       else if (req.prompt.length > 0) await this.#o.host.sendUser(id, { text: req.prompt, device: req.caller.device, clientMessageId: req.caller.clientMessageId, sentAt: req.caller.sentAt ?? this.#o.clock.now() });
     } catch (err) {
       await this.#o.host.stop(id, "failed to start").catch(() => {});
@@ -492,7 +575,7 @@ export class AgentManager {
       ...(req.model === undefined ? {} : { model: req.model }), ...(req.effort === undefined ? {} : { effort: req.effort }), ...definition,
     }, r.driver);
     try {
-      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt });
+      if (req.caller.kind === "bot") await this.#o.host.deliver(id, { from: "bot", bot: req.caller.bot, session: req.caller.session, text: req.prompt, depth: this.#spawnDepth(req.caller.session) });
       else if (req.prompt.length > 0) await this.#o.host.sendUser(id, { text: req.prompt, device: req.caller.device, clientMessageId: req.caller.clientMessageId, sentAt: req.caller.sentAt ?? this.#o.clock.now() });
     } catch (err) {
       await this.#o.host.stop(id, "failed to start").catch(() => {});
@@ -511,7 +594,7 @@ export class AgentManager {
       transcript: new AgentTranscript(this.#o.home, id, daemon.bot),
       record, daemon,
       driver: undefined as unknown as RemoteAgentEntry["driver"],
-      promptOf: (input) => promptOf(input),
+      promptOf: (input) => promptOf(input, (id) => this.#o.host.get(id)?.title),
       started: (agentSessionId) => {
         if (r.daemon.agentSessionId === agentSessionId) return;
         r.daemon = { ...r.daemon, agentSessionId };
@@ -581,11 +664,11 @@ export class AgentManager {
     return e?.peer ? { id, driver: e.driver, peer: e.peer } : undefined;
   }
 
-  /** A: an agent's `SendMessage` from the computer running it, into its bot's sessions only. */
+  /** A: an agent's `SendMessage` from the computer running it: judged here, by the one rule, as any session's. */
   async remoteMessage(id: string, text: string, to?: string): Promise<void> {
     const r = this.#remote.get(id);
     if (!r) throw new ContractError("not_found", `no agent ${id}`);
-    await this.#deliverFromAgent(id, r.bot, r.parent, text, to);
+    await this.#send(id, text, to);
   }
 
   /** Reattaches a background agent or a coding session after a daemon restart: the host restored the session dormant,
@@ -604,15 +687,19 @@ export class AgentManager {
     if (!view.backend || !view.root) return refuse("the host's view names no backend or root");
     if ((view.kind === "agent") !== (view.bot !== undefined)) return refuse("its kind and its bot disagree");
     const daemon = readAgentRecord(this.#o.home, view.id);
-    if (!daemon?.agentSessionId) return refuse("the daemon's record of it is missing");
+    if (!daemon) return refuse("the daemon's record of it is missing");
     if (daemon.backend !== view.backend || daemon.root !== view.root || daemon.computer !== view.computer || daemon.bot !== view.bot || daemon.parent !== view.parent) {
       return refuse("the daemon's record doesn't match the session");
     }
+    // A session whose agent never launched (a code session the user opened and hasn't typed into yet: the agent starts
+    // in the first turn) has no agent session id to resume: it reattaches all the same, and its next turn starts the
+    // agent new, as that first turn would have.
+    const resume = daemon.agentSessionId === undefined ? undefined : { agentSessionId: daemon.agentSessionId };
     const backend = this.#o.backends().find((b) => b.id === view.backend);
     if (!backend) return refuse(`no backend named ${view.backend}`);
     // Another plugin that took the id since (the bundled one switched off, a third party's on) never gets the session:
     // its program would see the agent's session id and root. The session ends, saying why.
-    // A record from before the plugin was kept goes on only with Clover's own backend (the bundled `clover/agent-<id>`,
+    // A record from before the plugin was kept goes on only with MOSS's own backend (the bundled `moss/agent-<id>`,
     // or a core one), and keeps it from now on.
     const own = (backend as { bundled?: boolean }).bundled === true || (backend as { inProcess?: boolean }).inProcess === true;
     if (daemon.pluginId === undefined && own) {
@@ -639,11 +726,11 @@ export class AgentManager {
     }
     const transcript = new AgentTranscript(this.#o.home, view.id, view.bot);
     const record: AgentRecordFile = {
-      v: 1, sessionId: view.id, backend: backend.id, computer: view.computer, root: view.root, startedAt: daemon.startedAt, agentSessionId: daemon.agentSessionId,
+      v: 1, sessionId: view.id, backend: backend.id, computer: view.computer, root: view.root, startedAt: daemon.startedAt, ...(resume ?? {}),
       ...(view.bot === undefined ? {} : { bot: view.bot }), ...(view.parent === undefined ? {} : { parent: view.parent }),
       ...(view.model === undefined ? {} : { model: view.model }), ...(view.effort === undefined ? {} : { effort: view.effort }),
     };
-    const entry = this.#entry(view.id, backend, transcript, record, daemon, rootPath, { agentSessionId: daemon.agentSessionId });
+    const entry = this.#entry(view.id, backend, transcript, record, daemon, rootPath, resume);
     this.#o.host.open({
       id: view.id, kind: view.kind, computer: view.computer, backend: backend.id, root: view.root,
       ...(view.bot === undefined ? {} : { bot: view.bot }), ...(view.parent === undefined ? {} : { parent: view.parent }),
@@ -687,25 +774,64 @@ export class AgentManager {
     transcript.redact(token);
     const entry = {
       id, backend, transcript, record, daemon, token, rootPath, computer: daemon.computer, root: daemon.root,
-      held: 0, gone: new AbortController(), serverName: this.#serverNameFor(), bridgeTools: bridgeOwnTools(daemon.bot).map((t) => t.name),
+      held: 0, gone: new AbortController(), serverName: this.#serverNameFor(daemon), bridgeTools: BRIDGE_OWN_TOOLS.map((t) => t.name),
+      shows: new AgentToolDisplays(),
       ...(daemon.bot === undefined ? {} : { bot: daemon.bot }), ...(daemon.parent === undefined ? {} : { parent: daemon.parent }),
       ...(record.model === undefined ? {} : { model: record.model }), ...(record.effort === undefined ? {} : { effort: record.effort }),
       ...(daemon.level === undefined ? {} : { level: daemon.level }),
       ...(peer === undefined ? {} : { peer }),
     } as Entry;
+    let started = false;
     entry.driver = new AgentDriver({
-      start: () => this.#startAgent(entry, reattach),
+      start: async () => {
+        if (started) {
+          // Started again after a turn failed: the old process's token went with it, so a fresh one; and the agent takes up its
+          // session by its history if it has said anything, afresh if not (`#reattachOf`).
+          entry.token = this.#o.tokens.mint(id);
+          entry.transcript.redact(entry.token);
+          const before = entry.daemon.agentSessionId;
+          return this.#startAgent(entry, before === undefined ? undefined : this.#reattachOf(entry, before));
+        }
+        started = true;
+        return this.#startAgent(entry, reattach);
+      },
+      // A turn failed and its agent's process was stopped; the session stays open and its next turn starts the agent again.
+      released: () => {
+        entry.unwatch?.();
+        entry.unwatch = undefined;
+        this.#o.tokens.revoke(id);
+        rmSync(this.setupDir(id), { recursive: true, force: true });
+        // A card the failed turn left pending has no turn left to answer (the broker's rule 7).
+        this.#o.approvals.cancelSession(id);
+        entry.session = undefined;
+      },
+      turnStarted: (input, origin) => {
+        // The loop brake's depth of this turn (agents/bridge/messenger.ts): the host sets it too as the turn starts (the same store
+        // when `depths` is the host's), so this only matters to a manager given no host store.
+        this.#messenger.turnStarted(id, input);
+        this.#o.turnStarted?.(id, input, origin);
+      },
+      toolShows: entry.shows,
+      started: (s) => this.#o.modelsReported?.(backend, s),
       // A turn another computer sent carries the prompt it built there (its images read there).
-      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input),
+      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
       redact: (v) => transcript.redacted(v),
       // A paused agent is sent no new prompt until the switch is back.
       beforeTurn: async (session) => {
         // A turn withdrawn while held ends `interrupted` (the driver checks its signal next).
         await this.#hold(entry).catch(() => {});
+        // The plugins as they are now: a change made a moment ago (an install the debounce has not reported yet, a server still
+        // listing its tools) is in the list this turn starts with, whatever the watchers have said.
+        await (this.#o.pluginTools?.settled?.(MCP_SETTLE_WAIT_MS) ?? Promise.resolve()).catch(() => {});
+        await this.#refreshing.then(() => this.#syncTools(entry)).catch(() => {});
         const renewed = await this.#renewIfOld(entry, session);
-        await this.#applyLevel(entry, renewed ?? session);
-        return renewed;
+        // Its tools changed and it takes that by being opened again (`toolListChanges: "next-turn"`).
+        const reopened = renewed === undefined ? await this.#reopenForTools(entry, session) : undefined;
+        await this.#applyLevel(entry, renewed ?? reopened ?? session);
+        return renewed ?? reopened;
       },
+      // An agent that keeps its tool list for its next session says so to the person, once per change.
+      noticeBeforeTurn: () => this.#toolsNotice(entry),
       ended: () => {
         entry.gone.abort();
         this.#o.tokens.revoke(id);
@@ -796,7 +922,7 @@ export class AgentManager {
     e.token = this.#o.tokens.mint(e.id);
     e.transcript.redact(e.token);
     e.transcript.call({ ts: this.#o.clock.now(), type: "token-renewed" });
-    return this.#startAgent(e, { agentSessionId });
+    return this.#startAgent(e, this.#reattachOf(e, agentSessionId));
   }
 
   /** At each turn, the computer's level as it is now (check 2's minor 5): the session's mode floor is held against it,
@@ -839,22 +965,194 @@ export class AgentManager {
     }
   }
 
+  /** An agent whose adapter MOSS provides, with none in place: one card (the package and version, where from, that it is
+   *  code MOSS will run, its size), shared by every session that starts while it is open; then, on the yes, the fetch.
+   *  Nothing is fetched without the yes. A fetch's failure never throws: what came of it is noted on the backend, and
+   *  `detect` then says plainly why the agent isn't there (or the person's own adapter, where there is one, is what
+   *  starts). The one thing that throws is the NO of a combined card (`#askAdapter`): nothing is then started. */
+  async #provideAdapter(e: Entry): Promise<void> {
+    const b = e.backend;
+    if (!isAdapterBackend(b)) return;
+    const offer = await b.adapterOffer().catch(() => undefined);
+    if (offer === undefined) return;
+    // The start's own facts, where the start will need the person's OK too: then ONE card asks for both.
+    const facts = await this.#startNeedsOk(e, b);
+    const key = `${offer.package}@${offer.version}`;
+    let flight = this.#adapterFlights.get(key);
+    if (flight === undefined) {
+      flight = this.#askAdapter(e, b, offer, facts).finally(() => this.#adapterFlights.delete(key));
+      this.#adapterFlights.set(key, flight);
+    }
+    const asked = await flight;
+    if (asked.stop !== undefined) throw new ContractError("refused", asked.stop);
+  }
+
+  /** The facts of the start that follows this download, when that start asks the person's OK too (no admitted sandbox, or a
+   *  version outside the tested range) and none is remembered for this program: the download and the start are then ONE
+   *  act and get ONE card. Undefined when only the download is asked (the sandbox is admitted, or the OK is already
+   *  kept for this program, or the facts can't be told). */
+  async #startNeedsOk(e: Entry, b: AdapterBackend): Promise<AdapterStartFacts | undefined> {
+    if (this.#o.startUnsandboxedForTests === true || b.adapterStart === undefined) return undefined;
+    const facts = await b.adapterStart().catch(() => undefined);
+    if (facts === undefined || (facts.sandboxed && facts.versionOk)) return undefined;
+    // An OK kept for this program at this run file for a copy placed under THIS pin (a copy fetched again, say) is the start's
+    // answer already: the download is asked alone. The decision is from what WILL be placed: an OK kept for a copy placed
+    // under another pin (a plugin that changed its lock under the same version) isn't this copy's, so the one card asks.
+    if (this.#oks.knows({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path }, facts.pin)) return undefined;
+    return facts;
+  }
+
+  /** One card for one act. `facts` set (the start needs the OK too): the combined card, "Start <Agent>?", which says both
+   *  halves plainly and whose yes covers both. Its no, like the download card's, means "don't download and don't start
+   *  MOSS's copy": nothing is fetched. An adapter of the person's own that passes its identity check then starts the agent
+   *  at once, on its own start card where no OK is kept for it (the first start and every later one alike); with none, the
+   *  start ends with the plain line (which says MOSS asks again the next time, as it does). */
+  async #askAdapter(e: Entry, b: AdapterBackend, offer: AdapterOffer, facts: AdapterStartFacts | undefined): Promise<AdapterAsk> {
+    const name = (b as { name?: string }).name ?? e.backend.id;
+    const decision = await this.#o.approvals.request(
+      facts === undefined ? this.#downloadCard(e, name, offer) : this.#oneCard(e, name, offer, facts),
+      (e.driver.currentSignal() === undefined ? {} : { signal: e.driver.currentSignal()! }),
+    ).catch(() => undefined);
+    if (decision === undefined || !decision.allowed) {
+      const declined = decision?.by === "card";
+      b.noteAdapter(declined ? { declined: true } : { failed: "the question about it wasn't answered" });
+      if (facts === undefined) return {};
+      // The person's own adapter, if it passes its identity check (`detect` says: MOSS's copy isn't placed), goes on as it does
+      // after a no to the download card alone; with none, the start ends here.
+      const own = await e.backend.detect().catch(() => undefined);
+      if (own?.installed === true && own.identityOk) return {};
+      return { stop: declined ? adapterDeclinedLine(name) : adapterFailedLine(name, "the question about it wasn't answered") };
+    }
+    let placed: AdapterPlaced;
+    try {
+      placed = await b.provideAdapter();
+      b.noteAdapter({ ok: true });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      b.noteAdapter({ failed: why });
+      this.#o.log?.(`agents: ${e.backend.id}'s adapter ${offer.package} ${offer.version} wasn't placed: ${why}`);
+      return {};
+    }
+    if (facts !== undefined) await this.#bindStartOk(e, facts, placed, decision.cardId);
+    return {};
+  }
+
+  /** THE RULE of the combined card (the owner's, 2026-11-23: one act, one card). Its yes is for exactly what it showed:
+   *  the download of the pinned package (its fingerprints are checked before anything is unpacked, as ever) and the start
+   *  of the agent from THAT copy. So the start's OK is kept here, once the copy is placed and checked whole, for the
+   *  digest of the copy this yes fetched, under the key a start card's OK has (agent, version, computer, run file,
+   *  digest), and for nothing else:
+   *  - the copy `detect` now finds must be that same one (same run file, version, sandbox facts and digest as placed),
+   *    else no OK is kept and the start asks on its own card, as it would for any copy it hasn't been told of;
+   *  - a copy changed after this (a file, or the record) isn't this digest: `start` checks the whole copy again and
+   *    refuses it, and a different digest finds no OK;
+   *  - the OK is remembered as a start card's is (never an "always" for the download, which is never kept). */
+  async #bindStartOk(e: Entry, facts: AdapterStartFacts, placed: AdapterPlaced, cardId: string | undefined): Promise<void> {
+    const d = await e.backend.detect().catch(() => undefined);
+    const same = d !== undefined && d.installed && d.identityOk
+      && d.path === facts.path && placed.path === facts.path
+      && d.version === facts.version && placed.version === facts.version
+      && d.versionOk === facts.versionOk && d.sandboxed === facts.sandboxed
+      && d.sha256 === placed.digest;
+    if (!same) return;
+    this.#oks.grant({ backend: e.backend.id, computer: e.computer, version: facts.version, path: facts.path, sha256: placed.digest }, { ...(cardId === undefined ? {} : { cardId }), at: this.#o.clock.now(), pin: facts.pin });
+  }
+
+  /** What a download card says (the start needs nothing of the person here). */
+  #downloadCard(e: Entry, name: string, offer: AdapterOffer): ApprovalRequest {
+    return {
+      kind: "change",
+      change: "agent-adapter",
+      session: e.id,
+      ...(e.bot === undefined ? {} : { bot: e.bot }),
+      origin: e.driver.currentOrigin() ?? "agent",
+      computers: [e.computer],
+      effect: "other",
+      fields: {
+        title: { type: "text", text: `Download ${sealedText(name, 200)}'s adapter?` },
+        what: { type: "text", text: `${sealedText(name, 200)} doesn't speak ACP itself, so MOSS runs an adapter for it: ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm. It is code from npm that MOSS will run on this computer to talk to ${sealedText(name, 200)}, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes.` },
+        computer: { type: "text", text: e.computer },
+        source: { type: "rows", rows: [
+          { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          ...this.#packageRows(offer),
+          { label: "Kept in", value: sealedText(offer.folder, 4000) },
+          { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
+          { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
+        ] },
+        detail: { type: "rows", rows: [
+          { label: "Runs on", value: "MOSS's own runtime, never your own node" },
+          ...(offer.uses.length === 0 ? [] : [{ label: "Drives, from your computer", value: sealedText(offer.uses.join(", "), 4000) }]),
+          ...(offer.again === undefined ? [] : [{ label: "Why again", value: sealedText(offer.again, 4000) }]),
+        ] },
+      },
+    };
+  }
+
+  #packageRows(offer: AdapterOffer): { label: string; value: string }[] {
+    const mb = (n: number) => (n < 1024 * 1024 ? "under 1 MB" : `about ${Math.round(n / (1024 * 1024))} MB`);
+    return [
+      { label: "Package", value: sealedText(`${offer.package} ${offer.version}`, 4000) },
+      { label: "Downloaded from", value: sealedText(offer.registry, 4000) },
+      { label: "Size", value: sealedText(`${offer.bytes === undefined ? "size not known" : mb(offer.bytes)}, ${offer.packages} package${offer.packages === 1 ? "" : "s"}`, 4000) },
+    ];
+  }
+
+  /** The combined card: the download's facts (the package, its version, from where, its size, that it is code MOSS will
+   *  run) and the start's (the agent, who started it, the folder, why it needs the OK: no sandbox, or a version outside
+   *  the tested ones, and what it gets from the environment), as short as both allow. It is a change card for the start
+   *  (`agent-unsandboxed`: always shown, never an "always"), which is the stronger of the two. */
+  #oneCard(e: Entry, name: string, offer: AdapterOffer, facts: AdapterStartFacts): ApprovalRequest {
+    const label = sealedText(name, 200);
+    const outside = `Its version ${sealedText(facts.version, 64)} is outside the versions MOSS was tested with`;
+    // The no-sandbox fact is said once (in "without a sandbox"); the version is said only where it is outside the tested ones.
+    const risk = facts.sandboxed ? `${outside}, so its sandbox may not hold. ` : facts.versionOk ? "" : `${outside}. `;
+    return {
+      kind: "change",
+      change: "agent-unsandboxed",
+      session: e.id,
+      ...(e.bot === undefined ? {} : { bot: e.bot }),
+      origin: e.driver.currentOrigin() ?? "agent",
+      computers: [e.computer],
+      effect: "other",
+      fields: {
+        title: { type: "text", text: `Start ${label}?` },
+        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
+        computer: { type: "text", text: e.computer },
+        source: { type: "rows", rows: [
+          { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          ...this.#packageRows(offer),
+          { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
+          { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
+          { label: "Folder", value: sealedText(e.root, 4000) },
+        ] },
+        detail: { type: "rows", rows: [
+          { label: "Runs on", value: "MOSS's own runtime, never your own node" },
+          ...(offer.uses.length === 0 ? [] : [{ label: "Drives, from your computer", value: sealedText(offer.uses.join(", "), 4000) }]),
+          { label: "Gets from your environment", value: sealedText(e.backend.quirks.launch.envAllow.join(", ") || "nothing", 4000) },
+          { label: "Sets in its environment", value: sealedText(Object.keys(e.backend.quirks.launch.envSet).join(", ") || "nothing", 4000) },
+          ...(offer.again === undefined ? [] : [{ label: "Why again", value: sealedText(offer.again, 4000) }]),
+        ] },
+      },
+    };
+  }
+
   /** Before an agent launches: an agent that isn't sandboxed, or is outside its tested versions, needs the user's OK. */
   async #admit(e: Entry): Promise<NonNullable<AcpStartSpec["admitted"]>> {
+    await this.#provideAdapter(e);
     const d = await e.backend.detect();
     if (!d.installed) throw new ContractError("not_installed", d.reason ?? `${e.backend.id} isn't installed on this computer`);
     if (!d.identityOk) throw new ContractError("refused", d.reason ?? `${e.backend.id}'s program isn't its publisher's`);
     const why: string[] = [];
     if (!d.sandboxed) {
       const detail = d.versionOk ? d.reason?.replace(/^no sandbox: /, "") : undefined;
-      why.push(`it has no sandbox Clover can count on here${detail ? ` (${detail})` : ""}`);
+      why.push(`it has no sandbox MOSS can count on here${detail ? ` (${detail})` : ""}`);
     }
-    if (!d.versionOk) why.push(`its version ${d.version ?? "(unknown)"} is outside the versions Clover was tested with`);
+    if (!d.versionOk) why.push(`its version ${d.version ?? "(unknown)"} is outside the versions MOSS was tested with`);
     const admitted = { path: d.path ?? "", ...(d.version === undefined ? {} : { version: d.version }) };
     e.sandboxHeld = why.length === 0;
     if (why.length === 0) return admitted;
     // The OK is for this program: its real path and its file's hash (K-M2 review 5).
-    const sha256 = (await programHash(admitted.path)) ?? "";
+    const sha256 = d.sha256 ?? (await programHash(admitted.path)) ?? "";
     await this.#requireOk(e, { version: d.version ?? "unknown", path: admitted.path, sha256 }, why.join("; "), d.sandboxed);
     return { ...admitted, ...(sha256 ? { sha256 } : {}) };
   }
@@ -868,8 +1166,13 @@ export class AgentManager {
     // Each one left out is logged; the skills and agent definitions are placed as before.
     if (parts.hooks.length > 0) this.#o.log?.(`[agents] ${e.id}: ${parts.hooks.length} plugin command hook(s) not placed (${parts.hooks.map((h) => `${h.pluginId}/${h.id}`).join(", ")}): a hook runs only under its plugin's fence, which an agent backend can't give it yet`);
     e.parts = parts.hooks.length > 0 ? { ...parts, hooks: [] } : parts;
-    const tools = await (this.#o.pluginTools ?? NO_PLUGIN_TOOLS).tools(e.id, this.#facts(e)).catch(() => []);
-    e.bridgeTools = [...bridgeOwnTools(e.bot).map((t) => t.name), ...tools.map((t) => t.name)];
+    // The same list `bridge.tools` answers, so a session started now holds what a running one is told of (`refreshBridgeTools`).
+    const view = await this.#bridgeView(e);
+    e.bridgeTools = view.tools.map((t) => t.name);
+    e.toolsSig = toolsSignature(view);
+    e.toolNames = e.bridgeTools;
+    e.toolsRestart = false;
+    e.toolsUntold = undefined;
     const spec: AcpStartSpec = {
       sessionId: e.id,
       ...(e.bot === undefined ? {} : { bot: e.bot }),
@@ -884,7 +1187,7 @@ export class AgentManager {
         env: { [BRIDGE_ENV.token]: e.token, [BRIDGE_ENV.session]: e.id, [BRIDGE_ENV.socket]: this.#o.bridge.socketPath },
         tools: e.bridgeTools,
       },
-      // The Clover home is out of every agent's reach (the owner's decision, #208's check 2): denied to its sandbox
+      // The MOSS home is out of every agent's reach (the owner's decision, #208's check 2): denied to its sandbox
       // whole, for reads and writes.
       // The user's secret places too (`SECRET_READ_PLACES`), so an agent's own commands and file tools read none.
       // An agent a bot started writes with its commands no more than its bot does: not the user's home (a bot's own
@@ -896,7 +1199,7 @@ export class AgentManager {
       // A backend that holds its own tool calls (the in-process ones, which ask nothing for a read) holds on this.
       ...(this.#gateFor(e) === undefined ? {} : { pause: this.#gateFor(e)! }),
       admitted,
-      // A backend inside the daemon (Clover's coding agent) gets the bridge in-process: its calls check the session's
+      // A backend inside the daemon (MOSS's coding agent) gets the bridge in-process: its calls check the session's
       // token is still live, as the socket's do.
       ...((e.backend as { inProcess?: boolean }).inProcess === true
         ? { inProcessBridge: await inProcessBridgeServer(this.bridgeHandlers(), { name: e.serverName, sessionId: e.id, live: () => this.#o.tokens.has(e.id) }) }
@@ -906,12 +1209,15 @@ export class AgentManager {
     e.session = session;
     const pid = (session as { pid?: number }).pid;
     if (pid) this.#o.tokens.bind(e.id, pid);
-    e.daemon = { ...e.daemon, agentSessionId: session.agentSessionId };
+    e.daemon = { ...e.daemon, agentSessionId: session.agentSessionId, bridge: e.serverName };
     // The computer that keeps the session keeps the record of an agent run for it.
     if (!e.peer) writeAgentRecord(this.#o.home, e.daemon);
     e.record = { ...e.record, agentSessionId: session.agentSessionId };
     e.transcript.writeRecord(e.record);
     session.onPermission((ask) => this.#permission(e, ask));
+    // A fresh session has no history until the agent says something; a reattached one has kept the one it had.
+    e.heard = reattach !== undefined;
+    session.onEvent((ev) => { if (ev.type === "text" || ev.type === "thought" || ev.type === "tool_call" || ev.type === "usage") e.heard = true; });
     // An agent that acts without asking can't be held at a call it never asks about: paused, its turn is cancelled at
     // its next tool call instead, and the next turn waits for the switch.
     if (e.backend.quirks.marks.includes("unasked-actions")) {
@@ -952,10 +1258,10 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: sandboxed ? "Start an agent Clover hasn't tested?" : "Start an agent without a sandbox?" },
+        title: { type: "text", text: sandboxed ? "Start an agent MOSS hasn't tested?" : "Start an agent without a sandbox?" },
         what: { type: "text", text: sandboxed
-          ? "This version of the agent is outside the ones Clover was tested with, so its sandbox may not hold. While it runs, it could read Clover's logins and approve its own cards."
-          : "This agent has no sandbox Clover can count on here. While it runs, it could read Clover's logins and approve its own cards." },
+          ? "This version of the agent is outside the ones MOSS was tested with, so its sandbox may not hold. While it runs, it could read MOSS's logins and approve its own cards."
+          : "This agent has no sandbox MOSS can count on here. While it runs, it could read MOSS's logins and approve its own cards." },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
@@ -976,7 +1282,9 @@ export class AgentManager {
     if (!decision.allowed) {
       throw new ContractError("refused", `${e.backend.id} wasn't started: ${reason}, and the OK to run it that way was ${decision.by === "expired" ? "not given in time" : decision.by === "card" ? "refused" : "withdrawn"}`);
     }
-    this.#oks.grant(key, { ...(decision.cardId === undefined ? {} : { cardId: decision.cardId }), at: this.#o.clock.now() });
+    // A copy MOSS placed (the program is its run file): the pins it was placed under, so a fetch under them asks the download alone.
+    const placed = isAdapterBackend(e.backend) ? await e.backend.adapterStart?.().catch(() => undefined) : undefined;
+    this.#oks.grant(key, { ...(decision.cardId === undefined ? {} : { cardId: decision.cardId }), at: this.#o.clock.now(), ...(placed !== undefined && placed.path === program.path ? { pin: placed.pin } : {}) });
   }
 
   async #permission(e: Entry, raw: AgentPermissionAsk): Promise<AgentPermissionAnswer> {
@@ -991,15 +1299,15 @@ export class AgentManager {
     // The token never reaches a card, and the fence sees each path as it really is (reviews 8 and 9).
     const resolved = agentPaths(raw.paths, e.rootPath);
     if (resolved.over) {
-      // More paths than Clover checks: refused without a card, never let through unchecked (check 2's minor 1).
+      // More paths than MOSS checks: refused without a card, never let through unchecked (check 2's minor 1).
       e.transcript.call({ ts: this.#o.clock.now(), type: "permission", toolCallId: raw.toolCallId, toolKind: raw.toolKind, allowed: false, by: "too-many-paths", paths: raw.paths.length });
       const reject = raw.options.find((o) => o.kind === "reject_once");
       return reject ? { outcome: "selected", optionId: reject.optionId } : { outcome: "cancelled" };
     }
-    // Anything in the Clover home (a bot's memory, its conversations, the runtime's state), as written or through a link:
+    // Anything in the MOSS home (a bot's memory, its conversations, the runtime's state), as written or through a link:
     // refused without a card, at every level (the owner's decision, #208's check 2).
     if (resolved.paths.some((p) => homeReach(this.#o.home, p, e.rootPath) === "inside")) {
-      e.transcript.call({ ts: this.#o.clock.now(), type: "permission", toolCallId: raw.toolCallId, toolKind: raw.toolKind, allowed: false, by: "clover-home" });
+      e.transcript.call({ ts: this.#o.clock.now(), type: "permission", toolCallId: raw.toolCallId, toolKind: raw.toolKind, allowed: false, by: "moss-home" });
       const reject = raw.options.find((o) => o.kind === "reject_once");
       return reject ? { outcome: "selected", optionId: reject.optionId } : { outcome: "cancelled" };
     }
@@ -1023,7 +1331,7 @@ export class AgentManager {
     // The plugins' tool.before hooks, before the broker (best effort: see the header). A plugin's tool on the bridge
     // meets them where it runs (plugin-reach.ts), under its own name, so not here a second time.
     const pluginOnBridge = raw.mcp !== undefined && raw.mcp.server === e.serverName && e.bridgeTools.includes(raw.mcp.tool)
-      && !bridgeOwnTools(e.bot).some((t) => t.name === raw.mcp!.tool);
+      && !BRIDGE_OWN_TOOLS.some((t) => t.name === raw.mcp!.tool);
     if (this.#o.hooks !== undefined && e.backend.id !== HOOKED_IN_RUNTIME_BACKEND && !pluginOnBridge) {
       const reject = (): AgentPermissionAnswer => {
         const r = raw.options.find((o) => o.kind === "reject_once");
@@ -1041,7 +1349,7 @@ export class AgentManager {
           id: e.id, kind: bot === undefined ? "coding" : "agent", computer: e.computer, ...(bot === undefined ? {} : { bot }), backend: e.backend.id,
           caller: { kind: "session", sessionId: e.id, sessionKind: bot === undefined ? "coding" : "agent", ...(bot === undefined ? {} : { bot }) } as HookSession["caller"],
         };
-        // Under Clover's tool names (execute → Bash, edit → Edit or Write, …), ACP's own kind kept as `acpKind`.
+        // Under MOSS's tool names (execute → Bash, edit → Edit or Write, …), ACP's own kind kept as `acpKind`.
         const call = acpHookCall(raw);
         const verdict = await hooks.toolBefore(session, { name: call.name, callId: raw.toolCallId }, call.input, signal);
         if (verdict.deny !== undefined) {
@@ -1072,7 +1380,7 @@ export class AgentManager {
       computers: [e.computer],
       ...(this.#routineLevelOf(e) === undefined ? {} : { level: this.#routineLevelOf(e)! }),
       effect,
-      // R5: a command of an agent whose sandbox Clover admitted runs inside it (never unsandboxed), so it is contained.
+      // R5: a command of an agent whose sandbox MOSS admitted runs inside it (never unsandboxed), so it is contained.
       ...(e.sandboxHeld === true && effect === "execute" ? { contained: true } : {}),
       paths: ask.paths,
       // No rule from a bot's agent's card (the adversarial review): its request carries its bot's id, so an "always" saved
@@ -1136,7 +1444,7 @@ export class AgentManager {
    *  child's drawn denies and the path classes when `childRunsLater` is given. True on any doubt. */
   #childRunsLater(e: Entry, path: string): boolean {
     try {
-      if (this.#o.userHome !== undefined && runLaterByName(path, { os: hostOsOf(), userHome: this.#o.userHome, cloverHome: this.#o.home })) return true;
+      if (this.#o.userHome !== undefined && runLaterByName(path, { os: hostOsOf(), userHome: this.#o.userHome, mossHome: this.#o.home })) return true;
       if (this.#o.childRunsLater === undefined || e.bot === undefined) return false;
       const fence = withSecretsDenied(withHomeDenied(botChildPolicy(agentPolicyOf(this.#o.fence.policy()), e.rootPath, this.#o.userHome), this.#o.home), this.#o.userHome, hostOsOf());
       return this.#o.childRunsLater({ bot: e.bot, rootPath: e.rootPath, level: this.#levelOf(e), fence }, path);
@@ -1145,7 +1453,7 @@ export class AgentManager {
     }
   }
 
-  /** Whether `backend` is one of Clover's own sandboxed coding agents (`clover`, `clover-code`) here: the id is a
+  /** Whether `backend` is one of MOSS's own sandboxed coding agents (`moss`, `moss-code`) here: the id is a
    *  reserved one (no plugin's backend may take it), it resolves to that backend, and the backend says it is installed,
    *  its own, at a tested version and sandboxed. A bot starts one with no card (the controller's ruling); any other
    *  backend asks on a card at each start. */
@@ -1185,8 +1493,26 @@ export class AgentManager {
     return {
       agents: { list: () => this.list() },
       setAgentModel: (id, model, effort) => this.setModel(id, model, effort),
+      setAgentOption: (id, option, value) => this.setOption(id, option, value),
       reattach: (views) => this.reattachAll(views),
     };
+  }
+
+  /** The backend of an agent or coding session on this computer and the config options its running agent reported (none
+   *  before its first turn starts it), for `models.list {session}`; undefined: not such a session here. */
+  sessionOptions(sessionId: string): { backend: AgentBackend; options: ReturnType<NonNullable<AgentSession["configOptions"]>> | undefined; session: AgentSession | undefined } | undefined {
+    const e = this.#entries.get(sessionId);
+    return e === undefined ? undefined : { backend: e.backend, options: e.driver.session?.configOptions?.(), session: e.driver.session };
+  }
+
+  /** `session.setConfig`: the person's pick of one of the running agent's other options (never the model, effort or the
+   *  approval level's mode). The agent may refuse it; a session that hasn't started has none to set. */
+  async setOption(sessionId: string, option: string, value: string): Promise<void> {
+    const e = this.#entries.get(sessionId);
+    if (!e) throw new ContractError("not_found", `no agent ${sessionId} on this computer`);
+    const s = e.driver.session;
+    if (s?.setOption === undefined) throw new ContractError("refused", "this agent has no option to set yet");
+    await s.setOption(option, value);
   }
 
   /** `session.setModel` on an agent or coding session (item 90's model picker). */
@@ -1201,6 +1527,9 @@ export class AgentManager {
     const e = this.#entries.get(sessionId);
     if (!e) throw new ContractError("not_found", `no agent ${sessionId} on this computer`);
     await e.driver.setModel(model, effort);
+    // The agent started again after a failed turn starts on it.
+    e.model = model;
+    if (effort !== undefined) e.effort = effort;
     e.record = { ...e.record, model, ...(effort === undefined ? {} : { effort }) };
     e.transcript.writeRecord(e.record);
   }
@@ -1210,6 +1539,7 @@ export class AgentManager {
   async close(): Promise<void> {
     this.#unpause?.();
     this.#unwatchLevels?.();
+    this.#unwatchCards?.();
     this.#unwatchParts?.();
     if (this.#partsTimer !== undefined) clearTimeout(this.#partsTimer);
     this.#offPeerPause?.();
@@ -1239,13 +1569,10 @@ export class AgentManager {
         const e = this.#entries.get(id);
         return e ? { ...(e.bot === undefined ? {} : { bot: e.bot }) } : undefined;
       },
-      tools: async (id) => {
+      tools: (id) => this.#bridgeView(this.#entries.get(id), id),
+      linked: (id, link) => {
         const e = this.#entries.get(id);
-        const facts = e === undefined ? undefined : this.#facts(e);
-        const plugin = await source.tools(id, facts).catch(() => []);
-        const own = await source.instructions?.(id, facts).catch(() => "");
-        const essentials = bridgeInstructions({ ...(e?.bot === undefined ? {} : { bot: e.bot }), serverName: e?.serverName ?? BRIDGE_SERVER_PREFIX });
-        return { tools: [...bridgeOwnTools(e?.bot), ...plugin], instructions: own ? `${essentials}\n\n${own}` : essentials };
+        if (e !== undefined) e.bridgeLink = link;
       },
       call: async (id, c) => {
         let e: Entry;
@@ -1256,24 +1583,167 @@ export class AgentManager {
           return { content: [{ type: "text", text: `Not run: ${why}.` }], isError: true };
         }
         const signal = e.driver.currentSignal();
-        return source.call(id, c, {
+        const r = await source.call(id, c, {
           computer: e.computer, origin: e.driver.currentOrigin() ?? "agent",
           ...(e.bot === undefined ? {} : { bot: e.bot }), ...(this.#routineLevelOf(e) === undefined ? {} : { level: this.#routineLevelOf(e)! }), ...(signal ? { signal } : {}),
           session: this.#facts(e),
         });
+        // What its result shows stays in MOSS, for the conversation; the agent gets the content.
+        if (r.display !== undefined && !r.isError) e.shows.put(c.tool, c.input, r.display);
+        if (r.app !== undefined && !r.isError) e.shows.putApp(c.tool, c.input, r.app);
+        return { content: r.content, isError: r.isError };
       },
       sendMessage: async (id, m) => {
         await this.#holdForBridge(id);
         return this.agentMessage(id, m.text, m.to);
       },
-      glossary: (id, q) => {
+      // What `SendMessage` would deliver to, from this session: the same messenger, the same rule. An agent run here for another
+      // computer's bot has none of this computer's sessions to list (its sends go to that computer, which checks where they may go).
+      listSessions: async (id) => {
         const e = this.#entries.get(id);
-        return this.#o.glossary && e !== undefined ? this.#o.glossary(id, q, this.#facts(e)) : Promise.resolve({ results: [], loaded: [] });
+        return { sessions: e === undefined || e.peer !== undefined ? [] : this.#messenger.reachable(id) };
+      },
+      glossary: async (id, q) => {
+        const e = this.#entries.get(id);
+        if (!this.#o.glossary || e === undefined) return { results: [], loaded: [] };
+        const r = await this.#o.glossary(id, q, this.#facts(e));
+        // An agent whose list can change holds an on-demand tool back until it is loaded: the load puts it on the list, which
+        // the agent then takes (live, or at its next turn). Every other agent's loads are the runtime's (`load`) or nothing.
+        if (exposureOf(e.backend.quirks) === "list" && r.load !== undefined && r.load.length > 0) {
+          e.loaded ??= new Set<string>();
+          for (const n of r.load) e.loaded.add(n);
+          await this.#syncTools(e).catch(() => {});
+          return { ...r, note: `The tools you loaded are on your tool list now${this.#listChangeMode(e) === "next-turn" ? ": you have them from your next message" : ""}.` };
+        }
+        return r;
       },
     };
   }
 
-  /** An agent's `SendMessage` (§9.3): it folds into its bot's conversation like any bot message. */
+  /** What the bridge offers a session now: its own tools, the plugins' tools in its scope as they are this moment, and
+   *  the instructions. The one place that list is made: `bridge.tools` and a session's start both read it. */
+  async #bridgeView(e: Entry | undefined, id = e?.id ?? ""): Promise<{ tools: BridgeToolDef[]; instructions: string }> {
+    const source = this.#o.pluginTools ?? NO_PLUGIN_TOOLS;
+    const facts = e === undefined ? undefined : this.#facts(e);
+    const plugin = await source.tools(id, facts).catch(() => []);
+    e?.shows.listed(plugin);
+    const own = await source.instructions?.(id, facts).catch(() => "");
+    const essentials = bridgeInstructions({ ...(e?.bot === undefined ? {} : { bot: e.bot }), serverName: e?.serverName ?? BRIDGE_SERVER_PREFIX });
+    return { tools: [...BRIDGE_OWN_TOOLS, ...plugin], instructions: own ? `${essentials}\n\n${own}` : essentials };
+  }
+
+  /** How a running session takes a changed tool list (`listChangeModeOf`). */
+  #listChangeMode(e: Entry): "live" | "next-turn" | "next-session" {
+    return listChangeModeOf(e.backend.quirks);
+  }
+
+  /** The plugins' tools changed for some sessions (an install, an update, a removal, an enable or disable, the tool
+   *  setting): each running session's list is made again and compared with what its agent holds. Only a real difference
+   *  does anything, so one install is one notification and a change that touches no session's tools is none:
+   *  * the stdio bridge is told (`bridge.toolsChanged`) and sends its agent `notifications/tools/list_changed`;
+   *  * an agent that can't take it live but can be opened again (`next-turn`) is, before its next turn;
+   *  * any other keeps the list it has and the person is told at its next turn (`#toolsNotice`).
+   *  A call is judged against the plugins' list at the call, whichever of these the agent did, so a name it still holds
+   *  of a tool that has gone is refused there. */
+  refreshBridgeTools(): Promise<void> {
+    // One at a time: two refreshes reading the list together would each see the change and tell the agent twice.
+    const run = this.#refreshing.then(() => this.#refreshBridgeToolsNow());
+    this.#refreshing = run.catch(() => {});
+    return run;
+  }
+
+  async #refreshBridgeToolsNow(): Promise<void> {
+    for (const e of [...this.#entries.values()]) await this.#syncTools(e);
+  }
+
+  /** One session's tool list made again and compared with what its agent holds; what a difference does is above. */
+  async #syncTools(e: Entry): Promise<void> {
+    if (e.peer || e.session === undefined || e.gone.signal.aborted) return;
+    const view = await this.#bridgeView(e).catch(() => undefined);
+    if (view === undefined || e.gone.signal.aborted || this.#entries.get(e.id) !== e || e.session === undefined) return;
+    const sig = toolsSignature(view);
+    if (sig === e.toolsSig) return;
+    const before = e.toolNames ?? [];
+    e.toolsSig = sig;
+    e.toolNames = view.tools.map((t) => t.name);
+    e.bridgeTools = e.toolNames;
+    const mode = this.#listChangeMode(e);
+    this.#o.log?.(`[agents] ${e.id}: the plugins' tools changed (${before.length} before, ${e.toolNames.length} now); ${mode === "live" ? "its agent is told" : mode === "next-turn" ? "it is opened again before its next turn" : "it keeps its list until its next session"}`);
+    if (mode === "next-turn") e.toolsRestart = true;
+    else if (mode === "next-session" && e.toolsUntold === undefined) e.toolsUntold = before;
+    try { e.bridgeLink?.notify(BRIDGE_TOOLS_CHANGED_NOTIFICATION, {}); } catch { /* the bridge has gone; the agent's own exit ends the session */ }
+  }
+
+  /** At a turn's start: an agent opened again for a changed tool list (`next-turn`), by the way a token near its expiry is
+   *  renewed: stopped, and started on a `session/resume` of its own history, which builds its list now. */
+  async #reopenForTools(e: Entry, session: AgentSession): Promise<AgentSession | undefined> {
+    if (e.toolsRestart !== true) return undefined;
+    const agentSessionId = e.daemon.agentSessionId ?? session.agentSessionId;
+    e.toolsRestart = false;
+    e.unwatch?.();
+    await session.stop();
+    await new Promise((r) => setTimeout(r, 0));
+    e.token = this.#o.tokens.mint(e.id);
+    e.transcript.redact(e.token);
+    e.transcript.call({ ts: this.#o.clock.now(), type: "tools-reopened" });
+    return this.#startAgent(e, this.#reattachOf(e, agentSessionId));
+  }
+
+  /** How an agent opened again takes up its session: by its history when it has one, and afresh when it has said nothing yet
+   *  (a session whose first turn is only beginning has no history, and resuming one fails before the new process starts). */
+  #reattachOf(e: Entry, agentSessionId: string): { agentSessionId: string } | undefined {
+    return e.heard === true ? { agentSessionId } : undefined;
+  }
+
+  /** What the person is told at a turn's start when their agent keeps the tool list it started with (`next-session`):
+   *  which tools came and went, and that the agent gets them in its next session. Undefined when nothing it holds differs. */
+  #toolsNotice(e: Entry): string | undefined {
+    const was = e.toolsUntold;
+    if (was === undefined) return undefined;
+    e.toolsUntold = undefined;
+    const now = new Set(e.toolNames ?? []);
+    const old = new Set(was);
+    const added = [...now].filter((n) => !old.has(n));
+    const removed = [...old].filter((n) => !now.has(n));
+    // A tool set to another loading, or its words changed, is no name added or removed: the person hears it as a change all the same.
+    const named = (names: string[]) => names.slice(0, 5).join(", ") + (names.length > 5 ? `, and ${names.length - 5} more` : "");
+    const what = [...(added.length > 0 ? [`new: ${named(added)}`] : []), ...(removed.length > 0 ? [`gone: ${named(removed)}`] : [])].join("; ");
+    return `MOSS's plugin tools changed${what ? ` (${what})` : ""}. This agent doesn't take a change of tools in a running session, so it keeps the list it started with until its next session. A tool that has gone is refused if it calls it.`;
+  }
+
+  /** The depth an agent a bot starts begins at: the starting session's own depth + 1 (its first prompt is that session's message),
+   *  never beyond the limit. So a spawn does not buy the exchange a fresh 8: a chain of spawns is braked as a chain of messages. */
+  #spawnDepth(session: string): number {
+    return Math.min(this.#messenger.depthOf(session) + 1, EXCHANGE_DEPTH_LIMIT);
+  }
+
+  /** The approval a bot's agent's `SendMessage` waits for (spec §9.2: "messaging the bot's own sessions or a session whose level is no wider
+   *  than its own" runs without asking at ask for risky actions; read only is absolute, ask asks, a wider target's a card every time):
+   *  the same call as in its bot's own session, judged by the bots' approval check (`BridgeToolSource.judge`), at the target the rule
+   *  resolved (never the model's `to`, which may be a title). A session the person drives (no bot) is not asked here: the spec gives
+   *  nothing for it. A bot's agent with no judge wired (no approvals here) is refused, as the late-bound source refuses: never sent
+   *  without the ask. */
+  #messageApproval(sessionId: string, text: string): ((target: SessionView) => Promise<string | undefined>) | undefined {
+    const judge = this.#o.pluginTools?.judge;
+    const e = this.#entries.get(sessionId);
+    const r = this.#remote.get(sessionId);
+    const facts: AgentSessionFacts | undefined = e !== undefined && e.peer === undefined ? this.#facts(e)
+      : r !== undefined ? { id: r.id, kind: r.bot === undefined ? "coding" : "agent", backend: r.backend, ...(r.bot === undefined ? {} : { bot: r.bot }), computer: r.computer, root: r.root }
+      : undefined;
+    if (facts === undefined || facts.bot === undefined) return undefined;
+    if (judge === undefined) return async () => "SendMessage was refused: this computer's approvals aren't running for agents here, so a bot's agent's message isn't sent.";
+    const level = e === undefined ? r?.level : this.#routineLevelOf(e);
+    const signal = e?.driver.currentSignal();
+    const ctx: BridgeCallContext = {
+      computer: facts.computer, origin: e?.driver.currentOrigin() ?? "agent", bot: facts.bot, ...(level === undefined ? {} : { level }), ...(signal ? { signal } : {}), session: facts,
+    };
+    return async (target) => {
+      const v = await judge(facts, ctx, { served: "SendMessage", input: { to: target.id, message: text }, callId: randomUUID() });
+      return v.allowed ? undefined : v.message;
+    };
+  }
+
+  /** An agent's `SendMessage` (§9.3, §9.5): a message to another session it may reach, under the protocol's one rule. */
   async agentMessage(sessionId: string, text: string, to?: string): Promise<void> {
     const e = this.#entries.get(sessionId);
     if (!e) throw new ContractError("not_found", `no agent ${sessionId}`);
@@ -1282,16 +1752,12 @@ export class AgentManager {
       if (!this.#peers) throw new ContractError("closed", "this computer has no link to the bot's computer");
       return this.#peers.sendMessage(e.peer.device, sessionId, text, to);
     }
-    await this.#deliverFromAgent(sessionId, e.bot, e.parent, text, to);
+    await this.#send(sessionId, text, to);
   }
 
-  async #deliverFromAgent(sessionId: string, bot: string | undefined, parent: string | undefined, text: string, to?: string): Promise<void> {
-    const target = to ?? parent;
-    if (!target) throw new ContractError("refused", "this session has no bot to message");
-    if (target === sessionId) throw new ContractError("refused", "that is this agent's own session; SendMessage reaches another one");
-    const view = this.#o.host.get(target);
-    if (!view || view.bot === undefined || view.bot !== bot) throw new ContractError("refused", "an agent may message only its own bot's sessions");
-    await this.#o.host.deliver(target, { from: "agent", agent: sessionId, text });
+  async #send(sessionId: string, text: string, to?: string): Promise<void> {
+    const r = await this.#messenger.send(sessionId, { message: text, ...(to === undefined ? {} : { to }) }, this.#messageApproval(sessionId, text));
+    if ("refused" in r) throw new ContractError("refused", r.refused);
   }
 }
 
@@ -1304,7 +1770,7 @@ export function effectOf(toolKind: string): ActionEffect {
   return EFFECTS[toolKind] ?? "other";
 }
 
-/** The key a card's "always" saves as Clover's own rule (S5 edit 5): a command exactly, or an MCP tool, each under the
+/** The key a card's "always" saves as MOSS's own rule (S5 edit 5): a command exactly, or an MCP tool, each under the
  *  agent's backend, so an agent's rule never covers a bot's own tool of the same name, or the reverse (review 4), and
  *  each written so no two calls share a key (check 2's minor 2). */
 export function ruleKeyOf(backend: string, ask: AgentPermissionAsk): string | undefined {
@@ -1312,6 +1778,9 @@ export function ruleKeyOf(backend: string, ask: AgentPermissionAsk): string | un
   if (ask.mcp) return `Agent(${backend}):mcp(${JSON.stringify([ask.mcp.server, ask.mcp.tool])})`;
   const command = (ask.rawInput as { command?: unknown } | undefined)?.command;
   if (ask.toolKind === "execute" && typeof command === "string" && command.length > 0 && command.length <= 2000) return `Agent(${backend}):Bash(${command})`;
+  // An edit of one file the core resolved: that file, for that agent, as a bot's edit rule is its file (lane MC: a code
+  // session's agent's card offers what a bot's does, "Always allow" included).
+  if (effectOf(ask.toolKind) === "edit" && ask.paths.length === 1) return `Agent(${backend}):${acpHookCall(ask).name}(${ask.paths[0]})`;
   return undefined;
 }
 
@@ -1327,23 +1796,30 @@ function sealedText(s: string, max: number): string {
   return w.length > max ? w.slice(0, max) : w;
 }
 
-/** The card's sealed fields: headings from this table, the agent's own words only as code or row values. */
+/** The card's sealed fields, in the shape a bot's tool card has (approvals/bot-check.ts `botToolRequest`), so it reads like
+ *  any other tool card (the app's card-summary.ts): the tool in MOSS's names (`what`: a built-in's as text, a server's
+ *  tool as code), a command as code, any other input as its JSON in `detail` (the app shows it as text, never as JSON),
+ *  the resolved paths as a list. Headings from this table; the agent's own words only as code or row values. */
 function cardFields(e: Entry, ask: AgentPermissionAsk): ApprovalRequest["fields"] {
   const effect = effectOf(ask.toolKind);
-  const raw = ask.rawInput as { command?: unknown } | undefined;
-  const code = typeof raw?.command === "string" ? raw.command : ask.rawInput === undefined ? ask.title : JSON.stringify(ask.rawInput, null, 2);
+  const call = acpHookCall(ask);
+  const { acpKind: _kind, ...input } = call.input;
+  const command = typeof input.command === "string" ? input.command : undefined;
   const fields: Partial<Record<string, SealedValue>> = {
     title: { type: "text", text: TITLES[effect] },
-    // A bot's agent asks as itself, never as its bot: "<bot>'s agent <title> wants to …".
-    what: { type: "text", text: e.bot === undefined ? "Allow it this once?" : sealedText(`${e.bot}'s agent "${e.title ?? e.backend.id}" (${e.backend.id}) is asking, not ${e.bot} itself. Allow it this once?`, 4000) },
-    command: { type: "code", code: sealedText(code, MAX_CARD_CODE) },
+    what: ask.mcp === undefined ? { type: "text", text: call.name } : { type: "code", code: sealedText(call.name, 4000) },
+    ...(command !== undefined
+      ? { command: { type: "code", code: sealedText(command, MAX_CARD_CODE) } }
+      : { detail: { type: "code", code: sealedText(JSON.stringify(input, null, 2) ?? "", MAX_CARD_CODE), language: "json" } }),
     computer: { type: "text", text: e.computer },
     source: { type: "rows", rows: [
       { label: "Agent", value: sealedText(e.backend.id, 4000) },
       { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
       { label: "Folder", value: sealedText(e.root, 4000) },
+      { label: "The agent's title", value: sealedText(ask.title, 4000) },
     ] },
-    detail: { type: "rows", rows: [{ label: "The agent's title", value: sealedText(ask.title, 4000) }] },
+    // A bot's agent asks as itself, never as its bot: "<bot>'s agent <title> is asking, not <bot> itself".
+    ...(e.bot === undefined ? {} : { reason: { type: "text", text: sealedText(`${e.bot}'s agent "${e.title ?? e.backend.id}" (${e.backend.id}) is asking, not ${e.bot} itself.`, 4000) } }),
   };
   if (ask.paths.length > 0) {
     const shown = ask.paths.slice(0, 200).map((p) => sealedText(p, 4000));
@@ -1355,8 +1831,9 @@ function cardFields(e: Entry, ask: AgentPermissionAsk): ApprovalRequest["fields"
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 
-/** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3). */
-export async function promptOf(input: TurnInput): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
+/** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3); another session's is
+ *  framed as that session's (`titleOf` gives its title), never as the user's words (§9.5). */
+export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
   switch (input.from) {
     case "user": {
       const images = (input.images ?? []).flatMap((img) => {
@@ -1375,12 +1852,14 @@ export async function promptOf(input: TurnInput): Promise<{ text: string; images
       return { text: input.text };
     case "agent":
       return { text: `Message from agent ${input.agent}:\n\n${input.text}` };
+    case "session":
+      return { text: formatSessionMessage(input, titleOf?.(input.session)) };
     case "task-notification":
       return { text: `Agent ${input.agent} (${input.backend}) finished: ${input.stopReason}. Transcript: ${input.transcript}\n\n${input.text}` };
     case "routine":
       return { text: `From the routine "${input.name}":\n\n${input.text}` };
     case "plugin":
-      return { text: `Message from the plugin ${input.pluginId}:\n\n${input.text}` };
+      return { text: input.app === undefined ? `Message from the plugin ${input.pluginId}:\n\n${input.text}` : `Message from a page the plugin ${input.pluginId} drew:\n\n${PAGE_MESSAGE_FRAME}\n${input.text}` };
     case "note":
     case "notice":
       return { text: `[${input.label}] ${input.text}` };
@@ -1428,7 +1907,7 @@ export function botRootRefusalOnDisk(rootPath: string, userHome: string | undefi
 /** Why a root a bot named can't be an agent's (undefined when it can): it must be a folder strictly inside the user's
  *  home (never the home itself, `/`, or anything outside it), not a hidden folder or one inside one (`~/.ssh`,
  *  `~/.config`), not `~/Library` (macOS) or inside it, and neither inside nor holding any of the user's secret places.
- *  The fence's `checkAgentRoot` has already refused the Clover home (every bot's folder is in it), a development folder
+ *  The fence's `checkAgentRoot` has already refused the MOSS home (every bot's folder is in it), a development folder
  *  and every fenced item. With no user home known, a bot starts no agent. */
 export function botRootRefusal(rootPath: string, userHome: string | undefined, os: Os): string | undefined {
   if (userHome === undefined) return "can't be checked: this computer's home isn't known";

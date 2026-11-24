@@ -1,0 +1,979 @@
+// MOSS's seam to the engine (spec §3.6 "What the engine gives MOSS as plain data", §6.10): every piece the window shows,
+// read over the one protocol both apps speak, and folded into the plain view the window draws (shared/view.ts).
+//
+// The seam is the wire. The engine pieces behind this window are other lanes' (bots as records BT, the feed and the
+// picture AF, the router RT, the tool setting TS); until one is served, its methods answer "not served yet" (-32601)
+// and the window says it waits for that piece, never shows something made up. The tests and the renders run against a
+// fake engine (test/fake-engine/) built from the contracts' own `Fake*`, so the same code here switches to the real
+// engine piece by piece as each lane merges, with no change on MOSS's side.
+//
+// Pure apart from the client it is given: the tests drive it under Bun.
+import { orderProviders } from "@waifucave/moss-protocol/provider-order";
+import {
+  ACTIVITY_STATES, CardPlacement, CORE_EVENT_NOTIFICATION, PICTURE_FRAME_NOTIFICATION,
+  type ActivityState, type ActivityView, type BotRecordView, type BotSummary, type PictureView, type RoutineView,
+} from "@waifucave/moss-protocol";
+import { RpcCallError } from "./client";
+import { MAIN_WINDOW_ID } from "./identity";
+import { oneLine, safeDetail } from "../shared/status-line";
+import type { SealedFrames } from "./sealed";
+import { talkCommandOf, type TalkCommand } from "./voice";
+import type {
+  BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, PairingRow, RelayRow, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
+} from "../shared/view";
+
+export interface EngineClient {
+  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>;
+}
+
+/** The areas whose events MOSS follows. */
+export const MOSS_EVENT_AREAS = ["bots", "activity", "approvals", "surfaces", "plugins", "host", "release", "devices"] as const;
+
+/** Whether an error is the engine's "not served yet" (a method with no handler). */
+export function notServed(err: unknown): boolean {
+  return err instanceof RpcCallError && err.code === -32601;
+}
+
+/** One bot conversation event as a message, or undefined for what the window doesn't show as a bubble. The text stays
+ *  text: it is drawn as a text node, never as markup. */
+export function messageOf(e: Record<string, unknown>): Message | undefined {
+  const seq = typeof e.seq === "number" ? e.seq : undefined;
+  const at = typeof e.ts === "number" ? e.ts : 0;
+  const id = `${String(e.sessionId ?? "s")}:${seq ?? at}`;
+  if (e.type === "user_message" && typeof e.text === "string") {
+    const files = Array.isArray(e.files) ? (e.files as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "file" as const }] : []) : [];
+    const images = Array.isArray(e.images) ? (e.images as { path?: unknown }[]).flatMap((f) => typeof f.path === "string" ? [{ name: baseName(f.path), kind: "image" as const }] : []) : [];
+    const all = [...files, ...images];
+    return { id, from: "user", text: stripTokens(e.text), at, ...(all.length > 0 ? { files: all } : {}) };
+  }
+  if (e.type === "assistant_message" && typeof e.text === "string" && e.text.trim() !== "") return { id, from: "bot", text: e.text, at };
+  if (e.type === "agent_error" && typeof e.message === "string") return { id, from: "note", text: e.message.slice(0, 500), at };
+  // A turn that ended in an error: the conversation's note, with Try again while it is the last thing there.
+  if (e.type === "turn_completed" && e.stopReason === "error") return { id: `${id}:failed`, from: "note", text: "The turn ended with an error.", at, failed: true };
+  // A routine's run posts its short result into the bot's conversation (§7): a note naming the routine.
+  if (e.type === "routine_result" && typeof e.text === "string") {
+    const name = typeof e.name === "string" ? e.name.slice(0, 200) : "A routine";
+    // A failed run says so and why (the engine's words: "The run failed (<why>): …"); a run that ended with no words still says it failed.
+    const said = e.text.trim();
+    const text = e.failed === true
+      ? (said === "" ? `Routine "${name}" failed, and said nothing about why.` : /^The run /.test(said) ? `Routine "${name}": ${said}` : `Routine "${name}" failed: ${said}`)
+      : `Routine "${name}": ${said}`;
+    return { id, from: "note", text: text.slice(0, 2_200), at, ...(e.failed === true ? { routineFailed: true as const } : {}) };
+  }
+  return undefined;
+}
+
+/** A path's last segment: an attachment card shows the file's name alone. */
+export function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter((p) => p !== "");
+  return (parts[parts.length - 1] ?? path).slice(0, 200);
+}
+
+/** The `[File #n]` and `[Image #n]` tokens in the person's own words: the attachment card stands in for them. */
+function stripTokens(text: string): string {
+  return text.replace(/\s*\[(?:File|Image) #\d+\]\s*/g, " ").trim();
+}
+
+/** A name the engine sent as text or as a table of languages: its English. */
+export function textOf(t: string | { en: string }): string {
+  return typeof t === "string" ? t : t.en;
+}
+
+/** A routine's triggers in a few words. */
+export function scheduleOf(r: Pick<RoutineView, "triggers">): string {
+  const words = r.triggers.map((t) => t.summary.trim()).filter((s) => s !== "");
+  return words.length === 0 ? "No trigger" : words.join(" · ").slice(0, 200);
+}
+
+/** The window's routine change, kept to the fields `routine.edit` takes and their sizes; undefined when nothing is left. */
+export function routineEditOf(v: unknown): RoutineEdit | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  const p = v as Record<string, unknown>;
+  const out: RoutineEdit = {};
+  const text = (x: unknown, max: number) => (typeof x === "string" && x.trim() !== "" ? x.trim().slice(0, max) : undefined);
+  const name = text(p.name, 200);
+  const schedule = text(p.schedule, 200);
+  const instructions = text(p.instructions, 60_000);
+  if (name !== undefined) out.name = name;
+  if (schedule !== undefined) out.schedule = schedule;
+  if (instructions !== undefined) out.instructions = instructions;
+  if (typeof p.paused === "boolean") out.paused = p.paused;
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/** What MOSS says when the engine gave up starting the background host (MOSS Code's `host-down`, MOSS's own words). */
+export const HOST_DOWN_NOTICE = "The island couldn't start: MOSS tried several times and stopped. Cards show in this window while it's in front; when it isn't, MOSS tells you a bot needs you and brings this window forward when you click. Quit and open MOSS again to try once more.";
+
+/** A routine as the side panel shows it. */
+export function routineRowOf(x: RoutineView): RoutineRow {
+  const spec = x.triggers.find((t) => t.type === "schedule")?.summary;
+  return {
+    id: x.id, name: x.name, schedule: scheduleOf(x), paused: x.state !== "active", state: x.state,
+    ...(x.pausedWhy !== undefined ? { pausedWhy: x.pausedWhy } : {}),
+    ...(spec !== undefined ? { scheduleSpec: spec } : {}),
+    ...(x.nextRunAt !== undefined ? { nextRunAt: x.nextRunAt } : {}),
+  };
+}
+
+export class MossEngine {
+  private client: EngineClient | undefined;
+  private connection: { kind: ConnectionKind; reason?: string } = { kind: "connecting" };
+  private engineRelease: string | undefined;
+  /** The home's setup as the engine last said it (`setup.state`), for the setup guide; absent until it answers. */
+  private setupNow: SetupRow | undefined;
+  private readonly pieces: Partial<Record<Piece, PieceState>> = {};
+  private records = new Map<string, BotRecordView>();
+  private summaries = new Map<string, BotSummary>();
+  private activity = new Map<string, ActivityView>();
+  /** The pending cards MOSS knows (ids, bots, kinds), and where the router put each. */
+  private cards = new Map<string, { id: string; bot?: string; kind: string; change?: string }>();
+  private placements = new Map<string, CardPlacement>();
+  /** The cards a `card_placed` event placed on this connection (an event always wins over a `card.placement` answer,
+   *  which may have been taken before it), and the cards resolved on it (a late answer never brings one back): MOSS
+   *  Code's PlacementBook rule. A new connection starts both afresh. */
+  private placedByEvent = new Set<string>();
+  /** Bots removed on this connection (`bot_record_removed`): a snapshot answer never brings one back. */
+  private removedBots = new Set<string>();
+  private resolvedCards = new Set<string>();
+  private viewListeners = new Set<(v: MossView) => void>();
+  /** The background host as the engine last said (`host.status`, `host_changed`): whether it gave up starting it. */
+  private hostGaveUp = false;
+  /** Cards the router placed `elsewhere` (no window in front and no host drawing the island): each said once, so the
+   *  person is told a bot needs them and can bring MOSS forward to answer it (never nowhere). */
+  private elsewhereSaid = new Set<string>();
+  private elsewhereListeners = new Set<(card: { id: string; bot?: string; botName?: string }) => void>();
+  private messageListeners = new Set<(bot: string, m: Message) => void>();
+  private frameListeners = new Set<(f: PictureFrameView) => void>();
+  /** The tool call running now on a bot's main session (the open bot's), for the status line: its name and the safe
+   *  detail and title only (status-line.ts), never its arguments. Cleared by its result, a reply or the turn's end. */
+  private liveCall = new Map<string, { name: string; detail?: string; title?: string }>();
+  /** Which bot's main session is which, for the conversation's live events. */
+  private sessionBot = new Map<string, string>();
+  /** The live pictures this window follows: stream → picture id. */
+  private streams = new Map<string, string>();
+  /** A stream's latest frame that came before `picture.open`'s answer named it (the engine sends the picture's latest frame
+   *  at once, and a still picture sends no other): kept until the answer comes, a few streams at most. */
+  private early = new Map<string, PictureFrameView & { stream: string }>();
+  private emitTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The bot session the window follows live now. */
+  private attached: string | undefined;
+  /** The pairing the person started in Settings (the engine's steps fill it in), and how often the devices changed. */
+  private pairingNow: { id: string; row: PairingRow; words?: string[] } | undefined;
+  private devicesRev = 0;
+  /** The voice plugin's talk command, from the plugins' declarations (voice.ts `talkCommandOf`). */
+  private talk: TalkCommand = { why: "Talking waits for the engine's voice plugin list." };
+
+  constructor(private readonly sealed: SealedFrames, private readonly log: (line: string) => void = () => {}) {}
+
+  // ---------------------------------------------------------------------------------------------
+  // The view
+  // ---------------------------------------------------------------------------------------------
+
+  view(): MossView {
+    const bots: BotRow[] = [...this.records.values()].map((r) => {
+      const s = this.summaries.get(r.id);
+      const a = this.activity.get(r.id);
+      const mood: ActivityState = a !== undefined && (ACTIVITY_STATES as readonly string[]).includes(a.state) ? a.state : "idle";
+      return {
+        id: r.id, name: textOf(r.name), ...(r.face !== undefined ? { face: r.face } : {}), mood,
+        ...(mood === "working" && a?.tool !== undefined ? { tool: a.tool } : {}),
+        ...(mood === "working" && this.liveCall.has(r.id) && (a?.tool === undefined || a.tool === this.liveCall.get(r.id)!.name) ? { ...(this.liveCall.get(r.id)!.detail !== undefined ? { detail: this.liveCall.get(r.id)!.detail! } : {}), ...(this.liveCall.get(r.id)!.title !== undefined ? { title: this.liveCall.get(r.id)!.title! } : {}) } : {}),
+        ...(s?.last !== undefined ? { last: s.last } : {}), unread: s?.unread === true,
+        ...(r.madeBy.kind === "default" ? { default: true as const } : {}),
+      };
+    });
+    // Newest activity first, as a list of conversations is.
+    bots.sort((x, y) => (y.last?.at ?? 0) - (x.last?.at ?? 0) || x.name.localeCompare(y.name));
+    const cards: CardRow[] = [];
+    for (const c of this.cards.values()) {
+      if (!this.sealed.isPending(c.id)) continue;
+      const p = this.placements.get(c.id);
+      if (p === undefined || (p.kind !== "conversation" && p.kind !== "strip") || p.program !== "moss" || p.window !== MAIN_WINDOW_ID) continue;
+      cards.push({ id: c.id, ...(c.bot !== undefined ? { bot: c.bot } : {}), kind: c.kind, place: p.kind });
+    }
+    const talk = "command" in this.talk ? { ready: true as const } : { ready: false as const, why: this.talk.why };
+    // The engine's offer to copy an old install's home comes first: the setup guide waits while it is pending.
+    const copyOffered = [...this.cards.values()].some((c) => c.change === "home-copy" && this.sealed.isPending(c.id));
+    return { connection: this.connection, pieces: { ...this.pieces }, bots, cards, talk, ...(this.setupNow !== undefined && !copyOffered ? { setup: this.setupNow } : {}), ...(this.pairingNow !== undefined ? { pairing: this.pairingNow.row } : {}), ...(this.devicesRev > 0 ? { devicesRev: this.devicesRev } : {}), ...(copyOffered ? { setupWaits: true as const } : {}), ...(this.engineRelease !== undefined ? { engine: this.engineRelease } : {}), ...(this.releaseNotice !== undefined ? { notice: this.releaseNotice } : this.hostGaveUp ? { notice: HOST_DOWN_NOTICE } : {}) };
+  }
+
+  /** How many pending cards MOSS knows that the router hasn't placed yet (anywhere): the smoke run waits for none. */
+  unplacedCards(): number {
+    let n = 0;
+    for (const c of this.cards.values()) if (this.sealed.isPending(c.id) && !this.placements.has(c.id)) n++;
+    return n;
+  }
+
+  /** A card no window or island draws now (`elsewhere`): main tells the person (a notification that brings MOSS forward). */
+  onElsewhere(fn: (card: { id: string; bot?: string; botName?: string }) => void): () => void {
+    this.elsewhereListeners.add(fn);
+    return () => this.elsewhereListeners.delete(fn);
+  }
+
+  /** A placement heard (an event or a snapshot): an `elsewhere` card of MOSS's is said once. */
+  private placedAt(id: string, place: CardPlacement): void {
+    if (place.kind !== "elsewhere") return;
+    if (this.elsewhereSaid.has(id) || !this.sealed.isPending(id)) return;
+    MossEngine.remember(this.elsewhereSaid, id);
+    const c = this.cards.get(id);
+    const botName = c?.bot === undefined ? undefined : this.records.get(c.bot) === undefined ? undefined : textOf(this.records.get(c.bot)!.name);
+    for (const l of this.elsewhereListeners) l({ id, ...(c?.bot !== undefined ? { bot: c.bot } : {}), ...(botName !== undefined ? { botName } : {}) });
+  }
+
+  private hostHeard(p: unknown): void {
+    const h = (p ?? {}) as { state?: unknown; gaveUp?: unknown };
+    if (typeof h.state !== "string") return;
+    const gaveUp = h.state === "absent" && h.gaveUp === true;
+    if (gaveUp !== this.hostGaveUp) {
+      this.hostGaveUp = gaveUp;
+      this.log(gaveUp ? "host: the engine gave up starting the host (MOSS says so in its window)" : "host: the host is back");
+      this.changed();
+    }
+  }
+
+  onView(fn: (v: MossView) => void): () => void {
+    this.viewListeners.add(fn);
+    return () => this.viewListeners.delete(fn);
+  }
+
+  onMessage(fn: (bot: string, m: Message) => void): () => void {
+    this.messageListeners.add(fn);
+    return () => this.messageListeners.delete(fn);
+  }
+
+  onPictureFrame(fn: (f: PictureFrameView) => void): () => void {
+    this.frameListeners.add(fn);
+    return () => this.frameListeners.delete(fn);
+  }
+
+  /** Changes are folded into one view a beat later. */
+  private changed(): void {
+    if (this.emitTimer !== undefined) return;
+    this.emitTimer = setTimeout(() => {
+      this.emitTimer = undefined;
+      const v = this.view();
+      for (const l of this.viewListeners) l(v);
+    }, 16);
+  }
+
+  /** One release's notice while connected (lane PK: a newer app brings a newer engine, and this MOSS updates itself), or none. */
+  private releaseNotice: string | undefined;
+  setReleaseNotice(text: string | undefined): void {
+    if (text === this.releaseNotice) return;
+    this.releaseNotice = text;
+    this.changed();
+  }
+
+  setConnection(kind: ConnectionKind, reason?: string, engine?: string): void {
+    this.connection = { kind, ...(reason !== undefined ? { reason } : {}) };
+    if (engine !== undefined) this.engineRelease = engine;
+    if (kind !== "connected") this.client = undefined;
+    this.changed();
+  }
+
+  /** The placement of a card, for the press path's stacking rule: the router's word alone. */
+  placementOf(id: string): CardPlacement | undefined {
+    return this.placements.get(id);
+  }
+
+  /** A bot this window knows: presence names only those. */
+  hasBot(id: string): boolean {
+    return this.records.has(id);
+  }
+
+  private piece(p: Piece, s: PieceState): void {
+    if (this.pieces[p] === s) return;
+    this.pieces[p] = s;
+    this.changed();
+  }
+
+  /** Runs one read for a piece: its answer, or undefined with the piece marked waiting (not served) or failed. */
+  private async read<T>(p: Piece, method: string, params: unknown = {}): Promise<T | undefined> {
+    const client = this.client;
+    if (client === undefined) return undefined;
+    try {
+      const r = await client.request<T>(method, params, 10_000);
+      this.piece(p, "ready");
+      return r;
+    } catch (err) {
+      this.piece(p, notServed(err) ? "waiting" : "failed");
+      if (!notServed(err)) this.log(`engine: ${method} failed (${err instanceof Error ? err.message.slice(0, 160) : "error"})`);
+      return undefined;
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A connection
+  // ---------------------------------------------------------------------------------------------
+
+  /** A new connection: follow the events, then read every piece afresh (a reconnect re-reads `card.placement`, since
+   *  `card_placed` is transient and a placement made while MOSS was away is in no event it will hear). */
+  async attach(client: EngineClient): Promise<void> {
+    this.client = client;
+    this.attached = undefined;
+    this.placements.clear();
+    this.placedByEvent.clear();
+    this.removedBots.clear();
+    this.resolvedCards.clear();
+    await client.request("events.subscribe", { areas: MOSS_EVENT_AREAS }, 10_000).catch((err: unknown) => this.log(`engine: events.subscribe failed (${err instanceof Error ? err.message.slice(0, 120) : "error"})`));
+    await Promise.all([this.loadBots(), this.loadSummaries(), this.loadActivity(), this.loadCards(), this.loadTalk(), this.loadHost(), this.loadSetup()]);
+    this.changed();
+  }
+
+  /** The talk command the microphone runs now, or why there is none. */
+  talkCommand(): TalkCommand {
+    return this.talk;
+  }
+
+  /** Reads which plugin fills the voice point and its held command (again at each plugin change). */
+  private async loadTalk(): Promise<void> {
+    const client = this.client;
+    if (client === undefined) return;
+    const [points, commands] = await Promise.all([
+      client.request<{ points: { point: string; declaredBy: string; active?: { pluginId: string } }[] }>("point.active.list", {}, 10_000).catch(() => undefined),
+      client.request<{ commands: { name: string; pluginId: string; hold?: true }[] }>("command.list", {}, 10_000).catch(() => undefined),
+    ]);
+    if (client !== this.client) return;
+    const next = talkCommandOf(points?.points, commands?.commands);
+    if (JSON.stringify(next) !== JSON.stringify(this.talk)) {
+      this.talk = next;
+      this.log("command" in next ? `voice: the talk command is ${next.command} (${next.pluginId})` : `voice: no talk command (${next.why})`);
+      this.changed();
+    }
+  }
+
+  /** The host's state at connect (a `host_changed` before the subscription would be missed); none from an older engine. */
+  private async loadHost(): Promise<void> {
+    const client = this.client;
+    const r = await client?.request<unknown>("host.status", {}, 10_000).catch(() => undefined);
+    if (r !== undefined && client === this.client) this.hostHeard(r);
+  }
+
+  private async loadBots(): Promise<void> {
+    const r = await this.read<{ bots: BotRecordView[] }>("bots", "bot.records");
+    if (r === undefined) return;
+    this.records = new Map(r.bots.map((b) => [b.id, b]));
+    this.sessionBot = new Map(r.bots.map((b) => [b.mainSession, b.id]));
+  }
+
+  private async loadSummaries(): Promise<void> {
+    const r = await this.read<{ summaries: BotSummary[] }>("summaries", "bot.summaries");
+    if (r !== undefined) this.summaries = new Map(r.summaries.map((s) => [s.id, s]));
+  }
+
+  private async loadActivity(): Promise<void> {
+    const r = await this.read<{ activity: ActivityView[] }>("activity", "activity.list", { kind: "bots" });
+    if (r === undefined) return;
+    this.activity = new Map(r.activity.filter((a) => a.subject.kind === "bots").map((a) => [a.subject.id, a]));
+  }
+
+  private async loadCards(): Promise<void> {
+    const client = this.client;
+    if (client === undefined) return;
+    const listed = await client.request<{ cards?: unknown[] }>("card.list", {}, 10_000).catch(() => undefined);
+    for (const c of listed?.cards ?? []) this.cardArrived(c);
+    await this.loadPlacements();
+  }
+
+  /** The router's snapshot: it fills in only the cards no event has placed and none resolved, on the connection that
+   *  asked (an answer that comes after a reconnect is the old connection's, and is dropped). */
+  private async loadPlacements(): Promise<void> {
+    const client = this.client;
+    const r = await this.read<{ placements: { card: string; place: unknown }[] }>("router", "card.placement", {});
+    if (r === undefined || client !== this.client) return;
+    for (const p of r.placements) {
+      if (this.placedByEvent.has(p.card) || this.resolvedCards.has(p.card)) continue;
+      const place = CardPlacement.safeParse(p.place);
+      if (place.success) { this.placements.set(p.card, place.data); this.placedAt(p.card, place.data); }
+    }
+  }
+
+  /** Remembers a card in a bounded set (the oldest goes first). */
+  private static remember(set: Set<string>, id: string): void {
+    set.delete(id);
+    set.add(id);
+    if (set.size > 512) set.delete(set.values().next().value!);
+  }
+
+  private cardArrived(card: unknown): void {
+    this.sealed.fromCore(card);
+    const c = card as { id?: unknown; bot?: unknown; kind?: unknown; change?: unknown };
+    if (typeof c?.id !== "string") return;
+    this.cards.set(c.id, { id: c.id, ...(typeof c.bot === "string" ? { bot: c.bot } : {}), kind: typeof c.kind === "string" ? c.kind : "tool", ...(typeof c.change === "string" ? { change: c.change } : {}) });
+  }
+
+  /** The engine's notifications on MOSS's connection: core events and picture frames. */
+  notification(method: string, params: unknown): void {
+    if (method === PICTURE_FRAME_NOTIFICATION) return this.frame(params);
+    if (method === "event") return this.sessionEvent(params);
+    if (method !== CORE_EVENT_NOTIFICATION) return;
+    const e = params as Record<string, unknown>;
+    switch (e?.type) {
+      case "bot_record_changed": {
+        const b = e.bot as BotRecordView;
+        if (typeof b?.id !== "string") return;
+        this.records.set(b.id, b);
+        this.sessionBot.set(b.mainSession, b.id);
+        this.removedBots.delete(b.id);
+        break;
+      }
+      case "bot_record_removed":
+        if (typeof e.id === "string") { this.records.delete(e.id); this.summaries.delete(e.id); this.activity.delete(e.id); MossEngine.remember(this.removedBots, e.id); }
+        break;
+      case "bot_summary_changed": {
+        const s = e.summary as BotSummary;
+        if (typeof s?.id === "string") this.summaries.set(s.id, s);
+        break;
+      }
+      case "activity_changed": {
+        const a = e.activity as ActivityView;
+        if (a?.subject?.kind === "bots") this.activity.set(a.subject.id, a);
+        break;
+      }
+      case "card_requested":
+        this.cardArrived(e.card);
+        // A card heard before its placement: ask the router where it goes (its `card_placed` may come first or not at all).
+        void this.loadPlacements().then(() => this.changed());
+        break;
+      case "card_resolved":
+        if (typeof e.id === "string") {
+          this.sealed.resolvedOutcome(e.id, (typeof e.outcome === "string" ? e.outcome : "cancelled") as "approved");
+          this.cards.delete(e.id);
+          this.placements.delete(e.id);
+          MossEngine.remember(this.resolvedCards, e.id);
+        }
+        break;
+      case "pairing_changed":
+        this.pairingStep(e);
+        break;
+      case "device_changed":
+      case "device_removed":
+        this.devicesRev++;
+        break;
+      case "host_changed":
+        this.hostHeard(e);
+        return;
+      case "plugin_changed":
+      case "plugin_point_changed":
+        // A plugin on, off or changed may change who fills the voice point or which command holds the key, and which
+        // providers the setup counts.
+        void this.loadTalk();
+        void this.loadSetup().then(() => this.changed());
+        return;
+      case "plugin_auth_changed":
+        // A key or a sign-in added or removed, here or in MOSS Code: the setup may be done, or need a model again.
+        void this.loadSetup().then(() => this.changed());
+        return;
+      case "card_placed": {
+        const place = CardPlacement.safeParse(e.place);
+        if (typeof e.card === "string" && place.success) {
+          this.placements.set(e.card, place.data);
+          MossEngine.remember(this.placedByEvent, e.card);
+          // Placed somewhere drawn again: a later `elsewhere` is said again.
+          if (place.data.kind !== "elsewhere") this.elsewhereSaid.delete(e.card);
+          this.placedAt(e.card, place.data);
+        }
+        break;
+      }
+      default:
+        return;
+    }
+    this.changed();
+  }
+
+  /** A bot's main session's own event: a new bubble in its conversation. */
+  private sessionEvent(params: unknown): void {
+    const e = params as Record<string, unknown>;
+    const bot = typeof e?.sessionId === "string" ? this.sessionBot.get(e.sessionId) : undefined;
+    if (bot === undefined) return;
+    // The running call, for the status line only (a tool call is never drawn as a row).
+    if (e.type === "tool_call" && typeof e.name === "string") {
+      const detail = typeof e.argsJson === "string" ? safeDetail(e.name, e.argsJson) : undefined;
+      const title = typeof e.displayTitle === "string" ? oneLine(e.displayTitle, 40) : "";
+      this.liveCall.set(bot, { name: e.name, ...(detail !== undefined ? { detail } : {}), ...(title !== "" ? { title } : {}) });
+      this.changed();
+    } else if ((e.type === "tool_result" || e.type === "assistant_message" || e.type === "turn_completed" || e.type === "user_message") && this.liveCall.delete(bot)) this.changed();
+    const m = messageOf(e);
+    if (m === undefined) return;
+    for (const l of this.messageListeners) l(bot, m);
+  }
+
+  private frame(params: unknown): void {
+    const f = params as { stream?: unknown; seq?: unknown; format?: unknown; data?: unknown };
+    if (typeof f?.stream !== "string" || typeof f.data !== "string" || typeof f.seq !== "number") return;
+    if (f.format !== "jpeg" && f.format !== "png" && f.format !== "webp") return;
+    // Inert pixels: a data URL of the declared image type, base64 only.
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(f.data)) return;
+    const url = `data:image/${f.format};base64,${f.data}`;
+    const id = this.streams.get(f.stream);
+    if (id === undefined) {
+      // Before `picture.open`'s answer: the latest one kept for it (a stream nobody opened is dropped with the oldest).
+      this.early.delete(f.stream);
+      this.early.set(f.stream, { stream: f.stream, id: "", seq: f.seq, url });
+      while (this.early.size > 4) this.early.delete(this.early.keys().next().value!);
+      return;
+    }
+    for (const l of this.frameListeners) l({ id, seq: f.seq, url });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // What the window asks
+  // ---------------------------------------------------------------------------------------------
+
+  async conversation(bot: string, before?: number): Promise<ConversationPage | { waiting: true }> {
+    const r = await this.read<{ session: string; events: Record<string, unknown>[]; hasMore: boolean }>("bots", "bot.conversation", { id: bot, limit: 100, ...(before !== undefined ? { before } : {}) });
+    if (r === undefined) return { waiting: true };
+    this.sessionBot.set(r.session, bot);
+    const messages = r.events.flatMap((e) => { const m = messageOf(e); return m === undefined ? [] : [m]; });
+    const first = r.events.find((e) => typeof e.seq === "number");
+    const last = [...r.events].reverse().find((e) => typeof e.seq === "number");
+    // Follow the conversation live from the last event read (MOSS's own connection; the window draws what comes).
+    if (before === undefined) {
+      if (this.attached !== undefined && this.attached !== r.session) void this.client?.request("session.detach", { id: this.attached }, 5_000).catch(() => undefined);
+      this.attached = r.session;
+      void this.client?.request("session.attach", { id: r.session, ...(last !== undefined ? { since: last.seq as number } : {}) }, 10_000).catch(() => undefined);
+    }
+    return { bot, messages, hasMore: r.hasMore, ...(first !== undefined ? { before: first.seq as number } : {}) };
+  }
+
+  async send(bot: string, text: string, clientMessageId: string, images: readonly { mediaType: "image/png" | "image/jpeg" | "image/webp"; data: string }[] = [], files: readonly { path: string }[] = []): Promise<{ ok: true } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      await client.request("user.send", { to: { bot }, text, clientMessageId, ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) }, 30_000);
+      return { ok: true };
+    } catch (err) {
+      // The engine's plain sentence about a file (too many, too big, a folder, MOSS's own) is shown as it is.
+      if (err instanceof RpcCallError && (err.data as { code?: unknown } | undefined)?.code === "file_reference_invalid") return { ok: false, why: err.message };
+      return { ok: false, why: notServed(err) ? "Sending isn't served by this engine yet." : "The engine didn't take the message." };
+    }
+  }
+
+  async createBot(name: string, model?: string): Promise<{ ok: true; id: string } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      const r = await client.request<{ bot: BotRecordView }>("bot.create", { name, ...(model !== undefined ? { model } : {}) }, 15_000);
+      this.records.set(r.bot.id, r.bot);
+      this.sessionBot.set(r.bot.mainSession, r.bot.id);
+      this.changed();
+      return { ok: true, id: r.bot.id };
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Making bots isn't served by this engine yet." : "The engine didn't make the bot." };
+    }
+  }
+
+  markRead(bot: string, at: number): void {
+    const s = this.summaries.get(bot);
+    if (s !== undefined && s.unread) {
+      this.summaries.set(bot, { ...s, unread: false });
+      this.changed();
+    }
+    void this.client?.request("bot.markRead", { id: bot, at }, 5_000).catch(() => undefined);
+  }
+
+  async routines(bot: string): Promise<RoutineRow[] | { waiting: true }> {
+    const r = await this.read<{ routines: RoutineView[] }>("routines", "routine.list", { bot });
+    if (r === undefined) return { waiting: true };
+    return r.routines.filter((x) => x.bot === bot).map(routineRowOf);
+  }
+
+  async routineInstructions(bot: string, id: string): Promise<{ text: string } | { ok: false; why: string }> {
+    const r = await this.act<{ instructions: string }>("routine.get", { bot, id }, "Reading a routine");
+    return r.ok ? { text: r.value.instructions } : r;
+  }
+
+  async runRoutine(id: string): Promise<{ ok: true } | { ok: false; why: string }> {
+    const r = await this.act("routine.runNow", { id }, "Running a routine now", 30_000);
+    return r.ok ? { ok: true } : r;
+  }
+
+  async editRoutine(bot: string, id: string, patch: RoutineEdit): Promise<{ ok: true; routine: RoutineRow } | { ok: false; why: string }> {
+    const r = await this.act<{ routine: RoutineView }>("routine.edit", { bot, id, patch }, "Changing a routine", 15_000);
+    return r.ok ? { ok: true, routine: routineRowOf(r.value.routine) } : r;
+  }
+
+  async memory(bot: string): Promise<MemoryFileRow[] | { waiting: true }> {
+    const r = await this.read<{ entries: MemoryFileRow[] }>("memory", "memory.list", { bot });
+    if (r === undefined) return { waiting: true };
+    return r.entries.map((e) => ({ path: e.path, size: e.size, modifiedAt: e.modifiedAt }));
+  }
+
+  async memoryFile(bot: string, path: string): Promise<{ text: string } | { ok: false; why: string }> {
+    const r = await this.act<{ text: string }>("memory.read", { bot, path }, "Reading a memory file");
+    return r.ok ? { text: r.value.text } : r;
+  }
+
+  /** A change or a read the person asked for: the engine's answer, or its why in words (an engine's refusal says what
+   *  was wrong, never a secret), or that this engine doesn't serve it. */
+  private async act<T = unknown>(method: string, params: unknown, what: string, ms = 10_000): Promise<{ ok: true; value: T } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      return { ok: true, value: await client.request<T>(method, params, ms) };
+    } catch (err) {
+      if (notServed(err)) return { ok: false, why: `${what} isn't served by this engine yet.` };
+      const message = err instanceof Error ? err.message.replace(/^[a-z]+\.[a-zA-Z.]+: /, "").slice(0, 300) : "";
+      return { ok: false, why: message === "" ? `${what} didn't work.` : `The engine said: ${message}` };
+    }
+  }
+
+  async pictures(bot: string): Promise<PictureRow[] | { waiting: true }> {
+    const r = await this.read<{ pictures: PictureView[] }>("pictures", "picture.list", { kind: "bots", bot });
+    if (r === undefined) return { waiting: true };
+    // The publisher's name from the plugin list, best effort (the id is always there).
+    const listed = await this.client?.request<{ plugins: { id: string; name: string | { en: string } }[] }>("plugin.list", {}, 5_000).catch(() => undefined);
+    const names = new Map((listed?.plugins ?? []).map((p) => [p.id, textOf(p.name)]));
+    return r.pictures.map((p) => ({ id: p.id, publisher: p.publisher, ...(names.has(p.publisher) ? { publisherName: names.get(p.publisher)! } : {}), ...(p.tool !== undefined ? { tool: p.tool } : {}), width: p.width, height: p.height, screen: p.screen }));
+  }
+
+  async openPicture(id: string): Promise<boolean> {
+    const r = await this.read<{ stream: string }>("pictures", "picture.open", { id, maxFps: 10 });
+    if (r === undefined) return false;
+    this.streams.set(r.stream, id);
+    const first = this.early.get(r.stream);
+    this.early.delete(r.stream);
+    if (first !== undefined) for (const l of this.frameListeners) l({ id, seq: first.seq, url: first.url });
+    return true;
+  }
+
+  closePicture(id: string): void {
+    for (const [stream, pic] of [...this.streams]) {
+      if (pic !== id) continue;
+      this.streams.delete(stream);
+      void this.client?.request("picture.close", { stream }, 5_000).catch(() => undefined);
+    }
+  }
+
+  async plugins(): Promise<PluginRow[] | { waiting: true }> {
+    const list = await this.read<{ plugins: { id: string; name: string | { en: string }; enabled: boolean; parent?: string }[] }>("plugins", "plugin.list");
+    if (list === undefined) return { waiting: true };
+    const perms = await this.read<{ plugins: { pluginId: string; server: string; tools: { name: string; permission: "allow" | "ask" | "deny"; availability?: ToolRow["availability"]; declared?: "preload" | "on-demand" }[] }[] }>("tools", "tool.permissions");
+    const toolsOf = new Map<string, ToolRow[]>();
+    for (const p of perms?.plugins ?? []) {
+      const rows = p.tools.map((t) => {
+        const declared = t.declared === undefined ? undefined : t.declared === "on-demand" ? "on-demand" as const : "always" as const;
+        return { server: p.server, tool: t.name, permission: t.permission, availability: t.availability ?? declared ?? "always", ...(declared !== undefined ? { declared } : {}) };
+      });
+      toolsOf.set(p.pluginId, [...(toolsOf.get(p.pluginId) ?? []), ...rows]);
+    }
+    return list.plugins.filter((p) => p.parent === undefined).map((p) => ({ id: p.id, name: textOf(p.name), enabled: p.enabled, tools: toolsOf.get(p.id) ?? [] }));
+  }
+
+  async setAvailability(server: string, tool: string, availability: ToolRow["availability"]): Promise<boolean> {
+    return (await this.read("tools", "tool.setAvailability", { server, tool, availability })) !== undefined;
+  }
+
+  /** Adds a plugin behind its OK card (the engine raises it; the router places it in this window, the card having no
+   *  session). A link that is an `npm:` name installs from npm; any other `https://` link is wrapped as an MCP server. */
+  async addPlugin(from: { link: string } | { folder: string }): Promise<{ ok: true } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    let source: unknown;
+    if ("folder" in from) source = { from: "folder", path: from.folder };
+    else {
+      const link = from.link.trim();
+      if (link.startsWith("npm:")) source = { from: "npm", name: link.slice(4) };
+      else if (/^https:\/\/\S+$/.test(link)) source = { from: "wrap", kind: "mcp-url", value: link };
+      else return { ok: false, why: "That isn't a link MOSS can add a plugin from." };
+    }
+    try {
+      await client.request("plugin.install", { source }, 60_000);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Adding plugins isn't served by this engine yet." : "The plugin couldn't be added." };
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Settings (spec §6.10, R8): MOSS's own, built in; a section waits while its piece isn't served
+  // ---------------------------------------------------------------------------------------------
+
+  async settings(): Promise<SettingsView> {
+    const [account, devices, computers, plugins] = await Promise.all([
+      this.read<{ signedIn: boolean; user?: { name?: string; email?: string } }>("account", "account.status"),
+      this.read<{ devices: { id: string; name: string; kind: string; isThis?: boolean }[] }>("devices", "device.list"),
+      this.read<{ computers: { name: string; level: string; self?: boolean }[] }>("devices", "computer.list"),
+      this.read<{ plugins: { id: string; name: string | { en: string }; enabled: boolean; parent?: string }[] }>("plugins", "plugin.list"),
+    ]);
+    let signIns: SettingsView["signIns"] = "waiting";
+    if (plugins !== undefined) {
+      const rows: Exclude<SettingsView["signIns"], "waiting"> = [];
+      for (const p of plugins.plugins.filter((x) => x.enabled)) {
+        const r = await this.client?.request<{ auth: { index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string }[] }>("plugin.auth.list", { id: p.id }, 5_000).catch(() => undefined);
+        for (const a of r?.auth ?? []) rows.push({ pluginId: p.id, name: textOf(p.name), index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}) });
+      }
+      signIns = rows;
+    }
+    return {
+      account: account === undefined ? "waiting" : { signedIn: account.signedIn, ...(account.user?.name !== undefined ? { name: account.user.name } : {}), ...(account.user?.email !== undefined ? { email: account.user.email } : {}) },
+      signIns,
+      computers: computers === undefined ? "waiting" : computers.computers.map((c) => ({ name: c.name, level: String(c.level) })),
+      devices: devices === undefined ? "waiting" : devices.devices.map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.isThis === true ? { here: true } : {}) })),
+    };
+  }
+
+  /** Every plugin's bot-scoped settings for one bot (a voice plugin's voice), with this bot's values (`bot.pluginSettings`),
+   *  for the window to draw from their schema. A secret is never drawn here. */
+  async botSettings(bot: string): Promise<BotSetting[] | { waiting: true }> {
+    type Row = Omit<BotSetting, "pluginId" | "pluginName" | "options"> & { scope?: string; options?: (string | { value: string; title: string | { en: string } })[]; title: string | { en: string }; description?: string | { en: string } };
+    const r = await this.read<{ plugins: { pluginId: string; name: string | { en: string }; settings: Row[] }[] }>("bots", "bot.pluginSettings", { id: bot });
+    if (r === undefined) return { waiting: true };
+    const out: BotSetting[] = [];
+    for (const p of r.plugins) {
+      for (const s of p.settings) {
+        if ((s.scope !== undefined && s.scope !== "bot") || s.type === "secret") continue;
+        const { scope: _scope, options, title, description, ...rest } = s;
+        out.push({
+          ...rest, title: textOf(title), ...(description !== undefined ? { description: textOf(description) } : {}), pluginId: p.pluginId, pluginName: textOf(p.name),
+          ...(options !== undefined ? { options: options.map((o) => typeof o === "string" ? { value: o, title: o } : { value: o.value, title: textOf(o.title) }) } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  async setBotSetting(bot: string, pluginId: string, key: string, value: unknown): Promise<boolean> {
+    return (await this.read("plugins", "plugin.settings.set", { id: pluginId, key, value, bot, noSecret: true })) !== undefined;
+  }
+
+  // Pairing (spec §8.1). The engine owns the pairing; this keeps the steps it sends for the page. Adding the device (the
+  // confirm) and removing one are the engine's sealed cards: a call here asks, and answers `applied: false` with the card's id.
+  async pairBegin(): Promise<{ ok: true } | { ok: false; why: string }> {
+    const r = await this.act<{ pairingId: string; code?: string; qr?: string }>("device.pair.begin", {}, "Pairing", 15_000);
+    if (!r.ok) return r;
+    this.pairingNow = { id: r.value.pairingId, row: { code: r.value.code ?? r.value.qr ?? "" } };
+    this.changed();
+    return { ok: true };
+  }
+
+  async pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }> {
+    const r = await this.act<{ pairingId: string; words?: string[] }>("device.pair.join", { code: code.trim() }, "Pairing", 45_000);
+    if (!r.ok) return r;
+    this.pairingNow = { id: r.value.pairingId, row: r.value.words ? { words: r.value.words } : {}, ...(r.value.words ? { words: r.value.words } : {}) };
+    this.changed();
+    return { ok: true };
+  }
+
+  async pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }> {
+    const now = this.pairingNow;
+    if (now?.words === undefined) return { ok: false, why: "There are no words to confirm yet." };
+    const r = await this.act("device.pair.confirm", { pairingId: now.id, words: now.words }, "Adding the device", 15_000);
+    if (!r.ok) return r;
+    if (this.pairingNow === now) { now.row = { ...now.row, confirming: true }; this.changed(); }
+    return { ok: true };
+  }
+
+  async pairCancel(): Promise<boolean> {
+    const now = this.pairingNow;
+    this.pairingNow = undefined;
+    this.changed();
+    if (now !== undefined && now.row.ended === undefined) void this.client?.request("device.pair.cancel", { pairingId: now.id }, 5_000).catch(() => undefined);
+    return true;
+  }
+
+  /** The relay the links use (the setup guide's relay page, spec §8.3). */
+  async relay(): Promise<RelayRow | { waiting: true }> {
+    const r = await this.read<RelayRow>("devices", "device.relay.get");
+    return r === undefined ? { waiting: true } : { mode: r.mode, ...(r.url !== undefined ? { url: r.url } : {}) };
+  }
+
+  async setRelay(choice: RelayRow): Promise<{ ok: true; relay: RelayRow } | { ok: false; why: string }> {
+    const r = await this.act<RelayRow>("device.relay.set", { mode: choice.mode, ...(choice.mode === "custom" && choice.url !== undefined ? { url: choice.url } : {}) }, "Choosing the relay", 15_000);
+    return r.ok ? { ok: true, relay: { mode: r.value.mode, ...(r.value.url !== undefined ? { url: r.value.url } : {}) } } : r;
+  }
+
+  async removeDevice(id: string): Promise<boolean> {
+    return (await this.read("devices", "device.revoke", { id })) !== undefined;
+  }
+
+  /** The engine's step of the pairing this window started (`pairing_changed`); another pairing's step is not ours. */
+  private pairingStep(e: Record<string, unknown>): void {
+    const now = this.pairingNow;
+    if (now === undefined || e.pairingId !== now.id) return;
+    const words = Array.isArray(e.words) ? (e.words as unknown[]).filter((w): w is string => typeof w === "string") : undefined;
+    switch (e.step) {
+      case "words":
+        if (words !== undefined) { now.words = words; now.row = { ...now.row, words }; }
+        break;
+      case "card":
+        now.row = { ...now.row, confirming: true };
+        break;
+      case "done":
+        this.pairingNow = { id: now.id, row: { ended: "The device was added." } };
+        this.devicesRev++;
+        break;
+      case "expired":
+        this.pairingNow = { id: now.id, row: { ended: "The code expired. Show a new one to try again." } };
+        break;
+      case "failed":
+        this.pairingNow = { id: now.id, row: { ended: typeof e.reason === "string" && e.reason !== "" ? `The pairing didn't finish: ${e.reason.slice(0, 200)}` : "The pairing didn't finish." } };
+        break;
+    }
+  }
+
+  async setLevel(computer: string, level: string): Promise<boolean> {
+    return (await this.read("devices", "computer.setLevel", { name: computer, level })) !== undefined;
+  }
+
+  async setPermission(server: string, tool: string, permission: "allow" | "ask" | "deny"): Promise<boolean> {
+    return (await this.read("tools", "tool.setPermission", { server, tool, permission })) !== undefined;
+  }
+
+  /** One `auth` entry's sign-in: the key goes to the engine's credential store and never comes back; a browser sign-in
+   *  answers the page to open, which the caller (main) opens itself. */
+  async signIn(pluginId: string, index: number, key?: string): Promise<{ state: string; authorizeUrl?: string } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      return await client.request<{ state: string; authorizeUrl?: string }>("plugin.auth.signIn", { id: pluginId, index, ...(key !== undefined ? { key } : {}) }, 30_000);
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Signing in isn't served by this engine yet." : "The engine didn't take the sign-in." };
+    }
+  }
+
+  async signOut(pluginId: string, index: number): Promise<boolean> {
+    return (await this.read("account", "plugin.auth.signOut", { id: pluginId, index, card: true })) !== undefined;
+  }
+
+  /** One bot's record for its Settings page: the engine's answer when it comes, else the record the events keep. The
+   *  answer never goes back into the list: it may have been taken before a `bot_record_removed` or `bot_record_changed`
+   *  that came first, and would bring back a bot just archived (the archive row's flake) or an old name. */
+  async botRecord(id: string): Promise<BotRecordRow | { waiting: true }> {
+    const r = await this.read<{ bots: BotRecordView[] }>("bots", "bot.records");
+    // A read that failed or timed out (an engine busy for longer than the read's 10 s) is no reason to show nothing: the
+    // record the events keep is there (the editor row's flake).
+    const b = r?.bots.find((x) => x.id === id) ?? (this.records.get(id) as BotRecordView | undefined);
+    if (b === undefined || (r !== undefined && !this.records.has(id) && this.removedBots.has(id))) return { waiting: true };
+    return { id: b.id, name: textOf(b.name), ...(b.model !== undefined ? { model: b.model } : {}), ...(b.effort !== undefined ? { effort: b.effort } : {}), ...(b.face !== undefined ? { face: b.face } : {}), instructionsBytes: b.instructionsBytes };
+  }
+
+  async botInstructions(id: string): Promise<{ text: string } | { waiting: true }> {
+    const r = await this.read<{ text: string }>("bots", "bot.instructions.get", { id });
+    return r === undefined || typeof r.text !== "string" ? { waiting: true } : { text: r.text };
+  }
+
+  async editBot(id: string, patch: BotEdit): Promise<boolean> {
+    return (await this.read("bots", "bot.edit", { id, patch })) !== undefined;
+  }
+
+  /** Archives a bot (`bot.remove`, §6.1: nothing is deleted; its conversation, memory and routines stay with it). */
+  async archiveBot(id: string): Promise<boolean> {
+    const ok = (await this.read("bots", "bot.remove", { id })) !== undefined;
+    if (ok) { this.records.delete(id); this.changed(); }
+    return ok;
+  }
+
+  /** Try again on a bot's failed latest turn: the engine resends the person's own message that began it, once. */
+  async retry(bot: string): Promise<{ ok: true } | { ok: false; why: string }> {
+    const client = this.client;
+    const session = this.records.get(bot)?.mainSession;
+    if (client === undefined || session === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      await client.request("session.resend", { session }, 15_000);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Trying again isn't served by this engine yet." : "It could not be sent again: send it from the composer." };
+    }
+  }
+
+  /** The archived bots, to bring one back. */
+  async archivedBots(): Promise<{ id: string; name: string }[] | { waiting: true }> {
+    const r = await this.read<{ bots: { id: string; name: string | { en: string } }[] }>("bots", "bot.archived");
+    return r === undefined ? { waiting: true } : r.bots.map((b) => ({ id: b.id, name: textOf(b.name) }));
+  }
+
+  /** Brings an archived bot back, with its conversation whole (`bot.restore`). */
+  async restoreBot(id: string): Promise<boolean> {
+    const ok = (await this.read("bots", "bot.restore", { id })) !== undefined;
+    if (ok) await this.loadBots().then(() => this.changed());
+    return ok;
+  }
+
+  async models(): Promise<ModelRow[] | { waiting: true }> {
+    const r = await this.read<{ models: { id: string; name: string | { en: string }; providerName: string | { en: string }; signedIn?: boolean }[] }>("models", "models.list", {});
+    if (r === undefined) return { waiting: true };
+    return r.models.map((m) => ({ id: m.id, title: textOf(m.name), provider: textOf(m.providerName), ready: m.signedIn !== false }));
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The setup guide (2026-11-20): the engine holds what is set up; MOSS only draws it
+  // ---------------------------------------------------------------------------------------------
+
+  /** Reads the home's setup (`setup.state`); an engine that doesn't serve it leaves the guide closed. */
+  private async loadSetup(): Promise<void> {
+    const client = this.client;
+    if (client === undefined) return;
+    const r = await client.request<SetupRow>("setup.state", {}, 10_000).catch(() => undefined);
+    if (client !== this.client || r === undefined) return;
+    this.setupNow = r;
+  }
+
+  async setup(): Promise<SetupRow | { waiting: true }> {
+    await this.loadSetup();
+    return this.setupNow ?? { waiting: true };
+  }
+
+  /** The model providers the installed model plugins offer (the `models` point's plugins), each with its terms and its
+   *  ways in, the ones added first; a provider's terms link stays here (main opens it). */
+  async setupProviders(): Promise<ProviderRow[] | { waiting: true }> {
+    const points = await this.read<{ points: { name: string; occupants: { pluginId: string }[] }[] }>("plugins", "point.list");
+    if (points === undefined) return { waiting: true };
+    const ids = [...new Set((points.points.find((p) => p.name === "models")?.occupants ?? []).map((o) => o.pluginId))];
+    const rows = await Promise.all(ids.map(async (id): Promise<ProviderRow | undefined> => {
+      const [detail, auth] = await Promise.all([
+        this.client?.request<{ plugin: { name: string | { en: string }; manifest: { contributes?: { models?: { name?: string | { en: string }; terms?: unknown; auth?: { help?: unknown }[] }[] } } } }>("plugin.get", { id }, 10_000).catch(() => undefined),
+        this.client?.request<{ auth: ProviderRow["auth"] }>("plugin.auth.list", { id }, 10_000).catch(() => undefined),
+      ]);
+      if (detail === undefined) return undefined;
+      const entries = detail.plugin.manifest.contributes?.models ?? [];
+      const first = entries[0];
+      const helps = entries.flatMap((e) => e.auth ?? []).map((a) => (typeof a.help === "string" ? a.help : undefined));
+      const terms = typeof first?.terms === "string" ? (/^https:\/\//.test(first.terms) ? { link: true as const } : { text: first.terms.slice(0, 4000) }) : undefined;
+      if (typeof first?.terms === "string" && /^https:\/\//.test(first.terms)) this.termsLinks.set(id, first.terms);
+      return {
+        pluginId: id,
+        name: textOf(first?.name ?? detail.plugin.name) || id,
+        ...(terms !== undefined ? { terms } : {}),
+        auth: (auth?.auth ?? []).map((a) => ({ index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}), ...(helps[a.index] !== undefined ? { help: helps[a.index]! } : {}) })),
+      };
+    }));
+    // The order both apps' guides share: added first, then the sign-ins and the big API-key providers, then by name.
+    const kept = rows.filter((r): r is ProviderRow => r !== undefined);
+    return orderProviders(kept.map((r) => ({ ...r, id: r.pluginId })), "").map(({ id: _id, ...r }) => r);
+  }
+
+  /** The terms links the guide listed, by plugin: main opens one in the person's browser; the window never has it. */
+  private readonly termsLinks = new Map<string, string>();
+
+  termsLink(pluginId: string): string | undefined {
+    return this.termsLinks.get(pluginId);
+  }
+
+  async setDefaultModel(model: string): Promise<{ ok: true; setup: SetupRow } | { ok: false; why: string }> {
+    const client = this.client;
+    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      const r = await client.request<{ setup: SetupRow }>("models.setDefault", { model }, 10_000);
+      this.setupNow = r.setup;
+      this.changed();
+      return { ok: true, setup: r.setup };
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Picking a default model isn't served by this engine yet." : err instanceof Error ? err.message.slice(0, 300) : "The engine didn't take the model." };
+    }
+  }
+
+  /** The person skipped the guide: the engine keeps it, so it doesn't open by itself again in MOSS or MOSS Code. */
+  async skipSetup(): Promise<boolean> {
+    const r = await this.read<SetupRow>("models", "setup.dismiss", { dismissed: true });
+    if (r === undefined) return false;
+    this.setupNow = r;
+    this.changed();
+    return true;
+  }
+
+  /** For the tests and renders' facts: the placements MOSS holds now. */
+  placementsNow(): Record<string, CardPlacement> {
+    return Object.fromEntries(this.placements);
+  }
+}

@@ -1,0 +1,54 @@
+# Homebrew cask template for MOSS, the app for bots (MOSS Code's is packaging/moss-code.rb.tmpl). Rendered per release by
+# scripts/release/package-managers.ts, which reads the release's file names from the artifact table (scripts/release/artifacts.ts)
+# and the dmg's sha256 from the release's own build; this .tmpl is the only copy committed to the repo.
+#
+# Interpolated at release time: the release version and the sha256 checksum of the release DMG.
+# The download URL is derived from the version at cask-eval time via Ruby's #{version} interpolation, as MOSS Code's.
+# (Slot names written in prose, not the literal syntax, so caskFrom's replaceAll can't mangle this comment itself.)
+cask "moss" do
+  version "{{version}}"
+  sha256 "{{sha256}}"
+
+  url "https://github.com/waifucave/moss/releases/download/v#{version}/MOSS-#{version}.dmg"
+  name "MOSS"
+  desc "Bots that live on your computers"
+  homepage "https://github.com/waifucave/moss"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on arch: :arm64
+
+  # electron-updater updates the app and the daemon together (spec §3.1), from MOSS's own update files in the same release.
+  auto_updates true
+
+  app "MOSS.app"
+  # No `binary` for the `moss` command: it is MOSS Code's cask that links it (two casks linking one name refuse to install together),
+  # and the engine's command line is the same in both apps. MOSS carries the engine and starts it by itself.
+
+  # Login start and the engine are shared with MOSS Code (spec §3.1: removing one app leaves the other working). Uninstalling removes
+  # login start through the daemon's own command, as the user, before the app's files go, ONLY when MOSS Code is not installed
+  # (packaging/installer-hooks.ts): `autostart remove` stops the daemon and deletes its agent. No `launchctl` stanza (MOSS Code's cask
+  # has one for an app already deleted): it would remove the shared agent whatever stays installed. The script runs through /bin/sh and
+  # exits 0 when the app's binary is gone, since Homebrew refuses a missing executable before must_succeed counts; must_succeed: false
+  # keeps a failing command from stopping the uninstall.
+  uninstall quit:   "com.waifucave.moss",
+            script: {
+              executable:   "/bin/sh",
+              args:         ["-c", '[ -x "$1" ] || exit 0; [ -d "$2" ] && exit 0; exec "$1" autostart remove', "sh", "#{appdir}/MOSS.app/Contents/Resources/daemon/moss-core", "#{appdir}/MOSS Code.app"],
+              sudo:         false,
+              must_succeed: false,
+            }
+
+  # The owner's rule: zap removes the caches, the preferences and the logs, and nothing else. ~/.moss (the user's bots, their history
+  # and their keys), the login item (MOSS Code's, the engine's) and the app's own data stay.
+  zap trash: [
+    "~/Library/Caches/@waifucavemoss-moss-updater",
+    "~/Library/Caches/com.waifucave.moss",
+    "~/Library/Caches/com.waifucave.moss.ShipIt",
+    "~/Library/Logs/MOSS",
+    "~/Library/Preferences/com.waifucave.moss.plist",
+  ]
+end

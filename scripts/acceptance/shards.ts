@@ -4,10 +4,16 @@
 // mean something. Kept apart from run.ts (which starts a run when loaded) so the split and the merge can be tested.
 //
 // What a unit is, from the step tables and the run's order (run.ts `main`):
-// * `main` is the chain that shares one home and its state in order: the first start, the key, the turns, the
-//   plugin installed and called, the fenced write, the restart, the window's steps on the restarted daemon (one app,
-//   one conversation: the pill counts the replies the composer made, the reopened app presses the plugin's card), the
-//   web, hook, stdio, network, shell and outside turns, the agent. Every row no other unit names is main's.
+// * `main` names the whole of what used to be one chain sharing one home, and is now four units (`expandUnitIds`):
+//   - `chain`: the first start, the key, the turns, the plugin installed and called, the fenced write, the restart, the reopened
+//     app pressing the plugin's card, and the web, hook, stdio, network, shell and outside turns and the agent: everything
+//     that reads step 4's plugin or the first daemon's state, in order. Every row no other unit names is the chain's.
+//   - `window-1`, `window-2`, `window-3`: the window's steps (UI_STEPS 0-11, 12-22, 23-30), each from a fresh home, a keyed daemon
+//     with step 4's plugin installed (the slash menu step runs its command) and an app over it, as `--only-ui` runs steps
+//     alone. They were one app and one conversation; the cut is by time (about 3, 5 and 4 minutes of steps), at 12 (the
+//     Plugins page, which opens its own folder) and 23 (the bot editor). A step that needs an earlier one's state is
+//     moved to that one's unit, not patched.
+//   `--units main` runs all four in one process, in one home, as before (the Mac's merge check and the try build use it).
 // * The rows that need only a keyed daemon, Alpha's conversation and an app over it (each proved alone by an
 //   `--only-*` run, or by its own setup in the step): the SDK's two examples (one unit: notes then weather, in the
 //   order the full run gives them), the bundled tools, the cards, the workshop, the ways a plugin arrives besides the
@@ -19,22 +25,32 @@
 //   shard's keyed daemon with no app; and the reopen steps, which start
 //   their own daemons and apps on the home in order, with step 4's fixture plugin installed and OK'd first in their
 //   shard (the mid-tool-call step calls its Echo tool: a first sharded run without it found no Echo tool).
+//   `moss`: MOSS, the bots app (apps/moss), from source over a keyed engine with the bots as engine data, its rows in its
+//   own window (moss-step.ts); alone in its run its home is fresh, beside other units it runs last, on a daemon restarted
+//   with the records as the bots' source.
 //   Everything else stays in `main`: what reads step 4's plugin or the first daemon's state (the API areas row, the
 //   host API, plugin CLI and index/npm rows, the agent row and its plugin-tool probes), and the workshop's own steps.
 // * Measuring units, serial after the parallel phase: the stage row (its narrow-window readings: a card's timing and
 //   a streamed reply's cost; its default-level turn runs with it), the tab flash, the cold start, the idle row.
-import { COLD_START_STEP, FULL_STEPS, IDLE_STEP, REOPEN_STEPS, STAGE_STEP, finishTable, type Row } from "./steps";
+import { UI_STEPS } from "./ui-steps";
+import { COLD_START_STEP, FULL_STEPS, IDLE_STEP, REOPEN_STEPS, finishTable, type Row } from "./steps";
 import { EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP } from "./example-steps";
 import { BUNDLED_TOOLS_STEP } from "./bundled-tools-step";
+import { TOOL_SETTING_STEP } from "./tool-setting-step";
+import { CODE_TOOLS_STEP } from "./code-tools-step";
+import { FAILED_TURN_STEP } from "./failed-turn-step";
 import { CARDS_STEP } from "./cards-step";
+import { ROUTER_STEP } from "./router-step";
 import { WORKSHOP_STEP } from "./workshop-step";
-import { TAB_FLASH_STEP } from "./tab-flash-step";
 import { ARRIVALS_STEP } from "./arrivals-step";
 import { CHILD_STEP, NOTIFY_STEP } from "./child-notify-step";
 import { LISTEN_STEP } from "./listen-step";
 import { WEB_STEP } from "./web-step";
 import { DRAG_STEP } from "./drag-step";
 import { REVIEW_STEP } from "./review-step";
+import { SURFACE_COPY_STEP } from "./surface-copy-step";
+import { CONVERSATION_COPY_STEP } from "./conversation-copy-step";
+import { STAGE_COPY_STEP } from "./stage-copy-step";
 import { ADDONS_STEP } from "./addons-step";
 import { ARCHIVE_STEP } from "./archive-step";
 import { ACP_BACKEND_STEP } from "./acp-backend-step";
@@ -43,8 +59,16 @@ import { WORKSHOP_POINTS_STEP } from "./workshop-points-step";
 import { BROWSER_STEP } from "./browser-step";
 import { CODE_ADAPTER_STEP, OAUTH_SIGN_IN_STEP, THIRD_PARTY_MODEL_STEP } from "./code-adapter-step";
 import { SCHEDULED_ROUTINE_STEP } from "./routine-schedule-step";
+import { RELEASE_AHEAD_STEP, RELEASE_BEHIND_STEP, RELEASE_INSTALL_STEP } from "./release-step";
+import { MOSS_STEPS } from "./moss-step";
+import { SETUP_STEPS } from "./setup-step";
+import { CANVAS_STEPS } from "./canvas-step";
+import { MCP_APPS_STEPS } from "./mcp-apps-step";
+import { CANVAS_APP_STEPS } from "./canvas-app-step";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
+import { ROWS_ELSEWHERE } from "./elsewhere";
 
-export type UnitId = "main" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "browser" | "plugin-app" | "models" | "stage" | "tab-flash" | "cold" | "idle";
+export type UnitId = "main" | "chain" | "setup" | "window-1" | "window-2" | "window-3" | "examples" | "bundled-tools" | "cards" | "workshop" | "reopen" | "arrivals" | "addons" | "archive" | "acp" | "builder-examples" | "workshop-points" | "release" | "browser" | "plugin-app" | "models" | "moss" | "cold" | "idle" | "host" | "browser-host" | "surface-copy-host" | "canvas" | "canvas-app";
 
 export interface Unit {
   id: UnitId;
@@ -54,12 +78,45 @@ export interface Unit {
   phase: "parallel" | "serial";
   /** About how long it takes on the source target, in seconds, as a sharded run measured it (the split's weights). */
   estimate: number;
+  /** Its rows need a home no other unit has used (MOSS's "only MOSS has ever run here" rows): beside other units it runs
+   *  as a run of its own (`--units <it>`, its own temp home, keychain file, fake provider and daemon), as a shard does. */
+  ownHome?: true;
 }
+
+/** The window's steps, in three units: the places in UI_STEPS where each starts (the last ends at its length). */
+const WINDOW_STARTS: readonly (readonly [UnitId, number])[] = [["window-1", 0], ["window-2", 12], ["window-3", 23]];
+
+/** What `main` names: the chain and the window's steps. */
+export const MAIN_PARTS: readonly UnitId[] = ["chain", ...WINDOW_STARTS.map(([id]) => id)];
+
+/** The unit ids a `--units` list names, with `main` as the parts it stands for. */
+export function expandUnitIds(ids: readonly UnitId[]): UnitId[] {
+  return [...new Set(ids.flatMap((id) => (id === "main" ? MAIN_PARTS : [id])))];
+}
+
+/** The window steps (by their place in UI_STEPS) a window unit runs, or undefined for any other unit. */
+export function windowIndexes(id: UnitId): number[] | undefined {
+  const at = WINDOW_STARTS.findIndex(([w]) => w === id);
+  if (at < 0) return undefined;
+  const from = WINDOW_STARTS[at]![1];
+  const to = WINDOW_STARTS[at + 1]?.[1] ?? UI_STEPS.length;
+  return Array.from({ length: to - from }, (_, i) => from + i);
+}
+
+/** The window steps a run really runs: of `asked` (a unit's steps, or every step when undefined), only those whose row is in a
+ *  unit's table. A step whose row runs elsewhere (elsewhere.ts, retired included) or is in no unit is never run here: its body
+ *  would print a FAIL that counts nowhere, spend its waits and leave state for the rows after it. `undefined` when all run. */
+export function windowStepsToRun(asked?: ReadonlySet<number>, all: readonly Unit[] = units()): Set<number> | undefined {
+  const live = new Set(UI_STEPS.map((_, i) => i).filter((i) => (asked === undefined || asked.has(i)) && unitOf(`window: ${UI_STEPS[i]}`, all) !== undefined));
+  return live.size === UI_STEPS.length ? undefined : live;
+}
+
+const WINDOW_ESTIMATES: Readonly<Record<string, number>> = { "window-1": 120, "window-2": 200, "window-3": 170 };
 
 const OTHERS: readonly Unit[] = [
   { id: "examples", rows: [EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP], phase: "parallel", estimate: 90 },
-  { id: "bundled-tools", rows: [BUNDLED_TOOLS_STEP], phase: "parallel", estimate: 60 },
-  { id: "cards", rows: [CARDS_STEP], phase: "parallel", estimate: 40 },
+  { id: "bundled-tools", rows: [BUNDLED_TOOLS_STEP, TOOL_SETTING_STEP, CODE_TOOLS_STEP, FAILED_TURN_STEP], phase: "parallel", estimate: 130 },
+  { id: "cards", rows: [CARDS_STEP, ROUTER_STEP], phase: "parallel", estimate: 70 },
   { id: "workshop", rows: [WORKSHOP_STEP], phase: "parallel", estimate: 60 },
   { id: "reopen", rows: REOPEN_STEPS.map((s) => s.name), phase: "parallel", estimate: 110 },
   { id: "arrivals", rows: [ARRIVALS_STEP], phase: "parallel", estimate: 45 },
@@ -68,19 +125,44 @@ const OTHERS: readonly Unit[] = [
   { id: "acp", rows: [ACP_BACKEND_STEP], phase: "parallel", estimate: 40 },
   { id: "builder-examples", rows: [BUILDER_EXAMPLES_STEP], phase: "parallel", estimate: 150 },
   { id: "workshop-points", rows: [WORKSHOP_POINTS_STEP], phase: "parallel", estimate: 60 },
-  { id: "plugin-app", rows: [CHILD_STEP, NOTIFY_STEP, LISTEN_STEP, WEB_STEP, DRAG_STEP, REVIEW_STEP], phase: "parallel", estimate: 150 },
+  { id: "release", rows: [RELEASE_INSTALL_STEP, RELEASE_BEHIND_STEP, RELEASE_AHEAD_STEP], phase: "parallel", estimate: 150 },
+  { id: "plugin-app", rows: [CHILD_STEP, NOTIFY_STEP, LISTEN_STEP, WEB_STEP, DRAG_STEP, REVIEW_STEP, SURFACE_COPY_STEP, CONVERSATION_COPY_STEP, STAGE_COPY_STEP], phase: "parallel", estimate: 330 },
   { id: "browser", rows: [BROWSER_STEP], phase: "parallel", estimate: 60 },
   { id: "models", rows: [CODE_ADAPTER_STEP, THIRD_PARTY_MODEL_STEP, OAUTH_SIGN_IN_STEP, SCHEDULED_ROUTINE_STEP], phase: "parallel", estimate: 90 },
-  { id: "stage", rows: [STAGE_STEP], phase: "serial", estimate: 125 },
-  { id: "tab-flash", rows: [TAB_FLASH_STEP], phase: "serial", estimate: 105 },
+  // MOSS, the bots app (moss-step.ts): its own app from source over the shard's engine, the bots as engine data.
+  { id: "moss", rows: MOSS_STEPS, phase: "parallel", estimate: 240, ownHome: true },
+  // Lane SG: the setup guide in MOSS Code and MOSS on a home no other unit has used (no provider, no default model).
+  { id: "setup", rows: SETUP_STEPS, phase: "parallel", estimate: 150, ownHome: true },
+  // The session canvas (spec revision 20, §9.5; canvas-step.ts): the rows that run in the shared home (lane CM's), left out of `units()` while empty.
+  { id: "canvas", rows: [...CANVAS_STEPS, ...MCP_APPS_STEPS], phase: "parallel", estimate: 120 },
+  // Lane CA's canvas rows (canvas-app-step.ts): MOSS Code from source with a plugin's start page, and a MOSS it starts when a part asks "Open in MOSS"; a home of its own.
+  { id: "canvas-app", rows: CANVAS_APP_STEPS, phase: "parallel", estimate: 180, ownHome: true },
   { id: "cold", rows: [COLD_START_STEP], phase: "serial", estimate: 16 },
   { id: "idle", rows: [IDLE_STEP], phase: "serial", estimate: 45 },
+  // lane HS: the background host's rows start their own daemon (and the host) on a home no other unit has used: beside other
+  // units each is a run of its own (`ownHome`), so a set that names them with others runs every unit, not just the first of them.
+  // lane HS: the background host's row, alone (its own daemon starts the host, host-step.ts).
+  { id: "host", rows: [HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP], phase: "serial", estimate: 330, ownHome: true },
+  // …and the Browser rows with that host running (the controller's ruling: every browser row passes with a host too).
+  { id: "browser-host", rows: [BROWSER_HOST_STEP], phase: "serial", estimate: 90, ownHome: true },
+  // lane HS: row 65 (the island and pill copies) with the background host drawing the screen (the controller's R12 ruling).
+  { id: "surface-copy-host", rows: [SURFACE_COPY_HOST_STEP], phase: "serial", estimate: 120, ownHome: true },
 ];
 
-/** Every unit, `main` first, its rows every row of `steps` the others don't name. */
+/** Every unit, the `chain` first, its rows every row of `steps` the others don't name; then the window's three. */
 export function units(steps: readonly string[] = FULL_STEPS): Unit[] {
-  const taken = new Set(OTHERS.flatMap((u) => u.rows));
-  return [{ id: "main", rows: steps.filter((s) => !taken.has(s)), phase: "parallel", estimate: 270 }, ...OTHERS];
+  // A row another lane runs (elsewhere.ts) is in no unit: MOSS Code's run never reaches it, and a full table says who does.
+  const here = (r: string) => !ROWS_ELSEWHERE.has(r);
+  const windows: Unit[] = WINDOW_STARTS.map(([id]) => ({
+    id,
+    rows: windowIndexes(id)!.map((i) => `window: ${UI_STEPS[i]}`).filter((r) => steps.includes(r) && here(r)),
+    phase: "parallel" as const,
+    estimate: WINDOW_ESTIMATES[id]!,
+  }));
+  const others = OTHERS.map((u) => ({ ...u, rows: u.rows.filter(here) }));
+  const taken = new Set([...OTHERS, ...windows].flatMap((u) => u.rows));
+  // A unit all of whose rows run elsewhere is left out (a unit whose rows all went elsewhere is removed from the table).
+  return [{ id: "chain", rows: steps.filter((s) => !taken.has(s) && here(s)), phase: "parallel", estimate: 270 }, ...windows, ...others.filter((u) => u.rows.length > 0)];
 }
 
 /** Which unit runs a row (by name). */
@@ -88,7 +170,7 @@ export function unitOf(name: string, all: readonly Unit[] = units()): UnitId | u
   return all.find((u) => u.rows.includes(name))?.id;
 }
 
-/** The parallel phase's units in `n` shards: `main`, the long pole, alone in the first (from 2 shards: anything added
+/** The parallel phase's units in `n` shards: the `chain`, the long pole, alone in the first (from 2 shards: anything added
  *  to it lengthens the whole run, and each shard pays its own start-up, so the others' estimates run high); the rest
  *  the longest first, each to the shard with the least so far (a unit is never split: its rows share a home and run in
  *  order). Shards with nothing are left out. */
@@ -96,9 +178,9 @@ export function planShards(n: number, all: readonly Unit[] = units()): UnitId[][
   if (!Number.isInteger(n) || n < 1) throw new Error("--shards takes a whole number from 1");
   const parallel = all.filter((u) => u.phase === "parallel").sort((a, b) => b.estimate - a.estimate);
   const shards: { ids: UnitId[]; load: number }[] = Array.from({ length: n }, () => ({ ids: [], load: 0 }));
-  const main = parallel.find((u) => u.id === "main");
+  const main = parallel.find((u) => u.id === "chain");
   if (n > 1 && main !== undefined) {
-    shards[0] = { ids: ["main"], load: Number.POSITIVE_INFINITY };
+    shards[0] = { ids: ["chain"], load: Number.POSITIVE_INFINITY };
     parallel.splice(parallel.indexOf(main), 1);
   }
   for (const u of parallel) {
@@ -112,6 +194,35 @@ export function planShards(n: number, all: readonly Unit[] = units()): UnitId[][
 }
 
 /** The serial phase: each measuring unit alone, in the table's order. */
+/** Where a run's units go: those that share the run's own home, and those run as runs of their own (`ownHome`), each in
+ *  a home no other unit uses. A unit that needs its own home and is the run's only unit is that run's home already. */
+export function homePlan(ids: readonly UnitId[], all: readonly Unit[] = units()): { shared: UnitId[]; ownRuns: UnitId[] } {
+  const own = new Set(all.filter((u) => u.ownHome === true).map((u) => u.id));
+  if (ids.length === 1) return { shared: [...ids], ownRuns: [] };
+  return { shared: ids.filter((id) => !own.has(id)), ownRuns: ids.filter((id) => own.has(id)) };
+}
+
+/** The units a run that includes the main chain runs as runs of their own after it: with `--units`, every `ownHome` unit
+ *  asked for (moss first, then the host units, in the table's order); a full run (no `--units`) runs moss alone. */
+export function chainOwnRuns(asked: readonly UnitId[] | undefined, all: readonly Unit[] = units()): UnitId[] {
+  if (asked === undefined) return ["moss", "setup"];
+  const own = all.filter((u) => u.ownHome === true).map((u) => u.id);
+  return own.filter((id) => asked.includes(id));
+}
+
+/** The units whose rows need the engine's source seam (the host units start their host through MOSS_HOST_COMMAND, which a
+ *  packaged core ignores, and a test-marked core never starts a host through the OS; the canvas unit's "Open in MOSS" asks the
+ *  acceptance daemon's own `launchProgram`, which only the source daemon has): they stay source-only. */
+export const SOURCE_ONLY_UNITS: readonly UnitId[] = ["host", "browser-host", "surface-copy-host", "canvas-app"];
+
+/** What a packaged run (a try's test twin, scripts/try/run.sh) names with `--units`: every unit there is but the
+ *  source-only ones, with `main` for the chain and the window's three. A run with no `--units` is the table from before
+ *  the split (it runs the rows that now run elsewhere, elsewhere.ts, and never the release rows), so the try never uses it. */
+export function packagedUnitIds(all: readonly Unit[] = units()): UnitId[] {
+  const rest = all.map((u) => u.id).filter((id) => !MAIN_PARTS.includes(id) && !SOURCE_ONLY_UNITS.includes(id));
+  return ["main", ...rest];
+}
+
 export function serialUnits(all: readonly Unit[] = units()): UnitId[] {
   return all.filter((u) => u.phase === "serial").map((u) => u.id);
 }

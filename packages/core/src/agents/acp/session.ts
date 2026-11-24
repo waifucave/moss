@@ -1,4 +1,4 @@
-// One ACP agent session: Clover's client side of one delegation (spec §9.3, spike S5 §7 "Connection", "Handlers",
+// One ACP agent session: MOSS's client side of one delegation (spec §9.3, spike S5 §7 "Connection", "Handlers",
 // "AgentSession"). It implements the spine's `AgentSession` (packages/core/src/contracts/agent-backend.ts) over a
 // JSON-RPC peer, reading the backend's quirks instead of its name.
 //
@@ -11,8 +11,8 @@
 //   MCP call's server and tool are read from the tool call's structured input where the quirks say (Cursor's
 //   `rawInput.providerIdentifier` and `toolName`, which arrive in an update before the request), never the title.
 //   Pending requests are answered `cancelled` on a cancel, as ACP requires of a client.
-// * **Clover's own record of each tool call**: a refused call is recorded refused whatever the agent reports
-//   (Cursor says `completed`), and calls a cancel leaves open are closed by Clover (`closedByClover`).
+// * **MOSS's own record of each tool call**: a refused call is recorded refused whatever the agent reports
+//   (Cursor says `completed`), and calls a cancel leaves open are closed by MOSS (`closedByMoss`).
 // * **How a turn ends**: a refusal that ends the turn with no reply (Antigravity reports `end_turn`) is `refusal`; the
 //   final text is the agent's text after its last tool call, unchanged; usage is passed on where the agent reports it.
 // * **Model and effort** through `session/set_config_option`. Where a choice persists into the user's own settings
@@ -29,7 +29,7 @@
 //
 // The client advertises neither `fs` nor `terminal`: agents use their own tools, inside their own sandbox (§9.3).
 // Reaching the folder tree and Bash under the fence through those doors comes with Gemini CLI, which uses them (M2).
-import type { Level } from "@waifucave/clover-protocol";
+import type { Level } from "@waifucave/moss-protocol";
 import type {
   AgentEvent, AgentPermissionAnswer, AgentPermissionAsk, AgentQuirks, AgentSession, AgentSessionState, AgentTurnEnd,
 } from "../../contracts/agent-backend";
@@ -39,6 +39,8 @@ import type { Clock } from "../../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../../contracts/common";
 import { RPC_METHOD_NOT_FOUND, RpcError, RpcPeer, type JsonRpcMessage } from "@waifucave/clover-agent-sdk/acp";
 import { UserSelections } from "./selections";
+import { ownedByMoss } from "../session-options";
+import { metaToolName, subagentOf } from "../subagents";
 import {
   ACP_PROTOCOL_VERSION, type AgentCaps, type ConfigOption, type StdioMcpServer, at, isAuthRequired, obj, pathsOf, readCaps,
   readConfigOptions, readPermissionOptions, readToolStatus, str, textOf, type Obj, type ToolStatus,
@@ -56,7 +58,7 @@ export interface AgentProcess {
   stop(graceMs?: number): Promise<void>;
 }
 
-/** Clover's own record of one tool call. */
+/** MOSS's own record of one tool call. */
 export interface ToolCallRecord {
   id: string;
   kind: string;
@@ -68,7 +70,11 @@ export interface ToolCallRecord {
   /** Wall-clock start, for the watchdog's process check (the process table is on wall time). */
   startedAtWall: number;
   decision?: "allowed" | "refused" | "cancelled";
-  closedByClover?: boolean;
+  closedByMoss?: boolean;
+  /** The tool's own name, where the `subagents` quirk reads it from the update's `_meta`. */
+  toolName?: string;
+  /** The subagent this call started, as last said (§9.5 "Subagents"). */
+  subagent?: { name: string; model?: string };
 }
 
 export interface OpenOptions {
@@ -105,7 +111,7 @@ export interface OpenOptions {
   modeConfirmMs?: number;
   /** For an agent whose permission requests don't name an MCP call's server and tool (`mcpNames: null`), the agent's
    *  own side can: the call's server and tool by its tool call id and the request's own title and kind, or undefined
-   *  (clover-code, in the daemon, gives a plugin tool on its own bridge, from the runtime's real tool name). */
+   *  (moss-code, in the daemon, gives a plugin tool on its own bridge, from the runtime's real tool name). */
   mcpCallOf?: (toolCallId: string, asked: { title?: string; kind?: string }) => { server: string; tool: string } | undefined;
 }
 
@@ -138,7 +144,7 @@ export const MAX_OPEN_ASKS = 8;
 /** A tool call's `rawInput` longer than this, as JSON, is kept as a preview. */
 export const MAX_RAW_INPUT_CHARS = 256 * 1024;
 
-export const CLIENT_INFO = { name: "clover", title: "Clover", version: "0.0.0" };
+export const CLIENT_INFO = { name: "moss", title: "MOSS", version: "0.0.0" };
 const DEFAULT_START_TIMEOUT_MS = 120_000;
 const CONFIG_TIMEOUT_MS = 30_000;
 
@@ -150,6 +156,8 @@ interface Turn {
   /** The last permission answer was a refusal, and no text came after it. */
   endedOnRefusal: boolean;
   usage?: { inputTokens: number; outputTokens: number };
+  /** The context the agent last said it uses in this turn (`usage_update`'s `used`). */
+  contextTokens?: number;
 }
 
 export class AcpAgentSession implements AgentSession {
@@ -163,6 +171,7 @@ export class AcpAgentSession implements AgentSession {
   #state: AgentSessionState = "starting";
   #caps: AgentCaps | undefined;
   #config: ConfigOption[] = [];
+  #labels = new Map<string, { name?: string; values: Map<string, string> }>();
   /** The backend's record of the user's own selections, and the options this session changed. */
   readonly #selections: { keeper: UserSelections; backend: string };
   readonly #held = new Set<string>();
@@ -226,7 +235,7 @@ export class AcpAgentSession implements AgentSession {
   }
 
   /** Starts the ACP session on a launched process: `initialize`, then `session/new` or a reattach, then model and
-   *  effort. A signed-out agent fails `sign_in`; the user signs in to it themselves, never through Clover. */
+   *  effort. A signed-out agent fails `sign_in`; the user signs in to it themselves, never through MOSS. */
   static async open(opts: OpenOptions): Promise<AcpAgentSession> {
     const s = new AcpAgentSession(opts);
     try {
@@ -266,6 +275,36 @@ export class AcpAgentSession implements AgentSession {
     return this.#config;
   }
 
+  /** The options as the agent names them: its own name for each option and each value (the SDK's `ConfigOption` keeps
+   *  only ids), for a picker. Read from the same answers as `configOptions`. */
+  optionLabels(): ReadonlyMap<string, { name?: string; values: ReadonlyMap<string, string> }> {
+    return this.#labels;
+  }
+
+  /** The config options an answer carries, and their names. */
+  #takeConfig(raw: unknown): void {
+    const read = readConfigOptions(raw);
+    if (read === undefined) return;
+    this.#config = read;
+    const list = Array.isArray(obj(raw)?.["configOptions"]) ? (obj(raw)!["configOptions"] as unknown[]) : Array.isArray(raw) ? raw : [];
+    const labels = new Map<string, { name?: string; values: Map<string, string> }>();
+    for (const o of list.slice(0, 64)) {
+      const c = obj(o);
+      const id = str(c?.["id"]);
+      if (id === undefined || id === "") continue;
+      const values = new Map<string, string>();
+      for (const v of (Array.isArray(c?.["options"]) ? (c!["options"] as unknown[]) : []).slice(0, 512)) {
+        const x = obj(v);
+        const value = str(x?.["value"]);
+        const name = str(x?.["name"]);
+        if (value !== undefined && name !== undefined && name.length <= 120) values.set(value, name);
+      }
+      const name = str(c?.["name"]);
+      labels.set(id, { ...(name !== undefined && name.length <= 120 ? { name } : {}), values });
+    }
+    this.#labels = labels;
+  }
+
   state(): AgentSessionState {
     return this.#state;
   }
@@ -297,7 +336,7 @@ export class AcpAgentSession implements AgentSession {
     const caps = readCaps(init);
     this.#caps = caps;
     if (caps.protocolVersion !== undefined && caps.protocolVersion !== ACP_PROTOCOL_VERSION) {
-      throw new ContractError("refused", `the agent speaks ACP version ${caps.protocolVersion}; Clover speaks ${ACP_PROTOCOL_VERSION}`);
+      throw new ContractError("refused", `the agent speaks ACP version ${caps.protocolVersion}; MOSS speaks ${ACP_PROTOCOL_VERSION}`);
     }
     const promptMeta = this.#systemPromptMeta(opts.instructions);
     if (opts.instructions && !promptMeta) this.#preamble = opts.instructions;
@@ -325,7 +364,7 @@ export class AcpAgentSession implements AgentSession {
       if (!id) throw new ContractError("failed", "the agent answered session/new without a session id");
       this.#agentSessionId = id;
     }
-    this.#config = readConfigOptions(obj(result)?.["configOptions"]) ?? this.#config;
+    this.#takeConfig(obj(result)?.["configOptions"]);
     const modes = obj(obj(result)?.["modes"]);
     if (modes) {
       const available = (Array.isArray(modes["availableModes"]) ? modes["availableModes"] : []).map((m) => str(obj(m)?.["id"])).filter((x): x is string => !!x);
@@ -408,7 +447,7 @@ export class AcpAgentSession implements AgentSession {
       }
       if (stopReason === "end_turn" && this.#quirks.turns.refusal === "ends-turn" && turn.endedOnRefusal) stopReason = "refusal";
       if (stopReason === "cancelled") this.#closeOpenCalls(turn);
-      return { stopReason, text: turn.text || (errorText ?? ""), ...(turn.usage ? { usage: turn.usage } : {}) };
+      return { stopReason, text: turn.text || (errorText ?? ""), ...(turn.usage ? { usage: turn.usage } : {}), ...(turn.contextTokens === undefined ? {} : { contextTokens: turn.contextTokens }) };
     })();
     this.#turnDone = run.catch(() => undefined);
     try {
@@ -437,10 +476,31 @@ export class AcpAgentSession implements AgentSession {
   async setConfig(option: "model" | "effort", value: string): Promise<void> {
     if (this.#state === "stopped" || this.#state === "failed") throw new ContractError("closed", "the agent's session has ended");
     const q = this.#quirks.config;
-    const id = option === "model" ? q.modelOption : q.effortOption;
-    if (id === null) {
+    const named = option === "model" ? q.modelOption : q.effortOption;
+    if (named === null) {
       throw new ContractError("refused", `this agent takes no ${option} option${option === "effort" && q.effortInModel ? "; its effort is part of the model" : ""}`);
     }
+    // The id sent is the AGENT'S OWN id for that option: the one the plugin names when the agent reports an option under it,
+    // else the reported option of that category. A plugin may name the category where the agent's id differs: Codex reports
+    // its effort as `reasoning_effort` in the category `thought_level`, and a set under `thought_level` is refused as invalid
+    // params, which failed every turn of a session that had an effort (the owner's installed build, 2026-11-23).
+    const category = option === "model" ? "model" : "thought_level";
+    const reported = this.#config.find((c) => c.id === named) ?? this.#config.find((c) => c.category === category);
+    await this.#setOption(reported?.id ?? named, value);
+  }
+
+  /** The person's pick of one of the agent's other options (never the model, the effort or the approval level's mode:
+   *  MOSS has controls and rules of its own for those): the option must be one the agent reports, with a fixed list of
+   *  values that holds the one asked for. The agent may still refuse it, which is the caller's to show. */
+  async setOption(id: string, value: string): Promise<void> {
+    if (this.#state === "stopped" || this.#state === "failed") throw new ContractError("closed", "the agent's session has ended");
+    const q = this.#quirks.config;
+    const option = this.#config.find((c) => c.id === id);
+    if (option === undefined) throw new ContractError("refused", `the agent reports no option ${id.slice(0, 64)}`);
+    if (ownedByMoss(option, { modelOption: q.modelOption, effortOption: q.effortOption, ...(this.#readOnlyMode ? { readOnlyOption: this.#readOnlyMode.option } : {}) })) {
+      throw new ContractError("refused", `${id.slice(0, 64)} is changed by MOSS's own control, not here`);
+    }
+    if (!option.values.includes(value)) throw new ContractError("refused", `${id.slice(0, 64)} has no value ${value.slice(0, 64)}`);
     await this.#setOption(id, value);
   }
 
@@ -458,7 +518,7 @@ export class AcpAgentSession implements AgentSession {
       const result = await this.#call("session/set_config_option", { sessionId: this.#agentSessionId, configId: c.id, value: user }, CONFIG_TIMEOUT_MS).catch(() => undefined);
       if (result === undefined) continue;
       keeper.restored(backend, c.id);
-      this.#config = readConfigOptions(result) ?? this.#config;
+      this.#takeConfig(result);
     }
   }
 
@@ -519,11 +579,11 @@ export class AcpAgentSession implements AgentSession {
     const refuse = (why: string): never => {
       throw new ContractError("refused", `the agent ${why}, which this level doesn't allow, so its session was ended`);
     };
-    if (floor.allowed !== undefined && this.#currentModes().length === 0) refuse("reports no mode Clover has checked");
+    if (floor.allowed !== undefined && this.#currentModes().length === 0) refuse("reports no mode MOSS has checked");
     if (bad().length === 0) return;
     const was = bad()[0]!;
     const to = floor.fallback;
-    if (to === undefined || !floorAllows(floor, to)) refuse(`is in its ${was} mode and Clover has no mode to switch it to`);
+    if (to === undefined || !floorAllows(floor, to)) refuse(`is in its ${was} mode and MOSS has no mode to switch it to`);
     const o = this.#config.find((c) => c.id === "mode");
     if (o && !floorAllows(floor, o.currentValue ?? "") && o.values.includes(to!)) await this.#setOption(o.id, to!);
     if (this.#modes?.current !== undefined && !floorAllows(floor, this.#modes.current) && this.#modes.available.includes(to!)) {
@@ -536,7 +596,7 @@ export class AcpAgentSession implements AgentSession {
 
   /** Switches the agent into its read-only mode, or back to the mode it had: its `mode` config option, else ACP's
    *  `session/set_mode`. Refused when it offers no read-only mode, or its answer doesn't show the mode set (check 1's
-   *  minor 11: Clover counts on the agent's own word only once it says so). */
+   *  minor 11: MOSS counts on the agent's own word only once it says so). */
   async setReadOnly(on: boolean): Promise<void> {
     if (on === this.#readOnly) return;
     const mode = this.#readOnlyMode;
@@ -544,7 +604,7 @@ export class AcpAgentSession implements AgentSession {
     const refuse = (why: string): never => {
       throw new ContractError("refused", `this agent acts without asking and ${why}, so it can't run at read-only`);
     };
-    // An unconfirmed switch on a running session ends it, as the mode floor does: Clover never counts on a read-only
+    // An unconfirmed switch on a running session ends it, as the mode floor does: MOSS never counts on a read-only
     // mode the agent hasn't reported itself (its config option's answer, or its own `current_mode_update`).
     const unconfirmed = async (): Promise<never> => {
       if (this.#state === "ready" || this.#state === "idle") {
@@ -599,7 +659,7 @@ export class AcpAgentSession implements AgentSession {
     }
     const result = await this.#call("session/set_config_option", { sessionId: this.#agentSessionId, configId: id, value }, CONFIG_TIMEOUT_MS);
     if (persists) keeper.set(backend, id, value);
-    this.#config = readConfigOptions(result) ?? this.#config;
+    this.#takeConfig(result);
   }
 
   /** Lets go of the options this session changed; the last holder sets the user's own value back when it can. */
@@ -636,7 +696,7 @@ export class AcpAgentSession implements AgentSession {
         // A URL-mode sign-in would open a browser; form elicitations come with M2's cards. Declined for now.
         return { action: "decline" };
       default:
-        throw new RpcError(RPC_METHOD_NOT_FOUND, `Clover's client doesn't offer ${method}`);
+        throw new RpcError(RPC_METHOD_NOT_FOUND, `MOSS's client doesn't offer ${method}`);
     }
   }
 
@@ -720,6 +780,7 @@ export class AcpAgentSession implements AgentSession {
           turn.toolIds.add(id);
         }
         this.#emit({ type: "tool_call", id, kind: r.kind, title: r.title, status: r.status, ...(r.rawInput === undefined ? {} : { rawInput: r.rawInput }) });
+        this.#saySubagent(r);
         return;
       }
       case "tool_call_update": {
@@ -728,22 +789,31 @@ export class AcpAgentSession implements AgentSession {
         const before = this.#calls.get(id)?.status;
         const r = this.#merge(id, update, false);
         if (turn) turn.toolIds.add(id);
+        // Its input arrives here when the agent streamed the call (Claude Code's adapter): the subagent's name with it.
+        this.#saySubagent(r);
         const status = readToolStatus(update?.["status"]);
         if (status && status !== before) {
-          const refused = r.decision === "refused" && (status === "completed" || status === "failed");
-          this.#emit({ type: "tool_call_update", id, status, ...(refused ? { refused: true } : {}) });
+          const ended = status === "completed" || status === "failed";
+          const refused = r.decision === "refused" && ended;
+          const output = ended ? toolOutputOf(r.fields["content"]) : undefined;
+          this.#emit({ type: "tool_call_update", id, status, ...(refused ? { refused: true } : {}), ...(output ? { output } : {}) });
         }
         return;
       }
       default:
-        // Plans, commands, modes, titles, config and usage updates: progress, recorded on the wire.
-        if (str(update?.["sessionUpdate"]) === "config_option_update") this.#config = readConfigOptions(update?.["configOptions"]) ?? this.#config;
+        // Plans, commands, modes, titles, config and usage updates: progress, recorded on the wire. A usage update's
+        // `used` (the tokens in its context now) is what the session's context reads at the turn's end.
+        if (str(update?.["sessionUpdate"]) === "usage_update" && turn) {
+          const used = Number(update?.["used"]);
+          if (Number.isInteger(used) && used >= 0) turn.contextTokens = used;
+        }
+        if (str(update?.["sessionUpdate"]) === "config_option_update") this.#takeConfig(update?.["configOptions"]);
         if (str(update?.["sessionUpdate"]) === "current_mode_update" && this.#modes) {
           const id = str(update?.["currentModeId"]) ?? str(update?.["modeId"]);
           if (id) {
             this.#modes.current = id;
             for (const w of [...this.#modeWaiters]) w();
-            // The agent left its read-only mode on its own: Clover no longer counts on it.
+            // The agent left its read-only mode on its own: MOSS no longer counts on it.
             if (this.#readOnly && !this.#readOnlyMode?.values.includes(id)) this.#readOnly = false;
           }
         }
@@ -751,7 +821,7 @@ export class AcpAgentSession implements AgentSession {
     }
   }
 
-  /** Merges a `tool_call`, a `tool_call_update` or a permission request's `toolCall` into Clover's record. */
+  /** Merges a `tool_call`, a `tool_call_update` or a permission request's `toolCall` into MOSS's record. */
   #merge(id: string, src: Obj | undefined, created: boolean): ToolCallRecord {
     let r = this.#calls.get(id);
     if (!r) {
@@ -769,7 +839,21 @@ export class AcpAgentSession implements AgentSession {
     if (status) r.status = status;
     if (src["rawInput"] !== undefined && !(isEmptyObject(src["rawInput"]) && r.rawInput !== undefined)) r.rawInput = capRawInput(src["rawInput"]);
     for (const key of ["locations", "content"]) if (src[key] !== undefined) r.fields[key] = src[key];
+    const toolName = metaToolName(this.#quirks.subagents, src);
+    if (toolName !== undefined) r.toolName = toolName;
     return r;
+  }
+
+  /** A call that starts a subagent of the agent's own (its `subagents` quirk) is said, and said again when its name or
+   *  model changes. Never for a call that has ended. */
+  #saySubagent(r: ToolCallRecord): void {
+    if (this.#quirks.subagents === undefined || this.#quirks.subagents === null) return;
+    const sub = subagentOf(this.#quirks.subagents, { ...(r.toolName === undefined ? {} : { toolName: r.toolName }), title: r.title, kind: r.kind, rawInput: r.rawInput });
+    if (sub === undefined) return;
+    if (r.subagent !== undefined && r.subagent.name === sub.name && r.subagent.model === sub.model) return;
+    if (r.subagent === undefined && (r.status === "completed" || r.status === "failed")) return;
+    r.subagent = sub;
+    this.#emit({ type: "subagent", id: r.id, ...sub });
   }
 
   #closeOpenCalls(turn: Turn): void {
@@ -777,8 +861,8 @@ export class AcpAgentSession implements AgentSession {
       const r = this.#calls.get(id);
       if (!r || (r.status !== "pending" && r.status !== "in_progress")) continue;
       r.status = "failed";
-      r.closedByClover = true;
-      this.#emit({ type: "tool_call_update", id, status: "failed", closedByClover: true });
+      r.closedByMoss = true;
+      this.#emit({ type: "tool_call_update", id, status: "failed", closedByMoss: true });
     }
   }
 
@@ -801,9 +885,9 @@ export function capRawInput(v: unknown): unknown {
   try {
     json = JSON.stringify(v) ?? "";
   } catch {
-    return { clover_unreadable: true };
+    return { moss_unreadable: true };
   }
-  return json.length <= MAX_RAW_INPUT_CHARS ? v : { clover_truncated: json.slice(0, 4096), length: json.length };
+  return json.length <= MAX_RAW_INPUT_CHARS ? v : { moss_truncated: json.slice(0, 4096), length: json.length };
 }
 
 function isEmptyObject(v: unknown): boolean {
@@ -837,4 +921,23 @@ export function onceOnly(answer: AgentPermissionAnswer, options: readonly AgentP
   if (once) return { outcome: "selected", optionId: once.optionId };
   const reject = options.find((o) => o.kind === "reject_once");
   return reject ? { outcome: "selected", optionId: reject.optionId } : { outcome: "cancelled" };
+}
+
+/** The most of an agent's tool output kept for the conversation (an outside agent's update is not ours to bound). */
+export const AGENT_TOOL_OUTPUT_MAX = 200_000;
+
+/** A tool call's text output from its ACP `content` (`{type:"content", content:{type:"text", text}}` items; a diff or a
+ *  terminal shows as its kind), cut at `AGENT_TOOL_OUTPUT_MAX`. */
+export function toolOutputOf(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  let out = "";
+  for (const item of content) {
+    if (item === null || typeof item !== "object") continue;
+    const it = item as { type?: unknown; content?: unknown };
+    const inner = it.content as { type?: unknown; text?: unknown } | undefined;
+    if (it.type === "content" && inner !== undefined && inner !== null && inner.type === "text" && typeof inner.text === "string") out += inner.text;
+    else if (typeof it.type === "string" && it.type !== "content") out += `[${it.type}]`;
+    if (out.length > AGENT_TOOL_OUTPUT_MAX) return out.slice(0, AGENT_TOOL_OUTPUT_MAX);
+  }
+  return out === "" ? undefined : out;
 }

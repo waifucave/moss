@@ -4,11 +4,13 @@
 #   scripts/try/run.sh <commit> <out folder> [--runs N] [--cold-start N] [--work <dir>]
 #
 #   1. the real build: `release/build.ts --sign --no-notarize` (Developer ID signed and hardened, never notarized or
-#      stapled, no update files, BUILD-COMMIT marked sign-only) into apps/desktop/out/sign-only. Its dmg, zip,
-#      BUILD-COMMIT and SHA256SUMS are copied to the out folder.
+#      stapled, no update files, BUILD-COMMIT marked sign-only) into apps/desktop/out/sign-only: BOTH apps of the release
+#      (lane PK), MOSS Code and MOSS. Their dmgs and zips (MOSS-Code-*, MOSS-*), BUILD-COMMIT and SHA256SUMS are copied to
+#      the out folder.
 #   2. its static checks (scripts/try/verify.sh --sign-only, on a copy) into <out>/verify.txt.
-#   3. the test twin: the same commit as `release/build.ts --test-build` (apps/desktop/out/test-build).
-#   4. the packaged acceptance on the twin, N times (default 3), each under the keychain-prompt watchdog
+#   3. the test twin: the same commit as `release/build.ts --test-build` (apps/desktop/out/test-build): both apps.
+#   4. the packaged acceptance on the twin pair (`--app` MOSS Code, `--moss-app` MOSS: the `moss` unit runs the packaged
+#      MOSS), N times (default 3), each under the keychain-prompt watchdog
 #      (scripts/try/watch.sh), and `--cold-start N` (default 5) once, into <out>/acceptance-test-twin/.
 #   5. with --upgrade-from <commit> (the previous try's): the owner's real path, an UPGRADE. That commit's test twin is
 #      built in a temporary worktree; it runs the full acceptance with --keep-state (its home, user home and test
@@ -16,11 +18,18 @@
 #      the app first, the old key, conversation, plugin, fence, bundled tools and setting, and no distrust), each under
 #      the watchdog, into <out>/acceptance-test-twin/upgrade-old and upgrade-new. Without it, the pair is skipped and
 #      the summary says so.
-#   --renders <dir> keeps the window pictures the full runs take (scripts/acceptance/ui-steps.ts, CLOVER_ACCEPT_RENDERS:
+#   --renders <dir> keeps the window pictures the full runs take (scripts/acceptance/ui-steps.ts, MOSS_ACCEPT_RENDERS:
 #   Alpha's tab, wide and narrow) in <dir>, from the packaged twin; each run writes over the one before.
 #   --twin-only skips 1 and 2 (no Developer ID release-shaped build, no verify): the twins and their runs only, for an
 #   upgrade pair or a re-run of the acceptance. `--runs 0 --cold-start 0 --upgrade-from <commit> --twin-only` is the
 #   upgrade pair alone.
+#   --keep-twin <dir> copies this commit's test twin pair (MOSS Code.app, MOSS.app) into <dir> before the try's own
+#   copies go: for re-running packaged units against it (scripts/try/watch.sh "<dir>/MOSS Code.app" <checkout> <run
+#   folder> --units <ids> --moss-app "<dir>/MOSS.app") without building again. Whoever keeps it unregisters and
+#   deletes it when done: a test-marked app must not stay on a Mac that gets the real one installed.
+#   --build-only is the quick install's build (the owner, 2026-11-22: small look and text changes need no two-hour try):
+#   1 and 2 only (the signed real build and its static checks); no test twin, no packaged run, no upgrade pair. What it
+#   does not prove is said in its summary; GitHub's run of the same commit from source is the tests' judge.
 #   6. the per-step table (each run's status per step; a step the script can't drive on a packaged app is shown NOT
 #      RUN ON PACKAGED with its reason), the upgrade pair's two tables, and how long each stage took, printed and kept
 #      in <out>/SUMMARY.txt.
@@ -28,15 +37,15 @@
 # Nothing is published, uploaded or notarized, and nothing is opened: the real build is never launched, the twin runs
 # headless from copies started by their binary path (never `open`), each copy is unregistered from Launch Services
 # and deleted, and the script reports that none stays registered. It stops at once if a keychain prompt (a new
-# SecurityAgent process) appears. The Developer ID identity is found by Clover's team in the login keychain
+# SecurityAgent process) appears. The Developer ID identity is found by MOSS's team in the login keychain
 # (`security find-identity`), never printed, and replaced in everything kept; NODE_AUTH_TOKEN (for the build's
 # installs) is taken from `gh auth token` inline when it isn't set, and never printed or written. The build's lines
 # carry the time, so a try's minutes can be read off its log. The out folder must be new or empty.
 set -u
 ARGV=("$@")
-usage() { echo "usage: scripts/try/run.sh <commit> <out folder> [--runs N] [--cold-start N] [--upgrade-from <previous try's commit>] [--twin-only] [--renders <dir>] [--work <dir>]" >&2; exit 2; }
+usage() { echo "usage: scripts/try/run.sh <commit> <out folder> [--runs N] [--cold-start N] [--upgrade-from <previous try's commit>] [--twin-only] [--build-only] [--keep-twin <dir>] [--renders <dir>] [--work <dir>]" >&2; exit 2; }
 [ $# -ge 2 ] || usage
-COMMIT="$1"; OUT="$2"; shift 2; RUNS=3; COLD=5; WORK=""; UPFROM=""; TWINONLY=false; RENDERS=""
+COMMIT="$1"; OUT="$2"; shift 2; RUNS=3; COLD=5; WORK=""; UPFROM=""; TWINONLY=false; BUILDONLY=false; RENDERS=""; KEEPTWIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs) RUNS="${2:-}"; shift 2 ;;
@@ -45,13 +54,20 @@ while [ $# -gt 0 ]; do
     --work) WORK="${2:-}"; shift 2 ;;
     --renders) RENDERS="${2:-}"; [ -n "$RENDERS" ] || usage; shift 2 ;;
     --twin-only) TWINONLY=true; shift ;;
+    --build-only) BUILDONLY=true; shift ;;
+    --keep-twin) KEEPTWIN="${2:-}"; [ -n "$KEEPTWIN" ] || usage; shift 2 ;;
     *) usage ;;
   esac
 done
 [[ "$RUNS" =~ ^[0-9]+$ && "$COLD" =~ ^[0-9]+$ ]] || usage
+if [ "$BUILDONLY" = true ]; then
+  [ "$TWINONLY" = false ] || usage
+  # Nothing after the real build and its checks: no twin, no runs, no upgrade pair.
+  RUNS=0; COLD=0; UPFROM=""; KEEPTWIN=""
+fi
 # One acceptance or try run on this machine at a time: the whole try holds scripts/heavy's exclusive lock, as a packaged
 # run (ordinary heavy jobs wait while it runs; what it starts through heavy runs under the same hold).
-[ -n "${CLOVER_HEAVY_EXCLUSIVE:-}" ] || exec "$(cd "$(dirname "$0")/.." && pwd -P)/heavy" --exclusive --packaged "$0" "${ARGV[@]}"
+[ -n "${MOSS_HEAVY_EXCLUSIVE:-}" ] || exec "$(cd "$(dirname "$0")/.." && pwd -P)/heavy" --exclusive --packaged "$0" "${ARGV[@]}"
 [ "$(uname -s)" = Darwin ] || { echo "try: macOS only (the try is a Developer ID build of the Mac app)" >&2; exit 2; }
 ROOT="$(git rev-parse --show-toplevel)" || exit 2; cd "$ROOT" || exit 2
 DESKTOP="$ROOT/apps/desktop"
@@ -75,11 +91,11 @@ for d in plugins/alpha/server/node_modules plugins/alpha/tab/node_modules; do
 done
 if [ -e "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then die "$OUT isn't empty: a try's folder is new"; fi
 mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd -P)" || exit 2
-[ -n "$WORK" ] || WORK="$(mktemp -d "${TMPDIR:-/tmp}/clover-try.XXXXXX")"
+[ -n "$WORK" ] || WORK="$(mktemp -d "${TMPDIR:-/tmp}/moss-try.XXXXXX")"
 mkdir -p "$WORK" && WORK="$(cd "$WORK" && pwd -P)" || exit 2
-export CLOVER_TRY_WORK="$WORK"
-TEAM="$(scripts/pinned-bun -e 'console.log((await import("./packages/core/src/bundled-identities.ts")).CLOVER_TEAM_ID)' 2>/dev/null | tail -1)"
-[[ "$TEAM" =~ ^[A-Z0-9]{10}$ ]] || die "couldn't read Clover's team id from packages/core/src/bundled-identities.ts"
+export MOSS_TRY_WORK="$WORK"
+TEAM="$(scripts/pinned-bun -e 'console.log((await import("./packages/core/src/bundled-identities.ts")).MOSS_TEAM_ID)' 2>/dev/null | tail -1)"
+[[ "$TEAM" =~ ^[A-Z0-9]{10}$ ]] || die "couldn't read MOSS's team id from packages/core/src/bundled-identities.ts"
 ID="$(security find-identity -v -p codesigning | sed -nE "s/.*\"(Developer ID Application: .* \\($TEAM\\))\".*/\\1/p" | head -1)"
 [ -n "$ID" ] || die "no Developer ID Application identity of team $TEAM in the keychain"
 NAME="${ID#Developer ID Application: }"; NAME="${NAME% ($TEAM)}"
@@ -92,20 +108,27 @@ TIMES=()
 timed() { local name="$1"; shift; local t0; t0=$(date +%s); "$@"; local rc=$?; TIMES+=("$name|$(( $(date +%s) - t0 ))|$rc"); return $rc; }
 build() {
   local log="$1"; shift
-  NODE_AUTH_TOKEN="${NODE_AUTH_TOKEN:-$(gh auth token 2>/dev/null)}" CLOVER_MAC_IDENTITY="$ID" \
+  # The identity under both names: a tree from before the rename (the upgrade pair's old twin) reads its own.
+  NODE_AUTH_TOKEN="${NODE_AUTH_TOKEN:-$(gh auth token 2>/dev/null)}" MOSS_MAC_IDENTITY="$ID" CLOVER_MAC_IDENTITY="$ID" \
     scripts/heavy bun scripts/release/build.ts "$@" 2>&1 | redact | stamp | tee "$log"
   return "${PIPESTATUS[0]}"
 }
 unregister_under() { while IFS= read -r p; do $LSR -u "$p" 2>/dev/null; done < <($LSR -dump 2>/dev/null | grep -E '^path:' | grep -F "$1/" | sed -E 's/^path: *//; s/ \(0x[0-9a-f]+\)$//'); }
 registered_under() { $LSR -dump 2>/dev/null | grep -E '^path:' | grep -cF "$1/"; }
 UPSTATE=""
+# Launch Services registers a bundle it comes across in a folder Spotlight indexes by itself (a checkout outside the
+# temp folders), and keeps the entry after the bundle is gone. A build leaves bundles in both apps' out folders (MOSS's
+# own before it is moved beside MOSS Code's, and the host helper's stash): every entry under them goes after each
+# build and at the end, found by the entries themselves, not by what is still on disk.
+MOSSOUT="$ROOT/apps/moss/out"
+unregister_builds() { unregister_under "$DESKTOP/out"; unregister_under "$MOSSOUT"; }
 cleanup() {
-  for d in "$WORK" "$DESKTOP/out/sign-only" "$DESKTOP/out/test-build"; do [ -d "$d" ] && unregister_under "$d"; done
+  unregister_under "$WORK"; unregister_builds
   # The previous try's worktree (under WORK) is let go of, and the upgrade's state dir (temp homes and a throwaway
   # keychain FILE that was never in the search list) goes.
   [ -d "$WORK/old" ] && git worktree remove --force "$WORK/old" 2>/dev/null; git worktree prune 2>/dev/null
   [ -n "$UPSTATE" ] && rm -rf "$UPSTATE"
-  rm -rf "$WORK" "$DESKTOP/out/sign-only" "$DESKTOP/out/test-build"
+  rm -rf "$WORK" "$DESKTOP/out/sign-only" "$DESKTOP/out/test-build" "$DESKTOP/out/host-helper" "$MOSSOUT/sign-only" "$MOSSOUT/test-build"
 }
 trap cleanup EXIT
 echo "try: $COMMIT ($(git rev-parse --short HEAD)) into $OUT; the identity: team $TEAM's Developer ID (found)"
@@ -115,8 +138,9 @@ VERIFY=0
 if [ "$TWINONLY" = false ]; then
   timed "real build (sign-only: app, plugins, daemon, package, sign)" build "$OUT/build-sign-only.log" --sign --no-notarize || die "the sign-only build failed (build-sign-only.log)"
   SO="$DESKTOP/out/sign-only"
-  cp "$SO"/Clover-*.dmg "$SO"/Clover-*-mac.zip "$SO/BUILD-COMMIT-mac.txt" "$SO/SHA256SUMS-mac.txt" "$OUT/" || die "the sign-only build's files are missing"
+  cp "$SO"/MOSS-*.dmg "$SO"/MOSS-*-mac.zip "$SO/BUILD-COMMIT-mac.txt" "$SO/SHA256SUMS-mac.txt" "$OUT/" || die "the sign-only build's files are missing"
   ditto "$SO" "$WORK/sign-only"
+  unregister_builds
   timed "verify (static checks)" bash -c 'scripts/try/verify.sh "$1" "$2" --sign-only 2>&1 | tee "$3"; exit "${PIPESTATUS[0]}"' _ "$WORK/sign-only" "$ROOT" "$OUT/verify.txt"
   VERIFY=$?
   unregister_under "$WORK/sign-only"; rm -rf "$WORK/sign-only"
@@ -125,17 +149,28 @@ else
 fi
 
 # ── 3. the test twin ─────────────────────────────────────────────────────────────────────────────────────────────
+if [ "$BUILDONLY" = false ]; then
 timed "twin build (test-marked, same commit)" build "$OUT/build-test-twin.log" --test-build || die "the test twin's build failed (build-test-twin.log)"
-mkdir -p "$WORK/twin" && ditto "$DESKTOP/out/test-build/mac-arm64/Clover.app" "$WORK/twin/Clover.app"
-unregister_under "$DESKTOP/out/test-build"; rm -rf "$DESKTOP/out/test-build"
+mkdir -p "$WORK/twin" && ditto "$DESKTOP/out/test-build/mac-arm64/MOSS Code.app" "$WORK/twin/MOSS Code.app"
+ditto "$DESKTOP/out/test-build/mac-arm64/MOSS.app" "$WORK/twin/MOSS.app" || die "the test twin has no MOSS.app (one release builds both apps)"
+rm -rf "$DESKTOP/out/test-build" "$MOSSOUT/test-build"; unregister_builds
+else
+  echo "try: --build-only: the signed build and its checks only (no test twin, no packaged run, no upgrade pair)"
+fi
+if [ -n "$KEEPTWIN" ]; then
+  mkdir -p "$KEEPTWIN" && ditto "$WORK/twin/MOSS Code.app" "$KEEPTWIN/MOSS Code.app" && ditto "$WORK/twin/MOSS.app" "$KEEPTWIN/MOSS.app" || die "the twin pair couldn't be kept in $KEEPTWIN"
+  echo "try: the test twin pair kept in $KEEPTWIN (unregister and delete it when done)"
+fi
 
 # ── 4. the packaged acceptance ───────────────────────────────────────────────────────────────────────────────────
 ACC="$OUT/acceptance-test-twin"; mkdir -p "$ACC"; COLS=(); PROMPT=false
-# The app a run takes (this try's twin, or the previous try's for the upgrade's first half).
-RUNAPP="$WORK/twin/Clover.app"
+# The app a run takes (this try's twin, or the previous try's for the upgrade's first half), and the checkout whose
+# harness drives it (this one; a tree from before the rename runs its own, on its own names and home).
+RUNAPP="$WORK/twin/MOSS Code.app"
+ACCROOT="$ROOT"
 accept() {
   local label="$1"; shift
-  timed "acceptance $label" scripts/try/watch.sh "$RUNAPP" "$ROOT" "$WORK/acc/$label" "$@" > "$WORK/$label.watch" 2>&1
+  timed "acceptance $label" scripts/try/watch.sh "$RUNAPP" "$ACCROOT" "$WORK/acc/$label" "$@" > "$WORK/$label.watch" 2>&1
   local rc=$?
   mkdir -p "$ACC/$label"; cp -R "$WORK/acc/$label/logs" "$WORK/acc/$label/run.out" "$ACC/$label/" 2>/dev/null; cp "$WORK/$label.watch" "$ACC/$label/watchdog.txt"
   sed 's/^/  /' "$WORK/$label.watch"
@@ -146,9 +181,17 @@ accept() {
 # Counted in bash, not with seq: BSD seq counts down (`seq 1 0` is 1 0), so --runs 0 would still run two.
 # The full runs take their window pictures into --renders' folder (only theirs: the cold start and the upgrade pair don't).
 if [ -n "$RENDERS" ]; then mkdir -p "$RENDERS" && RENDERS="$(cd "$RENDERS" && pwd -P)" || die "--renders $RENDERS can't be made"; fi
+# The units a packaged run runs (scripts/acceptance/shards.ts packagedUnitIds: all but the source-only host units), by
+# name: a run with no --units is the table from before the split, which runs the rows that now run elsewhere and no
+# release row.
+UNITS=""
+if [ "$RUNS" -gt 0 ]; then
+  UNITS="$(scripts/pinned-bun -e 'import { packagedUnitIds } from "./scripts/acceptance/shards"; console.log(packagedUnitIds().join(","))')" && [ -n "$UNITS" ] || die "the packaged run's units couldn't be listed (scripts/acceptance/shards.ts)"
+  echo "try: the packaged run's units: $UNITS"
+fi
 for ((k = 1; k <= RUNS; k++)); do
   [ "$PROMPT" = false ] || continue
-  if [ -n "$RENDERS" ]; then CLOVER_ACCEPT_RENDERS="$RENDERS" accept "run$k"; else accept "run$k"; fi
+  if [ -n "$RENDERS" ]; then MOSS_ACCEPT_RENDERS="$RENDERS" accept "run$k" --units "$UNITS" --moss-app "$WORK/twin/MOSS.app"; else accept "run$k" --units "$UNITS" --moss-app "$WORK/twin/MOSS.app"; fi
 done
 [ "$COLD" -gt 0 ] && [ "$PROMPT" = false ] && accept "cold-start-x$COLD" --cold-start "$COLD"
 [ "$PROMPT" = false ] || echo "try: A KEYCHAIN PROMPT APPEARED: the run was killed and no further run started"
@@ -159,16 +202,31 @@ upgrade_pair() {
   echo "try: the upgrade pair from $UPFROM ($(git rev-parse --short "$UPWANT")): its test twin, in a temporary worktree"
   git worktree add --detach "$WORK/old" "$UPWANT" >/dev/null 2>&1 || { echo "try: the previous try's worktree couldn't be made"; return 1; }
   ( cd "$WORK/old" && scripts/pinned-bun install --frozen-lockfile >/dev/null 2>&1 && build "$OUT/build-upgrade-old-twin.log" --test-build ) || { echo "try: the previous try's twin didn't build (build-upgrade-old-twin.log)"; return 1; }
-  mkdir -p "$WORK/old-twin" && ditto "$WORK/old/apps/desktop/out/test-build/mac-arm64/Clover.app" "$WORK/old-twin/Clover.app"
-  unregister_under "$WORK/old"; git worktree remove --force "$WORK/old" 2>/dev/null; git worktree prune 2>/dev/null
+  # The old twin's bundle by whatever name its tree gave it (a tree from before the rename builds its own app name).
+  local oldapp; oldapp="$(ls -d "$WORK/old/apps/desktop/out/test-build/mac-arm64/"*.app 2>/dev/null | head -1)"
+  [ -n "$oldapp" ] || { echo "try: the previous try's twin built no app (build-upgrade-old-twin.log)"; return 1; }
+  mkdir -p "$WORK/old-twin" && ditto "$oldapp" "$WORK/old-twin/old-twin.app"
+  unregister_under "$WORK/old"
   # Short: the daemon's socket goes under it (scripts/acceptance/state.ts).
   UPSTATE="$(mktemp -d "${TMPDIR:-/tmp}/clv-up.XXXXXX")"
-  # An older app that can't draw a card offscreen for the real press answers its cards over RPC.
-  local press=(); git grep -q CLOVER_TEST_SEALED_PRESS "$UPWANT" -- apps/desktop/src/main/index.ts || press=(--no-press)
-  RUNAPP="$WORK/old-twin/Clover.app"; accept "upgrade-old" --keep-state "$UPSTATE" ${press[@]+"${press[@]}"}; UPCOLS+=("upgrade-old")
+  local press=()
+  if [ -f "$WORK/old/packages/core/src/moss-dir.ts" ]; then
+    # A MOSS tree: this checkout's harness drives it. An older app that can't draw a card offscreen for the real press
+    # answers its cards over RPC.
+    git grep -q MOSS_TEST_SEALED_PRESS "$UPWANT" -- apps/desktop/src/main/index.ts || press=(--no-press)
+  else
+    # A tree from before the rename (the one-time copy's pair): its own harness on its own app, making the old
+    # install's home in the run's user home; this build's run then offers the copy (scripts/acceptance/steps.ts
+    # COPY_UPGRADE_STEPS).
+    ACCROOT="$WORK/old"
+  fi
+  # (A tree from before the rename knows the machine's hold by its own name: this try holds it.)
+  RUNAPP="$WORK/old-twin/old-twin.app"; CLOVER_HEAVY_EXCLUSIVE="${MOSS_HEAVY_EXCLUSIVE:-}" accept "upgrade-old" --keep-state "$UPSTATE" ${press[@]+"${press[@]}"}; UPCOLS+=("upgrade-old")
+  ACCROOT="$ROOT"
+  git worktree remove --force "$WORK/old" 2>/dev/null; git worktree prune 2>/dev/null
   [ "$PROMPT" = false ] || return 1
   [ -f "$UPSTATE/state.json" ] || { echo "try: the previous try's run left no state (upgrade-old/run.out says why)"; return 1; }
-  RUNAPP="$WORK/twin/Clover.app"; accept "upgrade-new" --upgrade-from "$UPSTATE"; UPCOLS+=("upgrade-new")
+  RUNAPP="$WORK/twin/MOSS Code.app"; accept "upgrade-new" --upgrade-from "$UPSTATE" --moss-app "$WORK/twin/MOSS.app"; UPCOLS+=("upgrade-new")
 }
 UPGRADE="not run (no --upgrade-from)"
 if [ -n "$UPFROM" ] && [ "$PROMPT" = false ]; then
@@ -177,15 +235,16 @@ fi
 
 # ── 6. the table, the times ──────────────────────────────────────────────────────────────────────────────────────
 cleanup; trap - EXIT
-LEFT=$(( $(registered_under "$DESKTOP/out") + $(registered_under "$WORK") ))
+LEFT=$(( $(registered_under "$DESKTOP/out") + $(registered_under "$MOSSOUT") + $(registered_under "$WORK") ))
 {
   if [ "$TWINONLY" = false ]; then
     echo "try $COMMIT; BUILD-COMMIT: $(head -1 "$OUT/BUILD-COMMIT-mac.txt") ($(sed -n 2p "$OUT/BUILD-COMMIT-mac.txt" | cut -d: -f1))"
-    (cd "$OUT" && for f in Clover-*.dmg Clover-*-mac.zip; do echo "  $f $(shasum -a 256 "$f" | cut -d' ' -f1)"; done)
+    (cd "$OUT" && for f in MOSS-Code-*.dmg MOSS-Code-*-mac.zip MOSS-[0-9]*.dmg MOSS-[0-9]*-mac.zip; do echo "  $f $(shasum -a 256 "$f" | cut -d' ' -f1)"; done)
     tail -1 "$OUT/verify.txt"
   else
     echo "try $COMMIT, --twin-only: no real build, no verify"
   fi
+  [ "$BUILDONLY" = true ] && echo "--build-only: NOT run on this build: the test twin, the packaged acceptance, the upgrade pair. Proven here: it builds, it is signed, its static checks."
   echo
   # The upgrade's two halves are their own tables (the old build's full run, the upgrade steps): their rows differ.
   COLS2=(); for c in ${COLS[@]+"${COLS[@]}"}; do case "$c" in upgrade-*) ;; *) COLS2+=("$c") ;; esac; done

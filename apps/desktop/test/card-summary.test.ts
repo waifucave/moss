@@ -176,13 +176,13 @@ describe("what a decision rests on stays readable", () => {
   });
   test("tokens that would hide the words are refused: see-through text, a tiny size", () => {
     const page = fieldPage({ cardId: "card_x", token: "se_001abcdef", field: "summary", value: e, tokens: { "card.text": "#FFFFFF00", "card.muted": "rgba(0,0,0,0.1)", "card.font.size": "1px", "card.approve.text": "#0004" } });
-    expect(page).not.toContain("--clover-card-text:");
-    expect(page).not.toContain("--clover-card-muted:");
-    expect(page).not.toContain("--clover-card-font-size:");
-    expect(page).not.toContain("--clover-card-approve-text:");
+    expect(page).not.toContain("--moss-card-text:");
+    expect(page).not.toContain("--moss-card-muted:");
+    expect(page).not.toContain("--moss-card-font-size:");
+    expect(page).not.toContain("--moss-card-approve-text:");
     const ok = fieldPage({ cardId: "card_x", token: "se_001abcdef", field: "summary", value: e, tokens: { "card.text": "#F2F2F2", "card.font.size": "14px" } });
-    expect(ok).toContain("--clover-card-text: #F2F2F2;");
-    expect(ok).toContain("--clover-card-font-size: 14px;");
+    expect(ok).toContain("--moss-card-text: #F2F2F2;");
+    expect(ok).toContain("--moss-card-font-size: 14px;");
     expect(readable("card.font.size", "40px")).toBe(true);
     expect(readable("card.font.size", "90px")).toBe(false);
   });
@@ -217,7 +217,7 @@ describe("text colours are an allow-list", () => {
   test("a page given a see-through text colour leaves it out", () => {
     for (const v of ["transparent", "rgb(0,0,0,0)", "hsl(0 0% 0% / 0)", "currentcolor"]) {
       const page = fieldPage({ cardId: "card_x", token: "se_001abcdef", field: "summary", value: { type: "text", text: "x" }, tokens: { "card.text": v } });
-      expect(page, v).not.toContain("--clover-card-text:");
+      expect(page, v).not.toContain("--moss-card-text:");
     }
   });
 });
@@ -264,5 +264,31 @@ describe("the Browser acting card", () => {
   test("the kept rule is said without the tool's internal name", () => {
     expect(summarize(browser("alpha"), "Alpha", HOME)!.always).toBe("Always allow Alpha to click and type on browser-other.test, on this computer (Delta) only.");
     expect(summarize(browser(undefined), undefined, HOME)!.always).toBe("Always allow your coding sessions to click and type on browser-other.test, on this computer (Delta) only.");
+  });
+});
+
+describe("a coding agent's card (agent-permission, lane MC): read like any tool card", () => {
+  const agentCard = (bot?: string) => ({
+    kind: "agent-permission", ...(bot === undefined ? {} : { bot }),
+    fields: {
+      title: { type: "text", text: "An agent wants to edit files" }, what: { type: "text", text: "Write" },
+      detail: detail({ file_path: "story.md", content: "The river rose.\nThe harvest came in autumn." }),
+      computer: { type: "text", text: "Delta" }, paths: { type: "list", items: ["/Users/me/project/story.md"] },
+      rule: { type: "rows", rows: [{ label: "kind", value: "file" }, { label: "target", value: "/Users/me/project/story.md" }, { label: "bot", value: "" }, { label: "computers", value: "Delta" }] },
+    },
+    options: [{ remember: undefined }, { remember: "always" }],
+  });
+  test("the session's own agent: a line in words, the file it resolved, the content as lines, and what Always would keep", () => {
+    const s = summarize(agentCard(), undefined, "/Users/me")!;
+    expect(s).toMatchObject({ who: "This coding session", verb: "write", target: "~/project/story.md" });
+    expect(s.preview).toMatchObject({ kind: "lines", lines: ["The river rose.", "The harvest came in autumn."] });
+    expect(s.always).toBe("Always allow: edits to ~/project/story.md, for requests that name no bot, on Delta only.");
+    // No escapes and no JSON anywhere it shows.
+    const page = previewHtml(s) + askHtml(s);
+    expect(page).not.toContain("\\n");
+    expect(page).not.toContain('"content"');
+  });
+  test("a bot's agent is named as the agent, never as its bot", () => {
+    expect(summarize(agentCard("alpha"), "Alpha", "/Users/me")!.who).toBe("Alpha's agent");
   });
 });

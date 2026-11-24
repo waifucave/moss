@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build Clover's pinned srt-win launcher with a static CRT, Clover's
+  Build MOSS's pinned srt-win launcher with a static CRT, MOSS's
   per-principal patch set applied, and check its Authenticode digest.
 
 .DESCRIPTION
@@ -47,13 +47,15 @@ $crateDir = Join-Path $srcDir "vendor/srt-win-src"
 $outDir = Join-Path $root "vendor/srt-win"
 $outExe = Join-Path $outDir "srt-win.exe"
 
-# Pinned Clover patches (file name -> SHA-256). `Apply-Patches` refuses
+# Pinned MOSS patches (file name -> SHA-256). `Apply-Patches` refuses
 # unknown or extra `*.patch` files and any hash mismatch before building.
 $PinnedPatches = @{
-  "0001-per-principal-setup-records.patch" = "6321a2922db67b4d19cb40728071af88f6635de761bba3aee2784431fd0e6341"
+  "0001-per-principal-setup-records.patch" = "188ad4c0c5ed37bc9cdba8db821fc5d0a82fb380b79278c300a1507afe81f55d"
+  "0002-session-0-named-objects.patch" = "60497de7a7c50a166eb73ff03e91e4cbe6389453d6f73fcfc9e06e029c0b3f81"
+  "0003-network-open-principal.patch" = "4c12672bfdc91edd85c88a3b677b502a6c0eb0bf9a5d972fbeee803be7b1cfb9"
 }
 
-# What the pinned patch set must change (per-principal records). After
+# What the pinned patch set must change (per-principal records; session 0's named objects; a network-open principal). After
 # applying, the tree must show exactly these files with this shape, or
 # the build stops: a patch that applies cleanly but changes nothing
 # (wrong -p level, already-applied upstream, CRLF damage) must fail
@@ -62,10 +64,12 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/cli.rs",
   "vendor/srt-win-src/src/install.rs",
   "vendor/srt-win-src/src/reg.rs",
-  "vendor/srt-win-src/src/user.rs"
+  "vendor/srt-win-src/src/user.rs",
+  "vendor/srt-win-src/src/winsta.rs",
+  "vendor/srt-win-src/src/wfp.rs"
 )
-$ExpectedPatchAdded = 409
-$ExpectedPatchDeleted = 43
+$ExpectedPatchAdded = 540
+$ExpectedPatchDeleted = 51
 
 function Check-Tools {
   foreach ($t in @("git", "cargo") ) {
@@ -98,7 +102,7 @@ function Sync-Source {
 }
 
 function Apply-Patches {
-  # Clover's per-principal patch set (vendor/srt-win/patches/*.patch).
+  # MOSS's per-principal patch set (vendor/srt-win/patches/*.patch).
   # Applied after the checkout, before the build, in sorted order.
   # Only pinned files may be present (unknown or extra files fail the
   # build), each must match its pinned hash, and afterwards the tree

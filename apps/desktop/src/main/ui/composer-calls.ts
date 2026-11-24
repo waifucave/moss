@@ -4,28 +4,24 @@
 // session) and from the key press or click it saw, never from anything the frame says.
 //
 //   models      a read.
-//   setModel    on a bot's main conversation it changes a user layer, which only the `clover` layer does directly: the
-//               bundled entry's goes on the app's own connection, any other plugin's goes on its own `layer` connection,
-//               where the core turns it into the sealed card it raises for a user-layer change. On any other session it is
-//               `session.setModel`, a session's own, with the gesture.
+//   setModel    on a bot's main conversation it changes a user layer: an entry whose plugin holds `bots.edit` (its OK card
+//               says it changes your bots' settings) sends it on the app's own connection, any other plugin's goes on its
+//               own `layer` connection, where the core turns it into the sealed card it raises for a user-layer change. On
+//               any other session it is `session.setModel`, a session's own, with the gesture.
+//   setOption   one of the session agent's other options (`models`' `options`): `session.setConfig` on the app's own connection,
+//               with the gesture; the engine refuses it for a bot's conversation and for an option MOSS has its own control for.
 //   interrupt   `session.interrupt`, stop: `session.stop`: the spot and the gesture.
 //   commands    a read for the slash menu: `command.list` joined with `plugin.list`, only the commands of plugins that
 //               are on, OK'd and running, each with its plugin's name and scope, the bot's own plugin's first.
 //   runCommand  `command.run` on the app's own connection: the user asking that plugin, so its handler is told the user
 //               called and acts with exactly the plugin's own powers (a carded action still raises its card). Only a
 //               command `commands` lists now, with the gesture; the args go to that command's plugin alone.
-//   listenStatus  a read: `voice.status` for the composer's bot, whether its voice listens now (the hold-to-talk control shows only then).
-//   listenStart   the user's press: the app's shell records (listen.ts). The bot is the one the core mounted the composer for, never
-//                 the page's word; one press covers one recording (the gesture), and the recording ends when the user lets go.
-//   listenStop    the release: the shell stops, and the answer is what was heard as text for the box, or a note saying why not.
-//   `commands`, `runCommand` and the three listen ops are the bundled entry's only: the user's own door to every plugin's commands is the
-//   app's, and a third party's composer the user picked doesn't get it (it would run any plugin's command as the user
-//   on any key press).
+//   `commands` and `runCommand` need the `commands.run` capability (its OK card warns that it runs your plugins' commands as
+//   you when you press a key in it; the command runs with the commanded plugin's own powers, never the caller's). No entry
+//   gets them by its id (F2).
 // Every acting call spends one key press or click the main process saw come to the window (the SendGate).
 
-import type { ListenHolds } from "./listen";
-
-export const COMPOSER_OPS = ["models", "setModel", "interrupt", "stop", "commands", "runCommand", "listenStatus", "listenStart", "listenStop"] as const;
+export const COMPOSER_OPS = ["models", "setModel", "setOption", "interrupt", "stop", "commands", "runCommand"] as const;
 export type ComposerOp = (typeof COMPOSER_OPS)[number];
 
 /** The composer mount the core made: where it is, which session and bot it was handed, whose it is. */
@@ -35,18 +31,16 @@ export interface ComposerMount {
   /** The session the composer was mounted for (from the props the declaring document gave the core). */
   session: string;
   bot?: string;
-  /** The entry is a part of the bundled `clover` tree, in the `clover` layer. */
-  tree: boolean;
+  /** The entry's plugin's granted capabilities (the main process's record of the mount). */
+  capabilities: ReadonlySet<string>;
 }
 
 export interface ComposerRoute {
   composer: ComposerMount | undefined;
-  /** The window's push-to-talk holds (listen.ts); without it the listen ops are refused. */
-  listens?: Pick<ListenHolds, "start" | "stop">;
   op: unknown;
   args: unknown;
   takeGesture(windowId: number): boolean;
-  /** On the app's own connection (the `clover` layer's right). */
+  /** On the app's own connection (the `moss` layer's right). */
   asApp(method: string, params: unknown): Promise<unknown>;
   /** On the entry's own plugin connection: the `layer` role's door. */
   asLayer(pluginId: string, method: string, params: unknown): Promise<unknown>;
@@ -123,14 +117,14 @@ async function isBotMain(r: ComposerRoute, session: string, bot: string | undefi
 export async function routeComposer(r: ComposerRoute): Promise<unknown> {
   const out = await routeComposerOp(r);
   // One line for each acting call that went through: the method and the outcome, never what it carried or returned.
-  if (r.composer !== undefined && r.op !== "models" && r.op !== "commands" && r.op !== "listenStatus") r.log(`composer: ${r.composer.pluginId}: ${String(r.op)} went through`);
+  if (r.composer !== undefined && r.op !== "models" && r.op !== "commands") r.log(`composer: ${r.composer.pluginId}: ${String(r.op)} went through`);
   return out;
 }
 
 async function routeComposerOp(r: ComposerRoute): Promise<unknown> {
   const c = r.composer;
   if (c === undefined) {
-    r.log(`composer: ${String(r.op)} refused (not the entry the core mounted in the composer spot, for a session of the clover tree's)`);
+    r.log(`composer: ${String(r.op)} refused (not the entry the core mounted in the composer spot, for a session of the moss tree's)`);
     throw r.refuse("this isn't the entry the core mounted in the composer spot");
   }
   const op = COMPOSER_OPS.find((o) => o === r.op);
@@ -140,19 +134,8 @@ async function routeComposerOp(r: ComposerRoute): Promise<unknown> {
     throw r.refuse(why);
   };
   if (op === "models") return r.asApp("models.list", { session: c.session });
-  if (op === "listenStatus" || op === "listenStart" || op === "listenStop") {
-    // The bundled composer's only: a third party's composer the user picked never gets the microphone's door.
-    if (!c.tree) return refuse("only Clover's own composer records for you");
-    if (c.bot === undefined) return refuse("this conversation has no bot to talk to");
-    if (op === "listenStatus") return r.asApp("voice.status", { bot: c.bot });
-    if (r.listens === undefined) return refuse("this app can't record");
-    if (op === "listenStop") return r.listens.stop(c.windowId);
-    // Only a press of the user's own starts a recording, and one press covers one.
-    if (!r.takeGesture(c.windowId)) return refuse("recording starts only right after your own key press or click");
-    return r.listens.start(c.windowId, c.bot);
-  }
   if (op === "commands" || op === "runCommand") {
-    if (!c.tree) return refuse("only Clover's own composer runs plugin commands as you");
+    if (!c.capabilities.has("commands.run")) return refuse("running plugins' commands as you takes the commands.run capability");
     if (op === "commands") return { commands: await commandsFor(r, c) };
     const a = isObject(r.args) ? r.args : {};
     const name = short(a.name, 128);
@@ -169,6 +152,14 @@ async function routeComposerOp(r: ComposerRoute): Promise<unknown> {
     if (!r.takeGesture(c.windowId)) return refuse("a command runs only right after your own key press or click");
     return r.asApp("command.run", { name, ...(a.args === undefined ? {} : { args: a.args }) });
   }
+  if (op === "setOption") {
+    const o = (r.args ?? {}) as { option?: unknown; value?: unknown };
+    const option = short(o.option, 128);
+    const value = short(o.value, 200);
+    if (option === undefined || value === undefined) return refuse("not an option");
+    if (!r.takeGesture(c.windowId)) return refuse("setOption goes only right after the user's own key press or click");
+    return r.asApp("session.setConfig", { id: c.session, option, value });
+  }
   const a = (r.args ?? {}) as { model?: unknown; effort?: unknown };
   const model = op === "setModel" ? short(a.model, 200) : undefined;
   const effort = a.effort === undefined ? undefined : short(a.effort, 32);
@@ -180,7 +171,7 @@ async function routeComposerOp(r: ComposerRoute): Promise<unknown> {
   if (op === "stop") return r.asApp("session.stop", { id: c.session });
   if (main) {
     const params = { id: c.bot, patch: { model, ...(effort !== undefined ? { effort } : {}) } };
-    return c.tree ? r.asApp("bot.setUserLayer", params) : r.asLayer(c.pluginId, "bot.setUserLayer", params);
+    return c.capabilities.has("bots.edit") ? r.asApp("bot.setUserLayer", params) : r.asLayer(c.pluginId, "bot.setUserLayer", params);
   }
   return r.asApp("session.setModel", { id: c.session, model, ...(effort !== undefined ? { effort } : {}) });
 }

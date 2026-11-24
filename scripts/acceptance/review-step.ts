@@ -6,7 +6,7 @@
 // still waiting, and the card is then denied (the plugin never installs).
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fail, sleep, until, type ExampleCtx, toAlphasTab } from "./example-steps";
+import { fail, sleep, until, type ExampleCtx, toSessionTab } from "./example-steps";
 
 export const REVIEW_STEP = "Review on a plugin's OK card: pressed on the card's own page, the report (the fake model's reading of this plugin's files) shows as text under a heading that says it is a model's reading, the note names the model, and the card is unchanged and still waiting";
 
@@ -25,20 +25,26 @@ export function reviewProblem(v: ReviewView, model: string): string | undefined 
   if (v.state !== "done") return `the card page's review is "${v.state}", not done`;
   if (v.headHidden || v.head.trim() !== HEAD_TEXT) return `the report's heading reads "${v.head.trim()}"${v.headHidden ? " (hidden)" : ""}, not "${HEAD_TEXT}"`;
   if (!v.report.includes(REPORT_MARK)) return `the report doesn't carry the fake model's reading of ${PLUGIN_ID}: "${v.report.slice(0, 120)}"`;
-  if (!v.report.includes("model's reading")) return "the report ends without Clover's own line that it is a model's reading";
+  if (!v.report.includes("model's reading")) return "the report ends without MOSS's own line that it is a model's reading";
   if (model === "" || !v.note.includes(model)) return `the note doesn't name the model ${model || "(none)"}: "${v.note.slice(0, 160)}"`;
   if (v.note.startsWith(NOTE_BEFORE)) return "the note still reads as before the model was known";
   return undefined;
 }
 
 export async function reviewStep(ctx: ExampleCtx, _session: string): Promise<string> {
-  await toAlphasTab(ctx);
+  await toSessionTab(ctx);
   const { cdp, rpc } = ctx;
   let cardId: string | undefined;
   let installed = false;
   let roleSet = false;
+  let frontSet = false;
   let settingsBefore: string | undefined;
   try {
+    // The fixture is the Plugins page row's too: a row that stopped part-way must not leave it installed for this one.
+    if (await rpc.request("plugin.get", { id: PLUGIN_ID }).then(() => true, () => false)) {
+      await rpc.request("plugin.remove", { id: PLUGIN_ID }).catch(() => undefined);
+      await until(`${PLUGIN_ID}, left by an earlier row, to be gone`, 30_000, async () => ((await rpc.request("plugin.get", { id: PLUGIN_ID }).then(() => false, () => true)) ? true : undefined));
+    }
     const r = await rpc.request<{ id: string; card?: string }>("plugin.install", { source: { from: "folder", path: FIXTURE_DIR } }, 60_000);
     if (r.id !== PLUGIN_ID) fail(`${PLUGIN_ID} installed as ${r.id}`);
     installed = true;
@@ -47,7 +53,7 @@ export async function reviewStep(ctx: ExampleCtx, _session: string): Promise<str
       return all.find((c) => c.kind === "plugin-ok" && c.pluginId === PLUGIN_ID);
     });
     cardId = card.id;
-    // Clover's own jobs run on the run's key (Anthropic, the fake) only with a model chosen for the role: it won't pick one
+    // MOSS's own jobs run on the run's key (Anthropic, the fake) only with a model chosen for the role: it won't pick one
     // on that provider by itself ("Settings > Roles"). The reviewer role is set to the model Alpha runs, as a user would.
     const tag = (await rpc.request<{ bots: { id: string; model?: string }[] }>("bot.list", {})).bots.find((x) => x.id === "alpha")?.model;
     if (tag === undefined || !tag.startsWith("anthropic/")) fail(`Alpha runs ${tag ?? "no model"}, not an Anthropic one the run's key can drive`);
@@ -68,8 +74,13 @@ export async function reviewStep(ctx: ExampleCtx, _session: string): Promise<str
       await sleep(1_000);
       return undefined;
     }, async () => `plugin.review (peek) stayed unavailable after the reviewer role was set in settings.json: ${readFileSync(file, "utf8").replace(/\s+/g, " ").slice(0, 600)}`);
-    // The card's own page: the fallback window the app draws when no part shows the card.
-    const url = `clover-sealed://card/${encodeURIComponent(card.id)}/own`;
+    // The card's own page: the app's own card, which the app draws when no part shows the card (the 2 s safety net) and at once
+    // for a card the window in front has no conversation to draw. The row asks for the second: the first came only when the
+    // island's frames happened to lose their buttons (the card re-drawn as the reviewer role arrived, ten seconds into try 16's
+    // run); with the role taken at once, as in try 17, the island showed both buttons and the page never came in 45 s.
+    ctx.setMainFront?.(true);
+    frontSet = ctx.setMainFront !== undefined;
+    const url = `moss-sealed://card/${encodeURIComponent(card.id)}/own`;
     const page = await until("the card's own page", 45_000, async () => (await cdp.documents()).find((d) => d.url.startsWith(url)));
     const s = page.session;
     const read = async (): Promise<ReviewView> => JSON.parse(String(await cdp.evaluate(s, `JSON.stringify((() => {
@@ -102,7 +113,7 @@ export async function reviewStep(ctx: ExampleCtx, _session: string): Promise<str
       // A pressed button is disabled at once and the report shows "Reviewing…".
       const started = await until("the press to start a review", 4_000, async () => { const v = await read(); return v.buttonDisabled || v.state !== "idle" ? v : undefined; }).catch(() => undefined);
       if (started !== undefined) break;
-      if (attempt === 2) { const probe = await cdp.evaluate(s, "JSON.stringify({ review: typeof (window.cloverSealed || {}).review, scripts: document.scripts.length, url: location.pathname, seen: window.__c, at: (() => { const e = document.elementFromPoint(53, 300); return e ? e.tagName + '.' + e.className : null; })(), btn: JSON.stringify(document.querySelector('.review-button')?.getBoundingClientRect()), ready: document.body.dataset.ready, vis: document.visibilityState, focus: document.hasFocus() })").catch((e: Error) => e.message); const said = cdp.console.filter((c) => c.session === s).map((c) => `${c.level}: ${c.text}`).slice(-6).join(' | '); fail(`probe ${String(probe)}; console: ${said}; pressing the Review button at (${Math.round(btn.x)},${Math.round(btn.y)}) started nothing (viewport ${String(await cdp.evaluate(s, "innerWidth + 'x' + innerHeight"))}; ${JSON.stringify(await read())})`); }
+      if (attempt === 2) { const probe = await cdp.evaluate(s, "JSON.stringify({ review: typeof (window.mossSealed || {}).review, scripts: document.scripts.length, url: location.pathname, seen: window.__c, at: (() => { const e = document.elementFromPoint(53, 300); return e ? e.tagName + '.' + e.className : null; })(), btn: JSON.stringify(document.querySelector('.review-button')?.getBoundingClientRect()), ready: document.body.dataset.ready, vis: document.visibilityState, focus: document.hasFocus() })").catch((e: Error) => e.message); const said = cdp.console.filter((c) => c.session === s).map((c) => `${c.level}: ${c.text}`).slice(-6).join(' | '); fail(`probe ${String(probe)}; console: ${said}; pressing the Review button at (${Math.round(btn.x)},${Math.round(btn.y)}) started nothing (viewport ${String(await cdp.evaluate(s, "innerWidth + 'x' + innerHeight"))}; ${JSON.stringify(await read())})`); }
     }
     const done = await until("the report on the card's page", 120_000, async () => { const v = await read(); return v.state === "done" || v.state === "failed" || v.state === "unavailable" ? v : undefined; },
       async () => JSON.stringify(await read().catch(() => null)));
@@ -117,6 +128,7 @@ export async function reviewStep(ctx: ExampleCtx, _session: string): Promise<str
     if (!still) fail("the Review answered the card");
     return `pressed on the card's own page, the report "${done.report.slice(0, 60).replace(/\s+/g, " ")}…" showed under "${HEAD_TEXT}", the note named ${view.model}, and the card stayed the same and waiting`;
   } finally {
+    if (frontSet) ctx.setMainFront?.(false);
     if (roleSet) { const file = join(ctx.home, "settings.json"); try { if (settingsBefore === undefined) rmSync(file, { force: true }); else writeFileSync(file, settingsBefore, { mode: 0o600 }); } catch { /* best effort */ } }
     if (cardId !== undefined) await ctx.denyCard(cardId).catch(() => undefined);
     if (installed) {

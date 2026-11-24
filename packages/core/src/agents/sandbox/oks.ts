@@ -1,11 +1,11 @@
-// The user's OK for an agent with no sandbox Clover counts as holding the fence (spec §9.3: it "starts only after the
-// user's OK, which says it could read Clover's logins and approve its own cards; like Devin, Clover never quietly
+// The user's OK for an agent with no sandbox MOSS counts as holding the fence (spec §9.3: it "starts only after the
+// user's OK, which says it could read MOSS's logins and approve its own cards; like Devin, MOSS never quietly
 // runs one unsandboxed").
 //
 // The OK is asked once per backend, version, computer, the program's real path and the SHA-256 of its file, as a
 // change card (`agent-unsandboxed`, which the broker always shows and never offers "always" for), and kept here; a
 // new version, another program earlier on PATH, or an edited copy asks again (K-M2 review 5). The record is
-// Clover's own, in `<home>/trust/agent-oks.json`, inside the fenced set's `trust` folder, so no bot or agent can
+// MOSS's own, in `<home>/trust/agent-oks.json`, inside the fenced set's `trust` folder, so no bot or agent can
 // write itself an OK (lane C confirms the path in its fenced set).
 import { createHash } from "node:crypto";
 import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -23,24 +23,37 @@ export interface AgentOkKey {
 
 export interface AgentOks {
   has(key: AgentOkKey): boolean;
-  grant(key: AgentOkKey, by: { cardId?: string; at: number }): void;
+  /** Whether an OK was given for this program at this path and version for a copy placed under `pin` (the declaration's pins:
+   *  the same pin places the same files), whatever its file hash: a copy fetched again under that pin is the one that was OK'd,
+   *  and then the download is asked alone. An OK kept with no pin, or under another, is not known. Never a yes by itself
+   *  (`has` is). */
+  knows(key: Omit<AgentOkKey, "sha256">, pin: string): boolean;
+  grant(key: AgentOkKey, by: { cardId?: string; at: number; pin?: string }): void;
 }
 
 const keyOf = (k: AgentOkKey) => [k.computer, k.backend, k.version, k.path ?? "", k.sha256 ?? ""].join("\u0000");
 
+const programOf = (k: Omit<AgentOkKey, "sha256">) => [k.computer, k.backend, k.version, k.path ?? ""].join("\u0000");
+
 export class MemoryAgentOks implements AgentOks {
   readonly #set = new Set<string>();
+  /** The pins a program's OKs were kept under. */
+  readonly #pins = new Set<string>();
   has(key: AgentOkKey): boolean {
     return this.#set.has(keyOf(key));
   }
-  grant(key: AgentOkKey): void {
+  knows(key: Omit<AgentOkKey, "sha256">, pin: string): boolean {
+    return this.#pins.has(`${programOf(key)}\u0000${pin}`);
+  }
+  grant(key: AgentOkKey, by?: { pin?: string }): void {
     this.#set.add(keyOf(key));
+    if (by?.pin !== undefined) this.#pins.add(`${programOf(key)}\u0000${by.pin}`);
   }
 }
 
 interface OkFile {
   v: 1;
-  oks: (AgentOkKey & { cardId?: string; at: number })[];
+  oks: (AgentOkKey & { cardId?: string; at: number; pin?: string })[];
 }
 
 export function agentOksPath(home: string): string {
@@ -67,10 +80,17 @@ export class FileAgentOks implements AgentOks {
     return this.#read().oks.some((o) => keyOf(o) === keyOf(key));
   }
 
-  grant(key: AgentOkKey, by: { cardId?: string; at: number }): void {
+  knows(key: Omit<AgentOkKey, "sha256">, pin: string): boolean {
+    return this.#read().oks.some((o) => o.pin === pin && o.computer === key.computer && o.backend === key.backend && o.version === key.version && o.path === key.path);
+  }
+
+  grant(key: AgentOkKey, by: { cardId?: string; at: number; pin?: string }): void {
     const f = this.#read();
-    if (f.oks.some((o) => keyOf(o) === keyOf(key))) return;
-    f.oks.push({ ...key, ...(by.cardId === undefined ? {} : { cardId: by.cardId }), at: by.at });
+    const kept = f.oks.find((o) => keyOf(o) === keyOf(key));
+    // Already kept: only the pin it was kept under may be added (it is what `knows` reads), never a new yes.
+    if (kept !== undefined && (by.pin === undefined || kept.pin === by.pin)) return;
+    if (kept !== undefined) kept.pin = by.pin;
+    else f.oks.push({ ...key, ...(by.cardId === undefined ? {} : { cardId: by.cardId }), at: by.at, ...(by.pin === undefined ? {} : { pin: by.pin }) });
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
     const tmp = `${this.#path}.${process.pid}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(f, null, 2)}\n`, { mode: 0o600 });

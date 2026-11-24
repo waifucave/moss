@@ -15,7 +15,7 @@ const RUN_OUT = `acceptance: step 1: PASS: whatever
 | # | step | result | detail
 |---|---|---|---
 | 1 | first start: the app pairs and finishes setup                     | PASS    | the app paired
-| 13 | each boot lists the bundled web tools within 5 s and offers them | PASS    | daemon 1: clover/web/web listed 2 tool(s)
+| 13 | each boot lists the bundled web tools within 5 s and offers them | PASS    | daemon 1: moss/web/web listed 2 tool(s)
 | 14 | the bot's WebSearch reaches the fake search backend; nothing leaves the machine | BLOCKED | a packaged core has no fake search backend (the keyed fetch's test seam is the source daemon's); the run never searches the real web
 | 15 | cold start: the app opens first, the daemon after, and the shell fills the window | FAIL | 1 of 1: the shell didn't fill the window
 14/15 passed
@@ -42,13 +42,17 @@ describe("scripts/try", () => {
     expect(run).toContain("--sign --no-notarize");
     // --twin-only skips the release-shaped build and its checks (the twins and their runs only).
     expect(run).toMatch(/--twin-only\) TWINONLY=true/);
+    // --build-only is the quick install's build: the signed build and its checks, then nothing (no twin, no runs, no upgrade pair), and its summary says what was not run.
+    expect(run).toMatch(/--build-only\) BUILDONLY=true/);
+    expect(run).toMatch(/RUNS=0; COLD=0; UPFROM=""; KEEPTWIN=""/);
+    expect(run).toMatch(/--build-only: NOT run on this build: the test twin, the packaged acceptance, the upgrade pair/);
     expect(run).toMatch(/if \[ "\$TWINONLY" = false \]; then\n  timed "real build/);
     // --runs 0 runs none (BSD seq counts down: `seq 1 0` is "1 0").
     expect(run).not.toMatch(/seq 1 "\$RUNS"/);
     expect(run).toContain("for ((k = 1; k <= RUNS; k++))");
     // --renders hands the full runs (only) the folder for their window pictures.
     expect(run).toMatch(/--renders\) RENDERS=/);
-    expect(run).toContain('CLOVER_ACCEPT_RENDERS="$RENDERS" accept "run$k"');
+    expect(run).toContain('MOSS_ACCEPT_RENDERS="$RENDERS" accept "run$k"');
     expect(run).toContain("--test-build");
     expect(run).toContain("check the try's commit out first");
     expect(run).toContain("git status --porcelain");
@@ -90,7 +94,7 @@ describe("scripts/try", () => {
 
   test("verify.sh: the sign-only mode wants the sign-only mark and no staple, and never an out/dist", () => {
     const v = read("verify.sh");
-    expect(v).toContain("CLOVER-SIGN-ONLY-BUILD");
+    expect(v).toContain("MOSS-SIGN-ONLY-BUILD");
     expect(v).toContain("xcrun stapler validate");
     expect(v).toContain("*/out/dist");
     expect(v).toContain("hdiutil attach -nobrowse -readonly");

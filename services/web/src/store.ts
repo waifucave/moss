@@ -3,6 +3,7 @@
 
 import type { CompanionStore, PairRecord } from "./app";
 
+// Keeps its old spelling on purpose: signed or derived state on disk carries this value over from the old install.
 const DB = "clover-companion";
 const STORE = "pairs";
 

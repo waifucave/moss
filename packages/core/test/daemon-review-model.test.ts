@@ -2,12 +2,14 @@
 // 2026-11-13): the reviewer role names a model whose provider is signed in → they run on it, default model or not; the
 // role unset → the user's default model; neither → "No model is set for reviews…". The settings file is changed while
 // the daemon runs, as Settings › Models does, and each answer is the live one (`plugin.review { peek }`).
+import { loadCatalog } from "@waifucave/clover-provider-catalog";
+import { recommendedModel } from "../src/default-model";
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLOVER_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS, type WritableSocket } from "@waifucave/clover-protocol";
-import { PLUGIN_API_VERSION } from "@waifucave/clover-plugin-sdk";
+import { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS, type WritableSocket } from "@waifucave/moss-protocol";
+import { PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sdk";
 import { catalogPointDecl } from "../../plugin-sdk/src/catalogs/index";
 import { FileSecretStore } from "../src/auth/secret-store";
 import { writeCredentialMaterial } from "../src/auth/credential-material";
@@ -54,23 +56,23 @@ async function rpc(path: string) {
 /** A daemon whose only credential is an Anthropic key, its default model `provider` (Settings › Models), a found
  *  plugin's OK card up; returns a way to set the settings file and to peek the card's Review. */
 async function home(provider: string, withBundled = false) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "clover-b-review-model-")));
-  const cloverHome = join(root, "clover-home");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-b-review-model-")));
+  const mossHome = join(root, "moss-home");
   const userHome = join(root, "home");
   mkdirSync(userHome, { recursive: true });
-  mkdirSync(join(cloverHome, "plugins", "tarot"), { recursive: true });
-  writeFileSync(join(cloverHome, "plugins", "tarot", "clover.json"), JSON.stringify({ manifest: 1, id: "tarot", name: "Tarot", version: "1.0.0", engines: { clover: `^${PLUGIN_API_VERSION}` } }));
-  const settingsFile = join(cloverHome, "settings.json");
+  mkdirSync(join(mossHome, "plugins", "tarot"), { recursive: true });
+  writeFileSync(join(mossHome, "plugins", "tarot", "moss.json"), JSON.stringify({ manifest: 1, id: "tarot", name: "Tarot", version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` } }));
+  const settingsFile = join(mossHome, "settings.json");
   writeFileSync(settingsFile, JSON.stringify({ schemaVersion: 3, provider: { model: provider } }, null, 2));
-  const secrets = new FileSecretStore(join(cloverHome, "secrets.json"));
+  const secrets = new FileSecretStore(join(mossHome, "secrets.json"));
   await writeCredentialMaterial(secrets, "anthropic:default", { kind: "api-key", key: "sk-ant-test" });
   if (withBundled) {
     const { buildDevBundledPlugins } = await import("../src/registry/bundled-stage");
-    await buildDevBundledPlugins({ sources: join(import.meta.dir, "..", "..", "..", "plugins"), ids: ["clover"], cloverHome });
+    await buildDevBundledPlugins({ sources: join(import.meta.dir, "..", "..", "..", "plugins"), ids: ["moss"], mossHome });
   }
   const net = new MemoryNetwork();
   daemon = await startDaemon({
-    home: cloverHome, secrets, appPeer: "none",
+    home: mossHome, secrets, appPeer: "none",
     links: {
       wire: (k) => net.endpoint(k.publicKey), handshake: null, publicTime: null,
       mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name: "Studio", os: "macos" },
@@ -82,9 +84,9 @@ async function home(provider: string, withBundled = false) {
       agents: false,
     },
   });
-  await daemon.cloverParts.ready;
+  await daemon.mossParts.ready;
   const app = await rpc(daemon.socketPath);
-  await app.request(METHODS.hello, { protocolVersion: CLOVER_PROTOCOL_VERSION, role: "app", token: readFileSync(join(cloverHome, "run", "app.token"), "utf8"), clientName: "test-app", features: ["app.quit"] });
+  await app.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "app", token: readFileSync(join(mossHome, "run", "app.token"), "utf8"), clientName: "test-app", features: ["app.quit"] });
   for (let i = 0; i < 300 && (await app.request("plugin.get", { id: "tarot" }))["error"] !== undefined; i++) await Bun.sleep(10);
   const card = ((await app.request("plugin.setEnabled", { id: "tarot", enabled: true }))["result"] as { card: string }).card;
   const settings = (patch: Record<string, unknown>) => {
@@ -101,15 +103,24 @@ async function home(provider: string, withBundled = false) {
   return { app, settings, peek, peekUntil };
 }
 
+// 2026-11-22: with no role set Review runs on the light model of the default's family on the default's own provider (the
+// default itself only where that family has no light model there): was the default model (or the one provider's recommended
+// model, for a default with no key).
+const LIGHT = "anthropic/claude-haiku-5-5";
+
 test("the reviewer role names a signed-in provider's model: Review runs on it though the default model is elsewhere, within a few seconds with the bundled model plugins watched", async () => {
   // The bundled tree (178 model plugins and the rest) staged as a source run stages it: the registry's watches on its
   // folders are what delayed the settings file's own event (14f's second table: past 30 s).
   const h = await home("codex-oauth/gpt-5.6-sol", true);
-  // Before the role is set: Clover chooses no model on Anthropic by itself, and the default is elsewhere.
-  expect(await h.peek()).toMatchObject({ state: "unavailable", why: REVIEW_NO_MODEL });
+  // Before the role is set: the older build's Codex default has no key here, so the boot's own layer (default-model.ts,
+  // 2026-11-20) REPLACES that default with the one provider's recommended model; the default is then an Anthropic model on
+  // the home's own provider, and Review runs on the light model of ITS family there. Not a crossing: the replaced default
+  // is what the rule reads (a Codex default left as it was would have no review model and the hook would ask).
+  expect(String(recommendedModel(loadCatalog(), "anthropic")).startsWith("anthropic/")).toBe(true);
+  expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: LIGHT });
   const t0 = Date.now();
   h.settings({ reviewer: { model: "anthropic/claude-sonnet-5-5" } });
-  expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: "anthropic/claude-sonnet-5-5" });
+  expect(await h.peekUntil((v) => v.model === "anthropic/claude-sonnet-5-5")).toMatchObject({ state: "idle", model: "anthropic/claude-sonnet-5-5" });
   // The settings watcher's stat look takes it within its second, whatever the file event does.
   expect(Date.now() - t0).toBeLessThan(5_000);
   h.app.close();
@@ -117,12 +128,14 @@ test("the reviewer role names a signed-in provider's model: Review runs on it th
 
 test("the role unset: Review runs on the user's default model", async () => {
   const h = await home("anthropic/claude-sonnet-5-5");
-  expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: "anthropic/claude-sonnet-5-5" });
+  expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: LIGHT });
   h.app.close();
 });
 
-test("neither a role nor a default it can run on: Review says no model is set", async () => {
+test("an older build's written default with no key for it: Review runs on the one provider's recommended model, not on it", async () => {
+  // 2026-11-20 (default-model.ts): before, this home had no default it could run on and Review said so; now the default
+  // named on disk counts as none (no Codex sign-in) and the one provider's recommended model takes its place.
   const h = await home("codex-oauth/gpt-5.6-sol");
-  expect(await h.peek()).toMatchObject({ state: "unavailable", why: REVIEW_NO_MODEL });
+  expect(await h.peekUntil((v) => v.state !== "unavailable")).toMatchObject({ state: "idle", model: LIGHT });
   h.app.close();
 });

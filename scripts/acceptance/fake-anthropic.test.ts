@@ -1,7 +1,7 @@
 // The acceptance fake's documented rules (`requestRefusal`): what the real API refuses with a 400 is refused, what its
 // docs accept is accepted. Each case names the rule in fake-anthropic.ts it exercises.
 import { describe, expect, test } from "bun:test";
-import { netCommand, netCommandCall, newestDirective, requestRefusal, startFakeAnthropic } from "./fake-anthropic";
+import { netCommand, netCommandCall, newestDirective, requestRefusal, startFakeAnthropic, withoutNotifications } from "./fake-anthropic";
 
 const BETA = "mid-conversation-output-config-2026-07-01";
 const effort = { role: "system", content: [], output_config: { effort: "high" } };
@@ -106,12 +106,25 @@ describe("what the fake acts on: the newest directive in the user text", () => {
         ] }),
       });
       expect(JSON.stringify(await both.json())).toContain("ACCEPTANCE-REPLY-OK ACCEPTANCE-TAG-11223344");
+      // The same with the runtime's tool changes after it (a `system` message last): still the message, never the call again.
+      const trailing = await fetch(`${fake.url}/v1/messages`, {
+        method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 10, messages: [
+          { role: "user", content: [{ type: "text", text: "ACCEPTANCE-HOLDTOOL-AB12CD keep going" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__echo__Echo", input: { text: "acceptance-hold" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "[interrupted]", is_error: false }, { type: "text", text: "ACCEPTANCE-TAG-55667788 are you back?" }] },
+          { role: "system", content: [{ type: "tool_addition", tool: { definition: { name: "mcp__echo__Echo", input_schema: { type: "object" } } } }] },
+        ] }),
+      });
+      const trailingBody = JSON.stringify(await trailing.json());
+      expect(trailingBody).toContain("ACCEPTANCE-REPLY-OK ACCEPTANCE-TAG-55667788");
+      expect(trailingBody).not.toContain("tool_use");
       const r = await send("ACCEPTANCE-SLOW-AB12CD keep going\n\nACCEPTANCE-TAG-0F1E2D3C say hello");
       expect(JSON.stringify(await r.json())).toContain("ACCEPTANCE-REPLY-OK ACCEPTANCE-TAG-0F1E2D3C");
       expect(fake.requests.at(-1)!.answered).toBe("text");
       const abort = new AbortController();
       const held = send("ACCEPTANCE-SLOW-AB12CD keep going", abort.signal).catch(() => undefined);
-      for (let i = 0; i < 50 && fake.requests.length < 3; i++) await Bun.sleep(20);
+      for (let i = 0; i < 50 && fake.requests.length < 4; i++) await Bun.sleep(20);
       expect(fake.requests.at(-1)!.answered).toBe("slow");
       abort.abort();
       await held;
@@ -122,7 +135,7 @@ describe("what the fake acts on: the newest directive in the user text", () => {
 });
 
 describe("the outside-the-sandbox step's scripted calls", () => {
-  const url = "http://127.0.0.1:4321/clover-outside-probe";
+  const url = "http://127.0.0.1:4321/moss-outside-probe";
   test("a command that needs the network, in the sandbox and flagged to leave it", () => {
     expect(netCommandCall(`ACCEPTANCE-NETCMD ${url}`)).toEqual({ tool: "Bash", input: { command: netCommand(url), description: "Fetch the probe page" } });
     expect(netCommandCall(`ACCEPTANCE-NETCMD-OUTSIDE ${url}`)).toEqual({ tool: "Bash", input: { command: netCommand(url), description: "Fetch the probe page", dangerouslyDisableSandbox: true } });
@@ -132,7 +145,7 @@ describe("the outside-the-sandbox step's scripted calls", () => {
     expect(routine.tool).toBe("Routine");
     expect(netCommandCall(`<routine name="Outside probe" id="r_1">\n${String(routine.input.instructions)}\n</routine>`)?.input.dangerouslyDisableSandbox).toBe(true);
     const agent = netCommandCall(`ACCEPTANCE-AGENT-NETCMD home/mac/agent-notes ${url}`)!;
-    expect(agent).toMatchObject({ tool: "Agent", input: { backend: "clover-code", root: "home/mac/agent-notes" } });
+    expect(agent).toMatchObject({ tool: "Agent", input: { backend: "moss-code", root: "home/mac/agent-notes" } });
     expect(netCommandCall(String(agent.input.prompt))?.input.dangerouslyDisableSandbox).toBe(true);
   });
   test("each is the newest directive in its text, and other text calls nothing", () => {
@@ -150,10 +163,10 @@ describe("the agent row's echo probe (row 1.93): an agent calls the echo plugin'
         body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 10, tools: tools.map((name) => ({ name, input_schema: { type: "object" } })), messages: [{ role: "user", content: [{ type: "text", text }] }] }),
       })).json()) as { content: { type: string; name?: string; input?: Record<string, unknown>; text?: string }[] };
       const agent = await send("ACCEPTANCE-AGENT-ECHO home/mac/agent-echo", ["Agent", "Glossary"]);
-      expect(agent.content[0]).toMatchObject({ type: "tool_use", name: "Agent", input: { backend: "clover-code", root: "home/mac/agent-echo" } });
+      expect(agent.content[0]).toMatchObject({ type: "tool_use", name: "Agent", input: { backend: "moss-code", root: "home/mac/agent-echo" } });
       const brief = String(agent.content[0]!.input!.prompt);
       expect(brief).toStartWith("ACCEPTANCE-CHILD-ECHO");
-      const bridged = "mcp__clover_0123456789abcdef__acceptance-echo-echo__Echo";
+      const bridged = "mcp__moss_0123456789abcdef__acceptance-echo-echo__Echo";
       const child = await send(brief, ["mcp__acceptance-echo-echo__Echo", bridged]);
       expect(child.content[0]).toMatchObject({ type: "tool_use", name: bridged, input: { text: "acceptance-child-ping" } });
       // Only a bot's own Echo offered: no call, and the tools it was offered are said.
@@ -162,5 +175,27 @@ describe("the agent row's echo probe (row 1.93): an agent calls the echo plugin'
     } finally {
       fake.close();
     }
+  });
+});
+
+describe("toolNamed: the tool a call line names, among the offered names", () => {
+  test("by name, by the end of an MCP name, and a code session's bridge short form; never another tool", async () => {
+    const { toolNamed } = await import("./fake-anthropic");
+    expect(toolNamed("save_place", "save_place")).toBe(true);
+    expect(toolNamed("mcp__moss_0123456789abcdef__example-weather-forecast__forecast", "forecast")).toBe(true);
+    expect(toolNamed("mcp__moss_0123456789abcdef__example-weather__save_place_290261", "save_place")).toBe(true);
+    expect(toolNamed("mcp__x__save_place_extra", "save_place")).toBe(false);
+    expect(toolNamed("mcp__x__unsave_place", "save_place")).toBe(false);
+    expect(toolNamed("mcp__x__forecast2", "forecast")).toBe(false);
+  });
+});
+
+describe("a folded background-agent report", () => {
+  test("is not a directive for the turn it lands in", () => {
+    const folded = "Loaded, callable now: mcp__figure__set_expression <system-reminder>The user sent a new message while you were working: <task-notification agent=\"agent_x\">ACCEPTANCE-CHILD done</task-notification></system-reminder>";
+    expect(withoutNotifications(folded)).not.toContain("ACCEPTANCE-CHILD");
+    expect(withoutNotifications("ACCEPTANCE-TAG-AB12 hello")).toBe("ACCEPTANCE-TAG-AB12 hello");
+    expect(withoutNotifications("x <task-notification agent=\"a\">ACCEPTANCE-REPLY y")).toBe("x ");
+    expect(withoutNotifications("Loaded <system-reminder>The user sent a new message: ACCEPTANCE-CHILD</system-reminder> ok")).toBe("Loaded  ok");
   });
 });

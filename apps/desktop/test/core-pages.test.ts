@@ -1,21 +1,21 @@
 // The core's own pages (spec §5.8): the welcome guide's providers, terms and sign-ins, and safe mode's plugin manager,
 // through the main process's checked calls. A key the user pastes reaches the daemon's sign-in and nothing else.
 import { describe, expect, test } from "bun:test";
-import { anyReady, listManaged, listProviders, pageCall, PAGE_CALLS, type PageClient, type PageDeps } from "../src/main/core-pages";
+import { anyReady, guideOpens, listManaged, listProviders, pageCall, PAGE_CALLS, type PageClient, type PageDeps } from "../src/main/core-pages";
 
 const SUMMARY = { version: "1.0.0", source: "index", class: "code", namespace: "x", scope: "everywhere", adult: false, children: [], dev: false };
 
 function client(overrides: Record<string, (params: Record<string, unknown>) => unknown> = {}): PageClient & { calls: { method: string; params: unknown }[] } {
   const calls: { method: string; params: unknown }[] = [];
   const answers: Record<string, (params: Record<string, unknown>) => unknown> = {
-    "point.list": () => ({ points: [{ name: "models", shape: "list", declaredBy: "core", spot: false, occupants: [{ pluginId: "luna-models", entry: "models" }, { pluginId: "clover/openai", entry: "models" }, { pluginId: "luna-models", entry: "models" }], waiting: [], replacesShipped: false, private: false }] }),
+    "point.list": () => ({ points: [{ name: "models", shape: "list", declaredBy: "core", spot: false, occupants: [{ pluginId: "luna-models", entry: "models" }, { pluginId: "moss/openai", entry: "models" }, { pluginId: "luna-models", entry: "models" }], waiting: [], replacesShipped: false, private: false }] }),
     "plugin.get": (p) => ({ plugin: { name: p.id, manifest: { contributes: { models: p.id === "luna-models"
       ? [{ provider: "luna", name: { en: "Luna AI", fr: "Luna IA" }, terms: "https://luna.example/terms", auth: [{ method: "api-key", help: "Make a key in Luna's console." }, { method: "oauth-pkce" }] }]
       : [{ provider: "openai", name: "OpenAI", terms: "Be nice.", auth: [{ method: "api-key" }] }] } } } }),
     "plugin.auth.list": (p) => ({ auth: p.id === "luna-models" ? [{ index: 0, method: "api-key", state: "signed-out" }, { index: 1, method: "oauth-pkce", state: "signed-out" }] : [{ index: 0, method: "api-key", state: "signed-in", account: "me@example.com" }] }),
     "plugin.list": () => ({ plugins: [
-      { id: "clover", name: "Clover", state: "enabled", enabled: true, ...SUMMARY, source: "bundled" },
-      { id: "clover/shell", parent: "clover", name: "Shell", state: "enabled", enabled: true, ...SUMMARY, source: "bundled" },
+      { id: "moss", name: "MOSS", state: "enabled", enabled: true, ...SUMMARY, source: "bundled" },
+      { id: "moss/shell", parent: "moss", name: "Shell", state: "enabled", enabled: true, ...SUMMARY, source: "bundled" },
       { id: "alpha", name: "Alpha", state: "enabled", enabled: true, ...SUMMARY, source: "bundled" },
       { id: "vn-shell", name: { en: "VN shell" }, state: "enabled", enabled: true, ...SUMMARY },
       { id: "vn-shell/extra", parent: "vn-shell", name: "Extra", state: "disabled", enabled: false, ...SUMMARY },
@@ -64,7 +64,7 @@ describe("the welcome guide", () => {
     const providers = await listProviders(client(), "fr");
     expect(providers).toEqual([
       { id: "luna-models", name: "Luna IA", terms: { url: "https://luna.example/terms" }, auth: [{ index: 0, method: "api-key", state: "signed-out", help: "Make a key in Luna's console." }, { index: 1, method: "oauth-pkce", state: "signed-out" }] },
-      { id: "clover/openai", name: "OpenAI", terms: { text: "Be nice." }, auth: [{ index: 0, method: "api-key", state: "signed-in", account: "me@example.com" }] },
+      { id: "moss/openai", name: "OpenAI", terms: { text: "Be nice." }, auth: [{ index: 0, method: "api-key", state: "signed-in", account: "me@example.com" }] },
     ]);
     expect(anyReady(providers)).toBe(true);
     expect(anyReady(providers.slice(0, 1))).toBe(false);
@@ -100,9 +100,48 @@ describe("the welcome guide", () => {
     const d = deps(client());
     await pageCall("welcome.openTerms", { id: "luna-models" }, d);
     expect(d.opened).toEqual(["https://luna.example/terms"]);
-    await expect(pageCall("welcome.openTerms", { id: "clover/openai" }, d)).rejects.toThrow("no terms to open");
+    await expect(pageCall("welcome.openTerms", { id: "moss/openai" }, d)).rejects.toThrow("no terms to open");
     await pageCall("welcome.done", {}, d);
     expect([d.done, d.closed]).toEqual([1, 1]);
+  });
+});
+
+describe("the setup guide's engine half", () => {
+  const SETUP = { ready: false, missing: ["model"], providers: ["luna", "openai"], dismissed: false };
+  const engine = () => client({
+    "setup.state": () => SETUP,
+    "setup.dismiss": (p) => ({ ...SETUP, dismissed: p.dismissed }),
+    "models.list": () => ({ models: [
+      { id: "luna/moon-1", name: { en: "Moon 1" }, provider: "luna", providerName: { en: "Luna AI" }, plugin: "luna-models", efforts: [], images: false, signedIn: true },
+      { id: "dark/x", name: "X", provider: "dark", providerName: "Dark", plugin: "dark-models", efforts: [], images: false, signedIn: false },
+    ] }),
+    "models.setDefault": (p) => ({ setup: { ...SETUP, ready: true, missing: [], default: { model: p.model, source: "chosen" } } }),
+  });
+
+  test("it opens by itself only while the home isn't set up and the person hasn't skipped it", () => {
+    expect(guideOpens({ ready: false, dismissed: false })).toBe(true);
+    expect(guideOpens({ ready: true, dismissed: false })).toBe(false);
+    expect(guideOpens({ ready: false, dismissed: true })).toBe(false);
+  });
+
+  test("the state, the signed-in models only, a default picked, and a skip the engine keeps", async () => {
+    const c = engine();
+    const d = deps(c);
+    expect(await pageCall("welcome.setup", {}, d)).toEqual(SETUP);
+    expect(await pageCall("welcome.models", {}, d)).toEqual({ models: [{ id: "luna/moon-1", name: "Moon 1", provider: "luna", providerName: "Luna AI" }] });
+    expect(await pageCall("welcome.setDefault", { model: "luna/moon-1" }, d)).toMatchObject({ ready: true, default: { model: "luna/moon-1" } });
+    await expect(pageCall("welcome.setDefault", { model: 7 }, d)).rejects.toThrow("which model?");
+    await pageCall("welcome.skip", {}, d);
+    expect(c.calls.filter((x) => x.method === "setup.dismiss").map((x) => x.params)).toEqual([{ dismissed: true }]);
+    expect([d.done, d.closed]).toEqual([0, 1]);
+  });
+
+  test("a default model whose provider is signed out comes with its names (any provider), the tag's own parts when the catalog has no row", async () => {
+    const out = { ...SETUP, missing: ["default-provider"], signedOut: "dark/x" };
+    const withRow = deps(client({ "setup.state": () => out, "models.list": () => ({ models: [{ id: "dark/x", name: "X", provider: "dark", providerName: { en: "Dark Labs" }, plugin: "dark-models", efforts: [], images: false, signedIn: false }] }) }));
+    expect(await pageCall("welcome.setup", {}, withRow)).toEqual({ ...out, signedOutAs: { model: "X", provider: "Dark Labs" } });
+    const noRow = deps(client({ "setup.state": () => out, "models.list": () => { throw new Error("down"); } }));
+    expect(await pageCall("welcome.setup", {}, noRow)).toEqual({ ...out, signedOutAs: { model: "dark/x", provider: "dark" } });
   });
 });
 
@@ -125,7 +164,7 @@ describe("safe mode's plugin manager", () => {
 
   test("never the app's own, never a child on its own, never another call", async () => {
     const d = deps(client());
-    await expect(pageCall("plugins.turnOff", { id: "clover/shell" }, d)).rejects.toThrow();
+    await expect(pageCall("plugins.turnOff", { id: "moss/shell" }, d)).rejects.toThrow();
     await expect(pageCall("plugins.remove", { id: "alpha" }, d)).rejects.toThrow();
     await expect(pageCall("plugins.remove", { id: "vn-shell/extra" }, d)).rejects.toThrow();
     await expect(pageCall("plugin.setEnabled", { id: "vn-shell", enabled: true }, d)).rejects.toThrow("not a call");

@@ -1,8 +1,8 @@
-// How Clover's plugins reach an agent session (spec §9.3 "How plugins reach an ACP agent", [D]): a coding session the
+// How MOSS's plugins reach an agent session (spec §9.3 "How plugins reach an ACP agent", [D]): a coding session the
 // user started, or a bot's delegation, on any backend.
 //
 // * **Tools.** The bridge serves the plugins' MCP tools in the session's scope: a plugin whose `scope` covers the
-//   session's kind (`agents` or `both`) and whose `onlyBackends` names its backend (`clover` for Clover's own runtime),
+//   session's kind (`agents` or `both`) and whose `onlyBackends` names its backend (`moss` for MOSS's own runtime),
 //   listed by this computer's PluginMcp as a bot's are. Each is named `<server>__<tool>` on the bridge (so two servers'
 //   tools never share a name); one past `BRIDGE_TOOL_NAME_MAX` takes a short form (`bridgeShortName`) whose
 //   description starts with its plugin's and tool's real names, and a name that would be ambiguous or has characters
@@ -18,22 +18,26 @@
 //   plugin, claude-code/placement.ts); `Glossary` on the bridge serves them to every agent. Command hooks are never
 //   given: an outside agent can't run one under its plugin's fence.
 import { createHash } from "node:crypto";
-import { skillItem } from "@waifucave/clover-plugin-sdk";
+import { skillItem } from "@waifucave/moss-plugin-sdk";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { CanUseTool } from "@waifucave/clover-agent-sdk";
-import type { Caller, TurnOrigin } from "@waifucave/clover-protocol";
+import type { Caller, TurnOrigin } from "@waifucave/moss-protocol";
 import type { BotSessionContext } from "../bots/service";
+import { toolOffMessage } from "../approvals/tool-settings";
 import type { PluginRegistry } from "../contracts/plugin-registry";
-import { glossaryIndex, parseFrontmatter, searchGlossary, SKILL_BODY_MAX_CHARS, type GlossaryItem } from "../runtime-sdk/turn-loop/glossary";
+import { glossaryIndex, parseFrontmatter, resolveGlossary, SKILL_BODY_MAX_CHARS, type GlossaryItem } from "../runtime-sdk/turn-loop/glossary";
 import type { HookSession, HookSource } from "../runtime-sdk/turn-loop/hooks";
 import { partsServe } from "../runtime-sdk/turn-loop/only-backends";
+import { toolDisplay } from "../runtime-sdk/tool-display";
 import type { BotMcpServer, McpRunner } from "../runtime-sdk/turn-loop/servers";
-import type { AgentSessionFacts, BridgeCallContext, BridgeToolDef, BridgeToolSource } from "./bridge/tools";
+import type { McpAppsService } from "../mcp-apps/service";
+import type { UiResourceContent } from "../mcp-apps/resource";
+import type { AgentSessionFacts, BridgeCallContext, BridgeToolDef, BridgeToolSource, GlossaryAnswer, PendingApp } from "./bridge/tools";
 import { NO_PARTS, type PluginParts, type PluginPartsSource } from "./placement";
 
 /** The longest bridge tool name: the agent sees `mcp__<bridge server>__<name>`, many clients refuse a full name past
- *  64 characters, and the bridge server's name is `clover_` and 16 hex digits (`BRIDGE_SERVER_PREFIX`): 64 − 30. */
+ *  64 characters, and the bridge server's name is `moss_` and 16 hex digits (`BRIDGE_SERVER_PREFIX`): 64 − 30. */
 export const BRIDGE_TOOL_NAME_MAX = 34;
 /** The largest agent file placed (a definition's words are cut at 20,000 characters anyway). */
 const AGENT_FILE_MAX = 256 * 1024;
@@ -45,20 +49,38 @@ export type AgentToolVerdict = { allowed: true; input: Record<string, unknown> }
 
 /** A plugin tool's call judged as the same call in the session that owns it (the daemon's bot approval check): `served`
  *  is the tool's name as a bot sees it (`mcp__<server>__<tool>`). */
-export type AgentToolJudge = (session: AgentSessionFacts, ctx: BridgeCallContext, call: { served: string; input: Record<string, unknown>; callId: string }) => Promise<AgentToolVerdict>;
+export type AgentToolJudge = (session: AgentSessionFacts, ctx: BridgeCallContext, call: AgentToolJudged) => Promise<AgentToolVerdict>;
+/** What a judge is asked: the call, and where it came from when it isn't the model's. */
+export interface AgentToolJudged {
+  served: string; input: Record<string, unknown>; callId: string;
+  /** A plugin's `tool.before` hook said ask (its words): the check is told, as the runtime tells it for a bot's call. */
+  ask?: string;
+  /** The call is a PAGE's (MCP Apps), shown by this plugin: its card says so and offers no "always" (`approvals/bot-check.ts`). */
+  page?: { plugin: string };
+  /** The signal the card waits under, when it isn't the context's (a page's call outlives the turn that drew it). */
+  signal?: AbortSignal;
+}
 
 export interface AgentPluginReachDeps {
   /** This computer's PluginMcp: the servers a session of `kind` on `backend`, delegated by `bot` (none: the user's own),
    *  gets (scope, `onlyBackends`, placement). */
-  servers(kind: "agent" | "coding", backend: string, bot?: string): readonly BotMcpServer[];
+  servers(kind: "agent" | "coding", backend: string, bot?: string, opts?: { keepOff?: boolean }): readonly BotMcpServer[];
   /** J's router: runs a call where its server is. */
   runner: McpRunner;
   judge: AgentToolJudge;
+  /** MCP Apps (`mcp-apps/`): where a plugin tool's page is bound, and the plugin MCP's own reads (`PluginMcp.uiTools`, `readUi`). Without
+   *  them a result shows as text. */
+  mcpApps?: { service: McpAppsService; ui: { tools(server: string, tool: string): { name: string; ui?: { resourceUri?: string; visibility: readonly ("model" | "app")[] } }[]; read(server: string, tool: string, uri: string, as: Caller, o?: { signal?: AbortSignal }): Promise<UiResourceContent[]> } };
+  /** A call's result as its tool returned it, before any hook, in the session `agentCheckContext` makes: what the
+   *  conversation saw, as a bot's turn reports it (a web search's hits, for the seen addresses). */
+  observeResult?: (ctx: BotSessionContext, served: string, result: unknown, input: Record<string, unknown>) => void;
   /** The plugins' hooks, read at each call (the bots' `agentHookSource`). Absent: none. */
   hooks?: HookSource;
   registry: Pick<PluginRegistry, "entries" | "get" | "list" | "points">;
   /** Tells `fn` when the plugins changed (`registry.watch`), for the parts placed in running sessions. */
   watch?(fn: () => void): () => void;
+  /** Waits for the plugin servers installed or enabled a moment ago to list their tools (`PluginMcp.settled`). */
+  settled?(timeoutMs: number): Promise<void>;
   /** Where a tool left off the bridge is said (its name shared, or with characters MCP clients refuse), so its author can find out why. */
   log?: (line: string) => void;
 }
@@ -86,8 +108,12 @@ export function agentCheckContext(s: AgentSessionFacts, level: BridgeCallContext
 export function agentToolJudge(check: ((ctx: BotSessionContext, origin: () => TurnOrigin | undefined) => CanUseTool) | undefined): AgentToolJudge {
   return async (session, call, c) => {
     if (check === undefined) return { allowed: false, message: `${c.served} was refused: this computer has no approvals to judge it.` };
-    const decide = check(agentCheckContext(session, call.level), () => call.origin);
-    const r = await decide(c.served, c.input, { signal: call.signal ?? new AbortController().signal, toolUseID: c.callId } as Parameters<CanUseTool>[2]);
+    const base = agentCheckContext(session, call.level);
+    const decide = check(c.page === undefined ? base : ({ ...base, pageAsking: c.page } as BotSessionContext), () => call.origin);
+    const r = await decide(c.served, c.input, {
+      signal: c.signal ?? call.signal ?? new AbortController().signal, toolUseID: c.callId,
+      ...(c.ask === undefined ? {} : { decisionReason: { type: "hook", reason: c.ask } }),
+    } as unknown as Parameters<CanUseTool>[2]);
     if (r?.behavior === "allow") return { allowed: true, input: (r.updatedInput ?? c.input) as Record<string, unknown> };
     return { allowed: false, message: r?.behavior === "deny" ? r.message : `${c.served} was refused.` };
   };
@@ -149,6 +175,28 @@ export function bridgeToolsOf(servers: readonly BotMcpServer[], left?: (name: st
   return out;
 }
 
+/** The one mapping between the engine's names for a session's plugin tools (`mcp__<server>__<tool>`, as a bot's `Glossary`
+ *  and the approvals say them) and the bridge's (`bridgeToolsOf`): built from the same listing, so a name maps to exactly
+ *  the tool that has it. A pair of tools two servers could spell the same (`a` + `b__c`, `a__b` + `c`) is left out of the listing
+ *  and so of both directions: no tool name aliases another server's tool. */
+export interface BridgeNames {
+  /** The bridge's name for an engine name (`mcp__<server>__<tool>`); undefined: not on this session's bridge. */
+  toBridge(engine: string): string | undefined;
+  /** The engine's name for a bridge name; undefined: no such bridge tool. */
+  toEngine(bridge: string): string | undefined;
+}
+
+export function bridgeNamesOf(listing: ReadonlyMap<string, Pick<BridgeTool, "name" | "full">>): BridgeNames {
+  const up = new Map<string, string>();
+  const down = new Map<string, string>();
+  for (const t of listing.values()) {
+    const engine = `mcp__${t.full}`;
+    up.set(engine, t.name);
+    down.set(t.name, engine);
+  }
+  return { toBridge: (e) => up.get(e), toEngine: (b) => down.get(b) };
+}
+
 /** A bridge tool's description: its own words and its plugin; a shortened one starts with its plugin's and tool's real
  *  names and says the name it was given in full. */
 export function bridgeToolDescription(t: Pick<BridgeTool, "server" | "tool" | "name" | "full">): string {
@@ -159,22 +207,162 @@ export function bridgeToolDescription(t: Pick<BridgeTool, "server" | "tool" | "n
 
 const text = (t: string) => ({ content: [{ type: "text", text: t }], isError: true });
 
+type FoundTool = { server: BotMcpServer; tool: BotMcpServer["tools"][number] };
+type Hooks = Exclude<ReturnType<NonNullable<AgentPluginReachDeps["hooks"]>>, undefined>;
+type Gated = { ok: false; refused: string } | { ok: true; input: Record<string, unknown>; hooks: Hooks; hookSession: HookSession };
+
+/** ONE PIPELINE for a plugin tool's call, whoever asked (the agent's model, or a tool's PAGE, MCP Apps): `gate` is the
+ *  plugins' `tool.before` hooks (deny, a rewritten input, ask) then the session's judge; `execute` is the router's run, the
+ *  observer and `tool.after`. A model's call (`callBody`) and a page's (`pendingApp`'s site) both go through exactly these two,
+ *  so a page gets everything a model's call gets; only `page` differs (the card says a page asks, with no "always"), and the
+ *  signal (a page's call can come long after the turn that drew it, whose signal has ended). */
+function pipeline(d: AgentPluginReachDeps) {
+  const gate = async (
+    s: AgentSessionFacts, ctx: BridgeCallContext, found: FoundTool, rawInput: Record<string, unknown>, callId: string, at: (stage: string) => void,
+    from: { page?: { plugin: string }; signal?: AbortSignal; name?: string } = {},
+  ): Promise<Gated> => {
+    const served = `mcp__${found.server.server}__${found.tool.name}`;
+    const name = from.name ?? served;
+    let input = rawInput;
+    const hookSession: HookSession = { id: s.id, kind: s.kind, caller: agentCallerOf(s), ...(s.bot === undefined ? {} : { bot: s.bot }), computer: s.computer, backend: s.backend };
+    // The plugins' tool hooks, as a bot's call meets them, under the tool's own name, on every backend (the in-process
+    // one leaves its bridge's plugin tools to this; the manager doesn't run them at the permission request either).
+    const hooks = d.hooks?.() ?? (d.hooks === undefined ? "none" : undefined);
+    if (hooks === undefined) return { ok: false, refused: `${name} was refused: MOSS's plugin hooks aren't running yet, so plugin tools are refused until they are; try again in a moment.` };
+    let ask: string | undefined;
+    if (hooks !== "none") {
+      at("the plugins' tool hooks (before)");
+      const before = await hooks.toolBefore(hookSession, { name: served, callId }, input, from.signal ?? ctx.signal);
+      if (before.deny !== undefined) return { ok: false, refused: `${name} was refused by a plugin's hook: ${before.deny}` };
+      if (before.input !== null && typeof before.input === "object" && !Array.isArray(before.input)) input = before.input as Record<string, unknown>;
+      ask = before.ask;
+    }
+    at("the approval (a card waits here for an answer)");
+    const verdict = await d.judge(s, ctx, { served, input, callId, ...(ask === undefined ? {} : { ask }), ...(from.page === undefined ? {} : { page: from.page }), ...(from.signal === undefined ? {} : { signal: from.signal }) });
+    if (!verdict.allowed) return { ok: false, refused: verdict.message };
+    return { ok: true, input: verdict.input, hooks: hooks as Hooks, hookSession };
+  };
+  /** Runs a gated call and returns what the caller gets: the result as the server gave it, after `tool.after`. */
+  const execute = async (
+    s: AgentSessionFacts, ctx: BridgeCallContext, found: FoundTool, g: Extract<Gated, { ok: true }>, callId: string, at: (stage: string) => void, signal: AbortSignal | undefined,
+  ) => {
+    const served = `mcp__${found.server.server}__${found.tool.name}`;
+    at("the plugin's server (sent, no answer yet)");
+    const { result } = await d.runner.run(found.server.server, found.tool.name, g.input, { session: s.id, as: agentCallerOf(s), callId, ...(signal === undefined ? {} : { signal }) });
+    const out = { content: Array.isArray(result.content) && result.content.length > 0 ? result.content : [{ type: "text", text: "" }], isError: result.isError === true };
+    try { d.observeResult?.(agentCheckContext(s, ctx.level), served, out, g.input); } catch { /* an observer never fails a call */ }
+    let final = out;
+    if (g.hooks !== "none") {
+      at("the plugins' tool hooks (after)");
+      const after = await g.hooks.toolAfter(g.hookSession, { name: served, callId }, g.input, out, signal);
+      const a = after as { content?: unknown; isError?: unknown } | undefined;
+      if (a !== undefined && Array.isArray(a.content)) final = { content: a.content, isError: a.isError === true };
+    }
+    return { out, final, result };
+  };
+  return { gate, execute };
+}
+
+/** MCP Apps: the page a plugin tool's successful result names, with the doors a page of it gets: this server's tools only, and
+ *  the SAME pipeline a model's call goes through (`pipeline`: hooks, the judge, the run, `tool.after`). The page's call is judged
+ *  as a page's (its own card, no "always") and waits under the page's own signal, not the signal of the turn that drew it. */
+function pendingApp(
+  d: AgentPluginReachDeps, s: AgentSessionFacts, ctx: BridgeCallContext, server: BotMcpServer, tool: BotMcpServer["tools"][number],
+  call: { input: Record<string, unknown>; result: { content: unknown[]; isError: boolean } },
+): PendingApp | undefined {
+  const resourceUri = tool.ui?.resourceUri;
+  const apps = d.mcpApps;
+  if (resourceUri === undefined || apps === undefined) return undefined;
+  const as = agentCallerOf(s);
+  const { gate, execute } = pipeline(d);
+  // The turn that drew the page has ended by the time a page calls (a card, a press, minutes later): its signal is dead, and a
+  // card asked under it would be withdrawn before it shows. A page's call carries no turn signal; the page's own is used.
+  const { signal: _turn, ...pageCtx } = ctx;
+  // A ticket is what `approve` hands back for a call it allowed (its hooks and session, as gated); only a ticket made here runs.
+  const issued = new WeakSet<object>();
+  return {
+    resourceUri,
+    bind: (callId) => apps.service.bind(s.id, callId, {
+      pluginId: server.plugin, server: server.server, tool: tool.name, resourceUri, input: call.input, result: { content: call.result.content },
+      listTools: async () => apps.ui.tools(server.server, tool.name).map((t) => ({ name: t.name, ...(t.ui === undefined ? {} : { _meta: { ui: t.ui } }) })),
+      readResource: (uri) => apps.ui.read(server.server, tool.name, uri, as),
+      approve: async (name, args, signal, cardId) => {
+        const found: FoundTool = { server, tool: { ...tool, name } };
+        try {
+          const g = await gate(s, pageCtx, found, args, cardId, () => {}, { page: { plugin: server.plugin }, signal });
+          if (!g.ok) return { allowed: false, message: g.refused };
+          issued.add(g);
+          return { allowed: true, input: g.input, ticket: g };
+        } catch {
+          return { allowed: false, message: `mcp__${server.server}__${name} was not run: the approval couldn't be asked.` };
+        }
+      },
+      callTool: async (name, args, signal, ticket) => {
+        // Only a call this gate allowed runs (its ticket); one made any other way is refused.
+        if (typeof ticket !== "object" || ticket === null || !issued.has(ticket)) throw new Error("this call wasn't approved");
+        const g = ticket as Extract<Gated, { ok: true }>;
+        const found: FoundTool = { server, tool: { ...tool, name } };
+        const r = await execute(s, pageCtx, found, g, `mcp-app-${crypto.randomUUID()}`, () => {}, signal);
+        return { content: r.final.content, ...(r.final.isError ? { isError: true } : {}) };
+      },
+    }),
+  };
+}
+
 /** The bridge's plugin tools for one daemon. */
 export function agentPluginTools(d: AgentPluginReachDeps): BridgeToolSource {
   const listing = (s: AgentSessionFacts | undefined) => (s === undefined ? new Map<string, BridgeTool>() : bridgeToolsOf(d.servers(s.kind, s.backend, s.bot)));
+  type CallArgs = Parameters<BridgeToolSource["call"]>;
+  const { gate, execute } = pipeline(d);
+  const callBody = async (c: CallArgs[1], ctx: CallArgs[2], at: (stage: string) => void) => {
+      const s = ctx.session;
+      if (s === undefined) return text(`No tool named ${c.tool} is available to this agent.`);
+      // The listing now, not the one the session started with: a plugin turned off, stopped or refused since is gone.
+      const listed = listing(s).get(c.tool);
+      // A tool the session holds back until it is loaded is not callable before: a stale name an agent made up is refused.
+      const found = listed !== undefined && s.exposure === "list" && listed.tool.load !== "preload" && s.loaded?.has(listed.name) !== true ? undefined : listed;
+      if (found === undefined) {
+        // A tool the user turned off (the tool setting) is not on the listing, but the agent that cached its name is told why.
+        const off = bridgeToolsOf(d.servers(s.kind, s.backend, s.bot, { keepOff: true })).get(c.tool);
+        if (off?.tool.off === true) return text(toolOffMessage(`mcp__${off.server.server}__${off.tool.name}`));
+        return text(`No tool named ${c.tool} is available to this agent.`);
+      }
+      if (c.input !== undefined && (typeof c.input !== "object" || c.input === null || Array.isArray(c.input))) return text(`${c.tool} was refused: its input must be an object.`);
+      try {
+        const g = await gate(s, ctx, found, (c.input ?? {}) as Record<string, unknown>, c.callId, at, { name: c.tool });
+        if (!g.ok) return text(g.refused);
+        const r = await execute(s, ctx, found, g, c.callId, at, ctx.signal);
+        // What its successful result shows in the conversation, as a bot's (`ToolDisplays.put`: a success's valid one only).
+        const display = r.out.isError ? undefined : toolDisplay(r.result.structuredContent);
+        // MCP Apps: a successful call of a tool that names a page: the page waits for the agent's own record of this call, whose
+        // id is the agent's (`PendingApp.bind`), and its doors are this call's own: the server's, and this session's gate.
+        const app = r.out.isError ? undefined : pendingApp(d, s, ctx, found.server, found.tool, { input: g.input, result: r.out });
+        return (display === undefined && app === undefined) || r.final.isError ? r.final : { ...r.final, ...(display === undefined ? {} : { display }), ...(app === undefined ? {} : { app }) };
+      } catch (err) {
+        return text(err instanceof Error ? err.message : String(err));
+      }
+  };
   return {
     async tools(sessionId, session): Promise<BridgeToolDef[]> {
       const left: string[] = [];
       const tools = session === undefined ? new Map<string, BridgeTool>() : bridgeToolsOf(d.servers(session.kind, session.backend, session.bot), (name, why) => left.push(`${name} (${why})`));
       if (left.length > 0) d.log?.(`${sessionId}: plugin tools left off its bridge: ${left.join(", ")}`);
-      return [...tools.values()].map((t) => ({
+      // An agent with no search of its own whose list can change holds an on-demand tool back until the session loads it
+      // (`Glossary`): the list is what the agent holds, and a load changes it.
+      // A tool that has left the listing (set off, its plugin stopped or gone) is no longer loaded: it comes back by a load again.
+      if (session?.loaded !== undefined) for (const n of [...session.loaded]) if (!tools.has(n)) session.loaded.delete(n);
+      const held = (t: BridgeTool) => session?.exposure === "list" && t.tool.load !== "preload" && session.loaded?.has(t.name) !== true;
+      return [...tools.values()].filter((t) => !held(t)).map((t) => ({
         name: t.name,
         // A description stands on its own (some agents never show a server's instructions): it names its plugin.
         description: bridgeToolDescription(t),
         inputSchema: t.tool.inputSchema as Record<string, unknown>,
         ...(t.tool.load === "preload" ? { preload: true } : {}),
+        ...(t.tool.title === undefined ? {} : { displayTitle: t.tool.title }),
       }));
     },
+    ...(d.settled === undefined ? {} : { settled: (ms: number) => d.settled!(ms) }),
+    judge: (s, ctx, call) => d.judge(s, ctx, call),
     async instructions(_sessionId, session) {
       if (session === undefined) return "";
       const seen = new Set<string>();
@@ -190,38 +378,19 @@ export function agentPluginTools(d: AgentPluginReachDeps): BridgeToolSource {
       }
       return parts.join("\n\n");
     },
-    async call(_sessionId, c, ctx) {
-      const s = ctx.session;
-      if (s === undefined) return text(`No tool named ${c.tool} is available to this agent.`);
-      // The listing now, not the one the session started with: a plugin turned off, stopped or refused since is gone.
-      const found = listing(s).get(c.tool);
-      if (found === undefined) return text(`No tool named ${c.tool} is available to this agent.`);
-      if (c.input !== undefined && (typeof c.input !== "object" || c.input === null || Array.isArray(c.input))) return text(`${c.tool} was refused: its input must be an object.`);
-      const served = `mcp__${found.server.server}__${found.tool.name}`;
-      let input = (c.input ?? {}) as Record<string, unknown>;
-      const hookSession: HookSession = { id: s.id, kind: s.kind, caller: agentCallerOf(s), ...(s.bot === undefined ? {} : { bot: s.bot }), computer: s.computer, backend: s.backend };
-      // The plugins' tool hooks, as a bot's call meets them, under the tool's own name, on every backend (the in-process
-      // one leaves its bridge's plugin tools to this; the manager doesn't run them at the permission request either).
-      const hooks = d.hooks?.() ?? (d.hooks === undefined ? "none" : undefined);
-      if (hooks === undefined) return text(`${c.tool} was refused: Clover's plugin hooks aren't running yet, so plugin tools are refused until they are; try again in a moment.`);
-      if (hooks !== "none") {
-        const before = await hooks.toolBefore(hookSession, { name: served, callId: c.callId }, input, ctx.signal);
-        if (before.deny !== undefined) return text(`${c.tool} was refused by a plugin's hook: ${before.deny}`);
-        if (before.input !== null && typeof before.input === "object" && !Array.isArray(before.input)) input = before.input as Record<string, unknown>;
-      }
-      const verdict = await d.judge(s, ctx, { served, input, callId: c.callId });
-      if (!verdict.allowed) return text(verdict.message);
+    async call(sessionId, c, ctx) {
+      // Where this call is, for the line a slow one leaves: a call that never answers (the runtime's `sdk_mcp_call` control request timed out after
+      // 120 s: builder-examples row 91, chain row 72) is told apart by the stage it was in, never by its input or any value.
+      let stage = "received";
+      const began = Date.now();
+      d.log?.(`${sessionId}: plugin tool call ${c.callId ?? "?"} ${c.tool} received`);
+      const slow = setInterval(() => d.log?.(`${sessionId}: plugin tool call ${c.callId ?? "?"} ${c.tool} still waiting after ${Math.round((Date.now() - began) / 1000)} s, in: ${stage}`), 30_000);
+      slow.unref?.();
       try {
-        const { result } = await d.runner.run(found.server.server, found.tool.name, verdict.input, {
-          session: s.id, as: agentCallerOf(s), callId: c.callId, ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
-        });
-        const out = { content: Array.isArray(result.content) && result.content.length > 0 ? result.content : [{ type: "text", text: "" }], isError: result.isError === true };
-        if (hooks === "none") return out;
-        const after = await hooks.toolAfter(hookSession, { name: served, callId: c.callId }, verdict.input, out, ctx.signal);
-        const a = after as { content?: unknown; isError?: unknown } | undefined;
-        return a !== undefined && Array.isArray(a.content) ? { content: a.content, isError: a.isError === true } : out;
-      } catch (err) {
-        return text(err instanceof Error ? err.message : String(err));
+        return await callBody(c, ctx, (x) => { stage = x; });
+      } finally {
+        clearInterval(slow);
+        d.log?.(`${sessionId}: plugin tool call ${c.callId ?? "?"} ${c.tool} ended after ${Date.now() - began} ms (last stage: ${stage})`);
       }
     },
   };
@@ -320,28 +489,48 @@ function agentMarkdown(registry: Pick<PluginRegistry, "entries" | "get">, plugin
   return undefined;
 }
 
-/** `Glossary` on the bridge: search and load the plugins' skills, agent definitions and tools in the session's scope,
- *  the same index a bot's Glossary reads, limited to that scope. */
+/** `Glossary` on the bridge: a bot's `Glossary` for what this session may reach. The same index (`glossaryIndex`) and the same
+ *  resolution of a search or a load (`resolveGlossary`) as a bot's, over the tools of this session's bridge (each by its bridge
+ *  name), the plugins and what each offers, the skills, agent definitions and points in this session's scope. A load of a
+ *  tool or of a plugin names the tools it makes callable in `load`: for MOSS's own agent the runtime loads them in that turn,
+ *  for an agent whose list can change the manager puts them on it, and for the rest they are on the list already. */
 export function agentGlossary(d: Pick<AgentPluginReachDeps, "registry" | "servers">) {
-  return async (_sessionId: string, q: { query?: string | string[]; load?: string | string[] }, session?: AgentSessionFacts): Promise<{ results: unknown[]; loaded: unknown[] }> => {
+  return async (_sessionId: string, q: { query?: string | string[]; load?: string | string[] }, session?: AgentSessionFacts): Promise<GlossaryAnswer> => {
     if (session === undefined) return { results: [], loaded: [] };
-    const tools = [...bridgeToolsOf(d.servers(session.kind, session.backend, session.bot)).values()];
-    const items: GlossaryItem[] = glossaryIndex({
-      tools: () => tools.map(({ tool, name }) => ({ name, ...(tool.description === undefined ? {} : { description: tool.description }), inputSchema: tool.inputSchema })),
+    const servers = d.servers(session.kind, session.backend, session.bot);
+    const listing = bridgeToolsOf(servers);
+    const names = bridgeNamesOf(listing);
+    // Only the tools this session's bridge can name: a plugin's `loads` and its tool lines never name one it can't call.
+    const onBridge = servers.map((sv) => ({ ...sv, tools: sv.tools.filter((t) => names.toBridge(`mcp__${sv.server}__${t.name}`) !== undefined) }));
+    const items = glossaryIndex({
+      tools: () => [...listing.values()].map((t) => ({ name: t.name, ...(t.tool.description === undefined ? {} : { description: t.tool.description }), inputSchema: t.tool.inputSchema })),
       registry: d.registry,
       serves: (pluginId, entryScope) => servesSession({ registry: d.registry }, session, pluginId, entryScope),
-      // A plugin's own listing on the bridge: only the tools this session has.
-      servers: () => [],
-    }).filter((i) => i.kind !== "plugin" && i.kind !== "point");
-    const list = (v: string | string[] | undefined) => (v === undefined ? [] : Array.isArray(v) ? v : [v]).filter((x) => typeof x === "string" && x.trim() !== "");
-    const results = list(q.query).slice(0, 20).flatMap((query) => searchGlossary(items, query).map((i) => ({ query, name: i.name, kind: i.kind, description: i.description })));
-    const loaded = list(q.load).slice(0, 50).map((name) => {
-      const item = items.find((i) => i.name === name) ?? items.find((i) => i.name.toLowerCase() === name.toLowerCase());
-      if (item === undefined) return { name, found: false };
-      const body = item.body ?? item.description;
-      return { name: item.name, kind: item.kind, text: body.length > SKILL_BODY_MAX_CHARS ? `${body.slice(0, SKILL_BODY_MAX_CHARS)}\n[cut at ${SKILL_BODY_MAX_CHARS} characters]` : body };
+      servers: () => onBridge,
+      ...(session.bot === undefined ? {} : { bot: session.bot }),
     });
-    return { results, loaded };
+    // Each name in the index's words, as the bridge says it (an agent calls a tool by its bridge name).
+    const order = [...listing.values()].map((t) => `mcp__${t.full}`).sort((a, b) => b.length - a.length);
+    const bridgeWords = (text: string) => order.reduce((acc, e) => (acc.includes(e) ? acc.split(e).join(names.toBridge(e)!) : acc), text);
+    const shown = (i: GlossaryItem) => ({ name: i.name, kind: i.kind, description: bridgeWords(i.description) });
+    const asked = resolveGlossary(items, { query: q.query, load: q.load });
+    const results = asked.searches.flatMap((s) => s.items.map((i) => ({ query: s.query, ...shown(i) })));
+    const loaded = asked.loads.map((l) => {
+      if (l.item === undefined) return { name: l.name, found: false };
+      const i = l.item;
+      if (i.kind === "tool") {
+        const t = listing.get(i.name);
+        const text = t === undefined ? i.description : `${t.tool.description ?? t.tool.name}\nInput schema: ${JSON.stringify(t.tool.inputSchema)}`;
+        return { ...shown(i), text: text.length > SKILL_BODY_MAX_CHARS ? `${text.slice(0, SKILL_BODY_MAX_CHARS)}\n[cut at ${SKILL_BODY_MAX_CHARS} characters]` : text };
+      }
+      const body = bridgeWords(i.body ?? i.description);
+      const capped = body.length > SKILL_BODY_MAX_CHARS ? `${body.slice(0, SKILL_BODY_MAX_CHARS)}\n[cut at ${SKILL_BODY_MAX_CHARS} characters]` : body;
+      // A skill's words as a bot's Glossary gives them (glossary.ts): inside its `<skill name="…">` tag.
+      return { ...shown(i), text: i.kind === "skill" ? `<skill name="${i.name}">\n${capped.trim()}\n</skill>` : capped };
+    });
+    // A tool item names its bridge name already; a plugin's `loads` are the engine's names, which the bridge names again.
+    const load = asked.toolNames.map((n) => names.toBridge(n) ?? (names.toEngine(n) !== undefined ? n : undefined)).filter((n): n is string => n !== undefined);
+    return { results, loaded, ...(load.length > 0 ? { load } : {}) };
   };
 }
 
@@ -352,9 +541,14 @@ export function lateAgentPlugins(deps: () => AgentPluginReachDeps | undefined, w
     pluginTools: {
       tools: async (id, s) => { const d = deps(); return d === undefined ? [] : agentPluginTools(d).tools(id, s); },
       instructions: async (id, s) => { const d = deps(); return d === undefined ? "" : agentPluginTools(d).instructions!(id, s); },
+      settled: async (ms) => { await deps()?.settled?.(ms); },
+      judge: async (s, ctx, call) => {
+        const d = deps();
+        return d === undefined ? { allowed: false, message: `${call.served} was refused: this computer's approvals aren't running for agents yet; try again in a moment.` } : d.judge(s, ctx, call);
+      },
       call: async (id, c, ctx) => {
         const d = deps();
-        return d === undefined ? text(`${c.tool} was refused: Clover's plugins aren't running for agents yet; try again in a moment.`) : agentPluginTools(d).call(id, c, ctx);
+        return d === undefined ? text(`${c.tool} was refused: MOSS's plugins aren't running for agents yet; try again in a moment.`) : agentPluginTools(d).call(id, c, ctx);
       },
     },
     pluginParts: {

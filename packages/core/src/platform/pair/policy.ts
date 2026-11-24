@@ -100,6 +100,9 @@ interface AppConn { leaving?: AppExitReason; canQuit: boolean; hung?: boolean }
 
 export class DaemonPair {
   private readonly apps = new Map<string, AppConn>();
+  /** An app AHEAD of this engine (served the release door only, RL): it is open and waits for its engine, so the pair starts no
+   *  second one, but it has no heartbeat and no part in a crash: its leaving schedules nothing. */
+  private readonly waiting = new Set<string>();
   private readonly crashes: number[] = [];
   private safeMode = false;
   private pending: { why: AppStartWhy; cancel: () => void } | null = null;
@@ -114,9 +117,27 @@ export class DaemonPair {
 
   private log(line: string): void { this.deps.log?.(`[pair] ${line}`); }
 
-  /** The daemon is up and listening. On a desktop, start the app if none connects within the grace. */
-  start(): void {
-    if (this.o.desktop) this.schedule("boot", this.o.graceMs);
+  /** The daemon is up and listening. On a desktop, start the app if none connects within the grace.
+   *  `appKept`: the daemon before this one stopped for a restart at once and left the app open (a release switch, the old home's
+   *  copy: `stop({ keepApp })`): the app redials and comes back, so the wait is the restart's (`restartGraceMs`), not the start-up's
+   *  2 s, which a daemon still booting would spend before it listens, and the OS start (`open -n`) would then bring up a second
+   *  copy over the one that is open. */
+  start(o: { appKept?: boolean } = {}): void {
+    if (!this.o.desktop) return;
+    if (o.appKept === true) this.schedule("restart", this.o.restartGraceMs);
+    else this.schedule("boot", this.o.graceMs);
+  }
+
+  /** An app connection served the release door only (it is ahead of this engine). It is there, so nothing starts another. */
+  appWaiting(connId: string): void {
+    this.waiting.add(connId);
+    this.cancelPending();
+    this.cancelWatchdog();
+  }
+
+  /** That connection closed: it was waiting, so its leaving is no crash and starts nothing. */
+  appWaitingGone(connId: string): void {
+    this.waiting.delete(connId);
   }
 
   /** A connection said hello as `app`, with the features its hello listed (`app.quit`, `app.show`,
@@ -152,6 +173,14 @@ export class DaemonPair {
     app.hung = true;
     this.log(`the app stopped answering (${connId}): it restarts in safe mode`);
   }
+
+  // lane HS: start
+  /** A background host took the screen: the window is no half of the pair any more (its quit stops nothing, its exit is
+   *  no crash and is never restarted). Stand-in until the pair is retired (lanes RT, RL, then HS). */
+  appReleased(connId: string): void {
+    this.apps.delete(connId);
+  }
+  // lane HS: end
 
   /** An app connection closed. */
   appDisconnected(connId: string): void {
@@ -207,7 +236,7 @@ export class DaemonPair {
     this.cancelPending();
     const cancel = this.deps.after(ms, () => {
       this.pending = null;
-      if (this.apps.size > 0 || this.stopping) return;
+      if (this.apps.size > 0 || this.waiting.size > 0 || this.stopping) return;
       void this.launch(why);
     });
     this.pending = { why, cancel };
@@ -217,7 +246,7 @@ export class DaemonPair {
     this.log(`starting the app (${why}${this.safeMode ? ", safe mode" : ""})`);
     let outcome: AppStartOutcome;
     try { outcome = await this.deps.startApp(why); } catch { outcome = "failed"; }
-    if (this.apps.size > 0 || this.stopping) return; // it connected while the OS was starting it
+    if (this.apps.size > 0 || this.waiting.size > 0 || this.stopping) return; // it connected while the OS was starting it
     if (outcome === "not-ready") { this.schedule(why, this.o.notReadyRetryMs); return; }
     if (outcome === "failed") { this.crashed("could not be started by the OS"); return; }
     this.cancelWatchdog();

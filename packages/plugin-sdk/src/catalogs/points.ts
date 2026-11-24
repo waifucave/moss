@@ -3,9 +3,7 @@
 // below) are exempt from the `<plugin-id>.` prefix rule, and a plugin that declares one must use the catalog's
 // declaration, or it is refused (§5.4).
 import { z } from "zod";
-import { utf16 } from "@waifucave/clover-protocol";
-import { EntryId, HandlerName, Path, Text } from "../manifest/fields";
-import { AVATAR_CAPABILITIES, AVATAR_FILE_CAPS, AVATAR_FILE_TYPES, AVATAR_FINDERS, AVATAR_MODEL_MAX_FILES, avatarFileProblem } from "./avatars";
+import { EntryId, HandlerName, Text } from "../manifest/fields";
 import { SPOTS } from "./spots";
 
 export interface CorePointInfo {
@@ -22,6 +20,12 @@ export interface CorePointInfo {
   readonly runsOn: string;
   readonly doc: string;
   readonly shipsWith: string;
+  /** One filler at a time (§5.4 "One at a time"): the platform keeps which entry is active; Settings' picker is titled
+   *  by `title`. */
+  readonly oneAtATime?: boolean;
+  readonly title?: string;
+  /** The line its fillers' OK cards show (`fillsOkLines`), attributed to MOSS. */
+  readonly fills?: { readonly ok: string; readonly warns?: boolean };
 }
 
 export const CORE_POINTS: readonly CorePointInfo[] = [
@@ -30,7 +34,7 @@ export const CORE_POINTS: readonly CorePointInfo[] = [
   { name: "models", side: "daemon", shape: "list", uniqueBy: "provider", kind: "either", runsOn: "every computer running a session; started when first needed",
     doc: "Calls the adapter, or the declared endpoint, for every turn; the welcome guide reads the sign-in methods (§3.3).", shipsWith: "every provider today's agent SDK has" },
   { name: "mcpServers", side: "daemon", shape: "keyed", kind: "either", runsOn: "local servers on each computer they are installed on; remote servers on the computer running the session (§9.1)",
-    doc: "Dispatches tool calls, builds the MCP block and shows MCP Apps pages.", shipsWith: "the web tools; `mcp__clover__Browser`" },
+    doc: "Dispatches tool calls, builds the MCP block and shows MCP Apps pages.", shipsWith: "the web tools; `mcp__moss__Browser`" },
   { name: "skills", side: "daemon", shape: "list", kind: "data", runsOn: "data, on every device", doc: "Indexes them in `Glossary` (§6.8).", shipsWith: "—" },
   { name: "agents", side: "daemon", shape: "list", kind: "data", runsOn: "data, on every device",
     doc: "Offers these presets to `Agent`: backend, model, effort, instructions, computer, root folder, plugins (§9.3).", shipsWith: "—" },
@@ -42,10 +46,8 @@ export const CORE_POINTS: readonly CorePointInfo[] = [
     doc: "Runs a plugin's public functions for any client at once, with no model turn (§5.4).", shipsWith: "—" },
   { name: "triggers", side: "daemon", shape: "keyed", uniqueBy: "type", kind: "code", runsOn: "each computer, started at once",
     doc: "Arms them for routine files (§7).", shipsWith: "schedule, webhook" },
-  { name: "voices", side: "daemon", shape: "list", uniqueBy: "id", kind: "code", runsOn: "the computer the user is talking on",
-    doc: "Speech-to-text and text-to-speech for the bot's voice choice (§6.6), which the active voice mode takes.", shipsWith: "Fish Audio" },
-  { name: "voiceModes", side: "daemon", shape: "list", uniqueBy: "id", kind: "code", runsOn: "the computer the user is talking on",
-    doc: "The voice slot (§6.6): one voice mode is active (Settings › Voice); it speaks the bots' replies, plays sound as their voices through its one queue, and hears push-to-talk. The others neither speak nor hear.", shipsWith: "Clover Voice" },
+  { name: "turns", side: "daemon", shape: "list", kind: "data", runsOn: "data",
+    doc: "Names of the plugin's own one-at-a-time turns that another plugin may take (`<plugin id>/<name>`, §5.4 \"Turns\"); its own need no entry.", shipsWith: "—" },
   { name: "computerProviders", side: "daemon", shape: "keyed", uniqueBy: "id", kind: "code", runsOn: "the main, unless `runsOn` says otherwise",
     doc: "Creates, resizes and deletes the VMs that cloud computer folders describe (§9.2).", shipsWith: "Google Cloud, Hetzner" },
   { name: "computer", side: "daemon", shape: "single", kind: "data", runsOn: "data",
@@ -62,8 +64,8 @@ export const CORE_POINTS: readonly CorePointInfo[] = [
     doc: "Mounts the main window's root: the shell (§5.5).", shipsWith: "the default shell" },
   { name: "app.surface", side: "app", shape: "list", kind: "code", runsOn: "every app instance",
     doc: "Opens top-level floating windows.", shipsWith: "island, Dispatch pill" },
-  { name: "bot.tab", side: "app", shape: "keyed", kind: "code", runsOn: "every app instance",
-    doc: "Holds each bot's tab, which the shell shows.", shipsWith: "the default bot tab" },
+  { name: "app.background", side: "app", shape: "list", kind: "code", runsOn: "every app instance",
+    doc: "Runs parts that have no place in the window, in a hidden window of their own." , shipsWith: "nothing yet; any plugin" },
   { name: "locales", side: "app", shape: "keyed", kind: "data", runsOn: "every app instance",
     doc: "Supplies strings for the core's own text and each plugin's keys, in the user's language (§5.5).", shipsWith: "English, built in" },
 ];
@@ -74,57 +76,40 @@ export const CORE_POINT_NAMES: ReadonlySet<string> = new Set(CORE_POINTS.map((p)
 export interface DataPointInfo {
   readonly name: string;
   readonly shape: "single" | "list" | "keyed";
+  /** A plugin's id, or `"core"`: a point the core and the app read themselves is the
+   *  platform's. No plugin declares it; its entries are in force as soon as their plugin runs. */
   readonly declaredBy: string;
+  /** For a platform point (`declaredBy: "core"`): the capabilities whose holders read its entries (`points.entries`,
+   *  `points.watch`), since no plugin declares it and the declarer's right to read is nobody's. Any one is enough. */
+  readonly readBy?: readonly string[];
   readonly entry: z.ZodType;
   readonly kind: "data" | "code";
   readonly doc: string;
+  /** One filler at a time (§5.4 "One at a time"), with the title Settings' picker shows. */
+  readonly oneAtATime?: boolean;
+  readonly title?: string;
 }
 
-/** One `avatar.formats` entry: what a renderer plugin declares about the model format it draws. */
-export const AvatarFormatEntry = z.strictObject({
-  id: EntryId,
-  /** The format id: the key of the `avatar` entry that draws it, and a bot's `avatar.format`. */
-  format: utf16(32, 1).regex(/^[a-z0-9-]+$/),
-  name: Text,
-  /** What `avatar.file` names: its extensions, lower case with the dot (`.vrm`, `.model3.json`). */
-  entry: z.strictObject({ extensions: z.array(utf16(32, 2).regex(/^\.[a-z0-9]+(\.[a-z0-9]+)*$/)).min(1).max(8) }),
-  files: z.strictObject({
-    /** The kinds of file a model is made of, each with its extensions and a cap. */
-    kinds: z.array(z.strictObject({
-      ext: z.array(utf16(32, 2).regex(/^\.[a-z0-9]+(\.[a-z0-9]+)*$/)).min(1).max(16),
-      type: z.enum(AVATAR_FILE_TYPES),
-      maxBytes: z.number().int().min(1).max(Math.max(...Object.values(AVATAR_FILE_CAPS))).optional(),
-    }).superRefine((k, ctx) => {
-      if (k.maxBytes !== undefined && k.maxBytes > AVATAR_FILE_CAPS[k.type]) ctx.addIssue({ code: "custom", path: ["maxBytes"], message: `a ${k.type} file may be at most ${AVATAR_FILE_CAPS[k.type]} bytes` });
-    })).min(1).max(16),
-    find: z.enum(AVATAR_FINDERS).default("folder"),
-    maxFiles: z.number().int().min(1).max(AVATAR_MODEL_MAX_FILES).optional(),
-  }),
-  /** What the avatar picker may offer for this format. */
-  import: z.strictObject({ accepts: z.array(z.enum(["folder", "zip", "file"])).min(1).max(3) }).optional(),
-  capabilities: z.array(z.enum(AVATAR_CAPABILITIES)).max(8).optional(),
-  /** A picture to show when the model cannot be drawn: a file in the renderer's folder. */
-  portrait: Path.optional(),
-});
-export type AvatarFormatEntry = z.infer<typeof AvatarFormatEntry>;
-
 export const DATA_POINTS: readonly DataPointInfo[] = [
-  { name: "webhook.ingress", shape: "list", declaredBy: "clover/trigger-webhook", kind: "code",
+  { name: "webhook.ingress", shape: "list", declaredBy: "moss/trigger-webhook", kind: "code",
     entry: z.strictObject({ id: EntryId, name: Text.optional(), handler: HandlerName }),
     doc: "Ways for webhooks to reach a device: the waifucave forwarder, the user's cloud computer, a tunnel (§7)." },
-  { name: "island.line", shape: "list", declaredBy: "clover/island", kind: "code",
+  { name: "usage.sources", shape: "list", declaredBy: "moss/usage", kind: "code",
+    entry: z.strictObject({
+      /** The source's id: what its records and its plan reading are filed under, and what an alarm names. */
+      id: EntryId,
+      /** What the Usage surfaces call it; the id when left out. */
+      name: Text.optional(),
+      handler: HandlerName,
+      /** What it gives: a plan reading (`plan`), the numbers its tool's own files hold (`usage`), or both. */
+      provides: z.array(z.enum(["plan", "usage"])).min(1).max(2),
+      /** The least time between two plan readings (default 5 minutes, at least 10 seconds): the core asks no oftener. */
+      planEveryMs: z.number().int().min(10_000).max(86_400_000).optional(),
+    }),
+    doc: "A tool of the user's installed on this computer whose usage MOSS reads: its plan windows (`plan`) and the token counts its own session files hold (`ingest`), through its own program and its own folders (`host.outside`), never its sign-in. The core calls the handler on this computer only, asks no oftener than `planEveryMs`, prices the records and keeps the store; the source owns how its tool is read (§12)." },
+  { name: "island.line", shape: "list", declaredBy: "island", kind: "code",
     entry: z.strictObject({ id: EntryId, handler: HandlerName }),
-    doc: "A line a plugin puts on the island: one line of plain text, an optional icon from the island's small named set and an optional progress bar, drawn in the island's own style with the plugin's name beside it. The island calls `handler` (an `IslandLineHandler`) only when Clover isn't in front (the first line on its closed strip, the lines on its open Needs you tab) and draws what it returns; the island decides how many lines fit, in what order, and how long they last. Nothing is drawn when the handler returns nothing, and a plugin that is off or removed has no line." },
-  { name: "avatar.formats", shape: "list", declaredBy: "clover/character", kind: "data",
-    entry: AvatarFormatEntry,
-    doc: "A model format a renderer plugin draws: the files its models are made of (closed kinds, capped), how they are found from the entry file, what the picker may import, and what the renderer can do. Nothing in the app is hardcoded per format (§5.5)." },
-  { name: "avatar.packs", shape: "list", declaredBy: "clover/character", kind: "data",
-    entry: z.strictObject({ id: EntryId, name: Text.optional(), file: Path, format: utf16(32, 1).regex(/^[a-z0-9-]+$/), portrait: Path.optional(), license: utf16(200).optional() })
-      .superRefine((a, ctx) => {
-        const problem = avatarFileProblem(a.format, a.file);
-        if (problem) ctx.addIssue({ code: "custom", path: ["file"], message: problem });
-      }),
-    doc: "Avatar files with their format and portrait, so an avatar pack is a data plugin (§5.5)." },
+    doc: "A line a plugin puts on the island: one line of plain text, an optional icon from the island's small named set and an optional progress bar, drawn in the island's own style with the plugin's name beside it. The island calls `handler` (an `IslandLineHandler`) only when MOSS isn't in front (the first line on its closed strip, the lines on its open Needs you tab) and draws what it returns; the island decides how many lines fit, in what order, and how long they last. Nothing is drawn when the handler returns nothing, and a plugin that is off or removed has no line." },
 ];
 
 /** Every well-known name: exempt from the prefix rule, and declared only with the catalog's declaration. */
@@ -135,4 +120,21 @@ export const WELL_KNOWN_POINT_NAMES: ReadonlySet<string> = new Set([
 
 export function dataPointInfo(name: string): DataPointInfo | undefined {
   return DATA_POINTS.find((p) => p.name === name);
+}
+
+/** Whether a point takes one filler at a time (§5.4 "One at a time"), with the title Settings' picker shows: a core
+ *  point's from `CORE_POINTS`, any other's from its declaration (a well-known name's declaration is the catalog's). */
+export function oneAtATimeOf(name: string, decl: { oneAtATime?: boolean; title?: unknown } | undefined): { title: string | { en: string; [lang: string]: string } } | undefined {
+  const core = CORE_POINTS.find((p) => p.name === name);
+  if (core !== undefined) return core.oneAtATime === true ? { title: core.title ?? name } : undefined;
+  if (decl?.oneAtATime !== true) return undefined;
+  const t = decl.title;
+  if (typeof t === "string" && t !== "") return { title: t };
+  if (typeof t === "object" && t !== null && typeof (t as { en?: unknown }).en === "string") return { title: t as { en: string; [lang: string]: string } };
+  return { title: name };
+}
+
+/** Whether a data point is the platform's own (no plugin declares it; fillers need no declarer to run). */
+export function isPlatformDataPoint(name: string): boolean {
+  return dataPointInfo(name)?.declaredBy === "core";
 }

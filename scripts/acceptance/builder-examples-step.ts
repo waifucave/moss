@@ -1,23 +1,23 @@
 // The plugin builder's examples (checklist 5.4), each installed on the real app and its UI drawn. The builder's skill
-// (plugins/clover/plugins/plugin-builder/skills/plugin-examples) holds 15 examples; each validates and loads in the unit
+// (plugins/moss/plugins/plugin-builder/skills/plugin-examples) holds 15 examples; each validates and loads in the unit
 // tests, and this row installs every one from a folder (its files written under the run's temp folder, `plugin.install`
 // over RPC, its `plugin-ok` OK card approved: ex-tool's pressed in the window), reaches running or enabled, and then, in
 // the window, sees each part drawn by its own layer:
 //   ex-settings, ex-point, ex-board, ex-buddy's part beside its bot: their Settings sections (the Settings dialog, by title);
 //   ex-status: its line in the status bar; ex-app, ex-timeline, ex-fit: their pages, from their sidebar entries;
 //   ex-board-widget: its widget inside ex-board's section; ex-fit-tile: its tile inside ex-fit's page;
-//   ex-buddy: its header and side panel on its bot's tab (the bot in `bot.list`); ex-bot: in `bot.list`;
+//   ex-buddy, ex-bot: installed and running, and no bot in `bot.list` (bots are the engine's records; the move runs once);
 //   ex-theme: listed as a theme (`plugin.ui`); ex-model: its model listed (`models.list`);
 //   ex-tool, ex-timeline: the tool answers one call from Alpha; ex-trigger: installed and running.
 // All fifteen are installed first and then looked at: a plugin with UI installed after the window was served loads the
 // window's document again, so the checks wait until that has settled. Each is removed afterwards (the fillers first).
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { readExamples, type Example } from "../../plugins/clover/plugins/plugin-builder/test/examples";
+import { readExamples, type Example } from "../../plugins/moss/plugins/plugin-builder/test/examples";
 import { callTurn, fail, frames, leave, treeDocs, until, type ExampleCtx } from "./example-steps";
-import { clickShown, drawn, drawnInSettings, openSidebarEntry, reloadsSettled } from "./window-open";
+import { drawn, drawnInSettings, openSidebarEntry, reloadsSettled } from "./window-open";
 
-export const BUILDER_EXAMPLES_STEP = "the plugin builder's 15 examples, each installed from a folder over RPC behind its OK card (ex-tool's pressed in the window) and running: Settings sections (ex-settings, ex-point, ex-board with ex-board-widget's widget in it, ex-buddy's child), the status line (ex-status), the pages from their sidebar entries (ex-app, ex-timeline, ex-fit with ex-fit-tile's tile in it) and ex-buddy's header and side panel on its bot's tab are drawn in the window; ex-theme is listed as a theme, ex-bot and ex-buddy as bots, ex-model's model as a model; ex-tool and ex-timeline's tools answer a call from Alpha; each removed afterwards";
+export const BUILDER_EXAMPLES_STEP = "the plugin builder's 15 examples, each installed from a folder over RPC behind its OK card (ex-tool's pressed in the window) and running: Settings sections (ex-settings, ex-point, ex-board with ex-board-widget's widget in it, ex-buddy's child), the status line (ex-status), the pages from their sidebar entries (ex-app, ex-timeline, ex-fit with ex-fit-tile's tile in it) are drawn in the window; ex-theme is listed as a theme, ex-bot and ex-buddy as bots, ex-model's model as a model; ex-tool and ex-timeline's tools answer a call from MOSS; each removed afterwards";
 
 interface Card { id: string; kind: string; pluginId?: string }
 
@@ -65,7 +65,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
   rmSync(dir, { recursive: true, force: true });
 
   // The app up and told of cards before the first one comes (its island's layer connected).
-  await until("the app's island connected to the core", 30_000, () => (ctx.appLog().includes("layers: clover/island's layer connected to the core") ? true : undefined));
+  await until("the app's island connected to the core", 30_000, () => (ctx.appLog().includes("layers: moss/island's layer connected to the core") ? true : undefined));
   await new Promise((r) => setTimeout(r, 2_000));
 
   // 1. Every example installed from its folder and OK'd.
@@ -77,7 +77,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     if (installed.id !== id) fail(`${id} installed as ${installed.id}`);
     const card = await until(`${id}'s OK card`, 60_000, async () => (await cardsNow(ctx)).find((c) => c.kind === "plugin-ok" && c.pluginId === id));
     const text = JSON.stringify((await rpc.request<{ card: unknown }>("card.get", { id: card.id })).card);
-    const name = (JSON.parse(examples.get(id)!.files["clover.json"]!) as { name: string }).name;
+    const name = (JSON.parse(examples.get(id)!.files["moss.json"]!) as { name: string }).name;
     if (!text.includes(name)) fail(`${id}'s OK card doesn't name it (${name}): ${text.slice(0, 300)}`);
     if (id === "ex-tool") await ctx.pressCard(`${id}'s OK card`, (c) => c.id === card.id);
     else await ctx.approveCard(card.id);
@@ -163,13 +163,13 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     const fill = await until("ex-fit's frame measured against its column", 20_000, async () => {
       for (const d of await treeDocs(cdp)) {
         const v = await cdp.evaluate(d.session, `(() => {
-          const f = [...document.querySelectorAll('iframe[data-clover-fill]')].find((e) => /^ex-fit(?!-)/.test(e.getAttribute('data-clover-entry') || ''));
+          const f = [...document.querySelectorAll('iframe[data-moss-fill]')].find((e) => /^ex-fit(?!-)/.test(e.getAttribute('data-moss-entry') || ''));
           if (!f) return null;
           let col = f.parentElement;
           while (col && getComputedStyle(col).display === 'contents') col = col.parentElement;
           const main = f.closest('.cl-window__main');
           const r = f.getBoundingClientRect();
-          return JSON.stringify({ frame: Math.round(r.height), col: col ? Math.round(col.clientHeight - parseFloat(getComputedStyle(col).paddingTop || '0') - parseFloat(getComputedStyle(col).paddingBottom || '0')) : 0, colBox: col ? col.clientHeight + ' ' + getComputedStyle(col).padding + ' ' + col.className : '', main: main ? Math.round(main.getBoundingClientRect().height) : 0, entry: f.getAttribute('data-clover-entry') });
+          return JSON.stringify({ frame: Math.round(r.height), col: col ? Math.round(col.clientHeight - parseFloat(getComputedStyle(col).paddingTop || '0') - parseFloat(getComputedStyle(col).paddingBottom || '0')) : 0, colBox: col ? col.clientHeight + ' ' + getComputedStyle(col).padding + ' ' + col.className : '', main: main ? Math.round(main.getBoundingClientRect().height) : 0, entry: f.getAttribute('data-moss-entry') });
         })()`).catch(() => null);
         if (typeof v === "string") return JSON.parse(v) as { frame: number; col: number; colBox: string; main: number; entry: string };
       }
@@ -183,26 +183,17 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     return `its page drawn from its sidebar entry ("${page.text.replace(/\s+/g, " ").trim().slice(0, 50)}") with ex-fit-tile's tile in it ("${tile.text.replace(/\s+/g, " ").trim().slice(0, 40)}"); its frame is ${fill.frame}px tall in a ${fill.col}px column (the page inside reads ${inside}px; its content ends at ${Math.round(content)}px)`;
   });
 
-  // The bots: listed, and ex-buddy's header and side panel on its tab.
-  await check("ex-bot", async () => {
-    const bots = (await rpc.request<{ bots: { id: string; name?: unknown }[] }>("bot.list", {})).bots;
-    const mine = bots.find((b) => b.id === "ex-bot" || b.id === "ex-bot/bot");
-    if (mine === undefined) fail(`bot.list lists ${bots.map((b) => b.id).join(", ")}`);
-    return `listed in bot.list as ${mine!.id}`;
-  });
-  await check("ex-buddy", async () => {
-    const bots = (await rpc.request<{ bots: { id: string }[] }>("bot.list", {})).bots;
-    const mine = bots.find((b) => b.id === "ex-buddy" || b.id === "ex-buddy/bot");
-    if (mine === undefined) fail(`bot.list lists ${bots.map((b) => b.id).join(", ")}`);
-    await openSidebarEntry(ctx, "Ex buddy");
-    // The bot's column (`bot.side`) opens from the tab's own "Details" button, as the user opens it.
-    const side = await drawn(ctx, "ex-buddy", "Today: one page of notes.", "its side panel on its bot's tab", 6_000).catch(async () => {
-      await clickShown(ctx, "the tab's Details button", "button.cl-panel-toggle[aria-pressed=false]", "Details", 10_000);
-      return drawn(ctx, "ex-buddy", "Today: one page of notes.", "its side panel on its bot's tab, after its Details button");
+  // The bots: with bots as the engine's records, the move that makes a plugin's bot a record happens once, at a home's first
+  // start; a bot plugin installed afterwards runs (installed and enabled above, ex-buddy's Settings section drawn) but makes no
+  // bot. Old claim: each "listed in bot.list". New claim: neither is a bot, and the default bot is still listed.
+  for (const id of ["ex-bot", "ex-buddy"]) {
+    await check(id, async () => {
+      const bots = (await rpc.request<{ bots: { id: string }[] }>("bot.list", {})).bots;
+      if (bots.some((b) => b.id === id || b.id === `${id}/bot`)) fail(`bot.list lists ${id}, which a plugin installed after the bots' move should not make a bot (${bots.map((b) => b.id).join(", ")})`);
+      if (!bots.some((b) => b.id === "alpha")) fail(`bot.list lists ${bots.map((b) => b.id).join(", ") || "no bot"}, not the default bot`);
+      return "installed and running, and no bot (bots are the engine's records; the move runs once, at a home's first start)";
     });
-    const header = await drawn(ctx, "ex-buddy", "Ex buddy", "its header on its bot's tab");
-    return `listed in bot.list as ${mine!.id}; on its tab its header ("${header.text.trim().slice(0, 30)}") and side panel ("${side.text.trim().slice(0, 40)}") drawn`;
-  });
+  }
   await check("ex-theme", async () => {
     // `plugin.ui` is the app's own call: a packaged core's CLI-role connection may not make it, and the plugin's record
     // (`plugin.get`: its manifest's themes) says the same of the theme there.

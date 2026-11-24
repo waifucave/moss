@@ -10,26 +10,38 @@
 //   only (what the contributor declared for that point, nothing else of its manifest). A value's `path` fields (by the
 //   point's declaration, `format: "path"`) become asset URLs.
 // * The reader must be on and running too: a turned-off plugin's connection still open reads nothing.
+// * A platform point (one the core and the app read, which no plugin declares; none ships today) is read by any
+//   plugin that holds one of the capabilities its catalog entry names (`readBy`); there is no declarer's right to read
+//   it, and no plugin's id decides. Its entries are in force as soon as their plugins run.
 // * A component reads them the same way (`plugin.layer.call`'s `points.entries`, its own plugin as the caller), and
 //   hears a change as `plugin_point_changed`, the point's name only, on its own plugin's connection (`pointChanges`).
 // * `points.call` runs the handler an entry names in `field`, a field whose format is `handler` in the point's
 //   declaration; any other field is refused, so a declarer can't make a contributor run an export its entry doesn't
 //   name. The call is the contributor's handler, told the declarer's caller (R7: a call the declarer makes while it
 //   serves a session's call acts as that session).
-import type { PointEntry } from "@waifucave/clover-plugin-sdk";
-import { topPluginIdOf } from "@waifucave/clover-protocol";
+// * `points.stream` is `points.call` for a handler that answers with a stream (§5.4 "Streams"): the same entry, field and
+//   checks, the caller's watch the stream's reader and the contributor's host half its writer.
+// * `points.active` and `points.onActive` (§5.4 "One at a time"): which entry of a one-at-a-time point is active, as
+//   its plugin and entry id (never its value), for the declarer's tree and for a plugin of a tree with an entry in it
+//   (`registry/active-one.ts`). Only the user's own door changes it (`point.active.set`); no plugin call does.
+import { STREAM_POINT_TIMEOUT_MAX_MS, DATA_POINTS, catalogPointDecl, dataPointInfo, type ActiveFiller, type PointEntry } from "@waifucave/moss-plugin-sdk";
+import { topPluginIdOf } from "@waifucave/moss-protocol";
 import { ContractError, type Unsubscribe } from "../../contracts/common";
 import type { PluginHost } from "../../contracts/plugin-host";
 import { RUNNING_STATES, type Contribution, type PluginRegistry, type RegisteredPoint } from "../../contracts/plugin-registry";
+import type { StreamEvent, StreamHub } from "../../streams/hub";
 import { assetPath } from "../paths";
 import { listenerArg, stringArg, type ApiCallContext, type ApiHandlers } from "./router";
+import { activeOne, mayReadActive, refOf } from "../../registry/active-one";
 
 export interface PointsApiOptions {
-  registry: Pick<PluginRegistry, "entries" | "points" | "watch"> & Partial<Pick<PluginRegistry, "get">>;
+  registry: Pick<PluginRegistry, "entries" | "points" | "watch"> & Partial<Pick<PluginRegistry, "get" | "chosen">>;
   host: Pick<PluginHost, "invoke">;
   /** The URL a component or host fetches a plugin's file from (lane E's asset server), given the path relative to the
    *  plugin's folder, checked and with each segment percent-encoded (`assetPath`). */
   assetUrl: (pluginId: string, path: string) => string;
+  /** The streams hub (`points.stream`); without it that call is refused. */
+  streams?: Pick<StreamHub, "openPoint" | "producerFinished">;
 }
 
 type Schema = Record<string, unknown>;
@@ -45,6 +57,19 @@ export function declaredPointFor(registry: Pick<PluginRegistry, "points">, point
   }
   return p;
 }
+
+/** The platform point `point` names, when `granted` lets its holder read it: the point as the catalog declares it, or
+ *  `undefined` when `point` is not a platform point; refused when it is and none of the capabilities that read it is held. */
+export function platformPointFor(point: string, granted: readonly string[]): RegisteredPoint | undefined {
+  const info = dataPointInfo(point);
+  if (info === undefined || info.declaredBy !== "core") return undefined;
+  const readers = info.readBy ?? [];
+  if (!readers.some((c) => granted.includes(c))) throw new ContractError("refused", `${point} is the platform's; reading it takes ${readers.map((c) => `\`${c}\``).join(" or ")}`);
+  return { name: point, shape: info.shape, declaredBy: "core", spot: false, active: true, decl: catalogPointDecl(point) as RegisteredPoint["decl"] };
+}
+
+/** The platform's own data points by name (the catalog's, whose `declaredBy` is `"core"`), for the change notices. */
+const PLATFORM_POINTS: ReadonlyMap<string, (typeof DATA_POINTS)[number]> = new Map(DATA_POINTS.filter((p) => p.declaredBy === "core").map((p) => [p.name, p]));
 
 /** A contribution as a declarer sees it, its `path` fields as asset URLs. */
 export function pointEntryOf(c: Contribution, decl: RegisteredPoint["decl"], assetUrl: (pluginId: string, path: string) => string): PointEntry {
@@ -87,10 +112,15 @@ export function pointChanges(o: Pick<PointsApiOptions, "registry" | "assetUrl"> 
   const last = new Map<string, string>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   // What each declared point shows, with its declaring tree: a new declarer taking a point over is a change too.
+  const platform = PLATFORM_POINTS;
   const snapshot = () => {
     const now = new Map<string, { text: string; tree: string }>();
+    for (const [name, info] of platform) {
+      const p: RegisteredPoint = { name, shape: info.shape, declaredBy: "core", spot: false, active: true, decl: catalogPointDecl(name) as RegisteredPoint["decl"] };
+      now.set(name, { text: `core\u0000${JSON.stringify(visibleEntries(o, p))}`, tree: "" });
+    }
     for (const p of o.registry.points()) {
-      if (!p.active || p.declaredBy === "core") continue;
+      if (!p.active || p.declaredBy === "core" || platform.has(p.name)) continue;
       const tree = topPluginIdOf(p.declaredBy.pluginId);
       now.set(p.name, { text: `${tree}\u0000${JSON.stringify(visibleEntries(o, p))}`, tree });
     }
@@ -107,8 +137,11 @@ export function pointChanges(o: Pick<PointsApiOptions, "registry" | "assetUrl"> 
         // The tree that declares the point when the notice goes, not when the first change came.
         const tree = snapshot().get(name)?.tree;
         if (tree === undefined) return;
+        const readers = platform.get(name)?.readBy;
         for (const r of o.registry.list()) {
-          if (topPluginIdOf(r.id) === tree && r.enabled && RUNNING_STATES.has(r.state)) changed(r.id, name);
+          if (!r.enabled || !RUNNING_STATES.has(r.state)) continue;
+          // A platform point goes to the running plugins that may read it (their grants); any other to the declaring tree.
+          if (readers !== undefined ? readers.some((c) => r.granted.includes(c)) : topPluginIdOf(r.id) === tree) changed(r.id, name);
         }
       }, ms));
     }
@@ -150,7 +183,31 @@ export function pointsApi(o: PointsApiOptions): ApiHandlers {
   };
   const entriesFor = (ctx: ApiCallContext, point: string): PointEntry[] => {
     readerRuns(ctx);
-    return visibleEntries(o, declaredPointFor(o.registry, point, ctx.pluginId));
+    return visibleEntries(o, platformPointFor(point, ctx.record.granted) ?? declaredPointFor(o.registry, point, ctx.pluginId));
+  };
+  /** `points.call`'s and `points.stream`'s checks: the point, its entry and the handler field's export. */
+  const resolveCall = (ctx: ApiCallContext, args: readonly unknown[]) => {
+    const point = stringArg(args, 0, "the point");
+    const ref = args[1];
+    if (!isObject(ref) || typeof ref.pluginId !== "string" || typeof ref.entryId !== "string") throw new ContractError("invalid", "points.call names an entry by { pluginId, entryId }");
+    const field = stringArg(args, 2, "the field", 128);
+    const opts = isObject(args[4]) ? args[4] : {};
+    readerRuns(ctx);
+    const decl = declaredPointFor(o.registry, point, ctx.pluginId);
+    if (!handlerFields(decl.decl?.fields as Schema | undefined).includes(field)) {
+      throw new ContractError("refused", `${field} isn't a handler field of ${point}`);
+    }
+    const entry = o.registry.entries(point).find((c) => c.state === "active" && contributorRuns(o.registry, c.pluginId) && c.pluginId === ref.pluginId && pointEntryOf(c, undefined, o.assetUrl).entryId === ref.entryId);
+    if (entry === undefined) throw new ContractError("not_installed", `${ref.pluginId} has no active entry ${ref.entryId} for ${point}`);
+    const handler = isObject(entry.value) ? entry.value[field] : undefined;
+    if (typeof handler !== "string") throw new ContractError("not_installed", `${ref.pluginId}'s entry names no ${field}`);
+    return { entry, handler, opts, point, field };
+  };
+  const activeFor = (ctx: ApiCallContext, point: string): ActiveFiller | undefined => {
+    readerRuns(ctx);
+    mayReadActive(o.registry, point, ctx.pluginId);
+    const a = activeOne(o.registry, point)?.active;
+    return a === undefined ? undefined : refOf(a);
   };
   return {
     "points.entries": (ctx, args) => entriesFor(ctx, stringArg(args, 0, "the point")),
@@ -171,21 +228,26 @@ export function pointsApi(o: PointsApiOptions): ApiHandlers {
         listener(now);
       });
     },
-    "points.call": async (ctx, args) => {
+    "points.active": (ctx, args) => activeFor(ctx, stringArg(args, 0, "the point")),
+    "points.onActive": (ctx, args): Unsubscribe => {
       const point = stringArg(args, 0, "the point");
-      const ref = args[1];
-      if (!isObject(ref) || typeof ref.pluginId !== "string" || typeof ref.entryId !== "string") throw new ContractError("invalid", "points.call names an entry by { pluginId, entryId }");
-      const field = stringArg(args, 2, "the field", 128);
-      const opts = isObject(args[4]) ? args[4] : {};
-      readerRuns(ctx);
-      const decl = declaredPointFor(o.registry, point, ctx.pluginId);
-      if (!handlerFields(decl.decl?.fields as Schema | undefined).includes(field)) {
-        throw new ContractError("refused", `${field} isn't a handler field of ${point}`);
-      }
-      const entry = o.registry.entries(point).find((c) => c.state === "active" && contributorRuns(o.registry, c.pluginId) && c.pluginId === ref.pluginId && pointEntryOf(c, undefined, o.assetUrl).entryId === ref.entryId);
-      if (entry === undefined) throw new ContractError("not_installed", `${ref.pluginId} has no active entry ${ref.entryId} for ${point}`);
-      const handler = isObject(entry.value) ? entry.value[field] : undefined;
-      if (typeof handler !== "string") throw new ContractError("not_installed", `${ref.pluginId}'s entry names no ${field}`);
+      const listener = listenerArg<ActiveFiller | undefined>(args, 1);
+      let last = JSON.stringify(activeFor(ctx, point) ?? null);
+      return o.registry.watch(() => {
+        let now: ActiveFiller | undefined;
+        try {
+          now = activeFor(ctx, point);
+        } catch {
+          now = undefined; // the point or the reader went: nothing is active for it
+        }
+        const text = JSON.stringify(now ?? null);
+        if (text === last) return;
+        last = text;
+        listener(now);
+      });
+    },
+    "points.call": async (ctx, args) => {
+      const { entry, handler, opts } = resolveCall(ctx, args);
       return await o.host.invoke({
         pluginId: entry.pluginId,
         handler,
@@ -195,6 +257,40 @@ export function pointsApi(o: PointsApiOptions): ApiHandlers {
         ...(ctx.caller.kind === "session" ? { session: ctx.caller.sessionId } : {}),
         ...(typeof opts.timeoutMs === "number" ? { timeoutMs: opts.timeoutMs } : {}),
       });
+    },
+    // `points.stream`: the same entry, field and checks as `points.call`, but the handler answers with a stream. The
+    // caller's watch is the stream's reader; the handler is told the stream's id and its host half writes what the
+    // handler returns (bytes, an async iterable or a ReadableStream of bytes) into it (the runtime's pump). The stream
+    // ending any way but the writer's own end cancels the handler's call.
+    "points.stream": (ctx, args) => {
+      const hub = o.streams;
+      if (hub === undefined) throw new ContractError("refused", "points.stream is not served on this computer");
+      const listener = listenerArg<StreamEvent>(args, 5);
+      const { entry, handler, opts, point, field } = resolveCall(ctx, args);
+      const abort = new AbortController();
+      const opened = hub.openPoint(
+        { pluginId: ctx.pluginId, side: ctx.process, listener },
+        { pluginId: entry.pluginId, onAbort: (reason) => abort.abort(new ContractError("cancelled", reason)) },
+        `${point}/${field}`,
+      );
+      const timeoutMs = typeof opts.timeoutMs === "number" && opts.timeoutMs > 0 ? Math.min(opts.timeoutMs, STREAM_POINT_TIMEOUT_MAX_MS) : STREAM_POINT_TIMEOUT_MAX_MS;
+      o.host.invoke({
+        pluginId: entry.pluginId,
+        handler,
+        ...(typeof opts.method === "string" ? { method: opts.method } : {}),
+        args: args[3],
+        caller: ctx.caller,
+        ...(ctx.caller.kind === "session" ? { session: ctx.caller.sessionId } : {}),
+        timeoutMs,
+        ownLimit: true,
+        streamId: opened.id,
+        signal: abort.signal,
+      }).then(
+        // The handler's call is over: its pump ended the stream, or it didn't, and the stream is cancelled.
+        () => hub.producerFinished(opened.id),
+        (err: unknown) => hub.producerFinished(opened.id, `the handler failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500)),
+      );
+      return opened.stop;
     },
   };
 }

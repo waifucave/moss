@@ -2,14 +2,15 @@
 // diff panel, and a bot's slim column, draw. Each serves what the core already knows, read only, nothing new kept:
 // - `session.diff`: the changes in the session's folder (`diff.ts`), when the folder is on this computer.
 // - `session.outputs`: the files the session delivered to its outputs folder (`<home>/outputs/<session>`), names only.
-// - `session.context`: its last turn's measured prompt (`turn_completed.contextTokens`) against its model's window.
+// - `session.context`: its last turn's measured prompt (`turn_completed.contextTokens`) against its model's window; for an
+//   agent, the context its agent reported (an agent that reports none: `{ reported: false }`, said as such, never nothing).
 // - `session.connectors`: how many plugin MCP servers it gets, and how many of their plugins wait for a sign-in.
 // The roles and the capability are the other session reads' (`conversation.read`); the server applies them first. A
 // plugin's own connection (a `layer`) also needs `files` for `session.diff`, since the diff carries the folder's file
 // contents: the bundled diff panel's OK lists both, a third-party layer with `conversation.read` alone is refused.
 import { readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
-import { CLOVER_ERR, SESSIONS_METHODS, type SessionDiff, type SessionView } from "@waifucave/clover-protocol";
+import { MOSS_ERR, SESSIONS_METHODS, type SessionDiff, type SessionView } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { handler, MethodError, type MethodHandler } from "../rpc/handler";
 import { folderDiff } from "./diff";
@@ -29,7 +30,7 @@ export interface SessionPanelDeps {
   length(id: string): number;
   /** A tree path as a folder on this computer, or why it isn't one (another computer's, not in the tree). */
   localFolder(root: string): { path: string } | { reason: string };
-  /** The Clover home, where the outputs folders are. */
+  /** The MOSS home, where the outputs folders are. */
   home: string;
   /** A model tag's context window, when the catalog knows it. */
   contextWindowOf?(model: string): number | undefined;
@@ -60,7 +61,7 @@ export function sessionPanelMethods(deps: SessionPanelDeps): Record<string, Meth
   return {
     [M.sessionDiff.name]: handler(M.sessionDiff, async ({ id }, ctx): Promise<SessionDiff> => {
       if (ctx.caller.kind === "plugin" && !(deps.grantsOf?.(ctx.caller.pluginId) ?? []).includes(DIFF_PLUGIN_CAPABILITY)) {
-        throw new MethodError(CLOVER_ERR.CAPABILITY_REFUSED, `${M.sessionDiff.name} needs the capability ${DIFF_PLUGIN_CAPABILITY} as well, which ${ctx.caller.pluginId}'s OK doesn't list`);
+        throw new MethodError(MOSS_ERR.CAPABILITY_REFUSED, `${M.sessionDiff.name} needs the capability ${DIFF_PLUGIN_CAPABILITY} as well, which ${ctx.caller.pluginId}'s OK doesn't list`);
       }
       const v = viewOf(id);
       const none = (notice: string): SessionDiff => ({ base: "", target: "working tree", targets: [], files: [], notice });
@@ -87,8 +88,11 @@ export function sessionPanelMethods(deps: SessionPanelDeps): Record<string, Meth
 
     [M.sessionContext.name]: handler(M.sessionContext, async ({ id }) => {
       const v = viewOf(id);
+      // An agent's context is what its agent reports: one that reports none is said to, whatever its model's window.
+      const agent = v.kind === "coding" || v.kind === "agent";
+      const unknown = agent ? { reported: false as const } : null;
       const window = v.model === undefined ? undefined : deps.contextWindowOf?.(v.model);
-      if (window === undefined || window <= 0) return null;
+      if (window === undefined || window <= 0) return unknown;
       // Back from the end, a page at a time, for the last turn whose prompt was measured.
       const length = deps.length(id);
       for (let end = length; end > 0 && length - end < CONTEXT_SCAN_RECORDS; end -= CONTEXT_SCAN_STEP) {
@@ -101,7 +105,7 @@ export function sessionPanelMethods(deps: SessionPanelDeps): Record<string, Meth
           if (typeof tokens === "number" && Number.isInteger(tokens) && tokens > 0) return { used: Math.min(1, tokens / window), tokens, window };
         }
       }
-      return null;
+      return unknown;
     }),
 
     [M.sessionConnectors.name]: handler(M.sessionConnectors, async ({ id }) => {

@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CLOVER_ERR, SESSIONS_METHODS, UNATTENDED_CARD_TIMEOUT_MS, USAGE_METHODS, type Caller, type TurnOrigin } from "@waifucave/clover-protocol";
+import { MOSS_ERR, SESSIONS_METHODS, UNATTENDED_CARD_TIMEOUT_MS, USAGE_METHODS, type Caller, type TurnOrigin } from "@waifucave/moss-protocol";
 import { flush } from "../../contracts/fakes/clock";
 import { SessionStore, type SessionRow } from "../../sessions/store";
 import { archiveMethods, HISTORY_EVENT_MAX_BYTES, HISTORY_PAGE_BYTES } from "../../sessions/archive-rpc";
@@ -47,11 +47,11 @@ describe("session.answer: a bot's AskUserQuestion", () => {
     // A plugin showing the question may answer one too.
     const again = canUseTool("AskUserQuestion", question, { signal: new AbortController().signal, toolUseID: "call_2" } as never);
     await flush();
-    expect(await answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "clover/conversation" } } as never)).toEqual({ ok: true });
+    expect(await answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never)).toEqual({ ok: true });
     expect(((await again) as unknown as { updatedInput: { answers: Record<string, string> } }).updatedInput.answers).toEqual({ "Which one?": "Coffee" });
     await flush();
     const resolved = b.host.history("b_alpha").flatMap((r) => (r.type === "driver" && r.event.type === "question_resolved" ? [r.event as unknown as { callId: string; by: string }] : []));
-    expect(resolved.map((e) => [e.callId, e.by])).toEqual([["call_1", "user"], ["call_2", "plugin:clover/conversation"]]);
+    expect(resolved.map((e) => [e.callId, e.by])).toEqual([["call_1", "user"], ["call_2", "plugin:moss/conversation"]]);
     await b.shutdown();
   });
 
@@ -63,7 +63,7 @@ describe("session.answer: a bot's AskUserQuestion", () => {
     await flush();
     // Another computer is never the user.
     const peer = await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: { kind: "peer", device: "dev_other" } } as never));
-    expect(peer instanceof MethodError && peer.code).toBe(CLOVER_ERR.NOT_THE_USER);
+    expect(peer instanceof MethodError && peer.code).toBe(MOSS_ERR.NOT_THE_USER);
     // An answer, or a note, to a question the card didn't ask.
     expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which two?": "Tea" } }, { caller: theUser } as never)))).toContain("doesn't ask \"Which two?\"");
     expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" }, notes: { "Why?": "x" } }, { caller: theUser } as never)))).toContain("doesn't ask \"Why?\"");
@@ -71,7 +71,7 @@ describe("session.answer: a bot's AskUserQuestion", () => {
     // Two answers at once: the first wins, the other is told nothing is waiting.
     const raced = await Promise.all([
       answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Tea" } }, { caller: theUser } as never).catch((e: unknown) => e),
-      answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "clover/conversation" } } as never).catch((e: unknown) => e),
+      answer({ id: "b_alpha", callId: "call_1", answers: { "Which one?": "Coffee" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never).catch((e: unknown) => e),
     ]);
     expect(raced[0]).toEqual({ ok: true });
     expect(String(raced[1])).toContain("no question call_1 is waiting");
@@ -81,7 +81,7 @@ describe("session.answer: a bot's AskUserQuestion", () => {
     await flush();
     b.registry.remove("alpha");
     await flush();
-    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Tea" } }, { caller: { kind: "plugin", pluginId: "clover/conversation" } } as never)))).toContain("isn't installed");
+    expect(String(await caught(() => answer({ id: "b_alpha", callId: "call_2", answers: { "Which one?": "Tea" } }, { caller: { kind: "plugin", pluginId: "moss/conversation" } } as never)))).toContain("isn't installed");
     b.side.questions.broker.respond("b_alpha", "call_2", {}, "aborted");
     await again;
     await b.shutdown();
@@ -178,7 +178,7 @@ describe("the archive of the previous app's sessions", () => {
     const chat = store.createSession("global", { mode: "chat" });
     const child = store.createSession("global", { mode: "chat", parentSessionId: chat });
     const history = archiveMethods({ store })[SESSIONS_METHODS.archiveHistory.name]!;
-    for (const caller of [{ kind: "plugin", pluginId: "clover/archive" }, { kind: "session", sessionId: "b_alpha", sessionKind: "bot", bot: "alpha" }, { kind: "peer", device: "dev_other" }]) {
+    for (const caller of [{ kind: "plugin", pluginId: "moss/archive" }, { kind: "session", sessionId: "b_alpha", sessionKind: "bot", bot: "alpha" }, { kind: "peer", device: "dev_other" }]) {
       expect(await caught(() => history({ id: chat }, { caller } as never))).toBeInstanceOf(Error);
     }
     for (const bad of ["-1", "1.5", "1e3", " 1", "0x10", "abc", "9".repeat(16)]) {
@@ -302,7 +302,7 @@ describe("the archive of the previous app's sessions", () => {
   });
 
   test("a synced line is stored starting with its own seq: a forged head seq or a seq written last can't hide records", async () => {
-    const { SessionEvent } = await import("@waifucave/clover-protocol");
+    const { SessionEvent } = await import("@waifucave/moss-protocol");
     const { readFileSync } = await import("node:fs");
     const home = tempDir();
     const store = new SessionStore(home);
@@ -347,14 +347,20 @@ describe("the archive of the previous app's sessions", () => {
   });
 });
 
+/** The service's readers over a table of source name to plan read (a source that is not in it is not a source here). */
+const readersFrom = (table: Record<string, () => Promise<PlanReading>>): PlanReaders => ({
+  planSources: () => Object.keys(table),
+  sourcePlan: (id) => table[id]!(),
+});
+
 describe("usage.plans", () => {
   test("each window of each app that answered, named for this computer; an app that isn't here or fails is left out", async () => {
     const reading = (over: Partial<PlanReading>): PlanReading => ({ provider: "codex", source: "codex-app-server", at: 1_000, windows: [], ...over });
-    const readers: PlanReaders = {
-      codexPlan: async () => reading({ planType: "pro", windows: [{ id: "a", kind: "five_hour", windowMinutes: 300, usedPercent: 42, resetsAt: 9_000, stale: false }, { id: "b", kind: "weekly", usedPercent: 7, stale: false }] }),
-      claudeCodePlan: async () => reading({ provider: "claude-code", source: "not-installed" }),
-      antigravityPlan: async () => { throw new Error("agy broke"); },
-    };
+    const readers = readersFrom({
+      codex: async () => reading({ planType: "pro", windows: [{ id: "a", kind: "five_hour", windowMinutes: 300, usedPercent: 42, resetsAt: 9_000, stale: false }, { id: "b", kind: "weekly", usedPercent: 7, stale: false }] }),
+      "claude-code": async () => reading({ provider: "claude-code", source: "not-installed" }),
+      antigravity: async () => { throw new Error("agy broke"); },
+    });
     const readings = await planReadings({ readers, computer: () => "Studio", now: () => 2_000 });
     expect(readings).toEqual([
       { source: "codex", computer: "Studio", plan: "pro", window: "five_hour", usedPercent: 42, resetsAt: 9_000, readAt: 1_000 },
@@ -368,22 +374,22 @@ describe("usage.plans", () => {
     const reading = (over: Partial<PlanReading>): PlanReading => ({ provider: "claude-code", source: "claude-cli", at: 1_000, windows: [], ...over });
     const now = 10_000;
     for (const source of ["not-installed", "disabled", "none"] as const) {
-      const readers: PlanReaders = {
-        codexPlan: async () => reading({ provider: "codex", source: "not-installed" }),
-        claudeCodePlan: async () => reading({ source, windows: [{ id: "a", kind: "five_hour", usedPercent: 1, stale: false }] }),
-        antigravityPlan: async () => reading({ provider: "antigravity", source, windows: [{ id: "a", kind: "weekly", usedPercent: 1, stale: false }] }),
-      };
+      const readers = readersFrom({
+        codex: async () => reading({ provider: "codex", source: "not-installed" }),
+        "claude-code": async () => reading({ source, windows: [{ id: "a", kind: "five_hour", usedPercent: 1, stale: false }] }),
+        antigravity: async () => reading({ provider: "antigravity", source, windows: [{ id: "a", kind: "weekly", usedPercent: 1, stale: false }] }),
+      });
       expect(await planReadings({ readers, computer: () => "Studio", now: () => now })).toEqual([]);
     }
-    const failing: PlanReaders = {
-      codexPlan: async () => { throw new Error("codex broke"); },
-      claudeCodePlan: async () => { throw new Error("claude broke"); },
-      antigravityPlan: () => Promise.reject(new Error("agy broke")),
-    };
+    const failing = readersFrom({
+      codex: async () => { throw new Error("codex broke"); },
+      "claude-code": async () => { throw new Error("claude broke"); },
+      antigravity: () => Promise.reject(new Error("agy broke")),
+    });
     expect(await planReadings({ readers: failing, computer: () => "Studio", now: () => now })).toEqual([]);
-    const ageing: PlanReaders = {
-      codexPlan: async () => reading({ provider: "codex", source: "not-installed" }),
-      claudeCodePlan: async () => reading({
+    const ageing = readersFrom({
+      codex: async () => reading({ provider: "codex", source: "not-installed" }),
+      "claude-code": async () => reading({
         planType: "max",
         windows: [
           { id: "now", kind: "five_hour", windowMinutes: 300, usedPercent: 30, resetsAt: now + 60_000, stale: false },
@@ -392,8 +398,8 @@ describe("usage.plans", () => {
         ],
       }),
       // Read long ago against a one-minute window: over by now, though its reader didn't say so then.
-      antigravityPlan: async () => reading({ provider: "antigravity", source: "agy-cli", at: 1, windows: [{ id: "old", kind: "other", windowMinutes: 0.1, usedPercent: 5, stale: false }] }),
-    };
+      antigravity: async () => reading({ provider: "antigravity", source: "agy-cli", at: 1, windows: [{ id: "old", kind: "other", windowMinutes: 0.1, usedPercent: 5, stale: false }] }),
+    });
     expect(await planReadings({ readers: ageing, computer: () => "Studio", now: () => now })).toEqual([
       { source: "claude-code", computer: "Studio", plan: "max", window: "five_hour", usedPercent: 30, resetsAt: now + 60_000, readAt: 1_000 },
     ]);

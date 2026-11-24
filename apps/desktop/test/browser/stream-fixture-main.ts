@@ -10,10 +10,10 @@ import type { AddressInfo } from "node:net";
 import { createBrowserHost, isBrowserContents, isBrowserTab, PERSON_POLICY, type BrowserHost, type TabView } from "../../src/main/browser/index";
 import type { AppTabEvent, StreamChunk } from "../../src/main/browser/contract";
 
-const out = process.env.CLOVER_BROWSER_TEST_OUT ?? "";
-const viewportAssets = { preload: process.env.CLOVER_BROWSER_TEST_PRELOAD ?? "", html: process.env.CLOVER_BROWSER_TEST_HTML ?? "" };
-const streamAssets = { preload: process.env.CLOVER_STREAM_TEST_PRELOAD ?? "", html: process.env.CLOVER_STREAM_TEST_HTML ?? "" };
-const viewerHtml = process.env.CLOVER_STREAM_TEST_VIEWER ?? "";
+const out = process.env.MOSS_BROWSER_TEST_OUT ?? "";
+const viewportAssets = { preload: process.env.MOSS_BROWSER_TEST_PRELOAD ?? "", html: process.env.MOSS_BROWSER_TEST_HTML ?? "" };
+const streamAssets = { preload: process.env.MOSS_STREAM_TEST_PRELOAD ?? "", html: process.env.MOSS_STREAM_TEST_HTML ?? "" };
+const viewerHtml = process.env.MOSS_STREAM_TEST_VIEWER ?? "";
 
 /** A red block that stays (the colour the viewer checks), on white, and below it eight bands of colour gradients
  *  that change every frame: the encoder spends about its whole target on them (2.8 Mbit/s at 2.5 in the headless
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
   const host: BrowserHost = createBrowserHost({ ...opts, screenReader: { override: false } });
   await host.start();
   // The other device's viewer: a page that is never shown, decoding with WebCodecs (a file: page, a secure context).
-  const viewer = new BrowserWindow({ show: false, webPreferences: { partition: "clover-stream-test-viewer", sandbox: true, contextIsolation: false, offscreen: true, backgroundThrottling: false } });
+  const viewer = new BrowserWindow({ show: false, webPreferences: { partition: "moss-stream-test-viewer", sandbox: true, contextIsolation: false, offscreen: true, backgroundThrottling: false } });
   await viewer.loadFile(viewerHtml);
   const bot = { kind: "bot" as const, bot: "alpha" };
   let tab!: TabView;
@@ -150,6 +150,9 @@ async function main(): Promise<void> {
     return { ok: wc?.getFrameRate() === 10 && visibleWindows() === 0, detail: { fps: wc?.getFrameRate(), visible: visibleWindows() } };
   });
 
+  // The rate bar: 5 fps, where a stuck stream makes about 0 (a Mac makes 10 to 30; the software VP8 encoder of a shared runner measured
+  // 2.5 once with the machine busy, 14 on its other runs). A runner sets MOSS_STREAM_MIN_FPS lower; unset, it is 5.
+  const MIN_FPS = Number(process.env.MOSS_STREAM_MIN_FPS) || 5;
   await step("a stream starts with a config, then a keyframe, then deltas at a sensible rate; the tab paints at 30 fps", async () => {
     await host.command(tab.id, { kind: "stream", stream: "s1", on: true });
     const k = await until(() => frames("s1").length >= 3 && frames("s1"), 20_000);
@@ -165,7 +168,7 @@ async function main(): Promise<void> {
     // The default pick: hardware H.264 where there is one, else VP8, never software H.264.
     const pickOk = cfg !== undefined && ((cfg.codec === "h264" && stats?.hardware === true) || cfg.codec === "vp8");
     return {
-      ok: k !== undefined && order[0] === "config" && order[1] === "key" && order[2] === "delta" && fps >= 5 && tabFps === 30 && pickOk && cfg?.width === 1280 && cfg?.height === 800,
+      ok: k !== undefined && order[0] === "config" && order[1] === "key" && order[2] === "delta" && fps >= MIN_FPS && tabFps === 30 && pickOk && cfg?.width === 1280 && cfg?.height === 800,
       detail: { order, fps, tabFps, summary: summary.default, frames: frames("s1").length },
     };
   });

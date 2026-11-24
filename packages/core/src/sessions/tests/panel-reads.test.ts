@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionView } from "@waifucave/clover-protocol";
+import type { SessionView } from "@waifucave/moss-protocol";
 import type { SessionRecord } from "../../contracts/session-host";
 import { DIFF_FILE_MAX_LINES, folderDiff } from "../diff";
 import { sessionPanelMethods } from "../panel-reads";
@@ -13,7 +13,7 @@ import { sessionPanelMethods } from "../panel-reads";
 const temps: string[] = [];
 afterAll(() => { for (const d of temps) rmSync(d, { recursive: true, force: true }); });
 const temp = (name: string) => {
-  const d = realpathSync(mkdtempSync(join(tmpdir(), `clover-a-${name}-`)));
+  const d = realpathSync(mkdtempSync(join(tmpdir(), `moss-a-${name}-`)));
   temps.push(d);
   return d;
 };
@@ -167,16 +167,25 @@ describe("the session panels' reads", () => {
     expect(await methods({ home: temp("empty") })["session.outputs"]!({ id: "s_code" }, USER)).toEqual({ items: [], more: 0 });
   });
 
-  test("session.context: the last measured turn against the model's window; null without a window or a measured turn", async () => {
+  test("session.context: the last measured turn against the model's window; a bot's is null without a window or a measured turn, a coding session's or an agent's says its agent reported none", async () => {
     const records = [turn(0, 40_000), turn(1, 50_000), turn(2)];
     expect(await methods({ records, window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toEqual({ used: 0.25, tokens: 50_000, window: 200_000 });
-    expect(await methods({ records })["session.context"]!({ id: "s_code" }, USER)).toBeNull();
-    expect(await methods({ records: [turn(0)], window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toBeNull();
+    const bot = view({ kind: "bot" as SessionView["kind"] });
+    expect(await methods({ view: bot, records, window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toEqual({ used: 0.25, tokens: 50_000, window: 200_000 });
+    expect(await methods({ view: bot, records })["session.context"]!({ id: "s_code" }, USER)).toBeNull();
+    expect(await methods({ view: bot, records: [turn(0)], window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toBeNull();
+    // A coding session or an agent: never nothing; its agent's silence is said.
+    for (const kind of ["coding", "agent"] as const) {
+      const v = view({ kind });
+      expect(await methods({ view: v, records })["session.context"]!({ id: "s_code" }, USER)).toEqual({ reported: false });
+      expect(await methods({ view: v, records: [turn(0)], window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toEqual({ reported: false });
+      expect(await methods({ view: v, records: [], window: 200_000 })["session.context"]!({ id: "s_code" }, USER)).toEqual({ reported: false });
+    }
   });
 
   test("session.diff from a plugin's own connection needs files too: a third-party layer with conversation.read alone is refused, the bundled diff panel is served", async () => {
     const dir = repo();
-    const grants: Record<string, string[]> = { "acme/diffy": ["conversation.read"], "clover/panel-diff": ["conversation.read", "files"] };
+    const grants: Record<string, string[]> = { "acme/diffy": ["conversation.read"], "moss/panel-diff": ["conversation.read", "files"] };
     const m = sessionPanelMethods({
       home: temp("home"),
       view: (id) => (id === "s_code" ? view() : undefined),
@@ -187,7 +196,7 @@ describe("the session panels' reads", () => {
     }) as Record<string, (params: unknown, ctx: unknown) => Promise<unknown>>;
     const as = (pluginId: string) => ({ caller: { kind: "plugin", pluginId } });
     await expect(m["session.diff"]!({ id: "s_code" }, as("acme/diffy"))).rejects.toMatchObject({ code: -32011, message: expect.stringContaining("needs the capability files as well") });
-    expect(((await m["session.diff"]!({ id: "s_code" }, as("clover/panel-diff"))) as { files: unknown[] }).files.length).toBe(4);
+    expect(((await m["session.diff"]!({ id: "s_code" }, as("moss/panel-diff"))) as { files: unknown[] }).files.length).toBe(4);
     // The user's own clients are as they were.
     expect(((await m["session.diff"]!({ id: "s_code" }, USER)) as { files: unknown[] }).files.length).toBe(4);
   });

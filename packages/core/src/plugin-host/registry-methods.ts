@@ -13,7 +13,7 @@
 import { CORE_VERSION } from "../version";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { PLUGINS_METHODS, PluginDetail, PluginSummary, topPluginIdOf, type InstallSource, type PluginProvenance } from "@waifucave/clover-protocol";
+import { PLUGINS_METHODS, PluginDetail, PluginSummary, topPluginIdOf, type InstallSource, type PluginProvenance } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import type { PluginHost } from "../contracts/plugin-host";
 import type { PluginRecord } from "../contracts/plugin-registry";
@@ -30,6 +30,7 @@ import { installFromNpm } from "../registry/indexes/npm";
 import type { PluginUpdater } from "../registry/indexes/update";
 import { readReviewTree, REVIEW_CHANGED, type PluginReviews, type ReviewTree } from "../registry/plugin-review";
 import { folderTreeHash } from "../registry/tree";
+import { manifestPathIn } from "../old-names";
 import { homedir } from "node:os";
 import { installWrapped } from "../registry/wrap";
 import { forgetRemovedPlugin } from "../registry/leftovers";
@@ -55,9 +56,9 @@ export function pluginLogTail(home: string, pluginId: string, n: number): string
 const DESCRIPTION_MAX = 500;
 
 export function summaryOf(r: PluginRecord): PluginSummary {
-  // The bundled `clover` tree is the app itself: its version is the app's (the generated VERSION), not its manifests'
+  // The bundled `moss` tree is the app itself: its version is the app's (the generated VERSION), not its manifests'
   // unset "0.0.0".
-  const app = r.source === "bundled" && topPluginIdOf(r.id) === "clover" && (r.manifest as { version?: unknown } | undefined)?.version === undefined;
+  const app = r.source === "bundled" && topPluginIdOf(r.id) === "moss" && (r.manifest as { version?: unknown } | undefined)?.version === undefined;
   // Its description only when it's text (a string, or a table with `en`), each language cut to DESCRIPTION_MAX: a
   // manifest that isn't valid lists still, and the list stays small (the page shows one line).
   const d = (r.manifest as { description?: unknown } | undefined)?.description;
@@ -95,7 +96,7 @@ function devFolderCheck(path: string): string {
   } catch {
     throw new ContractError("invalid", `${path} doesn't exist`);
   }
-  if (!statSync(real).isDirectory() || !existsSync(join(real, "clover.json"))) throw new ContractError("invalid", `${real} has no clover.json`);
+  if (!statSync(real).isDirectory() || !existsSync(manifestPathIn(real))) throw new ContractError("invalid", `${real} has no moss.json`);
   return real;
 }
 
@@ -122,6 +123,10 @@ export function pluginRegistryMethods(o: {
   /** Raises a sensitive change's sealed card (lane C's broker, `brokerCardOpener`): a development folder added from
    *  the app waits for it. Absent until the daemon's broker is wired, when adding one from the app is refused. */
   openCard?: CardOpener;
+  /** Asked before a plugin is removed, after the checks and before its card: a part of the core that holds something the
+   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it,
+   *  and throws to stop the removal. Absent: nothing is asked. */
+  beforeRemove?: (pluginId: string) => Promise<void>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
   indexes?: IndexClient;
@@ -193,7 +198,7 @@ export function pluginRegistryMethods(o: {
         // it was made from. Each gets its own OK card.
         const made = await installWrapped({
           ...target, kind: source.kind, value: source.value, by: "user",
-          homes: { user: o.userHome ?? homedir(), clover: o.home, os: target.os ?? (process.platform === "win32" ? "windows" : process.platform === "linux" ? "linux" : "macos") },
+          homes: { user: o.userHome ?? homedir(), moss: o.home, os: target.os ?? (process.platform === "win32" ? "windows" : process.platform === "linux" ? "linux" : "macos") },
           ...(o.secrets?.set !== undefined ? { secrets: { set: o.secrets.set.bind(o.secrets), delete: o.secrets.delete.bind(o.secrets) } } : {}),
         });
         const results = [];
@@ -250,20 +255,43 @@ export function pluginRegistryMethods(o: {
       // shown with it cut out ("…"), for every client.
       return { lines: pluginLogTail(o.home, id, lines ?? 200).map((l) => redactReadText(l).split(REDACTED).join("…")) };
     }),
-    [M.pluginConfirmAdult.name]: handler(M.pluginConfirmAdult, (_p, ctx) => {
+    [M.pluginConfirmAdult.name]: handler(M.pluginConfirmAdult, async ({ card }, ctx) => {
       requireUser(ctx, "confirm their age");
-      registry.confirmAdult();
-      return { ok: true as const };
+      // From a part (main sets `card`, F2): a sealed card asks; only the user's yes there declares their age.
+      if (card !== true || registry.adultConfirmed) {
+        registry.confirmAdult();
+        return { ok: true as const };
+      }
+      if (o.openCard === undefined) throw new ContractError("refused", "confirming your age from this page needs a sealed card, and this computer's approval broker isn't running");
+      const opened = await o.openCard({
+        kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-confirm-adult",
+        fields: {
+          title: { type: "text", text: "Are you 18 or older?" },
+          detail: { type: "list", items: ["Yes lets plugins marked for adults be switched on, on this computer."] },
+        },
+      });
+      onYes(opened.card, "plugin-confirm-adult", opened.allowed, () => {
+        registry.confirmAdult();
+        return undefined;
+      });
+      if (opened.card === undefined) {
+        if (!(await opened.allowed)) throw new ContractError("refused", "your age wasn't confirmed");
+        return { ok: true as const };
+      }
+      return { applied: false as const, card: opened.card };
     }),
     // Removing deletes a plugin's folder from the plugins directory; a bundled or development plugin isn't removed here.
     [M.pluginRemove.name]: handler(M.pluginRemove, async ({ id, card, deleteData }, ctx) => {
       requireUser(ctx, "remove a plugin");
       const r = must(id);
-      if (r.source === "bundled") throw new ContractError("refused", `${id} comes with Clover; switch it off instead`);
+      if (r.source === "bundled") throw new ContractError("refused", `${id} comes with MOSS; switch it off instead`);
       if (r.dev) throw new ContractError("refused", `${id} is a development folder; remove the folder from development instead`);
       const pluginsDir = resolve(join(o.home, "plugins"));
       const folder = resolve(r.folder);
       if (!folder.startsWith(pluginsDir + sep) || !existsSync(folder)) throw new ContractError("refused", `${id}'s folder isn't in the plugins directory`);
+      // What the plugin holds is asked about first (its cloud computers keep billing once it is gone): the person's answer
+      // to that question, then the removal's own card.
+      await o.beforeRemove?.(id);
       const remove = async (): Promise<string | undefined> => {
         // The tree as it is when the user says yes (a card may wait).
         const now = registry.get(id);
@@ -321,7 +349,7 @@ export function pluginRegistryMethods(o: {
         await folders.addDevFolder(path, "cli");
         return { applied: true as const };
       }
-      if (o.openCard === undefined) notServed("adding a development folder from the app", "this computer's approval broker isn't running; `clover plugin dev <folder>` in your terminal adds it");
+      if (o.openCard === undefined) notServed("adding a development folder from the app", "this computer's approval broker isn't running; `moss plugin dev <folder>` in your terminal adds it");
       const checked = devFolderCheck(path);
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "dev-folder",
@@ -352,7 +380,7 @@ export function pluginRegistryMethods(o: {
       // kind of yes as adding it.
       const d = folders.devFolders().find((x) => x.path === path);
       if (d === undefined) throw new ContractError("not_found", `${path} isn't a development folder`);
-      if (o.openCard === undefined) notServed("renewing a development folder from the app", "this computer's approval broker isn't running; `clover plugin dev renew <folder>` in your terminal renews it");
+      if (o.openCard === undefined) notServed("renewing a development folder from the app", "this computer's approval broker isn't running; `moss plugin dev renew <folder>` in your terminal renews it");
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "dev-folder",
         fields: {
@@ -450,7 +478,7 @@ export function pluginRegistryMethods(o: {
         const had = reviews.get(card);
         if (had !== undefined) return answer(had);
         const model = reviews.model();
-        return answer(model === undefined ? { state: "unavailable", why: "No model is set for reviews: choose one in Settings › Models (the reviewer role)." } : { state: "idle", model });
+        return answer(model === undefined ? { state: "unavailable", why: "No review could be run: no model can be used for it on this computer. Choose one in Settings › Models (the reviewer role)." } : { state: "idle", model });
       }
       const had = reviews.get(card);
       if (had !== undefined && (had.state === "running" || had.state === "done")) return answer(had);
@@ -558,7 +586,7 @@ export const PLUGIN_METHOD_NAMES: readonly string[] = [
   "plugin.list", "plugin.get", "plugin.setEnabled", "plugin.setScope", "plugin.setComputers", "plugin.restart", "plugin.logs",
   "plugin.settings.get", "plugin.settings.set", "plugin.install", "plugin.remove", "plugin.update", "plugin.pin",
   "plugin.renameFolder", "plugin.confirmAdult", "plugin.dev.list", "plugin.dev.add", "plugin.dev.remove", "plugin.dev.renew",
-  "plugin.index.list", "plugin.index.add", "plugin.index.remove", "plugin.index.search", "point.list", "command.list",
+  "plugin.index.list", "plugin.index.add", "plugin.index.remove", "plugin.index.search", "point.list", "point.active.list", "point.active.set", "command.list",
   "command.run", "glossary.query", "plugin.ui", "plugin.layer.api", "plugin.layer.call", "plugin.layer.watch", "plugin.layer.unwatch", "notify.send", "plugin.iconSource",
   "plugin.review",
 ];
@@ -573,6 +601,7 @@ export function beforePluginsOpen(method: string): unknown {
   if (method === "plugin.index.list") return { indexes: [] };
   if (method === "plugin.index.search") return { entries: [] };
   if (method === "point.list") return { points: [] };
+  if (method === "point.active.list") return { points: [] };
   if (method === "command.list") return { commands: [] };
   throw new ContractError("refused", "the plugin registry is still opening; try again in a moment");
 }

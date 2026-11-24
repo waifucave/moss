@@ -1,15 +1,25 @@
 // The acceptance run's result table: its steps, in order, and how a run's recorded results become one row per step.
 // Kept apart from run.ts (which starts a run when loaded) so the table can be unit-tested (steps.test.ts).
+import { SETUP_STEPS } from "./setup-step";
+import { CANVAS_STEPS } from "./canvas-step";
+import { MCP_APPS_STEPS } from "./mcp-apps-step";
+import { CANVAS_APP_STEPS } from "./canvas-app-step";
 import { UI_STEPS } from "./ui-steps";
 import { EXAMPLE_NOTES_STEP, EXAMPLE_WEATHER_STEP } from "./example-steps";
 import { BUNDLED_TOOLS_STEP } from "./bundled-tools-step";
+import { TOOL_SETTING_STEP } from "./tool-setting-step";
+import { CODE_TOOLS_STEP } from "./code-tools-step";
+import { FAILED_TURN_STEP } from "./failed-turn-step";
 import { CARDS_STEP } from "./cards-step";
+import { ROUTER_STEP } from "./router-step";
 import { ARRIVALS_STEP } from "./arrivals-step";
 import { ADDONS_STEP } from "./addons-step";
 import { ARCHIVE_STEP } from "./archive-step";
+import { BOT_MOVE_UPGRADE_STEP } from "./bot-move-upgrade-step";
 import { ACP_BACKEND_STEP } from "./acp-backend-step";
 import { BUILDER_EXAMPLES_STEP } from "./builder-examples-step";
 import { WORKSHOP_POINTS_STEP } from "./workshop-points-step";
+import { RELEASE_AHEAD_STEP, RELEASE_BEHIND_STEP, RELEASE_INSTALL_STEP } from "./release-step";
 import { WORKSHOP_STEP } from "./workshop-step";
 import { TAB_FLASH_STEP } from "./tab-flash-step";
 import { CHILD_STEP, NOTIFY_STEP } from "./child-notify-step";
@@ -17,11 +27,18 @@ import { LISTEN_STEP } from "./listen-step";
 import { WEB_STEP } from "./web-step";
 import { DRAG_STEP } from "./drag-step";
 import { REVIEW_STEP } from "./review-step";
+import { SURFACE_COPY_STEP } from "./surface-copy-step";
+import { CONVERSATION_COPY_STEP } from "./conversation-copy-step";
+import { STAGE_COPY_STEP } from "./stage-copy-step";
 import { API_AREAS_STEP } from "./api-areas-step";
+import { FEED_STEP } from "./feed-step";
 import { MANIFEST_FIELDS_STEP } from "./manifest-fields-step";
 import { CODE_ADAPTER_STEP, OAUTH_SIGN_IN_STEP, THIRD_PARTY_MODEL_STEP } from "./code-adapter-step";
 import { BROWSER_STEP } from "./browser-step";
 import { SCHEDULED_ROUTINE_STEP } from "./routine-schedule-step";
+import { BOT_RECORDS_STEP } from "./bot-records-step";
+import { MOSS_STEPS } from "./moss-step";
+import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP } from "./host-step";
 
 export type Status = "PASS" | "FAIL" | "BLOCKED";
 /** Stage 2 of "bots ask less": its name, which its number is looked up by (it sits before the three web steps, whose
@@ -30,7 +47,7 @@ export const SHELL_STEP = "the bot's shell: a command in its own folder runs wit
 /** Stage 3: a command outside the sandbox, only behind its own card, only in a bot's own conversation. */
 export const OUTSIDE_STEP = "a command that needs the network: in the sandbox it can't reach it, with no card; flagged to run outside the sandbox it raises one card (the headline, the exact command, the plain sentence, no Always): denied it doesn't run, approved it runs; the same flagged call from a side thread or a child agent is refused with no card";
 export interface Row { n: number; name: string; status: Status; detail: string }
-/** The reopen steps (try 9's blocker: quit, reopen a few seconds later, stuck on "Starting Clover…"): the app quits the
+/** The reopen steps (try 9's blocker: quit, reopen a few seconds later, stuck on "Starting MOSS…"): the app quits the
  *  way the owner's does while a turn runs, and opens again. Each fails on a window that never fills. */
 export const REOPEN_STEPS = [
   { name: "reopen 0 s after quitting mid-turn: the window fills, and the interrupted turn shows as such", delayMs: 0 },
@@ -44,8 +61,8 @@ export const REOPEN_STEPS = [
 
 /** Alpha's stage tools are display-only (`contained`, her own tree's rule, no special case): the step proves the three
  *  levels on the real path. */
-export const AGENT_STEP = "Alpha starts her study-buddy on Clover's own coding agent with no card; the agent's row names the definition and the backend, and its report comes back to her conversation; her agent and the user's own coding session each call a plugin's tool through their bridge and get its answer";
-export const STAGE_STEP = "Alpha's stage tool runs with no card at the default level and changes her stage; it asks at \"ask\" and is refused at read-only, where her read-only stage_status still answers with no card";
+export const AGENT_STEP = "MOSS starts her study-buddy on MOSS's own coding agent with no card; the agent's row names the definition and the backend, and its report comes back to her conversation; her agent and the user's own coding session each call a plugin's tool through their bridge and get its answer";
+export const STAGE_STEP = "MOSS's stage tool runs with no card at the default level and changes her stage; it asks at \"ask\" and is refused at read-only, where her read-only stage_status still answers with no card";
 /** The cold-start step's name (`coldStartStep`). Its number is its own place in the table: rows after it (the idle
  *  step) must never take it. */
 export const COLD_START_STEP = "cold start: the app opens first, the daemon after, and the shell fills the window";
@@ -75,6 +92,9 @@ export const FULL_STEPS = [
   EXAMPLE_NOTES_STEP,
   EXAMPLE_WEATHER_STEP,
   BUNDLED_TOOLS_STEP,
+  TOOL_SETTING_STEP,
+  CODE_TOOLS_STEP,
+  FAILED_TURN_STEP,
   CARDS_STEP,
   WORKSHOP_STEP,
   TAB_FLASH_STEP,
@@ -84,17 +104,21 @@ export const FULL_STEPS = [
   WEB_STEP,
   DRAG_STEP,
   REVIEW_STEP,
+  SURFACE_COPY_STEP,
+  CONVERSATION_COPY_STEP,
+  STAGE_COPY_STEP,
   BROWSER_STEP,
   "each boot lists the bundled web tools within 5 s and offers them; an installed plugin's server lists too",
   "the bot's WebSearch reaches the fake search backend; nothing leaves the machine",
   "the bot's WebFetch reads a page the user gave or a search hit with no card, asks for an address it made up or a link it found on a page, and is refused a private address",
   "a folder-installed plugin's command hook fires on its event, fenced: no write outside its folders, no undeclared host",
-  "a plugin's own API in its host half: a point's entries, call and watch; its synced store's keys, delete and watch; settings.watch; a note and a message into Alpha's conversation; its hooks on all eight events; removed with its data",
-  "the clover plugin CLI against the run's daemon: list, info, logs, pin refused for a folder plugin, restart, index list; install, disable, enable, update, remove, wrap skill-folder, dev add, list and remove; new and validate",
+  "a plugin's own API in its host half: a point's entries, call and watch; its synced store's keys, delete and watch; settings.watch; a note and a message into Alpha's conversation; its hooks on all eight events; removed with its data; turns: two plugins take one offered turn, never at once, and the holder's host process killed hands it on; streams: a host half and its page stream megabytes to each other, and a second plugin's point handler answers a caller with a stream",
+  "the moss plugin CLI against the run's daemon: list, info, logs, pin refused for a folder plugin, restart, index list; install, disable, enable, update, remove, wrap skill-folder, dev add, list and remove; new and validate",
   "plugins from an index the user added and from npm: installed behind their OK cards; an update offered and applied on the user's click with no card; a pinned plugin offered none; an update that adds a trigger asks again on a card that says what changed",
   "a folder-installed plugin's stdio MCP server lists and answers, fenced: no write outside its folders, no undeclared host",
   "a plugin's own network: its granted host through its proxy and nothing else, no direct socket, no borrowed proxy; a pasted MCP config reaches the network, as its card says; a pasted MCP URL's tools list to the bot and answer it",
   API_AREAS_STEP,
+  FEED_STEP,
   MANIFEST_FIELDS_STEP,
   CODE_ADAPTER_STEP,
   THIRD_PARTY_MODEL_STEP,
@@ -106,6 +130,28 @@ export const FULL_STEPS = [
   ACP_BACKEND_STEP,
   BUILDER_EXAMPLES_STEP,
   WORKSHOP_POINTS_STEP,
+  BOT_RECORDS_STEP,
+  // Lane RT's row: after every row it could renumber but the cold start and the idle row, which stays last.
+  ROUTER_STEP,
+  RELEASE_INSTALL_STEP,
+  RELEASE_BEHIND_STEP,
+  RELEASE_AHEAD_STEP,
+  // Lane MA's rows: MOSS, the bots app, on the real engine (the `moss` unit).
+  ...MOSS_STEPS,
+  // Lane HS's row, after RT's for the same reason.
+  HOST_STEP,
+  HOST_GAVE_UP_STEP,
+  HOST_IDLE_STEP,
+  BROWSER_HOST_STEP,
+  SURFACE_COPY_HOST_STEP,
+  // Lane SG's rows: the setup guide in both apps on a fresh home (the `setup` unit, setup-step.ts).
+  ...SETUP_STEPS,
+  // The session canvas's rows (spec revision 20, §9.5; the `canvas` unit, canvas-step.ts), before the two that stay last.
+  ...CANVAS_STEPS,
+  // Lane MA's MCP Apps rows (mcp-apps-step.ts; the `canvas` unit's shared home).
+  ...MCP_APPS_STEPS,
+  // Lane CA's rows: the start page, a start through the door, the corner control, "Open in MOSS" (the `canvas-app` unit, canvas-app-step.ts).
+  ...CANVAS_APP_STEPS,
   COLD_START_STEP,
   IDLE_STEP,
 ] as const;
@@ -114,7 +160,7 @@ export const FULL_STEPS = [
 export const UPGRADE_STEPS = [
   "upgrade cold start: the app opens first on the old home, the daemon after, and the shell fills the window",
   "the old run's model key works with no re-entry",
-  "the old conversation is listed and opens in the window",
+  "the old conversation is listed and opens in MOSS: the default bot's record is on the old conversation, the engine's page of it holds the old turns, and MOSS (the bots app, beside MOSS Code) draws them in her conversation; the old run's code sessions, if any, are listed for MOSS Code",
   "a new turn runs on the upgraded home",
   "the old run's plugin is still installed and its tool answers, with no new OK card",
   "a fenced write still raises an approval card, then lands",
@@ -124,6 +170,34 @@ export const UPGRADE_STEPS = [
   "a bundled plugin this build parks (the forwarder, on in the old run) is listed as not available, its switch kept on, with no card",
   "the daemon trusts the state the old build signed (plugin registry, device key)",
 ] as const;
+
+/** The upgrade run's steps over a state the old install's own run left (the build before the rename): the one-time
+ *  copy (spec §12, item 125). This build starts on a fresh home beside the old one, offers the copy on the core's own
+ *  card, takes the press and restarts into the copy; the keys don't come over (they stay in the old install's
+ *  Keychain service, which MOSS never reads), and the old home is left byte for byte as it was. */
+export const COPY_UPGRADE_STEPS = [
+  "upgrade cold start: the app opens first on a fresh home beside the old install's, the daemon after, and the shell fills the window",
+  "the copy from the old install's home is offered on the core's own card, taken on the press, and swapped in at the restart",
+  "the old run's model key does not come over: the notice names it, it isn't signed in, and it works once entered again",
+  // Lane SG: an existing home that works is set up (the engine's setup.state), and the setup guide doesn't open over it.
+  "the upgraded home is set up once its key is in again: the engine's setup.state is ready, its default model the key's provider's (the old home's named default kept when that provider is had, else the provider's recommended model), and the app doesn't open the setup guide over it",
+  "the old conversation is listed and opens in MOSS: the default bot's record is on the old conversation, the engine's page of it holds the old turns, and MOSS (the bots app, beside MOSS Code) draws them in her conversation; the old run's code sessions, if any, are listed for MOSS Code",
+  // Lane BT's: the bots the old home recorded, after the move (bot-move-upgrade-step.ts).
+  BOT_MOVE_UPGRADE_STEP,
+  "a new turn runs on the upgraded home",
+  "the old run's plugin is still installed, asks for its OK again once (its files were updated), and its tool answers",
+  "a fenced write still raises an approval card, then lands",
+  "the bundled web tools and the old plugin's server list within 5 s, and the first turn offers them",
+  "a setting the old run changed is still set",
+  "an \"Always allow\" the old build saved still answers the same call (asking again is acceptable; an error is not)",
+  "a bundled plugin this build parks (the forwarder, on in the old run) is listed as not available, its switch kept on, with no card",
+  "the daemon trusts the state the old build signed (plugin registry, device key)",
+  "the old install's home is byte for byte what it was",
+] as const;
+
+/** What a row another lane runs says when nothing recorded it (elsewhere.ts fills it: kept apart so the table's names import
+ *  nothing of who runs them). */
+export const ELSEWHERE_NOTES = new Map<string, string>();
 
 /** A step's number (1-based) in `steps` by its exact name; throws for a name the table doesn't have. */
 export function stepNumber(steps: readonly string[], name: string): number {
@@ -143,7 +217,7 @@ export function finishTable(recorded: readonly Row[], steps: readonly string[], 
     if (keep !== undefined && !keep.has(n)) continue;
     const mine = recorded.filter((r) => r.n === n);
     const name = steps[n - 1]!;
-    if (mine.length === 0) out.push({ n, name, status: "BLOCKED", detail: "not reached" });
+    if (mine.length === 0) out.push({ n, name, status: "BLOCKED", detail: ELSEWHERE_NOTES.get(name) ?? "not reached" });
     else if (mine.length === 1) out.push(mine[0]!);
     else out.push({ n, name, status: "FAIL", detail: `harness: step ${n} was recorded ${mine.length} times: ${mine.map((r) => `${r.status}: ${r.detail}`).join(" | ")}`.slice(0, 600) });
   }

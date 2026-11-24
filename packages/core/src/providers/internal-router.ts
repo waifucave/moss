@@ -1,5 +1,5 @@
 /**
- * 2026-09-19: the ONE door every caller of Clover's own background jobs passes through —
+ * 2026-09-19: the ONE door every caller of MOSS's own background jobs passes through —
  * `resolve(role)` answers either "here is the `Provider`, the bare model id it speaks and the
  * qualified tag this call runs on", or a typed refusal naming why the job is not running.
  *
@@ -31,17 +31,21 @@ import {
   effortToSpendForRole,
   explicitInternalRolePin,
   internalRoleEffectiveTag,
+  internalRoleLight,
   internalRoleNoTagReason,
+  LIGHT_MODEL_ROLES,
   type InternalJobRole,
   type Settings,
 } from "../settings";
+import { activeCatalog } from "../runtime-sdk/model-plugins/catalog-source";
+import { familyOfModel, lightModelOn } from "../runtime-sdk/model-plugins/light-model";
 import { wireModelIdFor } from "./internal-adapters";
 import { buildInternalProvider, internalWireEffortFor } from "./internal-provider";
 import { INTERNAL_JOBS_LOGIN_HINT } from "./internal-login-hint";
 import type { InternalProviderView } from "./internal-view";
 import { QuotaManager, withQuota } from "./quota";
 import type { SubscriptionQuotaSource } from "./role-health";
-import type { Provider } from "./types";
+import type { Provider, ProviderEvent } from "./types";
 import { isRetiredCatalogTag } from "./catalog-role-problems";
 
 /** The role union and its membership test live in `settings.ts` (`INTERNAL_JOB_ROLES`) beside the pure
@@ -91,7 +95,7 @@ export function requireInternalWiring(what: string): never {
  * The two reason strings the Mac's Roles pane already ships wording for, plus the pre-existing
  * `no-credential`:
  *
- *  - `"provider-unsupported"` — the role's EXPLICIT tag names a provider Clover's own jobs cannot run
+ *  - `"provider-unsupported"` — the role's EXPLICIT tag names a provider MOSS's own jobs cannot run
  *    on (the reserved subscription row, or one whose adapter family the daemon cannot drive).
  *    `detail` names the provider's display name.
  *  - `"no-credential"` — the role's explicit tag names an ELIGIBLE provider with nothing stored in its
@@ -106,7 +110,7 @@ export function requireInternalWiring(what: string): never {
  *    other unrunnable pin (the reviewer falls back; titles/the dreamer/the cleaner stay inert with a
  *    note). The same reason `settings.modelRoles` derives for a session-facing role
  *    (`catalog-role-problems.ts`).
- *  - `"no-default-model"` (M-3) — a provider IS credentialed, but Clover will not CHOOSE a model on it:
+ *  - `"no-default-model"` (M-3) — a provider IS credentialed, but MOSS will not CHOOSE a model on it:
  *    it declares no `terra`/`luna` family slot and it is not `settings.provider.model`'s own provider,
  *    so there is no model the user can be said to have picked. The fix is a pin, not a credential, so it
  *    has to be a different reason from `no-credential` — see `internalRoleDefaultTagFor`'s own doc for
@@ -178,6 +182,12 @@ export interface InternalRouter {
  */
 export interface ResolveOptions {
   fallbackToDefault?: boolean;
+  /** A light job about one session (its title, §9.5): the light model of THIS model's family on its own provider, in
+   *  place of the default's. When the model is one the catalog knows but its provider can't serve a light model (not
+   *  signed in, not a provider MOSS's jobs drive, no light row) the answer is a refusal, never another provider. A model
+   *  the catalog doesn't know (an outside agent's own name) has no provider of MOSS's to use: the role's own answer, the
+   *  default's family's light model on the default's provider. Never over an explicit pin. */
+  lightOf?: ModelTag;
 }
 
 /** The consumer defaults that predate roles being able to store an effort — passed through
@@ -194,6 +204,41 @@ function providerDisplayName(providerId: string): string {
   return loadCatalog().providers.find((p) => p.id === providerId)?.displayName ?? providerId;
 }
 
+/** Whether a provider's error event says the requested model isn't one this account or endpoint serves (a 404 on the model,
+ *  the vendor's own `model_not_found`): the one failure a light call recovers from by running on the default. */
+export function modelNotOffered(e: Extract<ProviderEvent, { type: "error" }>): boolean {
+  if (e.code !== "bad_request") return false;
+  if (e.providerCode !== undefined && /model.*(not_found|not_supported|unavailable|not_available)|not_found_error|invalid_model/i.test(e.providerCode)) return true;
+  return /\bmodel\b.*(not found|not exist|not available|not supported|unavailable|unknown|invalid)|(not found|unknown|invalid).*\bmodel\b|\b404\b/i.test(e.message);
+}
+
+/** A light call, watched: when the provider says the light model isn't one it serves (a custom endpoint, an account's plan),
+ *  the job fails as any failed call does and the log says so ONCE per model: it never moves to the default model, which
+ *  would be the costlier one (`LIGHT_MODEL_ROLES`). One wrapper per provider instance, so the instance cache still holds. */
+const watchedProviders = new WeakMap<Provider, Provider>();
+function noteLightNotOffered(light: InternalCall, log: (m: string) => void, said: Set<string>): InternalCall {
+  let provider = watchedProviders.get(light.provider);
+  if (provider === undefined) {
+    const inner = light.provider;
+    provider = {
+      id: inner.id,
+      models: () => inner.models(),
+      async *streamTurn(req) {
+        for await (const e of inner.streamTurn(req)) {
+          const key = `not-offered|${inner.id}|${req.model}`;
+          if (e.type === "error" && modelNotOffered(e) && !said.has(key)) {
+            said.add(key);
+            log(`internal-provider: the light model ${inner.id}/${req.model} is not one this endpoint serves, so the jobs on it are not running; pin a model for them in Settings › Roles`);
+          }
+          yield e;
+        }
+      },
+    };
+    watchedProviders.set(inner, provider);
+  }
+  return { ...light, provider };
+}
+
 export function createInternalRouter(deps: {
   view: InternalProviderView;
   secrets: SecretStore;
@@ -202,7 +247,20 @@ export function createInternalRouter(deps: {
   quota?: QuotaManager;
   /** TEST-ONLY: a loopback base URL per provider id, threaded into `buildInternalProvider`. */
   testBackendUrl?: (providerId: string) => string | undefined;
+  /** Where the router says, once per state, that a job is not running (default: stderr, the daemon's log). */
+  log?: (message: string) => void;
 }): InternalRouter {
+  const log = deps.log ?? ((m: string) => console.error(m));
+  const said = new Set<string>();
+  /** A refusal of a job is said once per (role, reason, tag), never per call: a title is tried at every turn's end. */
+  const sayOnce = (role: InternalRole, r: InternalRefusal): InternalRefusal => {
+    const key = `${role}|${r.reason}|${r.tag ?? ""}`;
+    if (!said.has(key)) {
+      said.add(key);
+      log(`internal-provider: ${role} is not running: ${r.detail}`);
+    }
+    return r;
+  };
   // M-2: ONE ledger PER PROVIDER, created lazily and keyed like the `Provider` cache. A `deps.quota`
   // (tests, and any caller that wants to observe one) seeds the FIRST provider asked for, so a
   // single-provider test sees exactly what it did before.
@@ -248,7 +306,7 @@ export function createInternalRouter(deps: {
 
   /** Resolve ONE already-chosen tag. Split out of `resolve` so the reviewer's pin fallback can ask the
    *  same question twice — once for the pin, once for the default — with no second spelling of the rules. */
-  const resolveTag = (role: InternalRole, settings: Settings | null | undefined, tag: ModelTag): InternalCall | InternalRefusal => {
+  const resolveTag = (role: InternalRole, settings: Settings | null | undefined, tag: ModelTag, lightEffort?: string): InternalCall | InternalRefusal => {
     let providerId: string;
     let model: string;
     try {
@@ -257,9 +315,9 @@ export function createInternalRouter(deps: {
       return { reason: "provider-unsupported", detail: `${JSON.stringify(tag)} is not a provider-qualified model tag`, tag };
     }
     if (!deps.view.eligible().has(providerId)) {
-      return { reason: "provider-unsupported", detail: `${providerDisplayName(providerId)} can't be used for Clover's own jobs yet`, tag };
+      return { reason: "provider-unsupported", detail: `${providerDisplayName(providerId)} can't be used for MOSS's own jobs yet`, tag };
     }
-    // R.1 ruling 1: a tag with no catalog row can never run — judged after the provider (a provider Clover's
+    // R.1 ruling 1: a tag with no catalog row can never run — judged after the provider (a provider MOSS's
     // jobs can never use is the more fundamental answer) and before the credential (no key would make it
     // runnable). Never a silent substitute; the reviewer's fallback below is the user-ruled exception, and it
     // reports this pin's own issue while it runs.
@@ -276,11 +334,33 @@ export function createInternalRouter(deps: {
     }
     const provider = providerFor(providerId, settings);
     if (provider === null) {
-      return { reason: "provider-unsupported", detail: `${providerDisplayName(providerId)} can't be used for Clover's own jobs yet`, tag };
+      return { reason: "provider-unsupported", detail: `${providerDisplayName(providerId)} can't be used for MOSS's own jobs yet`, tag };
     }
-    const wanted = effortToSpendForRole(settings, role, tag, CONSUMER_EFFORT[role], { neverEscalate: true });
+    // A light call with no effort of the job's own asks for the family's light effort; a stored one still wins.
+    const wanted = effortToSpendForRole(settings, role, tag, CONSUMER_EFFORT[role] ?? lightEffort, { neverEscalate: true });
     const effort = internalWireEffortFor(tag, wanted);
     return { provider, model: wireModelIdFor(providerId, model), tag, providerId, quota: quotaFor(providerId), ...(effort === undefined ? {} : { effort }) };
+  };
+
+  /** `ResolveOptions.lightOf`: the light model of `model`'s family on `model`'s OWN provider, as a call or a refusal;
+   *  `undefined` (resolve as usual) for a model the catalog doesn't know, an explicit pin or a role that isn't a light one. */
+  const lightOfModel = (role: InternalRole, settings: Settings | null | undefined, model: ModelTag): InternalCall | InternalRefusal | undefined => {
+    if (!LIGHT_MODEL_ROLES.includes(role) || explicitInternalRolePin(settings, role) !== undefined) return undefined;
+    let providerId: string;
+    try {
+      ({ providerId } = splitTag(model));
+    } catch {
+      return undefined;
+    }
+    const catalog = activeCatalog();
+    const family = familyOfModel(catalog, providerId, model);
+    if (family === undefined) return undefined;
+    const choice = lightModelOn(catalog, providerId, family);
+    if (choice === undefined) {
+      return { reason: "no-default-model", detail: `${providerDisplayName(providerId)} serves no light model of the ${family} family; pin a model for this job in Settings › Roles`, tag: null };
+    }
+    const call = resolveTag(role, settings, choice.tag as ModelTag, choice.effort);
+    return isInternalRefusal(call) ? call : noteLightNotOffered(call, log, said);
   };
 
   /** The refusal for "no tag at all" — shared by `resolve` and the pin-fallback path. */
@@ -288,16 +368,23 @@ export function createInternalRouter(deps: {
     const why = internalRoleNoTagReason(settings, role, deps.view.snapshot());
     if (why?.reason === "no-default-model") {
       // A credential IS present — a probe would not change this answer, so no self-heal here.
+      if (role === "reviewer.model") {
+        return {
+          reason: "no-default-model",
+          detail: `the default model's provider can't be used for the review${why.providerId === undefined ? "" : ` (${providerDisplayName(why.providerId)} is signed in)`}: pick a model for the reviewer in Settings › Roles`,
+          tag: null,
+        };
+      }
       return {
         reason: "no-default-model",
-        detail: `pick a model for this job in Settings › Roles — Clover won't choose one on ${providerDisplayName(why.providerId ?? "")} for you`,
+        detail: `no light model of your default model's family can be had${why.providerId === undefined ? "" : ` (${providerDisplayName(why.providerId)} is signed in)`}: pick a model for this job in Settings › Roles`,
         tag: null,
       };
     }
-    // SELF-HEAL (B-1): `clover login` writes `codex-oauth:default` in-process, so a cached snapshot can
+    // SELF-HEAL (B-1): `moss login` writes `codex-oauth:default` in-process, so a cached snapshot can
     // be stale in exactly this state. Non-blocking and rate-limited — the NEXT call is right.
     deps.view.refreshSoon();
-    return { reason: "no-internal-credential", detail: `no provider Clover's own jobs can run on has a credential stored — ${INTERNAL_JOBS_LOGIN_HINT}`, tag: null };
+    return { reason: "no-internal-credential", detail: `no provider MOSS's own jobs can run on has a credential stored — ${INTERNAL_JOBS_LOGIN_HINT}`, tag: null };
   };
 
   return {
@@ -310,12 +397,33 @@ export function createInternalRouter(deps: {
     },
     effectiveTag,
     resolve(role, settings, opts) {
+      const r = resolveRole(role, settings, opts);
+      return isInternalRefusal(r) ? sayOnce(role, r) : r;
+    },
+  };
+
+  function resolveRole(role: InternalRole, settings: Settings | null | undefined, opts?: ResolveOptions): InternalCall | InternalRefusal {
+      const own = opts?.lightOf === undefined ? undefined : lightOfModel(role, settings, opts.lightOf);
+      if (own !== undefined) return own;
       const tag = effectiveTag(role, settings);
       if (tag === null) return noTagRefusal(role, settings);
-      const first = resolveTag(role, settings, tag);
-      if (!isInternalRefusal(first)) return first;
+      // THE LIGHT MODEL (the owner, 2026-11-21; the rule 2026-11-22): with no pin the tag IS the light model of the
+      // default's family, and there is nothing behind it: a refused or unserved light model is a job that does not run.
+      // Titles ask for the family's light effort; the dreamer and the cleaner keep theirs; the reviewer sends none.
+      const light = explicitInternalRolePin(settings, role) === undefined ? internalRoleLight(settings, role, deps.view.snapshot()) : undefined;
+      const lightEffort = role === "reviewer.model" ? undefined : light?.choice.effort;
+      // The reviewer is a safety gate: with no light model it runs on the default model itself on its own provider, said once.
+      if (role === "reviewer.model" && light === undefined && explicitInternalRolePin(settings, role) === undefined) {
+        const key = `reviewer-default|${tag}`;
+        if (!said.has(key)) {
+          said.add(key);
+          log(`internal-provider: the default model's family has no light model on its provider, so the command safety check and the plugin Review run on the default model itself, ${tag}`);
+        }
+      }
+      const first = resolveTag(role, settings, tag, lightEffort);
+      if (!isInternalRefusal(first)) return light === undefined ? first : noteLightNotOffered(first, log, said);
       // THE REVIEWER'S PIN FALLBACK (user ruling — see `ResolveOptions`). Only for a refusal about the PIN
-      // itself, and only when a pin is what produced this tag: the default rule's own answers
+      // itself, and only when a pin is what produced this tag: an unpinned role's own answers
       // (`no-internal-credential`/`no-default-model`) are handled above and have nothing to fall back to.
       if (opts?.fallbackToDefault !== true) return first;
       // THE ASYMMETRY IS ENFORCED HERE, not left to the call sites. `reviewer.model` is the only safety
@@ -329,12 +437,12 @@ export function createInternalRouter(deps: {
       const fallbackTag = internalRoleEffectiveTag(settings, role, deps.view.snapshot(), { ignoreExplicitPin: true });
       if (fallbackTag === null) return noTagRefusal(role, settings);
       const second = resolveTag(role, settings, fallbackTag);
+      const light2 = internalRoleLight(settings, role, deps.view.snapshot());
       // The default rule can only land on a credentialed, eligible provider, so a refusal here would be a
       // build failure (an unusable endpoint). Report the PIN's issue in that case — it is the actionable one.
       if (isInternalRefusal(second)) return first;
-      return { ...second, pinRefusal: first };
-    },
-  };
+      return { ...(light2 === undefined ? second : noteLightNotOffered(second, log, said)), pinRefusal: first };
+  }
 }
 
 /**

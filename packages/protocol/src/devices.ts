@@ -1,4 +1,4 @@
-// Clover protocol area: devices and links (spec §6.4, §8). Owner: lane H (identity, devices, links, sync, the
+// MOSS protocol area: devices and links (spec §6.4, §8). Owner: lane H (identity, devices, links, sync, the
 // lease and the shared clock). Pinned by lane B at M0; spike S1 chose iroh (lane H's report of November 5).
 //
 // Every paired device has its own Ed25519 key, and each pair keeps one persistent encrypted link (§8.2). The main
@@ -90,9 +90,9 @@ export const DeviceView = z.object({
   name: utf16(63, 1),
   kind: DeviceKind,
   os: DeviceOs.optional(),
-  /** Runs clover-core, so it is a computer in the tree (§9.1) and can take over (§6.4). */
+  /** Runs moss-core, so it is a computer in the tree (§9.1) and can take over (§6.4). */
   runsCore: z.boolean(),
-  /** Its folder-tree name, for a device that runs clover-core. */
+  /** Its folder-tree name, for a device that runs moss-core. */
   computer: ComputerName.optional(),
   hasDisplay: z.boolean().optional(),
   online: z.boolean(),
@@ -103,6 +103,9 @@ export const DeviceView = z.object({
   lastSeenAt: Timestamp.optional(),
   /** How its app's answer key is held, for a device that may answer cards; absent for one that can't. */
   answers: z.object({ held: AnswerKeyHolder, alg: AnswerKeyAlg.optional() }).optional(),
+  /** A desktop's answer keys per program (spec revision 19, ruling C: MOSS, MOSS Code and the host each hold their own);
+   *  absent from an engine that keeps one key per device. */
+  answersBy: z.array(z.object({ program: z.enum(["moss", "code", "host"]), held: AnswerKeyHolder, alg: AnswerKeyAlg.optional() })).max(3).optional(),
 });
 export type DeviceView = z.infer<typeof DeviceView>;
 
@@ -146,6 +149,15 @@ export const AccountView = z.object({
   user: z.object({ id: utf16(128), email: utf16(320).optional(), name: utf16(200).optional() }).optional(),
 });
 export type AccountView = z.infer<typeof AccountView>;
+
+/** The relay this computer's links use (§8.3): n0's public relays (the default), none (a pair that can't connect directly then
+ *  can't connect), or the person's own relay server by its address (`https://`). A cloud computer's relay and a Cloudflare
+ *  relay are relay plugins, which the links don't take yet. */
+export const RelayView = z.object({
+  mode: z.enum(["n0", "off", "custom"]),
+  url: utf16(2048, 1).optional(),
+});
+export type RelayView = z.infer<typeof RelayView>;
 
 /** No-account pairing (§8.1): a code or QR, plus the inherited 4-word check. */
 export const PairingView = z.object({
@@ -227,6 +239,16 @@ export const DEVICES_METHODS = {
     name: "device.pair.cancel", owner: "H", roles: ["app", "cli"], userOnly: true,
     params: z.object({ pairingId: utf16(128, 1) }), result: Ok,
     doc: "Cancels a pairing.",
+  }),
+  deviceRelayGet: defineMethod({
+    name: "device.relay.get", owner: "H", roles: ["app", "cli"],
+    params: Empty, result: RelayView,
+    doc: "Which relay this computer's links use: n0's public relays by default, none, or the person's own relay server (§8.3).",
+  }),
+  deviceRelaySet: defineMethod({
+    name: "device.relay.set", owner: "H", roles: ["app", "cli"], userOnly: true,
+    params: RelayView, result: RelayView,
+    doc: "Chooses the relay (the setup guide's relay page, §8.3): `n0`, `off`, or `custom` with the relay server's `https://` address. The links use it at once; a relay sees which devices are online and how much they send, never what.",
   }),
   accountStatus: defineMethod({
     name: "account.status", owner: "H", roles: ["app", "cli", "remote"],
@@ -321,7 +343,7 @@ export const DEVICES_METHODS = {
   linkSessionDeliver: defineMethod({
     /** Lane H's bot relay, as a protocol method (H-M2's ask, D's review S2): another session's message, never the
      *  user's (a user's message comes only through `peer.session.send`, with its device's signature). The receiver
-     *  takes it only from a paired computer running clover-core, and only as what it says it is; `computer` names the
+     *  takes it only from a paired computer running moss-core, and only as what it says it is; `computer` names the
      *  sending computer, which must be the link's own peer. */
     name: "link.session.deliver", owner: "H", roles: ["peer"],
     params: z.object({
@@ -329,8 +351,10 @@ export const DEVICES_METHODS = {
       /** The sending computer's tree name; the receiver refuses one that isn't the link's peer. */
       computer: ComputerName,
       input: z.discriminatedUnion("from", [
-        z.strictObject({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(1_000_000) }),
-        z.strictObject({ from: z.literal("agent"), agent: utf16(128, 1), text: utf16(1_000_000) }),
+        // `depth`: how far the exchange has gone without the person (the loop brake, sessions/exchange-depth.ts); the receiver
+        // reads one beyond its limit as the limit.
+        z.strictObject({ from: z.literal("bot"), bot: BotId, session: SessionId, text: utf16(1_000_000), depth: z.number().int().nonnegative().max(1_000).optional() }),
+        z.strictObject({ from: z.literal("agent"), agent: utf16(128, 1), text: utf16(1_000_000), depth: z.number().int().nonnegative().max(1_000).optional() }),
         z.strictObject({ from: z.literal("routine"), routine: utf16(128, 1), name: utf16(200), sideThread: SessionId, text: utf16(1_000_000), failed: z.boolean().optional() }),
         /** An agent's final report reaching its bot. */
         z.strictObject({
@@ -411,11 +435,13 @@ export const DEVICES_EVENTS = {
   }),
   linkChanged: defineEvent({
     type: "link_changed", owner: "H", roles: ["app", "cli"], schema: LinkChangedEvent,
-    fixture: { type: "link_changed", ts: 1781270000000, link: { peer: "k3x9a7mq2c4d8e1f5g6h0j2k4m6n8p0r", up: true, path: "relay", relay: "clover/relay-n0", rttMs: 48 } },
+    fixture: { type: "link_changed", ts: 1781270000000, link: { peer: "k3x9a7mq2c4d8e1f5g6h0j2k4m6n8p0r", up: true, path: "relay", relay: "moss/relay-n0", rttMs: 48 } },
     doc: "A link came up, went down or changed path.",
   }),
   pairingChanged: defineEvent({
-    type: "pairing_changed", owner: "H", roles: ["app", "cli"], schema: PairingChangedEvent,
+    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairing the user
+    // started in its frame, its four words included; no other plugin does (`capability`).
+    type: "pairing_changed", owner: "H", roles: ["app", "cli", "layer"], capability: "devices.manage", schema: PairingChangedEvent,
     fixture: { type: "pairing_changed", ts: 1781270000000, pairingId: "pair_1", step: "words", words: ["maple", "orbit", "velvet", "canyon"] },
     doc: "A pairing moved on.",
   }),

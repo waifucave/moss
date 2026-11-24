@@ -3,8 +3,9 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSeatbeltProfile } from "../../src/agent/sandbox";
+import { OLD_PROJECT_DIR, PROJECT_DIR_NAMES } from "../../src/old-names";
 
-function realTmp(): string { return realpathSync(mkdtempSync(join(tmpdir(), "clover-sb-"))); }
+function realTmp(): string { return realpathSync(mkdtempSync(join(tmpdir(), "moss-sb-"))); }
 
 describe("buildSeatbeltProfile", () => {
   test("denies by default, allows read everywhere, writes only under writable roots", () => {
@@ -56,16 +57,16 @@ describe("buildSeatbeltProfile", () => {
 // SP-approvals final review (composition hole, HIGH, defense-in-depth): the engine's dispatch-loop
 // hard error (engine.ts's controlPlaneFileTarget, renamed from permissionRulesFileTarget in the
 // CC-parity Task 6.5 pass) only ever sees write/edit TOOL calls — a bash command
-// (`echo x > .clover/permissions.local.json`) never goes through it at all. The seatbelt
+// (`echo x > .moss/permissions.local.json`) never goes through it at all. The seatbelt
 // itself must independently deny that one exact file, for cwd AND every extra writable root (a
-// project's `.clover/permissions.local.json` could exist under any of them), while leaving
-// everything else in those same roots — including `.clover/memory/`, the MEMDIR — fully writable.
+// project's `.moss/permissions.local.json` could exist under any of them), while leaving
+// everything else in those same roots — including `.moss/memory/`, the MEMDIR — fully writable.
 describe("buildSeatbeltProfile: permission-rules-file carve-out (SP-approvals final review)", () => {
   test("denies the permission-rules file under cwd, as a deny-after-allow line (SBPL last-match-wins)", () => {
     const cwd = realTmp();
     const p = buildSeatbeltProfile({ cwd });
     const allowIdx = p.indexOf("(allow file-write*");
-    const denyIdx = p.indexOf(`(deny file-write* (literal "${join(cwd, ".clover", "permissions.local.json")}"))`);
+    const denyIdx = p.indexOf(`(deny file-write* (literal "${join(cwd, ".moss", "permissions.local.json")}"))`);
     expect(allowIdx).toBeGreaterThanOrEqual(0);
     expect(denyIdx).toBeGreaterThan(allowIdx); // AFTER the allow block — SBPL's last matching rule wins
   });
@@ -76,21 +77,21 @@ describe("buildSeatbeltProfile: permission-rules-file carve-out (SP-approvals fi
     const extra2 = realTmp();
     const p = buildSeatbeltProfile({ cwd, writableRoots: [extra1, extra2] });
     for (const root of [cwd, extra1, extra2]) {
-      expect(p).toContain(`(deny file-write* (literal "${join(root, ".clover", "permissions.local.json")}"))`);
+      expect(p).toContain(`(deny file-write* (literal "${join(root, ".moss", "permissions.local.json")}"))`);
     }
   });
 
-  test("the carve-out is FILENAME-specific — no deny for the .clover dir itself or for .clover/memory (the MEMDIR)", () => {
+  test("the carve-out is FILENAME-specific — no deny for the .moss dir itself or for .moss/memory (the MEMDIR)", () => {
     const cwd = realTmp();
     const p = buildSeatbeltProfile({ cwd });
-    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".clover")}"))`);
-    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".clover", "memory")}"))`);
+    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".moss")}"))`);
+    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".moss", "memory")}"))`);
     expect(p).not.toMatch(/\(deny file-write\* \(subpath/); // never a blanket subpath deny, only literal single-file denies
   });
 
   test("the carve-out path is escaped the same way subpath roots are (quotes/backslashes)", () => {
     const p = buildSeatbeltProfile({ cwd: '/tmp/we"ird' });
-    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.clover/permissions.local.json"))');
+    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.moss/permissions.local.json"))');
   });
 
   // CC-parity Task 6.5: this array grew from 1 entry to 3 (permissions.local.json +
@@ -103,15 +104,19 @@ describe("buildSeatbeltProfile: permission-rules-file carve-out (SP-approvals fi
     const p = buildSeatbeltProfile({ cwd, writableRoots: [] });
     const denyLines = [...p.matchAll(/\(deny file-write\* \(literal "([^"]*)"\)\)/g)].map((m) => m[1]);
     expect(denyLines).toEqual([
-      join(cwd, ".clover", "permissions.local.json"),
-      join(cwd, ".clover", "settings.json"),
-      join(cwd, ".clover", "settings.local.json"),
+      join(cwd, ".moss", "permissions.local.json"),
+      join(cwd, ".moss", "settings.json"),
+      join(cwd, ".moss", "settings.local.json"),
+      // The folder name the build reads second is held like the first (old-names.ts).
+      join(cwd, OLD_PROJECT_DIR, "permissions.local.json"),
+      join(cwd, OLD_PROJECT_DIR, "settings.json"),
+      join(cwd, OLD_PROJECT_DIR, "settings.local.json"),
     ]);
   });
 });
 
 // CC-parity Task 6.5 (controller-added): Task 7 wires ProjectSettingsResolver's permissions.allow
-// into the live gate, making `.clover/settings.json` and `.clover/settings.local.json` rule-bearing
+// into the live gate, making `.moss/settings.json` and `.moss/settings.local.json` rule-bearing
 // control-plane files exactly like permissions.local.json above. The seatbelt must independently
 // carve out these two filenames too, for the SAME bash-invoked-write reason (see this file's own
 // doc comment on buildSeatbeltProfile) — mirrors the describe block just above, filename for
@@ -123,7 +128,7 @@ describe("buildSeatbeltProfile: settings-overlay carve-out (CC-parity Task 6.5)"
     const allowIdx = p.indexOf("(allow file-write*");
     expect(allowIdx).toBeGreaterThanOrEqual(0);
     for (const f of ["settings.json", "settings.local.json"]) {
-      const denyIdx = p.indexOf(`(deny file-write* (literal "${join(cwd, ".clover", f)}"))`);
+      const denyIdx = p.indexOf(`(deny file-write* (literal "${join(cwd, ".moss", f)}"))`);
       expect(denyIdx).toBeGreaterThan(allowIdx);
     }
   });
@@ -135,7 +140,7 @@ describe("buildSeatbeltProfile: settings-overlay carve-out (CC-parity Task 6.5)"
     const p = buildSeatbeltProfile({ cwd, writableRoots: [extra1, extra2] });
     for (const root of [cwd, extra1, extra2]) {
       for (const f of ["settings.json", "settings.local.json"]) {
-        expect(p).toContain(`(deny file-write* (literal "${join(root, ".clover", f)}"))`);
+        expect(p).toContain(`(deny file-write* (literal "${join(root, ".moss", f)}"))`);
       }
     }
   });
@@ -150,28 +155,34 @@ describe("buildSeatbeltProfile: settings-overlay carve-out (CC-parity Task 6.5)"
     const p = buildSeatbeltProfile({ cwd, writableRoots: [extra] });
     const denyLines = [...p.matchAll(/\(deny file-write\* \(literal "([^"]*)"\)\)/g)].map((m) => m[1]);
     expect(denyLines).toEqual([
-      join(cwd, ".clover", "permissions.local.json"),
-      join(cwd, ".clover", "settings.json"),
-      join(cwd, ".clover", "settings.local.json"),
-      join(extra, ".clover", "permissions.local.json"),
-      join(extra, ".clover", "settings.json"),
-      join(extra, ".clover", "settings.local.json"),
+      join(cwd, ".moss", "permissions.local.json"),
+      join(cwd, ".moss", "settings.json"),
+      join(cwd, ".moss", "settings.local.json"),
+      join(cwd, OLD_PROJECT_DIR, "permissions.local.json"),
+      join(cwd, OLD_PROJECT_DIR, "settings.json"),
+      join(cwd, OLD_PROJECT_DIR, "settings.local.json"),
+      join(extra, ".moss", "permissions.local.json"),
+      join(extra, ".moss", "settings.json"),
+      join(extra, ".moss", "settings.local.json"),
+      join(extra, OLD_PROJECT_DIR, "permissions.local.json"),
+      join(extra, OLD_PROJECT_DIR, "settings.json"),
+      join(extra, OLD_PROJECT_DIR, "settings.local.json"),
     ]);
   });
 
-  test("the carve-out stays FILENAME-specific — no deny for .clover itself, .clover/memory (the MEMDIR), or .clover/rules (the prose-rules dir)", () => {
+  test("the carve-out stays FILENAME-specific — no deny for .moss itself, .moss/memory (the MEMDIR), or .moss/rules (the prose-rules dir)", () => {
     const cwd = realTmp();
     const p = buildSeatbeltProfile({ cwd });
-    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".clover")}"))`);
-    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".clover", "memory")}"))`);
-    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".clover", "rules")}"))`);
+    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".moss")}"))`);
+    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".moss", "memory")}"))`);
+    expect(p).not.toContain(`(deny file-write* (literal "${join(cwd, ".moss", "rules")}"))`);
     expect(p).not.toMatch(/\(deny file-write\* \(subpath/); // never a blanket subpath deny
   });
 
   test("the settings carve-out paths are escaped the same way the rules-file carve-out is (quotes/backslashes)", () => {
     const p = buildSeatbeltProfile({ cwd: '/tmp/we"ird' });
-    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.clover/settings.json"))');
-    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.clover/settings.local.json"))');
+    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.moss/settings.json"))');
+    expect(p).toContain('(deny file-write* (literal "/tmp/we\\"ird/.moss/settings.local.json"))');
   });
 
   // Part B step 2: TWO SEPARATE regex deny lines, never one combined via alternation (the shipped
@@ -184,7 +195,9 @@ describe("buildSeatbeltProfile: settings-overlay carve-out (CC-parity Task 6.5)"
     expect(p).toContain(String.raw`(deny file-write* (regex #"/\.[Nn][Oo][Rr][Mm][Aa]/[Ss][Ee][Tt][Tt][Ii][Nn][Gg][Ss]\.[Jj][Ss][Oo][Nn]$"))`);
     expect(p).toContain(String.raw`(deny file-write* (regex #"/\.[Nn][Oo][Rr][Mm][Aa]/[Ss][Ee][Tt][Tt][Ii][Nn][Gg][Ss]\.[Ll][Oo][Cc][Aa][Ll]\.[Jj][Ss][Oo][Nn]$"))`);
     const regexDenyCount = [...p.matchAll(/\(deny file-write\* \(regex/g)].length;
-    expect(regexDenyCount).toBe(3); // rules file + settings.json + settings.local.json — never merged
+    // The three above (the legacy folder name's), then the same three for `.moss` and for the name the build reads second
+    // (`PROJECT_DIR_NAMES`), each its own line — never merged.
+    expect(regexDenyCount).toBe(3 + 3 * PROJECT_DIR_NAMES.length);
     expect(p).not.toContain("|"); // SBPL alternation marker never appears anywhere in the profile
   });
 });

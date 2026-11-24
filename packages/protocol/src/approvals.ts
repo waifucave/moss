@@ -1,4 +1,4 @@
-// Clover protocol area: approvals (spec §5.5 "Approvals are core data that plugins show but cannot read", §9.1,
+// MOSS protocol area: approvals (spec §5.5 "Approvals are core data that plugins show but cannot read", §9.1,
 // §9.3). Owner: lane C (sealed-card data, ids, hashes and signed answers, C-M3); lane E renders sealed frames
 // (E-M3). Pinned by lane B at M0.
 //
@@ -18,7 +18,7 @@
 //
 // The card's hash is SHA-256 over its canonical JSON (RFC 8785, JCS: keys sorted by UTF-16 code units, numbers and
 // strings as ECMAScript serializes them), never over another language's default encoder. The phone recomputes the hash
-// from the card it shows and signs that, never the hash it was sent. `generated/clover/fixtures/card-hash-vectors.json`
+// from the card it shows and signs that, never the hash it was sent. `generated/moss/fixtures/card-hash-vectors.json`
 // pins the encoding (nulls, `/`, non-ASCII, U+2028, emoji, large integers).
 import { z } from "zod";
 import { utf16 } from "./strings";
@@ -35,7 +35,7 @@ export const CARD_KINDS = [
   "agent-permission",
   /** A plugin's OK: found on disk, or an update or edit that adds a trigger, or new card styling (§5.1, §5.5, §5.6). */
   "plugin-ok",
-  /** A sensitive change, or a change to the core's settings from a layer other than `clover`'s (§5.5). */
+  /** A sensitive change, or a change to the core's settings from a layer other than `moss`'s (§5.5). */
   "change",
   /** A plugin's `confirm(text)` (§5.4). */
   "confirm",
@@ -59,6 +59,9 @@ export const ChangeSubject = z.enum([
   "routine-level", "computer-level", "device-add", "device-revoke", "main-computer", "plugin-load", "dev-folder",
   "repo-trust", "saved-rule", "connector-permission", "computer-create", "computer-resize", "computer-delete",
   "agent-unsandboxed", "core-setting", "answer-key-rotate",
+  /** Downloading an agent's adapter (spec §9.3 "An adapter MOSS provides"): the package and version, where it comes from, that
+   *  it is code MOSS will run to talk to that agent, and its size where known. Nothing is fetched without the yes. */
+  "agent-adapter",
   /** A bot's first turn on a provider its plugin chose, not the user (the controller's ruling on #298): "<bot> wants
    *  to use <provider> (<model>) with your stored key". A yes holds for that bot and provider only. */
   "bot-provider",
@@ -73,6 +76,12 @@ export const ChangeSubject = z.enum([
   "plugin-index-remove",
   /** Applying an update from an index or npm from the Plugins page: its new code runs on the OK given before. */
   "plugin-update",
+  /** The user's statement that they are 18 or older, asked from a part (F2): only their yes on the card makes it. */
+  "plugin-confirm-adult",
+  /** The one-time copy of the old install's home (spec §12, item 125): the core's own card at a fresh home's first start
+   *  (bring the data over, or start fresh; quit the old app first while it runs), and its notice after the copy (what
+   *  to set up again, and the old engine's own `autostart disable`). */
+  "home-copy",
 ]);
 export type ChangeSubject = z.infer<typeof ChangeSubject>;
 
@@ -111,7 +120,7 @@ export const CARD_OPTION_ID_RE = /^[a-z0-9_-]{1,64}$/;
 export const CardOptionId = utf16(64, 1).regex(CARD_OPTION_ID_RE);
 
 /** A sealed button. `<Card.Approve>` and `<Card.Deny>` place the first option of their kind, or a named one. An
- *  "always" option saves Clover's own rule; an agent still gets `allow_once` (§9.3, spike S5 edit 5). */
+ *  "always" option saves MOSS's own rule; an agent still gets `allow_once` (§9.3, spike S5 edit 5). */
 export const CardOption = z.object({
   id: CardOptionId,
   kind: z.enum(["approve", "deny"]),
@@ -129,6 +138,10 @@ export const CardMeta = z.object({
   bot: BotId.optional(),
   /** A plugin's card: whose. */
   pluginId: AnyPluginId.optional(),
+  /** The plugins whose own card this is, written by the core (never by a requester): the plugin whose tool's call
+   *  raised it, in any session or bot's turn, and the plugin its bot's record says the bot was moved from. A plugin with
+   *  plain `approvals` hears and places these alone; `approvals.all` hears every card. */
+  ownedBy: z.array(AnyPluginId).max(2).optional(),
   origin: TurnOrigin,
   issuedAt: Timestamp,
   /** Set when the turn's origin isn't the user's: denied then, 10 minutes after it was issued (§5.5). */
@@ -190,8 +203,12 @@ export const CardAnswerProof = z.discriminatedUnion("via", [
     via: z.literal("device"),
     device: DeviceId,
     at: Timestamp,
-    /** Ed25519 with the device's answer key over `cardAnswerSigningInput(...)`, base64. */
+    /** Ed25519 with the device's answer key over `cardAnswerSigningInput(...)`, base64; with `program`, with that
+     *  program's key over `programCardAnswerSigningInput(...)` (surfaces.ts; spec revision 19, ruling C). */
     signature: utf16(256, 1),
+    /** The desktop program whose key signed it (`moss`, `code`, `host`; lane RT): the proof names its key. Absent: the
+     *  device's single answer key (a phone's, or MOSS Code's from before the split). */
+    program: z.enum(["moss", "code", "host"]).optional(),
   }),
 ]);
 export type CardAnswerProof = z.infer<typeof CardAnswerProof>;
@@ -224,6 +241,7 @@ export function cardContentInput(card: CardContent): string {
   return canonicalJson({ kind: card.kind, change: card.change, binds: card.binds, fields: card.fields, options: card.options, children: card.children?.map(({ id, label }) => ({ id, label })) });
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What a paired device signs to answer a card: the card's id and hash, the option, the time, and the children it
  *  checked (a plugin OK's checkboxes), sorted and joined by `,` on the last line (empty when there are none). */
 export function cardAnswerSigningInput(a: { id: string; hash: string; option: string; at: number; children?: readonly string[] }): string {
@@ -255,8 +273,11 @@ export const SignedCardAnswer = z.object({
   children: z.array(OkCheckboxId).max(MAX_CHILD_PLUGINS + 1).optional(),
   device: DeviceId,
   at: Timestamp,
-  /** Ed25519 over `cardAnswerSigningInput(...)`, base64. */
+  /** Ed25519 over `cardAnswerSigningInput(...)`, base64; with `program`, over `programCardAnswerSigningInput(...)`
+   *  (surfaces.ts) with that program's key (spec revision 19, ruling C). */
   signature: utf16(256, 1),
+  /** The desktop program whose key signed it (`moss`, `code`, `host`); absent: the device's single answer key. */
+  program: z.enum(["moss", "code", "host"]).optional(),
 });
 export type SignedCardAnswer = z.infer<typeof SignedCardAnswer>;
 

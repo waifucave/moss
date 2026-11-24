@@ -1,0 +1,61 @@
+/* The figure fills the place it is given (a panel, its window on the screen); its renderer's frame fills the figure. */
+.cl-figure {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  align-items: stretch;
+  justify-content: center;
+}
+.cl-figure[data-place="screen"] { background: transparent; }
+.cl-figure__portrait { max-width: 100%; max-height: 100%; object-fit: contain; align-self: center; }
+.cl-figure__empty {
+  align-self: center;
+  margin: 0;
+  padding: var(--moss-space-m);
+  color: var(--moss-color-text-secondary);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-control);
+  text-align: center;
+}
+
+/* The Settings section: the label and its detail, the figures a grid of cards, then the two switches. */
+.cl-figure-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moss-space-s);
+  padding: var(--moss-space-m) 0;
+  color: var(--moss-color-text);
+  font-family: var(--moss-font-sans);
+  font-size: var(--moss-font-size-control);
+  line-height: var(--moss-font-line-body);
+}
+.cl-figure-settings button, .cl-figure-settings input { font: inherit; }
+.cl-figure-settings :focus-visible { outline: 2px solid var(--moss-color-focus); outline-offset: -2px; }
+.cl-figure-settings__text { display: flex; flex-direction: column; gap: var(--moss-space-xs); }
+.cl-figure-settings__label { font-weight: 600; }
+.cl-figure-settings__detail, .cl-figure-settings__empty, .cl-figure-settings__from { color: var(--moss-color-text-secondary); margin: 0; }
+.cl-figure-settings__figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--moss-space-s); list-style: none; margin: 0; padding: 0; }
+.cl-figure-settings__figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--moss-space-xs);
+  width: 100%;
+  padding: var(--moss-space-s);
+  border: 1px solid var(--moss-color-hairline);
+  border-radius: var(--moss-radius-medium);
+  background: var(--moss-color-surface);
+  color: inherit;
+  cursor: pointer;
+}
+.cl-figure-settings__figure[aria-checked="true"] { border-color: var(--moss-color-accent); }
+.cl-figure-settings__figure:disabled { cursor: default; opacity: 0.6; }
+.cl-figure-settings__face { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: var(--moss-color-hairline); }
+.cl-figure-settings__switch { display: flex; align-items: center; gap: var(--moss-space-s); }
+.cl-figure-settings__own { display: grid; gap: var(--moss-space-xs); }
+.cl-figure-settings__own-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--moss-space-xs); }
+.cl-figure-settings__own-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--moss-space-s); }
+.cl-figure-settings__add { display: flex; gap: var(--moss-space-s); flex-wrap: wrap; }
+.cl-figure-settings__said { margin: 0; color: var(--moss-color-text-muted); }

@@ -1,5 +1,5 @@
 // How a browser pairs with a computer once, without an account (spec §8.1, §8.4), through the waifucave handshake.
-// Both ends use this file: the page (services/web/src) and the computer (clover/companion-web).
+// Both ends use this file: the page (services/web/src) and the computer (moss/companion-web).
 //
 // 1. The computer makes an invite: a pair P1 registered with its own key A and an invite key B0 derived from a fresh
 //    32-byte secret S0, and a URL whose fragment carries P1, A, S0 and the core's pairing code. The fragment never
@@ -15,7 +15,7 @@
 // What crosses P1 is sealed with P1's box key (the handshake's pair-scope boxes), so the service sees only sizes.
 
 import { b64u, concatBytes, fromB64u, sha256, utf8 } from "../../shared/encoding";
-import { pairStatement, signerFromSeed, type Signer } from "@waifucave/clover-service-handshake/client";
+import { pairStatement, signerFromSeed, type Signer } from "@waifucave/moss-service-handshake/client";
 import { EFF_SHORT_WORDLIST } from "./words";
 
 // ---- invites ----
@@ -84,11 +84,13 @@ async function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string, length = 32
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: salt as Uint8Array<ArrayBuffer>, info: utf8(info) }, key, length * 8));
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 /** The invite key B0, which both ends can sign with (the computer when it registers P1, the page on P1). */
 export async function inviteSigner(invite: Pick<Invite, "pair" | "secret">): Promise<Signer> {
   return signerFromSeed(await hkdf(invite.secret, fromB64u(invite.pair), "clover web invite key"));
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 /** P1's pair secret, for its boxes. */
 export function invitePairSecret(invite: Pick<Invite, "pair" | "secret">): Promise<Uint8Array> {
   return hkdf(invite.secret, fromB64u(invite.pair), "clover web invite secret");
@@ -155,6 +157,7 @@ export interface Transcript {
   code: string;
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 function transcriptBytes(t: Transcript): Uint8Array {
   return utf8(["clover web pairing v1", t.invitePair, t.pair, t.computerKey, t.browserKey, t.computerX25519, t.browserX25519, t.code].join("\n"));
 }
@@ -164,6 +167,7 @@ export async function generateX25519(): Promise<{ publicKey: string; privateKey:
   return { publicKey: b64u(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer)), privateKey: pair.privateKey };
 }
 
+// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
 /**
  * The lasting pair's secret and the four words, from this end's X25519 private key and the other end's public key.
  * Both ends get the same values from the same transcript.

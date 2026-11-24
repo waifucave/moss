@@ -1,0 +1,147 @@
+/* The pages' own styles: the side panel, the Plugins page and Settings (lane MA2's file). Loaded after window.css, built
+   on its tokens (neutral greys; light and dark). No literal colour here. */
+
+/* ---- Shared bits ---- */
+.ma2-body { max-width: 820px; }
+.ma2-lede { margin: 0; padding: 12px 14px; border-radius: var(--radius); background: var(--notice-bg); font-size: 13px; line-height: 1.5; }
+.ma2-note { margin: -2px 0 10px !important; }
+.ma2-field { padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--bg); min-width: 0; outline: none; }
+.ma2-field:focus { border-color: var(--text); box-shadow: 0 0 0 3px var(--ring); }
+.ma2-field[aria-invalid="true"] { border-color: var(--danger); }
+.ma2-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ma2-inline .ma2-field { flex: 1; min-width: 140px; }
+.ma2-inline--end { justify-content: flex-end; margin-top: 8px; }
+.ma2-why { color: var(--danger); }
+
+/* ---- The side panel's screen ---- */
+.ma2-screen .screen__view { user-select: none; -webkit-user-select: none; }
+.ma2-screen .screen__view img { -webkit-user-drag: none; }
+.ma2-screen__none { aspect-ratio: 16 / 10; }
+.ma2-none { display: grid; gap: 6px; max-width: 240px; line-height: 1.45; }
+.ma2-none strong { color: var(--text); font-weight: 600; font-size: 13px; }
+.ma2-none span { font-size: 12px; }
+.screen__from { display: flex; flex-wrap: wrap; gap: 0 2px; }
+.ma2-publisher { color: var(--text); font-weight: 600; }
+
+/* ---- The Plugins page ---- */
+.ma2-legend { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--radius); border: 1px dashed var(--line-strong); font-size: 12.5px; color: var(--muted); }
+.ma2-legend p { margin: 0; }
+.ma2-legend strong { color: var(--text); font-weight: 600; }
+.ma2-legend em { font-style: normal; color: var(--text); }
+.ma2-tools { list-style: none; margin: 0; padding: 0; display: grid; }
+.ma2-tools__head, .ma2-tool { display: grid; grid-template-columns: minmax(90px, 1fr) auto auto; align-items: center; gap: 14px; }
+.ma2-tools__head { padding: 0 0 6px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.ma2-tools__head span:nth-child(2), .ma2-tools__head span:nth-child(3) { padding-left: 2px; }
+.ma2-tool { padding: 8px 0; border-top: 1px solid var(--line); }
+.ma2-tool__name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ma2-seg button { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ma2-seg--permission button.is-on.ma2-seg__deny { background: var(--danger-bg); color: var(--danger); box-shadow: none; }
+.ma2-seg--permission button.is-on[data-value="allow"] { color: var(--chip-on-text); }
+.ma2-seg--availability button.is-on.ma2-seg__off { background: var(--chip-off); color: var(--text); box-shadow: none; }
+.ma2-default-mark { display: inline-block; padding: 0 5px; border-radius: 5px; font-size: 9.5px; font-weight: 600; line-height: 15px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); background: var(--selected); }
+
+/* ---- Settings ---- */
+.ma2-settings { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); }
+.ma2-settings__nav { display: flex; flex-direction: column; gap: 2px; padding: calc(var(--under) + 14px) 10px 14px; border-right: 1px solid var(--line); overflow-y: auto; }
+.ma2-settings__nav .nav-item { font-weight: 500; }
+.ma2-settings__nav .nav-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ma2-settings__group { margin: 12px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--faint); }
+.ma2-settings .page__body { overflow-y: auto; }
+.ma2-settings .settings-section select { margin-bottom: 0; max-width: 100%; }
+.ma2-account { display: flex; align-items: center; gap: 12px; }
+.ma2-pair { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ma2-pair__row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ma2-pair__code code, .ma2-pair__words { overflow-wrap: anywhere; user-select: text; }
+.ma2-account .account__dot { width: 34px; height: 34px; font-size: 14px; }
+.ma2-account__who { display: grid; flex: 1; min-width: 0; }
+.ma2-key { flex-wrap: wrap; }
+.ma2-key__who { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 160px; }
+.ma2-key__do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.ma2-key__do .ma2-field { width: 220px; }
+.ma2-key__note { flex-basis: 100%; margin: 0 !important; }
+
+.ma2-bot { display: grid; gap: 14px; }
+.ma2-bot__head { display: flex; align-items: center; gap: 16px; padding: 4px 2px; }
+.ma2-bot__who { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.ma2-bot__head p { margin: 0; }
+.ma2-name { font-size: 17px; font-weight: 650; padding: 5px 10px; }
+.ma2-instructions { display: block; width: 100%; resize: vertical; min-height: 96px; line-height: 1.5; }
+.ma2-face { display: grid; gap: 8px; }
+.ma2-face__label { margin: 4px 0 0 !important; font-size: 12px; font-weight: 600; color: var(--muted); }
+.ma2-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.ma2-swatch { display: inline-grid; place-items: center; min-width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.ma2-swatch:hover { border-color: var(--line-strong); }
+.ma2-swatch.is-on { border-color: var(--text); box-shadow: 0 0 0 2px var(--ring); }
+.ma2-swatch--name { padding: 0 12px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.ma2-swatch--name.is-on { color: var(--text); }
+.ma2-swatch--color span { width: 24px; height: 24px; border-radius: 50%; display: block; }
+.ma2-from { font-weight: 400; }
+.ma2-setting { gap: 14px; }
+.ma2-setting__text { display: grid; gap: 1px; min-width: 0; }
+.ma2-setting__control { flex: none; display: flex; justify-content: flex-end; max-width: 60%; }
+.ma2-setting__control .ma2-field { width: 160px; flex: none; }
+.ma2-switch { position: relative; display: inline-block; width: 38px; height: 22px; }
+.ma2-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.ma2-switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--line-strong); transition: background 0.15s; }
+.ma2-switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--knob); box-shadow: var(--knob-shadow); transition: transform 0.15s; }
+.ma2-switch input:checked + span { background: var(--primary); }
+.ma2-switch input:checked + span::after { transform: translateX(16px); }
+.ma2-switch input:focus-visible + span { box-shadow: 0 0 0 3px var(--ring); }
+
+/* ---- Medium and narrow ---- */
+/* The pages' rows stack their controls once the window is under 1100px wide (the Plugins page's two button groups need
+   about 700px beside the list, Settings' key row more than its column holds just above the narrow layout), so no page
+   is ever wider than its column, which under classic scroll bars is a sideways bar over the page's last button. */
+@media (max-width: 1100px) {
+  .ma2-tools__head { display: none; }
+  .ma2-tool { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .ma2-seg { justify-self: start; flex-wrap: wrap; }
+  .ma2-key__do { flex-basis: 100%; justify-content: flex-start; flex-wrap: nowrap; }
+  .ma2-key__do .ma2-field { width: auto; flex: 1; min-width: 0; }
+  .ma2-setting { flex-wrap: wrap; }
+  .ma2-setting__control { max-width: 100%; }
+}
+@media (max-width: 900px) {
+  .ma2-settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  /* The bots' names wrap onto more rows rather than scroll sideways: a sideways bar takes room under classic scroll bars. */
+  .ma2-settings__nav { flex-direction: row; flex-wrap: wrap; align-items: center; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); padding: calc(var(--under) + 8px) 10px 8px; }
+  .ma2-settings .page__body { padding-top: 18px; }
+  .ma2-settings__nav .nav-item { width: auto; flex: none; font-size: 13px; padding: 6px 10px; justify-content: flex-start; }
+  .ma2-settings__nav .nav-item span { display: inline; }
+  .ma2-settings__group { display: none; }
+}
+.ma2-publisher-id { color: var(--faint); }
+.ma2-pick { flex-wrap: nowrap; justify-content: flex-end; }
+.ma2-pick select { min-width: 0; max-width: 100%; }
+
+/* A bot's memory, read only. */
+.ma2-memory { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+.ma2-memory__file { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.ma2-memory__file:hover { background: var(--hover); }
+.ma2-memory__path { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.ma2-memory__text { margin: 4px 0 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ---- The setup guide (2026-11-20): a plain card over the window, the window's own tokens; no tint ---- */
+.setup { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: var(--bg); overflow-y: auto; -webkit-app-region: drag; }
+.setup__card { -webkit-app-region: no-drag; display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); max-height: calc(100vh - 48px); padding: 26px 28px 20px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); }
+.setup__card h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
+.setup__card p { margin: 0; line-height: 1.5; }
+.setup__step { margin: 0 !important; }
+.setup__search { flex: none; }
+.setup__providers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 120px; max-height: 46vh; }
+.setup__provider { border: 1px solid var(--line); border-radius: 12px; }
+.setup__provider.is-open { border-color: var(--line-strong); }
+.setup__provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 10px 12px; border: 0; background: transparent; text-align: left; font-weight: 550; border-radius: 12px; }
+.setup__provider-head:hover { background: var(--hover); }
+.setup__provider-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; }
+.setup__ways { border: 0; margin: 0; padding: 0; min-width: 0; }
+.setup__ways:disabled { opacity: 0.5; }
+.setup__link { align-self: flex-start; border: 0; padding: 0; background: none; color: var(--link); text-decoration: underline; }
+.setup__terms { margin: 0; padding: 8px 10px; max-height: 120px; overflow: auto; font-size: 12px; border-left: 3px solid var(--line-strong); white-space: pre-wrap; color: var(--muted); }
+.setup__check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.setup__chosen { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-radius: 12px; background: var(--bot-bg); color: var(--bot-text); }
+.setup__field { display: flex; flex-direction: column; gap: 4px; }
+.setup__field .ma2-field { width: 100%; }
+.setup__actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.setup__gap { flex: 1; }
+.setup__skip { border-color: transparent; color: var(--muted); }

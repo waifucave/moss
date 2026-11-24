@@ -1,6 +1,6 @@
 // Alpha's server (her `host.entry`): her stage's keeper, her `stage` MCP server, her hooks, her commands, and what her
 // tab calls (`host.call`). It runs in her tree's own fenced plugin process, like any third-party plugin's, with no
-// network and no capability beyond reading Clover's state: her tree declares none (a test holds it to that).
+// network and no capability beyond reading MOSS's state: her tree declares none (a test holds it to that).
 //
 // Exports (the plugin SDK's `HostModule` and handlers):
 //   start(api) / stop(reason)     loads the stage from her store; writes it back on stop
@@ -17,13 +17,11 @@ import { StageStore, type StageApi } from "./store";
 import { replyGist } from "./stage";
 // Types only (erased when it runs): her server has no dependencies, so the SDK is named by its path.
 import type { ConversationApi, PluginSelf, SettingsApi } from "../../../packages/plugin-sdk/src/api/plugin-api";
-import type { AvatarApi } from "../../../packages/plugin-sdk/src/catalogs/avatar-cues";
 import { runStageTool, STAGE_TOOLS } from "./tools";
 
 interface AlphaApi extends StageApi {
   readonly plugin?: Pick<PluginSelf, "id">;
   readonly settings: Pick<SettingsApi, "get"> & Partial<Pick<SettingsApi, "set">>;
-  readonly avatar?: Pick<AvatarApi, "cue" | "catalogue" | "watch">;
   /** `conversation.read`: the pin reads the reply it pins from the log. */
   readonly conversation?: Partial<Pick<ConversationApi, "get" | "history">>;
 }
@@ -65,7 +63,7 @@ export const onToolAfter = (args: HookArgs) => { movedAt = Date.now(); return ho
 export const onTurnEnd = (args: HookArgs) => { movedAt = 0; return hooks().onTurnEnd(args); };
 
 /** Her line on the island (`island.line`, the island's own point: `{ id: "activity", handler: "islandLine" }`): what she is
- *  doing now, in words and one icon, while a turn is running; nothing otherwise. The island asks when Clover isn't in front,
+ *  doing now, in words and one icon, while a turn is running; nothing otherwise. The island asks when MOSS isn't in front,
  *  and stops asking while she answers nothing until a bot starts work; idle, this is one comparison and no read. It draws the
  *  line in its own style under her name; she sets only these words. The tool's label is the one her stage already shows (its
  *  name and a file's name, never a path). */

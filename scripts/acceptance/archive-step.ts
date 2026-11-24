@@ -2,7 +2,8 @@
 // home (written into the home's session store before the daemon starts, as that app kept it) is listed on the Archive
 // page by its title, opens read-only, and its transcript shows what was said, the user's message and the reply.
 import { SessionStore } from "../../packages/core/src/sessions/store";
-import { clickTree, escape, fail, SIDEBAR_ITEMS, treeDocs, until, type ExampleCtx } from "./example-steps";
+import { clickTree, escape, fail, frames, SIDEBAR_ITEMS, treeDocs, until, type ExampleCtx } from "./example-steps";
+import { pressUntilShown } from "./click-until";
 
 export const ARCHIVE_STEP = "the archive: a code session the previous app left in the home is listed on the Archive page by its title, opens read-only, and its transcript shows the user's message and the reply";
 
@@ -32,7 +33,14 @@ export async function archiveStep(ctx: ExampleCtx): Promise<string> {
   // From the window's own sidebar, as the user reaches it on any tab (Alpha's too: the stock sidebar is beside every tab), out of any dialog first.
   await escape(cdp);
   for (const d of await treeDocs(cdp)) await cdp.evaluate(d.session, "document.querySelector('.cl-settings__close')?.click()").catch(() => undefined);
-  await clickTree(cdp, "the sidebar's Archive row", SIDEBAR_ITEMS, "Archive");
+  // The sidebar draws its session list after its first draw, which moves the Archive row down: a press aimed at the row's first place can
+  // land on a session instead. Pressed again, the row found anew, until the Archive page's list is drawn.
+  const opened = await pressUntilShown({
+    press: () => clickTree(cdp, "the sidebar's Archive row", SIDEBAR_ITEMS, "Archive"),
+    shown: async () => { for (const d of await treeDocs(cdp)) if (await cdp.centerOf(d.session, ".cl-archive__list").catch(() => undefined) !== undefined) return true; return false; },
+    tries: 4, waitMs: 6_000, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now(),
+  });
+  if (opened === 0) fail(`the Archive row was pressed 4 times and the Archive page never drew (${await frames(cdp)})`);
   await clickTree(cdp, `the old session in the Archive list (${ARCHIVE_TITLE})`, "button.cl-archive__session", ARCHIVE_TITLE, 30_000);
   const text = await until("its transcript in the reader", 30_000, async () => {
     let all = "";

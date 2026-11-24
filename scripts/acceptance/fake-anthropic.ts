@@ -5,10 +5,10 @@
 //   ACCEPTANCE-ECHO   → a `tool_use` of the tool whose name ends in `Echo` (the fixture plugin's MCP tool)
 //   ACCEPTANCE-STDIO  → a `tool_use` of the tool whose name ends in `StdioProbe` (the fixture's stdio server's tool)
 //   ACCEPTANCE-STAGE <mood> → a `tool_use` of the tool whose name ends in `__set_mood` (Alpha's stage) with that mood
-//   ACCEPTANCE-AGENT <root> → a `tool_use` of `Agent`: Alpha's study-buddy definition on clover-code in <root>, with
+//   ACCEPTANCE-AGENT <root> → a `tool_use` of `Agent`: Alpha's study-buddy definition on moss-code in <root>, with
 //                       the brief `ACCEPTANCE-CHILD …`
 //   ACCEPTANCE-CHILD  → the child agent's own turn: text, `CHILD_REPORT`
-//   ACCEPTANCE-AGENT-ECHO <root> → an `Agent`: Alpha's study-buddy on clover-code in <root>, with the brief
+//   ACCEPTANCE-AGENT-ECHO <root> → an `Agent`: Alpha's study-buddy on moss-code in <root>, with the brief
 //                       `ACCEPTANCE-CHILD-ECHO …`
 //   ACCEPTANCE-CHILD-ECHO → an agent's turn (a bot's or the user's coding session): a `tool_use` of the echo plugin's
 //                       tool on its bridge (`BRIDGE_ECHO`: never a bot's own Echo) with `acceptance-child-ping`; its
@@ -32,7 +32,7 @@
 //   ACCEPTANCE-NETCMD-OUTSIDE <url> → the same `Bash` with `dangerouslyDisableSandbox: true` (it asks to leave the sandbox)
 //   ACCEPTANCE-ROUTINE-NETCMD <url> → a `Routine` (name `Outside probe`, a once-a-year schedule) whose instructions are
 //                       `ACCEPTANCE-NETCMD-OUTSIDE <url>`: its side thread makes the flagged call (`routine.runNow`)
-//   ACCEPTANCE-AGENT-NETCMD <root> <url> → an `Agent`: Alpha's study-buddy on clover-code in <root>, with the brief
+//   ACCEPTANCE-AGENT-NETCMD <root> <url> → an `Agent`: Alpha's study-buddy on moss-code in <root>, with the brief
 //                       `ACCEPTANCE-NETCMD-OUTSIDE <url>`: the child agent makes the flagged call
 //                       (each of these four is called once in its turn, a deferred tool loaded through Glossary first)
 //   ACCEPTANCE-SEARCH → a `tool_use` of the tool whose name ends in `WebSearch` (the bundled web plugin's), which the
@@ -192,10 +192,15 @@ export function requestRefusal(body: WireBody, betaHeader: string | null): strin
 
 /** The user text from its last directive on (`ACCEPTANCE-SLOW`, `-HOLDTOOL`, `-ECHO`, `-STDIO`, `-FETCH`, `-SEARCH`, `-WRITE`, `-TAG`,
  *  `-REPLY`): the newest message's, when an unanswered one came before it in the same text. All of it when it has none. */
+/** A background agent's report folded into a turn (`<task-notification …>…</task-notification>`, a mid-turn push) is not the user's
+ *  message: its words (an earlier row's agent can finish during a later row's turn) carry no directive for this turn. */
+export const withoutNotifications = (text: string): string => text
+  .replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "")
+  .replace(/<task-notification[\s\S]*?(?:<\/task-notification>|$)/g, "");
 const DIRECTIVE = /ACCEPTANCE-(?:NETPROBE|NETCMD|ROUTINE|SLOW|STREAM|HOLDTOOL|ECHO|STDIO|FETCH|SEARCH|WRITE|EDIT|BASH|READ|TAG|REPLY|AGENT|CHILD|SHELL|FAIL)\b/;
 
-/** The echo plugin's tool on an agent's bridge: `mcp__<the session's bridge, clover_ and 16 hex>__<its server's key>__Echo`. */
-export const BRIDGE_ECHO = /^mcp__clover_[0-9a-f]{16}__acceptance-echo-echo__Echo$/;
+/** The echo plugin's tool on an agent's bridge: `mcp__<the session's bridge, moss_ and 16 hex>__<its server's key>__Echo`. */
+export const BRIDGE_ECHO = /^mcp__moss_[0-9a-f]{16}__acceptance-echo-echo__Echo$/;
 
 /** The command that needs the network (the outside-the-sandbox step's): one request to <url>, its body printed. The
  *  run's own loopback server is the target, never the real network. */
@@ -209,7 +214,7 @@ export function netCommandCall(said: string): { tool: string; input: Record<stri
   const routine = /ACCEPTANCE-ROUTINE-NETCMD (\S+)/.exec(said);
   if (routine !== null) return { tool: "Routine", input: { name: "Outside probe", instructions: `ACCEPTANCE-NETCMD-OUTSIDE ${routine[1]}`, schedule: "0 3 1 1 *" } };
   const agent = /ACCEPTANCE-AGENT-NETCMD (\S+) (\S+)/.exec(said);
-  if (agent !== null) return { tool: "Agent", input: { agent: "alpha:study-buddy", backend: "clover-code", root: agent[1], description: "Outside probe", prompt: `ACCEPTANCE-NETCMD-OUTSIDE ${agent[2]}` } };
+  if (agent !== null) return { tool: "Agent", input: { agent: "alpha:study-buddy", backend: "moss-code", root: agent[1], description: "Outside probe", prompt: `ACCEPTANCE-NETCMD-OUTSIDE ${agent[2]}` } };
   const outside = /ACCEPTANCE-NETCMD-OUTSIDE (\S+)/.exec(said);
   if (outside !== null) return { tool: "Bash", input: { command: netCommand(outside[1]!), description: "Fetch the probe page", dangerouslyDisableSandbox: true } };
   const inside = /ACCEPTANCE-NETCMD (\S+)/.exec(said);
@@ -226,13 +231,20 @@ export function newestDirective(text: string): string {
   return at < 0 ? text : text.slice(at);
 }
 
-export function startFakeAnthropic(o: { key: string; writePath: string; writeContent: string; ordinaryWritePath?: string; composedFetchUrl?: string; linkedFetchUrl?: string; hitFetchUrl?: string }): FakeProvider {
+export function startFakeAnthropic(o: { key: string; writePath: string; writeContent: string; ordinaryWritePath?: string; composedFetchUrl?: string; linkedFetchUrl?: string; hitFetchUrl?: string;
+  /** The live preview's (scripts/preview): the title a session's title request gets, by the request's text (`USER MESSAGE:` and the first message); undefined answers as always. */
+  titleFor?: (requestText: string) => string | undefined;
+  /** The live preview's: how long an `ACCEPTANCE-SLOW` turn is held, where the acceptance's is two minutes. */
+  slowHoldMs?: number }): FakeProvider {
   const requests: FakeRequest[] = [];
   const healed = new Set<string>();
   let n = 0;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
+    // No idle timeout: a held turn (ACCEPTANCE-SLOW) sends nothing for up to two minutes, and Bun's default of 10 s cuts such a request
+    // (the turn ends in an error the release row, which opens an app after the turn started, never sees as running).
+    idleTimeout: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
       const key = req.headers.get("x-api-key");
@@ -276,12 +288,14 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
           else if (b.type === "tool_removal") record.tools = record.tools.filter((t) => t !== name);
         }
       }
-      const last = messages[messages.length - 1];
+      // The last message of the conversation's own: a mid-conversation `system` message after it (the runtime's tool
+      // changes, sent after the user's turn) isn't what the request asks.
+      const last = [...messages].reverse().find((m) => m.role !== "system");
       const lastBlocks = Array.isArray(last?.content) ? (last!.content as Block[]) : [];
       // A user turn that carries results AND a new message with a directive (the runtime's own results for calls a stop
       // cut off, sent with the next message): the message is what this request asks, not the results.
       const lastSaid = last?.role === "user" ? textOf(lastBlocks.filter((b) => b.type === "text")) : "";
-      const carriesMessage = DIRECTIVE.test(lastSaid);
+      const carriesMessage = DIRECTIVE.test(withoutNotifications(lastSaid));
       const result = carriesMessage ? undefined : lastBlocks.find((b) => b.type === "tool_result");
       if (result !== undefined) {
         const images = Array.isArray(result.content) ? (result.content as Block[]).filter((b) => b.type === "image").length : 0;
@@ -289,7 +303,7 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       }
       const lastUser = carriesMessage ? last : [...messages].reverse().find((m) => m.role === "user" && !(Array.isArray(m.content) && m.content.some((b) => b.type === "tool_result")));
       record.lastUserText = (carriesMessage ? lastSaid : textOf(lastUser?.content)).slice(-4000);
-      if (carriesMessage && lastBlocks.some((b) => b.type === "tool_result")) console.error(`acceptance fake: a user turn with ${lastBlocks.filter((b) => b.type === "tool_result").length} tool result(s) and a new message: acting on the message`);
+      if (carriesMessage && lastBlocks.some((b) => b.type === "tool_result")) console.error(`acceptance fake: a user turn with ${lastBlocks.filter((b) => b.type === "tool_result").length} tool result(s) and a new message: acting on the message ${JSON.stringify(withoutNotifications(lastSaid).slice(0, 200))}`);
       // What the fake acts on: the newest directive in that text. A turn quit before its answer (the reopen steps')
       // leaves its message unanswered, and the next request carries it into the same user text: the upgrade pair's
       // step 4 ("ACCEPTANCE-TAG-…") once got the held slow turn of an old run's "ACCEPTANCE-SLOW-…".
@@ -298,10 +312,20 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
         console.error(`acceptance fake: the user text carries an earlier directive before the newest: ${JSON.stringify(record.lastUserText.slice(0, record.lastUserText.length - said.length).slice(-120))} then ${JSON.stringify(said.slice(0, 80))}; acting on the newest`);
       }
       requests.push(record);
+      // A session's title request (the engine's titler: "USER MESSAGE:" then the first message) held for
+      // MOSS_ACCEPTANCE_TITLE_DELAY_MS, so a title lands well after the turn that asked for it: a row that waits on what a
+      // session's sidebar row shows meets its id first and its title later (the race a local run forces with it).
+      const titleDelay = Number(process.env["MOSS_ACCEPTANCE_TITLE_DELAY_MS"] ?? 0);
+      if (titleDelay > 0 && record.lastUserText.startsWith("USER MESSAGE:")) await Bun.sleep(Math.min(titleDelay, 60_000));
       const refused = requestRefusal(body as WireBody, record.beta);
       if (refused !== undefined && record.keyMatched) {
         record.answered = "400";
         record.refused = refused;
+        // The request's shape, for whoever replays it (tool names, their deferral, and each system message's tool changes
+        // by index; never a text or a key): what the refusal was about.
+        const b = body as WireBody;
+        const changes = (b.messages ?? []).flatMap((m, i) => (m.role === "system" ? blocksOf(m).filter((x) => x.type !== "text").map((x) => `${i}:${String(x.type)}:${String((x.tool as { name?: unknown; type?: unknown } | undefined)?.type ?? "")}:${String((x.tool as { name?: unknown } | undefined)?.name ?? (x as { name?: unknown }).name ?? "")}`) : []));
+        console.error(`acceptance fake: refused (${refused.slice(0, 160)}): ${b.messages?.length ?? 0} message(s); tools ${JSON.stringify((b.tools ?? []).map((t) => `${String(t.name)}${t.defer_loading === true ? "(deferred)" : ""}`))}; system tool changes ${JSON.stringify(changes)}`);
         return Response.json({ type: "error", error: { type: "invalid_request_error", message: refused } }, { status: 400 });
       }
       if (!record.keyMatched) {
@@ -316,20 +340,22 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       }
       const id = `msg_acceptance_${++n}`;
       const model = body.model ?? "acceptance";
-      if (said.includes("ACCEPTANCE-STREAM") && result === undefined) {
+      // The preview's titles (`titleFor`): a title request is answered with its title whatever directive its first message carries.
+      const titleText = record.lastUserText.startsWith("USER MESSAGE:") ? o.titleFor?.(record.lastUserText) : undefined;
+      if (said.includes("ACCEPTANCE-STREAM") && result === undefined && titleText === undefined) {
         record.answered = "stream";
         return streamTurn(req.signal, id, model, record.stream);
       }
-      if (said.includes("ACCEPTANCE-SLOW") && result === undefined) {
+      if (said.includes("ACCEPTANCE-SLOW") && result === undefined && titleText === undefined) {
         record.answered = "slow";
-        return slowTurn(req.signal, id, model, record.stream);
+        return slowTurn(req.signal, id, model, record.stream, o.slowHoldMs);
       }
       let content: Record<string, unknown>[];
       let stop: string;
-      // A shell directive's turn, also when Clover's note after a grant came as a user message of its own: the
+      // A shell directive's turn, also when MOSS's note after a grant came as a user message of its own: the
       // directive is then the user message before it.
       const shellFrom = said.includes("ACCEPTANCE-SHELL-") ? lastUser
-        : record.lastUserText.includes("Clover granted your shell commands")
+        : record.lastUserText.includes("MOSS granted your shell commands")
           ? [...messages].reverse().find((m) => m.role === "user" && textOf(m.content).includes("ACCEPTANCE-SHELL-") && !(Array.isArray(m.content) && m.content.some((b) => b.type === "tool_result")))
           : undefined;
       const shell = shellFrom === undefined ? undefined : shellStep(newestDirective(textOf(shellFrom.content)), messages, shellFrom, record);
@@ -351,14 +377,19 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
         tool: callLine[1]!,
         input: (() => { try { return JSON.parse(callLine[2]!) as Record<string, unknown>; } catch { return undefined; } })(),
       });
-      const callTool = callWant === undefined ? undefined : record.tools.find((t) => t === callWant.tool || t.endsWith(`__${callWant.tool}`));
+      const forceLine = /ACCEPTANCE-FORCE (\S+) (\{.*\})\s*$/s.exec(said);
+      const forceLoadLine = /ACCEPTANCE-FORCE-LOADED (\S+) (\S+) (\{.*\})\s*$/s.exec(said);
+      const callTool = callWant === undefined ? undefined : record.tools.find((t) => toolNamed(t, callWant.tool));
       const callInput = callWant?.input;
       const callDeferred = callTool !== undefined && (body.tools ?? []).some((t) => t.name === callTool && (t as { defer_loading?: unknown }).defer_loading === true);
       const callLoaded = callTool !== undefined && messages.some((m) => m.role === "system" && Array.isArray(m.content) && (m.content as { type?: string; tool?: { name?: unknown } }[]).some((b) => b.type === "tool_addition" && b.tool?.name === callTool));
       // A plugin's Review (the internal `reviewer.model` job, registry/plugin-review.ts): its report, naming the plugin
       // it was given, so the run sees the job got that plugin's tree.
-      const reviewing = JSON.stringify((body as { system?: unknown }).system ?? "").includes("You review a plugin for Clover");
-      if (reviewing) {
+      const reviewing = JSON.stringify((body as { system?: unknown }).system ?? "").includes("You review a plugin for MOSS");
+      if (titleText !== undefined) {
+        content = [{ type: "text", text: titleText }];
+        stop = "end_turn";
+      } else if (reviewing) {
         const reviewed = /PLUGIN: (\S+)/.exec(record.lastUserText)?.[1] ?? /PLUGIN: (\S+)/.exec(textOf(messages[0]?.content))?.[1] ?? "unknown";
         content = [{ type: "text", text: `${REVIEW_MARK} ${reviewed}: it echoes text back. Nothing odd found.` }];
         stop = "end_turn";
@@ -366,6 +397,20 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
         content = shell;
         stop = shell[0]!.type === "tool_use" ? "tool_use" : "end_turn";
         if (shell[0]!.type === "tool_use") record.toolUse = String(shell[0]!.name);
+      } else if (forceLoadLine !== null && glossary !== undefined && !usedSince(glossary)) {
+        // `ACCEPTANCE-FORCE-LOADED <full name> <bridge name> <json>`: the model loads the tool through Glossary (the bridge's name), and in ITS NEXT STEP OF THE SAME TURN calls it by its full name.
+        content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: glossary, input: { load: forceLoadLine[2]! } }];
+        stop = "tool_use";
+        record.toolUse = glossary;
+      } else if (forceLoadLine !== null && !usedSince(forceLoadLine[1]!)) {
+        content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: forceLoadLine[1]!, input: (() => { try { return JSON.parse(forceLoadLine[3]!) as Record<string, unknown>; } catch { return {}; } })() }];
+        stop = "tool_use";
+        record.toolUse = forceLoadLine[1]!;
+      } else if (forceLine !== null && result === undefined) {
+        // A call by an exact name the request does not offer (`ACCEPTANCE-FORCE <full name> <json>`): what a model that guessed the name would send.
+        content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: forceLine[1]!, input: (() => { try { return JSON.parse(forceLine[2]!) as Record<string, unknown>; } catch { return {}; } })() }];
+        stop = "tool_use";
+        record.toolUse = forceLine[1]!;
       } else if (callWant !== undefined && (callTool === undefined || callInput === undefined) && result === undefined) {
         content = [{ type: "text", text: `ACCEPTANCE-NO-CALL-TOOL ${callWant.tool}${callInput === undefined ? " (its input isn't JSON)" : ""}` }];
         stop = "end_turn";
@@ -423,7 +468,7 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
           content = [{ type: "text", text: "ACCEPTANCE-NO-AGENT-TOOL" }];
           stop = "end_turn";
         } else {
-          content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: tool, input: { agent: "alpha:study-buddy", backend: "clover-code", root, description: "Echo probe", prompt: "ACCEPTANCE-CHILD-ECHO: call the echo tool and say what it answered." } }];
+          content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: tool, input: { agent: "alpha:study-buddy", backend: "moss-code", root, description: "Echo probe", prompt: "ACCEPTANCE-CHILD-ECHO: call the echo tool and say what it answered." } }];
           stop = "tool_use";
           record.toolUse = tool;
         }
@@ -437,7 +482,7 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
           content = [{ type: "text", text: "ACCEPTANCE-NO-AGENT-TOOL" }];
           stop = "end_turn";
         } else {
-          content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: tool, input: { agent: "alpha:study-buddy", backend: "clover-code", root, description: "Study notes", prompt: "ACCEPTANCE-CHILD: read the folder and say you're done." } }];
+          content = [{ type: "tool_use", id: `toolu_acceptance_${n}`, name: tool, input: { agent: "alpha:study-buddy", backend: "moss-code", root, description: "Study notes", prompt: "ACCEPTANCE-CHILD: read the folder and say you're done." } }];
           stop = "tool_use";
           record.toolUse = tool;
         }
@@ -611,10 +656,10 @@ function streamTurn(signal: AbortSignal, id: string, model: string, stream: bool
 
 /** A turn that keeps running (ACCEPTANCE-SLOW): the stream's start and a partial text at once, then nothing for two
  *  minutes or until the caller drops the request; a non-streaming request waits the same and then answers. */
-function slowTurn(signal: AbortSignal, id: string, model: string, stream: boolean): Response | Promise<Response> {
+function slowTurn(signal: AbortSignal, id: string, model: string, stream: boolean, holdMs = 120_000): Response | Promise<Response> {
   const usage = { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   const hold = (): Promise<void> => new Promise((resolve) => {
-    const t = setTimeout(resolve, 120_000);
+    const t = setTimeout(resolve, holdMs);
     signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
   if (!stream) {
@@ -641,3 +686,11 @@ function slowTurn(signal: AbortSignal, id: string, model: string, stream: boolea
 
 /** What the fake's plugin Review report starts with (the acceptance run's Review clause looks for it). */
 export const REVIEW_MARK = "ACCEPTANCE-REVIEW";
+
+/** Whether the offered `name` is the tool `tool`: by name, by the end of its name (`mcp__<server>__<tool>`), or as a code
+ *  session's bridge shortens a long one (`<server cut>__<tool>_<hex>`, agents/plugin-reach.ts `bridgeShortName`). */
+export function toolNamed(name: string, tool: string): boolean {
+  if (name === tool || name.endsWith(`__${tool}`)) return true;
+  const i = name.lastIndexOf(`__${tool}_`);
+  return i >= 0 && /^[0-9a-f]{6,16}$/.test(name.slice(i + tool.length + 3));
+}

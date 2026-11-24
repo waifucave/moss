@@ -13,8 +13,8 @@
 //   its session and seq; nothing the offering plugin adds rides along, and no bytes do: the claiming part reads the
 //   file or the message through its own plugin API, where the daemon checks its own access.
 // Sealed card frames are outside both (E-M3).
-import type { OpenTarget } from "@waifucave/clover-plugin-sdk/ui/bridge";
-import { SessionId, TreePath } from "@waifucave/clover-protocol";
+import type { OpenTarget } from "@waifucave/moss-plugin-sdk/ui/bridge";
+import { SessionId, TreePath } from "@waifucave/moss-protocol";
 
 export interface MenuItem {
   id?: string;
@@ -102,8 +102,8 @@ export function menuPoint(point: { x: number; y: number }, chain: readonly Rect[
 export const DRAG_KINDS: Readonly<Record<string, string | null>> = {
   "text/plain": null,
   "text/uri-list": null,
-  "application/x-clover-file": "files",
-  "application/x-clover-message": "conversation.read",
+  "application/x-moss-file": "files",
+  "application/x-moss-message": "conversation.read",
 };
 
 export const DRAG_GRANT_TTL_MS = 60_000;
@@ -155,11 +155,11 @@ export function checkDragOffer(raw: unknown, capabilities: ReadonlySet<string>):
   if (needs !== null && needs !== undefined && !capabilities.has(needs)) return { error: `the offering plugin lacks ${needs}` };
   const size = JSON.stringify(data ?? null).length;
   if (size > DRAG_DATA_MAX) return { error: "the data is too large" };
-  if (type === "application/x-clover-file") {
+  if (type === "application/x-moss-file") {
     const grant = mintFileGrant(data);
     return "error" in grant ? grant : { type, data: grant };
   }
-  if (type === "application/x-clover-message") {
+  if (type === "application/x-moss-message") {
     const grant = mintMessageGrant(data);
     return "error" in grant ? grant : { type, data: grant };
   }
@@ -173,10 +173,10 @@ export function mayClaim(type: string, capabilities: ReadonlySet<string>): boole
   return needs === null || (needs !== undefined && capabilities.has(needs));
 }
 
-/** Where a surface window sits on its display (`window.placement`, else by the surface: the island at the top centre
- *  (at the notch, where there is one), the pill at the bottom centre, anything else centred). */
-export function surfacePlacement(input: { surface: string; placement?: string; size: { width: number; height: number }; display: Rect; workArea: Rect }): Rect {
-  const where = input.placement ?? (input.surface === "island" ? "top" : input.surface === "pill" ? "bottom" : "center");
+/** Where a surface window sits on its display: where its manifest's `window.placement` says (`top-center`: at the top, at the notch
+ *  where there is one; `bottom-center`), else centred. Nothing here names a surface. */
+export function surfacePlacement(input: { placement?: string; size: { width: number; height: number }; display: Rect; workArea: Rect }): Rect {
+  const where = input.placement ?? "center";
   const { width, height } = input.size;
   const w = input.workArea;
   const x = Math.round(input.display.x + (input.display.width - width) / 2);
@@ -249,16 +249,10 @@ export class ClickThrough {
   }
 }
 
-/** Surfaces the `clover` tree ships may float above everything, on every Space (the island, the pill); in 1.111.1 any
- *  other plugin's surface is an ordinary window level (the E-M1 review's ruling). */
-export function surfaceMayFloat(pluginId: string): boolean {
-  return pluginId.split("/")[0] === "clover";
-}
-
-/** The largest surface a plugin outside the `clover` tree may have. */
+/** The largest surface a plugin without the `overlay` capability may have. */
 export const THIRD_PARTY_SURFACE_MAX = { width: 800, height: 600 } as const;
 
-/** A surface's size, as asked, kept to the display's work area, and for a plugin outside the `clover` tree to
+/** A surface's size, as asked, kept to the display's work area, and for a plugin without `overlay` (`trusted: false`) to
  *  `THIRD_PARTY_SURFACE_MAX`; each side at least 40 by 24. A side not asked keeps `current`'s. */
 export function surfaceSize(asked: { width?: unknown; height?: unknown }, current: { width: number; height: number }, input: { trusted: boolean; workArea: { width: number; height: number } }): { width: number; height: number } {
   const maxW = Math.max(40, input.trusted ? input.workArea.width : Math.min(THIRD_PARTY_SURFACE_MAX.width, input.workArea.width));
@@ -306,6 +300,12 @@ export class MenuGate {
 /** How soon after the user's key press or click a send it started must reach the main process. */
 export const SEND_INPUT_WINDOW_MS = 1_000;
 
+/** How long after a mouse press its frame's report (`seen`: the preload's trusted pointerdown) may still name where it landed. */
+export const PRESS_REPORT_MS = 1_000;
+
+/** How long after a press's release the frame may send once (hold-to-talk: the release, then the transcription). */
+export const SEND_RELEASE_WINDOW_MS = 30_000;
+
 /** Sends counted as the user's (§5.5): one key press or click the main process saw come to the window covers one
  *  send, within a second; any other send is refused. */
 export class SendGate {
@@ -317,16 +317,199 @@ export class SendGate {
     this.lastInput.set(windowId, this.now());
   }
 
-  take(windowId: number): boolean {
+  take(windowId: number, arrived: number = this.now()): boolean {
     const at = this.lastInput.get(windowId);
     this.lastInput.delete(windowId);
-    return at !== undefined && this.now() - at <= SEND_INPUT_WINDOW_MS;
+    const ok = at !== undefined && arrived - at <= SEND_INPUT_WINDOW_MS;
+    if (ok) {
+      // One press, one send, whichever rule spends it: this press's hold is spent (a key's send comes on its key down, a click's on
+      // its release), and an allowance its release already gave is gone; `takeIn` can't spend the same press again.
+      const h = this.holds.get(windowId);
+      if (h !== undefined) h.spent = true;
+      const p = this.lastPress.get(windowId);
+      if (p !== undefined) p.spent = true;
+      this.dropAllowances(windowId);
+    }
+    return ok;
   }
 
   forget(windowId: number): void {
     this.lastInput.delete(windowId);
+    this.holds.delete(windowId);
+    this.lastPress.delete(windowId);
+    this.dropAllowances(windowId);
+  }
+
+  // F2 (read 52): the press is the caller's frame's, not the window's. A gestured call from a part (the door for parts, the
+  // composer spot, the pickers, the shell API, an open) spends only the window's latest press, within the second, and only when
+  // that press landed IN THE CALLER'S OWN FRAME: the innermost frame of the press's record (`press`: the focused frame at a key
+  // down; `holdFrames`: the frame under the pointer at a mouse down). A press in another plugin's frame, on a sealed card's
+  // button or on the window's own root is not the caller's, and is left unspent for the frame it came to. The bundled tree's
+  // parts share one document (the `moss` layer's): a press anywhere in that document is that document's, as before.
+  private readonly lastPress = new Map<number, Hold>();
+  private readonly waiting = new Map<Hold, (() => void)[]>();
+
+  /** Spends the window's press for a call from `frameId`: true once, within SEND_INPUT_WINDOW_MS, when the press landed in that
+   *  frame (its innermost frame); false (and nothing spent) otherwise. `arrived` is when the call came (before any wait for
+   *  the walk, `settle`): the window is measured to it, so a slow walk never makes a timely call late. */
+  takeIn(windowId: number, frameId: string, arrived: number = this.now()): boolean {
+    // Timed by the press itself (browser-press, read 53's item 6): never one press's frames with another input's time.
+    const p = this.lastPress.get(windowId);
+    if (p === undefined || p.spent || arrived - p.at > SEND_INPUT_WINDOW_MS || arrived < p.at) return false;
+    if (p.frames === undefined || [...p.frames].at(-1) !== frameId) return false;
+    // Spent as `take` spends it: this press, its hold and allowances, and the window's one-second record.
+    p.spent = true;
+    this.lastInput.delete(windowId);
+    const h = this.holds.get(windowId);
+    if (h !== undefined) h.spent = true;
+    this.dropAllowances(windowId);
+    return true;
+  }
+
+  /** The frames the window's latest press landed in (outermost first), for the log line a refused call writes. */
+  pressFrames(windowId: number): readonly string[] | undefined {
+    const f = this.lastPress.get(windowId)?.frames;
+    return f === undefined ? undefined : [...f];
+  }
+
+  /** Waits (at most `ms`) until the window's latest press knows its frames (a mouse press asks the frames under the pointer a
+   *  moment after it): resolves at once when there is none or it is known. */
+  settle(windowId: number, ms = PRESS_REPORT_MS): Promise<void> {
+    const p = this.lastPress.get(windowId);
+    if (p === undefined || p.frames !== undefined) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      const list = this.waiting.get(p) ?? [];
+      list.push(() => { clearTimeout(timer); resolve(); });
+      this.waiting.set(p, list);
+    });
+  }
+
+  private framesKnown(hold: Hold): void {
+    const list = this.waiting.get(hold);
+    this.waiting.delete(hold);
+    for (const done of list ?? []) done();
+  }
+
+  // After a hold (hold-to-talk): the words come only after the release and the transcription, past the second and past the
+  // frame's own activation (Chromium drops it about 5 s after the press). A press AND its release the main process itself saw
+  // (never a page's own events, which don't reach `before-input-event` / `before-mouse-event`) give the frames the press
+  // happened in one send within SEND_RELEASE_WINDOW_MS of the release, with no check of the frame's activation at send time. It
+  // is the pressed frame's own: the frame focused at the key down or under the pointer at the mouse down, never one a page moved
+  // focus to afterwards; not carried across the frame's reload or navigation; spent by the send (one press, one send, in
+  // whichever of those frames it comes); ended by any new press in the window; and a hold nobody released expires.
+  private readonly holds = new Map<number, Hold>();
+  private readonly releases = new Map<string, { windowId: number; at: number; hold: Hold }>();
+
+  /** A press (mouse down, or the first key down of a key) the main process saw in a window: it ends every allowance of the window
+   *  and starts a hold, in `frames` (the focused frame and its ancestors for a key; a mouse press's are given by `holdFrames`
+   *  once the frame under the pointer is known). */
+  press(windowId: number, press: { kind: "key" | "mouse"; key: string; frames?: readonly string[] }): Hold {
+    this.input(windowId);
+    this.dropAllowances(windowId);
+    const h: Hold = { kind: press.kind, key: press.key, at: this.now(), spent: false, ...(press.frames !== undefined ? { frames: new Set(press.frames) } : {}) };
+    this.holds.set(windowId, h);
+    const was = this.lastPress.get(windowId);
+    if (was !== undefined) this.framesKnown(was);
+    this.lastPress.set(windowId, h);
+    return h;
+  }
+
+  /** A frame's report that its own document received a trusted pointerdown (the preload's `moss:press-seen`): `frames` is
+   *  that frame and the frames it sits in. It names where the window's latest mouse press landed, only while that press has no
+   *  frames yet (the first report wins) and is recent; anything else is dropped. A press nobody reports (a drag region, no
+   *  document) keeps no frames, and no frame takes it. True when it was taken. */
+  seen(windowId: number, frames: readonly string[]): boolean {
+    const p = this.lastPress.get(windowId);
+    if (p === undefined || p.kind !== "mouse" || p.frames !== undefined || this.now() - p.at > PRESS_REPORT_MS || frames.length === 0) return false;
+    this.holdFrames(windowId, p, frames);
+    return true;
+  }
+
+  /** The frames a mouse press happened in, once found (the release may already have come: it is credited now). */
+  holdFrames(windowId: number, hold: Hold, frames: readonly string[]): void {
+    // The press's own record knows where it landed (a gestured call reads it, `takeIn`), whether or not its hold is still open.
+    if (this.lastPress.get(windowId) === hold) {
+      if (hold.frames === undefined) hold.frames = new Set(frames);
+      this.framesKnown(hold);
+    }
+    if (this.holds.get(windowId) !== hold) return;
+    hold.frames = new Set(frames);
+    if (hold.releasedAt !== undefined) this.credit(windowId, hold);
+  }
+
+  /** The release of the press the main process saw: the same kind and key (a different key's release, or a right button's, is
+   *  not it). A key's release counts only in a frame the key went down in (`frame`: the focused frame at the key up). */
+  release(windowId: number, up: { kind: "key" | "mouse"; key: string; frame?: string }): void {
+    const h = this.holds.get(windowId);
+    if (h === undefined || h.kind !== up.kind || h.key !== up.key) return;
+    if (this.now() - h.at > SEND_HOLD_MAX_MS) { this.holds.delete(windowId); return; }
+    if (h.spent) { this.holds.delete(windowId); return; }
+    if (up.kind === "key" && (up.frame === undefined || h.frames === undefined || !h.frames.has(up.frame))) return;
+    h.releasedAt = this.now();
+    if (h.frames !== undefined) this.credit(windowId, h);
+  }
+
+  /** The window's newest press: a held key binding's down takes it (main's `press` ran for that same key down first). */
+  newest(windowId: number): Hold | undefined {
+    return this.lastPress.get(windowId);
+  }
+
+  /** A held key binding's release that the main process saw (§5.4 `hold`: the up of its key or of one of its modifiers),
+   *  `frames` being the binding owner's documents in this window (none for a plugin without `user.send`). They get the
+   *  allowance a press and release in them gives: one send within SEND_RELEASE_WINDOW_MS, shared with the press's own frames
+   *  (one press, one send), ended by any new press in the window (`hold` is then no longer the newest), lost when a frame
+   *  navigates, and nothing once the press was spent or is older than SEND_HOLD_MAX_MS. */
+  creditHeld(windowId: number, hold: Hold, frames: readonly string[]): void {
+    if (this.lastPress.get(windowId) !== hold || hold.spent || this.now() - hold.at > SEND_HOLD_MAX_MS) return;
+    hold.releasedAt ??= this.now();
+    for (const f of frames) this.releases.set(f, { windowId, at: hold.releasedAt, hold });
+  }
+
+  private credit(windowId: number, h: Hold): void {
+    this.holds.delete(windowId);
+    for (const f of h.frames ?? []) this.releases.set(f, { windowId, at: h.releasedAt ?? this.now(), hold: h });
+  }
+
+  private dropAllowances(windowId: number): void {
+    for (const [frame, r] of this.releases) if (r.windowId === windowId) this.releases.delete(frame);
+  }
+
+  /** Spends the frame's allowance: true once within SEND_RELEASE_WINDOW_MS of the release, in the window it was seen in; the
+   *  press's other frames lose theirs, and the one-second record of that press goes too (one press, one send). */
+  takeRelease(windowId: number, frameId: string): boolean {
+    const r = this.releases.get(frameId);
+    if (r === undefined || r.windowId !== windowId) return false; // another window's call spends nothing
+    const fresh = this.now() - r.at <= SEND_RELEASE_WINDOW_MS;
+    for (const [f, x] of this.releases) if (x.hold === r.hold) this.releases.delete(f);
+    if (fresh) {
+      this.lastInput.delete(windowId);
+      // Spent: a release of that press still to come (a held key binding's key let go after its modifier) gives nothing more.
+      r.hold.spent = true;
+    }
+    return fresh;
+  }
+
+  /** A frame that navigated, reloaded or went away is a document of its own from now on. */
+  forgetFrame(frameId: string): void {
+    this.releases.delete(frameId);
+    // A press that landed in (or inside) that frame is no frame's now: its outer frames don't inherit it.
+    for (const h of [...this.holds.values(), ...this.lastPress.values()]) if (h.frames?.has(frameId) === true) h.frames = new Set();
   }
 }
+
+/** A press the main process saw, waiting for its release. */
+export interface Hold {
+  kind: "key" | "mouse";
+  key: string;
+  at: number;
+  spent: boolean;
+  frames?: Set<string>;
+  releasedAt?: number;
+}
+
+/** A hold nobody released (a right-button press, a press whose release went to another window) is forgotten after this. */
+export const SEND_HOLD_MAX_MS = 120_000;
 
 /** A gated call's gesture: the call's own frame had transient user activation (`active`, read in the preload, where a
  *  page's script can't set it), AND the main process saw a key press or click come to the window (`take`, which spends it).
@@ -336,7 +519,7 @@ export function frameGesture(active: unknown, take: () => boolean): boolean {
   return active === true && take();
 }
 
-/** A `pill.send` target, checked: a bot, a session, or a `pill.target` entry by its ref. */
+/** A `user.send` target, checked: a bot, a session, or a `pill.target` entry by its ref. */
 export function sendTarget(v: unknown): { bot: string } | { session: string } | { target: string } | undefined {
   if (v === null || typeof v !== "object") return undefined;
   const t = v as Record<string, unknown>;
@@ -385,13 +568,22 @@ export function openTarget(v: unknown): OpenTarget | undefined {
 }
 
 
-/** Who may ask the app to open a place: in 1.111.1, the `clover` tree's parts only (the island's Usage and Devices
- *  tabs); a third party's would bring the main window up over whatever the person is doing. */
-export function mayOpen(pluginId: string): boolean {
-  return pluginId.split("/")[0] === "clover";
+/** Who may ask the app to open a place (Settings at a section, a bot's editor) in the main window: a part whose plugin
+ *  holds `shell.control` (its OK card says it moves MOSS's window's own parts), whichever plugin it is (F2: no door
+ *  checks an id), and only on the user's own press in that frame (electron.ts takes it). */
+export function mayOpen(capabilities: ReadonlySet<string>): boolean {
+  return capabilities.has("shell.control");
 }
 
-/** Where a surface asked to be, kept on its display: inside the display's bounds for the `clover` tree, inside the work
+/** Why a part's open of a place in the main window is refused, or undefined: the capability first, then one press of the
+ *  user's in that frame (`pressed` spends it, only once the capability holds). */
+export function openRefusal(capabilities: ReadonlySet<string>, pressed: () => boolean): string | undefined {
+  if (!mayOpen(capabilities)) return "opening a place in MOSS's window takes the shell.control capability";
+  if (!pressed()) return "opening a place in MOSS's window goes only right after your own key press or click";
+  return undefined;
+}
+
+/** Where a surface asked to be, kept on its display: inside the display's bounds for the `moss` tree, inside the work
  *  area and `THIRD_PARTY_SURFACE_MAX` for anyone else. */
 export function surfaceBounds(asked: unknown, display: { bounds: Rect; workArea: Rect }, trusted: boolean): Rect | undefined {
   if (asked === null || typeof asked !== "object") return undefined;
@@ -424,7 +616,7 @@ export function viewRect(rect: Rect, chain: readonly Rect[]): Rect | undefined {
   return { x: Math.round(x0 + dx), y: Math.round(y0 + dy), width: Math.round(x1 - x0), height: Math.round(y1 - y0) };
 }
 
-/** Who places the Clover Browser's live view: a part whose plugin has `browser`. */
+/** Who places the MOSS Browser's live view: a part whose plugin has `browser`. */
 export function mayPlaceView(capabilities: ReadonlySet<string>): boolean {
   return capabilities.has("browser");
 }
@@ -502,6 +694,13 @@ export class PointerLog {
   pressedIn(windowId: number, rect: Rect): boolean {
     const p = this.last.get(windowId);
     return p !== undefined && this.now() - p.at <= VIEW_USE_WINDOW_MS && inRegions(p, [rect]);
+  }
+
+  /** The person's latest mouse-down in that window (window coordinates), if it is at most `maxAgeMs` old (lane RT: where a
+   *  sealed press was made, for the OS-wide overlap check). */
+  lastDown(windowId: number, maxAgeMs: number): { x: number; y: number } | undefined {
+    const p = this.last.get(windowId);
+    return p !== undefined && this.now() - p.at <= maxAgeMs ? { x: p.x, y: p.y } : undefined;
   }
 
   forget(windowId: number): void {

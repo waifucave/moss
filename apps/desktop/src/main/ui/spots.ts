@@ -3,7 +3,7 @@
 // (test/spots.test.ts).
 //
 // A cell is one spot, or one key of a keyed spot. For a cell the resolver:
-//   * finds the entries that may fill it: the plugin is running (only `clover` and `alpha` in safe mode), its `when`
+//   * finds the entries that may fill it: the plugin is running (only `moss` and `alpha` in safe mode), its `when`
 //     holds in the cell's context, its plugin has every capability the spot `needs`, and its key covers the cell's
 //     (an exact key, then a `*` pattern, then an entry with no key: "an entry with no `key` fills every key that has
 //     no entry of its own");
@@ -18,7 +18,8 @@
 // "The smaller part": the part a plugin dresses is the smallest spot holding all its entries in that tab, a child
 // counting as its own plugin (a send-button plugin dresses the button, a bot's tab look the whole tab, a shell the
 // app). The spots form a tree: the catalog's declarations, and each plugin's `declares` under the spot its entry fills.
-import { SAME_ON_EVERY_TAB, SPOTS, isOwnPanelKey, keyMatches, spotInfo } from "@waifucave/clover-plugin-sdk";
+import { ADDED_KEY, SAME_ON_EVERY_TAB, SPOTS, isAddedKey, keyMatches, spotInfo } from "@waifucave/moss-plugin-sdk";
+import { kindCapability } from "@waifucave/moss-protocol";
 import { SAFE_MODE_PLUGINS, type PointDeclaration, type UiEntry, type UiPlugin } from "./model";
 
 export type Os = "macos" | "windows" | "linux";
@@ -61,17 +62,14 @@ export function nodeId(spot: string, key?: string): string {
   return key === undefined ? spot : `${spot}[${key}]`;
 }
 
-/** The keyed spots whose key is a bot, so the cell's context is that bot. */
-const KEYED_BY_BOT = new Set(["bot.tab", "sidebar.bot"]);
-
 /** Where each catalog spot's declarer sits (spec §5.5): the shell fills `app.root`, the settings part `main` keyed
- *  `settings`, a bot's tab `bot.tab`, and so on. */
+ *  `settings`, a session's tab `main` keyed `agent`, and so on. */
 const CATALOG_PARENT: Readonly<Record<string, string | undefined>> = {
   app: undefined,
   shell: "app.root",
   settings: "main[settings]",
-  "bot-tab": "bot.tab",
-  "bot-stage": "bot.stage",
+  // A session's tab: the conversation over the composer, in `main` keyed `agent` (the panel's `agent` tab draws the same).
+  "session-tab": "main[agent]",
   composer: "composer",
   conversation: "conversation",
   "file-view": undefined,
@@ -85,7 +83,7 @@ export class SpotTree {
 
   constructor(plugins: readonly UiPlugin[]) {
     for (const s of SPOTS) {
-      const p = s.name === "bot.tab" ? "main[bot]" : CATALOG_PARENT[s.declaredBy];
+      const p = CATALOG_PARENT[s.declaredBy];
       if (p !== undefined) this.parent.set(s.name, p);
     }
     for (const plugin of plugins) {
@@ -133,10 +131,24 @@ export class SpotTree {
     return common[0];
   }
 
-  /** The bot tab a node sits in (`bot.tab` or one of its keys), if any. */
-  tabOf(node: string): string | undefined {
-    return this.chain(node).find((n) => n === "bot.tab" || n.startsWith("bot.tab["));
-  }
+}
+
+/** The capabilities a spot's read means, by kind of data (`kindCapability`'s family `conversation.*`). */
+const KIND_READS: ReadonlySet<string> = new Set([kindCapability("conversation.*", "sessions"), kindCapability("conversation.*", "bots")]);
+
+/** What a spot needs in this cell. A spot that needs a read of messages (`sessions.read` in the catalog since lane MC, or
+ *  `conversation.read` in a plugin's own declaration) shows messages, and which capability reads them depends on the
+ *  data (spec revision 19, §3.6), through the one mapping, `kindCapability("conversation.*", kind)`: a code session
+ *  (`coding`, `agent`, every session of MOSS Code's window) is read with `sessions.read`, a bot's conversation (`bot`,
+ *  `side-thread`) with `conversation.read`, and an archived session (the previous app's, whose kind isn't told) or a
+ *  cell whose kind isn't told yet with both. The kind is the cell's own (`ctx.session`): the bundled conversation part
+ *  tells it from the session it shows, heard from the moss layer only, never from the part that placed the spot. */
+export function needsInCell(needs: readonly string[], ctx: Pick<CellContext, "session">): readonly string[] {
+  const kind = ctx.session;
+  const reads = kind === "coding" || kind === "agent" ? [kindCapability("conversation.*", "sessions")]
+    : kind === "bot" || kind === "side-thread" ? [kindCapability("conversation.*", "bots")]
+    : [...KIND_READS];
+  return [...new Set(needs.flatMap((c) => (KIND_READS.has(c) ? reads : [c])))];
 }
 
 /** A spot's declaration as the resolver needs it: the catalog's for a catalog name (a plugin that declares one must
@@ -200,11 +212,9 @@ export function applies(plugin: UiPlugin, e: UiEntry, ctx: CellContext): boolean
   return true;
 }
 
-/** The key an entry fills: its own, or in a bot's own plugin, a keyless `bot.tab` entry takes the bot's id. */
-export function effectiveKey(plugin: UiPlugin, e: UiEntry): string | undefined {
-  if (e.key !== undefined) return e.key;
-  if (plugin.isBot && e.spot === "bot.tab" && e.app !== true) return plugin.id;
-  return undefined;
+/** The key an entry fills: its own. */
+export function effectiveKey(_plugin: UiPlugin, e: UiEntry): string | undefined {
+  return e.key;
 }
 
 /** How closely an entry's key covers a cell's key: 2 exact, 1 a `*` pattern, 0 no key; undefined when it doesn't. */
@@ -248,7 +258,7 @@ export interface CellResult {
   /** In a list spot, entries a plugin's `hide` took out (and which), for Settings to offer back. */
   hiddenByPlugin: { entry: Candidate; by: Candidate }[];
   skipped: Skipped[];
-  /** The entries that lost a single or keyed cell, best first: what a winner may place inside itself with `<Spot entry>` (a bot's own panel around Clover's stock one). */
+  /** The entries that lost a single or keyed cell, best first: what a winner may place inside itself with `<Spot entry>` (a bot's own panel around MOSS's stock one). */
   runnersUp: Candidate[];
   /** Which rule decided the winner over the runner-up, 1–7; 0 when there was no contest or a key decided; 8 for a full
    *  tie, settled by plugin id. */
@@ -267,18 +277,14 @@ function runs(plugin: UiPlugin, ctx: CellContext): boolean {
   return ctx.safeMode !== true || SAFE_MODE_PLUGINS.includes(plugin.topId);
 }
 
-/** The part each plugin dresses around a cell: the smallest node holding its entries in that tab (or in the whole
- *  window outside tabs), a bot's own tab look counting as the whole tab. */
+/** The part each plugin dresses around a cell: the smallest node holding its entries in the window. */
 export function partOf(plugin: UiPlugin, cellNode: string, input: Pick<ResolveInput, "ctx">, tree: SpotTree): string | undefined {
-  const tab = tree.tabOf(cellNode);
   const nodes: string[] = [];
   for (const e of plugin.entries) {
     if (!applies(plugin, e, input.ctx)) continue;
     const node = nodeId(e.spot, effectiveKey(plugin, e));
-    if (tab !== undefined && tree.tabOf(node) === undefined) continue;
     nodes.push(node);
   }
-  if (plugin.isBot && input.ctx.bot === plugin.id && tab !== undefined) nodes.push(nodeId("bot.tab", plugin.id));
   return tree.smallestHolding(nodes);
 }
 
@@ -295,10 +301,10 @@ export function rank(cands: readonly Candidate[], cellNode: string, input: Resol
   const prefer = input.ctx.prefer?.[cellNode] ?? input.ctx.prefer?.[cellNode.replace(/\[.*$/, "")] ?? [];
   const facts = new Map<Candidate, number[]>();
   // A bot's own plugin's entry for a spot of its own tab (no layout naming it) takes the spot from the shipped stock one
-  // (the `clover` tree's), though a plugin that fills one spot alone is a smaller part than the bot's whole tab.
-  const ownHere = cands.some((c) => c.plugin.isBot && c.plugin.topId !== "clover" && input.ctx.bot === c.plugin.id && c.entry.kind !== "style");
+  // (the `moss` tree's), though a plugin that fills one spot alone is a smaller part than the bot's whole tab.
+  const ownHere = cands.some((c) => c.plugin.isBot && c.plugin.topId !== "moss" && input.ctx.bot === c.plugin.id && c.entry.kind !== "style");
   for (const c of cands) {
-    const stock = ownHere && c.plugin.topId === "clover" && c.plugin.source === "bundled";
+    const stock = ownHere && c.plugin.topId === "moss" && c.plugin.source === "bundled";
     const part = stock ? undefined : partOf(c.plugin, cellNode, input, tree);
     const preferAt = prefer.findIndex((r) => refNames(r, c.entry));
     facts.set(c, [
@@ -347,20 +353,27 @@ function userPick(choices: UiChoices, spot: string, key: string | undefined, bot
   return choices.picks.find((p) => matches(p) && p.bot === undefined);
 }
 
-/** The key a part asks the `panel` spot's entries with to get every panel a plugin ADDS (an entry whose key isn't a stock
- *  panel's, §5.5), instead of one key's: the shell lists them for its toggles. */
-export const OWN_PANELS_KEY = "*";
+/** The key a part asks a keyed spot with stock keys (`STOCK_KEYS`: the `panel` spot, `composer.action`) with to get every
+ *  entry a plugin ADDS (an entry whose key isn't a stock one, §5.5), instead of one key's: the shell lists the added panels
+ *  for its toggles, the composer the added buttons. */
+export const OWN_PANELS_KEY = ADDED_KEY;
 
-/** The panels plugins add that apply in this context (the tab's bot and kind of session), in their order: by `order`, then
- *  plugin and id. Each is its own cell's candidate: the shell places an entry by its ref (`<Spot entry>`). Two entries of one
- *  plugin with one key (one per kind of tab) are one panel here: the first that applies. */
+/** The panels plugins add that apply in this context (`addedCandidates` of the `panel` spot). */
 export function ownPanelCandidates(input: Pick<ResolveInput, "plugins" | "ctx">): Candidate[] {
+  return addedCandidates(input, "panel");
+}
+
+/** The entries plugins add to `spot` under keys of their own that apply in this context (the tab's bot and kind of
+ *  session), in their order: by `order`, then plugin and id. Each is its own cell's candidate: the declarer places an entry
+ *  by its ref (`<Spot entry>`). Two entries of one plugin with one key (one per kind of tab) are one here: the first that
+ *  applies. */
+export function addedCandidates(input: Pick<ResolveInput, "plugins" | "ctx">, spot: string): Candidate[] {
   const found: Candidate[] = [];
   const seen = new Set<string>();
   for (const plugin of input.plugins) {
     if (!runs(plugin, input.ctx)) continue;
     for (const entry of plugin.entries) {
-      if (entry.spot !== "panel" || entry.key === undefined || !isOwnPanelKey(entry.key)) continue;
+      if (entry.spot !== spot || entry.key === undefined || !isAddedKey(spot, entry.key)) continue;
       if (entry.kind !== "component" && entry.kind !== "web") continue;
       if (!applies(plugin, entry, input.ctx)) continue;
       const id = `${plugin.id}#${entry.key}`;
@@ -378,8 +391,8 @@ export function resolveCell(input: ResolveInput, spot: string, key?: string): Ce
   const decl = declarationOf(spot, input.plugins);
   const shape: Shape = decl?.shape ?? "single";
   const cellKey = shape === "keyed" ? key : undefined;
-  const ctx: CellContext = cellKey !== undefined && KEYED_BY_BOT.has(spot) ? { ...input.ctx, bot: cellKey } : input.ctx;
-  const inner: ResolveInput = { ...input, ctx, tree };
+  const ctx: CellContext = input.ctx;
+  const inner: ResolveInput = { ...input, tree };
   const node = nodeId(spot, cellKey);
   const choices = input.choices ?? NO_CHOICES;
   const result: CellResult = { spot, ...(cellKey !== undefined ? { key: cellKey } : {}), shape, shown: [], styles: [], hidden: false, conflict: false, hiddenByUser: [], hiddenByPlugin: [], runnersUp: [], skipped: [], decidedBy: 0 };
@@ -409,7 +422,7 @@ export function resolveCell(input: ResolveInput, spot: string, key?: string): Ce
         style.push({ plugin, entry, tier });
         continue;
       }
-      const missing = (decl?.needs ?? []).filter((cap) => !plugin.capabilities.has(cap));
+      const missing = needsInCell(decl?.needs ?? [], ctx).filter((cap) => !plugin.capabilities.has(cap));
       if (missing.length > 0) {
         result.skipped.push({ ref, reason: "needs", detail: missing.join(", ") });
         continue;

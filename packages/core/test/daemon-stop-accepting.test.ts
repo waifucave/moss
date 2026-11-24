@@ -19,11 +19,11 @@ const connects = (path: string): Promise<boolean> => Bun.connect({ unix: path, s
 
 describe.skipIf(process.platform === "win32")("a daemon the pair stops", () => {
   test("takes no new connection from the moment the pair stops it, and its stop ends within the bound", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-stopacc-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-stopacc-"));
     daemon = await startDaemon({
       home, secrets: new FileSecretStore(join(home, "secrets.json")), agentProvider: null, appPeer: "none",
       links: { binary: null, handshake: null, publicTime: null, mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name: "Studio", os: "macos" } },
-      parts: { userHome: mkdtempSync(join(tmpdir(), "clover-stopacc-user-")) },
+      parts: { userHome: mkdtempSync(join(tmpdir(), "moss-stopacc-user-")) },
     });
     expect(await connects(daemon.socketPath)).toBe(true);
     // The pair stops (no app: at once). The daemon's own stop runs a moment later (the pair's answer goes first).
@@ -63,4 +63,26 @@ describe("stopWithin cut off at its bound", () => {
       "[stop] not done after 0.03 s: the process ends anyway",
     ]);
   });
+});
+
+describe.skipIf(process.platform === "win32")("a stop that keeps the app open (RL: a release switch)", () => {
+  const boot = (home: string) => startDaemon({
+    home, secrets: new FileSecretStore(join(home, "secrets.json")), agentProvider: null, appPeer: "none",
+    links: { binary: null, handshake: null, publicTime: null, mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name: "Studio", os: "macos" } },
+    parts: { userHome: mkdtempSync(join(tmpdir(), "moss-keepapp-user-")) },
+  });
+
+  test("leaves the mark the next daemon takes; a plain stop leaves none", async () => {
+    const home = mkdtempSync(join(tmpdir(), "moss-keepapp-"));
+    const mark = join(home, "run", "app-kept.json");
+    const first = await boot(home);
+    await stopWithin(first, 5_000, { keepApp: true });
+    expect(existsSync(mark)).toBe(true);
+    // The next daemon on this home takes it (and the mark is gone, so a later start is an ordinary one).
+    daemon = await boot(home);
+    expect(existsSync(mark)).toBe(false);
+    await stopWithin(daemon, 5_000);
+    daemon = undefined;
+    expect(existsSync(mark)).toBe(false);
+  }, 60_000);
 });

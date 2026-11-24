@@ -12,8 +12,8 @@
 //   engine that decides when runs happen is M3's; `runSideThread` is its door.
 // * **A bot that breaks its own files** (§6.1 lets it edit its plugin folder) keeps running on its last good version,
 //   so it can still fix them; the reason is logged.
-// * **The user layer** (user-layer.ts) wins field by field over the plugin; model and effort apply at the next turn,
-//   instructions at the next compaction (§5.6, §6.3), since drivers read the bot through `current()`.
+// * **The user layer** (user-layer.ts) wins field by field over the plugin; model, effort and instructions apply at
+//   the next turn (§5.6, §6.3), since drivers read the bot through `current()` at each turn start.
 // * **The model**: the user layer's, else the plugin's default when the user has a key for it, else the user's
 //   default model (§6.1).
 // * **State** (`BotView.state`): `paused` while the pause switch is on, `thinking` while the main conversation runs a
@@ -36,9 +36,10 @@
 //
 // The driver of each session comes from `DriverFactory`: lane A's embedded runtime once A-M1 merges; tests use the
 // contracts' FakeSessionDriver.
+import { NO_DEFAULT_MODEL_CODE, NO_DEFAULT_MODEL_REASON } from "../default-model";
 import {
-  CLOVER_ERR, type BotView, type Caller, type ChangeResult, type Level, type RoutineRunView, type SessionView, type Text, type TurnOrigin, type UserMessageInput,
-} from "@waifucave/clover-protocol";
+  MOSS_ERR, type BotView, type Caller, type ChangeResult, type Level, type RoutineRunView, type SessionView, type Text, type TurnOrigin, type UserMessageInput,
+} from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import type { PluginRegistry } from "../contracts/plugin-registry";
@@ -53,9 +54,18 @@ import { homedir } from "node:os";
 import { seedMemory } from "./memory";
 import { sweepOwnTempFiles } from "../fence/own-files";
 import { botPaths, botStateFile, homeTreePath, sessionScratchDir, type BotPaths } from "./paths";
+import { outdirPath } from "../sessions/outdir";
 import { botEntries, loadPluginBot, type PluginBot } from "./plugin-bot";
 import { parseUserLayerPatch, userLayerFields, UserLayerStore, type UserLayer, type UserLayerField } from "./user-layer";
 import type { BotProviderConsent, ProviderConsent } from "./provider-consent";
+import type { ArchivedBot, BotFace, BotMaker, BotMoveJournal, BotPatch, BotRecordView, BotSummary } from "@waifucave/moss-protocol";
+import { projectRecords } from "../sessions/wire";
+import { readJson as readJsonFile } from "../sessions/atomic-file";
+import { defaultBotForMove } from "./default-bot";
+import { refreshDefaultBot } from "./default-bot-refresh";
+import { moveInputs, pendingPluginBots } from "./move";
+import { readMarkFile, type BotRecordStore } from "./records";
+import type { BotSource } from "./source";
 
 /** A bot as it stands now: its plugin's entry under the user layer. */
 export interface EffectiveBot {
@@ -67,16 +77,10 @@ export interface EffectiveBot {
   /** Who chose the model: the user (the bot's user layer), the user's default model (the plugin named none, or one the
    *  user has no key for), or the bot's plugin, whose provider the user approves once (provider-consent.ts). */
   modelFrom: "user" | "default" | "plugin";
-  /** The plugin's model tag comes from Clover's own bundled plugin, as staged (`BotServiceOptions.bundledChoice`, once per load): it
+  /** The plugin's model tag comes from MOSS's own bundled plugin, as staged (`BotServiceOptions.bundledChoice`, once per load): it
    *  asks nothing, like the user's own choice. Only with `modelFrom: "plugin"`. */
   modelBundled?: true;
   effort?: string;
-  voice?: { provider: string; voice: string; model?: string };
-  /** Who chose the voice: the user (the bot's user layer) or the bot's plugin, whose provider the user approves once. */
-  voiceFrom?: "user" | "plugin";
-  /** The plugin's voice comes from Clover's own bundled plugin, as staged: it asks nothing. Only with `voiceFrom: "plugin"`. */
-  voiceBundled?: true;
-  avatar?: { file: string; format: string; portrait?: string; credit?: string };
   theme?: string;
   layout?: string;
   greeting?: string;
@@ -100,9 +104,10 @@ export interface BotSessionContext {
   /** Who the session is when it calls anything, its bot named (§5.4; the controller's L-M1 answer): the runtime binds
    *  each tool call's caller from this, never from what a plugin says (R7). */
   readonly caller: Extract<Caller, { kind: "session" }>;
-  /** The bot now: a driver reads the model and effort at each turn and the instructions at each compaction. While a
-   *  turn or a compaction runs it is the bot as checked when it started (its provider the user allowed): a plugin
-   *  that changes its model then reaches the next turn, which checks it again (#311 B1). */
+  /** The bot now: a driver reads the model, effort and instructions at each turn start (an instructions edit reopens
+   *  its runtime under the new prompt). While a turn or a compaction runs it is the bot as checked when it started
+   *  (its provider the user allowed): a plugin that changes its model then reaches the next turn, which checks it
+   *  again (#311 B1). */
   current(): EffectiveBot;
   /** Whether an agent this session starts may run on `model` (#311 S1): the bot's own user-chosen provider, one granted
    *  for the bot, or the user's yes on the card now. Absent: no check. */
@@ -151,13 +156,24 @@ export type BotServiceEvent =
   | { type: "bot_changed"; ts: number; bot: BotView }
   | { type: "bot_removed"; ts: number; id: string }
   | { type: "session_changed"; ts: number; session: SessionView }
-  | { type: "bots_paused"; ts: number; paused: boolean };
+  | { type: "bots_paused"; ts: number; paused: boolean }
+  // Bots as engine data (lane BT; protocol bots.ts), with records as the source.
+  | { type: "bot_record_changed"; ts: number; bot: BotRecordView }
+  | { type: "bot_record_removed"; ts: number; id: string }
+  | { type: "bot_summary_changed"; ts: number; summary: BotSummary }
+  | { type: "bots_moved"; ts: number; journal: BotMoveJournal };
 
 export interface BotServiceOptions {
   home: string;
   /** This computer's name in the folder tree (§9.1). */
   computer: string;
   registry: PluginRegistry;
+  /** Where the bots come from (`bots/source.ts`, THE switch): `plugins` (today's) unless `records` is given. */
+  source?: BotSource;
+  /** The bots as engine data, with `source: "records"` (required then). */
+  records?: BotRecordStore;
+  /** Whether the move offers the default bot (Alpha, default-bot.ts); true unless a test of something else says no. */
+  defaultBot?: boolean;
   /** Built with this gate's `mayStart` and its main computer's `epoch` (wiring.ts does both). */
   host: DurableSessionHost;
   /** When bots may think here: the runner (lane H's lease) and the pause switch. */
@@ -184,9 +200,9 @@ export interface BotServiceOptions {
    *  words the picker shows; `starting` is accepted (the session reopens on the plugins' catalog once it lands).
    *  Default: every model is offered. */
   modelOffer?(model: string): "offered" | "starting" | "absent";
-  /** What Clover's own bundled plugin chose for a bot, read from its manifest's bytes as staging verified them (the
+  /** What MOSS's own bundled plugin chose for a bot, read from its manifest's bytes as staging verified them (the
    *  daemon's: `source` `bundled`, its folder in the staged copy, the manifest's digest the staged one), or undefined
-   *  for any other plugin. Asked once per bot load: a loaded tag (model or voice) equal to the verified bytes' asks
+   *  for any other plugin. Asked once per bot load: a loaded model tag equal to the verified bytes' asks
    *  nothing, so the exemption holds for the tag the bot runs, whatever was on disk when the registry read it.
    *  Without it, nothing is exempt (every plugin's choice asks). */
   bundledChoice?(plugin: { id: string; folder: string; source: PluginBot["source"] }): BundledChoice | undefined;
@@ -195,10 +211,9 @@ export interface BotServiceOptions {
   warn?(message: string): void;
 }
 
-/** The model and voice the verified bytes of a bundled plugin's manifest choose for its bot (its `contributes.bot`). */
+/** The model the verified bytes of a bundled plugin's manifest choose for its bot (its `contributes.bot`). */
 export interface BundledChoice {
   model?: string;
-  voice?: { provider: string; voice: string; model?: string };
 }
 
 /** A routine's run, as the routine engine (M3) hands it over. */
@@ -222,6 +237,21 @@ export const HAND_BACK_MAX_MS = 10 * 60_000;
 /** The longest result a side thread posts into the main conversation (`RoutineRunView.summary`'s cap). */
 export const SIDE_THREAD_RESULT_MAX_CHARS = 4_000;
 
+/** How far back a record bot's conversation is read for its last line (`bot.summaries`), and how much at a time. */
+const SUMMARY_SCAN = 2_000;
+const SUMMARY_PAGE = 200;
+/** The events that make a bot's last line, and who it is from. */
+const SUMMARY_FROM: Readonly<Record<string, "user" | "bot" | "note">> = {
+  user_message: "user", assistant_message: "bot",
+  bot_message: "note", agent_message: "note", agent_finished: "note", routine_result: "note", note: "note", plugin_message: "note",
+};
+
+/** A message as one line for MOSS's list: line breaks and hiding characters as spaces, at most 200 characters. */
+function summaryLine(text: string): string {
+  const one = text.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, " ").trim();
+  return (one.length <= 200 ? one : `${one.slice(0, 199)}…`).toWellFormed();
+}
+
 /** How many times a turn checks its bot's provider again when the plugin changes it while the user is asked. */
 const SETTLE_ROUNDS = 5;
 
@@ -234,8 +264,14 @@ interface PendingWakes {
 }
 
 interface Live {
-  plugin: PluginBot;
+  /** The bot's id. */
+  id: string;
+  /** Its plugin's entry, with the plugins as the source; absent for a record (`BotSource` `records`). */
+  plugin?: PluginBot;
   mainSession: string;
+  /** A record bot's summary as last sent (`bot_summary_changed`), and its follow of the conversation. */
+  lastSummary?: string;
+  offSummary?: Unsubscribe;
   /** The last view `bot_changed` carried, to tell a real change. */
   lastView?: string;
 }
@@ -271,6 +307,15 @@ export class BotService {
     this.#o = opts;
     this.#layers = new UserLayerStore(opts.home);
     this.#warn = opts.warn ?? (() => {});
+    if (opts.source === "records" && opts.records === undefined) throw new ContractError("invalid", "records as the bots' source needs the records store");
+    this.#records = opts.source === "records" ? opts.records : undefined;
+  }
+
+  /** The records store, with records as the source (`BotSource`); undefined with plugins as the source. */
+  readonly #records: BotRecordStore | undefined;
+
+  get records(): BotRecordStore | undefined {
+    return this.#records;
   }
 
   /** Loads every bot, opens (or reattaches) each one's conversation, and follows the registry from then on. */
@@ -280,7 +325,18 @@ export class BotService {
     this.#ranHere = this.#o.gate.main.runsHere();
     this.#lastRunner = this.#runner();
     this.#offs.push(this.#o.host.watch((view) => this.#onSession(view)));
-    this.#offs.push(this.#o.registry.watch(() => void this.#queueSync()));
+    const records = this.#records;
+    if (records !== undefined) {
+      // Bots as engine data: the records are the bots; the one-time move runs first, once.
+      this.#offs.push(records.watch((change) => this.#onRecord(change)));
+      await this.#runMove();
+    } else {
+      this.#offs.push(this.#o.registry.watch(() => void this.#queueSync()));
+      // A plugin's tree edited in place with nothing else changed (a bot's instructions file, the builder's edit): `watch`
+      // doesn't report it, and the bot would keep the instructions it was loaded with.
+      const offTrees = this.#o.registry.watchTrees?.(() => void this.#queueSync());
+      if (offTrees !== undefined) this.#offs.push(offTrees);
+    }
     this.#offs.push(this.#o.gate.main.watch(() => void this.#queueSync(() => this.#onRunnerChanged())));
     await this.#queueSync();
     // Runs a crash cut off whose bot is no longer installed: ended too, with the result posted for when it returns.
@@ -304,9 +360,10 @@ export class BotService {
     for (const w of this.#wakes.values()) w.off();
     this.#wakes.clear();
     await this.#sync;
+    for (const live of this.#bots.values()) live.offSummary?.();
     for (const live of this.#bots.values()) {
       await this.#o.host.release(live.mainSession);
-      for (const s of this.#o.host.list({ bot: live.plugin.id, kind: "side-thread" })) await this.#o.host.release(s.id);
+      for (const s of this.#o.host.list({ bot: live.id, kind: "side-thread" })) await this.#o.host.release(s.id);
     }
     this.#bots.clear();
     this.#started = false;
@@ -365,12 +422,14 @@ export class BotService {
   }
 
   /** A session's scratch folder here, made if missing, as a folder-tree path (§6.5; lane J's MCP router saves a
-   *  call's files there when it names no `saveTo`). Refused for a Clover home outside the user's home. */
+   *  call's files there when it names no `saveTo`). Refused for a MOSS home outside the user's home. A coding session
+   *  the user drives saves into its own outputs folder (`<home>/outputs/<session>`), the one place in the home its
+   *  agent's fence lets it write (`homeAllows`, rule 1): a screenshot its Browser call took, a plugin tool's image. */
   scratchFor(sessionId: string): string {
     const view = this.#o.host.get(sessionId);
     if (!view) throw new ContractError("not_found", `no session ${sessionId}`);
     const bot = this.#o.host.callerOf(sessionId).bot;
-    const dir = sessionScratchDir(this.#o.home, { id: sessionId, ...(bot === undefined ? {} : { bot }) });
+    const dir = view.kind === "coding" ? outdirPath(this.#o.home, sessionId) : sessionScratchDir(this.#o.home, { id: sessionId, ...(bot === undefined ? {} : { bot }) });
     const tree = homeTreePath({ userHome: this.#o.userHome ?? homedir(), computer: this.#o.computer, dir });
     if (tree === undefined) throw new ContractError("invalid", `the scratch folder ${dir} isn't inside the user's home, so the folder tree can't name it`);
     mkdirSync(dir, { recursive: true });
@@ -383,7 +442,7 @@ export class BotService {
 
   /** `bots.pause`: the user's switch for every bot and routine at once (§9.2). */
   async setPaused(paused: boolean, caller: Caller): Promise<void> {
-    if (caller.kind !== "user") throw new ContractError("refused", "only the user pauses or resumes the bots", { rpc: CLOVER_ERR.NOT_THE_USER });
+    if (caller.kind !== "user") throw new ContractError("refused", "only the user pauses or resumes the bots", { rpc: MOSS_ERR.NOT_THE_USER });
     if (!this.#o.gate.setPaused(paused, this.#o.clock.now())) return;
     this.#events.emit({ type: "bots_paused", ts: this.#o.clock.now(), paused });
     // Paused, what runs is held at its next tool call (the drivers read `mayAct`); resumed, it goes on, and what
@@ -437,12 +496,13 @@ export class BotService {
   /** `bot.setUserLayer`: only the user changes a bot's user layer (§6.1, §9.1). A change from a plugin's layer reaches
    *  this as the user only once the user approved its sealed card (lane C's `change: "core"` routing, §5.5). */
   async setUserLayer(id: string, patch: unknown, caller: Caller): Promise<ChangeResult> {
-    if (caller.kind === "session") throw new ContractError("refused", "a bot or an agent can't change a bot's user layer: it edits its plugin folder instead", { rpc: CLOVER_ERR.NOT_THE_USER });
-    if (caller.kind === "plugin") throw new ContractError("refused", "only the user changes a bot's user layer; a plugin's change goes to the user as a sealed card", { rpc: CLOVER_ERR.NOT_THE_USER });
-    if (caller.kind !== "user") throw new ContractError("refused", "only the user changes a bot's user layer", { rpc: CLOVER_ERR.NOT_THE_USER });
+    if (caller.kind === "session") throw new ContractError("refused", "a bot or an agent can't change a bot's user layer: it edits its plugin folder instead", { rpc: MOSS_ERR.NOT_THE_USER });
+    if (caller.kind === "plugin") throw new ContractError("refused", "only the user changes a bot's user layer; a plugin's change goes to the user as a sealed card", { rpc: MOSS_ERR.NOT_THE_USER });
+    if (caller.kind !== "user") throw new ContractError("refused", "only the user changes a bot's user layer", { rpc: MOSS_ERR.NOT_THE_USER });
     const live = this.#must(id);
     const parsed = parseUserLayerPatch(patch);
     const model = (patch as { model?: unknown } | null)?.model;
+    if (this.#records !== undefined) return this.#setRecordLayer(id, parsed, model);
     if (typeof model === "string" && this.#o.modelOffer?.(model) === "absent") {
       throw new ContractError("invalid", `${model} isn't offered by any plugin that is on: turn on its plugin in Settings › Plugins, or pick another model`);
     }
@@ -454,7 +514,7 @@ export class BotService {
 
   /** The bots whose LAN setting is on (lane L's `lanBots`, the core's `BrowserNetworkConfig`): the person's alone. */
   lanBots(): string[] {
-    return [...this.#bots.values()].filter((live) => this.#layers.get(live.plugin.id).lan === true).map((live) => live.plugin.id);
+    return [...this.#bots.values()].filter((live) => this.#layers.get(live.id).lan === true).map((live) => live.id);
   }
 
   userLayer(id: string): UserLayer {
@@ -510,6 +570,255 @@ export class BotService {
     };
   }
 
+
+  // ── Bots as engine data (lane BT): with records as the source ────────────────────────────────────
+
+  #need(): BotRecordStore {
+    if (this.#records === undefined) throw new ContractError("refused", "bots aren't engine data on this computer yet: its bots still come from plugins");
+    return this.#records;
+  }
+
+  /** Runs `job` after whatever sync is under way, one at a time, and hands back its result or its error. */
+  #serial<T>(job: () => Promise<T>): Promise<T> {
+    const run = this.#sync.then(job);
+    this.#sync = run.then(() => undefined, (err: unknown) => this.#warn(`updating bots failed: ${err instanceof Error ? err.message : String(err)}`));
+    return run;
+  }
+
+  /** `bot.create` (the person's), and a bot's yes'd `MakeBot` (`by` its maker): the bot's conversation is open when
+   *  this resolves. */
+  async createBot(input: { name: Text; instructions?: string; model?: string; effort?: string; face?: BotFace }, by: BotMaker): Promise<BotRecordView> {
+    if (input.model !== undefined && this.#o.modelOffer?.(input.model) === "absent") {
+      throw new ContractError("invalid", `${input.model} isn't offered by any plugin that is on: pick another model`);
+    }
+    const made = await this.#need().create(input, by);
+    await this.settled();
+    return this.#need().get(made.id) ?? made;
+  }
+
+  /** `bot.edit`, the person's. */
+  async editBot(id: string, patch: BotPatch): Promise<BotRecordView> {
+    if (typeof patch.model === "string" && this.#o.modelOffer?.(patch.model) === "absent") {
+      throw new ContractError("invalid", `${patch.model} isn't offered by any plugin that is on: pick another model`);
+    }
+    const v = await this.#need().edit(id, patch);
+    await this.settled();
+    return v;
+  }
+
+  /** `bot.remove`: the bot's sessions let go (its side threads and background agents stopped), then its folders archived. */
+  async archiveBot(id: string): Promise<void> {
+    const store = this.#need();
+    if (!store.has(id)) throw new ContractError("not_found", `no bot ${id}`);
+    await this.#serial(async () => {
+      const live = this.#bots.get(id);
+      if (live !== undefined) await this.#remove(id, live);
+      const host = this.#o.host;
+      for (const s of host.list({ bot: id })) {
+        if (s.status !== "stopped" && s.status !== "failed" && s.kind !== "bot") await host.stop(s.id, "its bot was archived");
+        if (host.isAttached(s.id)) await host.release(s.id);
+      }
+      for (const s of host.list({ bot: id })) {
+        try { host.forget(s.id); } catch (err) { this.#warn(`${s.id} wasn't let go: ${err instanceof Error ? err.message : String(err)}`); }
+      }
+      await store.remove(id);
+    });
+    await this.settled();
+  }
+
+  /** `bot.restore`: the bot back from the archive, its conversation picked up where it was. */
+  async restoreBot(id: string): Promise<BotRecordView> {
+    const store = this.#need();
+    const v = await this.#serial(async () => {
+      const back = await store.restore(id);
+      this.#o.host.rescan();
+      return back;
+    });
+    await this.settled();
+    return store.get(id) ?? v;
+  }
+
+  archivedBots(): ArchivedBot[] {
+    return this.#need().archived();
+  }
+
+  /** `bot.move.status`: the journal, and the plugin bots that have no record. */
+  moveStatus(): { journal?: BotMoveJournal; pending: string[]; held?: { reason: string } } {
+    const store = this.#records;
+    const journal = store?.journal();
+    // Pending: a pre-split bot (move.ts) with no record, live or archived, that the journal doesn't settle.
+    const settled = (id: string) => store !== undefined && (store.has(id) || store.archived().some((a) => a.id === id));
+    const pending = pendingPluginBots(this.#o.registry, this.#o.home, settled, journal);
+    const held = store?.journalUnreadable === true
+      ? { reason: "The record of moving your bots out of their plugins can't be read, so MOSS hasn't moved them again; your bots' files are untouched. Look at user-layers/moved/bots.json in MOSS's folder, or remove it to move them now." }
+      : undefined;
+    return { ...(journal === undefined ? {} : { journal }), pending, ...(held === undefined ? {} : { held }) };
+  }
+
+  /** Each record bot's line in MOSS's list (`bot.summaries`). */
+  summaries(): BotSummary[] {
+    return [...this.#bots.values()].filter((l) => l.plugin === undefined).map((l) => this.#summaryOf(l));
+  }
+
+  /** `bot.markRead`: the user has read the bot's conversation up to `at`. */
+  markRead(id: string, at: number): void {
+    const live = this.#must(id);
+    if (live.plugin !== undefined) throw new ContractError("refused", `${id} is a plugin's bot`);
+    const file = readMarkFile(this.#o.home, id);
+    const before = (readJsonFile(file) as { at?: unknown } | undefined)?.at;
+    const next = Math.max(typeof before === "number" ? before : 0, at);
+    if (next !== before) writeJsonAtomic(file, { read: 1, at: next }, { mode: 0o600 });
+    this.#emitSummary(live);
+  }
+
+  #movedJson: string | undefined;
+
+  /** The move, at each start: what the journal doesn't settle yet (records.ts `move`). */
+  async #runMove(): Promise<void> {
+    this.#movedJson = JSON.stringify(this.#records?.journal());
+    const store = this.#records!;
+    if (store.journalUnreadable) {
+      this.#warn("the bots' move journal is there but unreadable: the move doesn't run until it is looked at");
+      return;
+    }
+    let journal: BotMoveJournal;
+    try {
+      // The plugin bots first, then the default bot MOSS offers (Alpha, default-bot.ts): a plugin that still brings a
+      // bot of her id (a home's own development folder) is moved as that plugin's, and she isn't offered over it.
+      // Then the bots the home holds the plugin era's record of that no listed plugin brings (their plugin gone): last, so
+      // neither a plugin's bot nor the default bot is taken from there too. Which bots are pre-split is move.ts's.
+      const offered = this.#o.defaultBot === false ? [] : [defaultBotForMove(this.#o.home)];
+      journal = await store.move(moveInputs(this.#o.registry, this.#o.home, store.journal(), offered));
+    } catch (err) {
+      this.#warn(`moving the plugin bots into records failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const b of journal.bots) if (b.outcome === "failed") this.#warn(`the plugin bot ${b.id} wasn't moved: ${b.why}`);
+    // The default bot's rename, once, for a home that already held her under her earlier name (default-bot-refresh.ts).
+    if (this.#o.defaultBot !== false) await refreshDefaultBot({ home: this.#o.home, store, layers: this.#layers, now: () => this.#o.clock.now(), warn: (m) => this.#warn(m) });
+    // A bot the move put straight into the archive (its plugin was off): its sessions, which the host picked up at its
+    // start, are let go of with their files.
+    const host = this.#o.host;
+    for (const a of store.archived()) {
+      for (const s of host.list({ bot: a.id })) {
+        if (host.isAttached(s.id)) continue;
+        try { host.forget(s.id); } catch { /* attached meanwhile: left */ }
+      }
+    }
+    if (JSON.stringify(journal) !== this.#movedJson) {
+      this.#movedJson = JSON.stringify(journal);
+      this.#events.emit({ type: "bots_moved", ts: this.#o.clock.now(), journal });
+    }
+  }
+
+  #onRecord(change: { bot: BotRecordView } | { removed: string }): void {
+    const ts = this.#o.clock.now();
+    if ("removed" in change) this.#events.emit({ type: "bot_record_removed", ts, id: change.removed });
+    else this.#events.emit({ type: "bot_record_changed", ts, bot: change.bot });
+    void this.#queueSync();
+  }
+
+  async #syncRecords(store: BotRecordStore): Promise<void> {
+    const found = new Set(store.list().map((v) => v.id));
+    for (const [id, live] of [...this.#bots]) if (!found.has(id)) await this.#remove(id, live);
+    for (const id of found) {
+      const live = this.#bots.get(id);
+      if (live === undefined) await this.#add(id);
+      else {
+        this.#syncMainSession(live);
+        this.#emitBot(live);
+      }
+    }
+  }
+
+  /** A record bot as it stands now: its record, its instructions file read fresh, and the person's model (item 124: a
+   *  bot's model is the person's choice, so it never asks), else the user's default when there's no key for it. */
+  #recordEffective(live: Live): EffectiveBot {
+    const rec = this.#records?.record(live.id);
+    const layer = this.#layers.get(live.id);
+    const hasKey = this.#o.hasKeyFor ?? (() => true);
+    const fallback = () => this.#o.defaultModel();
+    let model: string;
+    let modelFrom: EffectiveBot["modelFrom"];
+    let effort = rec?.effort;
+    if (rec?.model !== undefined && hasKey(rec.model)) {
+      model = rec.model;
+      modelFrom = "user";
+    } else {
+      const f = fallback();
+      model = f.model;
+      modelFrom = "default";
+      effort = effort ?? f.effort;
+    }
+    return {
+      id: live.id,
+      name: rec?.name ?? live.id,
+      instructions: rec === undefined ? "" : this.#records!.instructions(live.id),
+      model, modelFrom,
+      ...(effort === undefined ? {} : { effort }),
+      ...(rec?.greeting === undefined ? {} : { greeting: rec.greeting }),
+      ...(layer.lan === true ? { lan: true } : {}),
+      userLayer: [],
+    };
+  }
+
+  /** Today's Edit page on a record bot (`bot.setUserLayer`): its name, instructions, model and effort change the record;
+   *  the LAN switch stays the user layer's; the plugin bot's look (theme, layout) has no place on a record. */
+  async #setRecordLayer(id: string, parsed: ReturnType<typeof parseUserLayerPatch>, model: unknown): Promise<ChangeResult> {
+    if (parsed.theme !== undefined || parsed.layout !== undefined) {
+      throw new ContractError("invalid", "a bot that is engine data has no theme or layout of its own");
+    }
+    if (typeof model === "string" && this.#o.modelOffer?.(model) === "absent") throw new ContractError("invalid", `${model} isn't offered by any plugin that is on: pick another model`);
+    const patch: BotPatch = {
+      ...(parsed.name === undefined || parsed.name === null ? {} : { name: parsed.name }),
+      ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions ?? "" }),
+      ...(parsed.model === undefined ? {} : { model: parsed.model }),
+      ...(parsed.effort === undefined ? {} : { effort: parsed.effort }),
+    };
+    if (Object.keys(patch).length > 0) await this.editBot(id, patch);
+    if (parsed.lan !== undefined) {
+      this.#layers.set(id, { lan: parsed.lan });
+      const live = this.#bots.get(id);
+      if (live !== undefined) this.#emitBot(live);
+    }
+    return { applied: true };
+  }
+
+  /** Follows a record bot's conversation for its line in MOSS's list. */
+  #followSummary(live: Live): void {
+    live.offSummary?.();
+    live.offSummary = this.#o.host.subscribe(live.mainSession, () => this.#emitSummary(live));
+  }
+
+  #emitSummary(live: Live): void {
+    if (!this.#bots.has(live.id)) return;
+    const summary = this.#summaryOf(live);
+    const json = JSON.stringify(summary);
+    if (json === live.lastSummary) return;
+    live.lastSummary = json;
+    this.#events.emit({ type: "bot_summary_changed", ts: this.#o.clock.now(), summary });
+  }
+
+  #summaryOf(live: Live): BotSummary {
+    const host = this.#o.host;
+    const id = live.mainSession;
+    let last: BotSummary["last"];
+    const length = host.length(id);
+    for (let end = length, scanned = 0; end > 0 && last === undefined && scanned < SUMMARY_SCAN; end -= SUMMARY_PAGE, scanned += SUMMARY_PAGE) {
+      const start = Math.max(0, end - SUMMARY_PAGE);
+      const events = projectRecords(host.history(id, { afterSeq: start - 1, limit: end - start }), { kind: "bot", sealed: true });
+      for (let i = events.length - 1; i >= 0 && last === undefined; i--) {
+        const e = events[i] as { type: string; text?: unknown; ts?: unknown };
+        const from = SUMMARY_FROM[e.type];
+        if (from === undefined || typeof e.text !== "string" || e.text.trim() === "") continue;
+        last = { text: summaryLine(e.text), from, at: typeof e.ts === "number" ? e.ts : 0 };
+      }
+    }
+    const read = (readJsonFile(readMarkFile(this.#o.home, live.id)) as { at?: unknown } | undefined)?.at;
+    const readAt = typeof read === "number" ? read : 0;
+    return { id: live.id, ...(last === undefined ? {} : { last }), unread: last !== undefined && last.from !== "user" && last.at > readAt };
+  }
+
   // -----------------------------------------------------------------------------------------------
 
   #must(id: string): Live {
@@ -550,11 +859,11 @@ export class BotService {
         // Took over: a turn the computer before never finished is recorded so, and nothing is run again.
         try {
           const marked = host.catchUp(live.mainSession);
-          if (marked > 0) this.#warn(`took ${live.plugin.id} over from ${before ?? "another computer"}: ${marked} call(s) it never finished are recorded as maybe having run there`);
+          if (marked > 0) this.#warn(`took ${live.id} over from ${before ?? "another computer"}: ${marked} call(s) it never finished are recorded as maybe having run there`);
         } catch (err) {
           this.#warn(`catching ${live.mainSession} up failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        this.#seed(live.plugin);
+        if (live.plugin !== undefined) this.#seed(live.plugin);
       }
       host.resume();
     } else if (!runsNow && this.#ranHere) {
@@ -593,6 +902,7 @@ export class BotService {
   }
 
   async #syncNow(): Promise<void> {
+    if (this.#records !== undefined) return this.#syncRecords(this.#records);
     const found = new Map<string, PluginBot>();
     for (const { record, contribution } of botEntries(this.#o.registry)) {
       const load = loadPluginBot(record, contribution.value);
@@ -602,7 +912,7 @@ export class BotService {
         const live = this.#bots.get(load.id);
         if (live) {
           this.#warn(`the bot ${load.id} keeps its last good version: ${load.reason}`);
-          found.set(load.id, live.plugin);
+          if (live.plugin !== undefined) found.set(load.id, live.plugin);
         } else this.#warn(`the bot ${load.id} isn't loaded: ${load.reason}`);
         continue;
       }
@@ -614,11 +924,11 @@ export class BotService {
     for (const [id, bot] of found) {
       const live = this.#bots.get(id);
       if (live) this.#update(live, bot);
-      else await this.#add(bot);
+      else await this.#add(id, bot);
     }
   }
 
-  /** The bot as loaded, with whether its tags are Clover's own bundled plugin's (asked once, at this load). */
+  /** The bot as loaded, with whether its tags are MOSS's own bundled plugin's (asked once, at this load). */
   #bundled(bot: PluginBot): PluginBot {
     if (bot.source !== "bundled" || this.#o.bundledChoice === undefined) return bot;
     let choice: BundledChoice | undefined;
@@ -628,15 +938,14 @@ export class BotService {
       choice = undefined;
     }
     if (choice === undefined) return bot;
-    const { model, voice } = bot.entry;
-    const sameVoice = voice !== undefined && choice.voice !== undefined && voice.provider === choice.voice.provider
-      && voice.voice === choice.voice.voice && voice.model === choice.voice.model;
-    return { ...bot, bundled: { model: model !== undefined && model.default === choice.model, voice: sameVoice } };
+    const { model } = bot.entry;
+    return { ...bot, bundled: { model: model !== undefined && model.default === choice.model } };
   }
 
-  async #add(bot: PluginBot): Promise<void> {
-    const live: Live = { plugin: bot, mainSession: mainSessionIdFor(bot.id) };
-    this.#folders(bot);
+  async #add(id: string, plugin?: PluginBot): Promise<void> {
+    const live: Live = { id, ...(plugin === undefined ? {} : { plugin }), mainSession: mainSessionIdFor(id) };
+    const bot = { id };
+    this.#folders(id);
     // Leftover temp files from a crash cut off mid-write (`writeOwnFile` renames over the target, so only a crash
     // between the temp file's create and its rename leaves one): swept at bot start, nothing else may reuse the name.
     try {
@@ -646,7 +955,7 @@ export class BotService {
       this.#warn(`the bot ${bot.id}'s leftover temp files weren't swept: ${err instanceof Error ? err.message : String(err)}`);
     }
     // Only the computer running the bot writes its memory (§6.5); the others get copies.
-    if (this.#o.gate.main.runsHere()) this.#seed(bot);
+    if (plugin !== undefined && this.#o.gate.main.runsHere()) this.#seed(plugin);
     const host = this.#o.host;
     const eff = this.#effective(live);
     const runner = this.#runner();
@@ -662,9 +971,11 @@ export class BotService {
     this.#bots.set(bot.id, live);
     // A conversation that holds nothing yet but its opening: the greeting goes first, once (a log picked up again
     // after its meta was lost holds more, and gets none).
-    if (host.length(live.mainSession) <= 1 && bot.greeting !== undefined) {
-      host.recordCore(live.mainSession, { type: "assistant_message", threadId: live.mainSession, text: bot.greeting, greeting: true });
+    const greeting = plugin?.greeting ?? this.#o.records?.get(id)?.greeting;
+    if (host.length(live.mainSession) <= 1 && greeting !== undefined) {
+      host.recordCore(live.mainSession, { type: "assistant_message", threadId: live.mainSession, text: greeting, greeting: true });
     }
+    if (plugin === undefined) this.#followSummary(live);
     await this.#endCutOffRuns(bot.id, live.mainSession);
     this.#emitBot(live);
   }
@@ -696,9 +1007,11 @@ export class BotService {
 
   async #remove(id: string, live: Live): Promise<void> {
     this.#bots.delete(id);
+    live.offSummary?.();
     // Its plugin removed (not just switched off): the LAN switch goes, so it never carries over to whatever plugin
     // later takes the id. The rest of the user layer survives a reinstall as before.
-    if (this.#o.registry.get(id) === undefined) this.#layers.clearLan(id);
+    // A record bot keeps it: an archived bot comes back as it was.
+    if (live.plugin !== undefined && this.#o.registry.get(id) === undefined) this.#layers.clearLan(id);
     const host = this.#o.host;
     await host.release(live.mainSession);
     for (const s of host.list({ bot: id, kind: "side-thread" })) {
@@ -708,8 +1021,9 @@ export class BotService {
   }
 
   /** The bot's memory, agents' and scratch folders (§6.5), which the system prompt names. */
-  #folders(bot: PluginBot): void {
-    const paths = botPaths(this.#o.home, bot.id);
+  #folders(id: string): void {
+    const bot = { id };
+    const paths = botPaths(this.#o.home, id);
     for (const dir of [paths.memory, paths.agents, paths.scratch]) {
       try {
         mkdirSync(dir, { recursive: true });
@@ -736,8 +1050,10 @@ export class BotService {
   }
 
   #effective(live: Live): EffectiveBot {
-    const { entry } = live.plugin;
-    const layer = this.#layers.get(live.plugin.id);
+    if (live.plugin === undefined) return this.#recordEffective(live);
+    const plugin = live.plugin;
+    const { entry } = plugin;
+    const layer = this.#layers.get(live.id);
     const hasKey = this.#o.hasKeyFor ?? (() => true);
     let model: string;
     let modelFrom: EffectiveBot["modelFrom"];
@@ -756,29 +1072,22 @@ export class BotService {
       modelFrom = "default";
       effort = layer.effort ?? fallback.effort;
     }
-    const voice = layer.voice ?? (entry.voice === undefined ? undefined : { provider: entry.voice.provider, voice: entry.voice.voice, ...(entry.voice.model === undefined ? {} : { model: entry.voice.model }) });
-    const voiceFrom = layer.voice !== undefined ? "user" as const : entry.voice !== undefined ? "plugin" as const : undefined;
-    // Clover's own bundled plugin, as staged: what it chose asks nothing (the owner's ruling, revising #298/#311's).
+    // MOSS's own bundled plugin, as staged: what it chose asks nothing (the owner's ruling, revising #298/#311's).
     // Decided once per load (`#bundled`), against the verified bytes' own tags.
-    const bundled = live.plugin.bundled;
-    const avatar = layer.avatar ?? entry.avatar;
+    const bundled = plugin.bundled;
     const theme = layer.theme ?? entry.theme;
     const layout = layer.layout ?? entry.layout;
     return {
-      id: live.plugin.id,
+      id: live.id,
       name: layer.name ?? entry.name,
-      instructions: layer.instructions ?? live.plugin.instructions,
+      instructions: layer.instructions ?? plugin.instructions,
       model,
       modelFrom,
       ...(bundled?.model === true && modelFrom === "plugin" ? { modelBundled: true as const } : {}),
       ...(effort === undefined ? {} : { effort }),
-      ...(voice === undefined ? {} : { voice }),
-      ...(voiceFrom === undefined ? {} : { voiceFrom }),
-      ...(bundled?.voice === true && voiceFrom === "plugin" ? { voiceBundled: true as const } : {}),
-      ...(avatar === undefined ? {} : { avatar: structuredClone(avatar) }),
       ...(theme === undefined ? {} : { theme }),
       ...(layout === undefined ? {} : { layout }),
-      ...(live.plugin.greeting === undefined ? {} : { greeting: live.plugin.greeting }),
+      ...(plugin.greeting === undefined ? {} : { greeting: plugin.greeting }),
       ...(layer.lan === true ? { lan: true } : {}),
       userLayer: userLayerFields(layer),
     };
@@ -791,6 +1100,14 @@ export class BotService {
    *  compaction, which never asks, runs only on a provider already allowed, pinned the same way. */
   #driver(live: Live, ctx: BotSessionContext): SessionDriver {
     const driver = this.#o.drivers(ctx);
+    // No model for the bot and no default model (a fresh home before a provider is added): the turn is refused with the
+    // plain sentence that leads to adding a provider or picking a model, never sent to a provider the person lacks.
+    const run = driver.turn.bind(driver);
+    driver.turn = (input, ctl): Promise<TurnEnd> => {
+      if (this.#effective(live).model !== "") return run(input, ctl);
+      ctl.record({ type: "agent_error", threadId: ctx.sessionId, message: NO_DEFAULT_MODEL_REASON, code: NO_DEFAULT_MODEL_CODE });
+      return Promise.resolve({ reason: "failed", failure: "error", text: NO_DEFAULT_MODEL_REASON } satisfies TurnEnd);
+    };
     const consent = this.#o.providerConsent;
     if (consent === undefined) return driver;
     const turn = driver.turn.bind(driver);
@@ -857,31 +1174,17 @@ export class BotService {
     return { ...rest, model: pin.model, modelFrom: pin.modelFrom, ...(pin.modelBundled ? { modelBundled: true as const } : {}) };
   }
 
-  /** Whether the bot may use its voice's provider (a plugin-chosen one asks once, `bot.voice:<provider>`). `at`: the
-   *  session using the voice (its card, and its running turn's origin, read from the session: a caller's own word is
-   *  never taken for it), or the user talking to the bot: only then is a held no asked again. */
-  checkVoice(id: string, at: { session?: string; origin?: "user"; onAsk?: () => void } = {}): Promise<ProviderConsent> {
-    const live = this.#must(id);
-    const consent = this.#o.providerConsent;
-    if (consent === undefined) return Promise.resolve({ ok: true });
-    const asker = at.session !== undefined && this.#o.host.get(at.session) !== undefined ? at.session : undefined;
-    const origin: TurnOrigin | undefined = at.session !== undefined
-      ? (asker === undefined ? undefined : this.#o.host.turnOrigin(asker))
-      : at.origin;
-    return consent.checkVoice(this.#effective(live), live.mainSession, { ...(origin === undefined ? {} : { origin }), ...(asker === undefined ? {} : { asker }), ...(at.onAsk === undefined ? {} : { onAsk: at.onAsk }) });
-  }
-
   #context(live: Live, sessionId: string, kind: "bot" | "side-thread", computer: string, level?: Level): BotSessionContext {
-    const paths = botPaths(this.#o.home, live.plugin.id);
+    const paths = botPaths(this.#o.home, live.id);
     const gate = this.#o.gate;
     return {
       ...(level === undefined ? {} : { level }),
-      botId: live.plugin.id,
+      botId: live.id,
       sessionId,
       kind,
       computer,
       paths,
-      caller: { kind: "session", sessionId, sessionKind: kind, bot: live.plugin.id },
+      caller: { kind: "session", sessionId, sessionKind: kind, bot: live.id },
       current: () => this.#current(live, sessionId),
       ...(this.#o.providerConsent === undefined ? {} : {
         providerCheck: (model: string, origin?: TurnOrigin) => this.#o.providerConsent!.checkAgentModel(
@@ -952,35 +1255,20 @@ export class BotService {
     return status === "prompting" || status === "cancelling" || status === "starting" ? "thinking" : "idle";
   }
 
-  /** The URL a layer loads the avatar from. The user's own model is `user:<folder>/<file>`, kept in the core's folder and
-   *  served from `/_a/<bot>/…`; any other file a user layer names is a raw path, never handed to a layer. */
-  #avatarSrc(live: Live, eff: { avatar?: { file: string; format: string; credit?: string }; userLayer: readonly string[] }): string {
-    const avatar = eff.avatar;
-    if (avatar === undefined) return "";
-    if (eff.userLayer.includes("avatar")) {
-      if (!avatar.file.startsWith("user:")) return "";
-      return `/_a/${botSegment(live.plugin.id)}/${avatar.file.slice(5).split("/").map(encodeURIComponent).join("/")}`;
-    }
-    return this.#o.assetUrl?.(live.plugin.id, avatar.file) ?? avatar.file;
-  }
-
   #view(live: Live): BotView {
     const eff = this.#effective(live);
-    const avatarSrc = this.#avatarSrc(live, eff);
-    // The user's own avatar brings its own portrait when it has one; otherwise the bot keeps the plugin's (her face in the dock
-    // and the lists, not a letter, while the model on her stage is the one the user chose).
-    const portraitPath = live.plugin.entry.avatar?.portrait;
-    const ownPortrait = eff.userLayer.includes("avatar") ? eff.avatar?.portrait : undefined;
-    const portrait = ownPortrait ?? (portraitPath === undefined ? undefined : this.#o.assetUrl?.(live.plugin.id, portraitPath));
+    if (live.plugin === undefined) {
+      return {
+        id: live.id, name: eff.name, model: eff.model, ...(eff.effort === undefined ? {} : { effort: eff.effort }),
+        ...(eff.lan === true ? { lan: true } : {}), userLayer: eff.userLayer, state: this.#state(live), computer: this.#runner(), mainSession: live.mainSession,
+      };
+    }
     return {
-      id: live.plugin.id,
+      id: live.id,
       name: eff.name,
-      ...(portrait === undefined ? {} : { portrait }),
       model: eff.model,
       ...(eff.effort === undefined ? {} : { effort: eff.effort }),
-      ...(eff.voice === undefined ? {} : { voice: eff.voice }),
       ...(eff.theme === undefined ? {} : { theme: eff.theme }),
-      ...(avatarSrc === "" || eff.avatar === undefined ? {} : { avatar: { src: avatarSrc, format: eff.avatar.format, ...(eff.userLayer.includes("avatar") && eff.avatar.credit !== undefined ? { credit: eff.avatar.credit } : {}) } }),
       ...(eff.lan === true ? { lan: true } : {}),
       userLayer: eff.userLayer,
       state: this.#state(live),
@@ -990,7 +1278,7 @@ export class BotService {
   }
 
   #emitBot(live: Live): void {
-    if (!this.#bots.has(live.plugin.id)) return;
+    if (!this.#bots.has(live.id)) return;
     const view = this.#view(live);
     const json = JSON.stringify(view);
     if (json === live.lastView) return;

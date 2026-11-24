@@ -7,14 +7,15 @@
 // agent that acts without asking starts read-only when its computer's level is unknown). Their hooks (K's
 // `AgentManager.sessionHooks()`) feed `ListAgents`' agent rows, `session.setModel` for agents and coding sessions,
 // and the reattaching of a restart's dormant sessions; `close` ends their processes when the daemon shuts down.
-import { BUNDLED_ROOT_PLUGIN, topPluginIdOf, type Level, type SessionView } from "@waifucave/clover-protocol";
+import { homedir } from "node:os";
+import { BUNDLED_ROOT_PLUGIN, topPluginIdOf, type Level, type SessionView } from "@waifucave/moss-protocol";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
 import type { DeliveredInput } from "../contracts/session-host";
-import type { PluginRegistry } from "../contracts/plugin-registry";
+import { grantsInForce, type PluginRegistry } from "../contracts/plugin-registry";
 import type { PluginHost } from "../contracts/plugin-host";
-import { pillMethods } from "../pill/rpc";
+import { userSendMethods } from "../pill/rpc";
 import { CacheTimedCompaction, type CompactionPolicy } from "../sessions/compaction";
 import { DurableSessionHost, type DurableSessionHostOptions } from "../sessions/durable-host";
 import { SessionGrants } from "../sessions/grants";
@@ -30,13 +31,21 @@ import { RoutineEngine, type RoutineEngineOptions } from "../routines/engine";
 import { routineMethods } from "../routines/rpc";
 import { routineToolDef, type RoutineToolDeps } from "../routines/tool";
 import { WebhookIngress, type WebhookIngressOptions } from "../routines/webhooks";
-import { voicesMethods } from "../voices/rpc";
-import { VoiceService, type VoiceServiceOptions } from "../voices/service";
-import { VoiceSlot } from "../voices/slot";
-import { speakReplies } from "../voices/replies";
 import { readUiSettings } from "../plugin-host/ui-settings";
 import { workshopToolDefs, type PluginWorkshop } from "../registry/workshop";
 import { appScreenshotToolDef, type AppScreenshotDeps } from "./app-screenshot";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { MAKE_BOT_TOOL } from "@waifucave/moss-protocol";
+import { OLD_PLUGIN_MANIFEST } from "../old-names";
+import { pendingPluginBots } from "./move";
+import type { PluginBotSettings } from "./plugin-bot-settings";
+import { BotRecordStore, type BotPluginSettingsPort } from "./records";
+import { botRecordMethods } from "./records-rpc";
+import { recordToolDefs } from "./records-tools";
+import { botSource, type BotSource } from "./source";
+import { DEFAULT_BOT_ID } from "./default-bot";
+import { registerBotOwnership } from "../runtime-sdk/turn-loop/only-backends";
 
 /** Lane K's side of the bot side's hooks (`AgentManager.sessionHooks()`). */
 export interface AgentHooks {
@@ -44,6 +53,8 @@ export interface AgentHooks {
   agents: AgentRows;
   /** `session.setModel` on an agent or coding session. */
   setAgentModel(id: string, model: string, effort?: string): Promise<void>;
+  /** `session.setConfig` on an agent or coding session. */
+  setAgentOption?(id: string, option: string, value: string): Promise<void>;
   /** A restart's dormant agent and coding sessions, reattached. */
   reattach(views: readonly SessionView[]): void | Promise<void>;
 }
@@ -57,6 +68,12 @@ export interface AgentsHandle {
 
 export interface BotSideOptions {
   home: string;
+  /** Where the bots come from (lane BT, `bots/source.ts`): THE switch's value, `MOSS_BOT_SOURCE` or `plugins`. */
+  botSource?: BotSource;
+  /** Whether the move offers the default bot (Alpha, default-bot.ts); true unless a test of something else says no. */
+  defaultBot?: boolean;
+  /** The plugins' bot-scoped settings, for the records' `bot.pluginSettings` (lane BT). */
+  pluginSettings?: BotPluginSettingsPort & Partial<Pick<PluginBotSettings, "views">>;
   /** This computer's name in the folder tree. */
   computer: string;
   clock: Clock;
@@ -82,7 +99,7 @@ export interface BotSideOptions {
     /** The plugin registry's `triggers` entries: which plugin may fire which trigger type (`RoutineEngine.fire`). */
     triggers?: Pick<PluginRegistry, "entries">;
   };
-  /** The plugin host that runs `pill.target` entries' handlers (lane G's `pill.send`); absent, a send to an entry is
+  /** The plugin host that runs `pill.target` entries' handlers (lane G's `user.send`); absent, a send to an entry is
    *  refused as not installed, and sends to bots and sessions still work. */
   pillTargets?: Pick<PluginHost, "invoke">;
   /** A session ended (stopped or failed): lane J's `TerminalRouter.closeSession` closes its shells. */
@@ -90,18 +107,10 @@ export interface BotSideOptions {
   /** Lane M's update gate (`RunningDaemon.updateGate`, #198): its turns are a busy source, and none starts while an
    *  update closes it (update-gate.ts). */
   updateGate?: UpdateGateLike;
-  /** Bots' voices on this device (§6.6): the `voices` entries, the plugin host that streams them, and `voice.play`
-   *  to the app. Each bot's voice is its effective one (its user layer's, else its plugin's). */
-  voices?: Pick<VoiceServiceOptions, "registry" | "host" | "play" | "listenIdleMs"> & {
-    /** The user's choice of voice mode (Clover Voice's `active` setting), read at each use (§6.6). */
-    chosen?(): Promise<string | undefined> | string | undefined;
-    /** Tells the user, in words, that their voice stopped and which speaks now. */
-    tell?(text: string): void;
-    /** Clears the user's choice of voice mode (its plugin was removed). */
-    forget?(): Promise<void> | void;
-  };
   userHome?: string;
   approvals?: DurableSessionHostOptions["approvals"] & Partial<Pick<ApprovalBroker, "request">>;
+  /** The engine's titles of code sessions (§9.5 "Titles"): the session host titles one after a turn of it ends. */
+  titles?: DurableSessionHostOptions["titles"];
   /** The provider check for bots' plugin-chosen models (provider-consent.ts); by default one over this side's grants,
    *  which refuses a plugin's provider when there's no broker to ask. A test's seam. */
   providerConsent?: BotProviderConsent;
@@ -126,10 +135,6 @@ export interface BotSide {
   routines?: RoutineEngine;
   /** Its webhooks' way in, when an ingress was given. */
   ingress?: WebhookIngress;
-  /** Bots' voices here, when voices were given. */
-  voices?: VoiceService;
-  /** The voice slot (§6.6): the active voice mode, its sink and the providers' endpoints. */
-  voiceSlot?: VoiceSlot;
   /** The one `SessionGrants` of this computer (R10: what the user allowed one session, such as driving their own
    *  browser partition), over this side's host and the approval broker; present when `approvals` can `request`.
    *  The daemon hands this same instance to the browser (`personsBrowserGrants(side.grants)`), so a grant the user
@@ -148,6 +153,44 @@ export interface BotSide {
   close(): Promise<void>;
 }
 
+/** `PluginInstall` with records as the bots' source: a folder whose manifest brings a bot (`contributes.bot`, in it or in
+ *  a child) is refused, and the bot is told to use `MakeBot`. Anything it can't read goes to the tool as it is. */
+export function refuseBotPlugins(tool: CoreToolDef, workshop: Pick<PluginWorkshop, "resolveFolder">, caller: { bot: string; sessionId: string }): CoreToolDef {
+  return {
+    ...tool,
+    run: async (input) => {
+      const folder = (input as { folder?: unknown } | null)?.folder;
+      if (typeof folder === "string") {
+        let real: string | undefined;
+        try { real = workshop.resolveFolder(caller, folder); } catch { real = undefined; }
+        if (real !== undefined && bringsBot(real)) {
+          return { text: `PluginInstall was refused: that plugin brings a bot, and bots aren't plugins any more. Make a bot with ${MAKE_BOT_TOOL} instead (its name, instructions and face), behind the person's card.`, isError: true };
+        }
+      }
+      return tool.run(input);
+    },
+  };
+}
+
+/** Whether a plugin folder's manifest (or a child's, one level of `plugins/`) contributes a bot. */
+function bringsBot(folder: string): boolean {
+  const has = (dir: string) => {
+    for (const name of ["moss.json", OLD_PLUGIN_MANIFEST]) {
+      try {
+        const m = JSON.parse(readFileSync(join(dir, name), "utf8")) as { contributes?: { bot?: unknown } };
+        if (m?.contributes?.bot !== undefined) return true;
+      } catch { /* not this one */ }
+    }
+    return false;
+  };
+  if (has(folder)) return true;
+  try {
+    return readdirSync(join(folder, "plugins"), { withFileTypes: true }).some((d) => d.isDirectory() && has(join(folder, "plugins", d.name)));
+  } catch {
+    return false;
+  }
+}
+
 /** The plugins with an active `triggers` entry of a type (an entry is keyed by its `type`). */
 export function triggerOwnersFrom(registry: Pick<PluginRegistry, "entries">): (type: string) => string[] {
   return (type) => registry.entries("triggers")
@@ -162,6 +205,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
   const updates = o.updateGate;
   const host: DurableSessionHost = new DurableSessionHost({
     home: o.home, clock: o.clock, computer: o.computer, epoch: () => main.epoch(),
+    ...(o.titles === undefined ? {} : { titles: o.titles }),
     // An update's restart holds every turn (lane M's gate); what waits starts on its reopen, below.
     mayStart: (view) => gate.mayStart(view) && turnMayStart(updates),
     // A bot's conversation lives on the runner: what arrives here for it goes there (review S1).
@@ -184,7 +228,34 @@ export function createBotSide(o: BotSideOptions): BotSide {
   });
   // The computer's one SessionGrants, over this host and the broker; also what a bot's plugin-chosen provider asks with.
   const grants = o.approvals?.request === undefined ? undefined : new SessionGrants({ host, approvals: { request: o.approvals.request.bind(o.approvals) } });
+  // Bots as engine data (lane BT), with records as the source: the store, holding back the ids of plugin bots the move
+  // hasn't moved yet.
+  const source = o.botSource ?? botSource();
+  let records: BotRecordStore | undefined;
+  if (source === "records") {
+    const store: BotRecordStore = new BotRecordStore({
+      home: o.home, clock: o.clock,
+      // Held: the pre-split bots the move hasn't moved yet (move.ts), and every installed plugin's top-level id (lane MC: a plugin's
+      // `own-bot` parts serve the bot of its own id, so a new bot never takes an installed plugin's id).
+      reserved: () => [...pendingPluginBots(o.registry, o.home, (id) => store.has(id), store.journal()), ...o.registry.list().map((r) => topPluginIdOf(r.id))],
+      ...(o.pluginSettings === undefined ? {} : { pluginSettings: o.pluginSettings }),
+      ...(o.warn === undefined ? {} : { warn: o.warn }),
+    });
+    records = store;
+  }
+  // `own-bot` with bots as records: a plugin's own-bot parts reach only a bot its record says was moved from it. The
+  // default bot (Alpha) keeps her old plugin's stage until lane MC2 makes her figure a pack (the controller's ruling).
+  const offOwnership = records === undefined ? undefined : registerBotOwnership((bot) => {
+    const rec = records!.record(bot);
+    if (rec === undefined) return { known: false };
+    if (rec.madeBy.kind === "move") return { known: true, plugin: rec.madeBy.plugin };
+    // Hers while the plugin serving her room tools is MOSS's own bundled `alpha`: another plugin that takes the id after
+    // hers is gone is not her plugin and gets nothing of her.
+    if (rec.madeBy.kind === "default" && rec.id === DEFAULT_BOT_ID) return o.registry.get(DEFAULT_BOT_ID)?.source === "bundled" ? { known: true, plugin: DEFAULT_BOT_ID } : { known: true };
+    return { known: true };
+  });
   const bots = new BotService({
+    source, ...(records === undefined ? {} : { records }), ...(o.defaultBot === undefined ? {} : { defaultBot: o.defaultBot }),
     home: o.home, computer: o.computer, registry: o.registry, host, gate, drivers: o.drivers, clock: o.clock,
     providerConsent: o.providerConsent ?? new BotProviderConsent(grants === undefined ? {} : { grants }),
     defaultModel: o.defaultModel, cacheCold: (id) => compaction.cacheCold(id),
@@ -201,7 +272,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
   let ingress: WebhookIngress | undefined;
   const routines: RoutineEngine | undefined = o.routines === undefined ? undefined : new RoutineEngine({
     home: o.home, computer: o.computer, clock: o.clock, computerLevel,
-    // A routine Clover paused gets one note of Clover's in its bot's conversation (it starts no turn).
+    // A routine MOSS paused gets one note of MOSS's in its bot's conversation (it starts no turn).
     bots: {
       has: (id) => bots.has(id), runSideThread: (id, run) => bots.runSideThread(id, run), onEvent: (fn) => bots.onEvent(fn),
       note: async (id, label, text) => { await bots.deliverTo(id, { from: "note", label, text, by: { kind: "core" } }); },
@@ -214,7 +285,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
     ...(o.routines.triggers === undefined ? {} : { triggerOwners: triggerOwnersFrom(o.routines.triggers) }),
     ...(o.routines.watchFiles === undefined ? {} : { watchFiles: o.routines.watchFiles }),
     ...(o.routines.ingress === undefined ? {} : { registerWebhook: (id: string, key: string, name?: string): Promise<string> => ingress!.register(id, key, name) }),
-    // Read from the registry at each use: an active `webhook` trigger type (clover/trigger-webhook's) and, where the
+    // Read from the registry at each use: an active `webhook` trigger type (moss/trigger-webhook's) and, where the
     // ingress runs, an active `webhook.ingress` entry. Neither is hardcoded: a plugin listed as not available has none.
     webhooksAvailable: () => {
       // Only the bundled tree's trigger counts (validation refuses a `webhook` trigger anywhere else; this holds for a
@@ -228,30 +299,6 @@ export function createBotSide(o: BotSideOptions): BotSide {
     registry: o.routines.ingress.registry, host: o.routines.ingress.host, engine: routines, clock: o.clock, ...(o.warn === undefined ? {} : { warn: o.warn }),
   });
   const questions = botQuestions({ host, ...(o.warn === undefined ? {} : { warn: o.warn }) });
-  const voices = o.voices === undefined ? undefined : new VoiceService({
-    ...o.voices,
-    voiceOf: (bot) => (bots.has(bot) ? bots.effective(bot).voice : undefined),
-    // A voice the bot's plugin chose, on the user's stored voice key, asks the user once (provider-consent.ts).
-    mayUse: (bot, at) => bots.checkVoice(bot, at),
-    ...(o.warn === undefined ? {} : { warn: o.warn }),
-  });
-  // The voice slot (§6.6): the active voice mode (Clover Voice by default) says the replies, plays the plugins' sound
-  // and hears push-to-talk; the service is its transport.
-  const voiceSlot = voices === undefined || o.voices?.host.invoke === undefined ? undefined : new VoiceSlot({
-    registry: o.voices.registry, host: o.voices.host as Pick<PluginHost, "invoke">, service: voices,
-    ...(o.voices.chosen === undefined ? {} : { chosen: o.voices.chosen }),
-    ...(o.voices.tell === undefined ? {} : { tell: o.voices.tell }),
-    ...(o.voices.forget === undefined ? {} : { forget: o.voices.forget }),
-    ...(o.voices.listenIdleMs === undefined ? {} : { listenIdleMs: o.voices.listenIdleMs }),
-    ...(o.warn === undefined ? {} : { warn: o.warn, log: o.warn }),
-  });
-  // Each reply of a bot's main conversation, spoken with its voice while the user's `voice.speakReplies` is on (unset is
-  // on; read at each turn's end).
-  let offReplies: (() => void) | undefined;
-  // A removed plugin that was the user's chosen voice takes the choice with it (a stop or a crash keeps it).
-  const registryWatch = (o.voices?.registry as Partial<Pick<PluginRegistry, "watch">> | undefined)?.watch;
-  const offVoiceRemovals = voiceSlot === undefined || registryWatch === undefined ? undefined
-    : registryWatch.call(o.voices!.registry, (change) => { if (change.type === "removed") void voiceSlot.removed(change.id).catch(() => undefined); });
   // Held by an update's restart: started again as the gate reopens.
   const offReopen = updates?.onReopen(() => host.resume());
   // The turns running here keep an update waiting (lane M's busy registry).
@@ -279,8 +326,6 @@ export function createBotSide(o: BotSideOptions): BotSide {
     ...(agents === undefined ? {} : { agents }),
     ...(routines === undefined ? {} : { routines }),
     ...(ingress === undefined ? {} : { ingress }),
-    ...(voices === undefined ? {} : { voices }),
-    ...(voiceSlot === undefined ? {} : { voiceSlot }),
     ...(grants === undefined ? {} : { grants }),
     questions,
     tools: (sessionId) => {
@@ -288,41 +333,53 @@ export function createBotSide(o: BotSideOptions): BotSide {
       const bot = host.callerOf(sessionId).bot;
       if (routineTool !== undefined && bot !== undefined && host.get(sessionId)?.kind !== "agent") defs.push(routineToolDef(routineTool, { bot }));
       // The plugin workshop's tools: a bot's own sessions (its conversation and side threads), never an agent's.
-      if (o.workshop !== undefined && bot !== undefined && host.get(sessionId)?.kind !== "agent") defs.push(...workshopToolDefs(o.workshop, { bot, sessionId }));
+      if (o.workshop !== undefined && bot !== undefined && host.get(sessionId)?.kind !== "agent") {
+        const shop = workshopToolDefs(o.workshop, { bot, sessionId });
+        // Bots as engine data (lane BT, R5): a bot builds a bot with MakeBot, never as a plugin; a plugin folder that
+        // brings a bot isn't installed.
+        defs.push(...(records === undefined ? shop : shop.map((t) => (t.name !== "PluginInstall" ? t : refuseBotPlugins(t, o.workshop!, { bot, sessionId })))));
+      }
       // A look at this computer's app, for the same sessions (the bot builds and fixes what the user sees).
       if (o.appScreenshot !== undefined && bot !== undefined && host.get(sessionId)?.kind !== "agent") defs.push(appScreenshotToolDef(o.appScreenshot, { bot }));
+      // Bots as engine data (lane BT): `MakeBot` and `EditBotInstructions` in a record bot's own sessions.
+      if (records !== undefined && bot !== undefined && records.has(bot) && host.get(sessionId)?.kind !== "agent") {
+        defs.push(...recordToolDefs({
+          bots, host, ...(o.approvals?.request === undefined ? {} : { approvals: { request: o.approvals.request.bind(o.approvals) } }),
+          setUp: (model) => (o.hasKeyFor?.(model) ?? true) && o.modelOffer?.(model) !== "absent",
+          // As the approval check reads it: a computer whose level isn't known is read-only.
+          readOnly: () => {
+            const computer = host.get(sessionId)?.computer ?? o.computer;
+            return o.levelOf !== undefined && (o.levelOf(computer) ?? "read-only") === "read-only";
+          },
+        }, sessionId));
+      }
       return defs;
     },
     methods: (deps) => {
       const sessions = sessionsMethods({
-        home: o.home, computer: o.computer, bots, host, clock: deps.clock ?? o.clock, localDevice: deps.localDevice, registry: o.registry,
+        home: o.home, computer: o.computer, bots, host, clock: deps.clock ?? o.clock, localDevice: deps.localDevice,
         ...(updates === undefined ? {} : { updateGate: updates }),
-        ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort) }),
+        ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort), ...(hooks.setAgentOption === undefined ? {} : { setAgentOption: (id: string, option: string, value: string) => hooks.setAgentOption!(id, option, value) }) }),
         questions,
+        capabilitiesOf: (pluginId: string) => grantsInForce(o.registry.get(pluginId)),
       });
       return {
       ...sessions,
-      // Lane G's `pill.send`: the Dispatch pill's words go through the same session.send as the composer's, and to a
+      // Lane G's `user.send`: the Dispatch pill's words go through the same session.send as the composer's, and to a
       // `pill.target` entry's handler through the plugin host, when there is one.
-      ...pillMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
+      ...userSendMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), files: { home: o.home, userHome: o.userHome ?? homedir(), computer: o.computer }, ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
       ...(routines === undefined ? {} : routineMethods({ routines })),
-      ...(voices === undefined ? {} : voicesMethods({ voices, host, ...(voiceSlot === undefined ? {} : { slot: voiceSlot }) })),
+      // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
+      ...botRecordMethods({ bots, host, ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
       };
     },
     start: async () => {
       await bots.start();
       await routines?.start();
       if (o.routines?.ingress?.poll !== false) ingress?.start();
-      if (voices !== undefined && offReplies === undefined) {
-        offReplies = speakReplies({
-          host, voices: voiceSlot !== undefined ? { speak: (r) => voiceSlot.reply(r) } : voices, enabled: () => readUiSettings(o.home).voice?.speakReplies !== false,
-          ...(o.warn === undefined ? {} : { warn: o.warn }),
-        });
-      }
     },
     close: async () => {
-      offReplies?.();
-      offVoiceRemovals?.();
+      offOwnership?.();
       offBusy?.();
       offQuestions?.();
       offReopen?.();

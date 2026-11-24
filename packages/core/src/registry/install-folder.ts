@@ -10,12 +10,14 @@
 // * Bounded: at most `INSTALL_MAX_FILES` files and `INSTALL_MAX_BYTES` bytes in all; the excluded names (`.git` and
 //   the others the tree hash leaves out) aren't copied.
 // * The id is the manifest's `id`, else the source folder's name, and the folder is named by it. An id that's already
-//   installed here is refused (removing it first is the user's own act), and so is one from Clover's bundled plugins.
+//   installed here is refused (removing it first is the user's own act), and so is one from MOSS's bundled plugins.
+import { homesOf } from "./outside-homes";
 import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
-import { MANIFEST_FILE, parseJsonc } from "@waifucave/clover-plugin-sdk";
-import { TopPluginId, type PluginProvenance } from "@waifucave/clover-protocol";
+import { MANIFEST_FILE, parseJsonc } from "@waifucave/moss-plugin-sdk";
+import { manifestPathIn } from "../old-names";
+import { TopPluginId, type PluginProvenance } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { treeEntries, TreeProblem } from "./tree";
 import { validatePluginFolder } from "./validate";
@@ -83,8 +85,8 @@ export function renameInto(staged: string, dest: string, id: string, rename: (fr
 }
 
 /** `<home>/run/plugin-install`: where an install's copy is staged, outside the plugins folder. */
-export function installStagingDir(cloverHome: string): string {
-  return join(cloverHome, "run", "plugin-install");
+export function installStagingDir(mossHome: string): string {
+  return join(mossHome, "run", "plugin-install");
 }
 
 /** The staging folders a run before left (a crash mid-install): removed when the daemon starts, and with them a copy
@@ -165,10 +167,10 @@ export function newStage(stagingDir: string): { dir: string; done(): void } {
 }
 
 /** Validates a staged plugin folder, the copy that will be installed, by the same validation the terminal's
- *  `clover plugin validate` runs, and renames it into the plugins folder under its id. */
+ *  `moss plugin validate` runs, and renames it into the plugins folder under its id. */
 export async function installStaged(staged: string, o: InstallTarget, expect: { id?: string; treeHash?: string; version?: string; check?: (id: string, treeHash: string) => void; from?: Partial<PluginProvenance> } = {}): Promise<{ id: string; folder: string; treeHash: string }> {
   chmodSync(staged, 0o755);
-  const v = await validatePluginFolder(staged, ...(o.os ? [{ os: o.os }] : []));
+  const v = await validatePluginFolder(staged, { ...(o.os ? { os: o.os } : {}), homes: homesOf(o.pluginsDir) });
   if (!v.ok || v.plugin === undefined || v.treeHash === undefined) {
     const errors = v.issues.filter((i) => i.severity === "error").slice(0, 5).map((i) => `${i.file ? `${i.file}: ` : ""}${i.message}`);
     throw new ContractError("invalid", `the plugin isn't valid${errors.length > 0 ? `: ${errors.join("; ")}` : ""}`);
@@ -197,7 +199,7 @@ export async function installStaged(staged: string, o: InstallTarget, expect: { 
  *  the new one can't go in. The registry then judges the change against the user's last OK, as any edit. */
 export async function replaceStaged(staged: string, o: Pick<InstallTarget, "pluginsDir" | "os">, id: string): Promise<{ id: string; folder: string; treeHash: string }> {
   chmodSync(staged, 0o755);
-  const v = await validatePluginFolder(staged, ...(o.os ? [{ os: o.os }] : []));
+  const v = await validatePluginFolder(staged, { ...(o.os ? { os: o.os } : {}), homes: homesOf(o.pluginsDir) });
   if (!v.ok || v.plugin === undefined || v.treeHash === undefined) {
     const errors = v.issues.filter((i) => i.severity === "error").slice(0, 5).map((i) => `${i.file ? `${i.file}: ` : ""}${i.message}`);
     throw new ContractError("invalid", `the plugin isn't valid${errors.length > 0 ? `: ${errors.join("; ")}` : ""}`);
@@ -222,7 +224,7 @@ export async function replaceStaged(staged: string, o: Pick<InstallTarget, "plug
  *  `ContractError` (`invalid`, `conflict`) with the reason. */
 export async function installFromFolder(o: InstallTarget & { source: string }): Promise<{ id: string; folder: string; treeHash: string }> {
   const root = sourceFolder(o.source, o.pluginsDir);
-  if (!existsSync(join(root, MANIFEST_FILE))) throw new ContractError("invalid", `${root} has no ${MANIFEST_FILE}`);
+  if (!existsSync(manifestPathIn(root, MANIFEST_FILE))) throw new ContractError("invalid", `${root} has no ${MANIFEST_FILE}`);
   const stage = newStage(o.stagingDir);
   const staged = join(stage.dir, basename(root));
   mkdirSync(staged, { recursive: true, mode: 0o700 });
@@ -236,7 +238,7 @@ export async function installFromFolder(o: InstallTarget & { source: string }): 
 
 /** A validated folder's manifest version (validation read the same file). */
 export function manifestVersion(folder: string): string | undefined {
-  const r = parseJsonc(readFileSync(join(folder, MANIFEST_FILE), "utf8"));
+  const r = parseJsonc(readFileSync(manifestPathIn(folder, MANIFEST_FILE), "utf8"));
   const v = r.ok ? (r.value as { version?: unknown } | null)?.version : undefined;
   return typeof v === "string" ? v : undefined;
 }

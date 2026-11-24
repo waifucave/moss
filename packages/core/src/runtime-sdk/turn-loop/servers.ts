@@ -3,7 +3,7 @@
 // Owner: lane A.
 //
 // * **Core tools** (`SendMessage`, `ListAgents` from lane D; `Agent`, `TaskStop` from lane K; `Glossary` here) come
-//   in lane K's neutral `CoreToolDef` shape and are served by one in-process server, `clover_core`, whose tools the
+//   in lane K's neutral `CoreToolDef` shape and are served by one in-process server, `moss_core`, whose tools the
 //   model sees under their plain names (the SDK's `toolNames`), preloaded (`anthropic/alwaysLoad`).
 // * **Plugin MCP servers** are served by one in-process server each, under the server's own name, so a tool reads
 //   `mcp__<server>__<Tool>`. Each call goes to `McpRouter.run` (J's `node.mcp.run`) as the session, with its call id
@@ -11,16 +11,19 @@
 //   A tool the manifest marks `preload` is loaded up front; the rest are on-demand, found through `Glossary`.
 // * The runtime's own copies of these names (`TaskStop`, `SendMessage`, `ListAgents`, `Agent`) are never offered to a
 //   bot's session (driver.ts leaves them out of `tools`), so the plain names never collide.
-import type { Caller } from "@waifucave/clover-protocol";
+import type { Caller } from "@waifucave/moss-protocol";
 import type { McpSdkServerConfigWithInstance, WinterMcpServerInstance } from "@waifucave/clover-agent-sdk";
 import { isContractError } from "../../contracts/common";
+import type { ToolUi } from "../../computers/mcp";
 
 /** A core tool in lane K's neutral shape (`agents/tools.ts`, `bots/tools.ts`). */
 export interface CoreToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  run(input: unknown): Promise<CoreToolResult>;
+  /** `signal`: the runtime's abort of this call (the user's stop, a pause, the turn's end), for a tool whose work can
+   *  be stopped part way (the Windows Bash and PowerShell). A tool may ignore it. */
+  run(input: unknown, extra?: { signal?: AbortSignal }): Promise<CoreToolResult>;
 }
 
 /** A core tool's result. `endTurn`: the runtime's turn ends once this call's result is in, and the driver goes on at
@@ -37,7 +40,7 @@ export interface CoreToolResult {
 }
 
 /** The core tools' server name; never a plugin's (plugin ids can't hold `_`). */
-export const CORE_TOOLS_SERVER = "clover_core";
+export const CORE_TOOLS_SERVER = "moss_core";
 
 /** One MCP tool as the MCP host lists it (lane J's `McpToolDef`), with its loading (§6.7). */
 export interface BotMcpTool {
@@ -46,9 +49,14 @@ export interface BotMcpTool {
   inputSchema: { type: "object"; [k: string]: unknown };
   /** `preload` is always visible; `on-demand` is found and loaded through `Glossary` (the default). */
   load?: "preload" | "on-demand";
+  /** The user turned it off (the tool setting): only a listing made to say why a call is refused carries it; no model is
+   *  ever offered it. */
+  off?: true;
   /** The tool's own title, for the conversation only (`tool_call.displayTitle`): never in what the runtime lists to the
    *  model, never on a card. */
   title?: string;
+  /** MCP Apps: the page this tool names (its `_meta.ui`), when it has one. */
+  ui?: ToolUi;
 }
 
 /** A plugin's MCP server as the session sees it (lanes B and D's host, J's placement). */
@@ -80,11 +88,11 @@ export function coreToolsServer(tools: () => readonly CoreToolDef[]): McpSdkServ
   for (const t of initial) toolNames[t.name] = t.name;
   const instance: WinterMcpServerInstance = {
     listTools: () => tools().map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { "anthropic/alwaysLoad": true } })),
-    async callTool(name, args) {
+    async callTool(name, args, extra) {
       const def = tools().find((t) => t.name === name);
       if (def === undefined) return text(`unknown tool: ${name}`, true);
       try {
-        const r = await def.run(args);
+        const r = await def.run(args, extra?.signal === undefined ? undefined : { signal: extra.signal });
         const images = (r.images ?? []).filter((i) => /^image\/[a-z0-9.+-]+$/i.test(i.mimeType) && /^[A-Za-z0-9+/=]+$/.test(i.data)).map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType.toLowerCase() }));
         const out = text(r.text, r.isError);
         return { content: [...out.content, ...images], isError: out.isError, ...(r.meta === undefined ? {} : { _meta: r.meta }) };
@@ -117,6 +125,9 @@ export function routedMcpServer(o: {
    *  (`ToolDisplays`, which keeps only a success's valid display). The runtime, and so the model, gets the content
    *  alone, as before. */
   displays?: { put(callId: string, result: { isError?: unknown; structuredContent?: unknown }): void; drop(callId: string): void };
+  /** MCP Apps: a call that succeeded, by call id, with the tool and its input, so a tool that names a page can be bound to
+   *  its page (`mcp-apps/`); a call that failed or was cancelled is dropped. */
+  apps?: { put(callId: string, call: { tool: string; input: Record<string, unknown>; result: { content: unknown[]; isError?: boolean } }): void; drop(callId: string): void };
 }): McpSdkServerConfigWithInstance {
   const { server } = o;
   const names = new Set(server.tools.map((t) => t.name));
@@ -137,12 +148,17 @@ export function routedMcpServer(o: {
         });
         o.onRan?.({ server: server.server, tool: name, computer });
         // A call cancelled while it ran shows nothing: its result never reaches the conversation as a success.
-        if (extra?.signal?.aborted === true) o.displays?.drop(callId);
-        else o.displays?.put(callId, result);
+        if (extra?.signal?.aborted === true) { o.displays?.drop(callId); o.apps?.drop(callId); }
+        else {
+          o.displays?.put(callId, result);
+          if (result.isError === true) o.apps?.drop(callId);
+          else o.apps?.put(callId, { tool: name, input: args as Record<string, unknown>, result: { content: result.content } });
+        }
         return { content: Array.isArray(result.content) && result.content.length > 0 ? result.content : [{ type: "text", text: "" }], isError: result.isError === true };
       } catch (err) {
         // A call that failed, timed out or was cancelled: nothing of it waits to be shown.
         o.displays?.drop(callId);
+        o.apps?.drop(callId);
         const msg = err instanceof Error ? err.message : String(err);
         return text(isContractError(err) ? `${msg} (${err.code})` : msg, true);
       }

@@ -21,7 +21,8 @@ import { catalogPointDecl } from "../../../../plugin-sdk/src/catalogs/index";
 
 /** The repo's root, from `packages/core/src/bots/tests/`. */
 export const REPO = resolve(import.meta.dir, "../../../../..");
-export const ALPHA_FOLDER = join(REPO, "plugins", "alpha");
+/** Alpha as the bundled plugin bot she was before bots became engine data (a fixture: `default-bot.ts` is her now). */
+export const ALPHA_FOLDER = join(import.meta.dir, "plugin-era", "alpha");
 
 export function diskReader(dir: string): PluginFolderReader {
   const at = (p: string) => join(dir, ...p.split("/"));
@@ -52,7 +53,7 @@ export async function pluginFromFolder(dir: string, opts: { bundled?: boolean } 
 }
 
 const temps: string[] = [];
-export function tempDir(prefix = "clover-d-"): string {
+export function tempDir(prefix = "moss-d-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   temps.push(dir);
   return dir;
@@ -120,12 +121,17 @@ export async function boot(opts: {
   routines?: BotSideOptions["routines"];
   onSessionEnded?: BotSideOptions["onSessionEnded"];
   updateGate?: BotSideOptions["updateGate"];
-  voices?: BotSideOptions["voices"];
   /** Ask for a provider the bot's plugin chose, as the daemon does (provider-consent.ts); by default the fixture's
    *  bots hold every provider already, so a test about something else never meets the card. */
   askProvider?: boolean;
-  /** The daemon's test of Clover's own bundled plugin (service.ts `bundledChoice`); none by default, so nothing is. */
+  /** The daemon's test of MOSS's own bundled plugin (service.ts `bundledChoice`); none by default, so nothing is. */
   bundledChoice?: BotSideOptions["bundledChoice"];
+  /** Lane BT: bots as engine data (`botSource: "records"`, the daemon's default since lane MC); these tests of the
+   *  plugin path keep plugins as the source unless they ask. */
+  botSource?: BotSideOptions["botSource"];
+  pluginSettings?: BotSideOptions["pluginSettings"];
+  /** The default bot (Alpha) offered by the move with records as the source; off unless a test asks for it. */
+  defaultBot?: boolean;
 }): Promise<Boot & { side: BotSide; shutdown(): Promise<void> }> {
   const clock = opts.clock ?? new FakeClock();
   const warnings: string[] = [];
@@ -137,6 +143,9 @@ export async function boot(opts: {
     ...(opts.hasKeyFor === undefined ? {} : { hasKeyFor: opts.hasKeyFor }),
     ...(opts.modelOffer === undefined ? {} : { modelOffer: opts.modelOffer }),
     ...(opts.bundledChoice === undefined ? {} : { bundledChoice: opts.bundledChoice }),
+    botSource: opts.botSource ?? "plugins",
+    defaultBot: opts.defaultBot ?? false,
+    ...(opts.pluginSettings === undefined ? {} : { pluginSettings: opts.pluginSettings }),
     ...(opts.main === undefined ? {} : { main: opts.main }),
     ...(opts.relay === undefined ? {} : { relay: opts.relay }),
     ...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
@@ -149,8 +158,7 @@ export async function boot(opts: {
     ...(opts.routines === undefined ? {} : { routines: opts.routines }),
     ...(opts.onSessionEnded === undefined ? {} : { onSessionEnded: opts.onSessionEnded }),
     ...(opts.updateGate === undefined ? {} : { updateGate: opts.updateGate }),
-    ...(opts.voices === undefined ? {} : { voices: opts.voices }),
-    assetUrl: (pluginId, path) => `clover-asset://${pluginId.replace("/", "--")}/${path}`,
+    assetUrl: (pluginId, path) => `moss-asset://${pluginId.replace("/", "--")}/${path}`,
     warn: (m) => warnings.push(m),
   });
   await side.start();

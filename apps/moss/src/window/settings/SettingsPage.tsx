@@ -1,0 +1,622 @@
+// MOSS's own Settings, built in (spec §6.10, R8): the account; the keys and sign-ins for models and voices (a key is typed
+// into MOSS's own field, goes to the engine once and is never shown again); each computer's approval level (a sensitive
+// change: the engine raises a sealed card, which the router places in this window); the devices; and one page per bot:
+// its name, its instructions, its model, its face (made from its name, or with its shape and colour pinned, §6.9) and its
+// settings from plugins, drawn GENERICALLY from each plugin's declared bot-scoped settings and their schema
+// (`bot.pluginSettings`). A bot's voice is one of those, not a field of the bot. No control here is one plugin's.
+//
+// Every change calls the bridge straight from the person's click, change or Enter (main takes it only after a press).
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
+import { bridge, shortTime } from "../bridge";
+import { Face } from "../faces/Face";
+import { EYES, makeBot, PALETTE, SHAPES, TEMPERS, type Eyes, type Shape, type Temper } from "@waifucave/moss-plugin-sdk/ui/faces";
+import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, PairingRow, SettingsView } from "../../shared/view";
+import type { Level } from "@waifucave/moss-protocol";
+
+export const LEVELS: readonly { value: Level; label: string }[] = [
+  { value: "read-only", label: "Read only" },
+  { value: "ask", label: "Ask before every action" },
+  { value: "ask-risky", label: "Ask before risky actions" },
+  { value: "accept-edits", label: "Ask before risky actions, edits allowed" },
+  { value: "automatic", label: "Fully automatic" },
+];
+
+type Section = { kind: "general" } | { kind: "bot"; id: string };
+
+export function SettingsPage(props: { bots: BotRow[]; strip?: ReactNode; bot?: string; onSetupGuide?: () => void; pairing?: PairingRow | undefined; devicesRev?: number }) {
+  const [section, setSection] = useState<Section>(props.bot !== undefined ? { kind: "bot", id: props.bot } : { kind: "general" });
+  // Opened again on a bot (the side panel's settings button) or on the account: follow it.
+  useEffect(() => { setSection(props.bot !== undefined ? { kind: "bot", id: props.bot } : { kind: "general" }); }, [props.bot]);
+  const bot = section.kind === "bot" ? props.bots.find((b) => b.id === section.id) : undefined;
+  return (
+    <main className="page" data-col="conversation" data-page="settings" aria-label="Settings">
+      <header className="page__head"><h1>Settings</h1></header>
+      {props.strip}
+      <div className="ma2-settings">
+        <nav className="ma2-settings__nav" aria-label="Settings sections">
+          <button type="button" className={`nav-item${section.kind === "general" ? " is-on" : ""}`} aria-current={section.kind === "general" ? "page" : undefined} onClick={() => setSection({ kind: "general" })} data-section="general">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.5" r="2.6" /><path d="M2.8 14a5.2 5.2 0 0 1 10.4 0" /></svg>
+            <span>Account and keys</span>
+          </button>
+          {props.bots.length > 0 ? <p className="ma2-settings__group">Bots</p> : null}
+          {props.bots.map((b) => (
+            <button key={b.id} type="button" className={`nav-item ma2-settings__bot${bot?.id === b.id ? " is-on" : ""}`} aria-current={bot?.id === b.id ? "page" : undefined} onClick={() => setSection({ kind: "bot", id: b.id })} data-section={`bot:${b.id}`}>
+              <Face name={b.name} {...(b.face !== undefined ? { face: b.face } : {})} mood="idle" size={22} surface="list" />
+              <span>{b.name}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="page__body ma2-body">
+          {bot !== undefined ? <BotPage key={bot.id} bot={bot} /> : <General {...(props.onSetupGuide !== undefined ? { onSetupGuide: props.onSetupGuide } : {})} pairing={props.pairing} devicesRev={props.devicesRev ?? 0} />}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Card(props: { title: string; children: ReactNode; note?: string; id?: string }) {
+  return (
+    <section className="settings-section" {...(props.id !== undefined ? { "data-settings": props.id } : {})}>
+      <h2>{props.title}</h2>
+      {props.note !== undefined ? <p className="muted small ma2-note">{props.note}</p> : null}
+      {props.children}
+    </section>
+  );
+}
+
+function Waiting(props: { what: string }) {
+  return <p className="muted">Waiting for the engine's {props.what}.</p>;
+}
+
+/** A read still on its way: draws nothing, and says so (`data-loading`), so what is pressed below it is pressed once the
+ *  page has its final shape (a card arriving above a button moves it from under a press: row 107's miss). */
+function Pending() {
+  return <span data-loading hidden />;
+}
+
+const KIND_WORDS: Record<string, string> = { desktop: "Computer", laptop: "Computer", phone: "Phone", tablet: "Tablet", cloud: "Cloud computer", browser: "Browser" };
+
+// ---------------------------------------------------------------------------------------------
+// The account, keys and sign-ins, approval levels and devices
+// ---------------------------------------------------------------------------------------------
+
+function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | undefined; devicesRev: number }) {
+  const [s, setS] = useState<SettingsView | undefined>(undefined);
+  const load = (): void => { void bridge().settings().then(setS); };
+  // Read again when a device came, went or was added by a pairing (the engine's `device_changed`).
+  useEffect(load, [props.devicesRev]);
+  const [levelNote, setLevelNote] = useState<string | undefined>(undefined);
+  const [deviceNote, setDeviceNote] = useState<string | undefined>(undefined);
+  const level = async (computer: string, value: string): Promise<void> => {
+    setLevelNote((await bridge().setLevel(computer, value)) ? "Look for the card to confirm the change." : "The engine didn't take the change.");
+    load();
+  };
+  return (
+    <>
+      <Card title="Account" id="account">
+        {s === undefined ? <Pending /> : s.account === "waiting" ? <Waiting what="account" /> : s.account.signedIn ? (
+          <div className="ma2-account">
+            <span className="account__dot" aria-hidden="true">{(s.account.name ?? s.account.email ?? "?").slice(0, 1).toUpperCase()}</span>
+            <span className="ma2-account__who">
+              {s.account.name !== undefined ? <strong>{s.account.name}</strong> : null}
+              {s.account.email !== undefined ? <span className="muted">{s.account.email}</span> : null}
+            </span>
+            <span className="chip chip--on">Signed in</span>
+          </div>
+        ) : <p className="muted">Not signed in. Signing in links your computers and phone.</p>}
+      </Card>
+      {props.onSetupGuide !== undefined ? (
+        <Card title="Setup guide" id="setup" note="Add a model provider and pick your default model, step by step.">
+          <button type="button" className="text-button" onClick={props.onSetupGuide} data-open-setup>Open the setup guide</button>
+        </Card>
+      ) : null}
+      <Card title="Keys and sign-ins" id="keys" note="For the models and voices your plugins bring. A key you paste here is kept by MOSS's engine and is never shown again.">
+        {s === undefined ? <Pending /> : s.signIns === "waiting" ? <Waiting what="sign-ins" /> : s.signIns.length === 0 ? <p className="muted">No model or voice needs a key yet.</p> : (
+          <ul className="kv ma2-keys">
+            {s.signIns.map((x) => <SignInRow key={`${x.pluginId}#${x.index}`} row={x} onChanged={load} />)}
+          </ul>
+        )}
+      </Card>
+      <Card title="Approval level" id="level" note="How much a bot may do on each computer before it asks you. A change asks you on a card first.">
+        {s === undefined ? <Pending /> : s.computers === "waiting" ? <Waiting what="computers" /> : (
+          <ul className="kv">
+            {s.computers.map((c) => (
+              <li key={c.name} data-computer={c.name}>
+                <span>{c.name}</span>
+                <Pick
+                  value={c.level} label={`${c.name}'s approval level`} button="Change" onSave={(v) => void level(c.name, v)}
+                  options={[...(LEVELS.some((l) => l.value === c.level) ? [] : [{ value: c.level, label: c.level }]), ...LEVELS]}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {levelNote !== undefined ? <p className="add__note" role="status">{levelNote}</p> : null}
+      </Card>
+      {/* Drawn once the cards above it are in: a list read before the keys (a few hundred rows) would be pushed down under
+          the person's pointer as they press Bring back (row 107's miss). */}
+      {s === undefined ? <Pending /> : <Archived />}
+      <Card title="Devices" id="devices">
+        {s === undefined ? <Pending /> : s.devices === "waiting" ? <Waiting what="devices" /> : s.devices.length === 0 ? <p className="muted">Only this computer.</p> : (
+          <ul className="kv">
+            {s.devices.map((d) => (
+              <li key={d.id} data-device={d.id}>
+                <span>{d.name}{d.here === true ? " (this computer)" : ""}</span>
+                <span className="muted">{KIND_WORDS[d.kind] ?? d.kind}</span>
+                {d.here === true ? null : <button type="button" className="text-button" aria-label={`Remove ${d.name}`} onClick={() => void bridge().removeDevice(d.id).then(() => setDeviceNote("Look for the card to confirm removing it."))}>Remove</button>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {deviceNote !== undefined ? <p className="add__note" role="status">{deviceNote}</p> : null}
+        {s === undefined || s.devices === "waiting" ? null : <PairDevice pairing={props.pairing} />}
+      </Card>
+    </>
+  );
+}
+
+/** Pairing another device without an account (spec §8.1): show a code here and enter it on the other device, or enter the code
+ *  the other device shows; then check that both show the same four words. Adding the device is the engine's sealed card, which
+ *  the router places in this window; nothing here adds one. */
+export function PairDevice(props: { pairing: PairingRow | undefined }) {
+  const p = props.pairing;
+  const [code, setCode] = useState("");
+  const [why, setWhy] = useState<string | undefined>(undefined);
+  const run = (r: Promise<{ ok: true } | { ok: false; why: string }>): void => { void r.then((x) => setWhy(x.ok ? undefined : x.why)); };
+  return (
+    <div className="ma2-pair" data-pairing>
+      <h3 className="small">Pair a device</h3>
+      {p === undefined ? (
+        <>
+          <p className="muted small">Show a code here and enter it on the other device, or enter the code another device shows. No account needed.</p>
+          <div className="ma2-pair__row">
+            <button type="button" className="text-button" data-pair-begin onClick={() => run(bridge().pairBegin())}>Show a code</button>
+            <form className="ma2-pair__row" onSubmit={(e) => { e.preventDefault(); if (code.trim() !== "") run(bridge().pairJoin(code.trim())); }}>
+              <input className="field" aria-label="Code from another device" placeholder="Code from another device" value={code} onChange={(e) => setCode(e.target.value)} data-pair-code />
+              <button type="submit" className="text-button" data-pair-join disabled={code.trim() === ""}>Join</button>
+            </form>
+          </div>
+        </>
+      ) : (
+        <div role="status">
+          {p.ended !== undefined ? <p>{p.ended}</p> : p.words !== undefined ? (
+            <>
+              <p className="muted small">Check that both devices show these four words:</p>
+              <p className="ma2-pair__words" data-pair-words><strong>{p.words.join(" · ")}</strong></p>
+            </>
+          ) : (
+            <>
+              <p className="muted small">Enter this code on the other device:</p>
+              <p className="ma2-pair__code" data-pair-shown><code>{p.code}</code></p>
+            </>
+          )}
+          <div className="ma2-pair__row">
+            {p.ended === undefined && p.words !== undefined ? (
+              <button type="button" className="text-button" data-pair-confirm disabled={p.confirming === true} onClick={() => run(bridge().pairConfirm())}>{p.confirming === true ? "Waiting for your OK" : "They match"}</button>
+            ) : null}
+            <button type="button" className="text-button" data-pair-cancel onClick={() => { setWhy(undefined); void bridge().pairCancel(); }}>{p.ended !== undefined ? "OK" : "Cancel"}</button>
+          </div>
+        </div>
+      )}
+      {why !== undefined ? <p className="add__note" role="alert">{why}</p> : null}
+    </div>
+  );
+}
+
+type SignIn = Exclude<SettingsView["signIns"], "waiting">[number];
+
+/** One of a plugin's sign-ins. A key goes from MOSS's own field to the engine once: the field is emptied the moment it is
+ *  sent, and nothing the person typed is ever drawn back (no echo, no "last four"). */
+export function SignInRow(props: { row: SignIn; onChanged: () => void }) {
+  const r = props.row;
+  const signedIn = r.state === "signed-in";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [note, setNote] = useState<string | undefined>(undefined);
+  const sendKey = async (): Promise<void> => {
+    const key = draft.trim();
+    setDraft("");
+    if (key === "") return;
+    const res = await bridge().signIn(r.pluginId, r.index, key);
+    if ("ok" in res) { setNote(res.why); return; }
+    setNote(res.state === "signed-in" ? "Key saved." : "The key wasn't taken.");
+    setEditing(false);
+    props.onChanged();
+  };
+  const onKey = (e: KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Enter") { e.preventDefault(); void sendKey(); }
+    if (e.key === "Escape") { setDraft(""); setEditing(false); }
+  };
+  const browser = async (): Promise<void> => {
+    const res = await bridge().signIn(r.pluginId, r.index);
+    setNote("ok" in res ? res.why : res.state === "signed-in" ? "Signed in." : "Finish signing in in your browser.");
+    props.onChanged();
+  };
+  const signOut = async (): Promise<void> => {
+    setNote((await bridge().signOut(r.pluginId, r.index)) ? "Look for the card to confirm signing out." : "The engine didn't take it.");
+  };
+  const askKey = r.method === "api-key" && (!signedIn || editing);
+  return (
+    <li className="ma2-key" data-sign-in={`${r.pluginId}#${r.index}`} data-method={r.method}>
+      <span className="ma2-key__who">
+        <span>{r.name}</span>
+        <span className={`chip${signedIn ? " chip--on" : " chip--paused"}`}>{signedIn ? (r.account ?? (r.method === "api-key" ? "Key saved" : "Signed in")) : r.method === "api-key" ? "No key" : "Signed out"}</span>
+      </span>
+      <span className="ma2-key__do">
+        {askKey ? (
+          <>
+            <input
+              type="password" className="ma2-field" placeholder="Paste a key" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey}
+              autoComplete="off" spellCheck={false} autoCapitalize="off" aria-label={`${r.name}'s key`} data-key-field
+            />
+            <button type="button" className="text-button text-button--solid" disabled={draft.trim() === ""} onClick={() => void sendKey()}>Save</button>
+            {editing ? <button type="button" className="text-button" onClick={() => { setDraft(""); setEditing(false); }}>Cancel</button> : null}
+          </>
+        ) : null}
+        {r.method === "api-key" && signedIn && !editing ? <button type="button" className="text-button" onClick={() => setEditing(true)}>Replace key</button> : null}
+        {(r.method === "oauth-pkce" || r.method === "custom") && !signedIn ? <button type="button" className="text-button text-button--solid" onClick={() => void browser()}>Sign in…</button> : null}
+        {signedIn && r.method !== "core" && !editing ? <button type="button" className="text-button" onClick={() => void signOut()}>Sign out</button> : null}
+      </span>
+      {note !== undefined ? <p className="add__note ma2-key__note" role="status">{note}</p> : null}
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// One bot's own page
+// ---------------------------------------------------------------------------------------------
+
+function BotPage(props: { bot: BotRow }) {
+  const id = props.bot.id;
+  const [rec, setRec] = useState<BotRecordRow | "waiting" | undefined>(undefined);
+  const [models, setModels] = useState<ModelRow[] | "waiting" | undefined>(undefined);
+  const [note, setNote] = useState<string | undefined>(undefined);
+  const load = (): void => { void bridge().botRecord(id).then((r) => setRec("waiting" in r ? "waiting" : r)); };
+  useEffect(() => {
+    load();
+    void bridge().models().then((m) => setModels("waiting" in m ? "waiting" : m));
+  }, [id]);
+  const edit = async (patch: BotEdit, said: string): Promise<boolean> => {
+    const ok = await bridge().editBot(id, patch);
+    setNote(ok ? said : "The engine didn't take the change.");
+    if (ok) load();
+    return ok;
+  };
+  if (rec === undefined) return <Pending />;
+  if (rec === "waiting") return <Card title={props.bot.name}><Waiting what="bots" /></Card>;
+  return (
+    <div className="ma2-bot" data-bot-page={id}>
+      <header className="ma2-bot__head" data-settings="name">
+        <Face name={rec.name} {...(rec.face !== undefined ? { face: rec.face } : {})} mood={props.bot.mood} size={56} surface="page" />
+        <div className="ma2-bot__who">
+          <NameField name={rec.name} onSave={(name) => edit({ name }, "Name saved.")} />
+          <p className="muted small">Changes apply from {rec.name}'s next turn.</p>
+        </div>
+      </header>
+      {note !== undefined ? <p className="add__note" role="status">{note}</p> : null}
+      <Card title="Model" id="model">
+        {models === undefined ? <Pending /> : models === "waiting" ? <Waiting what="models" /> : (
+          <Pick
+            value={rec.model ?? ""} label={`${rec.name}'s model`} data="model-picker" onSave={(v) => void edit({ model: v === "" ? null : v }, "Model saved.")}
+            options={[
+              { value: "", label: "Your default model" },
+              ...(rec.model !== undefined && !models.some((m) => m.id === rec.model) ? [{ value: rec.model, label: rec.model }] : []),
+              ...models.map((m) => ({ value: m.id, label: `${m.title} · ${m.provider}${m.ready ? "" : " (not signed in)"}` })),
+            ]}
+          />
+        )}
+      </Card>
+      <PluginSettings bot={id} />
+      <Card title="Face" id="face" note="A face is made from the name. Pin any of its four traits to keep it.">
+        <FacePicker name={rec.name} {...(rec.face !== undefined ? { face: rec.face } : {})} onPick={(face, said) => void edit({ face }, said)} />
+      </Card>
+      <Card title="Instructions" id="instructions" note="Who the bot is, how it talks, what it cares about.">
+        <Instructions bot={rec.id} name={rec.name} bytes={rec.instructionsBytes} onSave={(instructions) => edit({ instructions }, "Instructions saved.")} />
+      </Card>
+      <Memory bot={rec.id} name={rec.name} />
+      <Card title="Archive" id="archive" note={`Archiving puts ${rec.name} away: nothing is deleted. Its conversation, memory and routines come back with it from Settings.`}>
+        <button type="button" className="text-button" data-archive-bot={rec.id} onClick={() => void bridge().archiveBot(rec.id).then((ok) => { if (!ok) setNote("The engine didn't archive the bot."); })}>Archive {rec.name}</button>
+      </Card>
+    </div>
+  );
+}
+
+/** A bot's memory, read only (`memory.list`, `memory.read`): its files as the engine serves them, and one file's text
+ *  drawn as text. The bot keeps its memory itself; editing it here comes later. */
+function Memory(props: { bot: string; name: string }) {
+  const [files, setFiles] = useState<MemoryFileRow[] | "waiting" | undefined>(undefined);
+  const [open, setOpen] = useState<{ path: string; text?: string; why?: string } | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    setFiles(undefined);
+    setOpen(undefined);
+    void bridge().memory(props.bot).then((m) => { if (live) setFiles("waiting" in m ? "waiting" : m); });
+    return () => { live = false; };
+  }, [props.bot]);
+  const show = async (path: string): Promise<void> => {
+    if (open?.path === path) { setOpen(undefined); return; }
+    setOpen({ path });
+    const r = await bridge().memoryFile(props.bot, path);
+    setOpen((now) => now?.path !== path ? now : "text" in r ? { path, text: r.text } : { path, why: r.why });
+  };
+  return (
+    <Card title="Memory" id="memory" note={`What ${props.name} keeps in its memory folder, read only.`}>
+      {files === undefined ? <Pending /> : files === "waiting" ? <Waiting what="memory" />
+        : files.length === 0 ? <p className="muted small" data-memory-empty>{props.name} hasn't written any memory yet.</p> : (
+          <ul className="ma2-memory" data-memory-files>
+            {files.map((f) => (
+              <li key={f.path} data-memory-file={f.path}>
+                <button type="button" className="ma2-memory__file" aria-expanded={open?.path === f.path} onClick={() => void show(f.path)}>
+                  <span className="ma2-memory__path">{f.path}</span>
+                  <span className="muted small">{sizeWords(f.size)} · {shortTime(f.modifiedAt)}</span>
+                </button>
+                {open?.path === f.path ? (
+                  open.text !== undefined ? <pre className="ma2-memory__text" data-memory-text>{open.text}</pre>
+                    : open.why !== undefined ? <p className="muted small" role="status">{open.why}</p>
+                    : <p className="muted small">Reading…</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+    </Card>
+  );
+}
+
+/** The archived bots, each with Bring back (`bot.restore`: its conversation, memory and routines whole). */
+function Archived() {
+  const [bots, setBots] = useState<{ id: string; name: string }[] | "waiting" | undefined>(undefined);
+  const [note, setNote] = useState<string | undefined>(undefined);
+  const load = (): void => { void bridge().archivedBots().then((b) => setBots("waiting" in b ? "waiting" : b)); };
+  useEffect(load, []);
+  if (bots === undefined) return <Pending />;
+  return (
+    <Card title="Archived bots" id="archived" note="Bots you archived. Bringing one back brings its conversation, memory and routines with it.">
+      {bots === "waiting" ? <Waiting what="archive" /> : bots.length === 0 ? <p className="muted">None.</p> : (
+        <ul className="kv">
+          {bots.map((b) => (
+            <li key={b.id} data-archived-bot={b.id}>
+              <span>{b.name}</span>
+              <button type="button" className="text-button" onClick={() => void bridge().restoreBot(b.id).then((ok) => { setNote(ok ? `${b.name} is back.` : "The engine didn't bring the bot back."); load(); })}>Bring back</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {note !== undefined ? <p className="add__note" role="status">{note}</p> : null}
+    </Card>
+  );
+}
+
+function NameField(props: { name: string; onSave: (name: string) => Promise<boolean> }) {
+  const [v, setV] = useState(props.name);
+  useEffect(() => { setV(props.name); }, [props.name]);
+  const changed = v.trim() !== "" && v.trim() !== props.name;
+  const save = (): void => { if (changed) void props.onSave(v.trim()); };
+  return (
+    <div className="ma2-inline">
+      <input className="ma2-field ma2-name" value={v} maxLength={80} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); save(); } }} aria-label="The bot's name" />
+      <button type="button" className="text-button text-button--solid" disabled={!changed} onClick={save}>Save</button>
+    </div>
+  );
+}
+
+/** The bot's instructions as they are now (`bot.instructions.get`), edited in place and saved whole. While the engine
+ *  doesn't serve the read, the editor stays shut, so nothing ever overwrites a file the person can't see. */
+function Instructions(props: { bot: string; name: string; bytes: number; onSave: (text: string) => Promise<boolean> }) {
+  const [now, setNow] = useState<string | "waiting" | undefined>(undefined);
+  const [v, setV] = useState("");
+  useEffect(() => {
+    let live = true;
+    setNow(undefined);
+    void bridge().botInstructions(props.bot).then((r) => {
+      if (!live) return;
+      if ("waiting" in r) setNow("waiting");
+      else { setNow(r.text); setV(r.text); }
+    });
+    return () => { live = false; };
+  }, [props.bot]);
+  const save = async (): Promise<void> => { if (typeof now === "string" && v !== now && await props.onSave(v)) setNow(v); };
+  if (now !== "waiting" && now !== undefined) {
+    return (
+      <>
+        <textarea className="ma2-field ma2-instructions" rows={8} value={v} onChange={(e) => setV(e.target.value)} placeholder={`Who ${props.name} is, how ${props.name} talks…`} aria-label={`${props.name}'s instructions`} data-instructions-text />
+        <div className="ma2-inline ma2-inline--end">
+          <button type="button" className="text-button" disabled={v === now} onClick={() => setV(now)}>Undo changes</button>
+          <button type="button" className="text-button text-button--solid" disabled={v === now} onClick={() => void save()}>Save instructions</button>
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      <p className="muted small" data-instructions-size>{props.bytes === 0 ? `${props.name} has no instructions yet.` : `${props.name}'s instructions file holds ${sizeWords(props.bytes)}.`}</p>
+      <textarea className="ma2-field ma2-instructions" rows={5} value="" disabled readOnly placeholder={`Who ${props.name} is, how ${props.name} talks…`} aria-label={`${props.name}'s instructions`} />
+      {now === undefined ? <Pending /> : null}
+      {now === "waiting" ? <p className="muted small" data-instructions-why>Editing comes once MOSS can show you what the file says now, so nothing is replaced unseen.</p> : null}
+      <div className="ma2-inline ma2-inline--end">
+        <button type="button" className="text-button text-button--solid" disabled>Save instructions</button>
+      </div>
+    </>
+  );
+}
+
+export function sizeWords(bytes: number): string {
+  return bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+}
+
+const SHAPE_WORDS: Record<Shape, string> = { ball: "Ball", drop: "Drop", dome: "Dome", bowl: "Bowl", pill: "Pill", loaf: "Loaf", tile: "Tile", peak: "Peak", gem: "Gem", cup: "Cup" };
+
+const EYES_WORDS: Record<Eyes, string> = { round: "Round", tall: "Tall", dot: "Dots", calm: "Calm" };
+const TEMPER_WORDS: Record<Temper, string> = { steady: "Steady", restless: "Restless", slow: "Slow", bright: "Bright" };
+
+/** The face: its four traits to pin (shape, colour, eyes, temper, §6.9, the controller's ruling of 2026-11-17), each with
+ *  "from the name" to clear its pin. */
+function FacePicker(props: { name: string; face?: BotFace; onPick: (face: BotFace | null, said: string) => void }) {
+  const pinned: BotFace = props.face ?? {};
+  const made = makeBot(props.name, {
+    ...(pinned.shape !== undefined ? { shape: pinned.shape as Shape } : {}), ...(pinned.color !== undefined ? { color: pinned.color } : {}),
+    ...(pinned.eyes !== undefined ? { eyes: pinned.eyes as Eyes } : {}), ...(pinned.temper !== undefined ? { temper: pinned.temper as Temper } : {}),
+  });
+  const set = (change: Partial<Record<keyof BotFace, string | undefined>>): void => {
+    const all = { ...pinned, ...change };
+    const next = Object.fromEntries(Object.entries(all).filter(([, v]) => v !== undefined)) as BotFace;
+    props.onPick(Object.keys(next).length === 0 ? null : next, "Face saved.");
+  };
+  const pick = (shape: string | undefined, color: string | undefined): void => set({ shape, color });
+  return (
+    <div className="ma2-face">
+      <p className="ma2-face__label">Shape</p>
+      <div className="ma2-swatches" role="radiogroup" aria-label="Shape">
+        <button type="button" role="radio" aria-checked={pinned.shape === undefined} className={`ma2-swatch ma2-swatch--name${pinned.shape === undefined ? " is-on" : ""}`} onClick={() => pick(undefined, pinned.color)} title="Made from the name">From the name</button>
+        {SHAPES.map((s) => (
+          <button key={s} type="button" role="radio" aria-checked={pinned.shape === s} className={`ma2-swatch ma2-swatch--shape${pinned.shape === s ? " is-on" : ""}`} onClick={() => pick(s, pinned.color)} title={SHAPE_WORDS[s]} aria-label={SHAPE_WORDS[s]} data-shape={s}>
+            <Face name={props.name} face={{ ...pinned, shape: s }} mood="idle" size={34} surface="page" />
+          </button>
+        ))}
+      </div>
+      <p className="ma2-face__label">Colour</p>
+      <div className="ma2-swatches" role="radiogroup" aria-label="Colour">
+        <button type="button" role="radio" aria-checked={pinned.color === undefined} className={`ma2-swatch ma2-swatch--name${pinned.color === undefined ? " is-on" : ""}`} onClick={() => pick(pinned.shape, undefined)} title="Made from the name">From the name</button>
+        {PALETTE.map(([c, hex]) => (
+          <button key={c} type="button" role="radio" aria-checked={pinned.color === c} className={`ma2-swatch ma2-swatch--color${pinned.color === c ? " is-on" : ""}`} onClick={() => pick(pinned.shape, c)} title={c} aria-label={c} data-color={c}>
+            <span style={{ background: hex }} />
+          </button>
+        ))}
+      </div>
+      <p className="ma2-face__label">Eyes</p>
+      <div className="ma2-swatches" role="radiogroup" aria-label="Eyes">
+        <button type="button" role="radio" aria-checked={pinned.eyes === undefined} className={`ma2-swatch ma2-swatch--name${pinned.eyes === undefined ? " is-on" : ""}`} onClick={() => set({ eyes: undefined })} title="Made from the name">From the name</button>
+        {EYES.map((x) => (
+          <button key={x} type="button" role="radio" aria-checked={pinned.eyes === x} className={`ma2-swatch ma2-swatch--shape${pinned.eyes === x ? " is-on" : ""}`} onClick={() => set({ eyes: x })} title={EYES_WORDS[x]} aria-label={EYES_WORDS[x]} data-eyes={x}>
+            <Face name={props.name} face={{ ...pinned, eyes: x }} mood="idle" size={34} surface="page" />
+          </button>
+        ))}
+      </div>
+      <p className="ma2-face__label">Temper</p>
+      <div className="ma2-swatches" role="radiogroup" aria-label="Temper">
+        <button type="button" role="radio" aria-checked={pinned.temper === undefined} className={`ma2-swatch ma2-swatch--name${pinned.temper === undefined ? " is-on" : ""}`} onClick={() => set({ temper: undefined })} title="Made from the name">From the name</button>
+        {TEMPERS.map((x) => (
+          <button key={x} type="button" role="radio" aria-checked={pinned.temper === x} className={`ma2-swatch ma2-swatch--name${pinned.temper === x ? " is-on" : ""}`} onClick={() => set({ temper: x })} data-temper={x}>{TEMPER_WORDS[x]}</button>
+        ))}
+      </div>
+      <p className="muted small" data-face-traits>Now: {made.shape}, {made.colorName}, {EYES_WORDS[made.eye.kind]} eyes, {TEMPER_WORDS[made.temper].toLowerCase()}.</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// A bot's settings from plugins, drawn from each setting's declared schema
+// ---------------------------------------------------------------------------------------------
+
+/** Every plugin's bot-scoped settings for this bot, grouped by plugin. Each field is drawn from its schema alone (its
+ *  type, title, description, options, min and max), so any plugin's settings show the same way. */
+export function PluginSettings(props: { bot: string }) {
+  const [rows, setRows] = useState<BotSetting[] | "waiting" | undefined>(undefined);
+  const load = (): void => { void bridge().botSettings(props.bot).then((r) => setRows("waiting" in r ? "waiting" : r)); };
+  useEffect(load, [props.bot]);
+  const set = async (r: BotSetting, value: unknown): Promise<void> => {
+    if (await bridge().setBotSetting(props.bot, r.pluginId, r.key, value)) load();
+  };
+  if (rows === undefined) return <Pending />;
+  if (rows === "waiting") return <Card title="From plugins"><Waiting what="plugins" /></Card>;
+  if (rows.length === 0) return <Card title="From plugins"><p className="muted">No plugin has a setting for this bot.</p></Card>;
+  const groups = new Map<string, { name: string; rows: BotSetting[] }>();
+  for (const r of rows) {
+    const g = groups.get(r.pluginId) ?? { name: r.pluginName, rows: [] };
+    g.rows.push(r);
+    groups.set(r.pluginId, g);
+  }
+  return (
+    <>
+      {[...groups.entries()].map(([pluginId, g]) => (
+        <section key={pluginId} className="settings-section" data-plugin-settings={pluginId}>
+          <h2>{g.name}<span className="muted small ma2-from">&nbsp;· plugin</span></h2>
+          <ul className="kv ma2-plugin-settings">
+            {g.rows.map((r) => <SettingField key={`${r.pluginId}/${r.key}`} row={r} onSet={(v) => void set(r, v)} />)}
+          </ul>
+        </section>
+      ))}
+    </>
+  );
+}
+
+function SettingField(props: { row: BotSetting; onSet: (value: unknown) => void }) {
+  const r = props.row;
+  return (
+    <li className="ma2-setting" data-bot-setting={r.key} data-type={r.type}>
+      <span className="ma2-setting__text">
+        <span>{r.title}{!r.set ? <span className="muted small"> · default</span> : null}</span>
+        {r.description !== undefined ? <span className="muted small">{r.description}</span> : null}
+      </span>
+      <span className="ma2-setting__control"><Control row={r} onSet={props.onSet} /></span>
+    </li>
+  );
+}
+
+/** A choice from a list, sent with its own button: a native menu can stay open longer than main's press lasts, so the
+ *  write goes from the button's click (or Enter on the list), never from the menu's change. */
+function Pick(props: { value: string; label: string; options: readonly { value: string; label: string; disabled?: boolean }[]; onSave: (value: string) => void; button?: string; data?: string }) {
+  const [v, setV] = useState(props.value);
+  useEffect(() => { setV(props.value); }, [props.value]);
+  const changed = v !== props.value;
+  const save = (): void => { if (changed) props.onSave(v); };
+  return (
+    <span className="ma2-inline ma2-pick">
+      <select value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); save(); } }} aria-label={props.label} {...(props.data !== undefined ? { [`data-${props.data}`]: "" } : {})}>
+        {props.options.map((o) => <option key={o.value} value={o.value} {...(o.disabled === true ? { disabled: true } : {})}>{o.label}</option>)}
+      </select>
+      {changed ? <button type="button" className="text-button text-button--solid" onClick={save}>{props.button ?? "Save"}</button> : null}
+    </span>
+  );
+}
+
+function Control(props: { row: BotSetting; onSet: (value: unknown) => void }) {
+  const r = props.row;
+  if (r.type === "enum") {
+    const opts = r.options ?? [];
+    const value = typeof r.value === "string" ? r.value : "";
+    return (
+      <Pick
+        value={value} label={r.title} onSave={(v) => props.onSet(v)}
+        options={[...(value === "" || !opts.some((o) => o.value === value) ? [{ value, label: "Choose…", disabled: true }] : []), ...opts.map((o) => ({ value: o.value, label: o.title }))]}
+      />
+    );
+  }
+  if (r.type === "boolean") {
+    return (
+      <label className="ma2-switch">
+        <input type="checkbox" role="switch" checked={r.value === true} onChange={(e) => props.onSet(e.target.checked)} aria-label={r.title} />
+        <span aria-hidden="true" />
+      </label>
+    );
+  }
+  return <Typed row={r} onSet={props.onSet} />;
+}
+
+/** A typed value (a string, a number, a colour or a secret): set with Enter or the Set button. A secret's field starts
+ *  empty and is emptied once sent; its value is never drawn. */
+function Typed(props: { row: BotSetting; onSet: (value: unknown) => void }) {
+  const r = props.row;
+  const secret = r.type === "secret";
+  const start = secret || r.value === undefined || r.value === null ? "" : String(r.value);
+  const [v, setV] = useState(start);
+  useEffect(() => { setV(start); }, [start]);
+  const valid = r.type !== "number" || (v.trim() !== "" && Number.isFinite(Number(v)) && (r.min === undefined || Number(v) >= r.min) && (r.max === undefined || Number(v) <= r.max));
+  const dirty = v !== start && valid && (!secret || v !== "");
+  const commit = (): void => {
+    if (!dirty) return;
+    props.onSet(r.type === "number" ? Number(v) : v);
+    if (secret) setV("");
+  };
+  return (
+    <span className="ma2-inline">
+      <input
+        className="ma2-field" type={secret ? "password" : r.type === "number" ? "number" : r.type === "color" ? "color" : "text"} value={v}
+        {...(r.type === "number" && r.min !== undefined ? { min: r.min } : {})} {...(r.type === "number" && r.max !== undefined ? { max: r.max } : {})}
+        {...(secret ? { autoComplete: "off", placeholder: r.set ? "Set; type to replace" : "Not set" } : {})}
+        onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } }} aria-label={r.title} aria-invalid={!valid}
+      />
+      <button type="button" className="text-button" disabled={!dirty} onClick={commit}>Set</button>
+    </span>
+  );
+}

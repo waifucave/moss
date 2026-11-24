@@ -4,11 +4,11 @@
 // store's changes, and its own settings (`settings.watch`, which hears `plugin_settings_changed` for this plugin only;
 // the order switch on the page writes its one setting with `settings.set`).
 import { useCallback, useEffect, useState } from "react";
-import { usePluginApi, useT } from "@waifucave/clover-plugin-sdk/ui";
+import { usePluginApi, useT } from "@waifucave/moss-plugin-sdk/ui";
 
 interface Listed {
   notes: { text: string; at: number }[];
-  turns: number;
+  uses: number;
 }
 
 type Order = "newest" | "oldest";
@@ -41,14 +41,14 @@ function useNotes(): { listed: Listed | undefined; order: Order; setOrder(o: Ord
 }
 
 const CSS = `
-.np { padding: 28px 32px; max-width: 720px; font-family: var(--clover-font-family, system-ui, sans-serif); color: var(--clover-color-text, #2B2618); }
+.np { padding: 28px 32px; max-width: 720px; font-family: var(--moss-font-family, system-ui, sans-serif); color: var(--moss-color-text, #2B2618); }
 .np h1 { font-size: 24px; font-weight: 650; margin: 0 0 4px; }
-.np__meta { color: var(--clover-color-text-muted, #6B6046); font-size: 13px; margin-bottom: 18px; display: flex; gap: 14px; }
+.np__meta { color: var(--moss-color-text-muted, #6B6046); font-size: 13px; margin-bottom: 18px; display: flex; gap: 14px; }
 .np ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-.np li { background: var(--clover-color-surface, #FFFDF6); border: 1px solid var(--clover-color-hairline, #E9DDBA); border-radius: 12px; padding: 10px 14px; }
-.np__order { font: inherit; color: var(--clover-color-accent-text, #8A5A12); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
-.np time { display: block; font-size: 11.5px; color: var(--clover-color-text-muted, #6B6046); margin-top: 2px; }
-.np__empty { color: var(--clover-color-text-muted, #6B6046); }
+.np li { background: var(--moss-color-surface, #FFFDF6); border: 1px solid var(--moss-color-hairline, #E9DDBA); border-radius: 12px; padding: 10px 14px; }
+.np__order { font: inherit; color: var(--moss-color-accent-text, #8A5A12); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+.np time { display: block; font-size: 11.5px; color: var(--moss-color-text-muted, #6B6046); margin-top: 2px; }
+.np__empty { color: var(--moss-color-text-muted, #6B6046); }
 `;
 
 export function NotesPage() {
@@ -56,7 +56,7 @@ export function NotesPage() {
   const { listed, order, setOrder } = useNotes();
   const notes = listed === undefined ? [] : [...listed.notes].sort((a, b) => (order === "newest" ? b.at - a.at : a.at - b.at));
   return (
-    <main className="np" data-notes="page" data-order={order} data-turns={listed?.turns ?? ""} data-loaded={listed !== undefined}>
+    <main className="np" data-notes="page" data-order={order} data-uses={listed?.uses ?? ""} data-loaded={listed !== undefined}>
       <style>{CSS}</style>
       <h1>{t("example-notes.page.title")}</h1>
       <div className="np__meta">
@@ -64,7 +64,7 @@ export function NotesPage() {
         <button type="button" className="np__order" data-notes="order" onClick={() => setOrder(order === "newest" ? "oldest" : "newest")}>
           {t(order === "newest" ? "example-notes.page.order.newest" : "example-notes.page.order.oldest")}
         </button>
-        <span data-notes="turns">{t("example-notes.page.turns", { turns: listed?.turns ?? 0 })}</span>
+        <span data-notes="uses">{t("example-notes.page.uses", { uses: listed?.uses ?? 0 })}</span>
       </div>
       {listed !== undefined && notes.length === 0 ? <p className="np__empty">{t("example-notes.page.empty")}</p> : null}
       <ul>

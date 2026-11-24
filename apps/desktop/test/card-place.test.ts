@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cloverFront, FrontWatcher, islandMayDraw, placeCard, placeLine, pressMayBeTaken, type WatchedWindow } from "../src/main/card-place";
+import { APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
 import { SealedFrames } from "../src/main/sealed";
 
 /** The app's bookkeeping for where a pending card is drawn, as index.ts keeps it, over a fake front state: the three
@@ -33,8 +33,8 @@ describe("where a pending card is drawn", () => {
   });
 
   test("the island may draw only while the window is not in front", () => {
-    expect(islandMayDraw(false)).toBe(true);
-    expect(islandMayDraw(true)).toBe(false);
+    expect(islandMayDraw(undefined, false)).toBe(true);
+    expect(islandMayDraw(undefined, true)).toBe(false);
   });
 
   test("three placements, one line each: where it went and why", () => {
@@ -87,7 +87,7 @@ describe("where a pending card is drawn", () => {
   });
 });
 
-/** Fake windows and a fake clock: focus moves between Clover's own windows and out to another app. */
+/** Fake windows and a fake clock: focus moves between MOSS's own windows and out to another app. */
 function windows() {
   const win = (focused: boolean) => {
     const w = { focused, destroyed: false, isDestroyed: (): boolean => w.destroyed, isFocused: (): boolean => w.focused, isVisible: () => true, isMinimized: () => false };
@@ -99,7 +99,7 @@ function windows() {
   const timers: { at: number; fn: () => void }[] = [];
   let clock = 0;
   const moves: boolean[] = [];
-  const front = () => { const s = cloverFront(main, cardOpen ? [card] : []); return s.exists && s.visible && !s.minimized && s.focused; };
+  const front = () => { const s = mossFront(main, cardOpen ? [card] : []); return s.exists && s.visible && !s.minimized && s.focused; };
   const watcher = new FrontWatcher({
     read: front,
     changed: (f) => moves.push(f),
@@ -114,7 +114,7 @@ function windows() {
   };
 }
 
-describe("the app's own card is Clover's own window: answering it is not leaving the window", () => {
+describe("the app's own card is MOSS's own window: answering it is not leaving the window", () => {
   test("main in front, an unowned card shown as the app's own card: the card takes focus and main blurs, the card stays and its press is taken; focus to another app, it moves to the island", () => {
     const w = windows();
     w.watcher.event();
@@ -132,29 +132,276 @@ describe("the app's own card is Clover's own window: answering it is not leaving
     w.advance(500);
     expect(w.moves).toEqual([true]);
     expect(placeCard({ front: w.front(), drawnInWindow: false })).toBe("window");
-    expect(pressMayBeTaken({ fromIsland: false, front: w.front() })).toBe(true);
-    // Back to the main window and onto the card again: still Clover.
+    expect(pressMayBeTaken({ from: "window", placed: undefined, front: w.front() })).toBe(true);
+    // Back to the main window and onto the card again: still MOSS.
     w.card.focused = false; w.main.focused = true;
     w.watcher.event();
     w.advance(500);
     expect(w.moves).toEqual([true]);
-    // Another app comes in front: nothing of Clover has the focus; after the beat the card moves to the island.
+    // Another app comes in front: nothing of MOSS has the focus; after the beat the card moves to the island.
     w.main.focused = false;
     w.watcher.event();
     expect(w.moves).toEqual([true]);
     w.advance(200);
     expect(w.moves).toEqual([true, false]);
     expect(placeCard({ front: w.front(), drawnInWindow: false })).toBe("island");
-    // The island's frame is refused while Clover is in front, and not otherwise.
-    expect(pressMayBeTaken({ fromIsland: true, front: true })).toBe(false);
-    expect(pressMayBeTaken({ fromIsland: true, front: false })).toBe(true);
+    // The island's frame is refused while MOSS is in front, and not otherwise.
+    expect(pressMayBeTaken({ from: "island", placed: undefined, front: true })).toBe(false);
+    expect(pressMayBeTaken({ from: "island", placed: undefined, front: false })).toBe(true);
   });
 
   test("reading only the main window (the first version) moved the card on the click that was meant to answer it", () => {
     const main = { isDestroyed: () => false, isFocused: () => false, isVisible: () => true, isMinimized: () => false };
     const card = { isDestroyed: () => false, isFocused: () => true, isVisible: () => true, isMinimized: () => false };
-    expect(cloverFront(main, []).focused).toBe(false);
-    expect(cloverFront(main, [card]).focused).toBe(true);
-    expect(cloverFront(undefined, [card]).exists).toBe(false);
+    expect(mossFront(main, []).focused).toBe(false);
+    expect(mossFront(main, [card]).focused).toBe(true);
+    expect(mossFront(undefined, [card]).exists).toBe(false);
+  });
+});
+
+describe("lane RT: the engine's router places the card, and the press gate follows the placement", () => {
+  const strip = { kind: "strip", program: "code", window: "main" } as const;
+  const conversation = { kind: "conversation", program: "code", window: "main" } as const;
+  const island = { kind: "island" } as const;
+
+  test("the engine's place: the conversation; the strip (unless the conversation on screen draws it); the island", () => {
+    expect(placeFromEngine(conversation, { front: true, drawnInWindow: false })).toBe("conversation");
+    expect(placeFromEngine(strip, { front: true, drawnInWindow: false })).toBe("window");
+    expect(placeFromEngine(strip, { front: true, drawnInWindow: true })).toBe("conversation");
+    expect(placeFromEngine(island, { front: true, drawnInWindow: true })).toBe("island");
+    expect(placeFromEngine({ kind: "elsewhere" }, { front: false, drawnInWindow: false })).toBe("island");
+    // Before the engine has placed it: the old rule.
+    expect(placeFromEngine(undefined, { front: false, drawnInWindow: true })).toBe("island");
+  });
+
+  test("the island draws only a card placed on it, whatever the window's focus", () => {
+    expect(islandMayDraw(island, true)).toBe(true);
+    expect(islandMayDraw(strip, false)).toBe(false);
+    expect(islandMayDraw(conversation, false)).toBe(false);
+  });
+
+  test("the press gate follows the placement, never focus; the fallback card answers wherever the card is", () => {
+    expect(pressMayBeTaken({ from: "island", placed: island, front: true })).toBe(true);
+    expect(pressMayBeTaken({ from: "island", placed: strip, front: false })).toBe(false);
+    expect(pressMayBeTaken({ from: "window", placed: strip, front: false })).toBe(true);
+    expect(pressMayBeTaken({ from: "window", placed: island, front: true })).toBe(false);
+    expect(pressMayBeTaken({ from: "window", placed: { kind: "strip", program: "moss", window: "moss" }, front: true })).toBe(false);
+    expect(pressMayBeTaken({ from: "fallback", placed: island, front: true })).toBe(true);
+  });
+
+  test("presence: the one window, focused when in front, what its tab shows; Settings over it shows nothing", () => {
+    expect(showingOf({ tab: { kind: "bot", id: "alpha" } })).toEqual({ kind: "bot", id: "alpha" });
+    expect(showingOf({ tab: { kind: "agent", id: "s_1" } })).toEqual({ kind: "session", id: "s_1" });
+    expect(showingOf({ tab: { kind: "bot", id: "alpha" }, dialog: "settings" })).toBeNull();
+    expect(showingOf({ tab: { kind: "plugins" } })).toBeNull();
+    expect(showingOf(undefined)).toBeNull();
+    expect(presenceOf({ exists: true, visible: true, minimized: false, front: true }, { kind: "bot", id: "alpha" })).toEqual({ windows: [{ window: "main", focused: true, visible: true, showing: { kind: "bot", id: "alpha" } }] });
+    expect(presenceOf({ exists: true, visible: true, minimized: true, front: false }, null)).toEqual({ windows: [{ window: "main", focused: false, visible: false, showing: null }] });
+    expect(presenceOf({ exists: false, visible: false, minimized: false, front: false }, null)).toEqual({ windows: [] });
+  });
+});
+
+import { PresenceReporter, type PresenceSent } from "../src/main/card-place";
+import { EngineCardRouter } from "../../../packages/core/src/surfaces/card-router";
+import { FakeClock } from "../../../packages/core/src/contracts/fakes/clock";
+import type { CardPlacement, PresenceReport } from "@waifucave/moss-protocol";
+
+describe("lane RT: a press right after a focus change is taken at once (one press, never 'press again')", () => {
+  /** The engine's real router behind a connection that, like the core, hands the app every `card_placed` before it answers the
+   *  report (here: the app's own placements map is updated inside `send`, before it resolves), a beat later than the call. */
+  function world() {
+    const router = new EngineCardRouter({ clock: new FakeClock(), hostLive: true });
+    const placed = new Map<string, CardPlacement>();
+    router.watch((c) => placed.set(c.card, c.place));
+    let front = false;
+    const sent: PresenceReport[] = [];
+    const reporter = new PresenceReporter({
+      read: () => ({ exists: true, visible: true, minimized: false, front }),
+      showing: () => ({ kind: "bot", id: "alpha" }),
+      send: async (report): Promise<PresenceSent> => {
+        sent.push(report);
+        await new Promise((r) => setTimeout(r, 20));
+        router.report({ connId: 1, program: "code" }, report);
+        return "sent";
+      },
+    });
+    return { router, placed, reporter, sent, focus: () => { front = true; } };
+  }
+
+  test("the card is on the island; the window comes to the front and the watcher hasn't settled yet: one press in the conversation answers", async () => {
+    const w = world();
+    await w.reporter.report();
+    w.router.pending({ id: "card_aaaaaa", bot: "alpha" });
+    expect(w.placed.get("card_aaaaaa")).toEqual({ kind: "island" });
+    // The person clicks the window: it comes to the front, and the press lands before the front watcher has said so.
+    w.focus();
+    await w.reporter.beforePress();
+    expect(w.placed.get("card_aaaaaa")).toEqual({ kind: "conversation", program: "code", window: "main" });
+    expect(pressMayBeTaken({ from: "window", placed: w.placed.get("card_aaaaaa"), front: true })).toBe(true);
+  });
+
+  test("the watcher settled first and its report is still on its way: the press waits for it, then is taken", async () => {
+    const w = world();
+    await w.reporter.report();
+    w.router.pending({ id: "card_aaaaaa", bot: "alpha" });
+    w.focus();
+    w.reporter.settled(true);
+    void w.reporter.report();
+    // Before the report's answer the app still has the island's place; the press waits for the report on its way.
+    expect(w.placed.get("card_aaaaaa")).toEqual({ kind: "island" });
+    await w.reporter.beforePress();
+    expect(pressMayBeTaken({ from: "window", placed: w.placed.get("card_aaaaaa"), front: true })).toBe(true);
+    // One report for the focus change, not a second one for the press.
+    expect(w.sent.filter((r) => r.windows[0]?.focused === true)).toHaveLength(1);
+  });
+
+  test("a click onto the window's own strip (neither window focused for an instant) never reports the window as left", async () => {
+    const w = world();
+    w.focus();
+    w.reporter.settled(true);
+    await w.reporter.report();
+    // The instant reads unfocused, but the watcher hasn't settled out: the next report still says focused.
+    await w.reporter.report();
+    expect(w.sent.map((r) => r.windows[0]?.focused)).toEqual([true, true]);
+  });
+});
+
+describe("a card raised the moment the core's parts come up reaches an app that connected before (the upgrade pair's step 2)", () => {
+  /** A core as the engine answers one connection: its calls in order, `card.list` waiting for the late doors; the parts
+   *  raise a card the moment the doors open, told as `card_requested` to the connection only if it has subscribed. */
+  function core() {
+    const told: string[] = [];
+    const cards: { id: string; kind: string }[] = [];
+    let subscribed = false;
+    let open!: () => void;
+    const doors = new Promise<void>((r) => { open = r; });
+    let queue = Promise.resolve<unknown>(undefined);
+    const request = <T>(method: string, params?: unknown): Promise<T> => {
+      const run = async (): Promise<unknown> => {
+        if (method === "events.subscribe") { if ((params as { areas: string[] }).areas.includes("approvals")) subscribed = true; return { ok: true }; }
+        if (method === "card.list") { await doors; return { cards: [...cards] }; }
+        return {};
+      };
+      const p = queue.then(run);
+      queue = p.catch(() => undefined);
+      return p as Promise<T>;
+    };
+    // The parts come up: the doors open (a waiting call is answered), then the offer is raised at once.
+    const partsUp = async () => {
+      open();
+      await Promise.resolve();
+      cards.push({ id: "card_offer", kind: "change" });
+      if (subscribed) told.push("card_offer");
+    };
+    return { client: { request }, told, partsUp };
+  }
+
+  test("subscribed first, then listed: the card is told or listed; listed first (the old order), it was neither", async () => {
+    const c = core();
+    const waiting: string[] = [];
+    const done = subscribeThenListCards(c.client, (x) => waiting.push((x as { id: string }).id));
+    await new Promise((r) => setTimeout(r, 5));
+    await c.partsUp();
+    await done;
+    expect([...c.told, ...waiting]).toContain("card_offer");
+    expect(APP_EVENT_AREAS).toEqual(expect.arrayContaining(["approvals", "surfaces"]));
+
+    // The order before the fix: the list first, the subscription after it.
+    const old = core();
+    const listedOld: string[] = [];
+    const list = old.client.request<{ cards: { id: string }[] }>("card.list").then((r) => { for (const x of r.cards) listedOld.push(x.id); });
+    const sub = old.client.request("events.subscribe", { areas: [...APP_EVENT_AREAS] });
+    await new Promise((r) => setTimeout(r, 5));
+    await old.partsUp();
+    await Promise.all([list, sub]);
+    expect([...old.told, ...listedOld]).toEqual([]);
+  });
+});
+
+import { PlacementBook } from "../src/main/card-place";
+
+describe("lane RT: the last placement wins (the CI lane's plugin-app step 65)", () => {
+  const island = { kind: "island" } as const;
+  const strip = { kind: "strip", program: "code", window: "main" } as const;
+
+  test("the replayed order: on the island; to the window's strip (window in front); a snapshot asked before comes back 56 ms later with the island: the card stays in the window", () => {
+    const book = new PlacementBook();
+    book.follow("conn-1");
+    expect(book.placed("card_aaaaaa", island)).toBe(true);
+    expect(book.placed("card_aaaaaa", strip)).toBe(true);
+    // 56 ms later, the `card.placement` answer computed before the move arrives.
+    expect(book.snapshot([{ card: "card_aaaaaa", place: island }])).toEqual([]);
+    expect(book.get("card_aaaaaa")).toEqual(strip);
+    // The window still in front: the window's own card holds it, and the island neither draws it nor takes its press.
+    expect(placeFromEngine(book.get("card_aaaaaa"), { front: true, drawnInWindow: false })).toBe("window");
+    expect(islandMayDraw(book.get("card_aaaaaa"), true)).toBe(false);
+    expect(pressMayBeTaken({ from: "window", placed: book.get("card_aaaaaa"), front: true })).toBe(true);
+    expect(pressMayBeTaken({ from: "island", placed: book.get("card_aaaaaa"), front: true })).toBe(false);
+  });
+
+  test("a real move back to the island 56 ms later (an event) wins, and the island is the place that draws it, the window still in front", () => {
+    const book = new PlacementBook();
+    book.follow("conn-1");
+    book.placed("card_aaaaaa", island);
+    book.placed("card_aaaaaa", strip);
+    expect(book.placed("card_aaaaaa", island)).toBe(true);
+    expect(placeFromEngine(book.get("card_aaaaaa"), { front: true, drawnInWindow: false })).toBe("island");
+    expect(islandMayDraw(book.get("card_aaaaaa"), true)).toBe(true);
+    expect(pressMayBeTaken({ from: "island", placed: book.get("card_aaaaaa"), front: true })).toBe(true);
+    expect(pressMayBeTaken({ from: "window", placed: book.get("card_aaaaaa"), front: true })).toBe(false);
+  });
+
+  test("a reconnect in the middle of a flip: the new connection's own telling (its subscription, then its snapshot) is the place, the old one's word is gone", () => {
+    const book = new PlacementBook();
+    book.follow("conn-1");
+    book.placed("card_aaaaaa", island);
+    book.placed("card_aaaaaa", strip);
+    // The connection drops before the move back reached the app; the router moved the card to the island meanwhile.
+    book.follow("conn-2");
+    expect(book.get("card_aaaaaa")).toBeUndefined();
+    // The engine tells the new connection each card's place as it subscribes (before its answer), then the snapshot comes.
+    expect(book.placed("card_aaaaaa", island)).toBe(true);
+    expect(book.snapshot([{ card: "card_aaaaaa", place: strip }])).toEqual([]);
+    expect(book.get("card_aaaaaa")).toEqual(island);
+  });
+
+  test("a snapshot asked before a card was resolved and answered after it doesn't bring the card back", () => {
+    const book = new PlacementBook();
+    book.follow("conn-1");
+    book.placed("card_cccccc", island);
+    book.delete("card_cccccc");
+    expect(book.snapshot([{ card: "card_cccccc", place: island }])).toEqual([]);
+    expect(book.get("card_cccccc")).toBeUndefined();
+    // Nor one that arrives first in the snapshot after its resolution was heard.
+    book.delete("card_dddddd");
+    expect(book.snapshot([{ card: "card_dddddd", place: strip }])).toEqual([]);
+  });
+
+  test("a snapshot fills in a card no event placed; a new connection starts afresh; the same event again is no change", () => {
+    const book = new PlacementBook();
+    book.follow("conn-1");
+    expect(book.snapshot([{ card: "card_bbbbbb", place: island }])).toEqual(["card_bbbbbb"]);
+    expect(book.placed("card_bbbbbb", island)).toBe(false);
+    book.follow("conn-1");
+    expect(book.get("card_bbbbbb")).toEqual(island);
+    book.follow("conn-2");
+    expect(book.get("card_bbbbbb")).toBeUndefined();
+    expect(book.snapshot([{ card: "card_bbbbbb", place: strip }])).toEqual(["card_bbbbbb"]);
+  });
+});
+
+describe("the preview keeps every card in its own window", () => {
+  test("the window counts as in front whenever it exists, so no card is placed on an island the preview does not have", () => {
+    const win = { isDestroyed: () => false, isFocused: () => false, isVisible: () => false, isMinimized: () => false };
+    // the ordinary rule: an unfocused window is not in front
+    expect(mossFront(win, []).focused).toBe(false);
+    // the preview's: in front, and the report it sends says focused and visible
+    const st = previewMainState(win);
+    expect(st).toEqual({ exists: true, visible: true, minimized: false, focused: true });
+    expect(presenceOf({ exists: st.exists, visible: st.visible, minimized: st.minimized, front: st.focused }, { kind: "session", id: "s1" }).windows[0]).toMatchObject({ focused: true, visible: true });
+    expect(placeCard({ front: st.focused, drawnInWindow: true })).toBe("conversation");
+    expect(placeCard({ front: st.focused, drawnInWindow: false })).toBe("window");
+    expect(previewMainState(undefined).exists).toBe(false);
+    expect(previewMainState({ isDestroyed: () => true }).focused).toBe(false);
   });
 });

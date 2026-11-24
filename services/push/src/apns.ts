@@ -59,6 +59,7 @@ async function providerToken(config: ApnsConfig, now: number, fresh: boolean): P
   return token;
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** The notification body: a count, never content. A count of 0 only clears the badge. */
 export function apnsPayload(badge: number): Record<string, unknown> {
   if (badge === 0) return { aps: { badge: 0 } };
@@ -75,6 +76,7 @@ export function apnsPayload(badge: number): Record<string, unknown> {
 
 export const APNS_TOKEN_RE = /^(?:[0-9a-f]{2}){32,100}$/;
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 export async function sendApns(config: ApnsConfig, target: ApnsTarget, badge: number, now: number): Promise<SendOutcome> {
   const origin = target.env === "sandbox" ? config.sandboxOrigin : config.productionOrigin;
   const body = JSON.stringify(apnsPayload(badge));

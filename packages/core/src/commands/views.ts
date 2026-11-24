@@ -6,11 +6,12 @@
 // * `point.list`: the core's points (the plugin SDK's `CORE_POINTS`, declared by `core`) and every point a plugin
 //   declares, with its declaring entry, its occupants (active entries) and its waiting ones. A second declarer of a
 //   point that isn't a UI spot is listed too, inactive, so Settings can offer the choice (§5.4).
-import { CORE_POINTS, WELL_KNOWN_POINT_NAMES, resolveKeys } from "@waifucave/clover-plugin-sdk";
-import { PLUGINS_METHODS, type Caller, type CommandView, type PointView } from "@waifucave/clover-protocol";
+import { CORE_POINTS, WELL_KNOWN_POINT_NAMES, resolveKeys } from "@waifucave/moss-plugin-sdk";
+import { PLUGINS_METHODS, type Caller, type CommandView, type OneAtATimeView, type PointView } from "@waifucave/moss-protocol";
 import type { Contribution, PluginRegistry } from "../contracts/plugin-registry";
 import { CORE_SPOTS } from "../contracts/plugin-registry";
-import { handler, type MethodHandler } from "../rpc/handler";
+import { handler, requireUser, type MethodHandler } from "../rpc/handler";
+import { checkChoice, fillerName, oneAtATimePoints, refOf as activeRefOf, type ActiveRegistry } from "../registry/active-one";
 import type { ApiHandlers } from "../plugin-host/api/router";
 import { mayRunCommand, registryCommand, runCommand } from "../registry/commands";
 import type { PluginHost } from "../contracts/plugin-host";
@@ -31,6 +32,7 @@ export function commandViews(registry: Pick<PluginRegistry, "entries">, platform
       description: v.description as CommandView["description"],
       ...(isObject(v.args) ? { args: v.args } : {}),
       ...(typeof v.key === "string" ? { key: v.key } : {}),
+      ...(v.hold === true && typeof v.key === "string" ? { hold: true as const } : {}),
       ...(v.runsOn === "each" || v.runsOn === "main" || v.runsOn === "chosen" ? { runsOn: v.runsOn } : {}),
     });
   }
@@ -76,8 +78,8 @@ export function pointViews(registry: Pick<PluginRegistry, "entries" | "points">)
       ...(isObject(decl?.fields) ? { fields: decl.fields } : {}),
       ...(isObject(decl?.props) ? { props: decl.props } : {}),
       ...(p.active ? listed(p.name) : { occupants: [], waiting: [] }),
-      // Filling a point a bundled plugin declares, a well-known one, replaces UI Clover ships (§6.8).
-      replacesShipped: WELL_KNOWN_POINT_NAMES.has(p.name) && p.declaredBy !== "core" && p.declaredBy.pluginId.split("/")[0] === "clover",
+      // Filling a point a bundled plugin declares, a well-known one, replaces UI MOSS ships (§6.8).
+      replacesShipped: WELL_KNOWN_POINT_NAMES.has(p.name) && p.declaredBy !== "core" && p.declaredBy.pluginId.split("/")[0] === "moss",
       private: decl?.private === true,
       ...(typeof decl?.deprecated === "string" ? { deprecated: decl.deprecated } : {}),
       ...(typeof decl?.doc === "string" ? { doc: decl.doc } : {}),
@@ -117,11 +119,35 @@ export function commandsApi(registry: Pick<PluginRegistry, "entries"> & Partial<
   };
 }
 
-/** `command.list` and `point.list` on the user's connections. */
-export function commandListMethods(registry: Pick<PluginRegistry, "entries" | "points">): Record<string, MethodHandler> {
+/** The one-at-a-time points (§5.4 "One at a time") as Settings' pickers read them (`point.active.list`). */
+export function oneAtATimeViews(registry: ActiveRegistry): OneAtATimeView[] {
+  return oneAtATimePoints(registry).map((one) => ({
+    point: one.point.name,
+    title: one.title,
+    declaredBy: one.point.declaredBy === "core" ? "core" : one.point.declaredBy.pluginId,
+    fillers: one.fillers.map((c) => ({ ...activeRefOf(c), name: fillerName(registry, c) })),
+    ...(one.active !== undefined ? { active: activeRefOf(one.active) } : {}),
+    ...(one.chosen !== undefined ? { chosen: one.chosen } : {}),
+  }));
+}
+
+/** `command.list`, `point.list` and the one-at-a-time points' `point.active.*` on the user's connections. */
+export function commandListMethods(registry: Pick<PluginRegistry, "entries" | "points"> & Partial<Pick<PluginRegistry, "get" | "chosen" | "choose">>): Record<string, MethodHandler> {
   const M = PLUGINS_METHODS;
   return {
     [M.commandList.name]: handler(M.commandList, () => ({ commands: commandViews(registry) })),
     [M.pointList.name]: handler(M.pointList, () => ({ points: pointViews(registry) })),
+    [M.pointActiveList.name]: handler(M.pointActiveList, (_p, ctx) => {
+      requireUser(ctx, "read which filler of a point is active");
+      return { points: oneAtATimeViews(registry) };
+    }),
+    // The user's own pick (Settings' picker): never a plugin's, whatever door it calls through.
+    [M.pointActiveSet.name]: handler(M.pointActiveSet, ({ point, entry }, ctx) => {
+      requireUser(ctx, "choose which filler of a point is active");
+      if (registry.choose === undefined) throw new ContractError("unsupported", "this registry keeps no choices");
+      checkChoice(registry, point, entry);
+      registry.choose(point, { pluginId: entry.pluginId, entryId: entry.entryId });
+      return { ok: true as const };
+    }),
   };
 }

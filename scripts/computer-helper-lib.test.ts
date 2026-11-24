@@ -43,7 +43,7 @@ describe("the helper's identities", () => {
     expect(helperExecutable("/x/Winter Computer Use Dev.app", "dev")).toBe("/x/Winter Computer Use Dev.app/Contents/MacOS/Winter Computer Use Dev");
   });
 
-  test("the stated requirement: identifier + Clover's team under Apple's anchor (the dev daemon's shape)", () => {
+  test("the stated requirement: identifier + MOSS's team under Apple's anchor (the dev daemon's shape)", () => {
     expect(helperRequirement("com.winter.computeruse", TEAM)).toBe(`identifier "com.winter.computeruse" and anchor apple generic and certificate leaf[subject.OU] = "${TEAM}"`);
   });
 
@@ -195,7 +195,7 @@ describe("winter-browser-host (nested in the helper)", () => {
     const main = readFileSync(join(host, "Tool", "main.swift"), "utf8");
     const guarded = main.slice(main.indexOf("#if WINTER_CU_TEST_BUILD"), main.indexOf("#else"));
     for (const name of ["WINTER_BROWSER_HOST_HOME", "WINTER_CU_TEST_DAEMON_REQUIREMENT"]) expect(guarded).toContain(name);
-    expect(main.slice(main.indexOf("#else"))).not.toContain("CLOVER_");
+    expect(main.slice(main.indexOf("#else"))).not.toContain("MOSS_");
     const lib = join(host, "Sources", "WinterBrowserHostCore");
     for (const file of readdirSync(lib)) {
       const text = readFileSync(join(lib, file), "utf8");
@@ -219,14 +219,12 @@ describe("the helper protocol number is the same everywhere (apple/ComputerUse/P
     return Number(m[1]);
   };
 
-  test("the spec, the helper, the daemon, WinterKit and the live-test clients all speak one number", () => {
+  test("the spec, the helper, the daemon and the live-test clients all speak one number", () => {
     const spec = one(read("apple", "ComputerUse", "PROTOCOL.md"), /^\*\*Protocol version: (\d+)\*\*$/m, "PROTOCOL.md");
     const helper = one(read("apple", "ComputerUse", "WinterComputerUse", "Sources", "WinterComputerUseShell", "JSONRPC.swift"),
       /public static let protocolVersion = (\d+)/, "RPCWire.protocolVersion");
-    const kit = one(read("apple", "WinterKit", "Sources", "WinterKit", "ComputerUseHelperClient.swift"),
-      /public static let version = (\d+)/, "ComputerUseHelperProtocol.version");
     const probe = one(read("scripts", "cu-live", "swift", "ViewProbe", "Core.swift"), /static let protocolVersion = (\d+)/, "the view probe");
-    expect({ helper, daemon: HELPER_PROTOCOL, kit, probe }).toEqual({ helper: spec, daemon: spec, kit: spec, probe: spec });
+    expect({ helper, daemon: HELPER_PROTOCOL, probe }).toEqual({ helper: spec, daemon: spec, probe: spec });
   });
 
   test("no client hard-codes a hello protocol beside its constant", () => {

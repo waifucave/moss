@@ -1,5 +1,5 @@
 {
-  "name": "@waifucave/clover-plugin-sdk",
+  "name": "@waifucave/moss-plugin-sdk",
   "version": "0.124.0",
   "private": true,
   "license": "Apache-2.0",
@@ -9,9 +9,12 @@
     "./args": "./src/manifest/args.ts",
     "./ui": "./src/ui/index.tsx",
     "./ui/bridge": "./src/ui/bridge.ts",
-    "./ui/avatar-control": "./src/ui/avatar-control.ts",
+    "./ui/faces": "./src/ui/faces/index.tsx",
+    "./ui/testing": "./src/ui/testing.tsx",
     "./fold": "./src/catalogs/fold.ts",
     "./api-calls": "./src/catalogs/api-calls.ts",
+    "./streams": "./src/api/streams.ts",
+    "./usage-source": "./src/usage-source/index.ts",
     "./plain": "./src/plain-text.ts",
     "./templates": "./src/templates/index.ts",
     "./schemas/*": "./generated/*"
@@ -22,7 +25,7 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@waifucave/clover-protocol": "workspace:*",
+    "@waifucave/moss-protocol": "workspace:*",
     "zod": "^4.6.7"
   },
   "peerDependencies": {

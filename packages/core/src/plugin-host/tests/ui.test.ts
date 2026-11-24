@@ -4,8 +4,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync as makeTemp, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { layerApiCall, PLUGIN_API_VERSION } from "@waifucave/clover-plugin-sdk";
-import { PLUGINS_METHODS } from "@waifucave/clover-protocol";
+import { layerApiCall, PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sdk";
+import { PLUGINS_METHODS } from "@waifucave/moss-protocol";
 import { ContractError } from "../../contracts/common";
 import { FakeApprovalBroker } from "../../contracts/fakes/approval-broker";
 import { FakeClock } from "../../contracts/fakes/clock";
@@ -30,17 +30,17 @@ const ctx = { caller: { kind: "core" } } as never;
 
 describe("plugin.ui and plugin.layer.api", () => {
   test("views carry the real tree hash, files, grants and entries; a component's calls go through the ui side of the gate", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-b2-ui-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-b2-ui-"));
     const folder = join(home, "plugins", "tarot");
     const files: Record<string, string> = {
-      "clover.json": JSON.stringify({
-        manifest: 1, id: "tarot", name: "Tarot", version: "1.0.0", engines: { clover: `^${PLUGIN_API_VERSION}` },
+      "moss.json": JSON.stringify({
+        manifest: 1, id: "tarot", name: "Tarot", version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` },
         host: { entry: "host/index.js" }, client: { entry: "client/index.js", css: ["client/index.css"] },
         contributes: { themes: [{ id: "night", file: "themes/night.json" }], locales: [{ lang: "fr", file: "locales/fr.json" }] },
       }),
       "package.json": JSON.stringify({ type: "module" }),
       // What its components may call is its `ui` table only; `onToolAfter` stands for a tool's or a hook's handler.
-      "host/index.js": "export const onToolAfter = async () => \"a hook ran\";\nconst draw = async (args, ctx) => { await ctx.api.ui.send(\"drawn\", { card: args.card }); return { drew: args.card, by: ctx.caller.kind, as: ctx.caller.pluginId ?? null, session: ctx.session ?? null }; };\n"
+      "host/index.js": "export const onToolAfter = async () => \"a hook ran\";\nexport const tell = async (args, ctx) => { await ctx.api.ui.send(\"told\", { n: 1 }); return \"told\"; };\nconst draw = async (args, ctx) => { await ctx.api.ui.send(\"drawn\", { card: args.card }); return { drew: args.card, by: ctx.caller.kind, as: ctx.caller.pluginId ?? null, session: ctx.session ?? null }; };\n"
         + "const big = async (args, ctx) => { try { await ctx.api.ui.send(\"big\", \"x\".repeat(70000)); return \"sent\"; } catch (e) { return e.message; } };\n"
         + "const remember = async (args, ctx) => { for (let i = 0; i < 5; i++) await ctx.api.storage.synced.set(\"stage\", { v: 1, n: i, ...args }); return { by: ctx.caller.kind, as: ctx.caller.pluginId ?? null, session: ctx.session ?? null }; };\n"
         + "export const ui = { draw: (a, c) => draw(a, c), big: (a, c) => big(a, c), spam: (a, c) => spam(a, c), remember: (a, c) => remember(a, c) };\n"
@@ -56,7 +56,7 @@ describe("plugin.ui and plugin.layer.api", () => {
     }
     const broker = new FakeApprovalBroker({ clock: new FakeClock() });
     const secrets = new MemorySecretStore();
-    const opened = await openPluginRegistry({ cloverHome: home, os: "macos", broker, secrets, settleMs: 50 });
+    const opened = await openPluginRegistry({ mossHome: home, os: "macos", broker, secrets, settleMs: 50 });
     const events: { type: string; [k: string]: unknown }[] = [];
     const ph = await startPluginHost({ home, computer: "Studio", registry: opened.registry, secrets, emit: (e) => events.push(e) });
     const ui = pluginUi({ registry: opened.registry, router: ph.gate, emit: (e) => events.push(e) });
@@ -84,6 +84,12 @@ describe("plugin.ui and plugin.layer.api", () => {
       const api = ui.methods[PLUGINS_METHODS.pluginLayerApi.name]!;
       expect(await api({ pluginId: "tarot", ...layerApiCall("host.call", "draw", { card: "The Star" }), session: "s_1" }, ctx))
         .toEqual({ result: { drew: "The Star", by: "plugin", as: "tarot", session: "s_1" } });
+      // A component's call is the plugin's: its message names no call. One sent while serving a session's call (a tool
+      // call, here a handler the core invokes for a coding session) says whose, from the core's own record.
+      expect(events.find((e) => e.type === "plugin_ui_message" && e.event === "drawn")!.call).toBeUndefined();
+      expect(await ph.host.invoke({ pluginId: "tarot", handler: "tell", args: null, caller: { kind: "session", sessionId: "s_code", sessionKind: "coding" } })).toBe("told");
+      expect(await ph.host.invoke({ pluginId: "tarot", handler: "tell", args: null, caller: { kind: "session", sessionId: "s_alpha", sessionKind: "bot", bot: "alpha" } })).toBe("told");
+      expect(events.filter((e) => e.type === "plugin_ui_message" && e.event === "told").map((e) => e.call)).toEqual([{ session: "s_code", kind: "coding" }, { session: "s_alpha", kind: "bot", bot: "alpha" }]);
       // ui.send: a value over 64 KiB is refused, and so is a plugin's 51st message in a second (#333's review).
       expect(await api({ pluginId: "tarot", ...layerApiCall("host.call", "big", null) }, ctx)).toEqual({ result: expect.stringContaining("at most 65536") });
       expect(await api({ pluginId: "tarot", ...layerApiCall("host.call", "spam", null) }, ctx)).toEqual({ result: [expect.any(Number), expect.stringContaining("more than 50 UI messages this second")] });
@@ -178,7 +184,7 @@ describe("plugin.ui and plugin.layer.api", () => {
     const registry = { list: () => [], entries: () => [], get: (id: string) => states[id], watch: () => () => {} } as never;
     const ui = pluginUi({
       registry, router: async (call) => (routed.push(call.path), null), emit: () => {},
-      settings: { layerView: async (id, key) => (asked.push([id, key]), key === undefined ? { greeting: "hi", token: { set: true } } : "hi"), layerSet: (id, key, value) => void wrote.push([id, key, value]) },
+      settings: { layerView: async (id, key, bot) => (asked.push(bot === undefined ? [id, key] : [id, key, bot]), key === undefined ? { greeting: "hi", token: { set: true } } : "hi"), layerSet: (id, key, value, bot) => void wrote.push(bot === undefined ? [id, key, value] : [id, key, value, bot]) },
     });
     try {
       const own = ui.methods[PLUGINS_METHODS.pluginLayerCall.name]!;
@@ -192,11 +198,17 @@ describe("plugin.ui and plugin.layer.api", () => {
       // Only while on and running (or waiting): stopped, off and unknown plugins read nothing.
       for (const id of ["sol", "off", "ghost"]) expect(((await own({ call: "settings.get", args: ["greeting"] }, as(id)).catch((x: unknown) => x)) as Error).message).toContain("isn't running");
       // One key, a string; anything else is refused before anything is read.
-      for (const args of [[1], [""], ["k".repeat(129)], ["a", "b"], [{ key: "a" }]]) expect(((await own({ call: "settings.get", args }, as("luna")).catch((x: unknown) => x)) as Error).message).toContain("settings.get takes");
+      for (const args of [[1], [""], ["k".repeat(129)], ["a", "b"], [{ key: "a" }], ["a", { bot: 1 }], ["a", { bot: "alpha", id: "sol" }], ["a", { bot: "alpha" }, 1]]) expect(((await own({ call: "settings.get", args }, as("luna")).catch((x: unknown) => x)) as Error).message).toContain("settings.get takes");
       expect(asked).toHaveLength(3);
+      // F2: a bot's value of its own, for the bot it names (as the host half's `settings.get(key, { bot })`).
+      await own({ call: "settings.get", args: ["nick", { bot: "alpha" }] }, as("luna"));
+      expect(asked.at(-1)).toEqual(["luna", "nick", "alpha"]);
+      asked.pop();
       // A change: its own, a key and a value; at most LAYER_SETTING_WRITES_PER_MINUTE a minute per plugin.
       expect(await own({ call: "settings.set", args: ["order", "oldest"], pluginId: "sol" }, as("luna"))).toEqual({ result: null });
-      for (const args of [["order"], [1, "x"], ["order", "x", "y"]]) expect(((await own({ call: "settings.set", args }, as("luna")).catch((x: unknown) => x)) as Error).message).toContain("settings.set takes");
+      for (const args of [["order"], [1, "x"], ["order", "x", "y"], ["order", "x", { bot: "alpha", id: "sol" }]]) expect(((await own({ call: "settings.set", args }, as("luna")).catch((x: unknown) => x)) as Error).message).toContain("settings.set takes");
+      expect(await own({ call: "settings.set", args: ["nick", "Lu", { bot: "alpha" }] }, as("luna"))).toEqual({ result: null });
+      expect(wrote.at(-1)).toEqual(["luna", "nick", "Lu", "alpha"]);
       expect(((await own({ call: "settings.set", args: ["order", "x"] }, as("sol")).catch((x: unknown) => x)) as Error).message).toContain("isn't running");
       let capped: Error | undefined;
       for (let i = 0; i < LAYER_SETTING_WRITES_PER_MINUTE + 5 && capped === undefined; i++) {
@@ -221,16 +233,27 @@ describe("plugin.ui and plugin.layer.api", () => {
     }
   });
 
-  test("layers: the whole clover tree shares `clover`; any other id writes `/` as `--`", () => {
-    expect([layerOf("clover"), layerOf("clover/island"), layerOf("luna"), layerOf("luna/tarot-panel"), layerOf("cloverish")]).toEqual(["clover", "clover", "luna", "luna--tarot-panel", "cloverish"]);
+  test("layers: the whole moss tree shares `moss`; any other id writes `/` as `--`", () => {
+    expect([layerOf("moss"), layerOf("moss/island"), layerOf("luna"), layerOf("luna/tarot-panel"), layerOf("mossish")]).toEqual(["moss", "moss", "luna", "luna--tarot-panel", "mossish"]);
   });
 
-  test("a renderer's avatar.formats reach the view: its kinds, the extensions that pick it, the finder; a size over the format's ceiling is clamped, a renderer with no UI still shows", () => {
-    const record = { id: "pic", name: "Pic", enabled: true, state: "running", treeHash: "sha256:x", source: "local", granted: [], folder: "/p/pic", manifest: { manifest: 1, id: "pic", name: "Pic" } };
-    const declared = { id: "pngtuber", format: "pngtuber", name: "Pngtuber", entry: { extensions: [".pngtuber.json"] }, files: { kinds: [{ ext: [".json"], type: "json", maxBytes: 99_999_999 }, { ext: [".png"], type: "image", maxBytes: 4_194_304 }], find: "folder", maxFiles: 16 } };
-    const registry = { list: () => [record], entries: (point: string) => (point === "avatar.formats" ? [{ pluginId: "pic", state: "active", value: declared }, { pluginId: "pic", state: "waiting", value: { ...declared, format: "unfinished" } }] : []) } as never;
+  test("files that come with a point's entries reach the view (a word-list point, nothing about figures): the folder of each active entry's path, the declared kinds, a cap over the kind's ceiling clamped; a data plugin with no UI still shows", () => {
+    const record = { id: "words-en", name: "English words", enabled: true, state: "running", treeHash: "sha256:x", source: "local", granted: [], folder: "/p/words-en", manifest: { manifest: 1, id: "words-en", name: "English words" } };
+    const decl = { shape: "list", fields: { type: "object", properties: { id: { type: "string" }, list: { type: "string", format: "path" } } }, files: { list: { kinds: [{ ext: [".json"], type: "json", maxBytes: 99_999_999 }, { ext: [".mp3"], type: "audio", maxBytes: 1_000 }] } } };
+    const registry = {
+      list: () => [record],
+      points: () => [{ name: "spell.lists", shape: "list", declaredBy: { pluginId: "spell", ref: "host" }, spot: false, active: true, decl }],
+      entries: (point: string) => (point === "spell.lists" ? [
+        { pluginId: "words-en", state: "active", value: { id: "common", list: "lists/common/words.json" } },
+        { pluginId: "words-en", state: "waiting", value: { id: "later", list: "lists/later/words.json" } },
+        { pluginId: "words-en", state: "active", value: { id: "bad", list: "../out/words.json" } },
+      ] : []),
+    } as never;
     const [view] = uiPluginViews(registry);
-    expect(view?.avatarFormats).toEqual([{ format: "pngtuber", extensions: [".pngtuber.json"], kinds: [{ ext: [".json"], type: "json", maxBytes: 8 * 1024 * 1024 }, { ext: [".png"], type: "image", maxBytes: 4_194_304 }], find: "folder", maxFiles: 16 }]);
+    expect(view?.dataFiles).toEqual([{ folder: "lists/common", kinds: [{ ext: [".json"], type: "json", maxBytes: 8 * 1024 * 1024 }, { ext: [".mp3"], type: "audio", maxBytes: 1_000 }] }]);
+    // The declaration gone (its declarer off): no files come along.
+    const off = { ...(registry as Record<string, unknown>), points: () => [] } as never;
+    expect(uiPluginViews(off)[0]?.dataFiles).toBeUndefined();
   });
 });
 

@@ -1,5 +1,7 @@
 import type { Provider, TurnInputItem } from "../providers/types";
-import { isInternalRefusal, requireInternalWiring, type InternalCallSource } from "../providers/internal-router";
+import { isInternalRefusal, requireInternalWiring, type InternalCall, type InternalCallSource, type InternalRouter } from "../providers/internal-router";
+import type { ModelTag } from "../runtime-sdk/model-tag";
+import type { Settings } from "../settings";
 import { classifyProviderFailure, type RoleHealthRegistry, type SubscriptionQuotaSource } from "../providers/role-health";
 import type { SessionStore } from "../sessions/store";
 import type { SessionHub } from "../sessions/hub";
@@ -88,7 +90,7 @@ export class SessionTitler {
     /** See the field's own doc comment. A real daemon passes this and nothing else. */
     source?: InternalCallSource;
     /** B-1: `InternalProviderView.refreshSoon` — asked when the provider REJECTS the credential, which
-     *  is the `clover logout` symptom (the snapshot still says it is there). Titles are the most frequent
+     *  is the `moss logout` symptom (the snapshot still says it is there). Titles are the most frequent
      *  internal call — every session's first turn — so this is the fastest carrier of all of them.
      *  Rate-limited and non-blocking inside. Absent in every test double. */
     refreshCredentials?: () => void;
@@ -104,7 +106,7 @@ export class SessionTitler {
     this.roleHealth = deps.roleHealth;
     // A junk env value must fall back to the default, not become NaN — setTimeout(fn, NaN) fires
     // immediately (dreamer.ts's constructor guards the same footgun the same way).
-    const n = Number(process.env.CLOVER_TITLE_TIMEOUT_MS);
+    const n = Number(process.env.MOSS_TITLE_TIMEOUT_MS);
     // D2 (2026-09-22 dist-session-fixes): raised from 15000. Measured cause of the dist log's
     // "title timeout after 15000ms" — `titles.model`'s stored role effort of `"none"` was, at the
     // time, dropped by `internalWireEffortFor` (providers/internal-provider.ts) rather than sent, so
@@ -161,7 +163,7 @@ export class SessionTitler {
     const ac = new AbortController();
     // 2026-09-19: resolved ONCE per call, so the provider, the model, the tag and the effort provably
     // come from one settings/credential generation. A refusal means the job is not runnable right now
-    // (no credentialed provider, or an explicit pin on one Clover cannot use): return empty, which
+    // (no credentialed provider, or an explicit pin on one MOSS cannot use): return empty, which
     // `maybeTitle` already treats as "no title", exactly as a blank model reply does.
     const resolved = this.source?.();
     if (resolved !== undefined && isInternalRefusal(resolved)) return "";
@@ -199,7 +201,7 @@ export class SessionTitler {
         // + swallowed" — that swallowing is unchanged).
         else if (ev.type === "error" && wire.tag !== undefined) {
           sawProviderError = true;
-          // B-1: a REJECTED credential is the `clover logout` symptom — ask for a rate-limited re-probe
+          // B-1: a REJECTED credential is the `moss logout` symptom — ask for a rate-limited re-probe
           // so the next call goes quietly inert instead of failing the same way again.
           if (ev.code === "auth") this.refreshCredentials?.();
           this.roleHealth?.recordFailure("titles.model", wire.tag, classifyProviderFailure({ ...ev, subscriptionQuota: wire.quota?.subscriptionQuota() }));
@@ -221,4 +223,63 @@ export class SessionTitler {
       ac.abort();
     }
   }
+}
+
+/** The longest first message a code session's title is made from (spec revision 20, §9.5 "Titles"). */
+export const SESSION_TITLE_INPUT_MAX = 500;
+
+/**
+ * One title for a MOSS code session (§9.5 "Titles", lane CG): its first message on the call the internal router resolved
+ * (`titles.model`, on the light model of the session's model's family). Throws on a timeout or the provider's own error, so
+ * the caller leaves the session untitled and tries again at its next turn's end; the provider call is aborted with the
+ * race either way.
+ */
+export async function titleOnce(call: Pick<InternalCall, "provider" | "model" | "effort">, firstMessage: string, timeoutMs = 45_000): Promise<string> {
+  const ac = new AbortController();
+  const run = (async () => {
+    let text = "";
+    for await (const ev of call.provider.streamTurn({
+      model: call.model,
+      ...(call.effort === undefined ? {} : { reasoningEffort: call.effort }),
+      instructions: TITLE_INSTRUCTION,
+      input: [{ type: "message", role: "user", content: `USER MESSAGE:\n${firstMessage.slice(0, SESSION_TITLE_INPUT_MAX)}` }],
+      tools: [],
+      signal: ac.signal,
+    })) {
+      if (ev.type === "text_delta") text += ev.delta;
+      else if (ev.type === "error") throw new Error(`the title's model answered an error (${ev.code ?? "unknown"})`);
+      else if (ev.type === "done" && ev.stopReason === "aborted") throw new Error("title generation aborted");
+    }
+    return text;
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`title timeout after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([run, timeout]);
+  } finally {
+    clearTimeout(timer);
+    ac.abort();
+  }
+}
+
+/**
+ * The session host's titles (§9.5 "Titles"): `lightModelFor` answers the tag a session's title runs on (the light model
+ * of its model's family on its own provider, else the titles job's own answer: the default's family's light model, or the
+ * default), and `titler` runs one title on a tag. A job MOSS can't run (no credential, titles turned off) is a failed try:
+ * the session stays untitled and its next turn's end tries again.
+ */
+export function mossSessionTitles(router: Pick<InternalRouter, "resolve">, settings: () => Settings | null | undefined): { titler: (text: string, model: string) => Promise<string>; lightModelFor: (model: string | undefined) => string } {
+  const callFor = (model: string | undefined): InternalCall => {
+    const s = settings();
+    if (s?.titles?.enabled === false) throw new Error("titles are turned off");
+    const call = router.resolve("titles.model", s, model === undefined ? undefined : { lightOf: model as ModelTag });
+    if (isInternalRefusal(call)) throw new Error(call.detail);
+    return call;
+  };
+  return {
+    lightModelFor: (model) => callFor(model).tag,
+    titler: (text, model) => titleOnce(callFor(model), text),
+  };
 }

@@ -6,12 +6,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 // The document is this file's own: left registered, the next file that registers one fails at its import ("Happy DOM has
-// already been globally registered": ui-api, voice-hooks, pill-bots and key-dialog on the systems whose file order runs
+// already been globally registered": ui-api, pill-bots and key-dialog on the systems whose file order runs
 // this one first).
 afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
-import { PRESS_AGAIN_TEXT, buttonPage, ownCardPage } from "../src/main/sealed-pages";
+import { FRESH_SETTLE_MS, PRESS_AGAIN_TEXT, buttonPage, ownCardPage } from "../src/main/sealed-pages";
 
 function load(html: string, answers: string[]) {
   const g = globalThis as unknown as Record<string, unknown>;
@@ -21,11 +21,11 @@ function load(html: string, answers: string[]) {
   delete document.body.dataset.ready;
   g.IntersectionObserver = class {
     constructor(private cb: (e: unknown[]) => void) {}
-    observe(t: Element) { this.cb([{ target: t, intersectionRatio: 1, isVisible: true }]); }
+    observe(t: Element) { this.cb([{ target: t, intersectionRatio: 1, isVisible: true, time: performance.now() }]); }
     unobserve() {}
   };
   for (const b of document.querySelectorAll(".seal-button")) (b as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () => ({ width: 80, height: 32 });
-  g.cloverSealed = { visible: () => {}, size: () => {}, answer: async (o: string) => { answers.push(o); return { accepted: true }; } };
+  g.mossSealed = { visible: () => {}, size: () => {}, answer: async (o: string) => { answers.push(o); return { accepted: true }; } };
   new Function(script)();
   window.dispatchEvent(new Event("DOMContentLoaded"));
   return { win: window, doc: document };
@@ -51,7 +51,8 @@ describe("a press before the page is ready", () => {
     await wait(800);
     expect(doc.body.dataset.ready).toBe("yes");
     press(win, "pointerdown", btn);
-    await wait(20);
+    // A press is read twice, the second FRESH_SETTLE_MS after it (lane SV): the answer follows that.
+    await wait(FRESH_SETTLE_MS + 40);
     expect(answers).toEqual(["approve"]);
     window.dispatchEvent(new Event("pagehide"));
   });
@@ -69,7 +70,8 @@ describe("a press before the page is ready", () => {
     await wait(1_150);
     expect(doc.body.dataset.ready).toBe("yes");
     press(win, "click", btn);
-    await wait(20);
+    // A press is read twice, the second FRESH_SETTLE_MS after it (lane SV): the answer follows that.
+    await wait(FRESH_SETTLE_MS + 40);
     expect(answers).toEqual(["approve"]);
     window.dispatchEvent(new Event("pagehide"));
   });
@@ -83,9 +85,11 @@ describe("a press at any moment of a fresh page", () => {
       const btn = doc.querySelector(".seal-button")!;
       let early = 0;
       for (let t = 0; t < 12 && answers.length === 0; t++) {
+        // What the press produced decides the assertion, so no wall-clock gap enters it: a page not ready says so at once (the state
+        // text, synchronously) and answers nothing; one that took the press answers once its fresh report comes (a tick in the stub).
         press(win, "pointerdown", btn);
-        await wait(0);
-        if (answers.length === 0) { expect(doc.querySelector(".state")!.textContent).toBe(PRESS_AGAIN_TEXT); early++; }
+        if (doc.querySelector(".state")!.textContent === PRESS_AGAIN_TEXT) { expect(answers).toEqual([]); early++; }
+        else { for (let w = 0; w < 100 && answers.length === 0; w++) await wait(5); expect(answers).toEqual(["approve"]); }
         await wait(60);
       }
       expect(answers).toEqual(["approve"]);
@@ -115,7 +119,8 @@ describe("a page whose window hid and showed again starts its waits over", () =>
     expect(doc.querySelector(".state")!.textContent).toBe(PRESS_AGAIN_TEXT);
     await wait(500);
     press(win, "pointerdown", btn);
-    await wait(20);
+    // A press is read twice, the second FRESH_SETTLE_MS after it (lane SV): the answer follows that.
+    await wait(FRESH_SETTLE_MS + 40);
     expect(answers).toEqual(["approve"]);
     window.dispatchEvent(new Event("pagehide"));
   });
@@ -134,7 +139,8 @@ describe("a page whose window hid and showed again starts its waits over", () =>
     doc.dispatchEvent(new Event("pointerover"));
     await wait(1_150);
     press(win, "click", btn);
-    await wait(20);
+    // A press is read twice, the second FRESH_SETTLE_MS after it (lane SV): the answer follows that.
+    await wait(FRESH_SETTLE_MS + 40);
     expect(answers).toEqual(["approve"]);
   });
 });

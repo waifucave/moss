@@ -3,12 +3,12 @@
 // by this table (B-M2); the UI runtime does the same in layers (lane E). `satisfies` keeps it exactly in step with
 // `PluginApi`: a call added there and missing here, or the reverse, fails the typecheck.
 import type {
-  ApprovalsApi, AudioApi, SpeechApi, VoicesApi, AvatarReportApi, BotsApi, DesktopNotifications, BrowserApi, CommandsApi, ComputersApi, ConversationApi, DevicesApi, FilesApi, HostApi, KeysApi,
-  LogsApi, MemoryApi, NetApi, NotifyApi, PluginApi, PluginsApi, PointsApi, RoutinesApi, SecretsApi, SettingsApi, SyncedStore,
+  ApprovalsApi, BotsApi, DesktopNotifications, BrowserApi, CommandsApi, ComputersApi, ConversationApi, DevicesApi, FilesApi, HostApi, KeysApi,
+  LogsApi, MemoryApi, NetApi, NotifyApi, OutsideApi, PluginApi, PluginsApi, PointsApi, RoutinesApi, SecretsApi, SettingsApi, SyncedStore,
   ShellApi, TerminalApi, UiSendApi, UsageApi,
+  TurnsApi, StreamsApi, SessionsApi, ActivityApi, PicturesApi,
 } from "../api/plugin-api";
-import type { HostProcess } from "@waifucave/clover-protocol";
-import type { AvatarApi } from "./avatar-cues";
+import { isKindFamily, kindCapability, type HostProcess } from "@waifucave/moss-protocol";
 
 type Fn = (...args: never[]) => unknown;
 type FnKeys<T> = { [K in keyof T & string]-?: NonNullable<T[K]> extends Fn ? K : never }[keyof T & string];
@@ -17,25 +17,38 @@ type FnKeys<T> = { [K in keyof T & string]-?: NonNullable<T[K]> extends Fn ? K :
 export type ApiCallPath =
   | FnKeys<PluginApi>
   | `points.${FnKeys<PointsApi>}` | `commands.${FnKeys<CommandsApi>}` | `host.${FnKeys<HostApi>}` | `ui.${FnKeys<UiSendApi>}`
-  | `storage.synced.${FnKeys<SyncedStore>}` | `net.${FnKeys<NetApi>}` | `secrets.${FnKeys<SecretsApi>}` | `keys.${FnKeys<KeysApi>}`
+  | `storage.synced.${FnKeys<SyncedStore>}` | `net.${FnKeys<NetApi>}` | `outside.${FnKeys<OutsideApi>}` | `secrets.${FnKeys<SecretsApi>}` | `keys.${FnKeys<KeysApi>}`
   | `settings.${FnKeys<SettingsApi>}` | `conversation.${FnKeys<ConversationApi>}` | `memory.${FnKeys<MemoryApi>}`
   | `bots.${FnKeys<BotsApi>}` | `routines.${FnKeys<RoutinesApi>}` | `computers.${FnKeys<ComputersApi>}` | `devices.${FnKeys<DevicesApi>}`
   | `approvals.${FnKeys<ApprovalsApi>}` | `files.${FnKeys<FilesApi>}` | `browser.${FnKeys<BrowserApi>}` | `terminal.${FnKeys<TerminalApi>}`
   | `plugins.${FnKeys<PluginsApi>}` | `shell.${FnKeys<ShellApi>}`
-  | `usage.${FnKeys<UsageApi>}` | `logs.${FnKeys<LogsApi>}` | `notify.${FnKeys<NotifyApi>}` | `audio.${FnKeys<AudioApi>}` | `speech.${FnKeys<SpeechApi>}` | `voices.${FnKeys<VoicesApi>}`
-  | `desktop.${FnKeys<DesktopNotifications>}` | `avatar.${FnKeys<AvatarApi>}` | `avatar.${FnKeys<AvatarReportApi>}`;
+  | `usage.${FnKeys<UsageApi>}` | `logs.${FnKeys<LogsApi>}` | `notify.${FnKeys<NotifyApi>}`
+  | `desktop.${FnKeys<DesktopNotifications>}`
+  | `turns.${FnKeys<TurnsApi>}` | `streams.${FnKeys<StreamsApi>}`
+  | `sessions.${FnKeys<SessionsApi>}` | `activity.${FnKeys<ActivityApi>}` | `pictures.${FnKeys<PicturesApi>}`;
 
 /** How many notifications a plugin may send in a minute, and in an hour (`notify.send`, its host half and its layer
  *  together). */
 export const NOTIFY_PER_MINUTE = 3;
+/** `outside.run` (P5): each of a program's outputs is cut at this many bytes; its time is 60 s unless asked, at most
+ *  10 minutes. */
+export const OUTSIDE_OUTPUT_MAX = 1_048_576;
+export const OUTSIDE_TIMEOUT_MS = 60_000;
+export const OUTSIDE_TIMEOUT_MAX_MS = 600_000;
 export const NOTIFY_PER_HOUR = 20;
+/** Point messages (`points.send`): the most one may carry, serialized, and how many a plugin may send a second (its host
+ *  half and its parts together, every point). */
+export const POINT_MESSAGE_MAX_BYTES = 65_536;
+export const POINT_MESSAGES_PER_SECOND = 60;
 
 export interface ApiCallInfo {
-  /** The capability it needs; `call:*` is `call:<the target's top-level id>`, `network:*` the URL's host. */
+  /** The capability it needs; `call:*` is `call:<the target's top-level id>`, `network:*` the URL's host, and a family
+   *  by kind (`activity.read.*`, `picture.read.*`, spec revision 19 §3.6) that family's capability for the kind of data
+   *  the call reaches (`target.kind`). */
   readonly capability?: string;
   /** Host halves in any process; only a host half in a process of the plugin's own (`own`, never a worker of a shared
-   *  process); only the `clover` process (the owner's answer to S4); components (UI layers); or both. */
-  readonly where: "host" | "own" | "clover" | "ui" | "both";
+   *  process); only the `moss` process (the owner's answer to S4); components (UI layers); or both. */
+  readonly where: "host" | "own" | "moss" | "ui" | "both";
   /** Listed, but no side serves it yet: why. The core refuses it with this reason ("isn't available yet"), whatever the
    *  plugin's capabilities, and the SDK's `PluginApi` types it as absent, so calling it is a type error. */
   readonly notYet?: string;
@@ -44,8 +57,9 @@ export interface ApiCallInfo {
 /** Where a call comes from: a component, or a host half in the process the core started it in (`HostProcess`). */
 export type ApiCaller = "ui" | HostProcess;
 
+
 const both = (capability?: string): ApiCallInfo => (capability ? { capability, where: "both" } : { where: "both" });
-/** The Clover Browser's calls: the bundled tree's Browser tool (its host half, for the session whose tool call it serves) and
+/** The MOSS Browser's calls: the bundled tree's Browser tool (its host half, for the session whose tool call it serves) and
  *  the bundled panel (its component, for the person). The core serves no other plugin's. */
 const BROWSER: ApiCallInfo = { capability: "browser", where: "both" };
 
@@ -55,9 +69,17 @@ export const API_CALLS = {
   // calls cross to the core, and `t` answers at once with a string, which only a component's runtime can (`useT`).
   t: { where: "ui" },
   "points.entries": both(), "points.watch": both(), "points.call": both(),
+  /** A one-at-a-time point's active entry (§5.4): its declarer's tree and its fillers read it. */
+  "points.active": both(), "points.onActive": both(),
+  /** Point messages: between a point's declarer and its fillers, both ways, in order, capped. Filling the point (its
+   *  `fills` line on the filler's OK card) is the gate. */
+  "points.send": both(), "points.onMessage": both(),
   /** Its own tree's commands with no capability; another plugin's with `call:<its top-level id>`. */
   "commands.run": both("call:*"), "commands.list": both(),
   "host.call": { where: "ui" }, "host.on": { where: "ui" },
+  /** P5: the programs its manifest names (`host.outside.programs`, each on its OK card with a warning), run outside the
+   *  sandbox with the user's own access; the list is the grant, so no capability. Host halves only. */
+  "outside.run": { where: "host" },
   "ui.send": { where: "host" },
   /** A layer reads its own store (`plugin.layer.call`) and hears its changes (`plugin_store_changed`); only its host half
    *  writes it, so what a component hands over is checked by the plugin's own code first. */
@@ -66,8 +88,8 @@ export const API_CALLS = {
   "net.fetch": both("network:*"),
   /** Only a process of the plugin's own; never a worker of a shared process, never a layer (§5.2). */
   "secrets.get": { where: "own" },
-  /** Only the `clover` process (S4): a bundled plugin's own per-computer key pairs, whose private half stays in the core. */
-  "keys.publicKey": { where: "clover" }, "keys.open": { where: "clover" }, "keys.delete": { where: "clover" },
+  /** Only the `moss` process (S4): a bundled plugin's own per-computer key pairs, whose private half stays in the core. */
+  "keys.publicKey": { where: "moss" }, "keys.open": { where: "moss" }, "keys.delete": { where: "moss" },
   "settings.get": both(), "settings.watch": both(), "settings.set": both(),
   "conversation.list": both("conversation.read"), "conversation.get": both("conversation.read"),
   "conversation.history": both("conversation.read"), "conversation.watch": both("conversation.read"), "conversation.follow": both("conversation.read"),
@@ -86,9 +108,9 @@ export const API_CALLS = {
   "computers.list": both("computers.read"), "computers.get": both("computers.read"), "computers.watch": both("computers.read"),
   "computers.holds": both("computers.control"), "computers.takeHold": { capability: "computers.control", where: "host" },
   "computers.releaseHold": { capability: "computers.control", where: "host" }, "computers.setUserWorking": { capability: "computers.control", where: "host" },
-  "computers.setActionRunning": { capability: "computers.control", where: "host" }, "computers.cloverWindows": { capability: "computers.control", where: "host" },
+  "computers.setActionRunning": { capability: "computers.control", where: "host" }, "computers.mossWindows": { capability: "computers.control", where: "host" },
   "devices.list": both("devices.read"), "devices.watch": both("devices.read"),
-  /** Components only, with `approvals`: which cards wait for this plugin's own bot (the bundled `clover` tree: all), ids and
+  /** Components only, with `approvals`: which cards wait for this plugin's own bot (the bundled `moss` tree: all), ids and
    *  places, never a card's text. A host half has no cards: they are the user's, and a sealed frame is a component's. */
   "approvals.pending": { capability: "approvals", where: "ui" }, "approvals.watch": { capability: "approvals", where: "ui" },
   "files.stat": both("files"), "files.readText": both("files"), "files.readBytes": both("files"), "files.write": both("files"),
@@ -99,8 +121,8 @@ export const API_CALLS = {
    *  half's `files.path` (a grant's real path, never a page's) beside them. */
   "files.pickOpen": { capability: "files", where: "ui" }, "files.pickFolder": { capability: "files", where: "ui" }, "files.pickSave": { capability: "files", where: "ui" },
   "files.url": { capability: "files", where: "ui" }, "files.onDrop": { capability: "files", where: "ui" },
-  /** The bundled `clover` tree's host halves only, for a tool call they serve (the Browser tool): the session that call
-   *  is for drives the Clover Browser, under its own rules; the bundled panel's component acts for the person and alone
+  /** The bundled `moss` tree's host halves only, for a tool call they serve (the Browser tool): the session that call
+   *  is for drives the MOSS Browser, under its own rules; the bundled panel's component acts for the person and alone
    *  places a tab in a view and hears the tabs change. A third-party plugin's `browser` isn't served: raw DevTools on the
    *  person's signed-in pages is more than an OK card's one line can carry. */
   "browser.toolCaller": { capability: "browser", where: "host" }, "browser.tabs": BROWSER, "browser.open": BROWSER,
@@ -109,7 +131,7 @@ export const API_CALLS = {
   /** Components only: a listener can't cross a call, so the panel hears the tabs change as the core's `tab_changed` and
    *  `tab_closed` events; a page's DevTools events (`onCdpEvent`) are a component's watch, the panel's alone, of the `Page.*` events. */
   "browser.watch": { capability: "browser", where: "ui" }, "browser.onCdpEvent": { capability: "browser", where: "ui" },
-  /** Components only, of the bundled `clover` tree: what reaches a terminal the runtime derives from trusted events. */
+  /** Components only, of the bundled `moss` tree: what reaches a terminal the runtime derives from trusted events. */
   "terminal.open": { capability: "terminal", where: "ui" }, "terminal.input": { capability: "terminal", where: "ui" },
   "terminal.onData": { capability: "terminal", where: "ui" }, "terminal.resize": { capability: "terminal", where: "ui" },
   "terminal.close": { capability: "terminal", where: "ui" },
@@ -120,37 +142,42 @@ export const API_CALLS = {
   "shell.closePanel": { capability: "shell.control", where: "ui" }, "shell.togglePanel": { capability: "shell.control", where: "ui" },
   "shell.setSidebar": { capability: "shell.control", where: "ui" }, "shell.toggleSidebar": { capability: "shell.control", where: "ui" },
   "shell.go": { capability: "shell.control", where: "ui" }, "shell.openSettings": { capability: "shell.control", where: "ui" }, "shell.dragWindow": { capability: "shell.control", where: "ui" }, "shell.provide": { capability: "shell.control", where: "ui" },
-  /** Components only, of the bundled `clover` tree (the plugin index browser). */
+  /** Components only, of the bundled `moss` tree (the plugin index browser). */
   "plugins.install": { capability: "plugins.install", where: "ui" },
   /** Lane D's usage rows and this computer's plan readings, read-only. */
   "usage.rows": both("usage.read"), "usage.plans": both("usage.read"),
   "usage.summary": both("usage.read"), "usage.watch": both("usage.read"),
-  /** A plugin's own tree's logs need no capability; Clover's own (`"core"`) and any other plugin's need `logs.read`,
+  /** A plugin's own tree's logs need no capability; MOSS's own (`"core"`) and any other plugin's need `logs.read`,
    *  which the core checks per source (the coordinator's ruling: what the OK card says decides). */
   "logs.read": both(), "logs.follow": both(),
   "notify.send": both("notify"),
-  /** This computer's own notifications (the local app's `app.notify`): only the bundled `clover` tree's process, for its
+  /** This computer's own notifications (the local app's `app.notify`): only the bundled `moss` tree's process, for its
    *  desktop notifier (§10). Any other plugin reaches the user through `notify.send`, under the core's rules (its name
    *  shown, its rate, the user's mute, never while a card waits). */
-  "desktop.show": { where: "clover" }, "desktop.close": { where: "clover" },
-  /** A bot plugin's figure: its own bot only (the bot whose id is the plugin's top-level id), from its components and its
-   *  host half alike. The renderer's side is the stage's: only the bundled `clover` tree reports what it drew. */
-  "avatar.cue": both("avatar.control"), "avatar.catalogue": both("avatar.read"), "avatar.box": both("avatar.read"), "avatar.watch": both("avatar.read"),
-  "avatar.report": { capability: "avatar.report", where: "ui" },
-  /** The app plays a plugin's audio as a bot's speech; push-to-talk audio reaches the plugin as it comes. */
-  "audio.play": both("audio"), "audio.onRecording": both("audio"),
-  /** The active voice mode's door to the player (§6.6): no capability (its `voiceModes` entry, its OK card's lines
-   *  and the user's choice in Settings › Voice decide), refused to any plugin that isn't the active voice; `modes` is
-   *  any voice mode's and Clover's pages'. The providers' endpoints (`voices.*`): `voices.use`, which a voice mode holds
-   *  by being one (the router counts its `voiceModes` entry as the grant); a reply's ticket is the active mode's alone. */
-  "speech.piece": { where: "host" }, "speech.play": { where: "host" }, "speech.stop": { where: "host" }, "speech.modes": both(),
-  "voices.providers": both("voices.use"), "voices.speak": { capability: "voices.use", where: "host" }, "voices.listen": { capability: "voices.use", where: "host" },
-  "voices.feed": { capability: "voices.use", where: "host" },
+  "desktop.show": { where: "moss" }, "desktop.close": { where: "moss" },
+  /** One-at-a-time queues (§5.4 "Turns"), in both halves, with no capability of their own: the name decides. A plugin's
+   *  own (`<its id>/<name>`) is open to it; another plugin's only if that plugin's manifest lists the name
+   *  (`contributes.turns`); a device turn (`device/speech`) needs the capability the turns catalog names (`audio`). */
+  "turns.take": both(), "turns.done": both(), "turns.extend": both(), "turns.state": both(), "turns.watch": both(),
+  /** Byte streams between a plugin's own two halves (§5.4 "Streams"), in both halves, with no capability: a stream
+   *  connects only one plugin's own halves, or (`points.stream`) a caller to a handler it may already `points.call`. */
+  "points.stream": both(),
+  "streams.open": both(), "streams.accept": both(), "streams.write": both(), "streams.end": both(), "streams.cancel": both(), "streams.ack": both(),
+  /** Spec revision 19 (§3.6, G4 to G6), shapes pinned by lane SP; lane AF serves them. Code sessions by `sessions.read`;
+   *  the activity feed and live pictures by kind; `pictures.publish` by the server's manifest (`picture: true`) and the
+   *  tool call it serves, with no capability. */
+  "sessions.list": { capability: "sessions.read", where: "both" }, "sessions.get": { capability: "sessions.read", where: "both" },
+  "sessions.watch": { capability: "sessions.read", where: "both" }, "sessions.history": { capability: "sessions.read", where: "both" },
+  "sessions.follow": { capability: "sessions.read", where: "both" },
+  "activity.list": { capability: "activity.read.*", where: "both" }, "activity.watch": { capability: "activity.read.*", where: "both" },
+  "pictures.list": { capability: "picture.read.*", where: "both" }, "pictures.watch": { capability: "picture.read.*", where: "both" },
+  "pictures.open": { capability: "picture.read.*", where: "both" },
+  "pictures.publish": { where: "host" },
 } as const satisfies Record<ApiCallPath, ApiCallInfo>;
 
 /** Whether a plugin with these capabilities has a call, where it runs (§5.4: without the capability, the call doesn't
  *  exist for that plugin). `target` is the command's plugin for `commands.run`, the URL's host for `net.fetch`. */
-export function apiCallAllowed(call: string, where: ApiCaller, capabilities: readonly string[], target?: { plugin?: string; host?: string; port?: number }, allowNetwork?: (caps: readonly string[], host: string, port?: number) => boolean): boolean {
+export function apiCallAllowed(call: string, where: ApiCaller, capabilities: readonly string[], target?: { plugin?: string; host?: string; port?: number; kind?: "sessions" | "bots" }, allowNetwork?: (caps: readonly string[], host: string, port?: number) => boolean): boolean {
   const info = (API_CALLS as Record<string, ApiCallInfo>)[call];
   if (!info) return false;
   const reaches = info.where === "both"
@@ -160,5 +187,6 @@ export function apiCallAllowed(call: string, where: ApiCaller, capabilities: rea
   if (info.capability === undefined) return true;
   if (info.capability === "call:*") return target?.plugin !== undefined && capabilities.includes(`call:${target.plugin.split("/")[0]}`);
   if (info.capability === "network:*") return target?.host !== undefined && allowNetwork !== undefined && allowNetwork(capabilities, target.host, target.port);
+  if (isKindFamily(info.capability)) return target?.kind !== undefined && capabilities.includes(kindCapability(info.capability, target.kind));
   return capabilities.includes(info.capability);
 }

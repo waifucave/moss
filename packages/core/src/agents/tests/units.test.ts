@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError, RpcPeer, type JsonRpcMessage } from "@waifucave/clover-agent-sdk/acp";
 import { UserSelections } from "../acp/selections";
-import { MAX_RAW_INPUT_CHARS, capRawInput, onceOnly } from "../acp/session";
+import { AGENT_TOOL_OUTPUT_MAX, MAX_RAW_INPUT_CHARS, capRawInput, onceOnly, toolOutputOf } from "../acp/session";
 import { isAuthRequired, pathsOf, readCaps, readConfigOptions } from "@waifucave/clover-agent-sdk/acp";
 import { AcpAgentBackend, versionSatisfies } from "../backend";
 import { BridgeTokens } from "../bridge/tokens";
 import { buildAgentEnv, launchContained, spawnPlan } from "../process/launch";
-import { bridgeCloverParts } from "../bridge/handlers";
+import { bridgeMossParts } from "../bridge/handlers";
 import { BRIDGE_ENV, runBridge } from "../bridge/server";
-import type { CloverConn } from "../../ipc/clover";
+import type { MossConn } from "../../ipc/moss";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeFence } from "../../contracts/fakes/fence";
 import { WELL_BEHAVED_QUIRKS } from "../../contracts/fakes/agent-backend";
@@ -30,8 +30,9 @@ import { S5_ANTIGRAVITY_QUIRKS, S5_CURSOR_QUIRKS } from "../../contracts/fakes/a
 import { MAX_CHECKED_PATHS, agentPaths } from "../paths";
 import { AgentTranscript, REDACTED_TOKEN, botSegment, redactDeep, transcriptPaths } from "../transcript";
 import { effectOf, promptOf, ruleKeyOf } from "../manager";
+import { ruleShapeOf } from "../../approvals/bot-check";
 import { ADMISSIONS, admissionFor } from "../sandbox/admission";
-import { FileAgentOks, agentOksPath } from "../sandbox/oks";
+import { FileAgentOks, MemoryAgentOks, agentOksPath } from "../sandbox/oks";
 import { fileToolDenials, homeReach, realPathOf, withHomeDenied } from "../memory";
 
 function pair(opts: { stringIds?: boolean } = {}) {
@@ -78,9 +79,9 @@ describe("RpcPeer", () => {
 });
 
 describe("the environment allow-list", () => {
-  test("only the base set, the backend's names and LC_* pass; nothing named CLOVER_* ever does", () => {
-    const env = buildAgentEnv(["CURSOR_CONFIG_DIR", "CLOVER_HOME"], { NO_OPEN_BROWSER: "1", CLOVER_X: "no" }, {
-      PATH: "/bin", HOME: "/h", LC_ALL: "C", CURSOR_CONFIG_DIR: "/c", CLOVER_HOME: "/secret", CLOVER_BRIDGE_TOKEN: "t", OPENAI_API_KEY: "k", AWS_SECRET_ACCESS_KEY: "s",
+  test("only the base set, the backend's names and LC_* pass; nothing named MOSS_* ever does", () => {
+    const env = buildAgentEnv(["CURSOR_CONFIG_DIR", "MOSS_HOME"], { NO_OPEN_BROWSER: "1", MOSS_X: "no" }, {
+      PATH: "/bin", HOME: "/h", LC_ALL: "C", CURSOR_CONFIG_DIR: "/c", MOSS_HOME: "/secret", MOSS_BRIDGE_TOKEN: "t", OPENAI_API_KEY: "k", AWS_SECRET_ACCESS_KEY: "s",
     });
     expect(env).toEqual({ PATH: "/bin", HOME: "/h", LC_ALL: "C", CURSOR_CONFIG_DIR: "/c", NO_OPEN_BROWSER: "1" });
   });
@@ -161,6 +162,15 @@ describe("the card's inputs", () => {
     const mcpKey = (server: string, tool: string) => ruleKeyOf("cursor", { toolCallId: "1", toolKind: "other", title: "x", mcp: { server, tool }, options: [], paths: [] });
     expect(mcpKey("a__b", "c")).not.toBe(mcpKey("a", "b__c"));
     expect(ruleKeyOf("cursor", { toolCallId: "1", toolKind: "edit", title: "x", options: [], paths: [] })).toBeUndefined();
+    // An edit of one resolved file: that file, for that agent (a Write for new content, an Edit for a change); two files, none.
+    expect(ruleKeyOf("cursor", { toolCallId: "1", toolKind: "edit", title: "x", rawInput: { file_path: "a.md", content: "hi" }, options: [], paths: ["/u/p/a.md"] })).toBe("Agent(cursor):Write(/u/p/a.md)");
+    expect(ruleKeyOf("cursor", { toolCallId: "1", toolKind: "edit", title: "x", rawInput: { file_path: "a.md", old_string: "a", new_string: "b" }, options: [], paths: ["/u/p/a.md"] })).toBe("Agent(cursor):Edit(/u/p/a.md)");
+    expect(ruleKeyOf("cursor", { toolCallId: "1", toolKind: "edit", title: "x", options: [], paths: ["/u/p/a.md", "/u/p/b.md"] })).toBeUndefined();
+    // Each key read back as the rule it stores: the card's "Always allow" sentence comes from this.
+    expect(ruleShapeOf("Agent(cursor):Bash(ls -la)")).toEqual({ kind: "command", target: "ls -la" });
+    expect(ruleShapeOf("Agent(cursor):Write(/u/p/a.md)")).toEqual({ kind: "file", target: "/u/p/a.md" });
+    expect(ruleShapeOf('Agent(cursor):mcp(["blender","Render"])')).toEqual({ kind: "plugin-tool", target: "Render (blender)" });
+    expect(ruleShapeOf("Agent(cursor):Something(odd)")).toEqual({ kind: "other", target: "Agent(cursor):Something(odd)" });
     expect((await promptOf({ from: "bot", bot: "alpha", session: "s", text: "go on" })).text).toBe("go on");
     expect((await promptOf({ from: "note", label: "Fish", text: "hi", by: { kind: "core" } })).text).toBe("[Fish] hi");
   });
@@ -168,7 +178,7 @@ describe("the card's inputs", () => {
 
 describe("the transcript", () => {
   test("lives under bots/<bot>/agents/<session>, drops replays, and never writes the token", () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-k-tr-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-k-tr-"));
     try {
       const t = new AgentTranscript(home, "agent_x", "pack/luna");
       expect(t.treeWirePath).toBe("bots/pack--luna/agents/agent_x/acp.ndjson");
@@ -178,7 +188,7 @@ describe("the transcript", () => {
       expect(() => transcriptPaths(home, "agent_x", "../etc")).toThrow();
       const token = "tok_0123456789abcdefghijklmnopqrstuv";
       t.redact(token);
-      t.wire("out", { method: "session/new", params: { mcpServers: [{ env: [{ name: "CLOVER_BRIDGE_TOKEN", value: token }] }] } }, false, 1);
+      t.wire("out", { method: "session/new", params: { mcpServers: [{ env: [{ name: "MOSS_BRIDGE_TOKEN", value: token }] }] } }, false, 1);
       t.wire("in", { method: "session/update", params: { old: true } }, true, 2);
       t.stderr(new TextEncoder().encode(`starting server with ${token.slice(0, 10)}`));
       t.stderr(new TextEncoder().encode(`${token.slice(10)} ok\n`));
@@ -276,17 +286,17 @@ describe("the bridge's tokens", () => {
     t.bind("s1", 500);
     const v = await t.accept(token, "s1", 501);
     if (!v.ok) throw new Error(v.reason);
-    const parts = bridgeCloverParts(t, {
+    const parts = bridgeMossParts(t, {
       sessionInfo: () => ({ bot: "alpha" }), tools: async () => ({ tools: [], instructions: "" }),
-      call: async () => ({ content: [], isError: false }), sendMessage: async () => {}, glossary: async () => ({ results: [], loaded: [] }),
+      call: async () => ({ content: [], isError: false }), sendMessage: async () => {}, listSessions: async () => ({ sessions: [] }), glossary: async () => ({ results: [], loaded: [] }),
     });
     const caller = { kind: "session", sessionId: "s1", sessionKind: "agent", bot: "alpha" };
-    const conn = { caller, bridgeConnection: v.connection } as unknown as CloverConn;
-    const refusal = (c: CloverConn) => Promise.resolve().then(() => parts.handlers["bridge.tools"]!(c, {})).then(() => "ran", (e: unknown) => (e as Error).message);
+    const conn = { caller, bridgeConnection: v.connection } as unknown as MossConn;
+    const refusal = (c: MossConn) => Promise.resolve().then(() => parts.handlers["bridge.tools"]!(c, {})).then(() => "ran", (e: unknown) => (e as Error).message);
     expect(await parts.handlers["bridge.tools"]!(conn, {})).toEqual({ tools: [], instructions: "" });
     // No connection number, or another one: refused while the session's token is live.
-    expect(await refusal({ caller } as unknown as CloverConn)).toBe("this bridge's connection isn't its token's live one");
-    expect(await refusal({ caller, bridgeConnection: v.connection + 1 } as unknown as CloverConn)).toBe("this bridge's connection isn't its token's live one");
+    expect(await refusal({ caller } as unknown as MossConn)).toBe("this bridge's connection isn't its token's live one");
+    expect(await refusal({ caller, bridgeConnection: v.connection + 1 } as unknown as MossConn)).toBe("this bridge's connection isn't its token's live one");
     t.revoke("s1");
     expect(await refusal(conn)).toBe("this bridge's connection isn't its token's live one");
   });
@@ -303,7 +313,7 @@ describe("the bridge's tokens", () => {
 
 describe("the user's own selections (review 10)", () => {
   test("one record per backend: the first holder captures, the last one sets back, a crash keeps it", () => {
-    const dir = mkdtempSync(join(tmpdir(), "clover-k-sel-"));
+    const dir = mkdtempSync(join(tmpdir(), "moss-k-sel-"));
     try {
       const sel = new UserSelections(dir);
       const a = {};
@@ -323,7 +333,7 @@ describe("the user's own selections (review 10)", () => {
       expect(sel.end("cursor", "model", a, false)).toBeUndefined();
       const next = new UserSelections(dir);
       expect(next.record("cursor", "model")).toEqual({ user: "user-model", ours: "bot-a" });
-      // The next delegation finds Clover's value still set: the old record stands.
+      // The next delegation finds MOSS's value still set: the old record stands.
       next.begin("cursor", "model", b, "bot-a");
       expect(next.end("cursor", "model", b, true)).toBe("user-model");
       // Had the user changed it since, their new choice would be the one kept.
@@ -334,7 +344,7 @@ describe("the user's own selections (review 10)", () => {
       later.begin("cursor", "model", b, "user-new");
       expect(later.end("cursor", "model", b, true)).toBe("user-new");
       later.restored("cursor", "model");
-      // A session that opens finds a leftover with no holder: still Clover's value, so the user's comes back now;
+      // A session that opens finds a leftover with no holder: still MOSS's value, so the user's comes back now;
       // a value the user set since drops the record (check 2's minor 4).
       later.begin("cursor", "model", a, "user-model");
       later.set("cursor", "model", "bot-a");
@@ -350,22 +360,22 @@ describe("the user's own selections (review 10)", () => {
 
 describe("the paths the fence sees (review 8)", () => {
   test("relative, ~ and file: paths resolve against the root; a path through a link adds its real path", () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "clover-k-paths-")));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "moss-k-paths-")));
     try {
       const root = join(dir, "project");
-      const clover = join(dir, ".clover");
+      const moss = join(dir, ".moss");
       mkdirSync(root);
-      mkdirSync(clover);
-      symlinkSync(clover, join(root, "link"));
+      mkdirSync(moss);
+      symlinkSync(moss, join(root, "link"));
       expect(agentPaths(["notes.md"], root, dir).paths).toEqual([join(root, "notes.md")]);
-      expect(agentPaths(["../.clover/settings"], root, dir).paths).toEqual([join(clover, "settings")]);
-      expect(agentPaths(["~/.clover/settings", `file://${join(root, "a b")}`], root, dir).paths).toEqual([join(clover, "settings"), join(root, "a b")]);
-      expect(agentPaths(["link/settings"], root, dir).paths).toEqual([join(root, "link", "settings"), join(clover, "settings")]);
-      expect(agentPaths(["link/new/deep.txt"], root, dir).paths).toEqual([join(root, "link", "new", "deep.txt"), join(clover, "new", "deep.txt")]);
+      expect(agentPaths(["../.moss/settings"], root, dir).paths).toEqual([join(moss, "settings")]);
+      expect(agentPaths(["~/.moss/settings", `file://${join(root, "a b")}`], root, dir).paths).toEqual([join(moss, "settings"), join(root, "a b")]);
+      expect(agentPaths(["link/settings"], root, dir).paths).toEqual([join(root, "link", "settings"), join(moss, "settings")]);
+      expect(agentPaths(["link/new/deep.txt"], root, dir).paths).toEqual([join(root, "link", "new", "deep.txt"), join(moss, "new", "deep.txt")]);
       expect(agentPaths(["", "a\0b"], root, dir).paths).toEqual([]);
       // Every path is checked, however many come before it; past the hard cap the request is over.
-      const many = [...Array.from({ length: 300 }, (_, i) => `f${i}.txt`), "../.clover/run/x.json"];
-      expect(agentPaths(many, root, dir).paths.at(-1)).toBe(join(clover, "run", "x.json"));
+      const many = [...Array.from({ length: 300 }, (_, i) => `f${i}.txt`), "../.moss/run/x.json"];
+      expect(agentPaths(many, root, dir).paths.at(-1)).toBe(join(moss, "run", "x.json"));
       expect(agentPaths(Array.from({ length: MAX_CHECKED_PATHS + 1 }, (_, i) => `f${i}`), root, dir)).toEqual({ paths: [], over: true });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -376,16 +386,16 @@ describe("the paths the fence sees (review 8)", () => {
 describe("a hostile agent's sizes (review 12)", () => {
   test("a rawInput past the cap becomes a preview; each transcript file stops at its cap and says so", () => {
     expect(capRawInput({ command: "ls" })).toEqual({ command: "ls" });
-    const big = capRawInput({ command: "x".repeat(MAX_RAW_INPUT_CHARS + 1) }) as { clover_truncated: string; length: number };
-    expect(big.clover_truncated.length).toBe(4096);
+    const big = capRawInput({ command: "x".repeat(MAX_RAW_INPUT_CHARS + 1) }) as { moss_truncated: string; length: number };
+    expect(big.moss_truncated.length).toBe(4096);
     expect(big.length).toBeGreaterThan(MAX_RAW_INPUT_CHARS);
-    const home = mkdtempSync(join(tmpdir(), "clover-k-cap-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-k-cap-"));
     try {
       const t = new AgentTranscript(home, "agent_cap", "alpha", { "calls.ndjson": 200 });
       for (let i = 0; i < 10; i++) t.call({ type: "permission", i, pad: "y".repeat(40) });
       const lines = readFileSync(join(t.dir, "calls.ndjson"), "utf8").trim().split("\n");
       expect(lines.length).toBeLessThan(10);
-      expect(JSON.parse(lines.at(-1)!)).toEqual({ clover: "truncated", cap: 200 });
+      expect(JSON.parse(lines.at(-1)!)).toEqual({ moss: "truncated", cap: 200 });
       t.call({ type: "after" });
       expect(readFileSync(join(t.dir, "calls.ndjson"), "utf8").trim().split("\n").length).toBe(lines.length);
     } finally {
@@ -394,7 +404,7 @@ describe("a hostile agent's sizes (review 12)", () => {
   });
 
   test("a link the bot planted anywhere in its agents folder is never written through (#213's review)", () => {
-    const root = mkdtempSync(join(tmpdir(), "clover-k-link-"));
+    const root = mkdtempSync(join(tmpdir(), "moss-k-link-"));
     try {
       const home = join(root, "home");
       const outside = join(root, "outside");
@@ -524,11 +534,11 @@ describe("Windows containment (lane C's AgentJob)", () => {
     expect(p.contained).toBe(false);
     await p.exited;
     const backend = new AcpAgentBackend({
-      id: "w", pluginId: "clover/agent-w", quirks: fakeLaunch(WELL_BEHAVED_QUIRKS), clock: new FakeClock(), os: "windows", makeJob: () => null,
+      id: "w", pluginId: "moss/agent-w", quirks: fakeLaunch(WELL_BEHAVED_QUIRKS), clock: new FakeClock(), os: "windows", makeJob: () => null,
       command: { program: process.execPath, prefixArgs: ["-e", "1"], acpArgs: [] },
     });
     backend.detect = async () => ({ installed: true, path: process.execPath, version: "1.0.0", identityOk: true, versionOk: true, sandboxed: true });
-    const err = await backend.start({ sessionId: "s", root: tmpdir(), bridge: { name: "b", command: "x", args: [], env: {}, tools: [] }, fence: new FakeFence({ home: tmpdir(), cloverHome: join(tmpdir(), ".c") }).policy() }).catch((e: unknown) => e);
+    const err = await backend.start({ sessionId: "s", root: tmpdir(), bridge: { name: "b", command: "x", args: [], env: {}, tools: [] }, fence: new FakeFence({ home: tmpdir(), mossHome: join(tmpdir(), ".c") }).policy() }).catch((e: unknown) => e);
     expect((err as Error).message).toContain("job object");
   });
 });
@@ -563,7 +573,7 @@ describe("sandbox admissions and OKs", () => {
   });
 
   test("an OK is kept per backend, version, computer, program path and file hash, in the fenced trust folder", () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-k-oks-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-k-oks-"));
     try {
       const oks = new FileAgentOks(home);
       const key = { backend: "cursor", version: "2026.10.22", computer: "Studio", path: "/opt/cursor-agent", sha256: "a".repeat(64) };
@@ -579,6 +589,29 @@ describe("sandbox admissions and OKs", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("`knows` says an OK was kept for a program at a path and version for a copy placed under a pin, whatever its hash, and is never a yes by itself", () => {
+    const home = mkdtempSync(join(tmpdir(), "moss-oks-knows-"));
+    try {
+      const key = { backend: "claude-code", version: "0.100.0", computer: "Studio", path: "/h/run/agent-adapters/a/0.100.0/index.js", sha256: "a".repeat(64) };
+      const { sha256: _hash, ...program } = key;
+      for (const oks of [new FileAgentOks(home), new MemoryAgentOks()]) {
+        expect(oks.knows(program, "pin-1")).toBe(false);
+        oks.grant(key, { at: 1 }); // an OK kept with no pin (before pins) is not known
+        expect(oks.knows(program, "pin-1")).toBe(false);
+        oks.grant(key, { at: 2, pin: "pin-1" }); // the same yes, now with the pin its copy was placed under
+        expect(oks.knows(program, "pin-1")).toBe(true);
+        expect(oks.knows(program, "pin-2")).toBe(false); // a changed lock under the same version
+        expect(oks.has({ ...key, sha256: "b".repeat(64) })).toBe(false);
+        expect(oks.knows({ ...program, version: "0.101.0" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, computer: "Desk" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, path: "/elsewhere/index.js" }, "pin-1")).toBe(false);
+        expect(oks.knows({ ...program, backend: "codex" }, "pin-1")).toBe(false);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the backends' rows", () => {
@@ -587,6 +620,7 @@ describe("the backends' rows", () => {
       cursor: "2026.10.22-27dcf5f", antigravity: "1.4.12", grok: "grok 1.0.70 (f50904eaee6c) [stable]", gemini: "0.46.0",
       "claude-code": "0.100.0", codex: "2.5.0", deepseek: "dsh 0.1.2",
       devin: "devin 3000.11.234 (92c83011d113)", "devin-cloud": "devin 3000.11.234 (92c83011d113)",
+      opencode: "v2.2.5", copilot: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.", qwen: "0.26.5", kimi: "2.4.1",
     };
     for (const [id, q] of Object.entries(QUIRKS)) {
       for (const os of ["macos", "linux", "windows"] as const) expect(q.launch.command[os]?.length ?? 0).toBeGreaterThan(0);
@@ -597,16 +631,33 @@ describe("the backends' rows", () => {
       // No backend's sandbox is admitted yet: each asks for the user's OK until its gates pass.
       expect(admissionFor(ADMISSIONS, id, "macos", (m![1] ?? m![0]).trim()).status).not.toBe("protected");
     }
+    // The lines REAL installs print, measured on the owner's Mac on 2026-11-22 (each was refused before: the pattern knew only the
+    // bare number). The adapters name their npm package; OpenCode names itself. A line of another tool, or one with words around it, still isn't read.
+    const measured: [string, string, string][] = [
+      ["codex", "@agentclientprotocol/codex-acp 2.6.0", "2.6.0"],
+      ["codex", "codex-acp 2.5.0", "2.5.0"],
+      ["claude-code", "@agentclientprotocol/claude-agent-acp 0.109.1", "0.109.1"],
+      ["claude-code", "claude-agent-acp 0.100.0", "0.100.0"],
+      ["opencode", "opencode v2.2.5", "2.2.5"],
+      ["opencode", "v2.2.5", "2.2.5"],
+      ["antigravity", "1.5.14", "1.5.14"],
+    ];
+    for (const [id, line, want] of measured) expect([id, line, new RegExp(QUIRKS[id]!.launch.identity.versionPattern, "m").exec(line.trim())?.[1]]).toEqual([id, line, want]);
+    for (const id of ["codex", "claude-code", "opencode"]) {
+      for (const wrong of ["grok 1.0.70 (abc123)", "evil @agentclientprotocol/codex-acp 2.6.0 x", "@someone-else/codex-acp 2.6.0", "opencode-fork v2.2.5"]) {
+        expect([id, wrong, new RegExp(QUIRKS[id]!.launch.identity.versionPattern, "m").test(wrong)]).toEqual([id, wrong, false]);
+      }
+    }
     // `agent` is Cursor's and Grok's: neither row resolves that name.
     for (const q of Object.values(QUIRKS)) expect(q.launch.command.macos![0]).not.toBe("agent");
   });
 });
 
-describe("the Clover home is out of agents' reach", () => {
+describe("the MOSS home is out of agents' reach", () => {
   test("the whole home is denied, once; a path in it, as written or through a link, is in reach; one that holds it holds it", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "clover-k-home-")));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-k-home-")));
     try {
-      const home = join(root, ".clover");
+      const home = join(root, ".moss");
       mkdirSync(join(home, "transcripts", "beta"), { recursive: true });
       mkdirSync(join(root, "project"));
       symlinkSync(join(home, "transcripts"), join(root, "project", "link"));
@@ -615,7 +666,7 @@ describe("the Clover home is out of agents' reach", () => {
       expect(p.denyWrite).toEqual(["/a", home]);
       expect(withHomeDenied(p, home).denyRead).toEqual([home]);
       expect(homeReach(home, join(home, "diffs", "s", "1.diff"), root)).toBe("inside");
-      expect(homeReach(home, join(root, ".CLOVER", "x"), root)).toBe("inside");
+      expect(homeReach(home, join(root, ".MOSS", "x"), root)).toBe("inside");
       expect(homeReach(home, join(root, "project", "link", "beta", "s.jsonl"), root)).toBe("inside");
       expect(homeReach(home, "link/beta", join(root, "project"))).toBe("inside");
       expect(homeReach(home, root, root)).toBe("holds");
@@ -625,5 +676,16 @@ describe("the Clover home is out of agents' reach", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("an agent's tool output for the conversation (toolOutputOf)", () => {
+  test("the text of its content items; a diff or a terminal shows as its kind; nothing for no text; cut at the most kept", () => {
+    expect(toolOutputOf([{ type: "content", content: { type: "text", text: "pong: " } }, { type: "content", content: { type: "text", text: "hi" } }])).toBe("pong: hi");
+    expect(toolOutputOf([{ type: "diff", path: "/a", newText: "x" }, { type: "content", content: { type: "text", text: " done" } }])).toBe("[diff] done");
+    expect(toolOutputOf([{ type: "content", content: { type: "image", data: "…" } }])).toBeUndefined();
+    expect(toolOutputOf(undefined)).toBeUndefined();
+    expect(toolOutputOf("plain")).toBeUndefined();
+    expect(toolOutputOf([{ type: "content", content: { type: "text", text: "x".repeat(AGENT_TOOL_OUTPUT_MAX + 50) } }])).toHaveLength(AGENT_TOOL_OUTPUT_MAX);
   });
 });

@@ -1,10 +1,10 @@
-// Clover protocol area: sessions and bots (spec §6, §7, §9.3). Owner: lane D (bots, sessions, memory, routines),
+// MOSS protocol area: sessions and bots (spec §6, §7, §9.3). Owner: lane D (bots, sessions, memory, routines),
 // with lane A for the runtime underneath (plan §4). Pinned by lane B at M0.
 //
 // A session is any running conversation: a bot's main conversation, a side thread (a routine run), a background
 // agent, or a coding session the user started (§9.3). The user's message interrupts a bot's main conversation at
 // once (§6.4); messages from other bots, routines, agents and plugins fold into the running turn after its next
-// tool call. A session's log keeps the inherited `SessionEvent` stream (events.ts); the Clover kinds below join it when
+// tool call. A session's log keeps the inherited `SessionEvent` stream (events.ts); the MOSS kinds below join it when
 // lane D wires them through the inherited checklist (docs/claude/protocol-and-remote.md).
 import { z } from "zod";
 import { utf16 } from "./strings";
@@ -15,6 +15,7 @@ import {
 import { canonicalJson } from "./approvals";
 import { STAGE_IMAGE_B64_MAX_LENGTH, STAGE_IMAGE_MEDIA_TYPES } from "./methods";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
+import { SessionLinkEvent, SessionLinksParams, SessionLinksResult, SessionStarter, SessionSubagent, SessionWaiting, SUBAGENTS_MAX } from "./session-graph";
 
 // -------------------------------------------------------------------------------------------------
 // Bots
@@ -23,6 +24,8 @@ import { coreEvent, defineEvent, defineMethod } from "./rpc";
 /** A bot's state as clients show it. `asleep`: no computer that can run it is connected (§6.4, §14.2 item 18). */
 export const BotState = z.enum(["idle", "thinking", "asleep", "paused"]);
 
+/** To be retired in part by spec revision 19 (§6.1, G7, G8): a bot becomes engine data (`BotRecordView`, bots.ts) and its
+ *  `theme`, `layout` and the user layer go with the plugin bot (a figure left the platform for the avatar plugin); lane BT moves the bots over (`bot.move.status`). */
 export const BotView = z.object({
   /** The bot's id is its plugin's id (§6.1). */
   id: BotId,
@@ -32,16 +35,9 @@ export const BotView = z.object({
   /** A qualified catalog id; the user's default model when there is no key for the bot's own (§6.1). */
   model: utf16(200),
   effort: utf16(32).optional(),
-  voice: z.object({ provider: utf16(128), voice: utf16(256), model: utf16(128).optional() }).optional(),
   theme: utf16(256).optional(),
-  /** The avatar it stands with on its stage: the file's asset URL and its format (a renderer's `avatar.formats` id: `vrm`, `live2d`, or one a plugin brings), when it has one (§6.6). */
-  avatar: z.object({
-    src: utf16(4096), format: utf16(32),
-    /** The model's own credit or terms note as a user's own avatar carries it (plain text, at most 300 characters; set at import from the model's own notes, and the user's to edit or clear). */
-    credit: utf16(1200).optional(),
-  }).optional(),
   /** The fields the user layer sets over the plugin's (§6.1). */
-  userLayer: z.array(z.enum(["name", "instructions", "model", "effort", "voice", "avatar", "theme", "layout", "lan"])),
+  userLayer: z.array(z.enum(["name", "instructions", "model", "effort", "theme", "layout", "lan"])),
   /** The bot's browser tabs may reach the LAN (private and link-local addresses; never loopback or metadata, lane L's
    *  #260). Only the person sets it, in the user layer (`bot.setUserLayer`, theirs alone); it is never a plugin's. */
   lan: z.boolean().optional(),
@@ -59,10 +55,6 @@ export const UserLayerPatch = z.object({
   instructions: utf16(200_000).nullable().optional(),
   model: utf16(200).nullable().optional(),
   effort: utf16(32).nullable().optional(),
-  voice: z.object({ provider: utf16(128), voice: utf16(256), model: utf16(128).optional() }).nullable().optional(),
-  avatar: z.object({ file: utf16(4096), format: utf16(32), portrait: utf16(4096).optional(), credit: utf16(1200).optional() }).nullable().optional(),
-  /** Sets (text) or clears (`null`) the credit note of the user's own avatar; the avatar must be the user's own. */
-  avatarCredit: utf16(1200).nullable().optional(),
   theme: utf16(256).nullable().optional(),
   layout: utf16(4096).nullable().optional(),
   /** The bot's LAN setting (lane L's `lanBots`): written only by the person, through their own app or terminal, or a
@@ -83,7 +75,7 @@ export type SessionStatus = z.infer<typeof SessionStatus>;
 export const SessionFailure = z.enum(["sign-in", "crashed", "stalled", "error"]);
 export type SessionFailure = z.infer<typeof SessionFailure>;
 
-/** A session from the app Clover replaces, in the archive view (§14.1 "Existing … installs", review S16): readable,
+/** A session from the app MOSS replaces, in the archive view (§14.1 "Existing … installs", review S16): readable,
  *  never a bot's history. */
 export const ArchivedSessionView = z.object({
   id: utf16(128, 1),
@@ -107,6 +99,8 @@ export const SessionView = z.object({
   parent: SessionId.optional(),
   /** The computer running it (§6.4). */
   computer: ComputerName,
+  /** Its title: the person's, a spawn's, or the engine's titler's after a code session's first turn, on its model family's
+   *  light model (§9.5 "Titles", lane CG); a change reaches every reader as `session_changed`. */
   title: utf16(200).optional(),
   status: SessionStatus,
   failure: SessionFailure.optional(),
@@ -136,6 +130,15 @@ export const SessionView = z.object({
   rebasedAt: Timestamp.optional(),
   /** The user put this session in the archive: the sidebar's lists leave it out (the Archive page is where it lives). Absent: not archived. */
   archived: z.boolean().optional(),
+  // The session graph (spec revision 20, §9.5; session-graph.ts, lane CG). `parent` and `bot` above stay as they are.
+  /** Who started it: the person, a bot, another session or a routine. The engine's, set at the start. Absent on a session
+   *  from before revision 20 (read it as `parent`/`bot` say: a bot's agent was its bot's; a coding session the person's). */
+  startedBy: SessionStarter.optional(),
+  /** What it waits on, as counts (its background tasks that will wake it, its children not yet ended); absent: nothing.
+   *  How it sits beside `status`: `sessionMotion` (running wins). */
+  waiting: SessionWaiting.optional(),
+  /** The subagents its agent reported through its tool calls, oldest first: rows under it, never sessions. */
+  subagents: z.array(SessionSubagent).max(SUBAGENTS_MAX).optional(),
 });
 export type SessionView = z.infer<typeof SessionView>;
 
@@ -178,6 +181,7 @@ export function userMessageHashInput(m: Pick<UserMessageInput, "text" | "images"
   return canonicalJson({ text: m.text, images: m.images ?? [], files: m.files ?? [] });
 }
 
+// Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
 /** What the sending device signs for a message another computer may relay (review N3): the session, the client's
  *  message id, the message's hash and its send time, one per line. */
 export function userMessageSigningInput(a: { session: string; clientMessageId: string; hash: string; sentAt: number }): string {
@@ -190,13 +194,13 @@ export const RoutineView = z.object({
   name: utf16(200),
   bot: BotId,
   computer: ComputerName,
-  /** Its file in the tree: `home/<Computer>/.clover/routines/<bot>/<name>.md` (§7). */
+  /** Its file in the tree: `home/<Computer>/.moss/routines/<bot>/<name>.md` (§7). */
   file: TreePath,
   triggers: z.array(z.object({ type: utf16(128), summary: utf16(500) })).max(32),
   level: utf16(32),
   /** A raised level waiting for its card, or a copy with the same id paused (§7). */
   state: z.enum(["active", "paused", "waiting-for-ok", "duplicate", "bot-removed"]),
-  /** Why Clover paused it, while it stays paused (a plugin's trigger started it too often, §7); the user's resume (the
+  /** Why MOSS paused it, while it stays paused (a plugin's trigger started it too often, §7); the user's resume (the
    *  file's `paused` taken out) clears it. */
   pausedWhy: utf16(300).optional(),
   lastRunAt: Timestamp.optional(),
@@ -256,7 +260,8 @@ export type SessionDiff = z.infer<typeof SessionDiff>;
 
 /** A model as a picker lists it (`models.list`). */
 export const ModelListing = z.object({
-  /** The qualified catalog id `session.setModel` takes. */
+  /** The model id `session.setModel` takes: a qualified catalog id, or, for a session on an ACP agent (`provider` is then
+   *  the agent's backend id), the agent's own model id as it reported it. */
   id: utf16(200, 1),
   name: Text,
   /** The provider entry, its name as the plugin's manifest gives it (in the user's locale), and the plugin that
@@ -274,6 +279,42 @@ export const ModelListing = z.object({
 });
 export type ModelListing = z.infer<typeof ModelListing>;
 
+/** An option a session's agent reports and lets the person choose from a fixed list of values (an ACP config option other
+ *  than the model, the effort and the approval level's mode, which MOSS has controls for). `name`s are the agent's own. */
+export const SessionOption = z.object({
+  id: utf16(128, 1),
+  name: Text.optional(),
+  current: utf16(200).optional(),
+  values: z.array(z.object({ value: utf16(200, 1), name: Text.optional() })).min(2).max(200),
+});
+export type SessionOption = z.infer<typeof SessionOption>;
+
+/** What a first working reply still needs (the setup guide, 2026-11-20): a model provider (a key or a sign-in), then a
+ *  default model; or (`default-provider`) the default model the settings name is kept but its provider isn't signed in
+ *  now. Engine state, so every client asks the same question and gets the same answer. */
+export const SetupMissing = z.enum(["provider", "model", "default-provider"]);
+export type SetupMissing = z.infer<typeof SetupMissing>;
+
+export const SetupState = z.object({
+  /** Nothing is missing: a turn has a model and a provider to answer with. */
+  ready: z.boolean(),
+  missing: z.array(SetupMissing).max(2),
+  /** The providers the person added (a stored key or sign-in), by catalog provider id. */
+  providers: z.array(utf16(128, 1)).max(1_000),
+  /** The default model now, if any: `chosen` when the settings name it (picked, or written by the engine for the one
+   *  provider added), `computed` when it is the one provider's recommended model and not written yet. */
+  default: z.object({ model: utf16(200, 1), source: z.enum(["chosen", "computed"]), effort: utf16(32, 1).optional() }).optional(),
+  /** The default model the settings name, kept while its provider isn't signed in (`missing` has `default-provider`):
+   *  it is the default again once the key or the sign-in is back. */
+  signedOut: utf16(200, 1).optional(),
+  /** Each added provider's recommended default, its family's (a model and its effort), where it has one (the guide's
+   *  pre-filled pick). */
+  recommended: z.record(utf16(128, 1), z.object({ model: utf16(200, 1), effort: utf16(32, 1).optional() })).optional(),
+  /** The person skipped the guide: it doesn't open by itself again (it stays reachable from Settings). */
+  dismissed: z.boolean(),
+});
+export type SetupState = z.infer<typeof SetupState>;
+
 export const SESSIONS_METHODS = {
   botList: defineMethod({
     name: "bot.list", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "bots.read",
@@ -288,31 +329,7 @@ export const SESSIONS_METHODS = {
   botSetUserLayer: defineMethod({
     name: "bot.setUserLayer", owner: "D", roles: ["app", "cli", "layer"], userOnly: true, change: "core",
     params: z.object({ id: BotId, patch: UserLayerPatch }), result: ChangeResult,
-    doc: "Sets or clears fields of a bot's user layer; a change to its instructions applies at the next compaction.",
-  }),
-  botImportAvatar: defineMethod({
-    name: "bot.importAvatar", owner: "D", roles: ["app", "cli"], userOnly: true,
-    params: z.object({ id: BotId, path: utf16(4096) }),
-    result: z.object({
-      /** The model's format, as its renderer declares it (`avatar.formats`), and the format's name in English. */
-      format: utf16(32, 1), name: utf16(200).optional(),
-      files: z.number().int().nonnegative(), bytes: z.number().int().nonnegative(), credit: utf16(1200).optional(),
-    }),
-    doc: "Copies a model the user owns (a folder or zip holding an installed format's entry file, or one file of a format that imports single files, read on the daemon's own computer) into the user's folder and makes it the bot's avatar; what each format is comes from its renderer's `avatar.formats` declaration, and a model whose renderer isn't installed and on is refused, naming its format. A plain-text readme, license, credit or terms file at the top of the folder or zip is kept as the avatar's `credit` note (neutralised plain text, the first 300 characters; the user's to edit or clear). Only this computer's app or terminal may call it.",
-  }),
-  botAvatarFormats: defineMethod({
-    name: "bot.avatarFormats", owner: "D", roles: ["app", "cli"],
-    params: z.object({}),
-    result: z.object({
-      formats: z.array(z.object({
-        format: utf16(32, 1), name: utf16(200),
-        /** What the picker offers for it: a folder, a zip, a single file. */
-        accepts: z.array(z.enum(["folder", "zip", "file"])).max(3),
-        /** The extensions (with the dot) a picked single file of it may have, and what names it in a folder or zip. */
-        files: z.array(utf16(32)).max(32), entries: z.array(utf16(32)).max(16),
-      })).max(64),
-    }),
-    doc: "The avatar formats an import takes now: each installed renderer's that is on (`avatar.formats`), with what the picker offers for it.",
+    doc: "Sets or clears fields of a bot's user layer; a change to its instructions applies at its next turn.",
   }),
   botsPause: defineMethod({
     name: "bots.pause", owner: "D", roles: ["app", "cli", "remote"], userOnly: true,
@@ -320,53 +337,61 @@ export const SESSIONS_METHODS = {
     doc: "The core switch that pauses every bot and routine at once (§9.2).",
   }),
   sessionList: defineMethod({
-    name: "session.list", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.list", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: z.object({ kinds: z.array(SessionKind).max(4).optional(), bot: BotId.optional() }),
     result: z.object({ sessions: z.array(SessionView) }),
     doc: "Every session: bots' conversations, side threads, background agents and coding sessions (`ListAgents`).",
   }),
+  sessionLinks: defineMethod({
+    name: "session.links", owner: "CG", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
+    params: SessionLinksParams, result: SessionLinksResult,
+    doc: "The record of links between sessions (§9.5): every pair that has talked with its last link and count, and the links since a time; never the words, and only what the caller may hear (it reads both sessions' kinds), as the live session_link.",
+  }),
   sessionGet: defineMethod({
-    name: "session.get", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.get", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: SessionParams, result: z.object({ session: SessionView }),
     doc: "One session, with its state.",
   }),
   sessionAttach: defineMethod({
-    name: "session.attach", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.attach", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: z.object({ id: SessionId, since: z.number().int().nonnegative().optional() }),
     result: z.object({ lastSeq: z.number().int().nonnegative() }),
     doc: "Follows a session live: replays events after `since`, then streams them with the inherited `event` notification.",
   }),
   sessionDetach: defineMethod({
-    name: "session.detach", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.detach", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: SessionParams, result: Ok,
     doc: "Stops following a session.",
   }),
   sessionHistory: defineMethod({
-    name: "session.history", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.history", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: z.object({ id: SessionId, before: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(500) }),
     result: z.object({ events: z.array(z.record(z.string(), z.unknown())), hasMore: z.boolean() }),
     doc: "A page of a session's past events, newest last; sealed card fields never reach a plugin (§5.4).",
   }),
   sessionDiff: defineMethod({
-    name: "session.diff", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.diff", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: z.object({ id: SessionId, target: utf16(256).optional() }),
     result: SessionDiff,
     doc: "A coding session's or an agent's changes in its folder, read only: the working tree against HEAD (untracked files as added), per file with its hunks, bounded per file and in total. A folder that isn't a git repository, or isn't on this computer, answers no files and a notice. A plugin's own connection (a layer) also needs the capability files, since the diff carries file contents.",
   }),
   sessionOutputs: defineMethod({
-    name: "session.outputs", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.outputs", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: z.object({ id: SessionId, limit: z.number().int().min(1).max(100).optional() }),
     result: z.object({ items: z.array(z.object({ id: utf16(255, 1), name: utf16(255, 1), kind: z.enum(["page", "file", "image"]) })).max(100), more: z.number().int().nonnegative() }),
     doc: "The files a session delivered to its outputs folder (`<home>/outputs/<session>`), newest first: names and kinds only, never their content.",
   }),
   sessionContext: defineMethod({
-    name: "session.context", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.context", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: SessionParams,
-    result: z.object({ used: z.number().min(0).max(1), tokens: z.number().int().nonnegative(), window: z.number().int().positive() }).nullable(),
-    doc: "How full a session's context is: its last turn's measured prompt (`turn_completed.contextTokens`) against its model's context window; null when either isn't known.",
+    result: z.union([
+      z.object({ used: z.number().min(0).max(1), tokens: z.number().int().nonnegative(), window: z.number().int().positive() }),
+      z.object({ reported: z.literal(false) }),
+    ]).nullable(),
+    doc: "How full a session's context is: its last turn's measured prompt (`turn_completed.contextTokens`, for an agent the context it reported) against its model's context window; `{ reported: false }` for a coding session or an agent whose agent has reported none; null when neither is known.",
   }),
   sessionConnectors: defineMethod({
-    name: "session.connectors", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.read",
+    name: "session.connectors", owner: "D", roles: ["app", "cli", "remote", "web", "layer"], capability: "conversation.*",
     params: SessionParams,
     result: z.object({ total: z.number().int().nonnegative(), needSignIn: z.number().int().nonnegative() }),
     doc: "How many plugin MCP servers a session gets, and how many of them belong to a plugin with a sign-in that isn't signed in: counts only.",
@@ -381,7 +406,7 @@ export const SESSIONS_METHODS = {
     name: "session.resend", owner: "D", roles: ["app"], userOnly: true,
     params: z.object({ session: SessionId }),
     result: z.object({ seq: z.number().int().nonnegative() }),
-    doc: "Try again on a bot's main conversation whose latest turn ended in an error: the host sends the message that began that turn again, as a new message from this client, when that message was the user's own (a relay another computer's device did not sign, a task notification, a routine, a plugin, a bot or an agent is refused), nothing was sent or started since, and it carries no file and no picture it no longer holds (a picture is checked as the composer's send checks it; a message with files is refused: send it again from the composer). Once per failed turn. The caller names only the session: never the words, a message id or attachments. Not for a side thread, an agent or a coding session, nor for a conversation another computer runs. App role only: it is the app's \"Try again\" button; the terminal and a phone have none.",
+    doc: "Try again on a bot's main conversation or a coding session (the person's own, an ACP agent's too) whose latest turn ended in an error: the host sends the message that began that turn again, as a new message from this client, when that message was the user's own (a relay another computer's device did not sign, a task notification, a routine, a plugin, a bot or an agent is refused), nothing was sent or started since, and it carries no file and no picture it no longer holds (a picture is checked as the composer's send checks it; a message with files is refused: send it again from the composer). Once per failed turn. The caller names only the session: never the words, a message id or attachments. Not for a side thread or a bot's background agent, nor for a bot's conversation another computer runs. App role only: it is the app's \"Try again\" button; the terminal and a phone have none.",
   }),
   sessionPost: defineMethod({
     name: "session.post", owner: "D", roles: ["layer"], capability: "conversation.post",
@@ -421,6 +446,12 @@ export const SESSIONS_METHODS = {
     result: Ok,
     doc: "Switches an agent's or coding session's model mid-session; a bot's model is its user layer (§6.3).",
   }),
+  sessionSetConfig: defineMethod({
+    name: "session.setConfig", owner: "D", roles: ["app", "cli"], userOnly: true,
+    params: z.object({ id: SessionId, option: utf16(128, 1), value: utf16(200, 1) }),
+    result: Ok,
+    doc: "Sets one of an agent session's other options (`models.list {session}`'s `options`) to one of its listed values: the person's own app or CLI only (a bot, a plugin's page or another session is refused). The agent may refuse it.",
+  }),
   sessionStageImage: defineMethod({
     name: "session.stageImage", owner: "D", roles: ["app", "cli", "remote"], userOnly: true,
     params: z.object({
@@ -435,13 +466,31 @@ export const SESSIONS_METHODS = {
   modelsList: defineMethod({
     name: "models.list", owner: "A", roles: ["app", "cli", "remote"],
     params: z.object({ session: SessionId.optional() }),
-    result: z.object({ models: z.array(ModelListing).max(10_000), default: utf16(200).optional() }),
-    doc: "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes. `default` is the user's default model.",
+    result: z.object({ models: z.array(ModelListing).max(10_000), default: utf16(200).optional(), options: z.array(SessionOption).max(32).optional() }),
+    doc: "The models a session can switch to (`session.setModel`), read-only, for a model picker (lane I's phone among them): every model of a provider plugin that is on, signed in or not, less blocked rows and the rows of a blocked provider (a picker never offers what `session.setModel` refuses). With `session`, only the ones that session's runtime takes: an ACP agent's session lists the models its agent reported (or, before its first turn, the agent's own list as MOSS knows it), under the agent's backend id. `default` is the user's default model.",
+  }),
+  modelsSetDefault: defineMethod({
+    name: "models.setDefault", owner: "A", roles: ["app", "cli"], userOnly: true,
+    params: z.object({ model: utf16(200, 1) }),
+    result: z.object({ setup: SetupState }),
+    doc: "Sets the person's default model (what a bot or a session with no model of its own runs on): a model `models.list` offers whose provider the person added. Kept until they pick another or remove its provider (the setup guide, 2026-11-20).",
+  }),
+  setupState: defineMethod({
+    name: "setup.state", owner: "A", roles: ["app", "cli"],
+    params: z.object({}),
+    result: SetupState,
+    doc: "Whether this home is set up for a first working reply: the providers added, the default model and what is missing. The apps' setup guide opens by itself while it isn't, unless dismissed.",
+  }),
+  setupDismiss: defineMethod({
+    name: "setup.dismiss", owner: "A", roles: ["app", "cli"], userOnly: true,
+    params: z.object({ dismissed: z.boolean() }),
+    result: SetupState,
+    doc: "The person skipped the setup guide (`dismissed: true`: it no longer opens by itself, in either app), or asked for it back.",
   }),
   sessionCompact: defineMethod({
     name: "session.compact", owner: "D", roles: ["app", "cli"], userOnly: true,
     params: SessionParams, result: Ok,
-    doc: "Compacts now, so new instructions apply at once at the cost of a cache miss (§5.6).",
+    doc: "Compacts now: the conversation becomes a summary and the prompt's harness blocks are rebuilt (a cache miss). A conversation inside the compaction's retention window is refused as having nothing to compact; an instructions edit doesn't need it, since it reaches the next turn (§5.6).",
   }),
   memoryList: defineMethod({
     name: "memory.list", owner: "D", roles: ["app", "cli", "layer"], capability: "memory.read",
@@ -468,6 +517,31 @@ export const SESSIONS_METHODS = {
     name: "routine.runNow", owner: "D", roles: ["app", "cli"], userOnly: true,
     params: z.object({ id: utf16(128, 1) }), result: z.object({ session: SessionId }),
     doc: "Runs a routine now, in a side thread on its computer.",
+  }),
+  routineGet: defineMethod({
+    name: "routine.get", owner: "D", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.object({ bot: BotId, id: utf16(128, 1) }),
+    result: z.object({ routine: RoutineView, instructions: z.string() }),
+    doc: "One routine of the bot on this computer with its instructions, read from its file as it is now, for the person's edit (`routine.edit`), so an edit never writes over text the person couldn't see. The person's window only.",
+  }),
+  routineEdit: defineMethod({
+    name: "routine.edit", owner: "D", roles: ["app"], userOnly: true, windowOnly: true,
+    params: z.object({
+      /** The bot whose routine it is: a routine of another bot is not found through it. */
+      bot: BotId,
+      id: utf16(128, 1),
+      patch: z.object({
+        name: utf16(200, 1).optional(),
+        /** Replaces its schedule trigger (`every <N><s|m|h|d>` or a 5-field cron); its other triggers stay. */
+        schedule: utf16(200, 1).optional(),
+        /** The instructions, the file's body. */
+        instructions: utf16(60_000, 1).optional(),
+        /** `paused: true` in its file, or taken out (resume). */
+        paused: z.boolean().optional(),
+      }).strict(),
+    }),
+    result: z.object({ routine: RoutineView }),
+    doc: "The user changes a routine on this computer: the core rewrites that routine's own file (§7, the file stays the truth) under the Routine tool's rules: a schedule that doesn't read is refused, its id and webhook key stay where they are, a new name renames its file in the bot's own folder and can't take another routine's name, and a raised level waits for its OK again. The person's window only.",
   }),
   routineWebhookKey: defineMethod({
     name: "routine.webhookKey", owner: "D", roles: ["app", "cli"], userOnly: true,
@@ -510,7 +584,7 @@ export const BotsPausedEvent = coreEvent("bots_paused", { paused: z.boolean() })
 export const SessionChangedEvent = coreEvent("session_changed", { session: SessionView });
 export const RoutinesChangedEvent = coreEvent("routines_changed", { bot: BotId.optional() });
 
-/** The envelope of Clover's session events: the inherited one (`seq`, `sessionId`, `ts`, `late`), plus the lease epoch
+/** The envelope of MOSS's session events: the inherited one (`seq`, `sessionId`, `ts`, `late`), plus the lease epoch
  *  every log event carries once lane H's lease exists (§6.4 "Events carry their lease epoch"). `late`: the event
  *  reached this log after events that happened later (an earlier lease's, or another computer's set aside after a
  *  fork, §8.5); a client shows it apart, as history. */
@@ -523,6 +597,10 @@ function sessionEvent<T extends string, S extends z.ZodRawShape>(type: T, shape:
 
 /** Another bot's `SendMessage`, folded into this conversation (§6.4). */
 export const BotMessageEvent = sessionEvent("bot_message", { from: BotId, fromSession: SessionId, text: utf16(1_000_000) });
+/** Another session's `SendMessage` to this one, where neither is a bot's (§9.5: a session the person drives messaging
+ *  another of the person's code sessions): the sending session and the words. A message between a bot's sessions stays
+ *  `bot_message` / `agent_message`. */
+export const SessionMessageEvent = sessionEvent("session_message", { fromSession: SessionId, text: utf16(1_000_000) });
 /** A background agent's `SendMessage` to its bot while it works (§9.3). Shown as `agent-report` (§5.5). */
 export const AgentMessageEvent = sessionEvent("agent_message", { agent: SessionId, text: utf16(1_000_000) });
 /** A background agent finished: the task notification, with the final text unchanged (spike S5 §8). */
@@ -566,14 +644,21 @@ export const PluginMessageEvent = sessionEvent("plugin_message", {
  *  clock. A message stamped before output the model already produced sits after that output, showing its time. */
 export const UserMessageStamp = z.object({ device: DeviceId, sentAt: Timestamp });
 
-export const CloverSessionEvent = z.discriminatedUnion("type", [
-  BotMessageEvent, AgentMessageEvent, AgentFinishedEvent, RoutineResultEvent, NoteEvent, PluginMessageEvent,
+export const SetupChangedEvent = coreEvent("setup_changed", { setup: SetupState });
+
+export const MossSessionEvent = z.discriminatedUnion("type", [
+  BotMessageEvent, AgentMessageEvent, AgentFinishedEvent, RoutineResultEvent, NoteEvent, PluginMessageEvent, SessionMessageEvent,
 ]);
-export type CloverSessionEvent = z.infer<typeof CloverSessionEvent>;
+export type MossSessionEvent = z.infer<typeof MossSessionEvent>;
 
 const READERS = ["app", "cli", "remote", "web", "layer"] as const;
 
 export const SESSIONS_EVENTS = {
+  setupChanged: defineEvent({
+    type: "setup_changed", owner: "A", roles: ["app", "cli"], schema: SetupChangedEvent,
+    fixture: { type: "setup_changed", ts: 1781270000000, setup: { ready: true, missing: [], providers: ["anthropic"], default: { model: "anthropic/claude-opus-5-5", source: "chosen", effort: "medium" }, dismissed: false } },
+    doc: "What the home's setup needs changed: a provider was added or removed, or the default model or the guide's dismissal changed.",
+  }),
   botChanged: defineEvent({
     type: "bot_changed", owner: "D", roles: READERS, capability: "bots.read", schema: BotChangedEvent,
     fixture: {
@@ -593,12 +678,17 @@ export const SESSIONS_EVENTS = {
     doc: "The pause switch moved.",
   }),
   sessionChanged: defineEvent({
-    type: "session_changed", owner: "D", roles: READERS, capability: "conversation.read", schema: SessionChangedEvent,
+    type: "session_changed", owner: "D", roles: READERS, capability: "conversation.*", schema: SessionChangedEvent,
     fixture: {
       type: "session_changed", ts: 1781270000000,
       session: { id: "s_agent_1", kind: "agent", bot: "alpha", parent: "s_alpha", computer: "Desktop1", status: "prompting", startedAt: 1781269990000, updatedAt: 1781270000000, backend: "claude-code", root: "home/Desktop1/project1" },
     },
     doc: "A session started, changed state or ended.",
+  }),
+  sessionLink: defineEvent({
+    type: "session_link", owner: "CG", roles: READERS, capability: "conversation.*", transient: true, schema: SessionLinkEvent,
+    fixture: { type: "session_link", ts: 1781270000000, from: { end: "session", session: "s_code_1", kind: "coding" }, to: { session: "s_code_2", kind: "coding" }, link: "message" },
+    doc: "A message crossed from one session (or the person) to another: who, to whom, its kind and when, never its words; a plugin hears it only when it may read both sessions' kinds.",
   }),
   routinesChanged: defineEvent({
     type: "routines_changed", owner: "D", roles: READERS, capability: "routines.read", schema: RoutinesChangedEvent,
@@ -633,6 +723,11 @@ export const SESSIONS_EVENTS = {
     type: "note", owner: "D", roles: READERS, capability: "conversation.read", scope: "session", schema: NoteEvent,
     fixture: { type: "note", seq: 16, sessionId: "s_alpha", ts: 1781270004000, from: { kind: "plugin", pluginId: "weather" }, label: "Forecast", text: "Rain after 4 pm." },
     doc: "A labelled note in the conversation.",
+  }),
+  sessionMessage: defineEvent({
+    type: "session_message", owner: "CM", roles: READERS, capability: "sessions.read", scope: "session", schema: SessionMessageEvent,
+    fixture: { type: "session_message", seq: 18, sessionId: "s_code_2", ts: 1781270006000, fromSession: "s_code_1", text: "The API moved to v2; update the client." },
+    doc: "Another code session's message, folded in.",
   }),
   pluginMessage: defineEvent({
     type: "plugin_message", owner: "D", roles: READERS, capability: "conversation.read", scope: "session", schema: PluginMessageEvent,

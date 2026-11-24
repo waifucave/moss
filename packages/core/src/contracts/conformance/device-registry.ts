@@ -4,7 +4,7 @@
 // real Ed25519 keys in memory, adding and revoking,
 // and signatures that stop counting once a device is revoked.
 import { describe, expect, test } from "bun:test";
-import { DeviceId } from "@waifucave/clover-protocol";
+import { DeviceId } from "@waifucave/moss-protocol";
 import { isContractError } from "../common";
 import { deviceIdFor, holderFitsAlg, verifyKeySignature, type DeviceChange } from "../device-registry";
 import { FakeClock } from "../fakes/clock";

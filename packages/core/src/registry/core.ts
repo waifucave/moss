@@ -3,18 +3,18 @@
 // come from the contract's rules (`computeRegistry`), as the fake's do, so the conformance suite pins both. Where
 // plugins come from (folders, their tree hashes and what a change since the OK does) is `folders.ts`'s; this takes
 // each one as a `RegistryInput`.
-import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, NOT_AVAILABLE_YET, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/clover-protocol";
+import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, GRANT_REVISION, NOT_AVAILABLE_YET, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/moss-protocol";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import type {
   ApproveResult, Contribution, InstallFrom, PluginRecord, PluginRegistry, RegisteredPoint, RegistryChange, SwitchResult,
 } from "../contracts/plugin-registry";
 import {
-  EMPTY_SNAPSHOT, computeRegistry, parentOf, registryChanges, type RegistryPlugin, type RegistrySnapshot,
+  EMPTY_SNAPSHOT, computeRegistry, grantAsksAgain, parentOf, registryChanges, type RegistryPlugin, type RegistrySnapshot,
 } from "../contracts/plugin-registry-rules";
 import type { CoreEntries, Manifest, PointDecl } from "../contracts/sdk-types";
-import { botNameOf, contributionLabels, mayHoldCapability, pluginParts } from "@waifucave/clover-plugin-sdk";
+import { botNameOf, contributionLabels, pluginParts } from "@waifucave/moss-plugin-sdk";
 import type { ChangeKind } from "./changes";
-import type { PluginState as StoredState, RegistryStore } from "./state";
+import type { PluginState as StoredState, RegistryStateFile, RegistryStore } from "./state";
 
 /** A plugin as its folder shows it now (the fake's `FakePluginInput`, field for field). */
 export interface RegistryInput {
@@ -38,6 +38,9 @@ export interface RegistryInput {
   /** A plugin a bot built (the workshop rule, §5.6): `change` is judged against the user's last OK whatever came between
    *  (a change that asked, the user's no), so one that takes a request back out applies and runs again with no card. */
   workshop?: boolean;
+  /** The very tree it was OK'd for asks again: its OK card now shows a line its OK didn't (a point's `fills` line its
+   *  declarer added or changed, `fillsAdded`). The user's OK of this tree, given again, keeps the new card's words. */
+  asksAgain?: boolean;
 }
 
 /** Raises a plugin's OK card and reports the user's answer once (an unanswered card never refuses, rule 6). */
@@ -57,7 +60,7 @@ export function idleOkCards(): OkCardRaiser {
 }
 
 export interface RegistryCoreOptions {
-  catalog: (name: string) => PointDecl | undefined;
+  catalog: (name: string) => (PointDecl & { platform?: boolean }) | undefined;
   store: RegistryStore;
   cards?: OkCardRaiser;
   now?: () => number;
@@ -81,6 +84,9 @@ interface Held {
   approved: boolean;
   refused: boolean;
   okHash?: string;
+  /** The catalog revision its OK was given at: `GRANT_REVISION` for the user's answer or the build's own grant, kept as it
+   *  was when an OK carries over to a changed tree that applies with no card. */
+  okRevision?: number;
   cardHeld: boolean;
   stopped?: string;
   /** Its client didn't build at load (`client-builds.ts`), for this tree only. */
@@ -147,9 +153,9 @@ export class RegistryCore implements PluginRegistry {
       this.#update();
       return { applied: true };
     }
-    if (id === BUNDLED_ROOT_PLUGIN && held.input.source === "bundled" && !enabled) throw new ContractError("refused", "Clover's own plugin holds Settings; it stays on");
+    if (id === BUNDLED_ROOT_PLUGIN && held.input.source === "bundled" && !enabled) throw new ContractError("refused", "MOSS's own plugin holds Settings; it stays on");
     if (state === "refused" || state === "invalid") throw new ContractError("refused", `${id} is ${state}; it can't be switched`);
-    // The rules' not-yet state (the mark in Clover's own tree): its switch stays as it is.
+    // The rules' not-yet state (the mark in MOSS's own tree): its switch stays as it is.
     if (state === "off" && this.#snap.records.get(id)?.reason === NOT_AVAILABLE_YET) {
       throw new ContractError("refused", `${id} isn't available in this build yet, so it can't be turned on or off`);
     }
@@ -168,6 +174,27 @@ export class RegistryCore implements PluginRegistry {
     return { state, card: await this.#raiseOk(id) };
   }
 
+  /** The plugins whose OK the user gave before revision 19 and which hold a grant the split narrowed (`conversation.read`,
+   *  `sessions.read`): they read neither kind of data until they ask again (the record's `granted` leaves both out). Not
+   *  the bundled tree's own, which the build approves again at every start. */
+  staleGrants(): string[] {
+    return this.#ordered().filter((id) => {
+      const h = this.#plugins.get(id)!;
+      if (!(parentOf(id) === undefined && h.approved && !h.refused && h.input.dev !== true && h.input.source !== "bundled")) return false;
+      // Every manifest in the tree: a child part's own read is narrowed as the top's is (its grant is read from the top's OK).
+      const tree = [...this.#plugins].filter(([pid]) => pid === id || pid.startsWith(`${id}/`)).map(([, p]) => p);
+      return tree.some((p) => grantAsksAgain(p.input.manifest.capabilities ?? [], h.okRevision));
+    });
+  }
+
+  /** Raises the OK card of each plugin in `staleGrants()`, for the tree it runs: the plugin keeps running on its other
+   *  grants, and the user's yes (`approve`) records the revision and gives back what it asked. Returns the ids asked. */
+  async askStaleGrantsAgain(): Promise<string[]> {
+    const ids = this.staleGrants();
+    for (const id of ids) await this.#raiseOk(id);
+    return ids;
+  }
+
   /** The OK cards waiting, by plugin. */
   okCards(): { id: string; card: string; treeHash: string }[] {
     return [...this.#okCards].map(([id, c]) => ({ id, card: c.card, treeHash: c.treeHash }));
@@ -179,6 +206,7 @@ export class RegistryCore implements PluginRegistry {
     held.approved = true;
     held.refused = false;
     held.okHash = treeHash;
+    held.okRevision = GRANT_REVISION;
     held.cardHeld = false;
     this.#okCards.delete(id);
     // One OK covers the tree (§5.6): its children, which share its tree hash, are OK'd with it; each one's checkbox is
@@ -188,6 +216,7 @@ export class RegistryCore implements PluginRegistry {
       c.approved = true;
       c.refused = false;
       c.okHash = treeHash;
+      c.okRevision = GRANT_REVISION;
     }
     for (const [child, on] of Object.entries(selection)) {
       const c = this.#plugins.get(child);
@@ -372,15 +401,19 @@ export class RegistryCore implements PluginRegistry {
     const defaultEnabled = parent === undefined ? true : (input.manifest.enabledByDefault ?? true);
     const hash = input.treeHash ?? stableHash(input.manifest);
     const stored: StoredState | undefined = this.#state.plugins[input.id];
-    const prev: Pick<Held, "hash" | "approved" | "refused" | "okHash" | "cardHeld" | "enabled"> | undefined = this.#plugins.get(input.id)
+    const prev: Pick<Held, "hash" | "approved" | "refused" | "okHash" | "okRevision" | "cardHeld" | "enabled"> | undefined = this.#plugins.get(input.id)
       ?? (stored?.okHash !== undefined || stored?.refusedHash !== undefined
         ? {
           hash: stored.refusedHash ?? stored.okHash!, approved: stored.okHash !== undefined, refused: stored.refusedHash !== undefined,
-          ...(stored.okHash === undefined ? {} : { okHash: stored.okHash }), cardHeld: stored.cardHeld ?? false, enabled: stored.enabled ?? defaultEnabled,
+          ...(stored.okHash === undefined ? {} : { okHash: stored.okHash }), ...(stored.okRevision === undefined ? {} : { okRevision: stored.okRevision }), cardHeld: stored.cardHeld ?? false, enabled: stored.enabled ?? defaultEnabled,
         }
         : undefined);
     let approved: boolean;
     let okHash: string | undefined;
+    // The revision the OK in force was given at: only the user's answer on a card (`approve`) or the build's own grant
+    // (`input.approved === true`, as at every update) stamps it; an OK that carries over to a changed tree with no card
+    // keeps the revision it had, so an older grant does not read as new.
+    let okRevision: number | undefined = prev?.okRevision;
     let cardHeld = false;
     // A found folder's `approved: false` says the records hold no OK for it; it never undoes the OK this core holds for
     // this very tree (a folder read that loaded the records before the user's answer landed, and puts after it: the
@@ -389,6 +422,9 @@ export class RegistryCore implements PluginRegistry {
     if (input.approved === true || (input.approved === false && !okHeld)) {
       approved = input.approved;
       okHash = approved ? hash : prev?.okHash;
+      // The build grants its own: a bundled plugin or a development folder is approved again by itself at every start, as
+      // at every update. An update that put back the very tree the user OK'd keeps the revision that OK had.
+      if (input.approved === true && (input.source === "bundled" || input.source === "dev" || input.dev === true || prev === undefined)) okRevision = GRANT_REVISION;
     } else if (prev === undefined) {
       // Never seen and no record: not approved (lane J's question: nothing arrives OK'd by default). Only
       // `approved: true` approves (the bundled and development-folder paths), or the user's OK. A child is covered by
@@ -397,8 +433,10 @@ export class RegistryCore implements PluginRegistry {
       const parentHeld = parent !== undefined ? this.#plugins.get(parent) : undefined;
       approved = parentHeld !== undefined && parentHeld.approved && !parentHeld.refused && parentHeld.okHash === hash;
       okHash = approved ? hash : undefined;
+      okRevision = approved ? parentHeld?.okRevision : undefined;
     } else if (prev.hash === hash) {
       ({ approved, okHash, cardHeld } = prev);
+      if (input.asksAgain === true) approved = false;
     } else {
       const change = input.change ?? "asks-again";
       okHash = prev.okHash;
@@ -423,6 +461,7 @@ export class RegistryCore implements PluginRegistry {
       approved,
       refused: prev !== undefined && prev.refused && prev.hash === hash,
       ...(okHash === undefined ? {} : { okHash }),
+      ...(okRevision === undefined ? {} : { okRevision }),
       cardHeld,
       appParts: this.#plugins.get(input.id)?.appParts ?? stored?.appParts ?? true,
     });
@@ -463,6 +502,7 @@ export class RegistryCore implements PluginRegistry {
       if (beside.length > 0) p.beside = { refs: beside.map((b) => b.ref), kinds: beside.map((b) => b.kind) };
       if (i.source !== undefined) p.source = i.source;
       if (h.okHash !== undefined) p.okHash = h.okHash;
+      if (h.okRevision !== undefined) p.okRevision = h.okRevision;
       if (i.invalid !== undefined) p.invalid = i.invalid;
       else if (h.buildFailed !== undefined && h.buildFailed.hash === h.hash) p.invalid = h.buildFailed.reason;
       if (h.stopped !== undefined) p.stopped = h.stopped;
@@ -475,7 +515,7 @@ export class RegistryCore implements PluginRegistry {
     }
     this.#persist(ids);
     const before = this.#snap;
-    this.#snap = computeRegistry(plugins, { catalog: this.#o.catalog, adultConfirmed: this.#adult, mayHold: mayHoldCapability, labels: contributionLabels, ...(this.#o.platform !== undefined ? { platform: this.#o.platform } : {}) });
+    this.#snap = computeRegistry(plugins, { catalog: this.#o.catalog, adultConfirmed: this.#adult, labels: contributionLabels, ...(this.#o.platform !== undefined ? { platform: this.#o.platform } : {}) });
     const changes = registryChanges(before, this.#snap);
     for (const change of changes) this.#listeners.emit(change);
     // A plugin whose tree changed under the same id (an update applied, a folder edited) and is still there, when the
@@ -501,6 +541,7 @@ export class RegistryCore implements PluginRegistry {
       if (h.input.source !== undefined) s.source = h.input.source;
       if (h.input.provenance !== undefined) s.provenance = h.input.provenance;
       if (h.okHash !== undefined) s.okHash = h.okHash;
+      if (h.okRevision !== undefined) s.okRevision = h.okRevision;
       if (h.refused) s.refusedHash = h.hash;
       if (h.cardHeld) s.cardHeld = true;
       if (!h.appParts) s.appParts = false;
@@ -513,10 +554,35 @@ export class RegistryCore implements PluginRegistry {
       else if (this.#state.plugins[id] !== undefined) plugins[id] = this.#state.plugins[id]!;
     }
     const order = [...ids.filter((id) => plugins[id] !== undefined), ...this.#state.order.filter((id) => !ids.includes(id) && plugins[id] !== undefined)];
-    const next = { ...this.#state, order, plugins };
+    // The user's one-at-a-time choices (§5.4) go with their plugin's record: a removed plugin takes its choices along.
+    const active = Object.fromEntries(Object.entries(this.#state.active ?? {}).filter(([, r]) => plugins[r.pluginId] !== undefined));
+    const next: RegistryStateFile = { ...this.#state, order, plugins };
+    if (Object.keys(active).length > 0) next.active = active;
+    else delete next.active;
     if (JSON.stringify(next) === JSON.stringify(this.#state)) return;
     this.#state = next;
     this.#o.store.save(next);
+  }
+
+  /** The user's choice for a one-at-a-time point (§5.4 "One at a time"), from the records. */
+  chosen(point: string): { pluginId: string; entryId: string } | undefined {
+    const r = this.#state.active?.[point];
+    return r === undefined ? undefined : { pluginId: r.pluginId, entryId: r.entryId };
+  }
+
+  /** Keeps the user's choice for a one-at-a-time point, or forgets it (`point.active.set`, the user's own door, checks
+   *  the point and the entry first), and reports it as the point's change. */
+  choose(point: string, ref: { pluginId: string; entryId: string } | undefined): void {
+    const active = { ...(this.#state.active ?? {}) };
+    if (ref === undefined) delete active[point];
+    else active[point] = { pluginId: ref.pluginId, entryId: ref.entryId };
+    const next: RegistryStateFile = { ...this.#state };
+    if (Object.keys(active).length > 0) next.active = active;
+    else delete next.active;
+    if (JSON.stringify(next) === JSON.stringify(this.#state)) return;
+    this.#state = next;
+    this.#o.store.save(next);
+    this.#listeners.emit({ type: "entries", point });
   }
 
   /** The records' development folders (`folders.ts` keeps them). */

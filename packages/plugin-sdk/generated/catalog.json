@@ -40,7 +40,7 @@
     },
     {
       "name": "computers.control",
-      "lets": "Take and release holds and the user-working mark, learn where Clover's windows are, and say when an action is running",
+      "lets": "Take and release holds and the user-working mark, learn where MOSS's windows are, and say when an action is running",
       "ok": "controls the screen and input of your computers",
       "warns": true
     },
@@ -51,10 +51,40 @@
       "warns": false
     },
     {
-      "name": "approvals",
-      "lets": "Hear which cards are pending, never their text, and place their sealed frames",
-      "ok": "restyles approval cards",
+      "name": "devices.manage",
+      "lets": "On the user's own press in its frame: show a pairing code or enter one, see the pairing code and the four words of any pairing on this computer, and ask to add or remove a device; adding or removing one is still a sealed card the user answers",
+      "ok": "pairs and removes your devices when you press its controls, and sees the pairing code and the four words (each add or removal still asks on MOSS's own card, which shows the four words itself)",
       "warns": true
+    },
+    {
+      "name": "approvals",
+      "lets": "Hear which of the cards its own tools' calls raised are pending (in any session or bot's turn), never their text, and place their sealed frames",
+      "ok": "shows approval cards for its own tools",
+      "warns": true
+    },
+    {
+      "name": "approvals.all",
+      "lets": "Needs `approvals` too: hear the meta of every pending card, not only its own tools' (a plugin's OK card, a change from Settings), place their sealed frames in a surface of its own, and give each the look of its own `card.*` tokens; the card's words never reach it and the press stays the sealed frame's own",
+      "ok": "shows all your approval cards, whichever bot or plugin asks, and takes your yes or no on them",
+      "warns": true
+    },
+    {
+      "name": "user.send",
+      "lets": "Send text the part chooses to any bot, any session (coding sessions too) or any `pill.target` entry, as the user, on any real click or key press inside its own frames (`useUserSend`); one send for one press, or one send after a press the app saw held and released, within 30 s of the release (hold-to-talk), the release of its own held key binding (`commands[].hold`) included, wherever the window's focus was",
+      "ok": "sends messages to your bots and sessions as you, with text it chooses, when you click or press a key in its window, or press its own key anywhere in MOSS Code's window, or up to 30 seconds after you let go",
+      "warns": true
+    },
+    {
+      "name": "overlay",
+      "lets": "Open surfaces (`app.surface` entries) that float above every other window on every desktop, over the menu bar and full-screen apps, as large as the screen (`alwaysOnTop`); without it a surface is an ordinary window level, at most 800 by 600",
+      "ok": "shows windows on top of everything else on your screen",
+      "warns": true
+    },
+    {
+      "name": "tray",
+      "lets": "Add items to MOSS's menu-bar (tray) menu (`app.tray` entries): one that hides and shows a surface of its own, or runs a command of its own",
+      "ok": "adds items to the menu in your menu bar",
+      "warns": false
     },
     {
       "name": "files",
@@ -70,17 +100,15 @@
     },
     {
       "name": "browser",
-      "lets": "Drive the Clover Browser through its API",
-      "ok": "drives the Clover Browser",
-      "warns": false,
-      "bundledOnly": true
+      "lets": "Drive the MOSS Browser on this computer. A host half: only the session whose tool call it serves, while that call is open, on that session's own tab, out of sight. A component the user can see: a live view for the person over every owner's tab here, the person's own signed-in tabs included; it lists them (address and title), shows, hides and hears them, and pictures the one its own view holds (live or paused), freely; it runs DevTools, navigates, opens or closes a tab, or pictures another, only right after the user's own press in it. A background part: nothing, not even the tab events. Never the person's other browsers",
+      "ok": "drives the MOSS Browser: a bot's own tab as its tool; its page sees every MOSS Browser tab on this computer, its address, title and picture, ones you opened yourself included, with no asking, and opens, closes and acts in tabs when you press its controls, signed in wherever you signed in there",
+      "warns": true
     },
     {
       "name": "terminal",
-      "lets": "Show the user's terminals on their computers, fed only with what the runtime derives from the user's own key presses and pastes; never on a computer at read-only",
-      "ok": "runs commands on your computers",
-      "warns": true,
-      "bundledOnly": true
+      "lets": "Open terminals on the user's computers from a component (never on one at read-only), and resize, read and close its own: what a terminal runs is only what the user types or pastes into it, which the app hands over itself; no call of the plugin's writes to one",
+      "ok": "opens terminals on your computers that run what you type in them, as you, outside MOSS's sandbox, and sees what they show",
+      "warns": true
     },
     {
       "name": "shell.read",
@@ -91,22 +119,20 @@
     {
       "name": "shell.control",
       "lets": "Move the window's own parts when the user presses its controls: show a tab, a panel or the settings, fold the sidebar, open the bot's editor, drag the window; never a conversation, a card or a file",
-      "ok": "lets its own buttons move around Clover's window",
+      "ok": "lets its own buttons move around MOSS's window",
       "warns": false
     },
     {
       "name": "plugins.install",
       "lets": "Install plugins from the indexes and npm for the user to OK: each lands found, with its sealed OK card, and nothing it installs runs before that OK",
-      "ok": "installs plugins for you to OK",
-      "warns": false,
-      "bundledOnly": true
+      "ok": "downloads other plugins from the indexes and npm onto your computer, each waiting for your OK on its own card",
+      "warns": true
     },
     {
       "name": "plugins.watch",
       "lets": "Hear which plugins appear, change state or go (their ids and states only), and why a yes on a plugin's change card couldn't be done; it can call nothing",
-      "ok": "sees which plugins you have and whether they're on",
-      "warns": false,
-      "bundledOnly": true
+      "ok": "sees every plugin you have, whether it's on, and when you add or remove one",
+      "warns": true
     },
     {
       "name": "usage.read",
@@ -116,28 +142,9 @@
     },
     {
       "name": "logs.read",
-      "lets": "Read Clover's logs and every plugin's",
-      "ok": "reads Clover's logs and every plugin's logs",
+      "lets": "Read MOSS's logs and every plugin's",
+      "ok": "reads MOSS's logs and every plugin's logs",
       "warns": false
-    },
-    {
-      "name": "avatar.read",
-      "lets": "Read the figure of its own bot: the names its model answers to (expressions, motions, outfit parts), where the figure is on the stage, and hear them change",
-      "ok": "sees your bot's figure",
-      "warns": false
-    },
-    {
-      "name": "avatar.control",
-      "lets": "Make the figure of its own bot play an expression or a motion, switch an outfit part, calm or liven it, or look at a point; the renderer says plainly what it doesn't do",
-      "ok": "moves your bot's figure",
-      "warns": false
-    },
-    {
-      "name": "avatar.report",
-      "lets": "Report which renderer draws a bot's figure, what its model has and where it stands (the stage's own)",
-      "ok": "reports your bots' figures",
-      "warns": false,
-      "bundledOnly": true
     },
     {
       "name": "notify",
@@ -147,14 +154,92 @@
     },
     {
       "name": "audio",
-      "lets": "Hear the user's push-to-talk audio to their bots, and play sound through the app, including as the bots' voices",
-      "ok": "hears what you say to your bots with push-to-talk, and can play sound, including as your bots' voices",
+      "lets": "Play sound with no press from the user, even from a part kept in the background, and take the device's speech turn (`device/speech`) so it never talks over another plugin",
+      "ok": "can play sound at any time, even while no window of it shows",
       "warns": true
     },
     {
-      "name": "voices.use",
-      "lets": "Ask the voice providers (`voices` entries) to speak text or transcribe audio, getting the audio or text back",
-      "ok": "can ask your voice providers to speak or transcribe, which may use your accounts with them",
+      "name": "microphone",
+      "lets": "Open the user's microphone from its own frames (`getUserMedia({ audio: true })`), whenever its parts run, including a part kept in the background; the system's own permission still applies, and no other plugin's frame gets it",
+      "ok": "hears your microphone, also while no window of it shows",
+      "warns": true
+    },
+    {
+      "name": "app.settings",
+      "lets": "Read MOSS's own settings (its look, theme, language, layout lists, and which plugin is active for each one-at-a-time job) and, on the user's own press in its frame, change the look, the theme, the language and which plugin does each job",
+      "ok": "reads MOSS Code's settings, and changes its window's look, language and which plugin does each job when you press its controls",
+      "warns": true
+    },
+    {
+      "name": "bots.edit",
+      "lets": "On the user's own press in its frame: change a bot's settings (its name, instructions, model, voice, and whether its browser may reach the home network), its tab's layout switches, and its own plugin's settings for that bot; open MOSS's own key dialog for that bot's keys (the key never passes the plugin); read the model list and MOSS's layout settings",
+      "ok": "changes your bots' settings when you press its controls: their names, instructions, models, voices and keys, and whether a bot's browser may reach your home network",
+      "warns": true
+    },
+    {
+      "name": "plugins.read",
+      "lets": "Read every plugin's record and manifest, its settings (a secret only as set or not), sign-ins, development folders, granted files, commands and notification mutes, and the plugin indexes; it can change nothing",
+      "ok": "sees every plugin you have, its settings and what it may do",
+      "warns": true
+    },
+    {
+      "name": "plugins.manage",
+      "lets": "On the user's own press in its frame: install (each landing behind its own OK card), remove, update, pin, restart and switch plugins on and off; add and remove indexes and development folders (a folder only from MOSS's own picker); sign plugins in and out (a key only in MOSS's own key dialog); change any plugin's settings (never a key); take back picked files; mute a plugin's notifications. A removal, an update, a sign-out and a renewal still ask on MOSS's sealed card",
+      "ok": "installs, removes, switches on and off and changes the settings and sign-ins of your plugins when you press its controls",
+      "warns": true
+    },
+    {
+      "name": "tools.permissions",
+      "lets": "Read and, on the user's own press in its frame, change what each plugin tool may do (always allow, ask, always block): every installed plugin's tools, MOSS's own bundled plugins' included, so a tool set to always allow then acts with no card; not MOSS's built-in shell and file tools. It can also take back the card rules saved for a bot",
+      "ok": "shows and changes, for each plugin tool, whether it may be used and whether it asks first, and can set any plugin's tools, MOSS's own plugins' included, to act without asking you, with no card (not MOSS's built-in shell and file tools)",
+      "warns": true
+    },
+    {
+      "name": "account.read",
+      "lets": "Read whether MOSS is signed in to an account, with which provider, and the account's id, name and email",
+      "ok": "sees the name and email of your MOSS account",
+      "warns": true
+    },
+    {
+      "name": "commands.run",
+      "lets": "From the composer it fills: list every running plugin's commands and, on the user's own press, run one as the user, with that plugin's own powers (a carded action still raises its card)",
+      "ok": "runs your plugins' commands as you when you press a key in it",
+      "warns": true
+    },
+    {
+      "name": "sessions.read",
+      "lets": "Read the user's code sessions and follow them live, and nothing of bots' conversations; sealed card fields never reach it",
+      "ok": "reads your code sessions",
+      "warns": false
+    },
+    {
+      "name": "sessions.start",
+      "lets": "Start a session with a coding agent, on the user's own press, in a folder the user picked in the app's own dialog or one of the folders the user used recently (never a path the plugin names), with no words of the plugin's unless it also holds user.send; read the names of the folders the user used recently, with no click",
+      "ok": "starts sessions with a coding agent, in a folder you pick or one you used recently without asking you again, and sees the names of the folders you used recently",
+      "warns": true
+    },
+    {
+      "name": "activity.read.sessions",
+      "lets": "Read the activity feed of the user's code sessions: each one's state (idle, listening, thinking, working, asking, stuck, done, asleep), its title (which a bot or the person wrote, and can come from the conversation) and the tool it works with; never the messages, a tool's arguments or a card's text",
+      "ok": "follows what your code sessions are doing: their titles, their states and which tool they are using",
+      "warns": false
+    },
+    {
+      "name": "activity.read.bots",
+      "lets": "Read the activity feed of every bot: each one's state (idle, listening, thinking, working, asking, stuck, done, asleep), its name and the tool it works with; never what was said, a tool's arguments or a card's text",
+      "ok": "follows what all your bots are doing: their names, their states and which tool they are using, never their words",
+      "warns": false
+    },
+    {
+      "name": "picture.read.sessions",
+      "lets": "Show the live pictures tools publish of their work in the user's code sessions (inert pixels, with the publisher's id): a computer-use tool's can show the user's own screen, a browser tool's a page the user is signed in to",
+      "ok": "shows live pictures of what tools are doing in your code sessions, which can include your own screen and pages you are signed in to",
+      "warns": true
+    },
+    {
+      "name": "picture.read.bots",
+      "lets": "Show the live pictures tools publish of every bot's work (inert pixels, with the publisher's id): a computer-use tool's can show the user's own screen, a browser tool's a page the user is signed in to",
+      "ok": "shows live pictures of what all your bots' tools are doing, which can include your own screen and pages you are signed in to",
       "warns": true
     },
     {
@@ -166,9 +251,8 @@
     {
       "name": "network:public",
       "lets": "Reach any public host through the core's fetch, with its web floors: public addresses only (a private address is refused, with no card to allow it), the dangerous-domain list, size and time caps, no key, and the audit log; its components reach no host from it",
-      "ok": "connects to any public website, through Clover's web safeguards",
-      "warns": true,
-      "bundledOnly": true
+      "ok": "connects to any public website, through MOSS's web safeguards, so what you or your bots give it can leave your computer",
+      "warns": true
     },
     {
       "name": "network:<host>",
@@ -247,7 +331,7 @@
       "kind": "either",
       "runsOn": "local servers on each computer they are installed on; remote servers on the computer running the session (§9.1)",
       "doc": "Dispatches tool calls, builds the MCP block and shows MCP Apps pages.",
-      "shipsWith": "the web tools; `mcp__clover__Browser`"
+      "shipsWith": "the web tools; `mcp__moss__Browser`"
     },
     {
       "name": "skills",
@@ -307,24 +391,13 @@
       "shipsWith": "schedule, webhook"
     },
     {
-      "name": "voices",
+      "name": "turns",
       "side": "daemon",
       "shape": "list",
-      "uniqueBy": "id",
-      "kind": "code",
-      "runsOn": "the computer the user is talking on",
-      "doc": "Speech-to-text and text-to-speech for the bot's voice choice (§6.6), which the active voice mode takes.",
-      "shipsWith": "Fish Audio"
-    },
-    {
-      "name": "voiceModes",
-      "side": "daemon",
-      "shape": "list",
-      "uniqueBy": "id",
-      "kind": "code",
-      "runsOn": "the computer the user is talking on",
-      "doc": "The voice slot (§6.6): one voice mode is active (Settings › Voice); it speaks the bots' replies, plays sound as their voices through its one queue, and hears push-to-talk. The others neither speak nor hear.",
-      "shipsWith": "Clover Voice"
+      "kind": "data",
+      "runsOn": "data",
+      "doc": "Names of the plugin's own one-at-a-time turns that another plugin may take (`<plugin id>/<name>`, §5.4 \"Turns\"); its own need no entry.",
+      "shipsWith": "—"
     },
     {
       "name": "computerProviders",
@@ -400,13 +473,13 @@
       "shipsWith": "island, Dispatch pill"
     },
     {
-      "name": "bot.tab",
+      "name": "app.background",
       "side": "app",
-      "shape": "keyed",
+      "shape": "list",
       "kind": "code",
       "runsOn": "every app instance",
-      "doc": "Holds each bot's tab, which the shell shows.",
-      "shipsWith": "the default bot tab"
+      "doc": "Runs parts that have no place in the window, in a hidden window of their own.",
+      "shipsWith": "nothing yet; any plugin"
     },
     {
       "name": "locales",
@@ -422,7 +495,7 @@
     {
       "name": "webhook.ingress",
       "shape": "list",
-      "declaredBy": "clover/trigger-webhook",
+      "declaredBy": "moss/trigger-webhook",
       "kind": "code",
       "doc": "Ways for webhooks to reach a device: the waifucave forwarder, the user's cloud computer, a tunnel (§7).",
       "fields": {
@@ -473,11 +546,82 @@
       }
     },
     {
+      "name": "usage.sources",
+      "shape": "list",
+      "declaredBy": "moss/usage",
+      "kind": "code",
+      "doc": "A tool of the user's installed on this computer whose usage MOSS reads: its plan windows (`plan`) and the token counts its own session files hold (`ingest`), through its own program and its own folders (`host.outside`), never its sign-in. The core calls the handler on this computer only, asks no oftener than `planEveryMs`, prices the records and keeps the store; the source owns how its tool is read (§12).",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9]([a-z0-9._-]{0,126}[a-z0-9])?$"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "handler": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$",
+            "format": "handler",
+            "description": "An export of `host.entry`: a function, or for a service (a `webhook.ingress` entry, a notifier) an object of functions, whose caller names the one it calls."
+          },
+          "provides": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "plan",
+                "usage"
+              ]
+            }
+          },
+          "planEveryMs": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 86400000
+          }
+        },
+        "required": [
+          "id",
+          "handler",
+          "provides"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "island.line",
       "shape": "list",
-      "declaredBy": "clover/island",
+      "declaredBy": "island",
       "kind": "code",
-      "doc": "A line a plugin puts on the island: one line of plain text, an optional icon from the island's small named set and an optional progress bar, drawn in the island's own style with the plugin's name beside it. The island calls `handler` (an `IslandLineHandler`) only when Clover isn't in front (the first line on its closed strip, the lines on its open Needs you tab) and draws what it returns; the island decides how many lines fit, in what order, and how long they last. Nothing is drawn when the handler returns nothing, and a plugin that is off or removed has no line.",
+      "doc": "A line a plugin puts on the island: one line of plain text, an optional icon from the island's small named set and an optional progress bar, drawn in the island's own style with the plugin's name beside it. The island calls `handler` (an `IslandLineHandler`) only when MOSS isn't in front (the first line on its closed strip, the lines on its open Needs you tab) and draws what it returns; the island decides how many lines fit, in what order, and how long they last. Nothing is drawn when the handler returns nothing, and a plugin that is off or removed has no line.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -500,257 +644,6 @@
         "required": [
           "id",
           "handler"
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "avatar.formats",
-      "shape": "list",
-      "declaredBy": "clover/character",
-      "kind": "data",
-      "doc": "A model format a renderer plugin draws: the files its models are made of (closed kinds, capped), how they are found from the entry file, what the picker may import, and what the renderer can do. Nothing in the app is hardcoded per format (§5.5).",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[a-z0-9]([a-z0-9._-]{0,126}[a-z0-9])?$"
-          },
-          "format": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32,
-            "pattern": "^[a-z0-9-]+$"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "en": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "en"
-                ],
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            ]
-          },
-          "entry": {
-            "type": "object",
-            "properties": {
-              "extensions": {
-                "minItems": 1,
-                "maxItems": 8,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "maxLength": 32,
-                  "pattern": "^\\.[a-z0-9]+(\\.[a-z0-9]+)*$",
-                  "minLength": 2
-                }
-              }
-            },
-            "required": [
-              "extensions"
-            ],
-            "additionalProperties": false
-          },
-          "files": {
-            "type": "object",
-            "properties": {
-              "kinds": {
-                "minItems": 1,
-                "maxItems": 16,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "ext": {
-                      "minItems": 1,
-                      "maxItems": 16,
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "maxLength": 32,
-                        "pattern": "^\\.[a-z0-9]+(\\.[a-z0-9]+)*$",
-                        "minLength": 2
-                      }
-                    },
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "json",
-                        "binary",
-                        "image",
-                        "audio",
-                        "text"
-                      ]
-                    },
-                    "maxBytes": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 134217728
-                    }
-                  },
-                  "required": [
-                    "ext",
-                    "type"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "find": {
-                "default": "folder",
-                "type": "string",
-                "enum": [
-                  "folder",
-                  "cubism-model3"
-                ]
-              },
-              "maxFiles": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 512
-              }
-            },
-            "required": [
-              "kinds"
-            ],
-            "additionalProperties": false
-          },
-          "import": {
-            "type": "object",
-            "properties": {
-              "accepts": {
-                "minItems": 1,
-                "maxItems": 3,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "folder",
-                    "zip",
-                    "file"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "accepts"
-            ],
-            "additionalProperties": false
-          },
-          "capabilities": {
-            "maxItems": 8,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "lipsync",
-                "expressions",
-                "motions",
-                "outfits",
-                "lookat",
-                "pace"
-              ]
-            }
-          },
-          "portrait": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "format": "path",
-            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
-          }
-        },
-        "required": [
-          "id",
-          "format",
-          "name",
-          "entry",
-          "files"
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "avatar.packs",
-      "shape": "list",
-      "declaredBy": "clover/character",
-      "kind": "data",
-      "doc": "Avatar files with their format and portrait, so an avatar pack is a data plugin (§5.5).",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[a-z0-9]([a-z0-9._-]{0,126}[a-z0-9])?$"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "en": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "en"
-                ],
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            ]
-          },
-          "file": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "format": "path",
-            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
-          },
-          "format": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32,
-            "pattern": "^[a-z0-9-]+$"
-          },
-          "portrait": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "format": "path",
-            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
-          },
-          "license": {
-            "type": "string",
-            "maxLength": 200
-          }
-        },
-        "required": [
-          "id",
-          "file",
-          "format"
         ],
         "additionalProperties": false
       }
@@ -832,14 +725,14 @@
       }
     },
     {
-      "name": "bot.tab",
-      "shape": "keyed",
+      "name": "app.background",
+      "shape": "list",
       "declaredBy": "app",
-      "botsOffer": true,
+      "botsOffer": false,
       "context": [
-        "bot"
+        "os"
       ],
-      "doc": "Each bot's tab, keyed by bot; an entry with no key fills every bot without one of its own, except in a bot's own plugin, where a keyless entry takes that bot's id as its key.",
+      "doc": "A part with no place in the window: it runs in a hidden window of its own while MOSS is open and the plugin runs, outlives the main window, is never slept or slowed, and may play sound when the plugin holds `audio`. At most two per plugin; in a plugin with a bot it needs \"app\": true.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -848,44 +741,59 @@
       "props": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "app.tray",
+      "shape": "list",
+      "declaredBy": "app",
+      "botsOffer": false,
+      "needs": [
+        "tray"
+      ],
+      "doc": "A line in the menu-bar (tray) menu, with the `tray` capability: `toggles` names one of the plugin's own `app.surface` entries (the line hides and shows it, and the choice is kept), or `command` names a command of the plugin's own that the line runs.",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
         "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
+          "title": {
+            "anyOf": [
+              {
                 "type": "string"
               },
-              "name": {
-                "anyOf": [
-                  {
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
                     "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
                   }
-                ]
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
-            },
-            "required": [
-              "id",
-              "name"
             ]
+          },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "path",
+            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
           }
         },
         "required": [
-          "bot"
+          "title"
         ]
+      },
+      "props": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
       }
     },
     {
@@ -906,111 +814,6 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {}
-      }
-    },
-    {
-      "name": "bar",
-      "shape": "single",
-      "declaredBy": "shell",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The top bar. A child plugin of a bot may fill it with `when.bot` (its own component, in its own frame, calling `shell.*`); with the bot's theme `bar.mode: \"none\"` there is no bar at all and the bot's own controls (`bot.controls`) sit in its page.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
-      "name": "sidebar.bot",
-      "shape": "keyed",
-      "declaredBy": "shell",
-      "botsOffer": false,
-      "context": [
-        "bot"
-      ],
-      "doc": "A bot's row in the sidebar, keyed by bot: its state and what waits for the user.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "selected": {
-            "type": "boolean"
-          },
-          "state": {
-            "type": "string"
-          },
-          "needsYou": {
-            "type": "object",
-            "properties": {
-              "cards": {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              "questions": {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              }
-            },
-            "required": [
-              "cards",
-              "questions"
-            ]
-          }
-        },
-        "required": [
-          "bot",
-          "selected",
-          "state",
-          "needsYou"
-        ]
       }
     },
     {
@@ -1075,13 +878,13 @@
       "declaredBy": "shell",
       "botsOffer": false,
       "keys": [
-        "bot",
         "agent",
         "settings",
         "plugins",
-        "app"
+        "app",
+        "start"
       ],
-      "doc": "The main area, keyed by route: bot, agent, settings, plugins, app.",
+      "doc": "The main area, keyed by route: agent, settings, plugins, app, and `start`, MOSS Code's start page (spec revision 20, §9.5): what the window opens on and what `shell.go({ page: \"start\" })` shows. A plugin's entry keyed `start` fills it; with none, the shell shows its own new-session page (the reusable `NewSession`, `layout=\"panel\"`). Each entry also gets `navigate`, as every `main` entry does.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1102,11 +905,88 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "barHeight": {
+            "type": "number"
           }
         },
         "required": [
           "route",
           "params"
+        ]
+      }
+    },
+    {
+      "name": "page.bar",
+      "shape": "keyed",
+      "declaredBy": "shell",
+      "botsOffer": false,
+      "keys": [
+        "agent",
+        "settings",
+        "plugins",
+        "app",
+        "start"
+      ],
+      "doc": "A page's own line and controls on the window's top bar (spec revision 20, §9.5), keyed by route as `main` is: shown only when the entry comes from the plugin whose `main` entry the window shows for that route, in place of the shell's title (the shell's own controls stay). `title` is the bar's and the page's accessible name. Each gets the route's params, `navigate` (as a `main` entry does) and `barHeight`, the bar's height in CSS pixels; a page whose plugin fills this runs up under the bar, and its `main` entry gets `barHeight` too, so it keeps what it places on its own clear of the bar.",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "path",
+            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
+          }
+        }
+      },
+      "props": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "barHeight": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "route",
+          "params",
+          "barHeight"
         ]
       }
     },
@@ -1284,92 +1164,6 @@
       }
     },
     {
-      "name": "bot.editor.section",
-      "shape": "list",
-      "declaredBy": "bot-editor",
-      "botsOffer": false,
-      "context": [
-        "bot"
-      ],
-      "doc": "A section of a bot's editor (the bot editor part, `main` key `bot-editor`, declares it): a plugin adds the fields of the part of the bot it owns, each entry drawing its own section for the bot it is given. The avatar's section is the character plugin's.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "en": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "en"
-                ],
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            ]
-          },
-          "icon": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "format": "path",
-            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
-          }
-        }
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
       "name": "status",
       "shape": "list",
       "declaredBy": "shell",
@@ -1416,676 +1210,12 @@
       }
     },
     {
-      "name": "bot.header",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The tab's header.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "bot.header.action",
-      "shape": "list",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "Buttons in the tab's header.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "en": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "en"
-                ],
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            ]
-          },
-          "icon": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "format": "path",
-            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
-          }
-        },
-        "required": [
-          "title"
-        ]
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "bot.stage",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The stage, where the avatar stands.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "bot.side",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The tab's side area.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "bot.controls",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The bot's own drawn controls (its name, buttons, a handle to drag the window), placed by its layout and drawn by its plugin in its own frame; what they do is `shell.*`, the user's own press.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.title",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The tab's title (the bot's name), drawn by the shell; it opens the tab's menu where it has one.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.action",
-      "shape": "keyed",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "keys": [
-        "edit",
-        "session",
-        "browser"
-      ],
-      "context": [
-        "bot"
-      ],
-      "doc": "One of the shell's buttons, keyed: `edit` (the bot's editor), `session` (the column beside the conversation), `browser` (the browser panel). Drawn by the shell; a press is the app's own.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.actions",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "Every button the layout does not place one by one: the buttons plugins add to the bar (`bot.header.action`), the editor, the panel toggles.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.sidebar",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "The sidebar's show/hide button, drawn by the shell. A layout with no bar that does not place it gets a small one from the shell: the user never loses the sidebar.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.drag",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "A region that drags the window (empty, as wide and tall as the node the layout gives it). A layout with no bar that places none gets a thin one from the shell.",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
-      "name": "chrome.panels",
-      "shape": "single",
-      "declaredBy": "bot-tab",
-      "botsOffer": true,
-      "context": [
-        "bot"
-      ],
-      "doc": "Where the panels the user opens show (the session column excepted), in the shape the layout's container gives them. Left out, they show where the bot's `panel.mode` says (the standard right column by default).",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          }
-        },
-        "required": [
-          "bot"
-        ]
-      }
-    },
-    {
       "name": "conversation",
       "shape": "single",
-      "declaredBy": "bot-tab",
+      "declaredBy": "session-tab",
       "botsOffer": true,
       "needs": [
-        "conversation.read"
+        "sessions.read"
       ],
       "context": [
         "bot"
@@ -2144,9 +1274,69 @@
       }
     },
     {
+      "name": "session.corner",
+      "shape": "list",
+      "declaredBy": "session-tab",
+      "botsOffer": false,
+      "context": [
+        "session"
+      ],
+      "doc": "Small controls in a session tab's top corner (spec revision 20, §9.5), beside the shell's own, in the spot's order: `title` is the tooltip, `icon` a picture in the plugin's folder. Each gets the tab's session and its kind, and `navigate` (as a `main` entry does) to show the start page or another session's tab; `when.session` says which kinds of tab show it.",
+      "fields": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "en"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "path",
+            "description": "A path relative to the plugin folder, with `/`; it must resolve inside it."
+          }
+        }
+      },
+      "props": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "kind"
+        ]
+      }
+    },
+    {
       "name": "composer",
       "shape": "single",
-      "declaredBy": "bot-tab",
+      "declaredBy": "session-tab",
       "botsOffer": true,
       "needs": [
         "conversation.post"
@@ -2154,7 +1344,7 @@
       "context": [
         "bot"
       ],
-      "doc": "The composer; a send counts as the user's only on a real key press or click (§5.5). Its entry also gets the host callbacks (`useComposerHost`): the models its session can switch to, a model switch, interrupt and stop; each acting one needs the user's own key press or click, and a model switch on a bot's main conversation is a sealed card unless it is the default composer's. The default composer also lists the running plugins' commands and runs one as the user (its slash menu); another plugin's entry doesn't get those. It alone also gets push-to-talk (`listenStatus`, `listenStart`, `listenStop`): while the user holds the button or key the app records (never the plugin), hands the audio to the bot's listening voice, and the words heard come back as text for the box.",
+      "doc": "The composer; a send counts as the user's only on a real key press or click (§5.5). Its entry also gets the host callbacks (`useComposerHost`): the models its session can switch to, a model switch, interrupt and stop; each acting one needs the user's own key press or click, and a model switch on a bot's main conversation is a sealed card unless it is the default composer's. The default composer also lists the running plugins' commands and runs one as the user (its slash menu); another plugin's entry doesn't get those.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -2208,84 +1398,6 @@
       }
     },
     {
-      "name": "avatar",
-      "shape": "keyed",
-      "declaredBy": "bot-stage",
-      "botsOffer": true,
-      "keys": [
-        "vrm",
-        "live2d"
-      ],
-      "context": [
-        "bot"
-      ],
-      "doc": "Draws the bot's avatar, keyed by the avatar file's format (`vrm`, `live2d`, or a plugin's own; `AVATAR_FORMATS`), and lip-syncs it from `speech` (a `SpeechFeed`).",
-      "fields": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {}
-      },
-      "props": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "bot": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "en": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "en"
-                    ],
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "file": {
-            "type": "string"
-          },
-          "format": {
-            "type": "string"
-          },
-          "speaking": {
-            "type": "boolean"
-          },
-          "speech": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": {}
-          }
-        },
-        "required": [
-          "bot",
-          "file",
-          "format",
-          "speaking"
-        ]
-      }
-    },
-    {
       "name": "composer.action",
       "shape": "keyed",
       "declaredBy": "composer",
@@ -2293,7 +1405,7 @@
       "context": [
         "bot"
       ],
-      "doc": "The composer's buttons, keyed by action id.",
+      "doc": "The composer's buttons, keyed by action id: an entry keyed `attach`, `model`, `level`, `send` or `stop` draws that button another way (or hides it); one with any other key adds a button of its own, drawn among the buttons plugins add, in the spot's order (`order`, then plugin and id).",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -2395,7 +1507,7 @@
         "approval"
       ],
       "needs": [
-        "conversation.read"
+        "sessions.read"
       ],
       "context": [
         "bot"
@@ -2488,12 +1600,12 @@
       "declaredBy": "conversation",
       "botsOffer": true,
       "needs": [
-        "conversation.read"
+        "sessions.read"
       ],
       "context": [
         "bot"
       ],
-      "doc": "Add-ons under each message, with a UI of their own. A plugin outside Clover's own tree draws in its own layer, so each one is a frame under every message: for a button, use `conversation.message.action`.",
+      "doc": "Add-ons under each message, with a UI of their own. A plugin outside MOSS's own tree draws in its own layer, so each one is a frame under every message: for a button, use `conversation.message.action`.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -2650,7 +1762,7 @@
       "declaredBy": "conversation",
       "botsOffer": true,
       "needs": [
-        "conversation.read"
+        "sessions.read"
       ],
       "context": [
         "bot"
@@ -2777,7 +1889,7 @@
       "context": [
         "surface"
       ],
-      "doc": "A tab of the island, such as Needs you, Devices or Usage. The island labels a third-party tab with its plugin's name, and only the `clover` tree's tabs raise the strip's attention.",
+      "doc": "A tab of the island, such as Needs you, Devices or Usage. The island labels a third-party tab with its plugin's name, and only the `moss` tree's tabs raise the strip's attention.",
       "fields": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -2987,8 +2099,8 @@
     {
       "name": "sidebar.tint",
       "type": "color",
-      "default": "#F5F5F5B3",
-      "dark": "#202020B3",
+      "default": "#F5F5F566",
+      "dark": "#20202059",
       "doc": "The sidebar over the window's material."
     },
     {
@@ -3001,8 +2113,8 @@
     {
       "name": "titlebar.tint",
       "type": "color",
-      "default": "#FFFFFFC7",
-      "dark": "#191919C7",
+      "default": "#F5F5F566",
+      "dark": "#20202059",
       "doc": "The title bar over what scrolls under it."
     },
     {
@@ -3177,7 +2289,7 @@
       "type": "color",
       "default": "#C2387A",
       "dark": "#FF7AB6",
-      "doc": "Clover's mark: the one place the brand pink shows, since the accent follows the OS."
+      "doc": "MOSS's mark: the one place the brand pink shows, since the accent follows the OS."
     },
     {
       "name": "color.scrim",
@@ -3516,7 +2628,7 @@
       "name": "radius.huge",
       "type": "dimension",
       "default": "24px",
-      "doc": "The largest corners: sheets, the stage."
+      "doc": "The largest corners: sheets."
     },
     {
       "name": "radius.round",
@@ -3841,74 +2953,6 @@
       "type": "color",
       "default": "#CCEDFF",
       "doc": "The working plume at the nozzle."
-    },
-    {
-      "name": "stage.background",
-      "type": "paint",
-      "default": "linear-gradient(180deg, #FFFFFF 0%, #F4F2F8 100%)",
-      "dark": "linear-gradient(180deg, #1D1D23 0%, #151519 100%)",
-      "doc": "The stage behind the avatar."
-    },
-    {
-      "name": "stage.floor",
-      "type": "color",
-      "default": "#1C1B221F",
-      "dark": "#0000008C",
-      "doc": "The soft pool of shadow under the avatar."
-    },
-    {
-      "name": "stage.glow",
-      "type": "color",
-      "default": "#2F6FDF1F",
-      "dark": "#4180E31F",
-      "doc": "The light behind the avatar."
-    },
-    {
-      "name": "stage.foreground",
-      "type": "paint",
-      "default": "#00000000",
-      "doc": "A paint over the avatar's lower edge (grass, mist), so a figure the stage crops reads as standing behind it."
-    },
-    {
-      "name": "stage.foreground.height",
-      "type": "dimension",
-      "default": "0px",
-      "doc": "How far up the stage that paint reaches."
-    },
-    {
-      "name": "stage.text",
-      "type": "color",
-      "default": "#676674",
-      "dark": "#9B9AA8",
-      "doc": "Credits and notes on the stage."
-    },
-    {
-      "name": "avatar.light.key",
-      "type": "color",
-      "default": "#FFFFFF",
-      "dark": "#F2EEFF",
-      "doc": "The avatar's key light."
-    },
-    {
-      "name": "avatar.light.fill",
-      "type": "color",
-      "default": "#F2F6FF",
-      "dark": "#C9D8F2",
-      "doc": "The avatar's fill light."
-    },
-    {
-      "name": "avatar.light.rim",
-      "type": "color",
-      "default": "#FFFFFF",
-      "dark": "#DCE6F7",
-      "doc": "The avatar's rim light."
-    },
-    {
-      "name": "avatar.exposure",
-      "type": "number",
-      "default": 1,
-      "dark": 0.95,
-      "doc": "The avatar's exposure: 1 is neutral."
     }
   ],
   "apiCalls": {
@@ -3930,6 +2974,18 @@
     "points.call": {
       "where": "both"
     },
+    "points.active": {
+      "where": "both"
+    },
+    "points.onActive": {
+      "where": "both"
+    },
+    "points.send": {
+      "where": "both"
+    },
+    "points.onMessage": {
+      "where": "both"
+    },
     "commands.run": {
       "capability": "call:*",
       "where": "both"
@@ -3942,6 +2998,9 @@
     },
     "host.on": {
       "where": "ui"
+    },
+    "outside.run": {
+      "where": "host"
     },
     "ui.send": {
       "where": "host"
@@ -3969,13 +3028,13 @@
       "where": "own"
     },
     "keys.publicKey": {
-      "where": "clover"
+      "where": "moss"
     },
     "keys.open": {
-      "where": "clover"
+      "where": "moss"
     },
     "keys.delete": {
-      "where": "clover"
+      "where": "moss"
     },
     "settings.get": {
       "where": "both"
@@ -4077,7 +3136,7 @@
       "capability": "computers.control",
       "where": "host"
     },
-    "computers.cloverWindows": {
+    "computers.mossWindows": {
       "capability": "computers.control",
       "where": "host"
     },
@@ -4312,66 +3371,101 @@
       "where": "both"
     },
     "desktop.show": {
-      "where": "clover"
+      "where": "moss"
     },
     "desktop.close": {
-      "where": "clover"
+      "where": "moss"
     },
-    "avatar.cue": {
-      "capability": "avatar.control",
+    "turns.take": {
       "where": "both"
     },
-    "avatar.catalogue": {
-      "capability": "avatar.read",
+    "turns.done": {
       "where": "both"
     },
-    "avatar.box": {
-      "capability": "avatar.read",
+    "turns.extend": {
       "where": "both"
     },
-    "avatar.watch": {
-      "capability": "avatar.read",
+    "turns.state": {
       "where": "both"
     },
-    "avatar.report": {
-      "capability": "avatar.report",
-      "where": "ui"
-    },
-    "audio.play": {
-      "capability": "audio",
+    "turns.watch": {
       "where": "both"
     },
-    "audio.onRecording": {
-      "capability": "audio",
+    "points.stream": {
       "where": "both"
     },
-    "speech.piece": {
-      "where": "host"
-    },
-    "speech.play": {
-      "where": "host"
-    },
-    "speech.stop": {
-      "where": "host"
-    },
-    "speech.modes": {
+    "streams.open": {
       "where": "both"
     },
-    "voices.providers": {
-      "capability": "voices.use",
+    "streams.accept": {
       "where": "both"
     },
-    "voices.speak": {
-      "capability": "voices.use",
-      "where": "host"
+    "streams.write": {
+      "where": "both"
     },
-    "voices.listen": {
-      "capability": "voices.use",
-      "where": "host"
+    "streams.end": {
+      "where": "both"
     },
-    "voices.feed": {
-      "capability": "voices.use",
+    "streams.cancel": {
+      "where": "both"
+    },
+    "streams.ack": {
+      "where": "both"
+    },
+    "sessions.list": {
+      "capability": "sessions.read",
+      "where": "both"
+    },
+    "sessions.get": {
+      "capability": "sessions.read",
+      "where": "both"
+    },
+    "sessions.watch": {
+      "capability": "sessions.read",
+      "where": "both"
+    },
+    "sessions.history": {
+      "capability": "sessions.read",
+      "where": "both"
+    },
+    "sessions.follow": {
+      "capability": "sessions.read",
+      "where": "both"
+    },
+    "activity.list": {
+      "capability": "activity.read.*",
+      "where": "both"
+    },
+    "activity.watch": {
+      "capability": "activity.read.*",
+      "where": "both"
+    },
+    "pictures.list": {
+      "capability": "picture.read.*",
+      "where": "both"
+    },
+    "pictures.watch": {
+      "capability": "picture.read.*",
+      "where": "both"
+    },
+    "pictures.open": {
+      "capability": "picture.read.*",
+      "where": "both"
+    },
+    "pictures.publish": {
       "where": "host"
     }
-  }
+  },
+  "deviceTurns": [
+    {
+      "name": "device/speech",
+      "capability": "audio",
+      "doc": "One voice at a time on this device: a plugin takes it before its sound starts and says done when the sound has ended."
+    },
+    {
+      "name": "device/microphone",
+      "capability": "microphone",
+      "doc": "One recording at a time on this device: a plugin takes it before it opens the microphone and says done when it has closed it."
+    }
+  ]
 }

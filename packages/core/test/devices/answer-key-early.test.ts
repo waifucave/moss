@@ -8,7 +8,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLOVER_PROTOCOL_VERSION, ConnWriter, encodeLine, ERR, LineDecoder, METHODS, type Caller, type WritableSocket } from "@waifucave/clover-protocol";
+import { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, ERR, LineDecoder, METHODS, type Caller, type WritableSocket } from "@waifucave/moss-protocol";
 import { FileSecretStore } from "../../src/auth/secret-store";
 import { startDaemon, type RunningDaemon } from "../../src/daemon";
 import { answerKeyMethods, MethodError } from "../../src/devices/rpc";
@@ -74,7 +74,7 @@ async function connect(path: string) {
 
 describe.skipIf(process.platform === "win32")("a real daemon whose links are still starting", () => {
   test("device.answerKey.set takes the app's key while the links wait on their wire; device.list isn't served yet", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-akearly-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-akearly-"));
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     daemon = await startDaemon({
@@ -85,12 +85,12 @@ describe.skipIf(process.platform === "win32")("a real daemon whose links are sti
         // The wire (the sidecar, on a real start) holds the links back: the registry is already open.
         wire: async (key) => { await held; return new MemoryNetwork().endpoint(key.publicKey); },
       },
-      parts: { userHome: mkdtempSync(join(tmpdir(), "clover-akearly-user-")) },
+      parts: { userHome: mkdtempSync(join(tmpdir(), "moss-akearly-user-")) },
     });
     const c = await connect(daemon.socketPath);
     try {
       const token = readFileSync(join(home, "run", "app.token"), "utf8").trim();
-      const hello = await c.request(METHODS.hello, { protocolVersion: CLOVER_PROTOCOL_VERSION, role: "app", token, clientName: "early", features: [] });
+      const hello = await c.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "app", token, clientName: "early", features: [] });
       const device = (hello.result as { device: string }).device;
       expect(typeof device).toBe("string");
       const k = keyFor(device);

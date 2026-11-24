@@ -4,7 +4,7 @@
 // A plugin's sign-ins are its `auth` entries, numbered in one list: each `models` entry's, in order, then the
 // manifest's own `auth` (the welcome guide numbers the models' the same way). Where each one's key or token lives:
 //
-// * a bundled model plugin (`clover/model-<provider>`): its provider's keychain slot (`modelPluginSlotFor`), the one
+// * a bundled model plugin (`moss/model-<provider>`): its provider's keychain slot (`modelPluginSlotFor`), the one
 //   the model plugins read (`keychain-tokens.ts`) and the providers' older doors wrote, so a key stored before the
 //   plugins existed shows as signed in;
 // * any other plugin: its own item in the secret store, `{ owner: plugin, name: <the entry's secret> }`, the one
@@ -18,14 +18,14 @@
 //   finishes on the redirect in the background; `plugin_auth_changed` says how it ended. A bundled plugin's tokens
 //   land in its slot as an OAuth record (Codex's refresher renews them); another plugin's access token is its secret.
 // * `custom`: the plugin's handler is asked which flow to run; today a handler can only name a core flow
-//   (`{ flow: "core", id }`, `clover/model-xai-oauth`'s), which runs as `core` below.
+//   (`{ flow: "core", id }`, `moss/model-xai-oauth`'s), which runs as `core` below.
 // * `core`: the core's own flows. `xai-device` (xAI's device grant, `startXaiLogin`) answers with the verification URL
 //   and lands its token in the slot; the Console flows are refused here (their own doors, `provider.login`).
 //
 // One sign-in per entry runs at a time (`busy`). Signing out deletes the entry's secret (for Codex, every name its
 // older doors used).
 import type { CardOpener } from "../devices/rpc";
-import { PLUGINS_METHODS, type PluginAuthView } from "@waifucave/clover-protocol";
+import { PLUGINS_METHODS, type PluginAuthView } from "@waifucave/moss-protocol";
 import { startXaiLogin, type CredentialStore } from "@waifucave/clover-provider-runtime";
 import { clearCredentialMaterial, readCredentialMaterial, writeCredentialMaterial } from "../auth/credential-material";
 import type { SecretStore as DaemonSecretStore } from "../auth/secret-store";
@@ -41,6 +41,7 @@ import { handler, requireUser, type MethodHandler } from "../rpc/handler";
 import { credentialValueRefusal, removeCredential } from "./credentials";
 import { bundledModelProviderOf, modelPluginSlotFor } from "./model-plugins/keychain-tokens";
 import { installedModelPlugins } from "./model-plugins";
+import { MOSS_CREDENTIAL_INVENTORY } from "./keychain";
 import { onCardYes, type CardYesOutput } from "../plugin-host/card-yes";
 import type { OAuthRenewal } from "./model-plugins/oauth-renewal";
 
@@ -57,11 +58,15 @@ interface NumberedEntry {
   entry: AuthEntry;
   /** The `models` entry's provider, for an entry of one. */
   provider?: string;
+  /** A cloud computer provider's own sign-in (`computerProviders`): it covers no model provider, so it is never a model
+   *  sign-in (it must not make a plugin that ships both look signed in, or keyless, for its models). */
+  computer?: true;
 }
 
 /** The providers a key covers: its `models` entry's own, or, for one of the manifest's own sign-ins, every provider the
  *  plugin's `models` entries name. */
 function coveredBy(record: Pick<PluginRecord, "manifest">, n: NumberedEntry): string[] {
+  if (n.computer) return [];
   if (n.provider !== undefined) return [n.provider];
   const models = (record.manifest as { contributes?: { models?: { provider?: unknown }[] } } | undefined)?.contributes?.models ?? [];
   return [...new Set(models.map((m) => m.provider).filter((p): p is string => typeof p === "string" && p !== ""))];
@@ -74,14 +79,16 @@ function errorClass(err: unknown): string {
   return /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : "Error";
 }
 
-/** A plugin's sign-ins, numbered: each `models` entry's `auth`, then the manifest's own (32 at most). */
+/** A plugin's sign-ins, numbered: each `models` entry's `auth`, then the manifest's own, then each cloud computer
+ *  provider's (`computerProviders`, spec §9.2; last so the numbers of the others stay) (32 at most). */
 export function authEntriesOf(record: Pick<PluginRecord, "manifest">): NumberedEntry[] {
-  const manifest = record.manifest as { contributes?: { models?: { provider?: string; auth?: AuthEntry[] }[] }; auth?: AuthEntry[] } | undefined;
+  const manifest = record.manifest as { contributes?: { models?: { provider?: string; auth?: AuthEntry[] }[]; computerProviders?: { auth?: AuthEntry[] }[] }; auth?: AuthEntry[] } | undefined;
   const out: NumberedEntry[] = [];
   for (const m of manifest?.contributes?.models ?? []) {
     for (const entry of m.auth ?? []) out.push({ index: out.length, entry, ...(m.provider !== undefined ? { provider: m.provider } : {}) });
   }
   for (const entry of manifest?.auth ?? []) out.push({ index: out.length, entry });
+  for (const p of manifest?.contributes?.computerProviders ?? []) for (const entry of p.auth ?? []) out.push({ index: out.length, entry, computer: true });
   return out.slice(0, 32);
 }
 
@@ -105,6 +112,8 @@ export interface PluginAuthDeps {
   changed?(id: string, auth: PluginAuthView): Promise<void> | void;
   /** After a provider slot's key changed (a bundled plugin's): what the daemon refreshes. */
   credentialChanged?(provider: string): Promise<void> | void;
+  /** After the person signed out (an explicit removal): the providers the sign-in covered. */
+  signedOut?(providers: readonly string[]): Promise<void> | void;
   /** The model plugins' providers and the plugin serving each (the installed model plugins by default). */
   modelProviders?(): Iterable<{ provider: string; pluginId: string }>;
   /** Test seams: the OAuth flow (production: `runLoginFlow` on Codex's loopback port), xAI's device grant, the clock. */
@@ -162,6 +171,11 @@ export interface PluginAuth {
    *  sign-in at all (a local model): what `models.list`'s `signedIn` adds to the providers' keychain slots. A bundled
    *  plugin's provider is its slot's, so it is never here. */
   signedInProviders(): Promise<Set<string>>;
+  /** The bundled model plugins' providers that take no key at all (a local model server: no sign-in of its own and no
+   *  credential slot). Usable with nothing stored, so a default model on one is had; never an "added" provider. */
+  keylessProviders(): Set<string>;
+  /** Whether the model plugins have started, so `signedInProviders` and `keylessProviders` answer for all of them. */
+  modelPluginsReady(): boolean;
   signIn(id: string, index: number, key?: string): Promise<{ state: PluginAuthView["state"]; authorizeUrl?: string }>;
   signOut(id: string, index: number): Promise<void>;
   /** Tells the app and the CLI each of a plugin's sign-ins as it stands now (a renewal signed it out). */
@@ -265,12 +279,28 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         if (r === undefined || bundledModelProviderOf(r) !== undefined) continue;
         // A `models` entry's own sign-ins, and the manifest's own (which cover every provider the plugin serves). A
         // provider with none of either takes no key (a local model).
-        const own = authEntriesOf(r).filter((n) => n.provider === provider || n.provider === undefined);
+        const own = authEntriesOf(r).filter((n) => !n.computer && (n.provider === provider || n.provider === undefined));
         if (own.length === 0) { out.add(provider); continue; }
         const views = await Promise.all(own.map((n) => view(pluginId, n, undefined)));
         if (views.some((v) => v.state === "signed-in")) out.add(provider);
       }
       return out;
+    },
+
+    keylessProviders() {
+      const out = new Set<string>();
+      for (const { provider, pluginId } of servedProviders()) {
+        const r = deps.registry.get(pluginId);
+        if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
+        if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
+        if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
+        out.add(provider);
+      }
+      return out;
+    },
+
+    modelPluginsReady() {
+      return deps.modelProviders !== undefined || installedModelPlugins()?.snapshot !== undefined;
     },
 
     async list(id) {
@@ -355,6 +385,7 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
       }
       // The live sessions on what the key covered are replaced: none goes on with a key the user took back.
       await afterKeyChange(covers);
+      try { await deps.signedOut?.(covers); } catch (err) { deps.log?.(`[plugin-auth] after a sign-out (${errorClass(err)})`); }
       await announce(id, index);
     },
   };

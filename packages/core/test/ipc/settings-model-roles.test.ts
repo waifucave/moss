@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, ConnWriter, type WritableSocket } from "@waifucave/clover-protocol";
+import { LineDecoder, encodeLine, METHODS, PROTOCOL_VERSION, ConnWriter, type WritableSocket } from "@waifucave/moss-protocol";
 import { startIpcServer, REMOTE_ALLOWED_METHODS } from "../../src/ipc/server";
 import { SessionStore } from "../../src/sessions/store";
 import { FileSecretStore } from "../../src/auth/secret-store";
@@ -67,7 +67,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
    *  internal-jobs router over — the 2026-09-19 shape a production daemon always has. Omitted keeps the
    *  bare pre-2026-09-19 server (no router), which is what every older test in this file asserts. */
   async function boot(providerModel = "codex-oauth/gpt-5.6-sol", opts: { roleHealth?: RoleHealthRegistry; internalCredentials?: string[] } = {}) {
-    const home = mkdtempSync(join(tmpdir(), "clover-model-roles-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-model-roles-"));
     const settingsPath = join(home, "settings.json");
     saveSettings(settingsPath, Settings.parse({ schemaVersion: 3, provider: { model: providerModel } }));
     const store = new SessionStore(home);
@@ -82,7 +82,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
       await view.refresh();
       internalRouter = createInternalRouter({ view, secrets });
     }
-    const server = startIpcServer({ socketPath, serverVersion: "test", tokens: authority, store, cloverHome: home, secrets, roleHealth: opts.roleHealth, ...(internalRouter ? { internalRouter } : {}) });
+    const server = startIpcServer({ socketPath, serverVersion: "test", tokens: authority, store, mossHome: home, secrets, roleHealth: opts.roleHealth, ...(internalRouter ? { internalRouter } : {}) });
     stop = () => { server.stop(); store.close(); };
     return { home, settingsPath, socketPath, harnessToken: tokens.harness };
   }
@@ -122,12 +122,21 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
-    for (const role of ["provider.model", "titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
+    const session = res.result.roles["provider.model"];
+    expect(session.model).toBe("deepseek/deepseek-reasoner");
+    expect(session.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
+    expect(session.problem.detail).toContain("not in this build's model catalog");
+    // 2026-11-22: the internal roles used to sit on the retired tag itself (the default rule); a default in no family has no
+    // light model, so they run nothing and say to pin one.
+    for (const role of ["titles.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      expect(info.model).toBe("deepseek/deepseek-reasoner");
-      expect(info.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
-      expect(info.problem.detail).toContain("not in this build's model catalog");
+      expect(info.model).toBeNull();
+      expect(info.problem?.reason).toBe("no-default-model");
     }
+    // The reviewer, a safety gate, keeps its old claim: it sits on the default model itself and says it is not in the catalog.
+    const reviewer = res.result.roles["reviewer.model"];
+    expect(reviewer.model).toBe("deepseek/deepseek-reasoner");
+    expect(reviewer.problem).toMatchObject({ reason: "model-not-in-catalog", model: "deepseek/deepseek-reasoner" });
     // …and the note clears the moment the user picks a live model (derived, never persisted).
     const fixed = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "deepseek/deepseek-v4-pro" });
     expect(fixed.error).toBeUndefined();
@@ -300,7 +309,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   //    `aws` material — or the reserved `cc` row) is refused AT THE WRITE, because no future
   //    credential makes it runnable and storing it would only produce a role that silently never runs;
   //  - `anthropic` rejoined the admittable set in WS-23 (its API key is an ordinary token-priced
-  //    credential now that every model runs on the Clover SDK), and `console` with the live-gate fix
+  //    credential now that every model runs on the MOSS SDK), and `console` with the live-gate fix
   //    (its bearer slot is an inventory row the Anthropic adapter is driven over), so both are accepted;
   //  - an ELIGIBLE provider with no credential yet is accepted and LISTED as permitted — the old test's
   //    own rationale ("a provider the user is about to bind") applies to exactly that case.
@@ -345,15 +354,17 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   // 2026-09-19: the DERIVED role problems. These are recomputed from the live view on every read
   // (never written to role-health.json), so they clear themselves the moment the condition clears.
   // -------------------------------------------------------------------------------------------
-  test("a DeepSeek default with a Codex credential: the internal roles have a real model, a picker and NO problem", async () => {
+  // 2026-11-22: was "the internal roles have a real model, a picker and NO problem" (they sat on codex-oauth's rows): MOSS's
+  // jobs never run on a provider other than the default's, so with DeepSeek holding no key they do not run.
+  test("a DeepSeek default with a Codex credential: the internal roles run nothing on Codex, say to pin one, and keep their picker", async () => {
     const { socketPath, harnessToken } = await boot("deepseek/deepseek-flash", { internalCredentials: ["codex-oauth:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
     for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      expect(info.problem).toBeNull();
-      expect(info.model).toBe("codex-oauth/gpt-5.6-terra");
+      expect(info.problem?.reason).toBe("no-default-model");
+      expect(info.model).toBeNull();
       expect(info.permitted.length).toBeGreaterThan(1);
       const ids = info.permitted.map((p: any) => p.providerId);
       expect(ids).toContain("codex-oauth");
@@ -386,7 +397,8 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const res = await c.request(METHODS.settingsModelRoles, {});
     for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      expect(info.model).toBe("anthropic/claude-sonnet-5");
+      // 2026-11-22: all four sit on Claude's light model (the reviewer was on the user's own, claude-sonnet-5).
+      expect(info.model).toBe("anthropic/claude-haiku-5-5");
       expect(info.problem).toBeNull();
     }
     c.close();
@@ -437,7 +449,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const res = await c.request(METHODS.settingsModelRoles, {});
     const info = res.result.roles["titles.model"];
     expect(info.problem?.reason).toBe("provider-unsupported");
-    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for Clover's own jobs yet");
+    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for MOSS's own jobs yet");
     // The role's own model is still reported verbatim so the user can SEE and clear it.
     expect(info.model).toBe("bedrock/anthropic.claude-sonnet-4-5");
     c.close();
@@ -474,26 +486,32 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     c.close();
   });
 
-  test("M-3: a credentialed third-party provider with no family slot reports no-default-model, not a guess", async () => {
-    // `groq` is eligible and credentialed, declares no terra slot, and is not the session default's
-    // provider — the exact shape the retired "first non-blocked llm row" rung used to answer with
-    // `groq/llama-3.3-70b-versatile`, a model the user never chose.
+  test("M-3: a credentialed third-party provider with no light model of the default's family reports no-default-model, not a guess", async () => {
+    // `groq` is eligible and credentialed. 2026-11-22: with groq AS the session default the family of its model
+    // (llama) has no light model there, so the roles do not sit on the user's main model any more (was: they did).
     const { socketPath, harnessToken } = await boot("groq/llama-3.3-70b-versatile", { internalCredentials: ["groq:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
-    // With groq AS the session default it IS the user's own choice, so the role sits on it.
-    expect((await c.request(METHODS.settingsModelRoles, {})).result.roles["titles.model"].model).toBe("groq/llama-3.3-70b-versatile");
-    // Move the session default to a Claude row: groq is still the only credential, but Clover will no
-    // longer name a model on it, and codex-oauth/openai (which do have slots) have no key.
+    const first = (await c.request(METHODS.settingsModelRoles, {})).result.roles;
+    expect(first["titles.model"].model).toBeNull();
+    // The reviewer, a safety gate, runs on the default model itself (claim restored: it never goes unreviewed while its own provider is credentialed).
+    expect(first["reviewer.model"].model).toBe("groq/llama-3.3-70b-versatile");
+    expect(first["reviewer.model"].problem).toBeNull();
+    // Move the session default to a Claude row: groq is still the only credential, but it is not the default's
+    // provider, so no job runs on it (was: a light job took groq's gpt-oss-20b).
     const moved = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "anthropic/claude-opus-5" });
     expect(moved.error).toBeUndefined();
-    const info = moved.result.roles["titles.model"];
-    expect(info.model).toBeNull();
-    // `no-default-model`, NOT `no-internal-credential`: a credential exists, so "add a key" would be
-    // both wrong and unactionable. The fix is a pin, and the detail names the provider.
-    expect(info.problem?.reason).toBe("no-default-model");
-    expect(info.problem?.detail).toBe("pick a model for this job in Settings › Roles — Clover won't choose one on Groq for you");
-    expect(info.problem?.model).toBe("");
+    for (const role of ["titles.model", "reviewer.model"]) {
+      const info = moved.result.roles[role];
+      expect(info.model).toBeNull();
+      // `no-default-model`, NOT `no-internal-credential`: a credential exists, so "add a key" would be
+      // both wrong and unactionable. The fix is a pin, and the detail names the provider.
+      expect(info.problem?.reason).toBe("no-default-model");
+      expect(info.problem?.detail).toBe(role === "reviewer.model"
+        ? "the default model's provider can't be used for the review (Groq is signed in): pick a model for the reviewer in Settings › Roles"
+        : "no light model of your default model's family can be had (Groq is signed in): pick a model for this job in Settings › Roles");
+      expect(info.problem?.model).toBe("");
+    }
     // A pin on a provider that DOES have a slot clears it immediately.
     const pinned = await c.request(METHODS.settingsSetModelRole, { role: "titles.model", model: "groq/llama-3.3-70b-versatile" });
     expect(pinned.error).toBeUndefined();
@@ -502,17 +520,14 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     c.close();
   });
 
-  test("M-3: no-default-model when a slot-less provider IS the preferred one", async () => {
-    // Forced by pinning `provider.model` to a provider that is eligible+credentialed but declares no
-    // family slot AND is not itself nameable — reached through `pins.research`-style cross wiring is not
-    // possible here, so this exercises the reader directly alongside the RPC's own shape.
+  test("M-3: a slot-less provider that IS the default's still gets no job on the default model", async () => {
     const { socketPath, harnessToken } = await boot("groq/llama-3.3-70b-versatile", { internalCredentials: ["groq:default"] });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     const res = await c.request(METHODS.settingsModelRoles, {});
-    // The zero-setup case still works — the point is only that nothing was GUESSED.
-    expect(res.result.roles["pins.dream"].model).toBe("groq/llama-3.3-70b-versatile");
-    expect(res.result.roles["pins.dream"].problem).toBeNull();
+    // 2026-11-22: was the user's own model, `groq/llama-3.3-70b-versatile`, with no problem.
+    expect(res.result.roles["pins.dream"].model).toBeNull();
+    expect(res.result.roles["pins.dream"].problem?.reason).toBe("no-default-model");
     c.close();
   });
 
@@ -540,7 +555,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     // The role's own model is the pin, reported verbatim so the user can see and change it.
     expect(info.model).toBe("deepseek/deepseek-flash");
     expect(info.problem?.reason).toBe("no-credential");
-    expect(info.problem?.detail).toBe("no credential is stored for DeepSeek — reviewing on codex-oauth/gpt-5.6-terra meanwhile");
+    expect(info.problem?.detail).toBe("no credential is stored for DeepSeek — reviewing on codex-oauth/gpt-6-luna meanwhile");
     expect(info.problem?.model).toBe("deepseek/deepseek-flash");
     c.close();
   });
@@ -553,7 +568,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     await c.hello(harnessToken, "cli");
     const info = (await c.request(METHODS.settingsModelRoles, {})).result.roles["reviewer.model"];
     expect(info.problem?.reason).toBe("provider-unsupported");
-    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for Clover's own jobs yet — reviewing on codex-oauth/gpt-5.6-terra meanwhile");
+    expect(info.problem?.detail).toBe("AWS Bedrock can't be used for MOSS's own jobs yet — reviewing on codex-oauth/gpt-6-luna meanwhile");
     c.close();
   });
 
@@ -625,7 +640,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   // that stuck state: settings.provider.model already names `openai`, but the daemon is still
   // (only) bound to `codex-oauth`.
   test("settings.modelRoles: permitted for an internal-provider role reflects the BOUND backend, not settings alone (a stuck rebind)", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-model-roles-stuck-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-model-roles-stuck-"));
     const settingsPath = join(home, "settings.json");
     saveSettings(settingsPath, Settings.parse({ schemaVersion: 3, provider: { model: "openai/gpt-5.6-sol" } }));
     const store = new SessionStore(home);
@@ -634,7 +649,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const authority = new TokenAuthority(secrets);
     const tokens = await authority.ensureTokens();
     const server = startIpcServer({
-      socketPath, serverVersion: "test", tokens: authority, store, cloverHome: home, secrets,
+      socketPath, serverVersion: "test", tokens: authority, store, mossHome: home, secrets,
       boundProviderId: () => "codex-oauth", // the daemon's ACTUAL bound backend — the stuck rebind
     });
     stop = () => { server.stop(); store.close(); };
@@ -657,7 +672,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   });
 
   test("settings.setModelRole echoes the same bound-provider permitted set on its post-write cascade", async () => {
-    const home = mkdtempSync(join(tmpdir(), "clover-model-roles-stuck-write-"));
+    const home = mkdtempSync(join(tmpdir(), "moss-model-roles-stuck-write-"));
     const settingsPath = join(home, "settings.json");
     saveSettings(settingsPath, Settings.parse({ schemaVersion: 3, provider: { model: "openai/gpt-5.6-sol" } }));
     const store = new SessionStore(home);
@@ -666,7 +681,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const authority = new TokenAuthority(secrets);
     const tokens = await authority.ensureTokens();
     const server = startIpcServer({
-      socketPath, serverVersion: "test", tokens: authority, store, cloverHome: home, secrets,
+      socketPath, serverVersion: "test", tokens: authority, store, mossHome: home, secrets,
       boundProviderId: () => "codex-oauth",
     });
     stop = () => { server.stop(); store.close(); };
@@ -710,9 +725,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
 
-    const set = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-5.6-terra", effort: "high" });
+    const set = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-6.1-terra", effort: "high" });
     expect(set.error).toBeUndefined();
-    expect(set.result.roles["pins.dispatch"]).toMatchObject({ model: "codex-oauth/gpt-5.6-terra", effort: "high", effortExplicit: true });
+    expect(set.result.roles["pins.dispatch"]).toMatchObject({ model: "codex-oauth/gpt-6.1-terra", effort: "high", effortExplicit: true });
     // The wire's `role` IS the settings key — that is the whole point of the block's shape.
     let written = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(written.roleEfforts).toEqual({ "pins.dispatch": "high" });
@@ -722,7 +737,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     expect(read.result.roles["pins.dispatch"]).toMatchObject({ effort: "high", effortExplicit: true });
     expect(read.result.roles["pins.dispatch"].efforts).toContain("high");
 
-    const cleared = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-5.6-terra", effort: null });
+    const cleared = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-6.1-terra", effort: null });
     expect(cleared.error).toBeUndefined();
     expect(cleared.result.roles["pins.dispatch"]).toMatchObject({ effort: null, effortExplicit: false });
     written = JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -737,9 +752,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-5.6-luna", effort: "low" });
 
     // A model-only write on the SAME role — no `effort` key at all.
-    const modelOnly = await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-5.6-terra" });
+    const modelOnly = await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-6.1-terra" });
     expect(modelOnly.error).toBeUndefined();
-    expect(modelOnly.result.roles["pins.dream"]).toMatchObject({ model: "codex-oauth/gpt-5.6-terra", effort: "low", effortExplicit: true });
+    expect(modelOnly.result.roles["pins.dream"]).toMatchObject({ model: "codex-oauth/gpt-6.1-terra", effort: "low", effortExplicit: true });
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(written.roleEfforts["pins.dream"]).toBe("low");
 
@@ -758,7 +773,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     expect(set.error).toBeUndefined();
     expect(set.result.roles["provider.model"]).toMatchObject({ effort: "xhigh", effortExplicit: true });
     let written = JSON.parse(readFileSync(settingsPath, "utf8"));
-    // The established home — what `clover model --effort` writes and what `sync.config`'s
+    // The established home — what `moss model --effort` writes and what `sync.config`'s
     // `defaultEffort` reads. Duplicating it into `roleEfforts` would be two places to disagree.
     expect(written.provider.reasoningEffort).toBe("xhigh");
     expect(written.roleEfforts).toBeUndefined();
@@ -792,12 +807,12 @@ describe("settings.modelRoles / settings.setModelRole", () => {
 
     // A level no role could STORE (outside `REASONING_EFFORTS`) refuses at the door too, rather than
     // throwing out of `saveSettings`' own validation pass.
-    const unstorable = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-5.6-terra", effort: "minimal" });
+    const unstorable = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-6.1-terra", effort: "minimal" });
     expect(unstorable.error.code).toBe(-32602);
     expect(unstorable.error.message).toContain("is not a reasoning effort this daemon can store");
 
     // "none" IS accepted on a row with a vocabulary, even though the catalog never lists it.
-    const none = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-5.6-terra", effort: "none" });
+    const none = await c.request(METHODS.settingsSetModelRole, { role: "pins.dispatch", model: "codex-oauth/gpt-6.1-terra", effort: "none" });
     expect(none.error).toBeUndefined();
     expect(none.result.roles["pins.dispatch"].effort).toBe("none");
     c.close();
@@ -821,20 +836,20 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     c.close();
   });
 
-  test("effort: a Clover-level tier is refused on every role (no role's model is a code session's own)", async () => {
+  test("effort: a MOSS-level tier is refused on every role (no role's model is a code session's own)", async () => {
     const { socketPath, harnessToken } = await boot("codex-oauth/gpt-5.6-sol");
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     for (const [role, model] of [
-      ["pins.dispatch", "codex-oauth/gpt-5.6-terra"],
+      ["pins.dispatch", "codex-oauth/gpt-6.1-terra"],
       ["provider.model", "codex-oauth/gpt-5.6-sol"],
       ["pins.dream", "codex-oauth/gpt-5.6-luna"],
-      ["runtimes.advisorModel", "codex-oauth/gpt-5.6-terra"],
+      ["runtimes.advisorModel", "codex-oauth/gpt-6.1-terra"],
     ] as const) {
       const refused = await c.request(METHODS.settingsSetModelRole, { role, model, effort: "ultra" });
       expect(refused.error).toBeDefined();
       expect(refused.error.code).toBe(-32602);
-      expect(refused.error.message).toContain("Clover-level tier");
+      expect(refused.error.message).toContain("MOSS-level tier");
     }
     c.close();
   });
@@ -862,9 +877,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     expect(after.runtimes?.advisorModel).toBeUndefined();
 
     // …and the read side never offers a control for it, even once the role names a model WITH a vocabulary.
-    const set = await c.request(METHODS.settingsSetModelRole, { role: "runtimes.advisorModel", model: "codex-oauth/gpt-5.6-terra" });
+    const set = await c.request(METHODS.settingsSetModelRole, { role: "runtimes.advisorModel", model: "codex-oauth/gpt-6.1-terra" });
     expect(set.error).toBeUndefined();
-    expect(set.result.roles["runtimes.advisorModel"]).toMatchObject({ model: "codex-oauth/gpt-5.6-terra", effort: null, efforts: null });
+    expect(set.result.roles["runtimes.advisorModel"]).toMatchObject({ model: "codex-oauth/gpt-6.1-terra", effort: null, efforts: null });
     c.close();
   });
 
@@ -911,18 +926,18 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   });
 
   test("problem is populated on settings.modelRoles once a failure is recorded for that role's CURRENT effective model, and clears on success", async () => {
-    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "clover-model-roles-rh-")));
+    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "moss-model-roles-rh-")));
     const { socketPath, harnessToken } = await boot("codex-oauth/gpt-5.6-sol", { roleHealth });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
 
-    // pins.dream's default (unpinned) is codex-oauth/gpt-5.6-terra (pinsFor's own terra/luna rule —
+    // pins.dream's default (unpinned) is codex-oauth/gpt-6.1-terra (pinsFor's own terra/luna rule —
     // dream/cleaner/dispatch default to terra; only research/researchFallback default to luna).
-    roleHealth.recordFailure("pins.dream", "codex-oauth/gpt-5.6-terra", { reason: "usage-limit", detail: "the plan's usage window is exhausted", retryAt: "2026-09-19T00:00:00.000Z" });
+    roleHealth.recordFailure("pins.dream", "codex-oauth/gpt-6.1-terra", { reason: "usage-limit", detail: "the plan's usage window is exhausted", retryAt: "2026-09-19T00:00:00.000Z" });
     let result = await c.request(METHODS.settingsModelRoles, {});
     expect(result.result.roles["pins.dream"].problem).toEqual({
       reason: "usage-limit", detail: "the plan's usage window is exhausted",
-      model: "codex-oauth/gpt-5.6-terra", at: result.result.roles["pins.dream"].problem.at, retryAt: "2026-09-19T00:00:00.000Z",
+      model: "codex-oauth/gpt-6.1-terra", at: result.result.roles["pins.dream"].problem.at, retryAt: "2026-09-19T00:00:00.000Z",
     });
     // Every OTHER role is unaffected.
     expect(result.result.roles["pins.cleaner"].problem).toBeNull();
@@ -934,7 +949,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
   });
 
   test("problem also rides settings.setModelRole's post-write roles echo, and clears when the role moves OFF the failed model", async () => {
-    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "clover-model-roles-rh2-")));
+    const roleHealth = new RoleHealthRegistry(mkdtempSync(join(tmpdir(), "moss-model-roles-rh2-")));
     const { socketPath, harnessToken } = await boot("codex-oauth/gpt-5.6-sol", { roleHealth });
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
@@ -946,7 +961,7 @@ describe("settings.modelRoles / settings.setModelRole", () => {
 
     // Pin it to a DIFFERENT model — the note is about a model this role no longer runs, so it reads
     // as problem-free (without being deleted — role-health.test.ts covers that half directly).
-    set = await c.request(METHODS.settingsSetModelRole, { role: "pins.cleaner", model: "codex-oauth/gpt-5.6-terra" });
+    set = await c.request(METHODS.settingsSetModelRole, { role: "pins.cleaner", model: "codex-oauth/gpt-6.1-terra" });
     expect(set.result.roles["pins.cleaner"].problem).toBeNull();
     c.close();
   });
@@ -961,9 +976,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const c = await TestClient.connect(socketPath);
     await c.hello(harnessToken, "cli");
     await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-5.6-luna", effort: "low" });
-    const modelOnly = await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-5.6-terra" });
+    const modelOnly = await c.request(METHODS.settingsSetModelRole, { role: "pins.dream", model: "codex-oauth/gpt-6.1-terra" });
     expect(modelOnly.error).toBeUndefined();
-    expect(modelOnly.result.roles["pins.dream"]).toMatchObject({ model: "codex-oauth/gpt-5.6-terra", effort: "low" });
+    expect(modelOnly.result.roles["pins.dream"]).toMatchObject({ model: "codex-oauth/gpt-6.1-terra", effort: "low" });
     c.close();
   });
 
@@ -1060,18 +1075,18 @@ describe("settings.modelRoles / settings.setModelRole", () => {
       const { settingsPath, socketPath, harnessToken } = await boot("codex-oauth/gpt-5.6-sol");
       const c = await TestClient.connect(socketPath);
       await c.hello(harnessToken, "cli");
-      const pinned = await c.request(METHODS.settingsSetModelRole, { role, model: "codex-oauth/gpt-5.6-terra" });
+      const pinned = await c.request(METHODS.settingsSetModelRole, { role, model: "codex-oauth/gpt-6.1-terra" });
       expect(pinned.error).toBeUndefined();
-      expect(pinned.result.roles[role]).toMatchObject({ explicit: true, model: "codex-oauth/gpt-5.6-terra" });
+      expect(pinned.result.roles[role]).toMatchObject({ explicit: true, model: "codex-oauth/gpt-6.1-terra" });
 
       // Simulates a SECOND client pinning the role between this client's last read and its next
       // write — the effort-only write must not clobber it (model absent, not null).
       const effortOnly = await c.request(METHODS.settingsSetModelRole, { role, effort: "high" });
       expect(effortOnly.error).toBeUndefined();
-      expect(effortOnly.result.roles[role]).toMatchObject({ explicit: true, model: "codex-oauth/gpt-5.6-terra", effort: "high" });
+      expect(effortOnly.result.roles[role]).toMatchObject({ explicit: true, model: "codex-oauth/gpt-6.1-terra", effort: "high" });
       const block = role === "titles.model" ? "titles" : "reviewer";
       const written = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(written[block].model).toBe("codex-oauth/gpt-5.6-terra"); // the pin SURVIVED
+      expect(written[block].model).toBe("codex-oauth/gpt-6.1-terra"); // the pin SURVIVED
     });
   }
 

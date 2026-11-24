@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { keychainService, resolveCloverProfile } from "../profile";
+import { keychainService, resolveMossProfile } from "../profile";
 import { isolatedTestBackend, underTest } from "./test-isolation";
 
 export interface SecretStore {
@@ -10,7 +10,7 @@ export interface SecretStore {
    * WS-19 (W19-2): remove the item outright. `true` when something was actually removed, `false`
    * when there was nothing there — the exact shape `credential.remove`'s `removed` field reports.
    *
-   * Clover used to have no delete at all: `clearCredentialMaterial` wrote an EMPTY STRING and every
+   * MOSS used to have no delete at all: `clearCredentialMaterial` wrote an EMPTY STRING and every
    * reader treated a blank as absent (`readCredentialMaterial`'s own `if (!raw) return null`). That
    * blank-as-absent rule is NOT retired by this method — a home written by an older build still
    * holds blanked items, and they must keep reading as absent — but a *new* removal deletes rather
@@ -20,28 +20,28 @@ export interface SecretStore {
 }
 
 // DD branch review rider: resolved ONCE at module load (unlike `launchdLabel()`'s call-time
-// `resolveCloverProfile()` default param) — deliberate, but it means `CLOVER_PROFILE` must be set
-// in the environment BEFORE this module is first imported. Mutating `process.env.CLOVER_PROFILE`
+// `resolveMossProfile()` default param) — deliberate, but it means `MOSS_PROFILE` must be set
+// in the environment BEFORE this module is first imported. Mutating `process.env.MOSS_PROFILE`
 // afterward is inert; `SERVICE` will not re-resolve. This is why a launchd-installed dev daemon
-// MUST have `CLOVER_PROFILE` baked into its plist's `EnvironmentVariables` (see
+// MUST have `MOSS_PROFILE` baked into its plist's `EnvironmentVariables` (see
 // `packages/cli/src/launchd.ts` `renderPlist`) rather than relying on any later mutation.
 //
-// ISOLATION FIX (2026-10-09): the home an EXPLICIT `CLOVER_HOME` names is passed through, so a process run on a
-// custom home honours `CLOVER_KEYCHAIN_SERVICE` (`keychainService`'s own rule). Without it this store — the
+// ISOLATION FIX (2026-10-09): the home an EXPLICIT `MOSS_HOME` names is passed through, so a process run on a
+// custom home honours `MOSS_KEYCHAIN_SERVICE` (`keychainService`'s own rule). Without it this store — the
 // daemon's and the CLI's — always used the profile's REAL service: a hand-started daemon on a temp home probed
-// `com.waifucave.clover.core[.dev]` and raised one Keychain prompt per item another binary created. No `CLOVER_HOME`
+// `com.waifucave.moss.core[.dev]` and raised one Keychain prompt per item another binary created. No `MOSS_HOME`
 // still means "assert nothing" (the real service), exactly as before.
 //
 // LAZY (#243): resolved at the first store's construction, not at import, so nothing about the Keychain (its warning
 // for an overridden service included) runs before main.ts's startup checks have had their say.
 let defaultService: string | undefined;
 export function defaultSecretService(): string {
-  defaultService ??= keychainService(resolveCloverProfile(), explicitCloverHome());
+  defaultService ??= keychainService(resolveMossProfile(), explicitMossHome());
   return defaultService;
 }
 
-function explicitCloverHome(): string | undefined {
-  const home = process.env.CLOVER_HOME;
+function explicitMossHome(): string | undefined {
+  const home = process.env.MOSS_HOME;
   return home !== undefined && home.length > 0 ? home : undefined;
 }
 
@@ -58,16 +58,43 @@ export function setDefaultSecretsBackendForTests(backend: Pick<typeof Bun.secret
   testBackend = backend;
 }
 
-/** The production backend: on macOS keychain-ffi pinned to the account's login keychain (`login-keychain.ts` says
+/** The raw OS secret store: on macOS keychain-ffi pinned to the account's login keychain (`login-keychain.ts` says
  *  why the search list `Bun.secrets` uses is not enough); elsewhere `Bun.secrets` (libsecret, the Credential
- *  Manager). Loaded only on macOS, so this module stays free of the FFI everywhere else. */
-export function defaultSecretsBackend(): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
+ *  Manager). Loaded only on macOS, so this module stays free of the FFI everywhere else. On Windows and Linux this is
+ *  NOT where MOSS keeps its secrets (`defaultSecretsBackend` is, the encrypted file): it holds only that file's key
+ *  (`secrets/moss-secret-store.ts`'s `bunVault`) and is what the one-time move out of the OS store reads. */
+export function osSecretsBackend(): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
   if (testBackend !== undefined) return testBackend;
   // Under a test (a test daemon too, by the variables it inherits): an isolated store only (test-isolation.ts). On
   // macOS the pinned backend below already opens the test keychain file, or throws.
   if (process.platform !== "darwin") return underTest() ? isolatedTestBackend(Bun.secrets) : Bun.secrets;
   const { pinnedSecretsBackend } = require("./login-keychain") as typeof import("./login-keychain");
   return pinnedSecretsBackend();
+}
+
+/** Where MOSS's named secrets (provider keys, sign-in tokens, the pairing tokens) are kept, the one door for every
+ *  reader and writer of them (`KeychainSecretStore`, the MCP sign-in store, the CLI): on macOS the login keychain
+ *  (`osSecretsBackend`); on Windows and Linux the encrypted secrets file in the MOSS home, its key in the OS store
+ *  (spec §9.1, §8.5; `secrets/file-backend.ts`). A process under a test never reaches the file of any home it did not
+ *  name: it gets the isolated store `osSecretsBackend` gives (so a test that builds a store with no home can never write
+ *  the real `~/.moss`); a test of the file backend builds it itself, on a temp home. `home` and `service` default to the
+ *  process's own (`MOSS_HOME`, the profile's service). `file` forces the file under a test, for a home and service the test names. */
+export function defaultSecretsBackend(o: { home?: string; service?: string; file?: boolean } = {}): Pick<typeof Bun.secrets, "get" | "set" | "delete"> {
+  // `file: true` is for a test of the Windows and Linux wiring that names its own throwaway home and service: it takes the
+  // very path a daemon takes there, never the isolated store. (It is no way to reach a real home: the home is the caller's.)
+  const forced = o.file === true && o.home !== undefined && o.service !== undefined && process.platform !== "darwin";
+  if (!forced && (testBackend !== undefined || process.platform === "darwin" || underTest())) return osSecretsBackend();
+  const { sharedFileSecretsBackend } = require("../secrets/file-backend") as typeof import("../secrets/file-backend");
+  const home = o.home ?? (require("../moss-dir") as typeof import("../moss-dir")).resolveMossHome();
+  return sharedFileSecretsBackend({ home, service: o.service ?? keychainService(resolveMossProfile(), home) });
+}
+
+/** The daemon's own store of named secrets (`daemon.ts` builds it with this, and a test of the Windows and Linux wiring calls
+ *  this same function): `KeychainSecretStore` over `defaultSecretsBackend` for this home and service. `file` is a TEST-ONLY
+ *  door (see `defaultSecretsBackend`): both `home` and `service` must be named by the caller, and the file's key still goes
+ *  through the isolated OS store. */
+export function daemonSecretStore(o: { home: string; service: string; file?: boolean }): KeychainSecretStore {
+  return new KeychainSecretStore(defaultSecretsBackend({ home: o.home, service: o.service, ...(o.file ? { file: true } : {}) }), o.service);
 }
 
 /** Production store: the OS's secret store, on macOS the login keychain by path (`defaultSecretsBackend`). */

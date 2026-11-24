@@ -2,7 +2,7 @@
 // spots, unique entry ids and namespaces, private points, the catalog's declarations, and the order changes come in.
 // The fake and the real registry (`packages/core/src/registry/`) both compute their snapshots here, so the rules the
 // conformance suite pins are written once; what differs is where plugins come from (folders, OKs, the synced list).
-import { BUNDLED_ROOT_PLUGIN, NOT_AVAILABLE_YET, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/clover-protocol";
+import { BUNDLED_ROOT_PLUGIN, NOT_AVAILABLE_YET, grantReadsBots, grantReadsSessions, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/moss-protocol";
 import { CORE_SPOTS, UNIQUE_ENTRY_FIELD, type Contribution, type PluginRecord, type RegisteredPoint, type RegistryChange } from "./plugin-registry";
 import type { CoreEntries, Manifest, PointDecl } from "./sdk-types";
 
@@ -21,6 +21,10 @@ export interface RegistryPlugin {
   /** The top-level folder's tree hash now (`sha256:<hex>`). */
   hash: string;
   okHash?: string;
+  /** The catalog revision its OK was given at (`GRANT_REVISION` when the user answered the card or the build granted it;
+   *  absent: an OK from before revisions were kept). A grant older than revision 19 reads neither kind of data until the
+   *  plugin asks again (`grantsAtRevision`). */
+  okRevision?: number;
   /** A card-styling change waits for its OK. */
   cardHeld: boolean;
   /** The validator refused it: its reason. */
@@ -41,13 +45,9 @@ export interface RegistryPlugin {
 
 export interface RegistryRuleOptions {
   /** The catalog's declaration of a well-known name (the plugin SDK's `catalogPointDecl`). */
-  catalog: (name: string) => PointDecl | undefined;
+  catalog: (name: string) => (PointDecl & { platform?: boolean }) | undefined;
   /** The user confirmed they are 18 or older (§5.7). */
   adultConfirmed: boolean;
-  /** Whether a plugin may hold a capability at all (the plugin SDK's `mayHoldCapability`: a bundled-only one only in
-   *  Clover's own tree, by its install source and top id). Required, so every caller of the rules decides it: `granted`
-   *  never carries what it refuses, whatever the manifest or the records say. */
-  mayHold: (capability: string, plugin: { id: string; source: string }) => boolean;
   /** This computer's platform (`darwin-arm64`, …): a plugin whose `platforms` leaves it out is off here, with why.
    *  Absent: no plugin is held to its `platforms` (a test's rules). */
   platform?: string;
@@ -74,7 +74,7 @@ export interface RegistrySnapshot {
 export const EMPTY_SNAPSHOT: RegistrySnapshot = { records: new Map(), entries: new Map(), points: [] };
 
 const ARRAY_POINTS = new Set([
-  "models", "skills", "agents", "agentBackends", "hooks", "commands", "triggers", "voices", "voiceModes", "computerProviders",
+  "models", "skills", "agents", "agentBackends", "hooks", "commands", "triggers", "computerProviders",
   "relays", "notifiers", "companions", "themes", "locales", "ui",
 ]);
 const SINGLE_POINTS = new Set(["bot", "computer"]);
@@ -111,8 +111,8 @@ export function registryChanges(before: RegistrySnapshot, after: RegistrySnapsho
   return order;
 }
 
-/** Whether a plugin carries the not-yet mark in Clover's own tree: the mark, the tree's install source bundled, and
- *  its top id Clover's. */
+/** Whether a plugin carries the not-yet mark in MOSS's own tree: the mark, the tree's install source bundled, and
+ *  its top id MOSS's. */
 export function notYet(held: Pick<RegistryPlugin, "id" | "manifest" | "source">, top: Pick<RegistryPlugin, "source"> | undefined): boolean {
   return (held.manifest as { availability?: { status?: string } }).availability?.status === "not-yet"
     && (top?.source ?? held.source) === "bundled"
@@ -134,9 +134,9 @@ export function computeRegistry(plugins: ReadonlyMap<string, RegistryPlugin>, op
     const parentOff = parentId !== undefined && offReason.has(parentId);
     const adult = top?.manifest.adult === true;
     if (held.invalid !== undefined) offReason.set(id, { state: "invalid", reason: held.invalid });
-    // Clover's own plugin this build can't run yet (`availability`): listed, off, never started, whatever its switch and
-    // OK say (both kept as they are). It counts only in a tree installed as Clover's own (its install source, beside the
-    // validator's rule on the top id), so no other plugin can read as one of Clover's.
+    // MOSS's own plugin this build can't run yet (`availability`): listed, off, never started, whatever its switch and
+    // OK say (both kept as they are). It counts only in a tree installed as MOSS's own (its install source, beside the
+    // validator's rule on the top id), so no other plugin can read as one of MOSS's.
     else if (notYet(held, top)) offReason.set(id, { state: "off", reason: NOT_AVAILABLE_YET });
     else if (held.refused || (top?.refused ?? false)) offReason.set(id, { state: "refused" });
     else if (!held.approved || !(top?.approved ?? true)) offReason.set(id, { state: "found", reason: "waiting for your OK" });
@@ -199,6 +199,8 @@ export function computeRegistry(plugins: ReadonlyMap<string, RegistryPlugin>, op
       const spot = (c.value as { spot?: string }).spot ?? "";
       return CORE_SPOTS.includes(spot) ? undefined : spot;
     }
+    // A point the platform itself reads (the catalog's `platform`) has no declarer to wait for.
+    if (opts.catalog(c.point)?.platform === true) return undefined;
     return c.point.includes(".") ? c.point : undefined;
   };
   const treeOf = (id: string) => parentOf(id) ?? id;
@@ -297,11 +299,9 @@ export function computeRegistry(plugins: ReadonlyMap<string, RegistryPlugin>, op
       // Granted: what the user's OK covers and the plugin may use now. A change that adds a capability asks again
       // (§5.6), so an OK'd tree's capabilities are always the OK's or fewer; nothing is granted before the OK, after a
       // refusal or a block, or for an invalid plugin.
-      // A capability the plugin may not hold at all (bundled-only, outside Clover's own tree by its install source) is
-      // never granted, even where the validator was skipped.
-      granted: held.approved && top.approved && !["found", "refused", "invalid"].includes(state)
-        ? (m.capabilities ?? []).filter((c) => opts.mayHold(c, { id: parentOf(id) ?? id, source: top.source ?? held.source ?? "local" }))
-        : [],
+      // Any plugin may hold any capability (the owner, 2026-11-15: "Yes, all with a warning"): the OK is the gate.
+      granted: held.approved && top.approved && !["found", "refused", "invalid"].includes(state) ? grantsAtRevision(m.capabilities ?? [], top.okRevision) : [],
+      ...(top.okRevision === undefined ? {} : { okRevision: top.okRevision }),
       issues: structuredClone(held.issues ?? []),
       provenance: held.provenance ?? { by: "user-app", at: 0 },
     });
@@ -313,8 +313,6 @@ function entriesOf(plugins: ReadonlyMap<string, RegistryPlugin>, id: string): Co
   const held = plugins.get(id)!;
   const top = plugins.get(parentOf(id) ?? id)!;
   const namespace = top.manifest.namespace ?? (parentOf(id) ?? id);
-  // A bot's plugin: its tree holds the bot, whose id is the top-level plugin's.
-  const botOfTree = top.manifest.contributes?.bot !== undefined ? (parentOf(id) ?? id) : undefined;
   const out: Contribution[] = [];
   const push = (point: string, ref: string, value: unknown, entryId?: string, key?: string) =>
     out.push({
@@ -335,7 +333,7 @@ function entriesOf(plugins: ReadonlyMap<string, RegistryPlugin>, id: string): Co
         if (point === "commands") entryId = `${namespace}.${String(v.name)}`;
         if (point === "triggers") key = v.type as string;
         if (point === "locales") key = v.lang as string;
-        if (point === "ui") key = (v.key as string | undefined) ?? (v.spot === "bot.tab" ? botOfTree : undefined);
+        if (point === "ui") key = v.key as string | undefined;
         push(point, `${point}/${i}`, value, entryId, key);
       });
     } else if (point.includes(".")) {
@@ -344,4 +342,17 @@ function entriesOf(plugins: ReadonlyMap<string, RegistryPlugin>, id: string): Co
     }
   }
   return out;
+}
+
+/** What an OK given at catalog `okRevision` grants of `capabilities` (spec revision 19 §3.6, the controller's ruling of
+ *  2026-11-17): a grant made before the split reads NEITHER kind of data until the plugin asks again, so its
+ *  `conversation.read` (which then meant every conversation) and `sessions.read` are left out; everything else it was OK'd
+ *  for keeps running. The one rule every gate inherits, since each reads a plugin's grant from the record. */
+export function grantsAtRevision(capabilities: readonly string[], okRevision: number | undefined): string[] {
+  return capabilities.filter((c) => (c !== "conversation.read" || grantReadsBots(okRevision)) && (c !== "sessions.read" || grantReadsSessions("sessions.read", okRevision)));
+}
+
+/** Whether an OK given at `okRevision` holds a grant the split narrowed: the plugin asks again for it. */
+export function grantAsksAgain(capabilities: readonly string[], okRevision: number | undefined): boolean {
+  return grantsAtRevision(capabilities, okRevision).length !== capabilities.length;
 }

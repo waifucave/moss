@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACCEPTANCE_BUILD_LABEL, RELEASE_BUILD_BANNER, RELEASE_BUILD_DEFINE_NAME, RELEASE_BUILD_LABEL, releaseBuildDefine, releaseMarkerProblems, TEST_ONLY_APP_STRINGS, TEST_ONLY_CORE_STRINGS, asarFiles, asarMarkerProblems, carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, testBuildDefine, testBuildDefineArg, testBuildMarkerProblems } from "./test-build";
+import { ACCEPTANCE_BUILD_LABEL, PREVIEW_BUILD_DEFINE_NAME, PREVIEW_BUILD_LABEL, PREVIEW_ONLY_APP_STRINGS, previewBuildDefine, RELEASE_BUILD_BANNER, RELEASE_BUILD_DEFINE_NAME, RELEASE_BUILD_LABEL, releaseBuildDefine, releaseMarkerProblems, TEST_ONLY_APP_STRINGS, TEST_ONLY_MOSS_APP_STRINGS, TEST_ONLY_CORE_STRINGS, asarFiles, asarMarkerProblems, carriesTestBuild, TEST_BUILD_LABEL, TEST_BUILD_SENTINEL, testBuildDefine, testBuildDefineArg, testBuildMarkerProblems } from "./test-build";
 import { verifySealedCore } from "./verify-sealed-core";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -42,15 +42,15 @@ function packAsar(files: Record<string, string>, unpacked: readonly string[] = [
 
 describe("the test-marked build's marker (scripts/test-build.ts)", () => {
   test("the define: `false` for a real build (no quotes, cmd.exe takes it), the label for a test build", () => {
-    expect(testBuildDefineArg(false)).toBe("__CLOVER_TEST_BUILD__=false");
-    expect(testBuildDefineArg(true)).toBe(`'__CLOVER_TEST_BUILD__="${TEST_BUILD_LABEL}"'`);
-    expect(testBuildDefine(false)).toEqual({ __CLOVER_TEST_BUILD__: "false" });
-    expect(testBuildDefine(true)).toEqual({ __CLOVER_TEST_BUILD__: JSON.stringify(TEST_BUILD_LABEL) });
+    expect(testBuildDefineArg(false)).toBe("__MOSS_TEST_BUILD__=false");
+    expect(testBuildDefineArg(true)).toBe(`'__MOSS_TEST_BUILD__="${TEST_BUILD_LABEL}"'`);
+    expect(testBuildDefine(false)).toEqual({ __MOSS_TEST_BUILD__: "false" });
+    expect(testBuildDefine(true)).toEqual({ __MOSS_TEST_BUILD__: JSON.stringify(TEST_BUILD_LABEL) });
     expect(TEST_BUILD_LABEL).toMatch(/^[A-Z-]+$/);
   });
 
   test("the gate: a real build carries neither the label nor the test-only code, a test build both", () => {
-    const clean = utf8("clover 1.2.3 code");
+    const clean = utf8("moss 1.2.3 code");
     const both = utf8(`code ${TEST_BUILD_LABEL} and ${TEST_BUILD_SENTINEL}`);
     expect(testBuildMarkerProblems("core", clean, false)).toEqual([]);
     expect(testBuildMarkerProblems("core", both, true)).toEqual([]);
@@ -81,8 +81,8 @@ describe("the test-marked build's marker (scripts/test-build.ts)", () => {
     expect(asarMarkerProblems("app.asar", test, true)).toEqual([]);
     expect(asarMarkerProblems("app.asar", real, true)).toHaveLength(2);
     // The test-only app paths: a real build's code reads neither variable, nor carries the acceptance build's label.
-    for (const t of TEST_ONLY_APP_STRINGS) {
-      // Each name is found (a longer one, CLOVER_TEST_PICK_AVATAR, also carries CLOVER_TEST_PICK: both are named).
+    for (const t of [...TEST_ONLY_APP_STRINGS, ...TEST_ONLY_MOSS_APP_STRINGS]) {
+      // Each name is found.
       expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `process.env.${t}` }), false)).toContain(`app.asar's code reads ${t}: a real build's test-only path must be compiled out`);
       expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js.map": `process.env.${t}` }), false)).toEqual([]);
     }
@@ -110,10 +110,30 @@ describe("the test-marked build's marker (scripts/test-build.ts)", () => {
     expect(asarMarkerProblems("app.asar", release, false)).toEqual([]);
   });
 
+  test("the live preview's define: the label only in its own build; a release's and the test twin's app.asar carry neither it nor a name only it reads", () => {
+    expect(previewBuildDefine(true)).toEqual({ [PREVIEW_BUILD_DEFINE_NAME]: JSON.stringify(PREVIEW_BUILD_LABEL) });
+    expect(previewBuildDefine(false)).toEqual({ [PREVIEW_BUILD_DEFINE_NAME]: "false" });
+    expect(carriesTestBuild(utf8(PREVIEW_BUILD_LABEL))).toBe(false);
+    const labelled = packAsar({ "out/main/index.js": `log('${PREVIEW_BUILD_LABEL}')` });
+    for (const test of [false, true]) {
+      // The test twin's own label and sentinel make it a passing test build; the preview's label in either is a problem.
+      const base = test ? `${TEST_BUILD_LABEL} ${TEST_BUILD_SENTINEL} ` : "";
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}console.log(1)` }), test)).toEqual([]);
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}log('${PREVIEW_BUILD_LABEL}')` }), test)[0]).toContain("preview build's label");
+      expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js.map": `${base}${PREVIEW_BUILD_LABEL}` }), test).join(" ")).toContain("preview build's label");
+      for (const t of PREVIEW_ONLY_APP_STRINGS) {
+        expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}x ${t} y` }), test)).toContain(`app.asar's code reads ${t}: the preview's path must be compiled out of a real build and the test twin`);
+        // The source map carries the source in every build: not a leak.
+        expect(asarMarkerProblems("app.asar", packAsar({ "out/main/index.js": `${base}ok`, "out/main/index.js.map": `${t}` }), test)).toEqual([]);
+      }
+    }
+    expect(labelled.length).toBeGreaterThan(0);
+  });
+
   test("verify:sealed-core refuses a test-marked core before running it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lane-int-sealed-test-"));
     try {
-      const core = join(dir, "clover-core");
+      const core = join(dir, "moss-core");
       writeFileSync(core, `binary ${TEST_BUILD_LABEL} bytes`);
       expect(await verifySealedCore(core, { signed: true, sweep: false, requireProof: true })).toEqual([`ERROR: ${core} is a test-marked core (scripts/test-build.ts): never verified or shipped as a release's`]);
     } finally {

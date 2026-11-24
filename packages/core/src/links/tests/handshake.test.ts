@@ -241,7 +241,7 @@ describe("handshake directory", () => {
     const devs = await Promise.all(["Studio", "Laptop"].map(async (name, i) => {
       const store = new MemorySecretStore();
       const key = await DeviceKey.loadOrCreate(store);
-      const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-h-dir-")), key, clock, self: { name } });
+      const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-dir-")), key, clock, self: { name } });
       const client = new HandshakeClient({ baseUrl: hs.url, clock });
       const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, handshake: client });
       stops.push(() => pairing.close());
@@ -293,7 +293,7 @@ describe("a revocation the service didn't hear (S5 of H-M1's review)", () => {
     const devs = await Promise.all(["Studio", "Laptop"].map(async (name) => {
       const store = new MemorySecretStore();
       const key = await DeviceKey.loadOrCreate(store);
-      const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "clover-h-hs-")), key, clock, self: { name } });
+      const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-hs-")), key, clock, self: { name } });
       const client = new HandshakeClient({ baseUrl: hs.url, clock, fetch: (req) => (down ? Promise.reject(new Error("no network")) : fetch(req)) });
       const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, handshake: client });
       stops.push(() => pairing.close());

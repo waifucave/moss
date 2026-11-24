@@ -1127,6 +1127,21 @@
             "value"
           ],
           "additionalProperties": false
+        },
+        "app": {
+          "type": "object",
+          "properties": {
+            "resourceUri": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^ui:\\/\\/[!-~]+$",
+              "minLength": 6
+            }
+          },
+          "required": [
+            "resourceUri"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

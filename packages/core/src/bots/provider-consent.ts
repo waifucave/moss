@@ -7,9 +7,9 @@
 //
 // * **The user's choice asks nothing:** a model the user set for the bot (its user layer), or the user's default model
 //   the bot falls back to (with `hasKeyFor`, a plugin's tag the user holds no key for falls back to the default too).
-// * **Nor does Clover's own bundled plugin's** (the owner's ruling, revising #298's and #311's): a model or voice tag
-//   from a bot whose plugin is Clover's own bundled one, as staging verified it (`EffectiveBot.modelBundled` /
-//   `voiceBundled`, decided once per load from the bot side's `bundledChoice`: the record's source is `bundled`, its
+// * **Nor does MOSS's own bundled plugin's** (the owner's ruling, revising #298's and #311's): a model tag from a
+//   bot whose plugin is MOSS's own bundled one, as staging verified it (`EffectiveBot.modelBundled`, decided once per
+//   load from the bot side's `bundledChoice`: the record's source is `bundled`, its
 //   folder is the staged copy under `run/`, which no runner can write, its manifest's bytes are the staged digest, and
 //   the tag loaded is the tag those verified bytes name). Not the bot's id or name, nor anything a manifest says: a development folder or an installed plugin named `alpha` is refused at load
 //   (its id is reserved to the bundled tree), and any record not staged as bundled asks. The card protects against a
@@ -19,18 +19,20 @@
 //   (the shared `SessionGrants`, lane C's card path): its side threads and its next turns use it, and a plugin that
 //   moves its tag to a new provider asks again. Only the user's answer on the card counts (`SessionGrants`, review B1).
 // * **The same rule for what else a bot picks:** an agent it starts with a model on another provider than the bot's own
-//   user-chosen (or bundled) one (#311 S1), and a voice provider its plugin chose that uses the user's stored voice key
-//   (`bot.voice:`), unless Clover's own bundled plugin chose it.
+//   user-chosen (or bundled) one (#311 S1). (A bot's voice isn't checked here: it is MOSS Voice's, the user's choice
+//   in the bot's Voice section, else a default the plugin bringing the bot gives on MOSS Voice's point
+//   `moss.voice.defaults`, which that plugin's OK card says (the point's `fills` line) and which speaks only through a
+//   provider the user set up.)
 // * **A no holds** until the user's next message of their own: until then nothing asks again, not a wake, a routine or
 //   an agent's report (#311 S2); the turn fails with a clear reason, and nothing reaches the provider. The hold is kept
 //   with the grants (`SessionGrants.hold`), in the bot's main conversation's log, so it survives a restart. Only the
 //   user's own no on the card holds: a card nobody answered in time, or one withdrawn or cancelled with its turn, says
 //   so in the reason and asks again next time. With no broker to ask, a plugin's provider is refused.
-// * **The card is Clover's own words** (#267's house rule, #311 B2): a fixed title and sentence; the bot, the provider
+// * **The card is MOSS's own words** (#267's house rule, #311 B2): a fixed title and sentence; the bot, the provider
 //   and the model, which a plugin wrote, only as code values with every hiding character removed (`plainOf`). Its
 //   origin is the asking session's turn (a side thread's own), never the main conversation's.
-import type { TurnOrigin } from "@waifucave/clover-protocol";
-import { CardFieldName, type SealedValue } from "@waifucave/clover-protocol";
+import type { TurnOrigin } from "@waifucave/moss-protocol";
+import { CardFieldName, type SealedValue } from "@waifucave/moss-protocol";
 import { plainOf } from "../approvals/strings";
 import { testProviderNameFor } from "../runtime-sdk/provider-selection";
 import type { SessionGrants } from "../sessions/grants";
@@ -41,10 +43,6 @@ export function providerGrantKey(provider: string): string {
   return `bot.provider:${provider}`;
 }
 
-/** The grant that lets a bot use a voice provider its plugin chose. */
-export function voiceGrantKey(provider: string): string {
-  return `bot.voice:${provider}`;
-}
 
 /** The provider a model tag names (`anthropic/claude-sonnet-5-5` → `anthropic`); none for an untagged id, and none for
  *  the runtime's test models, which use no stored key (the provider fill gives them nothing). */
@@ -72,7 +70,7 @@ export interface BotProviderConsentOptions {
   grants?: Pick<SessionGrants, "has" | "ensure" | "held" | "hold" | "lift">;
 }
 
-type Subject = { what: "model" | "agent"; provider: string; model: string } | { what: "voice"; provider: string; voice: string; model?: string };
+type Subject = { what: "model" | "agent"; provider: string; model: string };
 
 export class BotProviderConsent {
   readonly #o: BotProviderConsentOptions;
@@ -98,15 +96,6 @@ export class BotProviderConsent {
     return this.#ask(bot, mainSession, providerGrantKey(provider), { what: "agent", provider, model }, opts);
   }
 
-  /** Whether `bot` may use its voice's provider now (the user's stored voice key), asking when its plugin chose it. */
-  checkVoice(bot: EffectiveBot, mainSession: string, opts: ConsentAsk = {}): Promise<ProviderConsent> {
-    const voice = bot.voice;
-    if (voice === undefined || bot.voiceFrom !== "plugin" || bot.voiceBundled === true) return Promise.resolve({ ok: true });
-    return this.#ask(bot, mainSession, voiceGrantKey(voice.provider), {
-      what: "voice", provider: voice.provider, voice: voice.voice, ...(voice.model === undefined ? {} : { model: voice.model }),
-    }, opts);
-  }
-
   /** Whether `bot` may use its model's provider now without asking (a compaction never shows a card). */
   allowedNow(bot: EffectiveBot, mainSession: string): boolean {
     if (bot.modelFrom !== "plugin" || bot.modelBundled === true) return true;
@@ -118,7 +107,7 @@ export class BotProviderConsent {
     const grants = this.#o.grants;
     const what = describe(subject);
     if (grants === undefined) {
-      return { ok: false, reason: `This bot's plugin chose ${what}, and Clover can't ask you here whether it may use your stored key. Pick it in the bot's settings.` };
+      return { ok: false, reason: `This bot's plugin chose ${what}, and MOSS can't ask you here whether it may use your stored key. Pick it in the bot's settings.` };
     }
     if (grants.has(mainSession, key)) return { ok: true };
     if (grants.held(mainSession, key)) {
@@ -141,7 +130,6 @@ export class BotProviderConsent {
 
 /** What the plugin chose, in the reason's words: never its own text, only the kind. */
 function describe(subject: Subject): string {
-  if (subject.what === "voice") return "a voice provider";
   if (subject.what === "agent") return "a model for an agent on a provider you didn't choose for it";
   return "a model on a provider you didn't choose";
 }
@@ -163,21 +151,18 @@ function declined(what: string): string {
   return `You didn't let this bot use ${what} with your stored key, so it didn't go ahead. Pick it in the bot's settings, or say yes when it asks again after your next message.`;
 }
 
-/** The card: Clover's own title and sentence, and what the plugin wrote only as code values (#267's house rule). */
+/** The card: MOSS's own title and sentence, and what the plugin wrote only as code values (#267's house rule). */
 function cardFields(bot: EffectiveBot, subject: Subject): Partial<Record<CardFieldName, SealedValue>> {
-  const voice = subject.what === "voice";
-  const chosen = subject.what === "voice" ? `${subject.voice}${subject.model === undefined ? "" : ` (${subject.model})`}` : subject.model;
+  const chosen = subject.model;
   return {
-    title: { type: "text", text: voice ? "Let this bot use a voice provider its plugin chose?" : "Let this bot use a provider its plugin chose?" },
+    title: { type: "text", text: "Let this bot use a provider its plugin chose?" },
     what: {
       type: "text",
-      text: voice
-        ? "This bot's plugin, not you, chose a voice whose provider uses your stored key. A yes lets this bot use that provider with your key, and no other bot or provider."
-        : subject.what === "agent"
+      text: subject.what === "agent"
           ? "This bot wants to start an agent on a model whose provider uses your stored key, and you didn't choose that provider for it. A yes lets this bot use that provider with your key, and no other bot or provider."
           : "This bot's plugin, not you, chose a model whose provider uses your stored key. A yes lets this bot use that provider with your key, and no other bot or provider.",
     },
-    reason: { type: "text", text: "You can choose the model or voice yourself in the bot's settings instead: then nothing asks." },
+    reason: { type: "text", text: "You can choose the model yourself in the bot's settings instead: then nothing asks." },
     source: { type: "code", code: sealedCode(`${bot.id}`) },
     host: { type: "code", code: sealedCode(subject.provider) },
     command: { type: "code", code: sealedCode(chosen) },

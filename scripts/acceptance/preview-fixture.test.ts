@@ -5,10 +5,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SPOTS } from "../../packages/plugin-sdk/src/catalogs/spots";
 import { validateManifest } from "../../packages/plugin-sdk/src/manifest/validate";
-import { resolveSpot, type UiEntry } from "../../plugins/clover/plugins/shell/runtime/resolve";
+import { resolveSpot, type TestEntry as UiEntry } from "../../packages/plugin-sdk/src/ui/testing";
 
 const dir = join(import.meta.dir, "fixtures", "acceptance-preview");
-const manifest = JSON.parse(readFileSync(join(dir, "clover.json"), "utf8"));
+const manifest = JSON.parse(readFileSync(join(dir, "moss.json"), "utf8"));
 
 test("the fixture is a valid manifest that fills file.preview for image/*", () => {
   const report = validateManifest(manifest);

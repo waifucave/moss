@@ -1,17 +1,19 @@
 // The Electron half of the plugin runtime: the app's schemes, the UI session's hardening, the protocol handlers that
 // serve the core root and the layers, the IPC the preload's bridge speaks, and the crash census. Spike S9's measured
 // design, with decision 94 (stock Electron) and the E-M0 review: the WebRTC UDP policy on every window, no PAC.
+import { browserReach, browserRefusal } from "./browser-calls";
 import { readFileSync } from "node:fs";
+import type { FrameWatches } from "./frame-watches";
 import { join, normalize } from "node:path";
 import { randomBytes } from "node:crypto";
 import { app, ipcMain, protocol, webFrameMain, BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Session, type WebContents, type WebFrameMain } from "electron";
-import type { ShellApp, ShellState } from "@waifucave/clover-plugin-sdk";
-import { cleanAvatarDown, cleanAvatarUp, cleanSpeechMessage, type LayerMessage, type OpenTarget, type SurfaceEnvironment } from "@waifucave/clover-plugin-sdk/ui/bridge";
-import { CORE_CSP, CORE_SCHEME, LAYER_SCHEME, MICROPHONE_ORIGIN, SEALED_SCHEME, WEB_SCHEME, commonHeaders, layerDocument, layerHeaders, withMicrophone } from "./documents";
-import { checkMenu, frameGesture, mayPlaceView, menuPoint, openTarget, viewRect, type MenuItem, type Rect } from "./brokers";
-import { avatarModelFile, builtClientFile, isInside, mediaType, modelResponse, pluginFile, userAvatarFile } from "./files";
+import type { ShellApp, ShellState } from "@waifucave/moss-plugin-sdk";
+import { type LayerMessage, type OpenTarget, type SurfaceEnvironment } from "@waifucave/moss-plugin-sdk/ui/bridge";
+import { APP_SCHEME, CORE_CSP, CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, commonHeaders, layerDocument, layerHeaders, layerMicrophone, withMicrophone } from "./documents";
+import { checkMenu, frameGesture, openRefusal, mayPlaceView, menuPoint, openTarget, viewRect, type MenuItem, type Rect } from "./brokers";
+import { builtClientFile, dataFile, entryIcon, isInside, mediaType, modelResponse, ownDataFile, ownDataPlugin, ownDataRequest, pluginFile } from "./files";
 import { SEALED_PRESS_WORDS } from "../sealed-pages";
-import { LayerError, type FrameRef, type UiRuntime } from "./runtime";
+import { LayerError, isInstanceId, type FrameRef, type UiRuntime } from "./runtime";
 import { FileGrants, PICK_METHODS, grantResponse, routeDrop, routePick, type DialogRequest, type Grant } from "./file-grants";
 import { PickTokens, routeCall, type KeyTarget, type PickUse } from "./tree-calls";
 import { iconRequest } from "./plugin-icon";
@@ -19,11 +21,13 @@ import { routeComposer } from "./composer-calls";
 import { cleanReport, hearsShell, providedNow, routeShell } from "./shell-calls";
 import type { UiPlugin } from "./model";
 import type { IpcStats } from "./ipc-stats";
+import type { AppNote } from "./web-views";
+import { mayPlaceAppView } from "./app-page";
 
 /** Registers the app's schemes as standard and secure origins, before the app is ready. Service workers and
  *  `bypassCSP` are never granted. */
 export function registerSchemes(): void {
-  protocol.registerSchemesAsPrivileged([CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME].map((scheme) => ({
+  protocol.registerSchemesAsPrivileged([CORE_SCHEME, LAYER_SCHEME, SEALED_SCHEME, WEB_SCHEME, APP_SCHEME].map((scheme) => ({
     scheme,
     // `stream`: a layer's <video> and <audio> may play from the app's own scheme (the granted-file route answers Range requests).
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
@@ -69,17 +73,17 @@ function fileResponse(path: string, type: string, headers: Record<string, string
   }
 }
 
-/** Serves the core root (`clover-core://app/`) and the layers on the UI session, and keeps the session off the
+/** Serves the core root (`moss-core://app/`) and the layers on the UI session, and keeps the session off the
  *  network: no plugin layer declares a host until lane B's registry hands them over, so every request outside the
  *  app's own schemes is cancelled. */
 export interface UiSessionOptions {
   /** Layers served without `Connection-Allowlist`: only the UI test's positive control for the DNS probe, and only in
    *  an unpackaged run (index.ts decides). */
   unguardedLayers?: ReadonlySet<string>;
-  /** The core's folder of the user's own avatar models, `<home>/user-layers/avatars` (`bot.importAvatar`): served at
-   *  `/_a/<bot>/…` to the layers, and only for a bot that is installed. */
-  avatarsDir?: string;
-  /** A plugin's own icon for the Plugins page's lists (`plugin-icon.ts`): served at `/_icon/<id>` in the clover tree's
+  /** The home's plugin data folders, `<home>/plugin-data`: what a plugin shares with its own pages (its `shared/`
+   *  folder) is served at `/_d/<id>/…` to its own layer only, inert data and media. */
+  pluginDataDir?: string;
+  /** A plugin's own icon for the Plugins page's lists (`plugin-icon.ts`): served at `/_icon/<id>` in the moss tree's
    *  layer only, a raster picture or nothing. */
   pluginIcon?: (id: string) => Promise<{ data: Buffer; type: string } | undefined>;
   /** The files the user handed plugins' pages (`files.pick*`), served at `/_g/<id>` on the plugin's own layer: the same
@@ -100,23 +104,23 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
     if (type === undefined) return notFound();
     // The core's document is the top of every window: same-origin opener policy (with the embedder policy of `commonHeaders`) is
     // what lets a frame of it be cross-origin isolated; it severs `window.opener`, which no window of the app uses (popups are denied).
-    return fileResponse(file, type, { ...(type.startsWith("text/html") ? withMicrophone(commonHeaders(), `(self "${MICROPHONE_ORIGIN}")`) : commonHeaders()), ...(type.startsWith("text/html") ? { "Content-Security-Policy": CORE_CSP, "Cross-Origin-Opener-Policy": "same-origin" } : {}) });
+    return fileResponse(file, type, { ...(type.startsWith("text/html") ? withMicrophone(commonHeaders(), "*") : commonHeaders()), ...(type.startsWith("text/html") ? { "Content-Security-Policy": CORE_CSP, "Cross-Origin-Opener-Policy": "same-origin" } : {}) });
   });
 
   // The sealed frames' own scheme (§5.5; E-M3): the frame's page answered once, served once, from the store's own
   // copy of the card's sealed content. What runs in it is the page's own check (IOv2 in E-M3's next piece); its
-  // answers go over the preload's own channel (`clover:sealed-answer`). Nothing in production relaxes `isTrusted`
+  // answers go over the preload's own channel (`moss:sealed-answer`). Nothing in production relaxes `isTrusted`
   // or the open-delay: there is no `trust` knob. Serving is single-use per token (the store marks it); the token
   // itself is 20 crypto-random bytes, so no header gate is needed.
   ses.protocol.handle(SEALED_SCHEME, (request) => {
     const url = new URL(request.url);
-    // A render window's placeholder (`clover-sealed://placeholder/<id>`, runtime.ts): served once, a page with no
+    // A render window's placeholder (`moss-sealed://placeholder/<id>`, runtime.ts): served once, a page with no
     // token and no answer bridge.
     if (url.host === "placeholder") {
       const served = runtime.servePlaceholder(url.pathname.replace(/^\//, "").slice(0, 64));
       return served === undefined ? notFound() : new Response(served.html, { headers: served.headers });
     }
-    // Minted URLs are `clover-sealed://card/<cardId>/<element>?token=…` (parts and the fallback alike); the token's
+    // Minted URLs are `moss-sealed://card/<cardId>/<element>?token=…` (parts and the fallback alike); the token's
     // single use is the real gate.
     if (url.host !== "card") {
       log(`sealed: refusing a sealed load (bad host)`);
@@ -142,8 +146,10 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       const mount = runtime.serveDocument(layer, url.searchParams.get("mount"));
       if (mount === undefined) return forbidden();
       const doc = runtime.mountForDocument(mount);
-      // The clover layer's document alone may open the microphone (push-to-talk's shell, listen.ts); the policy still needs the frame's `allow`.
-      const headers = layerHeaders("text/html; charset=utf-8", [], doc.layers, doc.layer !== "clover", doc.layer === "clover");
+      // The microphone policy by one rule for every layer (`layerMicrophone`): open while its own layer holds `microphone`. The
+      // permission itself is main's (microphone.ts), by the requesting frame's own layer.
+      const microphone = layerMicrophone(doc.layer, (l) => runtime.layerHolds(l, "microphone"));
+      const headers = layerHeaders("text/html; charset=utf-8", [], doc.layers, doc.layer !== "moss", microphone);
       // The DNS probe's positive control (the UI test, unpackaged runs only): the same document without its allowlist.
       if (options.unguardedLayers?.has(doc.layer) === true) delete headers["Connection-Allowlist"];
       return new Response(layerDocument({ css: doc.assets.css, title: doc.pluginId }), { headers });
@@ -152,7 +158,7 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       // The Plugins page's lists: a plugin's icon, even one off or waiting for its OK, as a small still raster picture
       // only (plugin-icon.ts). Who asks is checked before this, by the requesting frame (`onBeforeRequest`); this
       // host check is a second lock, not the gate.
-      if (layer !== "clover" || options.pluginIcon === undefined) return forbidden();
+      if (layer !== "moss" || options.pluginIcon === undefined) return forbidden();
       let id: string;
       try {
         id = decodeURIComponent(url.pathname.slice("/_icon/".length));
@@ -166,14 +172,14 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
         () => notFound(),
       );
     }
-    if (url.pathname.startsWith("/_clover/")) {
-      const file = normalize(join(dirs.layer, ...url.pathname.slice("/_clover/".length).split("/")));
+    if (url.pathname.startsWith("/_moss/")) {
+      const file = normalize(join(dirs.layer, ...url.pathname.slice("/_moss/".length).split("/")));
       if (!isInside(dirs.layer, file)) return forbidden();
       const type = mediaType(file);
       if (type === undefined) return notFound();
-      // The `clover` tree's bundle is served only in the `clover` layer, and no source map to anyone.
+      // The `moss` tree's bundle is served only in the `moss` layer, and no source map to anyone.
       if (url.pathname.endsWith(".map")) return notFound();
-      if (/^clover\.(js|css)$/.test(url.pathname.slice("/_clover/".length)) && layer !== "clover") return forbidden();
+      if (/^moss\.(js|css)$/.test(url.pathname.slice("/_moss/".length)) && layer !== "moss") return forbidden();
       return fileResponse(file, type, layerHeaders(type));
     }
     if (url.pathname.startsWith("/_p/")) {
@@ -219,9 +225,13 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       const type = "text/javascript; charset=utf-8";
       return new Response(bytes, { headers: { ...layerHeaders(type), "Content-Type": type } });
     }
-    if (url.pathname.startsWith("/_a/") && options.avatarsDir !== undefined) {
-      // The user's own avatar model (the core copied it here): data only, the kinds the installed renderers declared, one bot's folder.
-      const served = userAvatarFile(options.avatarsDir, runtime.registry, url.pathname);
+    if (url.pathname.startsWith("/_d/") && options.pluginDataDir !== undefined) {
+      // What a plugin of this layer shares with its own pages (`<home>/plugin-data/<id>/shared/`): inert data and media, to
+      // this layer only (the frame was checked before, `ownDataRequest`; this host check is a second lock).
+      const id = ownDataPlugin(url.pathname);
+      const owner = id === undefined ? undefined : runtime.registry.find((p) => p.id === id && p.layer === layer);
+      if (owner === undefined) return forbidden();
+      const served = ownDataFile(options.pluginDataDir, owner.id, url.pathname);
       if (served === "forbidden") return forbidden();
       if (served === "missing") return notFound();
       return modelResponse(served.file, served.type, { ...commonHeaders(), "Content-Security-Policy": THEME_ASSET_CSP }, served.maxBytes);
@@ -241,7 +251,7 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
     if (url.pathname.startsWith("/_t/")) {
       // A theme's or a layout's images and fonts, a bot's portrait (the core's `assetUrl`) and a plugin's icon, in every layer they
       // reach (§5.5): only a plugin with themes, style entries, a bot's layout or a bot, only images and fonts, inside
-      // its folder. Never a document: an SVG opened as a page gets no origin.
+      // its folder; and the files a plugin's point entries bring (`dataFiles`), by their declared kinds. Never a document: an SVG opened as a page gets no origin.
       const [, , encoded, ...rest] = url.pathname.split("/");
       let id: string;
       let path: string;
@@ -251,8 +261,10 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       } catch {
         return notFound();
       }
-      // A plugin's own picture (its view's `icon`) too, by that exact path: the Plugins page's lists.
-      const plugin = runtime.registry.find((p) => p.id === id && (p.isBot || p.themes.length > 0 || p.botLayout !== undefined || p.entries.some((e) => e.style !== undefined) || (p.icon !== undefined && p.icon === path)));
+      // A plugin's own picture (its view's `icon`) too, by that exact path: the Plugins page's lists; and a plugin whose point
+      // entries bring files (`dataFiles`).
+      const looks = (p: (typeof runtime.registry)[number]) => p.isBot || p.themes.length > 0 || p.entries.some((e) => e.style !== undefined) || (p.icon !== undefined && p.icon === path) || entryIcon(p, path);
+      const plugin = runtime.registry.find((p) => p.id === id && (looks(p) || p.dataFiles.length > 0));
       if (plugin === undefined) return forbidden();
       let file: string;
       try {
@@ -260,11 +272,13 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
       } catch {
         return notFound();
       }
-      // A bot's own model files (a VRM, a Live2D `.moc3` and its JSON, a sprite's picture list…) are the bot plugin's inert data its stage's
-      // avatar entry reads: served by the kinds the installed renderer of the bot's format declared (`avatar.formats`), inside the folder
-      // its avatar sits in, capped, nosniff and sandboxed, never as a document.
-      const model = avatarModelFile(plugin, runtime.registry, file);
+      // The files that come with a plugin's point entries (a model's binaries and JSON, a word list, a sound bank…) are its inert
+      // data: served by the kinds the point's declaration names (`dataFiles`), inside the folder of the entry's file, capped,
+      // nosniff and sandboxed, never as a document.
+      const model = dataFile(plugin, file);
       if (model !== undefined) return modelResponse(file, model.media, { ...commonHeaders(), "Content-Security-Policy": THEME_ASSET_CSP }, model.maxBytes);
+      // Let in by its data files alone: those files and nothing else of its folder.
+      if (!looks(plugin)) return forbidden();
       const type = mediaType(file);
       if (type === undefined || !(type.startsWith("image/") || type.startsWith("font/"))) return forbidden();
       return fileResponse(file, type, { ...commonHeaders(), "Content-Security-Policy": THEME_ASSET_CSP });
@@ -283,10 +297,15 @@ export function installUiSession(ses: Session, runtime: UiRuntime, dirs: { core:
     } catch {
       /* refused */
     }
-    // A plugin's icon (`/_icon/`): only for a frame main bound to the clover tree's layer, by the frame that asks.
+    // A plugin's icon (`/_icon/`): only for a frame main bound to the moss tree's layer, by the frame that asks.
     if (protocolName === `${LAYER_SCHEME}:`) {
       const f = details.frame;
       const layer = f === undefined || f === null || f.detached ? undefined : runtime.layerOfFrame({ processId: f.processId, routingId: f.routingId });
+      // A layer's own data (`/_d/`): only for a frame main bound to that same layer.
+      if (ownDataRequest(layer, details.url) === "refuse") {
+        log(`layers: cancelled a request for another layer's own data from ${layer === undefined ? "a frame main doesn't know" : `the ${layer} layer's frame`}`);
+        return callback({ cancel: true });
+      }
       if (iconRequest(layer, details.url) === "refuse") {
         // Said once per icon and asker: a frame main doesn't know, or another layer's.
         const id = (() => {
@@ -382,10 +401,23 @@ export interface IpcHooks {
   viewFrame(windowId: number, mount: string, name: string, bounds: Rect | undefined, used: boolean): void;
   /** A part's plugin-API call, on its plugin's own connection to the core. */
   api(pluginId: string, method: string, params: unknown): Promise<unknown>;
-  /** One key press or click of the user's the main process saw come to the window, spent (the SendGate). */
-  takeGesture(windowId: number): boolean;
-  /** The windows' push-to-talk holds (listen.ts): the composer's start and stop, and the shell's pieces. */
-  listens?: import("./listen").ListenHolds;
+  /** The watches each frame opened, so its going ends them (frame-watches.ts). */
+  frameWatches?: FrameWatches;
+  /** One key press or click of the user's the main process saw land IN THE CALLER'S OWN FRAME (`frameId`), spent (the
+   *  SendGate's `takeIn`, F2): a press in another frame of the window is not the caller's, and is left unspent. */
+  takeGesture(windowId: number, frameId: string, arrived?: number): boolean;
+  /** Waits (briefly) until the window's latest press knows which frame it landed in (a click asks the frames under the
+   *  pointer a moment after it), so `takeGesture` can tell. */
+  settleGesture?(windowId: number): Promise<void>;
+  /** A visible part subscribed to the `browser` area (on) or unsubscribed (off): the app unsubscribes its plugin's
+   *  connection when the last such part goes (browser-calls.ts `BrowserAreaFrames`). */
+  browserArea?(pluginId: string, mount: string, on: boolean): void;
+  /** A watch opened on a `browser.*` call: its values go only to the plugin's visible documents. */
+  noteBrowserWatch?(watch: string): void;
+  /** Whether part `mount`'s own browser view is bound to tab `tab` (live or paused: browser-calls.ts `ViewBindings`). */
+  showsTab?(windowId: number, mount: string, tab: string): boolean;
+  /** A part's Browser call answered (its view's binding follows its show, open-and-show, hide and close). */
+  noteBrowserResult?(mount: string, method: string, params: unknown, result: unknown): void;
   /** The bundled tree's call, already checked against the table (`tree-calls.ts`), on the app's own connection. */
   treeRequest(method: string, params: unknown): Promise<unknown>;
   /** Main's native folder or file dialog over a window, for the Plugins page's `ui.pick`: the path, or undefined. */
@@ -399,27 +431,34 @@ export interface IpcHooks {
   grants?: FileGrants;
   /** Opens the app's own key dialog for a plugin's key (the Plugins page's `ui.secret`, checked as one). */
   openKey?(target: KeyTarget): Promise<boolean>;
+  /** Opens the setup guide again (`app.openSetup`, the person's press in Settings). */
+  openGuide?(): Promise<void>;
   /** A key press or paste in a terminal part's element, to write what the main process derives from its own input;
    *  `frameId` names the focused frame (the review's S2: the record the main process keeps is per frame). */
   terminalInput(windowId: number, frameId: string, pluginId: string, terminalId: string, input: { kind: "key"; key: string } | { kind: "paste" }): Promise<void>;
-  /** The user's own words from a `clover` surface's part (`pill.send`), after the gate. */
-  userSend(windowId: number, to: unknown, message: { text: string; images?: unknown }, active: boolean): Promise<{ seq?: number }>;
+  /** The user's own words from a `moss` surface's part (`user.send`), after the gate. */
+  userSend(windowId: number, to: unknown, message: { text: string; images?: unknown }, active: boolean, frameId: string): Promise<{ seq?: number }>;
   /** The shell's press on a drag region (`shell`: the main process's own record says this is the shell in `app.root`). */
   windowDrag(windowId: number, shell: boolean): void;
-  /** The session a window shows now, as the `clover` layer's shell says (null: none). */
+  /** The session a window shows now, as the `moss` layer's shell says (null: none). */
   activeSession(windowId: number, session: string | null): void;
   /** Where a web page part's view goes in the window (undefined: hidden). */
   webFrame(windowId: number, mount: string, web: { plugin: UiPlugin; web: Readonly<Record<string, unknown>> }, bounds: Rect | undefined): void;
+  /** Where the page of an MCP tool call goes in the window (undefined: hidden), `key` naming the placement; `note` carries what
+   *  the window hears of it (its height, or that no page could be shown). The state the view is in now. */
+  appFrame?(windowId: number, key: string, call: { session: string; callId: string }, bounds: Rect | undefined, note: (n: AppNote) => void): "pending" | "shown" | "hidden";
   /** Shows a checked menu at a point in the window; the id picked, or null. */
   menu(windowId: number, items: MenuItem[], point: { x: number; y: number }): Promise<string | null>;
   /** A sealed button's answer: the app signs it with the answer key over the frame's own channel (§5.5; E-M3), the
    *  computer-use gate first, in the main process (B3). `senderKey` is the sender frame's own key, checked against the
    *  mint's binding (B4). */
-  sealedAnswer(token: string, option: string | undefined, senderKey: string, children?: readonly string[]): Promise<{ accepted: boolean; reason?: string; key?: "changed" | "fault" }>;
+  sealedAnswer(token: string, option: string | undefined, senderKey: string, children?: readonly string[]): Promise<{ accepted: boolean; reason?: string; key?: "changed" | "fault"; again?: true; covered?: "this" | "moss" | "code" | "host" | "ours" }>;
   /** A sealed frame's page reports its own visibility (IOv2), so the main process can disarm the fallback once all of
    *  a card's buttons show (§5.5's fallback rule). Checked like the answer: the sender must be the sealed frame its
    *  token was served to. */
   sealedVisible(token: string, visible: boolean): void;
+  /** The report a press asked for: the button showed whole and uncovered at the press (`seen`), after `ms`. */
+  sealedFresh(token: string, seen: boolean, ms: number): void;
   /** A press the sealed page saw and what it did with it (one of `SEALED_PRESS_WORDS`). */
   sealedPress(token: string, what: string): void;
   /** The app's own card page says how tall it is, so its window fits it (a number, nothing else). */
@@ -436,6 +475,17 @@ function rect(v: unknown): Rect | undefined {
 
 /** The IPC the preload's bridge speaks. Every call is bound to its sender's frame. */
 export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: string) => void, stats?: IpcStats): () => void {
+  /** A gestured call's press, for the frame that sent it (F2): the frame's own activation, and a press the main process saw land in
+   *  that very frame. Waits for a click's frame to be known first, only when the frame reports activation (nothing else can
+   *  spend a press). */
+  const fid = (f: { processId: number; routingId: number }) => `${f.processId}:${f.routingId}`;
+  /** The shell API's calls that spend no press (`routeShell` answers them before its gesture). */
+  const SHELL_NO_PRESS: ReadonlySet<string> = new Set(["state", "apps", "account", "dragWindow", "provide"]);
+  const pressIn = async (s: { windowId: number; frame: { processId: number; routingId: number } }, active: unknown): Promise<(windowId: number) => boolean> => {
+    const arrived = Date.now();
+    if (active === true) await hooks.settleGesture?.(s.windowId);
+    return (w) => frameGesture(active, () => hooks.takeGesture(w, fid(s.frame), arrived));
+  };
   /** What the shell last said of each window's place, for the plugin frames that read it (`shell.state`). */
   const shellWindows = new Map<number, { state: ShellState; apps: ShellApp[] }>();
   /** Which essential handles a shown bot's own frames offer (`shell.provide`), by window and frame; only while a bot of the plugin shows its tab. */
@@ -447,13 +497,13 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       const f = webFrameMain.fromId(Number(processId), Number(routingId));
       return f !== undefined && f !== null && !f.detached;
     };
-    runtime.shellMessage(windowId, { type: "shell-provides", ...providedNow(shellProvides.get(windowId) ?? new Map(), state, alive) });
+    runtime.rootPartMessage(windowId, { type: "shell-provides", ...providedNow(shellProvides.get(windowId) ?? new Map(), state, alive) });
   };
   runtime.send = (frame, message: LayerMessage) => {
     const f = webFrameMain.fromId(frame.processId, frame.routingId);
     if (f === undefined || f === null || f.detached) return;
     stats?.sent(message.type);
-    f.send("clover:message", message);
+    f.send("moss:message", message);
   };
   const handle = (channel: string, fn: (event: IpcMainInvokeEvent, arg: Record<string, unknown>) => unknown) =>
     ipcMain.handle(channel, (event, arg) => {
@@ -470,31 +520,34 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       }
     });
 
-  handle("clover:describe", (event, a) => {
+  handle("moss:describe", (event, a) => {
     const s = sender(event);
     return runtime.describe(s.frame, s.windowId, str(a.token, 128));
   });
-  handle("clover:resolve", (event, a) => {
+  handle("moss:resolve", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const spot = str(a.spot, 128);
     if (mount === undefined || spot === undefined) throw new LayerError("bad request");
-    const hints = typeof a.hints === "object" && a.hints !== null ? (a.hints as { session?: unknown; entry?: unknown; bot?: unknown }) : {};
-    return runtime.resolve(s.frame, mount, spot, str(a.key), { ...(str(hints.session, 32) ? { session: str(hints.session, 32)! } : {}), ...(str(hints.entry, 300) ? { entry: str(hints.entry, 300)! } : {}), ...(str(hints.bot, 81) ? { bot: str(hints.bot, 81)! } : {}) });
+    const hints = typeof a.hints === "object" && a.hints !== null ? (a.hints as { session?: unknown; entry?: unknown; bot?: unknown; instance?: unknown }) : {};
+    // The `<Spot>` instance asking: one that is sent must be a valid id (answering a bad one as if none came would put it back on the
+    // places every caller without one shares, the very thing an instance is for); one that is not sent is a caller built before them.
+    if (hints.instance !== undefined && !isInstanceId(hints.instance)) throw new LayerError("bad request");
+    return runtime.resolve(s.frame, mount, spot, str(a.key), { ...(str(hints.session, 32) ? { session: str(hints.session, 32)! } : {}), ...(str(hints.entry, 300) ? { entry: str(hints.entry, 300)! } : {}), ...(str(hints.bot, 81) ? { bot: str(hints.bot, 81)! } : {}), ...(isInstanceId(hints.instance) ? { instance: hints.instance } : {}) });
   });
-  handle("clover:entries", (event, a) => {
+  handle("moss:entries", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const spot = str(a.spot, 128);
     if (mount === undefined || spot === undefined) throw new LayerError("bad request");
     return runtime.entries(s.frame, mount, spot, str(a.key), str(a.bot, 81), str(a.session, 32));
   });
-  handle("clover:reload", (event, a) => {
+  handle("moss:reload", (event, a) => {
     const s = sender(event);
     const child = str(a.child, 32);
     return child === undefined ? undefined : runtime.reload(s.frame, child);
   });
-  on("clover:props", (event, a) => {
+  on("moss:props", (event, a) => {
     const child = str(a.child, 32);
     if (child === undefined) return;
     if (JSON.stringify(a.props ?? null).length > MAX_PROPS_BYTES) {
@@ -503,64 +556,52 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     }
     runtime.setProps(sender(event).frame, child, a.props);
   });
-  // An `avatar` child frame's speech, from the document that placed it: numbers only, or dropped.
-  on("clover:speech", (event, a) => {
-    const child = str(a.child, 32);
-    const message = cleanSpeechMessage(a.message);
-    if (child === undefined || message === undefined) return;
-    runtime.speech(sender(event).frame, child, message);
-  });
-  // An `avatar` child frame's cue, from the document that placed it; and its state, to its parent only: plain data, or dropped.
-  on("clover:avatar", (event, a) => {
-    const child = str(a.child, 32);
-    const message = cleanAvatarDown(a.message);
-    if (child === undefined || message === undefined) return;
-    runtime.avatarDown(sender(event).frame, child, message);
-  });
-  on("clover:avatar-up", (event, a) => {
-    const message = cleanAvatarUp(a.message);
-    if (message === undefined) return;
-    runtime.avatarUp(sender(event).frame, message);
-  });
-  on("clover:callback", (event, a) => {
+  on("moss:callback", (event, a) => {
     const id = str(a.id, 32);
     if (id === undefined || !Array.isArray(a.args) || JSON.stringify(a.args).length > MAX_PROPS_BYTES) return;
     runtime.callback(sender(event).frame, id, a.args);
   });
-  on("clover:size", (event, a) => {
+  on("moss:size", (event, a) => {
     if (typeof a.height === "number") runtime.reportSize(sender(event).frame, a.height);
   });
-  on("clover:release", (event, a) => {
+  on("moss:release", (event, a) => {
     if (!Array.isArray(a.mounts)) return;
     runtime.release(sender(event).frame, a.mounts.filter((m): m is string => typeof m === "string").slice(0, 1000));
   });
-  on("clover:sleep", (event, a) => {
+  on("moss:sleep", (event, a) => {
     const child = str(a.child, 32);
     if (child !== undefined) runtime.sleep(sender(event).frame, child);
   });
-  handle("clover:wake", (event, a) => {
+  handle("moss:wake", (event, a) => {
     const child = str(a.child, 32);
     return child === undefined ? undefined : runtime.wake(sender(event).frame, child);
   });
-  on("clover:surface", (event, a) => {
+  on("moss:surface", (event, a) => {
     const id = runtime.surfaceOf(sender(event).frame);
     if (id !== undefined) hooks.surface(id, a);
   });
-  handle("clover:surface-environment", (event) => {
+  handle("moss:surface-environment", (event) => {
     const id = runtime.surfaceOf(sender(event).frame);
     return id === undefined ? undefined : hooks.surfaceEnvironment(id);
   });
-  handle("clover:open", (event, a) => {
+  handle("moss:open", async (event, a) => {
     const mount = str(a.mount, 32);
     if (mount === undefined) throw new LayerError("bad request");
     const pluginId = runtime.partOf(sender(event).frame, mount);
     const target = openTarget(a.target);
     if (target === undefined) throw new LayerError("not a place the app opens");
+    // It brings the main window up: `shell.control`, and the user's own press in that frame, one open per press.
+    const press = await pressIn(sender(event), a.active);
+    const refused = openRefusal(runtime.capabilitiesOf(sender(event).frame, mount), () => press(sender(event).windowId));
+    if (refused !== undefined) {
+      log(`open: ${pluginId}: refused (${refused})`);
+      throw new LayerError(refused);
+    }
     return hooks.open(pluginId, target);
   });
   // The menu broker: where the asking frame sits, from each document above it, then the menu at that point.
   const rects = new Map<string, { from: string; resolve: (r: Rect | undefined) => void }>();
-  on("clover:rect-reply", (event, a) => {
+  on("moss:rect-reply", (event, a) => {
     const id = str(a.id, 64);
     const f = event.senderFrame;
     const waiting = id === undefined ? undefined : rects.get(id);
@@ -580,7 +621,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     } });
     runtime.send(parent, { type: "rect-query", id, child });
   });
-  handle("clover:menu", async (event, a) => {
+  handle("moss:menu", async (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     // The part asking must be in the asking document.
@@ -595,10 +636,10 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (point === undefined) throw new LayerError("no place for the menu");
     return hooks.menu(place.windowId, checked.items, point);
   });
-  // A native view's frame (the Clover Browser's live view): checked, clipped to the part's own frame, placed in the
+  // A native view's frame (the MOSS Browser's live view): checked, clipped to the part's own frame, placed in the
   // window by each document above it. Reports from one part go in order, so a late answer never moves a view back.
   const viewSeq = new Map<string, number>();
-  on("clover:view-frame", (event, a) => {
+  on("moss:view-frame", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const name = str(a.name, 64);
@@ -625,7 +666,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
   // A web page part's view (§5.5 "Web pages"): the place its part reports, clipped to the frame, as for a native view.
   const webSeq = new Map<string, number>();
-  on("clover:web-frame", (event, a) => {
+  on("moss:web-frame", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) return;
@@ -644,14 +685,64 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       hooks.webFrame(place.windowId, mount, web, bounds);
     });
   });
+  // An MCP Apps page's view (§5.5 "MCP Apps"): the component `<AppView call>` reports the place it holds; the page is read
+  // through the engine for that (session, call) and shown in a view of its own, clipped to the part's frame like a web
+  // page's. Reports from one place go in order. What the view says back (its height, or that it can't be shown) goes to
+  // the asking frame as an `app-view` message.
+  const appSeq = new Map<string, number>();
+  handle("moss:app-view", async (event, a) => {
+    const s = sender(event);
+    const mount = str(a.mount, 32);
+    const session = str(a.session, 64);
+    const callId = str(a.callId, 128);
+    if (mount === undefined || session === undefined || callId === undefined) throw new LayerError("bad request");
+    runtime.partOf(s.frame, mount);
+    // Only a part that draws a conversation (one its OK let read sessions or bots' conversations) may place a page: any other
+    // part that learns a (session, call) can't open one, and so can't replace the real page's bridge under it.
+    if (!mayPlaceAppView(runtime.capabilitiesOf(s.frame, mount))) {
+      log(`layers: ${runtime.partOf(s.frame, mount)} may not place an app view (it needs a conversation or session read capability)`);
+      return { state: "hidden" };
+    }
+    if (hooks.appFrame === undefined) return { state: "hidden" };
+    const key = `${mount}|${session}|${callId}`;
+    const seq = (appSeq.get(key) ?? 0) + 1;
+    appSeq.set(key, seq);
+    const frame = s.frame;
+    const note = (n: AppNote) => {
+      try {
+        runtime.send(frame, { type: "app-view", session, callId, ...(n.state === "unavailable" ? { unavailable: true } : n.height !== undefined ? { height: n.height } : {}) });
+      } catch { /* the frame went */ }
+    };
+    const call = { session, callId };
+    const r = a.rect === null ? undefined : rect(a.rect);
+    if (r === undefined) {
+      appSeq.delete(key);
+      return { state: hooks.appFrame(s.windowId, key, call, undefined, note) };
+    }
+    const place = runtime.placeOf(s.frame);
+    const chain = await Promise.all(place.steps.map((step) => askRect(step.parent, step.child)));
+    if (appSeq.get(key) !== seq) return { state: "pending" };
+    const bounds = chain.some((c) => c === undefined) ? undefined : viewRect(r, chain as Rect[]);
+    return { state: hooks.appFrame(place.windowId, key, call, bounds, note) };
+  });
   // The Plugins page's picked folders, as one-use tokens (tree-calls.ts): their paths stay in main.
   const pickTokens = new PickTokens();
-  handle("clover:api", (event, a) => {
+  handle("moss:api", async (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const method = str(a.method, 128);
     if (mount === undefined || method === undefined) throw new LayerError("bad request");
     const pluginId = runtime.partOf(s.frame, mount);
+    const press = await pressIn(s, a.active);
+    // The MOSS Browser from a component (browser-calls.ts): none from a part in the background, and an acting call only with
+    // the user's own press in this part's frame (`press`: the SendGate's `takeIn`, one press, one call; a refused call spends
+    // nobody's gesture).
+    const reach = browserReach(method, a.params, { showing: (tab) => hooks.showsTab?.(s.windowId, mount, tab) === true });
+    const browserWhy = browserRefusal(reach, { background: runtime.inBackground(s.frame, mount), takePress: () => press(s.windowId) });
+    if (browserWhy !== undefined) {
+      log(`layers: ${pluginId}: ${reach.kind === "none" ? method : reach.call} refused (${browserWhy}); frame ${s.frame.processId}:${s.frame.routingId}, active ${a.active === true}`);
+      throw new LayerError(browserWhy);
+    }
     // The pickers are main's own: a plugin that holds `files`, the user's own click, main's dialog; the page gets tokens.
     if (PICK_METHODS.has(method)) {
       if (pluginId === "core" || hooks.pickFiles === undefined || hooks.registerGrant === undefined || hooks.grants === undefined) throw new LayerError("this part can't ask for a file");
@@ -660,7 +751,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
         params: a.params,
         plugin: { id: pluginId, capabilities: runtime.capabilitiesOf(s.frame, mount) },
         windowId: s.windowId,
-        takeGesture: (w) => frameGesture(a.active, () => hooks.takeGesture(w)),
+        takeGesture: press,
         dialog: hooks.pickFiles,
         grants: hooks.grants,
         register: hooks.registerGrant,
@@ -669,26 +760,53 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       });
     }
     return routeCall({
-      tree: runtime.treePart(s.frame, mount),
+      caller: runtime.partCaller(s.frame, mount),
       method,
       params: a.params,
       tokens: pickTokens,
-      ...(hooks.listens ? { listens: hooks.listens } : {}),
       ...(hooks.pick ? { pick: (w: number, kind: "folder" | "file", filters: readonly { name: string; extensions: string[] }[] | undefined, use: PickUse) => hooks.pick!(w, kind, filters, use) } : {}),
       ...(hooks.openKey ? { openKey: (target: KeyTarget) => hooks.openKey!(target) } : {}),
-      // The key press or click must have come to THIS frame (its own transient activation, read in the preload) and be
-      // one the main process saw come to the window; a refused call spends nobody's gesture.
-      takeGesture: (w) => frameGesture(a.active, () => hooks.takeGesture(w)),
+      ...(hooks.openGuide ? { openGuide: () => hooks.openGuide!() } : {}),
+      // The key press or click must have come to THIS frame: its own transient activation (read in the preload) AND a press the
+      // main process saw land in this frame (F2); a refused call spends nobody's gesture.
+      takeGesture: press,
       request: hooks.treeRequest,
+      // A session a part started (the person's own press) is shown: the window takes the session's tab (spec revision 20, §9.5).
+      openSession: (windowId: number, session: string) => runtime.rootPartMessage(windowId, { type: "shell-act", act: { kind: "go", target: { session } } }),
       entries: (spot) => runtime.entries(s.frame, mount, spot),
-      layer: () => hooks.api(pluginId, method, a.params),
+      layer: () => {
+        const got = hooks.api(pluginId, method, a.params);
+        // The `browser` area, by the visible part that asked for it (a background part's ask was refused above).
+        const areas = (a.params as { areas?: unknown } | undefined)?.areas;
+        if ((method === "events.subscribe" || method === "events.unsubscribe") && Array.isArray(areas) && areas.includes("browser")) {
+          void got.then(() => hooks.browserArea?.(pluginId, mount, method === "events.subscribe"), () => undefined);
+        }
+        if (reach.kind !== "none") void got.then((r) => hooks.noteBrowserResult?.(mount, method, a.params, r), () => undefined);
+        const watched = (a.params as { call?: unknown } | undefined)?.call;
+        if (method === "plugin.layer.watch" && typeof watched === "string" && watched.startsWith("browser.")) {
+          void got.then((r) => { const w = (r as { watch?: unknown } | undefined)?.watch; if (typeof w === "string") hooks.noteBrowserWatch?.(w); }, () => undefined);
+        }
+        // A frame's watch is the frame's: noted, so the frame's going ends it (frame-watches.ts).
+        const fw = hooks.frameWatches;
+        if (fw === undefined) return got;
+        if (method === "plugin.layer.unwatch") {
+          const w = (a.params as { watch?: unknown } | undefined)?.watch;
+          if (typeof w === "string") fw.forget(mount, w);
+        }
+        if (method !== "plugin.layer.watch") return got;
+        return got.then((r) => {
+          const w = (r as { watch?: unknown } | undefined)?.watch;
+          if (typeof w === "string") fw.add(mount, pluginId, w);
+          return r;
+        });
+      },
       log,
       refuse: (why) => new LayerError(why),
     });
   });
   // A file dropped on a plugin's page (the preload read the real paths of a trusted drop): tokens like a pick's, for a plugin
   // that holds `files`, sent back to that frame's page as `files-dropped`.
-  on("clover:drop-files", (event, a) => {
+  on("moss:drop-files", (event, a) => {
     const s = sender(event);
     const who = runtime.documentPlugin(s.frame);
     if (hooks.registerGrant === undefined || hooks.grants === undefined) return;
@@ -703,15 +821,16 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     }, () => undefined);
   });
   // `PluginApi.shell` (spec §5.4: `shell.read`, `shell.control`): every rule is in shell-calls.ts.
-  handle("clover:shell", (event, a) => {
+  handle("moss:shell", async (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) throw new LayerError("bad request");
     const plugin = { id: runtime.partOf(s.frame, mount), capabilities: runtime.capabilitiesOf(s.frame, mount) };
-    if (plugin.id.split("/")[0] === "clover") throw new LayerError("the shell's own parts do not ask");
     let r;
     try {
-      r = routeShell({ method: a.method, args: a.args, plugin, window: shellWindows.get(s.windowId), appButtons: () => runtime.appButtons(), takeGesture: () => frameGesture(a.active, () => hooks.takeGesture(s.windowId)) });
+      // Only the shell's acts take a press: a read, the drag (main follows the pointer itself, at once) and `provide` never wait for one.
+      const press = SHELL_NO_PRESS.has(String(a.method)) ? () => false : await pressIn(s, a.active);
+      r = routeShell({ method: a.method, args: a.args, plugin, window: shellWindows.get(s.windowId), appButtons: () => runtime.appButtons(), takeGesture: () => press(s.windowId) });
     } catch (err) {
       throw new LayerError(err instanceof Error ? err.message : "refused");
     }
@@ -728,15 +847,15 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
       hooks.windowDrag(s.windowId, true);
       return Promise.resolve();
     }
-    runtime.shellMessage(s.windowId, { type: "shell-act", act: r.act });
+    runtime.rootPartMessage(s.windowId, { type: "shell-act", act: r.act });
     return Promise.resolve();
   });
-  on("clover:shell-report", (event, a) => {
+  on("moss:shell-report", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) return;
-    // Only the app's own shell says where the window is.
-    if (runtime.partOf(s.frame, mount).split("/")[0] !== "clover") return;
+    // Only the window's shell (the part the core mounted in `app.root`, whichever plugin's) says where the window is.
+    if (runtime.mainShell(s.frame, mount) === undefined) return;
     const report = cleanReport(a.report);
     if (report === undefined) return;
     const before = JSON.stringify(shellWindows.get(s.windowId)?.state);
@@ -745,7 +864,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     sayProvides(s.windowId);
     if (JSON.stringify(report.state) !== before) runtime.windowPluginMessage(s.windowId, (p) => hearsShell(p, report.state), { type: "shell-state", state: report.state });
   });
-  handle("clover:terminal-input", (event, a) => {
+  handle("moss:terminal-input", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const terminalId = str(a.terminalId, 128);
@@ -755,24 +874,24 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (checked === undefined) throw new LayerError("not a key press or a paste");
     return hooks.terminalInput(s.windowId, `${s.frame.processId}:${s.frame.routingId}`, runtime.partOf(s.frame, mount), terminalId, checked);
   });
-  handle("clover:composer", (event, a) => {
+  handle("moss:composer", async (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) throw new LayerError("bad request");
     const pluginId = runtime.partOf(s.frame, mount);
+    const press = await pressIn(s, a.active);
     return routeComposer({
       composer: runtime.composerOf(s.frame, mount),
-      ...(hooks.listens ? { listens: hooks.listens } : {}),
       op: a.op,
       args: a.args,
-      takeGesture: (w) => frameGesture(a.active, () => hooks.takeGesture(w)),
+      takeGesture: press,
       asApp: hooks.treeRequest,
       asLayer: (id, method, params) => hooks.api(id || pluginId, method, params),
       log,
       refuse: (why) => new LayerError(why),
     });
   });
-  handle("clover:user-send", (event, a) => {
+  handle("moss:user-send", (event, a) => {
     try {
     const s = sender(event);
     const mount = str(a.mount, 32);
@@ -782,14 +901,14 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (only !== undefined && !(typeof a.to === "object" && a.to !== null && Object.keys(a.to).length === 1 && (a.to as { session?: unknown }).session === only.session)) throw new LayerError("a composer sends to its own session");
     const m = (a.message ?? {}) as { text?: unknown; images?: unknown };
     if (typeof m.text !== "string" || m.text.length > 1_000_000) throw new LayerError("the words are text");
-    return hooks.userSend(windowId, a.to, { text: m.text, ...(m.images !== undefined ? { images: m.images } : {}) }, a.active === true);
+    return hooks.userSend(windowId, a.to, { text: m.text, ...(m.images !== undefined ? { images: m.images } : {}) }, a.active === true, `${s.frame.processId}:${s.frame.routingId}`);
     } catch (err) {
       // Refused before the core's own checks (the part, the target, the words): the reason, never the words.
       if (err instanceof LayerError) log(`send: refused (${err.message})`);
       throw err;
     }
   });
-  on("clover:window-drag", (event, a) => {
+  on("moss:window-drag", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) return;
@@ -797,21 +916,21 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     const shell = runtime.mainShell(s.frame, mount);
     hooks.windowDrag(shell?.windowId ?? s.windowId, shell !== undefined);
   });
-  on("clover:active-session", (event, a) => {
+  on("moss:active-session", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     if (mount === undefined) return;
-    // Only the app's own shell says what the window shows.
-    if (runtime.partOf(s.frame, mount).split("/")[0] !== "clover") return;
+    // Only the window's shell (the part the core mounted in `app.root`, whichever plugin's) says what the window shows.
+    if (runtime.mainShell(s.frame, mount) === undefined) return;
     const session = a.session === null ? null : str(a.session, 128);
     if (session !== undefined) hooks.activeSession(s.windowId, session);
   });
-  handle("clover:drag-offer", (event, a) => {
+  handle("moss:drag-offer", (event, a) => {
     const mount = str(a.mount, 32);
     if (mount === undefined) throw new LayerError("bad request");
     return runtime.dragOffer(sender(event).frame, mount, a.offer);
   });
-  handle("clover:drag-claim", (event, a) => {
+  handle("moss:drag-claim", (event, a) => {
     const mount = str(a.mount, 32);
     const token = str(a.token, 128);
     if (mount === undefined || token === undefined) throw new LayerError("bad request");
@@ -819,7 +938,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
   // The app's own page for a plugin's OK card a part places, for its Review: navigation the user's click asks for, never an
   // answer (the runtime holds the same placing rule as for its frames).
-  handle("clover:card-page", (event, a) => {
+  handle("moss:card-page", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const cardId = str(a.cardId, 64);
@@ -829,7 +948,7 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
   // A sealed frame's own single-use URL: its part asks, the runtime mints (the plugin's `approvals` capability's own
   // gate), and the scheme's handler serves once from the store's own copy of the card's sealed content.
-  handle("clover:sealed-frame", (event, a) => {
+  handle("moss:sealed-frame", (event, a) => {
     const s = sender(event);
     const mount = str(a.mount, 32);
     const cardId = str(a.cardId, 64);
@@ -853,10 +972,10 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   // Nothing a render window's page says about a card counts (an answer, a visibility, a press): it has placeholders, never
   // a minted frame, and this holds even if one ever got a token.
   const inRender = (event: IpcMainEvent | IpcMainInvokeEvent): boolean => runtime.isRenderWindow(BrowserWindow.fromWebContents(event.sender)?.id);
-  handle("clover:sealed-answer", (event, a) => {
+  handle("moss:sealed-answer", (event, a) => {
     try {
       const f = event.senderFrame;
-      if (f === null || f.detached || !f.url.startsWith("clover-sealed://")) throw new LayerError("not a sealed frame");
+      if (f === null || f.detached || !f.url.startsWith("moss-sealed://")) throw new LayerError("not a sealed frame");
       if (inRender(event)) throw new LayerError("a render window answers no card");
       const token = str(a.token, 128);
       const option = str(a.option, 64);
@@ -880,9 +999,9 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   // A sealed frame's page reports its own visibility (IOv2), so the main process can disarm the fallback once all of
   // a card's buttons show (§5.5's fallback rule). Checked like the answer: the sender must be the sealed frame its
   // token was served to, on the channel the mint bound (a part's document frame, the fallback's main frame).
-  on("clover:sealed-visible", (event, a) => {
+  on("moss:sealed-visible", (event, a) => {
     const f = event.senderFrame;
-    if (f === null || f.detached || !f.url.startsWith("clover-sealed://")) throw new LayerError("not a sealed frame");
+    if (f === null || f.detached || !f.url.startsWith("moss-sealed://")) throw new LayerError("not a sealed frame");
     if (inRender(event)) return;
     const token = str(a.token, 128);
     const visible = typeof a.visible === "boolean" ? a.visible : undefined;
@@ -896,11 +1015,30 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (bound === undefined || bound !== key) throw new LayerError("bad sealed visibility");
     return hooks.sealedVisible(token, visible);
   });
+  // The report a press asked for: a new observer the page made at the press says whether the button shows whole and uncovered right
+  // now. Checked like the visibility report: the sender is the sealed frame its token was served to, on the channel the mint bound.
+  on("moss:sealed-fresh", (event, a) => {
+    const f = event.senderFrame;
+    if (f === null || f.detached || !f.url.startsWith("moss-sealed://")) throw new LayerError("not a sealed frame");
+    if (inRender(event)) return;
+    const token = str(a.token, 128);
+    const seen = typeof a.seen === "boolean" ? a.seen : undefined;
+    const ms = typeof a.ms === "number" && Number.isFinite(a.ms) ? Math.max(0, Math.min(60_000, Math.round(a.ms))) : undefined;
+    if (token === undefined || seen === undefined || ms === undefined) throw new LayerError("bad sealed report");
+    const urlToken = new URL(f.url).searchParams.get("token");
+    if (urlToken === null || urlToken !== token) throw new LayerError("bad sealed report");
+    const key = f.parent !== null && !f.parent.detached
+      ? `p:${f.parent.processId}:${f.parent.routingId}`
+      : `m:${f.processId}:${f.routingId}`;
+    const bound = runtime.boundOf(token);
+    if (bound === undefined || bound !== key) throw new LayerError("bad sealed report");
+    return hooks.sealedFresh(token, seen, ms);
+  });
   // A press the sealed page saw, in one word of a fixed set: logged with the card's id, so a press that did nothing says why.
   // Checked like the visibility report: the sender is the sealed frame its token was served to, on the channel the mint bound.
-  on("clover:sealed-press", (event, a) => {
+  on("moss:sealed-press", (event, a) => {
     const f = event.senderFrame;
-    if (f === null || f.detached || !f.url.startsWith("clover-sealed://") || inRender(event)) return;
+    if (f === null || f.detached || !f.url.startsWith("moss-sealed://") || inRender(event)) return;
     const token = str(a.token, 128);
     const what = str(a.what, 24);
     if (token === undefined || what === undefined || !SEALED_PRESS_WORDS.includes(what)) return;
@@ -912,9 +1050,9 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
   // The app's own card page says how tall it is (a number): only its own window's main frame, on its own token, which the
   // mint bound to that frame, so a plugin's sealed frame can't size a card window.
-  on("clover:sealed-size", (event, a) => {
+  on("moss:sealed-size", (event, a) => {
     const f = event.senderFrame;
-    if (f === null || f.detached || f.parent !== null || !f.url.startsWith("clover-sealed://") || inRender(event)) return;
+    if (f === null || f.detached || f.parent !== null || !f.url.startsWith("moss-sealed://") || inRender(event)) return;
     const token = str(a.token, 128);
     const height = typeof a.height === "number" && Number.isFinite(a.height) ? Math.min(4000, Math.max(0, Math.round(a.height))) : undefined;
     if (token === undefined || height === undefined) return;
@@ -925,9 +1063,9 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
   // The Review on the app's own card page: like the size, only its own window's main frame, on its own token, bound to
   // that frame (a plugin's sealed frame, a part's, can't ask for a review's report).
-  handle("clover:sealed-review", (event, a) => {
+  handle("moss:sealed-review", (event, a) => {
     const f = event.senderFrame;
-    if (f === null || f.detached || f.parent !== null || !f.url.startsWith("clover-sealed://")) throw new LayerError("not the app's own card page");
+    if (f === null || f.detached || f.parent !== null || !f.url.startsWith("moss-sealed://")) throw new LayerError("not the app's own card page");
     const token = str(a.token, 128);
     const urlToken = new URL(f.url).searchParams.get("token");
     if (token === undefined || urlToken === null || urlToken !== token || runtime.boundOf(token) !== `m:${f.processId}:${f.routingId}`) throw new LayerError("not the app's own card page");
@@ -939,17 +1077,17 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
     if (f === null || f.parent !== null || !f.url.startsWith(`${CORE_SCHEME}://app/`)) return undefined;
     return BrowserWindow.fromWebContents(event.sender)?.id;
   };
-  on("clover:frame-metrics", (event, a) => {
+  on("moss:frame-metrics", (event, a) => {
     const id = fromRoot(event);
     const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1000, Math.round(v))) : d);
     if (id !== undefined) hooks.frameMetrics(id, { top: n(a.top, 45), start: n(a.start, 0), end: n(a.end, 0) });
   });
-  on("clover:root-command", (event, a) => {
+  on("moss:root-command", (event, a) => {
     const id = fromRoot(event);
     const name = str(a.name, 64);
     if (id !== undefined && name !== undefined) hooks.rootCommand(id, name);
   });
-  handle("clover:root-call", (event, a) => {
+  handle("moss:root-call", (event, a) => {
     const id = fromRoot(event);
     const name = str(a.name, 64);
     if (id === undefined || name === undefined) throw new LayerError("only the core's root calls that");
@@ -957,8 +1095,8 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
   });
 
   return () => {
-    for (const c of ["clover:describe", "clover:resolve", "clover:reload", "clover:wake", "clover:menu", "clover:drag-offer", "clover:drag-claim", "clover:surface-environment", "clover:open", "clover:root-call", "clover:entries", "clover:user-send", "clover:composer", "clover:api", "clover:terminal-input", "clover:shell", "clover:sealed-frame", "clover:sealed-answer", "clover:sealed-visible"]) ipcMain.removeHandler(c);
-    for (const c of ["clover:props", "clover:callback", "clover:size", "clover:release", "clover:sleep", "clover:surface", "clover:rect-reply", "clover:frame-metrics", "clover:root-command", "clover:view-frame", "clover:web-frame", "clover:active-session", "clover:window-drag", "clover:shell-report", "clover:sealed-size", "clover:sealed-press"]) ipcMain.removeAllListeners(c);
+    for (const c of ["moss:describe", "moss:resolve", "moss:reload", "moss:wake", "moss:menu", "moss:drag-offer", "moss:drag-claim", "moss:surface-environment", "moss:open", "moss:root-call", "moss:entries", "moss:user-send", "moss:composer", "moss:api", "moss:terminal-input", "moss:shell", "moss:sealed-frame", "moss:app-view", "moss:sealed-answer", "moss:sealed-visible", "moss:sealed-fresh"]) ipcMain.removeHandler(c);
+    for (const c of ["moss:props", "moss:callback", "moss:size", "moss:release", "moss:sleep", "moss:surface", "moss:rect-reply", "moss:frame-metrics", "moss:root-command", "moss:view-frame", "moss:web-frame", "moss:active-session", "moss:window-drag", "moss:shell-report", "moss:sealed-size", "moss:sealed-press"]) ipcMain.removeAllListeners(c);
   };
 }
 

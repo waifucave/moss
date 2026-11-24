@@ -3,14 +3,14 @@ import { execFile } from "node:child_process";
 import { constants, type Stats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { CLOVER_TEAM_ID } from "../bundled-identities";
+import { MOSS_PROGRAM_IDENTIFIERS, MOSS_TEAM_ID } from "../bundled-identities";
 import type { HostCodeOutputTransportFactory } from "./host-code-broker";
 
 export const HOST_OUTPUT_PROTOCOL_VERSION = 1;
 export const HOST_OUTPUT_IMPLEMENTATION_ID = "winter-host-output/v1";
 export const HOST_OUTPUT_BUNDLE_SUBPATH = "native/host-output";
 const ARTIFACT = "winter-host-output.node";
-const TEAM = CLOVER_TEAM_ID;
+const TEAM = MOSS_TEAM_ID;
 const SHA = /^[a-f0-9]{64}$/;
 // Retain the handles, not just FD integers: FileHandle's GC must not release a
 // dyld name or an image containing registered process-lifetime atfork callbacks.
@@ -114,6 +114,8 @@ function codesign(args: string[]): Promise<{ stdout: string; stderr: string }> {
     });
   });
 }
+/** The apps whose `Resources/moss-core` may load the host-output add-on. */
+export const HOST_OUTPUT_APP_IDENTIFIERS = [MOSS_PROGRAM_IDENTIFIERS.code.dist, MOSS_PROGRAM_IDENTIFIERS.code.dev, MOSS_PROGRAM_IDENTIFIERS.moss.dist, MOSS_PROGRAM_IDENTIFIERS.moss.dev] as const;
 const signatures: SignatureVerifier = async (app, core, addon) => {
   const team = `anchor apple generic and certificate leaf[subject.OU] = "${TEAM}"`;
   const flags = await codesign(["-dv", core]);
@@ -127,12 +129,14 @@ const signatures: SignatureVerifier = async (app, core, addon) => {
   await verify(core, team);
   await verify(addon, `(${team}) and identifier "com.winter.host-output"`);
   // Last: seal-check the manifest/image tree pinned before verification.
-  await verify(app, `(${team}) and (identifier "com.waifucave.clover" or identifier "com.waifucave.clover.dev")`);
+  // The bundle moss-core lives in: either app carries a copy of the engine (spec revision 19, §3.1), MOSS Code or MOSS,
+  // dist or dev. Never the host's id: the host is a helper nested in an app and carries no engine.
+  await verify(app, `(${team}) and (${HOST_OUTPUT_APP_IDENTIFIERS.map((id) => `identifier "${id}"`).join(" or ")})`);
   return true;
 };
 async function load(corePath: string, verify: SignatureVerifier, loadAddon: (fd: number) => Addon, retainMapping: boolean): Promise<HostCodeOutputTransportFactory> {
   const core = await realpath(corePath), resources = dirname(core), contents = dirname(resources), app = dirname(contents);
-  if (basename(core) !== "clover-core" || basename(resources) !== "Resources" || basename(contents) !== "Contents" || !app.endsWith(".app")) {
+  if (basename(core) !== "moss-core" || basename(resources) !== "Resources" || basename(contents) !== "Contents" || !app.endsWith(".app")) {
     throw new HostOutputUnavailable("bundle-layout");
   }
   const root = join(resources, HOST_OUTPUT_BUNDLE_SUBPATH), path = join(root, ARTIFACT), record = join(root, "manifest.json");
@@ -212,7 +216,7 @@ function lazy(resolve: () => Promise<HostCodeOutputTransportFactory>, log?: (lin
 export function loadBundledHostOutputFactory(log: (line: string) => void = line => console.error(line)): HostCodeOutputTransportFactory | undefined {
   if (bundled) return bundled;
   const core = process.execPath, resources = dirname(core), contents = dirname(resources), app = dirname(contents);
-  if (process.platform !== "darwin" || process.arch !== "arm64" || basename(core) !== "clover-core" ||
+  if (process.platform !== "darwin" || process.arch !== "arm64" || basename(core) !== "moss-core" ||
       basename(resources) !== "Resources" || basename(contents) !== "Contents" || !app.endsWith(".app")) return undefined;
   return bundled = lazy(() => load(core, signatures, nativeAddon, true), log);
 }

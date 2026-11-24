@@ -5,7 +5,7 @@
 // * A view is a running plugin's (on, and running or waiting) that has components, `ui` entries, themes, locales or a
 //   bot. Its files are its folder's (`assetBase`: for a bundled plugin, the private copy of its verified bytes). Its
 //   `clientEntry` is the manifest's `client.entry` when that is a built module (`.js`/`.mjs`); a TypeScript entry gets
-//   `clientBuild` once the registry's load-time build (`registry/client-builds.ts`) lands, and its parts mount then. Everything under `clover` shares the `clover` layer; any other
+//   `clientBuild` once the registry's load-time build (`registry/client-builds.ts`) lands, and its parts mount then. Everything under `moss` shares the `moss` layer; any other
 //   plugin's layer is its id with `/` written `--`. `ui`, `themes`, `locales` and the bot are its active entries.
 // * `plugin.layer.api` runs as the user (`client: app`), from the `ui` side of the capability gate: only the calls a
 //   component may make, each needing what the plugin's OK granted. `pluginId` is the one the app bound the mount to,
@@ -15,39 +15,39 @@
 // * A component reaches every member the SDK's catalog gives components (`COMPONENT_CALLS`), on its own layer
 //   connection (`plugin.layer.call`) or the app's (`plugin.layer.api`): the same router, so the same capability, fence
 //   and limits as its host half's call, from the `ui` side as the plugin. What only a host half's process could ask is
-//   held the same way here: the account token (`net.fetch` with `auth: "waifucave"`) only for the bundled `clover`
+//   held the same way here: the account token (`net.fetch` with `auth: "waifucave"`) only for the bundled `moss`
 //   tree's own components; `secrets.get` never (the router: own process only); a `net.fetch` key placed by the core and
 //   masked out of what comes back, so the page never sees it. A member that takes a listener is a watch
 //   (`plugin.layer.watch`): the core's listener sits in its place and each value goes back as `plugin_api_event` to
 //   that connection alone, until it is unwatched, the connection closes, or the plugin stops, is turned off, removed or
 //   loses the capability (`ended`, with why).
 import {
-  API_CALLS, apiCallAllowed, clampAvatarCap, isComponentCall, listenerArgOf, fromLayerWire, responseToLayerWire, toLayerWire,
-  type ApiCallInfo, type AvatarFormatEntry,
-} from "@waifucave/clover-plugin-sdk";
+  API_CALLS, apiCallAllowed, clampDataFileCap, isComponentCall, listenerArgOf, fromLayerWire, responseToLayerWire, toLayerWire,
+  type ApiCallInfo, type DataFileType,
+} from "@waifucave/moss-plugin-sdk";
 import { randomUUID } from "node:crypto";
-import { PLUGINS_EVENTS, PLUGINS_METHODS, topPluginIdOf, type UiPluginView } from "@waifucave/clover-protocol";
+import { PLUGINS_EVENTS, PLUGINS_METHODS, topPluginIdOf, type DataFilesView, type UiPluginView } from "@waifucave/moss-protocol";
 import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
-import { cloverProcessOnly, type ApiRouter } from "../contracts/plugin-host";
+import { mossProcessOnly, type ApiRouter } from "../contracts/plugin-host";
 import { RUNNING_STATES, type PluginRecord, type PluginRegistry } from "../contracts/plugin-registry";
 import { handler, MethodError, toMethodError, type MethodHandler } from "../rpc/handler";
 
 /** The registry states whose plugins show UI: on and running, or waiting for a point. */
 const SHOWN = new Set(["running", "waiting"]);
 
-/** The layer a plugin's documents load in: `clover` for the whole bundled tree, otherwise its id with `/` as `--`. */
+/** The layer a plugin's documents load in: `moss` for the whole bundled tree, otherwise its id with `/` as `--`. */
 export function layerOf(pluginId: string): string {
-  return pluginId === "clover" || pluginId.startsWith("clover/") ? "clover" : pluginId.replace(/\//g, "--");
+  return pluginId === "moss" || pluginId.startsWith("moss/") ? "moss" : pluginId.replace(/\//g, "--");
 }
 
-type Entries = Pick<PluginRegistry, "entries">;
+type Entries = Pick<PluginRegistry, "entries"> & Partial<Pick<PluginRegistry, "points">>;
 
 function activeValues<T>(registry: Entries, point: string, pluginId: string): T[] {
   return registry.entries(point).filter((c) => c.pluginId === pluginId && c.state === "active").map((c) => c.value as T);
 }
 
-/** A plugin's picture: its manifest's `icon`, else its bot's avatar portrait (each a file in its folder). */
+/** A plugin's picture: its manifest's `icon` (a file in its folder). */
 /** Only a path inside its own folder that a view can hold (UiPluginView's icon): never one that would fail the list. */
 const inFolder = (p: unknown): p is string => typeof p === "string" && p !== "" && p.length <= 4096 && !p.startsWith("/") && !p.includes("\\") && !/^[a-z][a-z0-9+.-]*:/i.test(p) && !p.split("/").some((s) => s === ".." || s === "." || s === "");
 
@@ -58,11 +58,30 @@ export function manifestIconOf(m: unknown): string | undefined {
 }
 
 export function iconOf(m: unknown): string | undefined {
-  const x = m as { icon?: unknown; contributes?: { bot?: { avatar?: { portrait?: unknown } } } };
-  const own = manifestIconOf(m);
-  if (own !== undefined) return own;
-  const portrait = x.contributes?.bot?.avatar?.portrait;
-  return inFolder(portrait) ? portrait : undefined;
+  return manifestIconOf(m);
+}
+
+/** The files that come with a plugin's entries (`DataFilesView`): for each point a running declaration declares with
+ *  `files`, each active entry of the plugin's there, each such field naming a path in its folder: that path's folder,
+ *  with the declared kinds, each cap clamped. */
+export function dataFilesOf(registry: Pick<PluginRegistry, "entries"> & Partial<Pick<PluginRegistry, "points">>, pluginId: string): DataFilesView[] {
+  if (registry.points === undefined) return [];
+  const out: DataFilesView[] = [];
+  for (const p of registry.points()) {
+    const files = p.decl?.files as Record<string, { kinds: { ext: string[]; type: DataFileType; maxBytes?: number }[] }> | undefined;
+    if (!p.active || p.spot || p.declaredBy === "core" || files === undefined) continue;
+    for (const c of registry.entries(p.name)) {
+      const value = c.value as Record<string, unknown> | null;
+      if (c.pluginId !== pluginId || c.state !== "active" || value === null || typeof value !== "object") continue;
+      for (const [field, spec] of Object.entries(files)) {
+        const path = value[field];
+        if (!inFolder(path)) continue;
+        const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+        out.push({ folder, kinds: spec.kinds.slice(0, 16).map((k) => ({ ext: [...k.ext], type: k.type, maxBytes: clampDataFileCap(k.type, k.maxBytes) })) });
+      }
+    }
+  }
+  return out.slice(0, 64);
 }
 
 /** One plugin's view, or undefined when it shows no UI. */
@@ -82,16 +101,10 @@ export function uiViewOf(registry: Entries, r: PluginRecord, builds?: Pick<Clien
   const ui = activeValues<Record<string, unknown>>(registry, "ui", r.id);
   const themes = activeValues<{ id: string; file: string }>(registry, "themes", r.id).map((t) => ({ id: t.id, file: t.file }));
   const locales = activeValues<{ lang: string; file: string }>(registry, "locales", r.id).map((l) => ({ lang: l.lang, file: l.file }));
-  const bot = activeValues<{ name: string; theme?: string; layout?: string; avatar?: { file?: unknown; format?: unknown } }>(registry, "bot", r.id)[0];
-  const avatarFormats = activeValues<AvatarFormatEntry>(registry, "avatar.formats", r.id).map((f) => ({
-    format: f.format,
-    extensions: [...f.entry.extensions],
-    kinds: f.files.kinds.map((k) => ({ ext: [...k.ext], type: k.type, maxBytes: clampAvatarCap(k.type, k.maxBytes) })),
-    find: f.files.find,
-    ...(f.files.maxFiles !== undefined ? { maxFiles: f.files.maxFiles } : {}),
-  }));
+  const bot = activeValues<{ name: string; theme?: string; layout?: string }>(registry, "bot", r.id)[0];
+  const dataFiles = dataFilesOf(registry, r.id);
   const client = m.client;
-  if (client === undefined && ui.length === 0 && themes.length === 0 && locales.length === 0 && bot === undefined && avatarFormats.length === 0) return undefined;
+  if (client === undefined && ui.length === 0 && themes.length === 0 && locales.length === 0 && bot === undefined && dataFiles.length === 0) return undefined;
   const networkHosts = r.granted.filter((c) => c.startsWith("network:")).map((c) => c.slice("network:".length)).filter((h) => h !== "");
   return {
     pluginId: r.id,
@@ -101,8 +114,8 @@ export function uiViewOf(registry: Entries, r: PluginRecord, builds?: Pick<Clien
     capabilities: [...r.granted],
     ...(client?.css !== undefined && client.css.length > 0 ? { css: [...client.css] } : {}),
     ...(networkHosts.length > 0 ? { networkHosts } : {}),
-    ...(avatarFormats.length > 0 ? { avatarFormats } : {}),
-    ...(bot !== undefined ? { bot: { name: bot.name, ...(bot.theme !== undefined ? { theme: bot.theme } : {}), ...(bot.layout !== undefined ? { layout: bot.layout } : {}), ...(userLayout?.(r.id) !== undefined ? { userLayout: userLayout(r.id)! } : {}), ...(typeof bot.avatar?.file === "string" && bot.avatar.file !== "" && bot.avatar.file.length <= 4096 && typeof bot.avatar.format === "string" && bot.avatar.format !== "" && bot.avatar.format.length <= 32 ? { avatar: { file: bot.avatar.file, format: bot.avatar.format } } : {}) } } : {}),
+    ...(dataFiles.length > 0 ? { dataFiles } : {}),
+    ...(bot !== undefined ? { bot: { name: bot.name, ...(bot.theme !== undefined ? { theme: bot.theme } : {}), ...(bot.layout !== undefined ? { layout: bot.layout } : {}), ...(userLayout?.(r.id) !== undefined ? { userLayout: userLayout(r.id)! } : {}) } } : {}),
     layer: layerOf(r.id),
     ...(iconOf(m) !== undefined ? { icon: iconOf(m) } : {}),
     assetBase: r.folder,
@@ -116,7 +129,7 @@ export function uiViewOf(registry: Entries, r: PluginRecord, builds?: Pick<Clien
   };
 }
 
-export function uiPluginViews(registry: Pick<PluginRegistry, "list" | "entries">, builds?: Pick<ClientBuildLookup, "get">, userLayout?: UserLayoutOf): UiPluginView[] {
+export function uiPluginViews(registry: Pick<PluginRegistry, "list" | "entries"> & Partial<Pick<PluginRegistry, "points">>, builds?: Pick<ClientBuildLookup, "get">, userLayout?: UserLayoutOf): UiPluginView[] {
   const out: UiPluginView[] = [];
   for (const r of registry.list()) {
     const v = uiViewOf(registry, r, builds, userLayout);
@@ -126,15 +139,15 @@ export function uiPluginViews(registry: Pick<PluginRegistry, "list" | "entries">
 }
 
 export interface PluginUiOptions {
-  registry: Pick<PluginRegistry, "list" | "entries" | "watch"> & Partial<Pick<PluginRegistry, "get">>;
+  registry: Pick<PluginRegistry, "list" | "entries" | "watch"> & Partial<Pick<PluginRegistry, "get" | "points">>;
   /** A plugin's settings as its own layer reads and changes them (`PluginSettings.layerView`, `layerSet`). Absent: both
    *  are refused. */
-  settings?: { layerView(pluginId: string, key?: string): Promise<unknown>; layerSet(pluginId: string, key: string, value: unknown): void };
+  settings?: { layerView(pluginId: string, key?: string, bot?: string): Promise<unknown>; layerSet(pluginId: string, key: string, value: unknown, bot?: string): void };
   /** The capability gate with no process check (`createApiRouter`'s): a component's call comes from the `ui` side. */
   router: ApiRouter;
-  /** Sends a core event to the app (the Clover server's `coreEvent`). */
+  /** Sends a core event to the app (the MOSS server's `coreEvent`). */
   emit(event: { type: string; [key: string]: unknown }): void;
-  /** Sends a core event to the one connection whose follows these are (a component's watch value): the Clover server's
+  /** Sends a core event to the one connection whose follows these are (a component's watch value): the MOSS server's
    *  `coreEvent` with `to: (conn) => conn.follows === follows`. Absent: a watch is refused. */
   emitTo?(follows: Map<string, () => void>, event: { type: string; [key: string]: unknown }): void;
   clock?: Pick<Clock, "setTimeout" | "clearTimeout">;
@@ -148,9 +161,12 @@ export interface PluginUiOptions {
 /** `plugin.layer.call`'s limits: its args serialized, and calls per plugin per second (a watch opened counts as one). */
 export const LAYER_CALL_MAX_BYTES = 64 * 1024;
 export const LAYER_CALLS_PER_SECOND = 20;
+/** A stream's flow calls (§5.4 "Streams") are not counted in that rate: the daemon's credit is their rate (a write waits
+ *  for room, one at a time per stream; an acknowledgement is for bytes already sent), and a piece is at most 32 KiB. */
+export const LAYER_UNRATED_CALLS: ReadonlySet<string> = new Set(["streams.write", "streams.ack"]);
 /** The members whose args carry bytes (a clip, a file), and how many serialized bytes they may take: under the app's
  *  own cap on a layer's call (`LAYER_CALL_MAX` in the app's layer-links.ts, 2,000,000 characters). */
-const BIG_ARGS: ReadonlySet<string> = new Set(["audio.play", "files.write"]);
+const BIG_ARGS: ReadonlySet<string> = new Set(["files.write"]);
 export const LAYER_CALL_BIG_MAX_BYTES = 1_500_000;
 /** An answer handed to a component, serialized, at most: one line well under the connection's 4 MiB send buffer
  *  (`ConnWriter`), so a big answer is refused with why rather than cutting the page's connection. */
@@ -167,9 +183,6 @@ export const LAYER_WATCHES_PER_PLUGIN = 64;
 /** A watch's value as sent, at most; a larger one is sent as `{ $tooLarge: <bytes> }` in its place, so the page knows
  *  it missed one. */
 export const LAYER_WATCH_VALUE_MAX_BYTES = 256 * 1024;
-/** A push-to-talk piece is bigger: `voice.listen` takes up to 2,000,000 characters of base64 a piece, and the page gets
- *  it whole (as `{ $bytes }`, the same base64), so `audio.onRecording`'s values may take that and their envelope. */
-export const LAYER_RECORDING_VALUE_MAX_BYTES = 2_100_000;
 /** What a whole-file read (`files.readText` or `files.readBytes` with no `length`) may be, so its answer fits
  *  LAYER_RESULT_MAX_BYTES: checked from the file's size before it is read, never after reading it all. */
 const WHOLE_READ_MAX: Readonly<Record<string, number>> = {
@@ -191,7 +204,7 @@ export function layerCallRefusal(call: string, watch = false): string | undefine
   return undefined;
 }
 
-const isBundledClover = (r: Pick<PluginRecord, "id" | "source"> | undefined): boolean => r !== undefined && r.source === "bundled" && topPluginIdOf(r.id) === "clover";
+const isBundledMoss = (r: Pick<PluginRecord, "id" | "source"> | undefined): boolean => r !== undefined && r.source === "bundled" && topPluginIdOf(r.id) === "moss";
 
 /** The serialized size of a value, or undefined when it isn't JSON. */
 function jsonBytes(v: unknown): number | undefined {
@@ -245,27 +258,33 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
   };
   const layerWindows = new Map<string, { start: number; n: number }>();
   // `settings.get` and `settings.set` from a plugin's own layer: its own settings only (the connection's plugin; a
-  // child's layer is the child's, and reaches the child's own), while it is on and running (`grantsInForce`'s rule). A
-  // read gives a secret only as `{ set }`; a change is `layerSet`'s (never a secret, a bot value or a setting written
-  // into what the plugin runs), with no card, at most LAYER_SETTING_WRITES_PER_MINUTE a minute. No capability: they
-  // are its own, as its own events are (§5.4).
+  // child's layer is the child's, and reaches the child's own), while it is on and running (`grantsInForce`'s rule), at
+  // every scope as the host half reaches them (F2: `{ bot }` names the bot of a `bot` field, any bot). A read gives a
+  // secret only as `{ set }`; a change is `layerSet`'s (never a secret or a setting written into what the plugin runs),
+  // with no card, at most LAYER_SETTING_WRITES_PER_MINUTE a minute. No capability: they are its own, as its own events
+  // are (§5.4).
   const settingWrites = new Map<string, number[]>();
   const ownSettings = async (pluginId: string, call: "settings.get" | "settings.set", args: readonly unknown[]): Promise<unknown> => {
     const key = args[0];
     const keyOk = typeof key === "string" && key.length > 0 && key.length <= 128;
-    if (call === "settings.get" ? args.length > 1 || (key !== undefined && !keyOk) : args.length !== 2 || !keyOk) {
-      throw new ContractError("invalid", call === "settings.get" ? "settings.get takes one of the plugin's setting keys, or nothing for every key" : "settings.set takes one of the plugin's setting keys and its value");
+    // The last argument may be `{ bot }`, as the host half's `settings.get(key, { bot })` and `set(key, value, { bot })`.
+    const optsAt = call === "settings.get" ? 1 : 2;
+    const opts = args[optsAt];
+    const optsOk = opts === undefined || (typeof opts === "object" && opts !== null && !Array.isArray(opts) && Object.keys(opts).every((k) => k === "bot") && ((opts as { bot?: unknown }).bot === undefined || typeof (opts as { bot?: unknown }).bot === "string"));
+    const bot = optsOk ? (opts as { bot?: string } | undefined)?.bot : undefined;
+    if (args.length > optsAt + 1 || !optsOk || (call === "settings.get" ? key !== undefined && !keyOk : args.length < 2 || !keyOk) || (call === "settings.get" && key === undefined && bot !== undefined)) {
+      throw new ContractError("invalid", call === "settings.get" ? "settings.get takes one of the plugin's setting keys (and { bot } for a bot's value), or nothing for every key" : "settings.set takes one of the plugin's setting keys, its value, and { bot } for a bot's value");
     }
     const record = o.registry.get?.(pluginId);
     if (record === undefined || !record.enabled || !RUNNING_STATES.has(record.state)) throw new ContractError("refused", `${pluginId} isn't running, so its page reaches none of its settings`);
     if (o.settings === undefined) throw new ContractError("refused", "this computer's plugin settings aren't open");
-    if (call === "settings.get") return o.settings.layerView(pluginId, key as string | undefined);
+    if (call === "settings.get") return o.settings.layerView(pluginId, key as string | undefined, bot);
     // One budget per top-level plugin: its children's pages share it.
     const top = topPluginIdOf(pluginId);
     const now = Date.now();
     const recent = (settingWrites.get(top) ?? []).filter((t) => now - t < 60_000);
     if (recent.length >= LAYER_SETTING_WRITES_PER_MINUTE) throw new ContractError("refused", `${top}'s pages changed its settings ${LAYER_SETTING_WRITES_PER_MINUTE} times this minute; try again in a moment`);
-    o.settings.layerSet(pluginId, key as string, args[1]);
+    o.settings.layerSet(pluginId, key as string, args[1], bot);
     recent.push(now);
     settingWrites.set(top, recent);
     return null;
@@ -285,9 +304,9 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
     if (size > max) throw new ContractError("invalid", `${method}'s args are ${size} bytes; at most ${max}`);
   };
   /** What only a host half's own process could ask is held here the same way: the account token only for the bundled
-   *  `clover` tree's own components (`guardApiRouter`'s rule for its `clover` process). */
+   *  `moss` tree's own components (`guardApiRouter`'s rule for its `moss` process). */
   const processRule = (pluginId: string, call: string, args: readonly unknown[]) => {
-    if (cloverProcessOnly(call, args) && !isBundledClover(o.registry.get?.(pluginId))) throw new ContractError("refused", `${call} is honoured only from the bundled clover tree`);
+    if (mossProcessOnly(call, args) && !isBundledMoss(o.registry.get?.(pluginId))) throw new ContractError("refused", `${call} is honoured only from the bundled moss tree`);
   };
   const failed = (err: unknown, pluginId: string, call: string): never => {
     const e = toMethodError(err instanceof ContractError || err instanceof MethodError ? err : new ContractError("failed", err instanceof Error ? err.message : String(err)));
@@ -373,7 +392,7 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
       if (!open) return;
       let wire = toLayerWire(value);
       const size = jsonBytes(wire);
-      if (size === undefined || size > (call === "audio.onRecording" ? LAYER_RECORDING_VALUE_MAX_BYTES : LAYER_WATCH_VALUE_MAX_BYTES)) wire = { $tooLarge: size ?? -1 };
+      if (size === undefined || size > LAYER_WATCH_VALUE_MAX_BYTES) wire = { $tooLarge: size ?? -1 };
       emitTo(follows, { type: PLUGINS_EVENTS.pluginApiEvent.type, pluginId, watch: id, ...(wire === undefined ? {} : { value: wire }) });
     };
     const input = fromLayerWire(args, { responses: false }) as unknown[];
@@ -430,7 +449,7 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
         if (ctx.caller.kind !== "plugin") throw new ContractError("refused", "only a plugin's UI layer calls its plugin this way");
         const pluginId = ctx.caller.pluginId;
         sized("plugin.layer.call", p.call, p.args);
-        rated(pluginId);
+        if (!LAYER_UNRATED_CALLS.has(p.call)) rated(pluginId);
         if (p.call === "settings.get" || p.call === "settings.set") return { result: await ownSettings(pluginId, p.call, p.args) };
         try {
           return { result: await componentCall(pluginId, p.call, p.args) };
@@ -462,7 +481,7 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
         try {
           // A component acts as its plugin, never as the user (the coordinator's ruling on #333): `commands.run`,
           // `host.call` and every area see the plugin. The user's own gesture counts only on the app's explicit path
-          // (`pill.send` inside a real key press or click, carried by the app's main process).
+          // (`user.send` inside a real key press or click, carried by the app's main process).
           return { result: await componentCall(p.pluginId, p.call, p.args, p.session) };
         } catch (err) {
           return failed(err, p.pluginId, p.call);
@@ -471,7 +490,7 @@ export function pluginUi(o: PluginUiOptions): { methods: Record<string, MethodHa
     },
     close() {
       stop();
-      for (const w of [...watches.values()]) w.end("Clover's plugins closed");
+      for (const w of [...watches.values()]) w.end("MOSS's plugins closed");
       if (timer !== undefined) {
         if (o.clock !== undefined) o.clock.clearTimeout(timer as TimerHandle);
         else clearTimeout(timer as ReturnType<typeof setTimeout>);

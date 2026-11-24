@@ -14,7 +14,7 @@
 // lane C's per-principal patch) with a static CRT and posts their digests: the pins below are lane M's
 // CI digests (#207 910b7711e, both build pairs byte-identical, no dynamic CRT).
 // Every launch checks the digest and fails closed with exit 3 on a mismatch; once Windows signing exists, the launch
-// also checks that the signature is Clover's (a native check, still to be built).
+// also checks that the signature is MOSS's (a native check, still to be built).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { win32 } from "node:path";
@@ -25,10 +25,14 @@ export type SrtWinArch = "x64" | "arm64";
 /**
  * The pinned launcher digests, one per architecture. Shape is load-bearing: lane M's build check parses this exact
  * constant (`parsePins` in `scripts/release/srt-win.ts`), so keep it a frozen object literal with `x64` and `arm64`.
- * Both are lane M's CI digests of the patched static-CRT build (per-principal records, Addendum 13).
+ * Both are CI digests of the patched static-CRT build (per-principal records, Addendum 13). x64 has patch 0002 too
+ * (session 0's named objects) and was re-measured on 2026-11-23 by the windows-fence workflow (`scripts/ci/windows-fence/build-launcher.ps1`, windows-latest, Server
+ * 2025 26100): lane M's earlier x64 pin was no longer reproducible from the pinned source and patch on that image (its
+ * MSVC linker had moved on; /BREPRO makes a build repeatable only on one toolchain). arm64 is still lane M's and is not
+ * rebuilt by any job here, and lacks patch 0002 (it must be rebuilt on an arm64 toolchain). A release must ship the launcher built on the toolchain that measured its pin.
  */
 export const SRT_WIN_PINS = Object.freeze({
-  x64: "95b2c474943b9cae55a2521a643e9a09aa34847e05c79796316c6ca819b4ae92",
+  x64: "64068333097946441a0ec11b0d7ef81dac0d95d0115458d296742743051377ab",
   arm64: "bcd117665fe9f64494bd535b9508e4808ae99ad0ff6118fb410a7f60bb47abb9",
 });
 
@@ -37,10 +41,10 @@ export function srtWinArch(arch: string = process.arch): SrtWinArch {
   return arch === "arm64" ? "arm64" : "x64";
 }
 
-/** Where the launcher lives: beside the running `clover-core` binary (lane M's installer puts it there), or
- *  `CLOVER_SRT_WIN` in dev and tests. */
+/** Where the launcher lives: beside the running `moss-core` binary (lane M's installer puts it there), or
+ *  `MOSS_SRT_WIN` in dev and tests. */
 export function srtWinPath(execPath: string = process.execPath, env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.CLOVER_SRT_WIN;
+  const override = env.MOSS_SRT_WIN;
   if (override) return override;
   // Always a Windows path, whatever OS renders it (tests on macOS included).
   return win32.join(win32.dirname(execPath), "srt-win.exe");
