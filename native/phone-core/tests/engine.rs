@@ -205,10 +205,20 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     conn.bot_summaries().await.expect("bot_summaries()");
     let raw_sessions: Value = serde_json::from_str(&conn.call("session.list".into(), "{}".into()).await.unwrap()).unwrap();
     assert_eq!(conn.sessions().await.expect("sessions()").len(), raw_sessions["sessions"].as_array().unwrap().len());
-    conn.backends().await.expect("backends()");
-    conn.recent_start().await.expect("recent_start()");
-    conn.models(None).await.expect("models()");
-    conn.commands().await.expect("commands()");
+    // Where the test engine can't answer (its agents don't run on a temp home), the typed call gives the same error the
+    // raw one does; where it answers, the typed call reads it.
+    for (method, typed) in [
+        ("agent.backends", conn.backends().await.map(|v| v.len())),
+        ("agent.recent", conn.recent_start().await.map(|_| 0)),
+        ("models.list", conn.models(None).await.map(|v| v.models.len())),
+        ("command.list", conn.commands().await.map(|v| v.len())),
+    ] {
+        match (conn.call(method.into(), "{}".into()).await, typed) {
+            (Ok(_), Ok(_)) => {}
+            (Err(CoreError::Rpc { code: a, .. }), Err(CoreError::Rpc { code: b, .. })) => assert_eq!(a, b, "{method}"),
+            (raw, typed) => panic!("{method}: raw {raw:?}, typed {typed:?}"),
+        }
+    }
     if let Some(b) = typed_bots.first() {
         conn.conversation(b.id.clone(), None, 20).await.expect("conversation()");
         conn.history(b.main_session.clone(), None, 20).await.expect("history()");
@@ -354,15 +364,17 @@ async fn unpaired_the_phone_pairs_the_same_computer_again_as_a_new_device() {
     let old = core.identity();
     engine.ok(json!({ "cmd": "waitDevice", "device": old.device_id })).await;
     let old_seeds: Vec<Vec<u8>> = ["device-key", "answer-key"].iter().map(|k| storage.0.lock().unwrap()[*k].clone()).collect();
-    // While a pairing shows its words, the last computer can't be forgotten (the pairing would complete under keys
-    // replaced by it); once that pairing is rejected, it can.
-    let begun = engine.ok(json!({ "cmd": "begin" })).await;
-    let open = core.clone().begin_pairing(begun["qr"].as_str().unwrap().into(), PhoneApp::Moss).await.expect("a second pairing shows its words");
+    // While a pairing with another computer shows its words, the last computer can't be forgotten (the pairing would
+    // complete under keys replaced by it); once that pairing is rejected, it can.
+    let mut other = Engine::start().await;
+    let begun = other.ok(json!({ "cmd": "begin" })).await;
+    let open = core.clone().begin_pairing(begun["qr"].as_str().unwrap().into(), PhoneApp::Moss).await.expect("a pairing with another computer shows its words");
     assert!(matches!(core.forget_computer(first.id.clone()), Err(CoreError::Refused { .. })), "refused while a pairing is open");
     assert_eq!(core.paired_computers().unwrap().len(), 1, "nothing was forgotten");
     assert_eq!(core.identity().device_id, old.device_id);
     open.reject().await;
     drop(open);
+    other.stop().await;
     // Unpaired on the phone: nothing of that pairing stays, its identity included.
     core.forget_computer(first.id.clone()).unwrap();
     assert!(storage.0.lock().unwrap().iter().all(|(_, v)| !old_seeds.contains(v)), "an old seed is still in the store");

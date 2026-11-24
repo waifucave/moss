@@ -190,7 +190,8 @@ pub struct AnswerOutcome {
 }
 
 struct Queue {
-    q: VecDeque<ConnEvent>,
+    /// Each event with the weight it was counted at (a card's state can change while it waits: its weight is fixed).
+    q: VecDeque<(usize, ConnEvent)>,
     bytes: usize,
     dropped: u32,
     closed: bool,
@@ -209,15 +210,15 @@ impl Events {
         }
         let w = e.weight();
         while !g.q.is_empty() && (g.q.len() >= MAX_EVENTS || g.bytes + w > MAX_EVENT_BYTES) {
-            let old = g.q.pop_front().unwrap();
-            g.bytes -= old.weight();
+            let (old, _) = g.q.pop_front().unwrap();
+            g.bytes -= old;
             g.dropped += 1;
         }
         if matches!(e, ConnEvent::Closed) {
             g.closed = true;
         }
         g.bytes += w;
-        g.q.push_back(e);
+        g.q.push_back((w, e));
         drop(g);
         self.notify.notify_one();
     }
@@ -233,8 +234,8 @@ impl Events {
                     let dropped = std::mem::take(&mut g.dropped);
                     return Some(ConnEvent::Lagged { dropped });
                 }
-                if let Some(e) = g.q.pop_front() {
-                    g.bytes -= e.weight();
+                if let Some((w, e)) = g.q.pop_front() {
+                    g.bytes -= w;
                     return Some(e);
                 }
                 if g.closed {

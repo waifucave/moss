@@ -972,3 +972,36 @@ async fn the_open_question_comes_from_its_door_or_from_the_log_on_an_older_engin
     assert_eq!((q.call_id.as_str(), q.seq, q.asked_at), ("old", 4, 7));
     c.disconnect();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_answered_while_its_event_waits_leaves_the_queue_whole() {
+    // The pending list is queued; before the app reads it, the card is answered (its shared state changes). Reading the
+    // queue afterwards must not miscount it (an event's weight is the one it was queued at).
+    let a = card("card_aaaaaaaa", "Card A");
+    let (a2, a3) = (a.clone(), a.clone());
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| match m {
+            "card.list" => Reply::Result(json!({ "cards": [a2.clone()] })),
+            "card.get" => Reply::Result(json!({ "card": a3.clone() })),
+            "card.answer" => Reply::Result(json!({ "accepted": true })),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while c.state() != moss_phone_core::LinkState::Up {
+        assert!(Instant::now() < end, "never up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let fetched = c.fetch_card("card_aaaaaaaa".into()).await.unwrap();
+    assert!(c.answer_card(fetched, "approve".into(), vec![]).await.unwrap().accepted);
+    let ConnEvent::PendingCards { cards } = until(&c, "the pending cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await else { unreachable!() };
+    assert!(!cards[0].pending(), "the listed view shares the answered state");
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    assert_eq!(c.queued_event_bytes(), 0, "the queue's count ends where it began");
+    c.disconnect();
+}
