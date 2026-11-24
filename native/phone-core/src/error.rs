@@ -21,8 +21,9 @@ pub enum CoreError {
     #[error("timeout: {reason}")]
     Timeout { reason: String },
     /// The engine answered a call with a JSON-RPC error.
-    #[error("rpc error {code}: {text}")]
-    Rpc { code: i64, text: String, data_json: Option<String> },
+    /// `computers_words` is the engine's own message, cleaned (`names::computers_words`): show it as the computer's.
+    #[error("rpc error {code}: {computers_words}")]
+    Rpc { code: i64, computers_words: String, data_json: Option<String> },
     /// This computer revoked this phone: pair again.
     #[error("revoked: {reason}")]
     Revoked { reason: String },

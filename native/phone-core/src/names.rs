@@ -157,6 +157,33 @@ pub fn safe_device_name(raw: &str, fallback: &str) -> String {
     }
 }
 
+/// Text a computer wrote, made safe to show as its words: control, format (the bidi marks, overrides and isolates,
+/// zero-width characters), separator and filler characters left out, every run of blanks one space, at most `max`
+/// characters. What crosses the FFI from a computer's own text goes through this, in a field named as the computer's.
+pub fn computers_words(raw: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for c in raw.chars() {
+        if n >= max {
+            break;
+        }
+        // Blanks first: a newline or tab is a control character too, but reads as a space between words.
+        if is_blank(c) {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+                n += 1;
+            }
+            continue;
+        }
+        if unsafe_char(c) {
+            continue;
+        }
+        out.push(c);
+        n += 1;
+    }
+    out.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +199,7 @@ mod tests {
         assert!(!clean_name("   "));
         assert_eq!(safe_device_name("  My\u{0007}  Phone  ", "Phone"), "My Phone");
         assert_eq!(safe_device_name("\u{202E}", "Phone"), "Phone");
+        assert_eq!(computers_words("Bad\u{202E}\u{200B} news\n\n\u{7}here", 200), "Bad news here");
+        assert_eq!(computers_words(&"x".repeat(500), 200).len(), 200);
     }
 }

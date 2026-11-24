@@ -38,7 +38,7 @@ pub struct Target {
 }
 
 pub async fn bind(seed: &[u8], relay: &RelayChoice, bind_addr: Option<&str>) -> Result<iroh::Endpoint, CoreError> {
-    let seed: [u8; 32] = seed.try_into().map_err(|_| CoreError::storage("the device key isn't 32 bytes"))?;
+    let seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(seed.try_into().map_err(|_| CoreError::storage("the device key isn't 32 bytes"))?);
     let secret = iroh::SecretKey::from_bytes(&seed);
     let mut b = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(secret)
@@ -111,6 +111,46 @@ pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Option<Vec<
     let mut body = vec![0u8; len];
     recv.read_exact(&mut body).await.map_err(|e| CoreError::offline(format!("the stream ended: {e}")))?;
     Ok(Some(body))
+}
+
+/// One frame read with a keep limit: kept whole up to `keep`, or, up to `skip`, read and dropped with its first bytes
+/// kept (enough to say what it answered), so one oversize message costs one call, not the link.
+pub enum Read {
+    Frame(Vec<u8>),
+    Skipped { len: usize, head: Vec<u8> },
+    End,
+}
+
+pub async fn read_frame_or_skip(recv: &mut RecvStream, keep: usize, skip: usize) -> Result<Read, CoreError> {
+    let mut head = [0u8; 4];
+    let mut got = 0;
+    while got < 4 {
+        match recv.read(&mut head[got..]).await {
+            Ok(Some(n)) => got += n,
+            Ok(None) if got == 0 => return Ok(Read::End),
+            Ok(None) => return Err(CoreError::protocol("a frame cut short")),
+            Err(e) => return Err(CoreError::offline(format!("the stream ended: {e}"))),
+        }
+    }
+    let len = u32::from_be_bytes(head) as usize;
+    if len <= keep {
+        let mut body = vec![0u8; len];
+        recv.read_exact(&mut body).await.map_err(|e| CoreError::offline(format!("the stream ended: {e}")))?;
+        return Ok(Read::Frame(body));
+    }
+    if len > skip {
+        return Err(CoreError::protocol("a frame is longer than the link allows"));
+    }
+    let mut first = vec![0u8; 512.min(len)];
+    recv.read_exact(&mut first).await.map_err(|e| CoreError::offline(format!("the stream ended: {e}")))?;
+    let mut left = len - first.len();
+    let mut buf = vec![0u8; 64 * 1024];
+    while left > 0 {
+        let n = left.min(buf.len());
+        recv.read_exact(&mut buf[..n]).await.map_err(|e| CoreError::offline(format!("the stream ended: {e}")))?;
+        left -= n;
+    }
+    Ok(Read::Skipped { len, head: first })
 }
 
 /// The code and reason a connection closed with, as the peer gave them (or a lost path's).

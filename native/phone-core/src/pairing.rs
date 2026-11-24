@@ -421,12 +421,21 @@ impl Pairing {
 
     /// The person saw the same words on both: this phone confirms, and the pairing completes once the computer has
     /// confirmed too (its person, and its sealed card). Returns the computer, now kept.
+    ///
+    /// Once called it runs to its end even if the caller stops waiting (a cancelled task): the phone's side then ends
+    /// as the computer's does. Both confirms crossed: both keep the pairing (`paired_computers` lists it). The
+    /// computer cancelled, closed or timed out: neither keeps it. To stop before the computer confirms, call `reject`
+    /// instead of cancelling this.
     pub async fn confirm(&self) -> Result<PairedComputer, CoreError> {
         let state = self.state.lock().await.take().ok_or_else(|| CoreError::Closed { reason: "the pairing ended".into() })?;
         let storage = self.storage.clone();
         let identity = self.identity.clone();
         let app = self.app;
-        crate::runtime::spawn(async move { confirm(state, storage, identity, app).await }).await
+        // A detached task: dropping the handle doesn't abort it.
+        match crate::runtime::handle().spawn(async move { confirm(state, storage, identity, app).await }).await {
+            Ok(r) => r,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
     }
 
     /// The words differ, or the person changed their mind: the computer is told and nothing is kept.
@@ -485,12 +494,15 @@ async fn confirm(mut s: Agreed, storage: Arc<dyn SecretStorage>, identity: Arc<I
             return Err(CoreError::refused("the computer's group admission is wrong"));
         }
     }
-    // Pairing the same computer again replaces what the last pairing kept, leaving nothing of it behind.
-    computers::forget(&storage, &s.host.record.id)?;
-    storage.save(computers::pair_key_item(&pair_id), s.pair_key.seed().to_vec())?;
-    storage.save(computers::pair_secret_item(&pair_id), pair_secret.to_vec())?;
+    // The new pairing's items first, then its record, and only then what an earlier pairing of this computer kept: a
+    // save that fails leaves the old pairing as it was, never neither. Each seed is moved out of its zeroizing holder
+    // into the call (no copy here); the copy the FFI makes for the host belongs to the host's store.
+    let mut items = vec![
+        (computers::pair_key_item(&pair_id), s.pair_key.seed()),
+        (computers::pair_secret_item(&pair_id), Zeroizing::new(pair_secret.to_vec())),
+    ];
     if group_exchange {
-        storage.save(computers::group_key_item(&s.group), s.group_key.seed().to_vec())?;
+        items.push((computers::group_key_item(&s.group), s.group_key.seed()));
     }
     let computer = PairedComputer {
         id: s.host.record.id.clone(),
@@ -503,7 +515,7 @@ async fn confirm(mut s: Agreed, storage: Arc<dyn SecretStorage>, identity: Arc<I
         app,
         paired_at: now_ms() as i64,
     };
-    computers::put(&storage, computer.clone())?;
+    computers::store_pairing(&storage, &computer, items)?;
     let _ = identity;
     // The computer adds this phone once both confirms crossed, and closes the connection a moment after; closing it
     // here first could drop this phone's confirm before it is read.
