@@ -87,6 +87,10 @@ export interface GroupKeeperOptions {
 
 const CARD_TIMEOUT_MS = 5 * 60_000;
 
+/** What a device is called, on a card: a row of its own, never a word inside a sentence of the engine's (the add card does the same,
+ *  `devices/rpc.ts`), so no character in a name can end or continue what the engine says. */
+const nameRows = (rows: readonly { label: string; value: string }[]): { type: "rows"; rows: { label: string; value: string }[] } => ({ type: "rows", rows: rows.map((r) => ({ ...r })) });
+
 export class GroupKeeper {
   readonly #o: GroupKeeperOptions;
   readonly #offs: Unsubscribe[] = [];
@@ -200,10 +204,11 @@ export class GroupKeeper {
     const answer = await this.#ask({
       kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke",
       fields: {
-        title: { type: "text", text: `Remove ${name} from your devices' group?` },
-        detail: { type: "list", items: [`${name} let these in during the last 7 days. They leave with it, unless you keep them. Keep only the ones you recognise.`] },
+        title: { type: "text", text: "Remove this device from your devices' group?" },
+        what: { type: "text", text: "The device named below let the ones listed under it in during the last 7 days. They leave with it, unless you check them to keep them. Check only the ones you recognise." },
+        detail: nameRows([{ label: "The device to remove", value: name }]),
       },
-      children: dropped.map((m, i) => ({ id: ids[i]!, label: `Keep ${this.#labelOf(g, m)}`, checked: false })),
+      children: dropped.map((m, i) => ({ id: ids[i]!, label: this.#labelOf(g, m), checked: false })),
     }, { noTimeout: true });
     if (!answer.ok) {
       this.#keeps.set(id, "declined");
@@ -406,11 +411,14 @@ export class GroupKeeper {
   }
 
   /** A card with a checked box for each computer; the ones still checked when the user agrees, or undefined. */
-  async #pick(text: { title: string; detail: string }, computers: string[], change: "device-add" | "device-revoke" = "device-add"): Promise<string[] | undefined> {
+  async #pick(text: { title: string; detail: string; rows?: readonly { label: string; value: string }[] }, computers: string[], change: "device-add" | "device-revoke" = "device-add"): Promise<string[] | undefined> {
     const ids = computers.map((_, i) => `c${i + 1}`);
     const answer = await this.#ask({
       kind: "change", origin: "user", computers: [], effect: "other", change,
-      fields: { title: { type: "text", text: text.title }, detail: { type: "list", items: [text.detail] } },
+      // The engine's words never hold a device's name: it is a row of its own (`nameRows`), and a checkbox is the name alone.
+      fields: text.rows === undefined
+        ? { title: { type: "text", text: text.title }, detail: { type: "list", items: [text.detail] } }
+        : { title: { type: "text", text: text.title }, what: { type: "text", text: text.detail }, detail: nameRows(text.rows) },
       ...(computers.length > 0 ? { children: computers.map((d, i) => ({ id: ids[i]!, label: this.#o.registry.get(d)?.name ?? "a computer", checked: true })) } : {}),
     }, { noTimeout: true });
     if (!answer.ok) return undefined;
@@ -469,8 +477,9 @@ export class GroupKeeper {
     const { ok } = await this.#ask({
       kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke",
       fields: {
-        title: { type: "text", text: `Remove ${name} from your devices?` },
-        detail: { type: "list", items: [`${asker} asks, to revoke it`, name, ...keptNames.map((n) => `Kept: ${n}`)] },
+        title: { type: "text", text: "Remove this device from your devices?" },
+        what: { type: "text", text: "Another of your devices asks to revoke the device named below." },
+        detail: nameRows([{ label: "The device to remove", value: name }, { label: "Asked by", value: asker }, ...keptNames.map((n) => ({ label: "Kept", value: n }))]),
       },
     });
     if (!ok) throw new ContractError("refused", "the user didn't agree");
@@ -493,12 +502,14 @@ export class GroupKeeper {
     const others = Object.keys(mine.members).filter((d) => d !== from && this.#isMember(d));
     const picked = await this.#pick(p.reason === "merge"
       ? {
-        title: `Move this computer into ${asker}'s new group?`,
-        detail: `${asker} was paired with another of your devices and moved into its group. The computers you check are asked to move too.`,
+        title: "Move this computer into a new group?",
+        detail: "The device named below was paired with another of your devices and moved into its group. The computers you check are asked to move too.",
+        rows: [{ label: "The device asking", value: asker }],
       }
       : {
-        title: `Move this computer to ${asker}'s new group?`,
-        detail: `${asker} can't stay in your devices' group: another device removed it, or its revoke couldn't get your devices' agreement. Say yes only if you know why. The computers you check are asked to move too.`,
+        title: "Move this computer to a new group?",
+        detail: "The device named below can't stay in your devices' group: another device removed it, or its revoke couldn't get your devices' agreement. Say yes only if you know why. The computers you check are asked to move too.",
+        rows: [{ label: "The device asking", value: asker }],
       }, others);
     if (!picked) throw new ContractError("refused", "the user didn't agree");
     await this.#serial(() => this.#moveVia(from, p.group as string, mine, p.reason as "merge" | "recovery", picked));

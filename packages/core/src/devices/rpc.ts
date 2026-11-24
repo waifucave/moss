@@ -492,7 +492,8 @@ function mustMain(deps: Pick<DevicesMethodsDeps, "main">): NonNullable<DevicesMe
 
 const mainCard = (name: string): ApprovalRequest => ({
   kind: "change", origin: "user", computers: [], effect: "other", change: "main-computer",
-  fields: { title: { type: "text", text: `Make ${name} the main computer?` }, detail: { type: "list", items: [name] } },
+  // This computer's name is a row of its own, never a word inside the engine's title (the add card does the same).
+  fields: { title: { type: "text", text: "Make this computer the main computer?" }, detail: { type: "rows", rows: [{ label: "This computer", value: name }] } },
 });
 
 /** Makes this computer the main one: at once from the user's terminal, otherwise once its card is approved. */
