@@ -114,7 +114,7 @@ impl Identity {
     }
 
     /// This phone's device record, as the pairing hello carries it and the transcript hashes it.
-    pub fn record(&self) -> RecordFields {
+    pub fn record(&self, app: &str) -> RecordFields {
         RecordFields {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -125,6 +125,7 @@ impl Identity {
             has_display: None,
             public_key: bytes::b64(&self.device.public()),
             answer_key: Some((bytes::b64(&self.answer.public()), self.holder.wire().into(), None)),
+            app: Some(app.to_string()),
         }
     }
 

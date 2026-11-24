@@ -127,6 +127,8 @@ pub struct RecordFields {
     pub public_key: String,
     /// (publicKey, held, alg) — alg "ed25519" unless it says otherwise.
     pub answer_key: Option<(String, String, Option<String>)>,
+    /// A phone's app (`moss` or `code`): the record's tenth item, only when present (lane PH).
+    pub app: Option<String>,
 }
 
 pub fn canonical_record(r: &RecordFields) -> Vec<u8> {
@@ -134,7 +136,7 @@ pub fn canonical_record(r: &RecordFields) -> Vec<u8> {
         Some((pk, held, alg)) => Cbor::Array(vec![Cbor::text(pk), Cbor::text(held), Cbor::text(alg.as_deref().unwrap_or("ed25519"))]),
         None => Cbor::Null,
     };
-    encode(&Cbor::Array(vec![
+    let mut items = vec![
         Cbor::text(&r.id),
         Cbor::text(&r.name),
         Cbor::text(&r.kind),
@@ -144,7 +146,11 @@ pub fn canonical_record(r: &RecordFields) -> Vec<u8> {
         r.has_display.map(Cbor::Bool).unwrap_or(Cbor::Null),
         Cbor::text(&r.public_key),
         ak,
-    ]))
+    ];
+    if let Some(app) = &r.app {
+        items.push(Cbor::text(app));
+    }
+    encode(&Cbor::Array(items))
 }
 
 /// A JS number as `String(t)` writes it, for an integer `t` (what the engine's statements carry).

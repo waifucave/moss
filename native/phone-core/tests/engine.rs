@@ -170,6 +170,8 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     let devices = engine.ok(json!({ "cmd": "devices" })).await;
     let listed = devices["devices"].as_array().unwrap().iter().find(|d| d["id"] == json!(me.device_id)).expect("the phone is listed").clone();
     assert_eq!(listed["kind"], "phone");
+    // The app the phone paired as is the engine's record of it (lane PH), fixed by the transcript the words covered.
+    assert_eq!(listed["app"], "moss");
     // The pair credential is kept through the host's storage, never anywhere else.
     let pair_id = computer.pair_id.clone().unwrap();
     assert!(storage.0.lock().unwrap().contains_key(&format!("pair-key:{pair_id}")));

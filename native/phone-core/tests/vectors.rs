@@ -58,15 +58,21 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(hex(&commit), s("commit"));
     let phone = RecordFields {
         id: "phoneid".into(), name: "Phone ü".into(), kind: "phone".into(), os: Some("ios".into()), runs_core: false, computer: None, has_display: None,
-        public_key: "cGhvbmU=".into(), answer_key: Some(("YWs=".into(), "keychain".into(), None)),
+        public_key: "cGhvbmU=".into(), answer_key: Some(("YWs=".into(), "keychain".into(), None)), app: None,
     };
     let host = RecordFields {
         id: "hostid".into(), name: "Studio".into(), kind: "desktop".into(), os: Some("macos".into()), runs_core: true, computer: Some("Studio".into()),
-        has_display: Some(true), public_key: "aG9zdA==".into(), answer_key: Some(("cDI1Ng==".into(), "app-keychain".into(), Some("p256".into()))),
+        has_display: Some(true), public_key: "aG9zdA==".into(), answer_key: Some(("cDI1Ng==".into(), "app-keychain".into(), Some("p256".into()))), app: None,
     };
     let bare = RecordFields {
         id: "x".into(), name: "y".into(), kind: "phone".into(), os: None, runs_core: false, computer: None, has_display: None, public_key: "eg==".into(), answer_key: None,
+        app: None,
     };
+    // A phone's app, the record's tenth item (both values); without it the record encodes as before (`phone`, `bare`).
+    for app in ["moss", "code"] {
+        let with = RecordFields { app: Some(app.into()), ..phone.clone() };
+        assert_eq!(hex(&sas::canonical_record(&with)), v["records"][app].as_str().unwrap(), "record with app {app}");
+    }
     let (rp, rh) = (sas::canonical_record(&phone), sas::canonical_record(&host));
     assert_eq!(hex(&rp), v["records"]["phone"].as_str().unwrap());
     assert_eq!(hex(&rh), v["records"]["host"].as_str().unwrap());

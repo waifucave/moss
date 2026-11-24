@@ -61,7 +61,10 @@ console.log(JSON.stringify({
   signature: hex(key.sign(msg)),
   message: hex(msg),
   commit: hex(commit),
-  records: { phone: hex(sas.canonicalRecord(recordPhone)), host: hex(sas.canonicalRecord(recordHost)), bare: hex(sas.canonicalRecord(recordBare)) },
+  records: {
+    phone: hex(sas.canonicalRecord(recordPhone)), host: hex(sas.canonicalRecord(recordHost)), bare: hex(sas.canonicalRecord(recordBare)),
+    moss: hex(sas.canonicalRecord({ ...recordPhone, app: "moss" })), code: hex(sas.canonicalRecord({ ...recordPhone, app: "code" })),
+  },
   hostPublicKey: hex(host.publicKey),
   joiner: hex(joiner),
   full: hex(full),

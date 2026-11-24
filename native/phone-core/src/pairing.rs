@@ -127,6 +127,12 @@ fn read_host_side(m: &Cbor, key: &[u8; 32]) -> Option<HostSide> {
         }
         answer_key = Some((pk.to_string(), held.to_string(), (alg == AnswerKeyAlg::P256).then(|| "p256".to_string())));
     }
+    // An app on the computer's record is refused as the engine refuses one on any device that isn't a phone.
+    let app = match d.get("app") {
+        None | Some(Cbor::Undefined) => None,
+        Some(Cbor::Text(a)) if (a == "moss" || a == "code") && kind == "phone" => Some(a.clone()),
+        _ => return None,
+    };
     let opt_s = |k: &str| d.get(k).and_then(Cbor::as_str).map(str::to_string);
     Some(HostSide {
         record: RecordFields {
@@ -139,6 +145,7 @@ fn read_host_side(m: &Cbor, key: &[u8; 32]) -> Option<HostSide> {
             has_display: d.get("hasDisplay").and_then(Cbor::as_bool),
             public_key: public_key.into(),
             answer_key,
+            app,
         },
         pair_key,
         group_key,
@@ -155,6 +162,9 @@ fn device_map(r: &RecordFields) -> Cbor {
     m.push(("publicKey", Cbor::text(&r.public_key)));
     if let Some((pk, held, _)) = &r.answer_key {
         m.push(("answerKey", Cbor::map(vec![("publicKey", Cbor::text(pk)), ("held", Cbor::text(held))])));
+    }
+    if let Some(app) = &r.app {
+        m.push(("app", Cbor::text(app)));
     }
     Cbor::map(m)
 }
@@ -225,7 +235,7 @@ pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dy
     let (mut send, mut recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no pairing stream: {e}")))?;
     let _ = send.set_priority(3);
 
-    let own = identity.record();
+    let own = identity.record(app.wire());
     let own_canonical = canonical_record(&own);
     let pair_key = Ed25519Key::generate();
     let group_key = Ed25519Key::generate();
