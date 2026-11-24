@@ -500,9 +500,11 @@ describe("the bot's Agent tool and the agent's own models", () => {
   test("the model is the agent's own: its id, or its name or another case of it, and it reaches the agent as its id", async () => {
     const w = make({ script: [[{ wait: true }]] });
     const [agent] = bot(w);
-    expect(agent!.inputSchema).toMatchObject({ properties: { model: { type: "string" } } });
+    expect(agent!.inputSchema).toMatchObject({ properties: { model_id: { type: "string" } } });
+    // The runtime puts one family's aliases into the `model` property of any tool named Agent: this one has none by that name.
+    expect((agent!.inputSchema as { properties: Record<string, unknown> }).properties).not.toHaveProperty("model");
     expect(JSON.stringify(agent!.inputSchema)).not.toContain("fable");
-    const r = await agent!.run({ ...call, model: "Fake B" });
+    const r = await agent!.run({ ...call, model_id: "Fake B" });
     expect(r.isError).toBe(false);
     await waitFor(() => w.report("config").length > 0, "the model to be set");
     expect(w.report("config")).toMatchObject([{ option: "model", value: "fake-model-b" }]);
@@ -512,7 +514,7 @@ describe("the bot's Agent tool and the agent's own models", () => {
     const w = make({ script: [[{ wait: true }]] });
     const [agent] = bot(w);
     for (const wrong of ["terra", "fable", "opus"]) {
-      const r = await agent!.run({ ...call, model: wrong });
+      const r = await agent!.run({ ...call, model_id: wrong });
       expect(r.isError).toBe(true);
       expect(r.text).toContain(`doesn't offer a model "${wrong}"`);
       expect(r.text).toContain("fake-model-a (Fake A)");
@@ -528,7 +530,7 @@ describe("the bot's Agent tool and the agent's own models", () => {
     expect(w.report("config")).toEqual([]);
     const w2 = make({ script: [[{ wait: true }]] });
     const [unknown] = agentToolDefs(w2.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], modelsOf: async (backend) => ({ backend, known: false, source: "unknown", models: [] }) });
-    expect((await unknown!.run({ ...call, model: "fake-model-b" })).isError).toBe(false);
+    expect((await unknown!.run({ ...call, model_id: "fake-model-b" })).isError).toBe(false);
   });
 
   test("AgentModels lists what an agent offers and starts nothing; an unknown list says so", async () => {

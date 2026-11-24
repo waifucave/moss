@@ -62,7 +62,7 @@ export interface FakeRequest {
   model?: string;
   stream: boolean;
   tools: string[];
-  /** The `model` property of the offered Agent tool's input schema (what the model is told it takes), when Agent was offered. */
+  /** The `model` and `model_id` properties of the offered Agent tool's input schema (what the model is told it takes), when Agent was offered. */
   agentModel?: unknown;
   lastUserText: string;
   /** The last tool result's text, whether it was an error, and how many images came with it (an `image` block). */
@@ -275,7 +275,7 @@ export function startFakeAnthropic(o: { key: string; writePath: string; writeCon
       record.beta = req.headers.get("anthropic-beta");
       record.stream = body.stream === true;
       record.tools = (body.tools ?? []).map((t) => String(t.name ?? ""));
-      record.agentModel = ((body.tools ?? []).find((t) => t.name === "Agent") as { input_schema?: { properties?: { model?: unknown } } } | undefined)?.input_schema?.properties?.model;
+      record.{ const props = ((body.tools ?? []).find((t) => t.name === "Agent") as { input_schema?: { properties?: Record<string, unknown> } } | undefined)?.input_schema?.properties; record.agentModel = props === undefined ? undefined : { model: props.model, model_id: props.model_id }; }
       const messages = body.messages ?? [];
       // Tools added mid-conversation (a plugin installed after the first turn) come as `tool_addition` blocks in a
       // `role: "system"` message, by definition or by reference to a deferred `tools` entry, not in `tools` (the cached

@@ -106,7 +106,7 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
         "you with SendMessage while it works, and when it finishes you get a task notification with its final report",
         "and the path to its full transcript. Use ListAgents to see it and TaskStop to stop it; a message you send it",
         "with SendMessage becomes its next prompt. Write the prompt as a complete brief: the agent sees nothing of this",
-        "conversation. `model` is the chosen agent's OWN model id, never another agent's (Codex takes Codex's models, not",
+        "conversation. `model_id` is the chosen agent's OWN model id, never another agent's (Codex takes Codex's models, not",
         "fable or opus); leave it out for the agent's default, and AgentModels shows what an agent offers (it starts",
         "nothing). A model the agent doesn't offer is refused with the ones it does.",
       ].join(" "),
@@ -117,7 +117,9 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
           prompt: { type: "string", description: "The task, as a complete brief." },
           backend: backends.length > 0 ? { type: "string", enum: backends, description: "Which agent runs it." } : { type: "string", description: "Which agent runs it (an agent backend's id)." },
           root: { type: "string", description: "The folder it works in, as a folder-tree path: home/<Computer>/…" },
-          model: { type: "string", description: "The model id the chosen backend itself offers (AgentModels lists them), or leave out for its default. Not a model of another family." },
+          // Not named `model`: the runtime puts one family's aliases (fable, opus, sonnet, haiku) into the `model` property of any tool
+          // named Agent, this one included, so the model would be told those are the only choices.
+          model_id: { type: "string", description: "The model id the chosen backend itself offers (AgentModels lists them), or leave out for its default. Not a model of another family." },
           effort: { type: "string", description: "The agent's effort level, where it offers one." },
           computer: { type: "string", description: "The computer to run on; the one holding the root by default." },
           ...(opts.definition === undefined ? {} : { agent: { type: "string", description: "A plugin's agent definition to start from, by the name Glossary lists (<plugin>:<id>): its instructions go before your brief. It brings words only: the backend, the folder and the rest stay yours to give." } }),
@@ -136,7 +138,7 @@ export function agentToolDefs(manager: AgentManager, caller: AgentToolCaller, op
         if (!prompt || !backend || !root) return fail(new ContractError("invalid", "Agent needs a prompt, a backend and a root folder"));
         if (backends.length > 0 && !backends.includes(backend)) return fail(new ContractError("invalid", `no agent backend ${backend.slice(0, 64)} (${backends.join(", ")})`));
         try {
-          let model = str(input, "model");
+          let model = str(input, "model_id") ?? str(input, "model");
           if (model !== undefined && opts.modelsOf !== undefined && !RESERVED_BACKEND_IDS.has(backend)) {
             // An agent's own list, where it is known: the model is one of its own, by its id; any other is refused with the ones it has.
             const offered = await opts.modelsOf(backend).catch(() => undefined);
