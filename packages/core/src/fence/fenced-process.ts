@@ -341,7 +341,10 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
   const writer = Bun.file(toRelay[1]).writer();
   const server = serveSandboxBus({
     input: Bun.file(fromRelay[0]).stream() as unknown as AsyncIterable<Uint8Array>,
-    write: (b) => { writer.write(b); void writer.flush(); },
+    write: (b) => {
+      // A relay that is gone makes the write fail: the broker just stops answering it.
+      try { writer.write(b); const p = writer.flush(); if (p instanceof Promise) p.catch(() => {}); } catch { /* gone */ }
+    },
     policy,
     backend: () => sessionBusSecrets() ?? noKeyring,
   });

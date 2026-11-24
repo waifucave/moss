@@ -6,7 +6,7 @@ import { dataFrames, encodeFrame, FrameReader, FrameType } from "../../src/fence
 import { decodeMessage, encodeMessage, type DValue, type Message, MessageReader, MessageType, splitSignature, Variant, WireError } from "../../src/fence/dbus-wire";
 import { BROKER_LIMITS, type CredentialGrant, grantMatches, isMossItem, type KeyringItem, REFUSAL, type SecretBackend, serveSandboxBus, unixBusPath } from "../../src/fence/linux-secret-broker";
 
-const MOSS_NAMES = ["com.waifucave.", "com.winter.core", "com.norma.core", "com.waifucave.moss.core"];
+const MOSS_NAMES = ["com.waifucave.", "moss.test.override"];
 
 /** A keyring of three items: a git login, gh's token and MOSS's own secrets-file key. */
 function fakeKeyring(): SecretBackend & { reads: string[]; searches: Record<string, string>[] } {
@@ -147,10 +147,10 @@ describe("the item rules", () => {
   test("MOSS's own items, by any attribute value or the label, every form", () => {
     expect(isMossItem({ label: "x", attributes: { service: "com.waifucave.moss.core.key" } }, MOSS_NAMES)).toBe(true);
     expect(isMossItem({ label: "x", attributes: { service: "COM.WaifuCave.moss.core.dev.items" } }, MOSS_NAMES)).toBe(true);
-    expect(isMossItem({ label: "com.winter.core", attributes: {} }, MOSS_NAMES)).toBe(true);
-    expect(isMossItem({ label: "x", attributes: { a: "com.norma.core.items" } }, MOSS_NAMES)).toBe(true);
+    expect(isMossItem({ label: "com.waifucave.moss.core.dev", attributes: {} }, MOSS_NAMES)).toBe(true);
+    expect(isMossItem({ label: "x", attributes: { a: "moss.test.override.items" } }, MOSS_NAMES)).toBe(true);
     expect(isMossItem({ label: "x", attributes: { service: "gh:github.com" } }, MOSS_NAMES)).toBe(false);
-    expect(isMossItem({ label: "x", attributes: { service: "com.winter.corex" } }, MOSS_NAMES)).toBe(false);
+    expect(isMossItem({ label: "x", attributes: { service: "moss.test.overridex" } }, MOSS_NAMES)).toBe(false);
   });
 
   test("a grant needs an attribute besides the schema, and matches only every attribute it names", () => {

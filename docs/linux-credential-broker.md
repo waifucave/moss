@@ -64,8 +64,8 @@ carry over. Its method rules do.)
 ## What a command may reach
 
 - **MOSS's own items: never.** An item is MOSS's when its label, or any of its attribute values, equals or starts
-  with a MOSS store name: anything under `com.waifucave.` (MOSS and Clover, dev and dist, the `.key` and `.items`
-  stores), the predecessors' `com.winter.core` and `com.norma.core`, and the engine's `MOSS_KEYCHAIN_SERVICE` override.
+  with a MOSS store name: anything under `com.waifucave.` (every MOSS store, dev and dist, the `.key` and `.items`
+  stores, and the old product's under the same prefix), and the engine's `MOSS_KEYCHAIN_SERVICE` override.
   This deny is checked first. No grant can open such an item, not even one that names it exactly.
 - **Other items: only those a grant for the run matches.** A grant is a label for the card plus a set of attributes
   (for example `{ xdg:schema: org.git.Password, server: github.com, protocol: https }`, or

@@ -45,10 +45,11 @@ export interface SecretBackend {
   close(): void;
 }
 
-/** The names MOSS keeps its own items under, every form: MOSS's and Clover's stores (dev and dist, `.key`, `.items`),
- *  the predecessors' (`com.winter.core`, `com.norma.core`), and this engine's own service with its override. */
+/** The names MOSS keeps its own items under, every form: every MOSS store (dev and dist, `.key`, `.items`, and the
+ *  old product's: all under `com.waifucave.`), and this engine's
+ *  own service with its override. */
 export function mossItemNames(): string[] {
-  const names = ["com.waifucave.", "com.winter.core", "com.norma.core"];
+  const names = ["com.waifucave."];
   try { names.push(keychainService()); } catch { /* the base names cover it */ }
   const o = process.env.MOSS_KEYCHAIN_SERVICE;
   if (o) names.push(o);
