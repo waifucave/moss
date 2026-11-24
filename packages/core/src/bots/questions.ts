@@ -29,8 +29,9 @@ export function questionKeys(own: readonly string[], keys: readonly string[]): {
   const of = new Map<string, string>();
   const named = new Map<string, string>();
   for (const key of keys) {
-    // The exact text always wins; otherwise the one question whose cut form this is.
-    const found = own.includes(key) ? [key] : [...new Set(own.filter((q) => cutQuestion(q) === key))];
+    // The exact text of a question, or the cut form of one; a key that is both (one question's exact text is another's cut form: a
+    // question of exactly 2,000 units ending in "…" beside a longer one cut to it) names two questions and is refused, never guessed.
+    const found = [...new Set(own.filter((q) => q === key || cutQuestion(q) === key))];
     if (found.length === 0) return { ok: false, message: `doesn't ask ${JSON.stringify(key.slice(0, 200))}` };
     if (found.length > 1) return { ok: false, message: `has more than one question that is cut to ${JSON.stringify(key.slice(0, 200))}; the key names none of them` };
     const exact = found[0]!;

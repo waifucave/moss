@@ -151,12 +151,22 @@ describe("session.answer by the text session.openQuestions gave", () => {
     expect((await w.done).updatedInput!.answers).toEqual({ [x]: "Yes", [y]: "No" });
   });
 
-  test("an exact key wins over a cut one; both forms of one question in an answer are refused", async () => {
-    const big = long("c");
-    const w = await waiting([{ question: big }]);
-    expect(w.q.answer("s_code", "call_1", { [big]: "Yes", [cutQuestion(big)]: "No" }, "user")).toMatchObject({ ok: false, code: "invalid" });
+  test("a key that is one question's exact text and another's cut form is refused as ambiguous; both forms of one question in an answer are refused", async () => {
+    // Exactly 2,000 units ending in "…", and a longer question that is cut to exactly it.
+    const x = long("d", 1999) + "…", y = long("d", 1999) + "…more";
+    expect(cutQuestion(y)).toBe(x);
+    const w = await waiting([{ question: x }, { question: y }]);
+    const refused = w.q.answer("s_code", "call_1", { [x]: "Yes" }, "user");
+    expect(refused).toMatchObject({ ok: false, code: "invalid" });
+    expect((refused as { message: string }).message).toContain("more than one question");
     expect(w.q.broker.isPending("s_code", "call_1")).toBe(true);
-    expect(w.q.answer("s_code", "call_1", { [big]: "Yes" }, "user")).toEqual({ ok: true });
-    await w.done;
+    // The longer one's own text is unambiguous.
+    expect(w.q.answer("s_code", "call_1", { [y]: "No" }, "user")).toEqual({ ok: true });
+    expect((await w.done).updatedInput!.answers).toEqual({ [y]: "No" });
+    const big = long("c");
+    const w2 = await waiting([{ question: big }]);
+    expect(w2.q.answer("s_code", "call_1", { [big]: "Yes", [cutQuestion(big)]: "No" }, "user")).toMatchObject({ ok: false, code: "invalid" });
+    expect(w2.q.answer("s_code", "call_1", { [big]: "Yes" }, "user")).toEqual({ ok: true });
+    await w2.done;
   });
 });

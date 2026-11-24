@@ -186,6 +186,21 @@ describe("the card that removes a device is never the removed device's", () => {
     await waitFor(() => a.registry.get(A.id)?.revokedAt !== undefined);
   });
 
+  test("the revoke card says which app a phone is (from the registry's record), and nothing for a device that recorded none", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const { A, B } = await withPhones(a);
+    const bare = await makeFakePhone();
+    await a.registry.add({ id: bare.id, name: "Old phone", kind: "phone", runsCore: false, publicKey: bare.publicKey, answerKey: bare.answerKey }, { via: "account", account: "acct_1" });
+    const rowsOf = async (id: string) => {
+      const res = (await a.call("device.revoke", { id }, app)) as { card: string };
+      return cardRows(a.broker.cards().find((c) => c.id === res.card)!);
+    };
+    expect(await rowsOf(A.id)).toContainEqual({ label: "The app", value: "MOSS Code" });
+    expect(await rowsOf(B.id)).toContainEqual({ label: "The app", value: "MOSS" });
+    expect((await rowsOf(bare.id)).map((r) => r.label)).toEqual(["The device", "What it is"]);
+  });
+
   test("a card is raised for a phone-kind caller only with that phone as its asker; a caller no link authenticated (the app) names none", async () => {
     const net = new MemoryNetwork();
     const a = await computer(net, "Studio");

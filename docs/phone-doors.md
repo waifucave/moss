@@ -59,7 +59,8 @@ These are open to a paired phone today and were not changed by PH2 or PH3:
   `session.answer` keys each answer by the question's text, and a phone only has the text it was given, so for each of the call's questions
   `session.answer` accepts its exact text or the exact cut form this read gives for it (one function, `cutQuestion`, makes both) and
   gives the model its own text; if two questions of one call are cut to the same text, that key is refused (`invalid`, "more than one
-  question") and each one's full text still answers; the exact text wins over a cut one, and the two forms of one question in one answer are
+  question") and each one's full text still answers; a key that is one question's exact text and another's cut form (a question of exactly
+  2,000 units ending in "…" beside a longer one cut to it) is refused the same way, and the two forms of one question in one answer are
   refused. The answer's VALUE is never matched against a label: it goes to the model as the phone sent it (a cut label, over 200 units, is
   passed on as sent).
 
@@ -136,9 +137,10 @@ a person holding a paired, unlocked phone can:
 What the person does about a lost phone: **remove the phone, both of its apps, in a computer's Settings, and answer the card at that
 computer. A phone cannot block it.** A phone with MOSS and MOSS Code both paired is TWO devices (one for each app), each in the devices list
 of Settings as its own entry, and both must be removed, one after the other: take out only one and the other still holds the phone's
-doors. The list shows each entry by the name the phone gave it and the word "Phone" (not which app it is; the list has no app column
-today), so the person recognises them as the entries that carry the lost phone's name, with the time each was last seen, and removes every
-one (a removal that doesn't match a phone they still hold is theirs to look at before they press the card). Settings' devices list calls
+doors. The list shows each entry by the name the phone gave it and "Phone · MOSS" or "Phone · MOSS Code" (the app it paired as, from the
+registry's record; a phone that recorded none shows "Phone" alone), and the "Revoke this device?" card has the same app as its own row,
+"The app", built by the engine from the registry and never from the device's own text. So the person recognises the two as the entries
+that carry the lost phone's name, one of each app, and removes both. Settings' devices list calls
 `device.revoke`; Settings closes while the card waits. Removing raises the engine's "Revoke this device?" card, which the person answers at
 that computer, in the app's own window.
 

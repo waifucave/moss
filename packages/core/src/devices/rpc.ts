@@ -154,6 +154,9 @@ const ROTATION_REFUSED: Record<AnswerKeyRotationRefusal, string> = {
   refused: "the device registry refused the new key",
 };
 
+/** What each phone app is called to the person (the card's row). */
+const PHONE_APP_NAMES: Record<"moss" | "code", string> = { moss: "MOSS", code: "MOSS Code" };
+
 export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodHandler> {
   const M = DEVICES_METHODS;
   const { registry, pairing } = deps;
@@ -278,7 +281,11 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await run();
         return { applied: true };
       }
-      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [{ label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind }], p.id,
+      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [
+        { label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind },
+        // A phone with both apps paired is two devices: the card says which app this one is, from the registry's record (never the device's own text).
+        ...(d.kind === "phone" && (d.app === "moss" || d.app === "code") ? [{ label: "The app", value: PHONE_APP_NAMES[d.app] }] : []),
+      ], p.id,
         // Answered at a computer, or by the phone whose own request this is (a link's authenticated device, never what it says), never by another phone.
         { ...(ctx.caller.kind === "user" && ctx.caller.client !== "app" && ctx.caller.client !== "cli" && ctx.caller.device !== undefined ? { askedBy: ctx.caller.device } : {}) }));
       if (!opened.card) {
