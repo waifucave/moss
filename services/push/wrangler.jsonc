@@ -19,7 +19,8 @@
     "PUSH_AUDIENCE": "push.waifucave.com",
     "APNS_KEY_ID": "LOCALKEY00",
     "APNS_TEAM_ID": "LOCALTEAM0",
-    "APNS_TOPIC": "com.waifucave.clover.ios",
+    "APNS_TOPIC_MOSS": "local.test.moss",
+    "APNS_TOPIC_CODE": "local.test.code",
     "APNS_PRODUCTION_ORIGIN": "https://api.push.apple.com",
     "APNS_SANDBOX_ORIGIN": "https://api.sandbox.push.apple.com",
     "VAPID_SUBJECT": "mailto:push@waifucave.invalid",
@@ -46,13 +47,14 @@
       "services": [{ "binding": "ACCOUNT_SERVICE", "service": "clover-accounts" }],
       "vars": {
         // waifucave's account service (services/accounts): its issuer and its keys' URL. Set at the live gates:
-        // the APNs key's ids, the iOS app's bundle id and the VAPID public key (the private halves are secrets).
+        // the APNs key's ids, the two iOS apps' bundle ids (APNS_TOPIC_MOSS, APNS_TOPIC_CODE) and the VAPID public key (the private halves are secrets).
         "ACCOUNT_ISSUER": "https://waifucave.com/auth",
         "ACCOUNT_JWKS_URL": "https://waifucave.com/auth/.well-known/jwks.json",
         "PUSH_AUDIENCE": "push.waifucave.com",
         "APNS_KEY_ID": "",
         "APNS_TEAM_ID": "",
-        "APNS_TOPIC": "",
+        "APNS_TOPIC_MOSS": "",
+        "APNS_TOPIC_CODE": "",
         "APNS_PRODUCTION_ORIGIN": "https://api.push.apple.com",
         "APNS_SANDBOX_ORIGIN": "https://api.sandbox.push.apple.com",
         "VAPID_SUBJECT": "mailto:push@waifucave.com",

@@ -18,7 +18,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 
-import type { FakeLogEntry } from "../fake-log.ts";
+import { CODE_TOKEN_PREFIX, type FakeLogEntry } from "../fake-log.ts";
 
 export type { FakeLogEntry };
 
@@ -81,7 +81,7 @@ function pad32(scalar: Buffer): Buffer {
   return scalar.length >= 32 ? scalar : Buffer.concat([Buffer.alloc(32 - scalar.length), scalar]);
 }
 
-export function createPushFakes(config: { apnsKeyId: string; apnsTeamId: string; apnsTopic: string }): PushFakes {
+export function createPushFakes(config: { apnsKeyId: string; apnsTeamId: string; apnsTopics: { moss: string; code: string } }): PushFakes {
   const apnsKey = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const vapid = createECDH("prime256v1");
   vapid.generateKeys();
@@ -130,7 +130,7 @@ export function createPushFakes(config: { apnsKeyId: string; apnsTeamId: string;
     if (!verified || verified.header.kid !== config.apnsKeyId || verified.claims.iss !== config.apnsTeamId) return reply(403, "InvalidProviderToken");
     const iat = verified.claims.iat;
     if (typeof iat !== "number" || Math.abs(Date.now() / 1000 - iat) > 3600) return reply(403, "ExpiredProviderToken");
-    if (entry.topic !== config.apnsTopic) return reply(400, "DeviceTokenNotForTopic");
+    if (entry.topic !== (token.startsWith(CODE_TOKEN_PREFIX) ? config.apnsTopics.code : config.apnsTopics.moss)) return reply(400, "DeviceTokenNotForTopic");
     if (entry.pushType !== "alert") return reply(400, "InvalidPushType");
     try {
       entry.payload = JSON.parse(await request.text());

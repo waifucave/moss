@@ -7,9 +7,11 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+import { preferThenAll, type PushApp } from "../../../packages/protocol/src/push-routing";
 import { utf8 } from "../../shared/encoding";
 import { sendApns, type SendOutcome } from "./apns";
 import { apnsConfig, maxTargets, pushTimeoutMs, vapidConfig, type Env } from "./env";
+import type { FcmTarget } from "./fcm";
 import { sendWebPush } from "./webpush";
 
 export interface Caller {
@@ -18,13 +20,19 @@ export interface Caller {
 }
 
 export type Target =
-  | { kind: "apns"; token: string; env: "production" | "sandbox" }
+  | { kind: "apns"; token: string; env: "production" | "sandbox"; app: PushApp }
+  | ({ kind: "fcm" } & FcmTarget)
   | { kind: "webpush"; endpoint: string; p256dh: string; auth: string };
+
+/** A phone's target (APNs, FCM), as against a browser's: the ones a push's `phones` preference is about. */
+const isPhone = (t: Target): t is Extract<Target, { kind: "apns" | "fcm" }> => t.kind === "apns" || t.kind === "fcm";
 
 export interface TargetInfo {
   id: string;
   kind: Target["kind"];
   env?: string;
+  /** For a phone: the app it registered as. */
+  app?: PushApp;
   /** For a browser, only its push service's host: the endpoint itself is a bearer capability. */
   host?: string;
   added: number;
@@ -131,23 +139,37 @@ export class PushDO extends DurableObject<Env> {
     if (refused) return refused;
     const targets = this.rows().map(({ id, target, added }) => {
       const info: TargetInfo = { id, kind: target.kind, added };
-      if (target.kind === "apns") info.env = target.env;
+      if (target.kind === "apns") {
+        info.env = target.env;
+        info.app = target.app;
+      } else if (target.kind === "fcm") info.app = target.app;
       else info.host = new URL(target.endpoint).host;
       return info;
     });
     return { ok: true, targets };
   }
 
-  /** Sends the count to every target, content-free, and forgets the ones their push service says are gone. */
-  async notify(caller: Caller, input: { badge: number; urgent: boolean }): Promise<({ ok: true } & NotifyResult) | Refusal> {
+  /**
+   * Sends the count to the account's targets, content-free, and forgets the ones their push service says are gone.
+   * `phones` (device ids; a target's id is its device's) is the computer's preference for which PHONES to wake, from which
+   * app each is: the phones among them it holds a target for, and every phone when it holds none (the computer may not know
+   * every phone the account has: `preferThenAll`, the one rule in packages/protocol push-routing.ts). Browsers are not phones
+   * and get every push, as before.
+   */
+  async notify(caller: Caller, input: { badge: number; urgent: boolean; phones?: readonly string[] }): Promise<({ ok: true } & NotifyResult) | Refusal> {
     const refused = this.refuse(caller);
     if (refused) return refused;
     const now = Date.now();
     const payload = utf8(JSON.stringify({ n: input.badge }));
-    const rows = this.rows();
+    const all = this.rows();
+    const preferred = input.phones === undefined ? undefined : new Set(input.phones);
+    const woken = preferred === undefined ? all.filter((r) => isPhone(r.target)) : preferThenAll(all.filter((r) => isPhone(r.target)), (r) => preferred.has(r.id));
+    const rows = all.filter((r) => !isPhone(r.target) || woken.includes(r));
     const outcomes = await Promise.all(
       rows.map(async ({ target }): Promise<SendOutcome> => {
         try {
+          // FCM has no credentials yet, so no target of its kind is ever registered (index.ts); one that is there anyway is not sent to.
+          if (target.kind === "fcm") return { ok: false, gone: false, status: 0, reason: "not_configured" };
           return target.kind === "apns"
             ? await sendApns(apnsConfig(this.env), target, input.badge, now)
             : await sendWebPush(vapidConfig(this.env), target, payload, {
