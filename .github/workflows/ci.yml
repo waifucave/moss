@@ -395,8 +395,7 @@ jobs:
   machine-windows:
     name: ${{ matrix.target }} (workspaces, daemon, app)
     needs: changes
-    # The machine job's condition, or the Windows jobs' own files (the `windows` area): a Windows-only edit starts the Windows runners and no macOS one.
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.workspaces == 'true' || needs.changes.outputs.daemon == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.windows == 'true')
+    if: *machine-if
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     strategy:

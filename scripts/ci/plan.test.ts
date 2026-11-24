@@ -87,14 +87,14 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     expect(p.jobs.map((j) => j.id)).toContain("core-linux");
   });
 
-  test("a Windows-only edit starts the Windows jobs and no macOS runner: the fence workflow and its scripts, not the machine, the sealed core or the macOS legs", () => {
+  test("a Windows-only edit starts the fence workflow (on a Windows runner) and no macOS runner; the machine's Windows leg has no step for those files, so it stays out", () => {
     for (const f of [".github/workflows/windows-fence.yml", "scripts/ci/windows-fence/build-launcher.ps1"]) {
       const p = planForFiles([f]);
       expect(p.macos, f).toBe(0);
       expect(p.areas, f).toContain("windows");
       const ids = p.jobs.map((j) => j.id);
-      expect(ids, f).toEqual(expect.arrayContaining(["windows-fence", "machine-windows"]));
-      for (const id of ["machine", "sealed-core", "macos"]) expect(ids, f).not.toContain(id);
+      expect(ids, f).toEqual(expect.arrayContaining(["windows-fence"]));
+      for (const id of ["machine", "machine-windows", "sealed-core", "macos"]) expect(ids, f).not.toContain(id);
     }
   });
 

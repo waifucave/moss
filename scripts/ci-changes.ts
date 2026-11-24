@@ -39,8 +39,8 @@ export const CI_GLOBAL: readonly Pattern[] = [
   "scripts/ci/acceptance-units.ts", "scripts/ci/acceptance-scope.ts", "scripts/ci/queue-map.ts", "scripts/ci/test-reads.ts", "scripts/ci/test-reads.test.ts", "scripts/ci/queue-map.test.ts", "scripts/ci/plan.ts", "scripts/ci/lane",
 ];
 
-/** The Windows jobs' own definition: the called workflow and its PowerShell. It is the `windows` area alone: it starts `windows-fence` and
- *  `machine-windows` (Windows runners) and no macOS job. (The merge queue's frozen map, scripts/ci/queue-map.ts, still sends it to the old areas.) */
+/** The Windows fence's own definition: the called workflow and its PowerShell. It is the `windows` area alone: it starts `windows-fence` (a Windows runner) and no macOS job.
+ *  (`machine-windows` has no step for these files: its steps run on the workspaces, the daemon and the app. The merge queue's frozen map, scripts/ci/queue-map.ts, still sends it to the old areas.) */
 const WINDOWS_CI: readonly Pattern[] = [".github/workflows/windows-fence.yml", "scripts/ci/windows-fence/"];
 
 /** Paths no job reads: documents and the repository's own housekeeping. A change to only these runs no area (the names-and-layout
