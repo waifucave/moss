@@ -317,7 +317,53 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     return { text: `Command running in the background with ID: ${id}. Its output is being written to ${log} (read it with Read). You will be told when it ends; TaskStop with this id stops it.`, isError: false };
   };
   return [
-    tool("Bash", "bash", "Run a bash command (Git for Windows' bash) in MOSS's sandbox on this Windows computer. It writes only the folders the sandbox allows, reaches no network (a command the user approves to leave the sandbox does), and starts in the session's folder each time."),
-    tool("PowerShell", "powershell", "Run a Windows PowerShell command in MOSS's sandbox on this computer. It writes only the folders the sandbox allows, reaches no network (a command the user approves to leave the sandbox does), and starts in the session's folder each time."),
+    tool("Bash", "bash", windowsShellDescription("Bash", o)),
+    tool("PowerShell", "powershell", windowsShellDescription("PowerShell", o)),
   ];
+}
+
+/** What the model reads of each tool (lane WS8: from agent SDK 0.0.85 a host tool under a built-in's name is offered
+ *  exactly as written, with none of the runtime's shell guidance, so it is all here, in MOSS's words). It says what this
+ *  session may do: a background command only where its end can be told (`wake`), leaving the sandbox only from a bot's
+ *  own conversation. Every parameter of `INPUT_SCHEMA` is named (a unit test holds that). */
+export function windowsShellDescription(name: "Bash" | "PowerShell", o: Pick<WindowsShellToolsOptions, "kind" | "wake">): string {
+  const bash = name === "Bash";
+  const lines = [
+    bash
+      ? "Runs a command in bash (Git for Windows' bash, with its usual tools: ls, cat, grep, sed, find, git) on this Windows computer, inside MOSS's sandbox."
+      : "Runs a command in Windows PowerShell on this computer, inside MOSS's sandbox.",
+    "",
+    "Where it runs:",
+    "- It runs as one of the sandbox's own Windows accounts, not as the user. It can read most of the user's files, but not their keys and credentials, browser data, or MOSS's own folder; it writes only the folders the sandbox allows (this session's own working folders and its temp folder), and reaches no network. A refusal says which. Don't try to work around one: say what you needed.",
+    "- Each call starts fresh in this session's working folder: a `cd`, a variable or a function doesn't carry to the next call, so chain steps in one command or use full paths.",
+    "- Nothing can answer a prompt: never run anything interactive (an editor, a pager, a password or y/n question); pass the flags that skip questions.",
+    "",
+    "Parameters:",
+    "- `command`: what to run.",
+    "- `description`: a few words on what it does, for the user.",
+    `- \`timeout\`: milliseconds before it is ended (default ${WIN_SHELL_DEFAULT_TIMEOUT_MS}, at most ${WIN_SHELL_MAX_TIMEOUT_MS}).`,
+    o.wake === undefined
+      ? "- `run_in_background`: not available in this session; every command runs in the foreground."
+      : `- \`run_in_background\`: for something long (a server, a watch, a long build): the call answers at once with a task id and a log file; read the log with Read, you are told when it ends, and TaskStop with the id stops it. At most ${WIN_SHELL_BACKGROUND_PER_SESSION} at once in a conversation, and fewer when the computer is busy.`,
+    o.kind === "bot"
+      ? "- `dangerouslyDisableSandbox`: true asks the user, on a card, to run this one command outside the sandbox (it can then write the user's files and reach the network; MOSS's folder stays closed). Only for a command that truly needs it, never in the background; leave it out otherwise."
+      : "- `dangerouslyDisableSandbox`: leave it out: this session's commands never leave the sandbox, and a call with it is refused.",
+    "",
+    "Windows specifics:",
+    ...(bash
+      ? [
+          "- Paths: `C:/Users/x/file` or `/c/Users/x/file`; a backslash is an escape character in bash, so quote a Windows path (`'C:\\Users\\x'`). Quote paths with spaces.",
+          "- cmd's built-ins (`dir`, `copy`, `del`, `type`, `set`) are not commands here; use their bash forms, or the PowerShell tool.",
+          "- Windows programs may write CRLF line endings; `tr -d '\\r'` strips them before comparing text.",
+        ]
+      : [
+          "- Paths take `\\` or `/`; quote one with spaces in single quotes, and use `-LiteralPath` for names with `[` or `]`.",
+          "- Strings in double quotes expand `$variables`; single quotes don't. Escape with a backtick, not a backslash. Join steps with `;` (this is Windows PowerShell 5.1: no `&&`).",
+          "- Text written with `>` is UTF-16; use `Set-Content -Encoding utf8` for a file another tool reads.",
+        ]),
+    "- Very long paths (over 260 characters) fail in many programs; work from a nearer folder.",
+    "",
+    "Prefer the file tools for files: Read to read one, Glob to find files by name, Grep to search their text, Edit and Write to change them. They are quicker, show the user exactly what changed, and need no quoting.",
+  ];
+  return lines.join("\n");
 }

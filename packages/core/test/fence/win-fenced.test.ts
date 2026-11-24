@@ -296,6 +296,23 @@ describe("a bot's Bash and PowerShell on Windows (the core's tools)", () => {
     spawner, caller: BOT, kind, cwd: () => "C:\\h\\.moss\\scratch\\luna", sandbox: () => SANDBOX, userHome: "C:\\h", temp: "C:\\h\\AppData\\Local\\Temp", mossHome: "C:\\h\\.moss",
   }).map((t) => [t.name, t]));
 
+  test("each description names every parameter, and says what this session may do (lane WS8: from agent SDK 0.0.85 it is all the model reads)", () => {
+    const { spawner } = spy();
+    const wake = async () => {};
+    for (const [kind, withWake] of [["bot", true], ["bot", false], ["side-thread", false]] as const) {
+      const ts = windowsShellTools({ spawner, caller: BOT, kind, cwd: () => "C:\\x", sandbox: () => SANDBOX, userHome: "C:\\h", temp: "C:\\t", mossHome: "C:\\h\\.moss", ...(withWake ? { wake } : {}) });
+      for (const t of ts) {
+        const props = Object.keys((t.inputSchema as { properties: Record<string, unknown> }).properties);
+        expect(props.sort()).toEqual(["command", "dangerouslyDisableSandbox", "description", "run_in_background", "timeout"]);
+        for (const p of props) expect([t.name, kind, p, t.description.includes(`\`${p}\``)]).toEqual([t.name, kind, p, true]);
+        expect(t.description).toContain("Read");
+        expect(t.description).toContain("Grep");
+        expect(t.description).toContain(kind === "bot" ? "asks the user, on a card" : "never leave the sandbox");
+        expect(t.description).toContain(withWake ? "TaskStop" : "not available in this session");
+        expect(t.description).toContain(t.name === "Bash" ? "cmd's built-ins" : "-LiteralPath");
+      }
+    }
+  });
   test("each runs its shell under the session's sandbox, in the session's folder, its time limit capped", async () => {
     const { runs, spawner } = spy();
     const t = tools("bot", spawner);
