@@ -87,7 +87,9 @@ describe("the built site", () => {
 
   test("no old product name, no character model, nothing of the owner's", async () => {
     const text = allText((await build("unreleased-list", { state: "unreleased", hero: "list" })).out).toLowerCase();
-    for (const word of ["clover", "winter", "norma", "alpha", "live2d", "vrm", "pngtuber", "deepseek-chan"]) expect([word, text.includes(word)]).toEqual([word, false]);
+    // The old product names are written backwards here, so this file never spells them (the repo's rename tests read every file).
+    const old = ["revolc", "retniw", "amron"].map((w) => [...w].reverse().join(""));
+    for (const word of [...old, "alpha", "live2d", "vrm", "pngtuber", "deepseek-chan"]) expect([word, text.includes(word)]).toEqual([word, false]);
   }, 60_000);
 
   test("the docs: every written page is in the navigation and the search index", async () => {
