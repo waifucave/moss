@@ -1,7 +1,8 @@
 // The files a paired phone sends (`session.stageFile`, the owner's decision of 2026-11-24, PH3). A file arrives in chunks over the
 // phone's link, is held aside in the core's own folder until it is whole, then is placed in the folder its bot or coding session
-// works in, where a file dropped on the desktop would have been (a bot's `scratch/<bot>/attachments/`; a coding session's own
-// `outputs/<session>/received/`), and the phone's next `session.send` names it (`files`). Owner: lane PH.
+// works in (a bot's `scratch/<bot>/attachments/`, where a file dropped on the desktop is copied; a coding session's `.moss-received/<session>/`
+// in the user's home, which is outside MOSS's home, where no agent may read, and not in the project), and the phone's next `session.send`
+// names it (`files`, by its folder-tree path; the agent is told the real one). Owner: lane PH.
 //
 // What a phone cannot do through it, by construction:
 //   - write anywhere else. The destination is computed here from the session, never from the phone; the phone's name is cleaned to
@@ -26,9 +27,11 @@ import { ContractError } from "../contracts/common";
 import { MethodError } from "../rpc/handler";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
 import { transcriptsDir } from "../sessions/ids";
-import { outdirPath } from "../sessions/outdir";
 import { botPaths, homeTreePath } from "./paths";
 import type { BotService } from "./service";
+
+/** The folder in the user's home where the files a phone sends to coding sessions are kept, one folder per session. */
+export const RECEIVED_FOLDER = ".moss-received";
 
 export interface StageLimits {
   fileBytes: number;
@@ -123,7 +126,10 @@ interface Upload {
   state: "open" | "ready" | "sent";
   startedAt: number;
   touchedAt: number;
-  /** The folder the file's folder is made in (a bot's scratch, a session's outputs), and the folder in it that holds the file. */
+  /** What it was staged for: a bot's conversation (the file goes in the bot's scratch) or a coding session (the file goes in
+   *  `RECEIVED_FOLDER` in the user's home). Either way it is named by a folder-tree path. */
+  kind?: "bot" | "coding";
+  /** The folder the file's folder is made in (a bot's scratch, the coding sessions' `RECEIVED_FOLDER`), and the folder in it that holds the file. */
   root: string;
   base: string;
   /** Once `ready`: the file, and what names it in the folder tree. */
@@ -285,9 +291,18 @@ export class FileStager {
     return "name" in p ? this.#begin(who, target, p) : this.#next(who, target, p);
   }
 
+  /** Where a file for this target goes. A bot's is in its scratch folder, a place its own file tools open. A coding session's agent
+   *  can open nothing inside MOSS's home (its sandbox denies the whole home, with no way back in for the session's own `outputs`, and
+   *  the manager refuses any request into it), and the project is not a place to put what a phone sends, so its file goes in a
+   *  folder of its own in the user's home beside MOSS's, `RECEIVED_FOLDER/<session>/`, which the sandbox lets it read and the
+   *  folder tree names (the agent is told the real path: `promptOf`). */
   #folders(t: StageTarget): { root: string; base: string } {
-    const root = t.kind === "bot" ? botPaths(this.#o.home, t.bot!).scratch : outdirPath(this.#o.home, t.session);
-    return { root, base: join(root, t.kind === "bot" ? "attachments" : "received") };
+    if (t.kind === "coding") {
+      const root = join(this.#o.userHome, RECEIVED_FOLDER);
+      return { root, base: join(root, t.session) };
+    }
+    const root = botPaths(this.#o.home, t.bot!).scratch;
+    return { root, base: join(root, "attachments") };
   }
 
   #begin(who: { device: string; client: string }, target: StageTarget, p: { name: string; size: number; dataBase64: string }): StageResult {
@@ -324,7 +339,7 @@ export class FileStager {
     }
     closeSync(fd);
     const now = this.#o.now();
-    const u: Upload = { id, device: who.device, client: who.client, session: target.session, name, size: p.size, received: bytes.length, state: "open", startedAt: now, touchedAt: now, root, base };
+    const u: Upload = { id, device: who.device, client: who.client, session: target.session, name, size: p.size, received: bytes.length, state: "open", startedAt: now, touchedAt: now, kind: target.kind, root, base };
     l.uploads[id] = u;
     l.days[who.device] = { day: this.#day(), bytes: day + bytes.length, files: today.files + 1 };
     this.#finishIfWhole(l, u);
@@ -398,21 +413,39 @@ export class FileStager {
     return { upload: u.id, received: u.received, done, ...(done && u.dest !== undefined && u.tree !== undefined ? { name: u.name, path: u.tree } : {}) };
   }
 
-  /** `path` (in MOSS's home, spelled either way) as a folder-tree path, or undefined when MOSS's home isn't inside the user's. */
+  /** `path` (in MOSS's home or the user's, spelled either way) as a folder-tree path, or undefined when it isn't inside the user's home. */
   #treeOf(path: string): string | undefined {
     const real = (p: string): string => { try { return realpathSync.native(p); } catch { return p; } };
-    const realHome = real(this.#o.home);
-    const dir = within(realHome, path) ? path : within(this.#o.home, path) ? join(realHome, relative(this.#o.home, path)) : path;
-    return homeTreePath({ userHome: real(this.#o.userHome), computer: this.#o.computer, dir });
+    const realUser = real(this.#o.userHome);
+    let dir = path;
+    for (const spelled of [this.#o.home, this.#o.userHome]) {
+      const resolved = real(spelled);
+      if (within(resolved, dir)) break;
+      if (within(spelled, dir)) { dir = join(resolved, relative(spelled, dir)); break; }
+    }
+    return homeTreePath({ userHome: realUser, computer: this.#o.computer, dir });
   }
 
   /** Moves the whole file from the spool to its folder. Every step that can be fooled by a link in the bot's or session's own
    *  (writable) folder is checked: the folders' real paths are the expected ones, and the file is judged by its descriptor first. */
   #place(u: Upload): void {
+    const coding = u.kind === "coding";
     const home = realpathSync.native(this.#o.home);
-    mkdirSync(u.root, { recursive: true, mode: 0o700 });
-    const root = realpathSync.native(u.root);
-    if (!within(home, root) || root === home) throw refused("This conversation's folder isn't inside MOSS's own.");
+    let root: string;
+    if (coding) {
+      // `RECEIVED_FOLDER` in the user's home: one real folder of ours, not a link a sandboxed agent (which may write the home) put there
+      // to lead the file elsewhere, and not inside MOSS's home, where no agent can read it.
+      const userHome = realpathSync.native(this.#o.userHome);
+      try { mkdirSync(u.root, { mode: 0o700 }); } catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
+      const st = lstatSync(u.root);
+      if (!st.isDirectory() || st.isSymbolicLink() || (typeof process.getuid === "function" && st.uid !== process.getuid())) throw refused("The folder for files a phone sends isn't a plain folder of yours; nothing was written.");
+      root = realpathSync.native(u.root);
+      if (root !== join(userHome, lastPart(u.root)) || within(home, root) || within(root, home)) throw refused("The folder for files a phone sends isn't where it should be; nothing was written.");
+    } else {
+      mkdirSync(u.root, { recursive: true, mode: 0o700 });
+      root = realpathSync.native(u.root);
+      if (!within(home, root) || root === home) throw refused("This conversation's folder isn't inside MOSS's own.");
+    }
     mkdirSync(u.base, { recursive: true, mode: 0o700 });
     const base = realpathSync.native(u.base);
     // One level under the root, and not through a link: a planted `attachments -> elsewhere` leads nowhere.

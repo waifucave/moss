@@ -386,7 +386,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
       ...userSendMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), files: { home: o.home, userHome: o.userHome ?? homedir(), computer: o.computer }, ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
       ...(routines === undefined ? {} : routineMethods({ routines })),
       // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
-      ...botRecordMethods({ bots, host, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
+      ...botRecordMethods({ bots, host, capHome: { home: o.home, now: () => o.clock.now() }, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
       };
     },
     start: async () => {

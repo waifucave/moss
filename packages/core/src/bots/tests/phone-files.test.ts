@@ -2,14 +2,14 @@
 // the design names is here: a phone that isn't paired with an answer key, a file too big, too many, too much a day, a name that tries to
 // leave its folder, a link planted in the bot's own folder, something that runs when opened, a file named that this phone didn't send.
 import { afterEach, describe, expect, test } from "bun:test";
-import { closeSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX, STAGE_FILE_PENDING_MAX_BYTES, type Caller } from "@waifucave/moss-protocol";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import { pairedPhone, type TestPhone } from "../../agents/tests/phone";
 import { botPaths } from "../paths";
-import { cleanFileName, createExclusive, refusedKind, type StageLimits } from "../staged-files";
+import { cleanFileName, createExclusive, RECEIVED_FOLDER, refusedKind, type StageLimits } from "../staged-files";
 import { outdirPath } from "../../sessions/outdir";
 import { boot, removeTemps, tempDir } from "./fixtures";
 
@@ -71,13 +71,21 @@ describe("a file from a paired phone to a bot's conversation", () => {
     await s.b.shutdown();
   });
 
-  test("a file for a coding session lands in that session's own outputs folder, not in its project", async () => {
+  test("a file for a coding session lands in `.moss-received/<session>/` in the user's home (MOSS's home is closed to its agent), named by its folder-tree path, and is not in its project", async () => {
     const s = await setup();
     const r = await s.send("s_code", "spec.md", text("# spec"));
-    expect(r.path).toBe(`home/Studio/.moss/outputs/s_code/received/phone-${r.upload}/spec.md`);
-    expect(readFileSync(join(outdirPath(s.home, "s_code"), "received", `phone-${r.upload}`, "spec.md"), "utf8")).toBe("# spec");
+    expect(r.path).toBe(`home/Studio/${RECEIVED_FOLDER}/s_code/phone-${r.upload}/spec.md`);
+    const real = join(realpathSync(s.userHome), RECEIVED_FOLDER, "s_code", `phone-${r.upload}`, "spec.md");
+    expect(readFileSync(real, "utf8")).toBe("# spec");
+    expect(real.startsWith(`${realpathSync(s.home)}/`)).toBe(false);
+    expect(existsSync(join(outdirPath(s.home, "s_code"), "received"))).toBe(false);
+    if (posix) expect(statSync(real).mode & 0o777).toBe(0o600);
     await s.call("session.send", { id: "s_code", message: { text: "see [File #1]", clientMessageId: "c1", files: [{ n: 1, path: r.path }] } });
     expect(sentInput(s, "s_code")).toMatchObject({ files: [{ n: 1, path: r.path }] });
+    // Cancelling takes the file and its folder away.
+    const r2 = await s.send("s_code", "again.md", text("# again"));
+    await s.call("session.stageFile", { id: "s_code", upload: r2.upload, cancel: true });
+    expect(existsSync(join(realpathSync(s.userHome), RECEIVED_FOLDER, "s_code", `phone-${r2.upload}`))).toBe(false);
     await s.b.shutdown();
   });
 
@@ -307,13 +315,17 @@ describe.skipIf(!posix)("a link planted in the bot's own folder leads nowhere", 
     await s.b.shutdown();
   });
 
-  test("a session's `received` as a link to a folder outside: refused, nothing written", async () => {
+  test("a coding session's folder in `.moss-received`, or `.moss-received` itself, as a link to a folder outside: refused, nothing written", async () => {
     const s = await setup();
     const outside = join(s.userHome, "outside2");
     mkdirSync(outside);
-    mkdirSync(outdirPath(s.home, "s_code"), { recursive: true });
-    symlinkSync(outside, join(outdirPath(s.home, "s_code"), "received"));
+    mkdirSync(join(s.userHome, RECEIVED_FOLDER));
+    symlinkSync(outside, join(s.userHome, RECEIVED_FOLDER, "s_code"));
     expect(await fail(s.send("s_code", "a.txt", text("x")))).toMatch(/plain folder|nothing was written/);
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(join(s.userHome, RECEIVED_FOLDER), { recursive: true, force: true });
+    symlinkSync(outside, join(s.userHome, RECEIVED_FOLDER));
+    expect(await fail(s.send("s_code", "a.txt", text("x")))).toMatch(/isn't a plain folder of yours/);
     expect(readdirSync(outside)).toEqual([]);
     await s.b.shutdown();
   });
