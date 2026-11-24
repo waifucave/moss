@@ -134,6 +134,15 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(rec.by_backend[0].backend, "codex");
     let ml = engine::models(&t["models.list"]);
     assert_eq!((ml.models[0].signed_in, ml.default_model.as_deref()), (true, Some("m1")));
+    if t["session.openQuestions"].is_object() {
+        let open = engine::open_questions(&t["session.openQuestions"]).unwrap();
+        assert_eq!((open[0].call_id.as_str(), open[0].seq, open[0].asked_at), ("toolu_01", 42, 1781270000000));
+        let q = &open[0].questions[0];
+        assert_eq!((q.question.as_str(), q.header.as_deref(), q.placeholder.as_deref()), ("Which database?", Some("Database"), Some("Or name one")));
+        assert_eq!(q.options[1].preview.as_deref(), Some("file: app.db"));
+    } else {
+        eprintln!("this tree has no session.openQuestions yet: checked in tests/hostile.rs only");
+    }
     if t["session.composerOffers"].is_object() {
         let c = engine::composer_offers(&t["session.composerOffers"]).unwrap();
         assert_eq!(c.files.unwrap().chunk_bytes, 524288);

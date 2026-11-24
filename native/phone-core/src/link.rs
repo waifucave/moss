@@ -1201,7 +1201,12 @@ impl Connection {
     pub async fn composer_offers(&self, session: String) -> Result<crate::engine::ComposerOffers, CoreError> {
         typed!(self, |i| crate::engine::composer(&*i, &session))
     }
-    /// The question waiting in a session, from the newest 200 events of its log (see `engine::pending_question`).
+    /// The questions open in a session, in the order asked (`session.openQuestions`; the newest 200 events of its log
+    /// on an engine without it).
+    pub async fn open_questions(&self, session: String) -> Result<Vec<crate::engine::AskQuestion>, CoreError> {
+        typed!(self, |i| crate::engine::open_questions_of(&*i, &session))
+    }
+    /// The question waiting in a session: the newest open one (see `open_questions`).
     pub async fn pending_question(&self, session: String) -> Result<Option<crate::engine::AskQuestion>, CoreError> {
         typed!(self, |i| crate::engine::pending_question(&*i, &session))
     }
