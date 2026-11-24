@@ -13,7 +13,7 @@
  * where a parsable page sees only its own). */
 
 import type { TokenValue } from "@waifucave/moss-plugin-sdk";
-import { isJoinerChar, joinerInName } from "@waifucave/moss-protocol";
+import { sealedEscape } from "@waifucave/moss-protocol";
 import type { SealedValue } from "./sealed";
 import type { CardSummary, PreviewBlock } from "./card-summary";
 
@@ -198,31 +198,10 @@ function cssSafe(text: string): string | undefined {
   return undefined;
 }
 
-/** The sealed text at one line's length: control characters and bidirectional marks visible as their escapes. The
- *  set is the core's own (`http-read.ts`: C0 and C1 controls but tab, newline and carriage return, the bidi marks and
- *  overrides, U+061C), the zero-width characters (U+200B, U+200C, U+200D, U+FEFF) that make a name look like another, the characters
- *  that draw nothing but sit in text (soft hyphen U+00AD, word joiner U+2060, Mongolian vowel separator U+180E, the interlinear
- *  annotation marks U+FFF9-FFFB, the tag block U+E0000-E007F), plus U+2028 and U+2029 - never Hebrew (0x0590-0x05FF), never dashes, curly quotes, bullets or
- *  the ellipsis (U+2010-2027). The two joiners (U+200C, U+200D) are real only in a HUMAN NAME (`name`: the value of a row the card's builder marked
- *  as a device's, a bot's or a person's name): there one between two visible non-ASCII characters (an emoji sequence, Persian or Indic letters;
- *  the protocol's `joinerInName`) is kept as it was written. In every other value (a command, a path, a host, a file name, free text) and
- *  in a name anywhere else (first, last, doubled, beside a blank, a format character or an ASCII character) it is an escape like the rest. */
-export function sealedEscape(text: string, name = false): string {
-  let out = "";
-  const chars = [...text];
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i]!;
-    if (name && isJoinerChar(ch) && joinerInName(chars, i)) {
-      out += ch;
-      continue;
-    }
-    const code = ch.codePointAt(0)!;
-    if ((code <= 0x08 || code === 0x0b || code === 0x0c || (code >= 0x0e && code <= 0x1f)) || code === 0x7f || (code >= 0x80 && code <= 0x9f) || code === 0x00ad || code === 0x061c || code === 0x180e || code === 0x200b || code === 0x200c || code === 0x200d || code === 0x2060 || code === 0xfeff || code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) || code === 0x2028 || code === 0x2029 || (code >= 0xfff9 && code <= 0xfffb) || (code >= 0xe0000 && code <= 0xe007f)) {
-      out += `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
-    } else out += ch;
-  }
-  return out;
-}
+/** The sealed text with every character that draws nothing, or a blank, or reorders the line shown as its escape (`U+2064`): the protocol's one
+ *  rule, `sealedEscape` in `visible-text.ts`, the same for both apps and for every value on a card. `name`: the value is a human name a builder
+ *  marked (a row's `name: true`), where a joiner between two visible non-ASCII characters is real and stays. */
+export { sealedEscape };
 
 /** A row's value, isolated for direction: a name that starts or ends in right-to-left letters reorders only inside its own value, never
  *  the label beside it or the punctuation after it. The text is already escaped (`sealedEscape`). */

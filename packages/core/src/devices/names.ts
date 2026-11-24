@@ -13,11 +13,13 @@
 // end or continue the engine's words (`devices/rpc.ts`, `askToAdd`).
 //
 // ZERO WIDTH JOINER and NON-JOINER (U+200D, U+200C) are real in names (a family emoji, Persian "می‌خواهم"): each is allowed only
-// between two visible characters, never first or last, never doubled, never beside another format character or a blank. "Between"
+// between two visible NON-ASCII characters (the sealed cards draw one only there, `joinerInName`; beside a Latin letter, a digit or a dot it draws
+// nothing and can only make a name look like another: "exam‌ple.com"), never first or last, never doubled, never beside another format
+// character or a blank. "Between"
 // looks past a variation selector or a skin-tone modifier on the character before it (🏳️‍🌈, 👩🏽‍💻). The subdivision flags
 // (🏴 and the tag block) are refused with the tag block; the flags drawn from two regional indicators pass.
 
-import { UNSHOWN_CHAR, isBlankChar, isJoinerChar, isMarkChar, joinerBetweenVisible } from "@waifucave/moss-protocol";
+import { UNSHOWN_CHAR, isBlankChar, isJoinerChar, isMarkChar, joinerInName } from "@waifucave/moss-protocol";
 
 /** Most combining marks after one character (a script's own need is a few; more is a stack that draws over its neighbours). */
 export const MARKS_MAX = 4;
@@ -38,7 +40,7 @@ export function nameProblem(name: unknown): string | null {
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]!;
     if (isJoinerChar(ch)) {
-      if (!joinerBetweenVisible(chars, i)) return "a device's name can't hold a joiner that isn't between two visible characters";
+      if (!joinerInName(chars, i)) return "a device's name can't hold a joiner that isn't between two visible, non-ASCII characters (an emoji, Persian or Indic letters)";
       prev = "joiner";
       marks = 0;
     } else if (UNSHOWN_CHAR.test(ch)) {

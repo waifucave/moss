@@ -3,10 +3,12 @@
 // doors use it, so a name one accepts is a name the other draws as it was written: a device's name (`devices/names.ts` in the
 // core) and the text of a sealed card (`sealedEscape` in both apps' `sealed-pages.ts`).
 
-/** The characters that never show on their own: controls, every format character (the joiners among them: `joinerBetweenVisible`
- *  takes them back where they sit between two visible characters), lone surrogates, the line and paragraph separators, and the
- *  fillers that draw as blanks (Hangul U+115F, U+1160, U+3164, U+FFA0, Khmer U+17B4–17B5, the braille blank U+2800). */
-export const UNSHOWN_CHAR = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}ᅟᅠㅤﾠ឴឵⠀]/u;
+/** The characters that never show on their own: controls, every format character (the joiners among them: `joinerInName` takes them
+ *  back in a name, where they sit between two visible non-ASCII characters), lone surrogates, the line and paragraph separators, the
+ *  fillers that draw as blanks (Hangul U+115F, U+1160, U+3164, U+FFA0, Khmer U+17B4–17B5, the braille blank U+2800) and the combining
+ *  grapheme joiner U+034F (a mark that draws nothing and joins nothing a person can see), and the whole tag block U+E0000–E007F (its
+ *  unassigned code points too: a character a later Unicode gives a meaning to must not slip in as nothing). */
+export const UNSHOWN_CHAR = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u17B4\u17B5\u2800\u034F\u{E0000}-\u{E007F}]/u;
 const MARK = /^\p{M}$/u;
 const BLANK = /^\p{White_Space}$/u;
 const ZWNJ = "‌";
@@ -45,4 +47,24 @@ export function joinerInName(chars: readonly string[], i: number): boolean {
   let j = i - 1;
   while (j >= 0 && (isMarkChar(chars[j]!) || isToneModifierChar(chars[j]!))) j--;
   return !isAscii(chars[j]!) && !isAscii(chars[i + 1]!);
+}
+
+/** The one escape rule of every sealed value (a card's title, sentence, command, path, host, rows, labels): the text with every
+ *  character `UNSHOWN_CHAR` holds drawn as its escape, `U+00AD`, `U+2064`, `U+3164`, so what a person approves is what is there and
+ *  nothing reads as nothing or as a blank. Tab, line feed and carriage return stay (a command and a file have lines). Nothing else is
+ *  touched: a Hebrew letter, a dash, a curly quote, an ellipsis is as it was. A joiner (U+200D, U+200C) stays as written only when `name`
+ *  (the value is a human name a builder marked: a device's, a bot's, a person's) and `joinerInName` says it is real there. Both apps'
+ *  sealed pages call this one function (`sealedEscape`), so no list of characters is kept twice. */
+export function sealedEscape(text: string, name = false): string {
+  let out = "";
+  const chars = [...text];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    if (name && isJoinerChar(ch) && joinerInName(chars, i)) {
+      out += ch;
+    } else if (ch !== "\t" && ch !== "\n" && ch !== "\r" && UNSHOWN_CHAR.test(ch)) {
+      out += `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+    } else out += ch;
+  }
+  return out;
 }

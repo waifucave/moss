@@ -62,6 +62,19 @@ describe("cleanName: what is refused", () => {
   });
 });
 
+describe("a joiner beside an ASCII character is refused, as the sealed cards would draw it as an escape", () => {
+  test("between two Latin letters, a digit and a letter, a dot, or one emoji and one Latin letter", () => {
+    for (const name of ["a\u200Db", "exam\u200Cple.com", "user\u200D1", "1\u200C2", "a\u200D\u{1F469}", "\u{1F469}\u200Db", "\u0645\u06CC\u200Cx"]) bad(name);
+    expect(nameProblem("exam\u200Cple")).toMatch(/non-ASCII/);
+  });
+  test("an emoji sequence, a flag, a skin tone, Persian and Devanagari still pass", () => {
+    for (const name of ["MacBook \u{1F468}\u200D\u{1F469}\u200D\u{1F467}", "\u{1F3F3}\uFE0F\u200D\u{1F308}", "\u{1F469}\u{1F3FD}\u200D\u{1F4BB}", "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645", "\u0915\u094D\u200D\u0937"]) expect([name, nameProblem(name)]).toEqual([name, null]);
+  });
+  test("the combining grapheme joiner is refused with the invisible characters", () => {
+    expect(nameProblem("a\u034Fb")).toMatch(/invisible/);
+  });
+});
+
 describe("nameProblem says why, in plain words", () => {
   test("each refusal reads as a sentence about the name", () => {
     expect(nameProblem("ok")).toBeNull();

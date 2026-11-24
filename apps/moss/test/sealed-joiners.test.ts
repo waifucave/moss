@@ -44,7 +44,7 @@ const HOSTILE: readonly (readonly [string, string])[] = [
   [`a${ZWJ}​b`, "aU+200DU+200Bb"],
   [`a﻿${ZWNJ}b`, "aU+FEFFU+200Cb"],
   [`a\n${ZWJ}b`, "a\nU+200Db"],
-  [`aㅤ${ZWJ}b`, "aㅤU+200Db"], // a filler that draws as a blank
+  [`aㅤ${ZWJ}b`, "aU+3164U+200Db"], // a filler that draws as a blank is an escape too
 ];
 
 describe("sealedEscape and the joiners", () => {
@@ -85,6 +85,24 @@ describe("sealedEscape and the joiners", () => {
   test("a lone surrogate beside a joiner is not a visible character", () => {
     expect(sealedEscape(`a${ZWJ}\uD800`, true)).toContain("U+200D");
     expect(sealedEscape(`\uDC00${ZWNJ}b`, true)).toContain("U+200C");
+  });
+});
+
+describe("one escape rule for every sealed value", () => {
+  const page = (field: "command" | "paths" | "title", value: unknown) => fieldPage({ cardId: "card_x", token: TOKEN, field, value: value as never });
+  test("a command, a path and a list of files draw what is there: an invisible operator or a filler does not read as nothing or as a blank", () => {
+    expect(page("command", { type: "code", code: "rm \u3164-rf ~/x" })).toContain("rm U+3164-rf ~/x");
+    expect(page("paths", { type: "list", items: ["/Users/me/safe\u2064dir", "/tmp/a\u034Fb"] })).toContain("<li>/Users/me/safeU+2064dir</li><li>/tmp/aU+034Fb</li>");
+    expect(page("title", { type: "text", text: "Open \u2800file" })).toContain("Open U+2800file");
+  });
+  test("the card's own page and the preview draw them too", () => {
+    const options = [{ id: "approve", kind: "approve" as const, label: "Approve" }, { id: "deny", kind: "deny" as const, label: "Deny" }];
+    const own = ownCardPage({ cardId: "card_x", token: "se_1", origin: "user", issuedAt: 0, expiresAt: null, fields: { title: { type: "text", text: "Run \u2064this" }, command: { type: "code", code: "cat /Users/me/safe\u2064dir" }, paths: { type: "list", items: ["/a\u17B4b"] } }, options });
+    expect(own).toContain("Run U+2064this");
+    expect(own).toContain("cat /Users/me/safeU+2064dir");
+    expect(own).toContain("/aU+17B4b");
+    const summary = { preview: { kind: "lines", lines: ["rm \u3164-rf"], hidden: 0, mono: true }, shortened: false } as unknown as CardSummary;
+    expect(previewHtml(summary)).toContain("rm U+3164-rf");
   });
 });
 

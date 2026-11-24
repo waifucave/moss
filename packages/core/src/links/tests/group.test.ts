@@ -280,9 +280,8 @@ describe("voters and the quorum (lane I's proposal)", () => {
     const link = await a.links.transport.connect(b.links.key.id);
     const { generateEd25519 } = await import("../../identity/keys");
     const { GROUP_LINK } = await import("../group");
-    // An unknown key, named by the asker. A name with a control, nothing that shows, or past the length is not taken ("a device this computer doesn't
-    // know"); the name rule (`cleanName`) takes "Spare", a family emoji, and a joiner between letters, which the card's page then draws as an escape
-    // (the page, not the engine, narrows the joiners: `sealedEscape` with `joinerInName`).
+    // An unknown key, named by the asker. A name with a joiner beside an ASCII letter, a control, nothing that shows, or past the length is not taken
+    // ("a device this computer doesn't know"); the name rule (`cleanName`) takes "Spare" and a family emoji.
     const seen: string[] = [];
     for (const name of [`exam\u200Dple`, "a\u202Eb", "\u200B", "x".repeat(200), "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]) {
       const key = toBase64Url(generateEd25519().publicKey);
@@ -297,7 +296,7 @@ describe("voters and the quorum (lane I's proposal)", () => {
       await answer(b, "device-revoke", false);
       expect(isContractError(await asked, "refused")).toBe(true);
     }
-    expect(seen).toEqual(["exam\u200Dple", "a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]);
+    expect(seen).toEqual(["a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]);
   }, 40_000);
 
   test("removing a member asks the other voters, each by its card: one declines, one agrees, and that's a quorum", async () => {
