@@ -525,11 +525,15 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const before = { bots: [await windowSessionView(rpc)] };
     const was = before.bots[0]?.model;
     await cdp.click(pill.session, pill.c.x, pill.c.y);
-    const items = await until("the picker's models", 15_000, async () => {
-      const r = await cdp.evaluate(pill.session, `JSON.stringify([...document.querySelectorAll('${MODEL_ROWS}')].map((e) => ({ t: (e.innerText || '').trim(), c: e.getAttribute('aria-checked') })))`);
-      const list = JSON.parse(String(r)) as { t: string; c: string }[];
-      return list.length > 0 ? list : undefined;
-    }, async () => `pill: ${String(await cdp.evaluate(pill.session, "(() => { const b = document.querySelector('.cl-composer button[aria-label^=Model]'); return b ? 'expanded=' + b.getAttribute('aria-expanded') + ' menus=' + document.querySelectorAll('[role=menu]').length + ' radios=' + document.querySelectorAll('[role=menuitemradio]').length + ' items=' + document.querySelectorAll('[role=menuitem]').length + ' text=' + [...document.querySelectorAll('[role=menu]')].map((e) => e.innerText.slice(0, 80)).join('|') : 'gone'; })()").catch(() => "gone"))}`);
+    // The menu opens at once with the session's own model and fills when the core's list arrives (about a second on a busy core,
+    // as a real person sees it): wait up to 15 s for two or more rows. A picker that stays at one row still fails, with what it lists.
+    let last: { t: string; c: string }[] = [];
+    const readRows = async () => JSON.parse(String(await cdp.evaluate(pill.session, `JSON.stringify([...document.querySelectorAll('${MODEL_ROWS}')].map((e) => ({ t: (e.innerText || '').trim(), c: e.getAttribute('aria-checked') })))`))) as { t: string; c: string }[];
+    for (const end = Date.now() + scaled(15_000); Date.now() < end; await sleep(100)) {
+      last = await readRows().catch(() => last);
+      if (last.length >= 2) break;
+    }
+    const items = last;
     if (items.length < 2) fail(`the picker lists ${items.length} model(s): ${items.map((i) => i.t).join(", ")}`);
     // Only the signed-in provider's models are listed first: the run's one stored key is Anthropic's.
     if (items.length > 100) fail(`the picker lists ${items.length} models up front: every provider's, signed in or not`);

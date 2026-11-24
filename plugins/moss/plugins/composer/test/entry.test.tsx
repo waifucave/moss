@@ -13,13 +13,13 @@ const ALPHA: BotView = { id: "alpha", name: "Alpha", model: "openai/gpt-6", effo
 const STUDIO: ComputerView = computerView("Studio", { device: "d1", level: "ask-risky", link: "self", isMain: true });
 const session = (extra: Partial<SessionView>): SessionView => ({ id: "s_alpha", kind: "bot", bot: "alpha", computer: "Studio", status: "idle", startedAt: 0, updatedAt: 0, ...extra });
 
-async function mount(s: SessionView = session({}), opts: { options?: unknown[]; refuseOption?: boolean; level?: "applied" | "card"; entries?: Parameters<typeof runtimeWith>[0]["entries"]; component?: EntryComponent; refuse?: string; kept?: Map<string, string>; models?: { id: string; name: string; providerName: string; plugin?: string; signedIn?: boolean; efforts?: string[]; defaultEffort?: string }[]; commands?: SlashCommand[]; run?: (name: string, args: unknown) => unknown; tokens?: Record<string, number> } = {}) {
+async function mount(s: SessionView = session({}), opts: { options?: unknown[]; refuseOption?: boolean; level?: "applied" | "card"; entries?: Parameters<typeof runtimeWith>[0]["entries"]; component?: EntryComponent; refuse?: string; kept?: Map<string, string>; models?: { id: string; name: string; providerName: string; plugin?: string; signedIn?: boolean; efforts?: string[]; defaultEffort?: string }[]; modelsRead?: () => Promise<unknown>; commands?: SlashCommand[]; run?: (name: string, args: unknown) => unknown; tokens?: Record<string, number> } = {}) {
   const core = fakeCore({ "computer.setLevel": () => (opts.level === "applied" ? { applied: true } : { applied: false, card: "card-level" }) });
   // The composer spot's host callbacks: the core decides what each one is (a bot's user layer, a session's model).
   const host: string[][] = [];
   let held: BotView = ALPHA; // what the daemon holds: a pick changes it
   const composerHost = {
-    models: async () => ({ models: opts.models ?? [{ id: "openai/gpt-6", name: "GPT-6", providerName: "OpenAI" }, { id: "xai/grok-5", name: "Grok 5", providerName: "xAI" }], ...(opts.options ? { options: opts.options } : {}) }),
+    models: opts.modelsRead ?? (async () => ({ models: opts.models ?? [{ id: "openai/gpt-6", name: "GPT-6", providerName: "OpenAI" }, { id: "xai/grok-5", name: "Grok 5", providerName: "xAI" }], ...(opts.options ? { options: opts.options } : {}) })),
     setOption: async (option: string, value: string) => { host.push(["setOption", option, value]); if (opts.refuseOption) throw new Error("refused"); },
     setModel: async (model: string, effort?: string) => { host.push(["setModel", model, effort ?? ""]); held = { ...held, model, ...(effort !== undefined ? { effort } : {}) }; },
     interrupt: async () => { host.push(["interrupt"]); },
@@ -118,6 +118,34 @@ describe("the composer entry", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Model: GPT-6/ }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Grok 5/ }));
     expect(agent.host).toEqual([["setModel", "xai/grok-5", ""]]);
+  });
+
+  // The picker's model read: the one acceptance row 11 failed on (a packaged run, 2026-11-24).
+  test("the first models read is used even though the session's status changed while it ran, and a failed read is tried again", async () => {
+    const own = [{ id: "a-1", name: "Agent One", providerName: "Demo", signedIn: true }, { id: "a-2", name: "Agent Two", providerName: "Demo", signedIn: true }];
+    // 1. Each read is held open by the test. The session arrives (its status changes), which starts a second read; the FIRST
+    //    one finishing is enough: before, its answer was thrown away and the picker waited for the second.
+    const reads: { resolve: (v: unknown) => void; reject: (e: Error) => void }[] = [];
+    await mount(session({ id: "code-1", kind: "coding", bot: undefined, backend: "demo", model: "a-1" }), {
+      modelsRead: () => new Promise((resolve, reject) => reads.push({ resolve, reject })),
+    });
+    expect(reads.length).toBe(2);
+    await act(async () => { reads[0]!.resolve({ models: own }); await settle(); });
+    fireEvent.click(screen.getByRole("button", { name: /^Model:/ }));
+    expect(screen.getAllByRole("menuitemradio").length).toBe(2);
+    cleanup();
+    // 2. A read that fails is read again (not left as one row), and the picker fills.
+    let calls = 0;
+    await mount(session({ id: "code-1", kind: "coding", bot: undefined, backend: "demo", model: "a-1" }), {
+      modelsRead: async () => {
+        calls++;
+        if (calls <= 2) throw new Error("this document isn't bound to a mount");
+        return { models: own };
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Model:/ }));
+    expect(screen.getAllByRole("menuitemradio").length).toBe(1);
+    await waitFor(() => expect(screen.getAllByRole("menuitemradio").length).toBe(2), { timeout: 4000 });
   });
 
   test("each option the agent lets the person choose is its own picker, named as the agent names it; a pick goes through the host", async () => {

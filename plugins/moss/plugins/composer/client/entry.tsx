@@ -17,7 +17,7 @@
 // didn't run, shows as a row above the box, here only: it isn't added to the conversation, so neither the bot nor any
 // other plugin reads it.
 import { Spot, useApprovals, useComposerHost, useKept, usePluginApi, useSpotEntries, useTokens, useUserSend } from "@waifucave/moss-plugin-sdk/ui";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Composer } from "./Composer";
 import { argsFor, inScope, refusalText, resultText, type SlashCommand } from "./slash";
 import { MOSS_LEVELS } from "./levels";
@@ -32,13 +32,39 @@ export interface ComposerEntryProps {
   sessionKind?: SessionKind;
 }
 
+/** A failed read is tried again after these waits (ms), then left: a read that fails while the window's document reloads, or
+ *  while the core is busy, must not leave the picker on what it had when it mounted. */
+export const LOAD_RETRY_MS: readonly number[] = [300, 900, 2700];
+
+/** Reads something the composer shows, again whenever `deps` change.
+ *  - The value already held stays while the next read runs (no blank between two reads).
+ *  - A read that finishes after `deps` changed again is still used while nothing is held yet: the models list takes about
+ *    a second on a busy core, and the session's status changes in that second, so throwing the first answer away doubled
+ *    the wait (and kept doing so for as long as the status kept changing). Once a value is held, only the newest read counts.
+ *  - A read that fails is tried again (LOAD_RETRY_MS), not swallowed into a picker that stays empty. */
 function useLoad<T>(load: () => Promise<T> | undefined, deps: readonly unknown[]): T | undefined {
   const [value, setValue] = useState<T | undefined>(undefined);
+  const held = useRef(false);
   useEffect(() => {
     let live = true;
-    load()?.then((v) => live && setValue(v), () => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = (n: number): void => {
+      load()?.then(
+        (v) => {
+          if (!live && held.current) return;
+          held.current = true;
+          setValue(v);
+        },
+        () => {
+          const wait = LOAD_RETRY_MS[n];
+          if (live && wait !== undefined) timer = setTimeout(() => attempt(n + 1), wait);
+        },
+      );
+    };
+    attempt(0);
     return () => {
       live = false;
+      if (timer !== undefined) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
