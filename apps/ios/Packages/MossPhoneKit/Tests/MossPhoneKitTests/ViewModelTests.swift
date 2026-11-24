@@ -242,4 +242,29 @@ final class ViewModelTests: XCTestCase {
         let paired = await c.pairedComputer
         XCTAssertNil(paired)
     }
+
+    func testComposerOffersOnlyWhatIsBehindADoor() async {
+        let c = fake()
+        let bot = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        await bot.loadComposer()
+        XCTAssertEqual(bot.offers?.pictures, true)
+        XCTAssertTrue(bot.offers?.models.isEmpty ?? false)           // a bot's phone composer has no Model row
+        let code = ConversationModel(source: .session(SampleData.sessions[1]), client: c)
+        await code.loadComposer()
+        XCTAssertFalse(code.offers?.models.isEmpty ?? true)
+        let first = code.offers!.efforts[0]
+        await code.setEffort(first)
+        XCTAssertEqual(code.offers?.effort, first)
+    }
+
+    func testQuestionIsAnsweredOnce() async {
+        let c = fake()
+        let m = ConversationModel(source: .session(SampleData.sessions.first { $0.id == "c4" }!), client: c)
+        await m.loadComposer()
+        XCTAssertNotNil(m.question)
+        let ok = await m.answerQuestion(["Tag colour": "Green"])
+        XCTAssertTrue(ok); XCTAssertNil(m.question)
+        await m.loadComposer()
+        XCTAssertNil(m.question)
+    }
 }

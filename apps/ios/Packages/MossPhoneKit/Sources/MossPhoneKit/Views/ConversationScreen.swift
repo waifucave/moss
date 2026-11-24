@@ -79,12 +79,14 @@ public struct ConversationScreen: View {
                         }
                     }
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
                 }
-                ComposerBar(draft: $model.draft, placeholder: model.placeholder, running: model.isRunning,
-                            onSend: { Task { await model.send() } }, onStop: { Task { await model.stop() } })
-                    .focused($composing)
+                if let q = model.question {
+                    QuestionComposerView(question: q) { answers in await model.answerQuestion(answers) }
+                } else {
+                    ComposerView(model: model, placeholder: model.placeholder)
+                }
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
         }
         .navigationBarTitleDisplayMode(.inline)
         .task { model.start() }
@@ -191,55 +193,3 @@ extension EnvironmentValues {
     var conversationStartsAtTop: Bool { get { self[StartsAtTopKey.self] } set { self[StartsAtTopKey.self] = newValue } }
 }
 
-/// The composer: a field, and Send, which becomes Stop while a turn runs and nothing is typed.
-public struct ComposerBar: View {
-    @Binding var draft: String
-    let placeholder: String
-    let running: Bool
-    let onSend: () -> Void
-    let onStop: () -> Void
-
-    public init(draft: Binding<String>, placeholder: String, running: Bool, onSend: @escaping () -> Void, onStop: @escaping () -> Void) {
-        _draft = draft; self.placeholder = placeholder; self.running = running; self.onSend = onSend; self.onStop = onStop
-    }
-    private var hasText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    @State private var note: String?
-
-    /// The pill is the system's own glass (Liquid Glass) on a rounded shape; the plus and the round button inside it are the
-    /// system's glass button styles, grouped in one container so they blend with the pill as the system does it.
-    public var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(alignment: .bottom, spacing: 4) {
-                Button { note = "Adding files from the phone is not ready yet." } label: {
-                    Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36)
-                }
-                .buttonStyle(.glass).buttonBorderShape(.circle).tint(.primary)
-                .accessibilityLabel("Add")
-                TextField(placeholder, text: $draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .padding(.vertical, 12)
-                    .accessibilityLabel(placeholder)
-                if running && !hasText {
-                    round("stop.fill", "Stop", onStop)
-                } else if hasText {
-                    round("arrow.up", "Send", onSend)
-                } else {
-                    round("mic.fill", "Voice") { note = "Talking to a bot from the phone is not ready yet." }
-                }
-            }
-            .padding(4)
-            .glassEffect(.regular, in: .rect(cornerRadius: 26))
-        }
-        .alert(note ?? "", isPresented: Binding(get: { note != nil }, set: { if !$0 { note = nil } })) { Button("OK") { note = nil } }
-    }
-
-    private func round(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(uiColor: .systemBackground))
-                .frame(width: 36, height: 36)
-        }
-        .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(.primary)
-        .accessibilityLabel(label)
-    }
-}

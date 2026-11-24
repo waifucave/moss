@@ -11,6 +11,8 @@ public enum Theme {
     /// The two blues the owner allowed: the unread dot and a link.
     public static let unreadDot = Color(uiColor: .systemBlue)
     public static let link = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.30, green: 0.75, blue: 0.85, alpha: 1) : UIColor(red: 0.05, green: 0.52, blue: 0.64, alpha: 1) })
+    /// The inverse of the canvas: the Send, Stop and voice circles (black on light, near white on dark).
+    public static let inverse = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.93, alpha: 1) : UIColor(white: 0.07, alpha: 1) })
     /// "Needs you".
     public static let waiting = Color(uiColor: .systemOrange)
     /// A soft round button's fill.

@@ -41,7 +41,7 @@ public protocol EngineClient: AnyObject, Sendable {
 
     /// `session.send` with a `UserMessageInput` (the client id makes a resend one message). Bots' conversations and
     /// coding sessions are both sessions, so one call serves both.
-    func send(session: String, text: String, clientMessageId: String) async throws
+    func send(session: String, text: String, clientMessageId: String, images: [String]) async throws
     /// `session.interrupt`: Stop.
     func stop(session: String) async throws
 
@@ -60,10 +60,28 @@ public protocol EngineClient: AnyObject, Sendable {
     func recentStart() async throws -> RecentStart
     func startSession(_ request: StartRequest) async throws -> String
 
+    /// The composer's rows: what this conversation or session offers through the doors a phone may call. Nothing offered, no row.
+    func composerOffers(session: String, kind: ConversationKind) async throws -> ComposerOffers
+    /// `session.setModel` (a bot's effort too).
+    func setModel(session: String, model: String?, effort: String?) async throws
+    /// `session.stageImage`: the staged picture's path, for `send(images:)`.
+    func stageImage(session: String, data: Data) async throws -> String
+    /// `command.run`.
+    func runCommand(session: String, command: String) async throws
+    /// The question waiting in a conversation, if any, and `session.answer`.
+    func pendingQuestion(session: String) async throws -> AskQuestion?
+    func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws
+
     /// The state of the link now (`events()` tells the changes), and forgetting this computer.
     func connectionState() async -> ConnectionState
     func unpair() async
 
     /// `events.subscribe`: what happens next, until the stream is dropped.
     func events() async -> AsyncStream<EngineEvent>
+}
+
+public extension EngineClient {
+    func send(session: String, text: String, clientMessageId: String) async throws {
+        try await send(session: session, text: text, clientMessageId: clientMessageId, images: [])
+    }
 }

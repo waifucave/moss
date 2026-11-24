@@ -27,7 +27,7 @@ targets:
         CFBundleDisplayName: MOSS
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSCameraUsageDescription: MOSS uses the camera only to read the pairing code shown on your computer. Nothing is recorded.
+        NSCameraUsageDescription: MOSS uses the camera to read the pairing code shown on your computer, and to take a picture you choose to send. Nothing is recorded otherwise.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.ios
@@ -46,7 +46,7 @@ targets:
         CFBundleDisplayName: MOSS Code
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSCameraUsageDescription: MOSS Code uses the camera only to read the pairing code shown on your computer. Nothing is recorded.
+        NSCameraUsageDescription: MOSS Code uses the camera to read the pairing code shown on your computer, and to take a picture you choose to send. Nothing is recorded otherwise.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.code.ios

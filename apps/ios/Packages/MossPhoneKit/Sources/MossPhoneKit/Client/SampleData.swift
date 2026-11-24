@@ -79,6 +79,14 @@ public enum SampleData {
                    backend: "cursor", model: "auto", root: "home/Studio/tools"),
     ]
 
+    /// Questions waiting in a conversation, by session id.
+    public static let questions: [String: AskQuestion] = [
+        "c4": AskQuestion(callId: "ask_1", header: "Tag colour", text: "Which colour should the new tag have?",
+                          options: [.init(label: "Green", detail: "Matches the success states"), .init(label: "Amber", detail: "Stands out on the white page"), .init(label: "Grey", detail: "Quiet, like the other tags")]),
+        "s_luna": AskQuestion(callId: "ask_2", header: "Receipts", text: "Which folder should I keep this week's receipts in?",
+                              options: [.init(label: "Receipts 2026"), .init(label: "Taxes"), .init(label: "A new folder")]),
+    ]
+
     public static func sessionMessages(for id: String) -> [ChatMessage] {
         switch id {
         case "c1":

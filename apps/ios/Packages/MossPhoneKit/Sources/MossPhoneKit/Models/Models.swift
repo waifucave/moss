@@ -355,3 +355,67 @@ public enum StartError: Error, Equatable, Sendable {
     /// The agent is not installed on that computer.
     case notInstalled
 }
+
+// MARK: Composer
+
+/// A plugin's command the person may run from a conversation (`command.list`, `command.run`).
+public struct PluginCommand: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var title: String
+    public init(id: String, title: String) { self.id = id; self.title = title }
+}
+
+/// A model a session lets the person switch to (`models.list {session}`, `session.setModel`).
+public struct ModelChoice: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var efforts: [String]
+    public init(id: String, name: String, efforts: [String] = []) { self.id = id; self.name = name; self.efforts = efforts }
+}
+
+/// What the composer of one conversation or session may offer, read from the doors a phone may call today. A kind with nothing
+/// behind it is empty or `nil`, and its row is left out of the picker: there are no placeholder rows.
+public struct ComposerOffers: Equatable, Sendable {
+    /// `session.stageImage`: Photos, and Camera where the phone has one. Files have no door on the `remote` list, so there is no Files row.
+    public var pictures: Bool
+    /// `command.list` and `command.run`: the Plugins row, when any command is listed.
+    public var commands: [PluginCommand]
+    /// `session.setModel`'s effort: the session's own levels and the one set now. Empty: no Effort row.
+    public var efforts: [String]
+    public var effort: String?
+    /// `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row.
+    public var models: [ModelChoice]
+    public var model: String?
+    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil) {
+        self.pictures = pictures; self.commands = commands; self.efforts = efforts; self.effort = effort; self.models = models; self.model = model
+    }
+    public var isEmpty: Bool { !pictures && commands.isEmpty && efforts.isEmpty && models.isEmpty }
+}
+
+public enum ConversationKind: Sendable { case bot, codingSession }
+
+/// A picture staged for the next message (`session.stageImage` wrote it; `path` is what `session.send` takes).
+public struct StagedImage: Identifiable, Hashable, Sendable {
+    public var id: String { path }
+    public var path: String
+    public var thumbnail: Data
+    public init(path: String, thumbnail: Data) { self.path = path; self.thumbnail = thumbnail }
+}
+
+/// An `AskUserQuestion` waiting in a conversation (`session.answer` answers it).
+public struct AskQuestion: Identifiable, Hashable, Sendable {
+    public struct Option: Hashable, Sendable {
+        public var label: String
+        public var detail: String?
+        public init(label: String, detail: String? = nil) { self.label = label; self.detail = detail }
+    }
+    public var callId: String
+    public var header: String?
+    public var text: String
+    public var options: [Option]
+    public var multiSelect: Bool
+    public var id: String { callId }
+    public init(callId: String, header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {
+        self.callId = callId; self.header = header; self.text = text; self.options = options; self.multiSelect = multiSelect
+    }
+}

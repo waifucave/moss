@@ -26,6 +26,9 @@ public struct AppLaunch {
         l.startNew = args.contains("-startNew")
         l.confirmUnpair = args.contains("-confirmUnpair")
         l.scrollTop = args.contains("-scrollTop")
+        if let i = args.firstIndex(of: "-open"), i + 1 < args.count { l.openID = args[i + 1] }
+        if let i = args.firstIndex(of: "-draft"), i + 1 < args.count { l.composer.draft = args[i + 1] }
+        l.composer.focus = args.contains("-focus"); l.composer.picker = args.contains("-picker")
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
         return l
@@ -37,6 +40,9 @@ public struct AppLaunch {
     public var scrollTop = false
     /// A message id to show at the bottom edge, under the composer (for pictures).
     public var scrollTo: String?
+    /// For pictures: which bot or session to open, and what the composer starts with.
+    public var openID: String?
+    public var composer = ComposerPreset()
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
 
@@ -66,7 +72,7 @@ public struct MossRoot: View {
         _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
         _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
-        if launch.screen == .conversation, let alpha = SampleData.bots.first(where: { $0.id == "alpha" }) { _path = State(initialValue: [alpha]) }
+        if launch.screen == .conversation, let alpha = SampleData.bots.first(where: { $0.id == (launch.openID ?? "alpha") }) { _path = State(initialValue: [alpha]) }
     }
 
     public var body: some View {
@@ -94,6 +100,7 @@ public struct MossRoot: View {
         .environment(\.nowMs, SampleData.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
         .environment(\.conversationScrollTo, launch.scrollTo)
+        .environment(\.composerPreset, launch.composer)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
@@ -130,7 +137,7 @@ public struct MossCodeRoot: View {
         _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
         _showNew = State(initialValue: launch.screen == .newSession)
-        if launch.screen == .session, let s = SampleData.sessions.first(where: { $0.id == "c2" }) { _path = State(initialValue: [s]) }
+        if launch.screen == .session, let s = SampleData.sessions.first(where: { $0.id == (launch.openID ?? "c2") }) { _path = State(initialValue: [s]) }
     }
 
     public var body: some View {
@@ -165,6 +172,7 @@ public struct MossCodeRoot: View {
         .environment(\.nowMs, SampleData.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
         .environment(\.conversationScrollTo, launch.scrollTo)
+        .environment(\.composerPreset, launch.composer)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }

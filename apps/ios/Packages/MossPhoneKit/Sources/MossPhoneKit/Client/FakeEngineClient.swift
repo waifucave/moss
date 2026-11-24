@@ -69,6 +69,7 @@ public actor FakeEngineClient: EngineClient {
         case .midTurn:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
             statusLines["s_alpha"] = "Alpha is working"
+            statusLines["c1"] = "Working"
             if let i = botList.firstIndex(where: { $0.id == "alpha" }) { botList[i].state = .thinking }
         case .unpaired: paired = nil
         case .unreachable:
@@ -147,7 +148,7 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Sending
 
-    public func send(session: String, text: String, clientMessageId: String) async throws {
+    public func send(session: String, text: String, clientMessageId: String, images: [String]) async throws {
         try await maybeFail()
         if scenario == .sendFails { throw Failure("send failed") }
         // A resend with the same client id is not a second message.
@@ -160,6 +161,54 @@ public actor FakeEngineClient: EngineClient {
         let line = isBot ? "\(botList.first { $0.mainSession == session }?.name ?? "Bot") is thinking" : "Working"
         statusLines[session] = line
         emit(.statusLine(subject: session, line: line))
+    }
+
+    // MARK: Composer
+
+    public private(set) var efforts: [String: String] = [:]
+    public private(set) var models: [String: String] = [:]
+    public private(set) var staged: [String] = []
+    public private(set) var commandsRun: [String] = []
+    public private(set) var questionsAnswered: [(session: String, answers: [String: String])] = []
+    private var answeredQuestions: Set<String> = []
+
+    public func composerOffers(session: String, kind: ConversationKind) async throws -> ComposerOffers {
+        try await maybeFail()
+        switch kind {
+        case .bot:
+            return ComposerOffers(pictures: true, commands: [PluginCommand(id: "summary.daily", title: "Daily summary")],
+                                  efforts: ["low", "medium", "high"], effort: efforts[session] ?? "medium")
+        case .codingSession:
+            let row = sessionList.first { $0.id == session }
+            let backend = row?.backend ?? "claude-code"
+            let options = SampleData.options(for: backend)
+            let choices = options.models.map { ModelChoice(id: $0.id, name: $0.name, efforts: $0.efforts) }
+            let current = models[session] ?? row?.model ?? choices.first?.id
+            let levels = choices.first { $0.id == current }?.efforts ?? choices.first?.efforts ?? []
+            return ComposerOffers(pictures: true, commands: [PluginCommand(id: "tests.run", title: "Run the tests"), PluginCommand(id: "review.diff", title: "Review the diff")],
+                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current)
+        }
+    }
+    public func setModel(session: String, model: String?, effort: String?) async throws {
+        try await maybeFail()
+        if let model { models[session] = model }
+        if let effort { efforts[session] = effort }
+    }
+    public func stageImage(session: String, data: Data) async throws -> String {
+        try await maybeFail()
+        let path = "staged/\(session)/image-\(staged.count + 1).png"
+        staged.append(path); return path
+    }
+    public func runCommand(session: String, command: String) async throws { try await maybeFail(); commandsRun.append(command) }
+    public func pendingQuestion(session: String) async throws -> AskQuestion? {
+        try await maybeFail()
+        guard let q = SampleData.questions[session], !answeredQuestions.contains(q.callId) else { return nil }
+        return q
+    }
+    public func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws {
+        try await maybeFail()
+        answeredQuestions.insert(question.callId)
+        questionsAnswered.append((session, answers))
     }
 
     public func stop(session: String) async throws {

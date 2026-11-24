@@ -17,6 +17,13 @@ public final class ConversationModel {
     /// A message that did not go: its words stay in the composer, and Retry sends it again under the same id (never twice).
     public private(set) var failedSend: (text: String, id: String)?
     public var draft = ""
+    /// What the composer's picker may offer here; `nil` until read.
+    public private(set) var offers: ComposerOffers?
+    /// The question waiting in this conversation: the composer's place is taken by it.
+    public private(set) var question: AskQuestion?
+    public private(set) var staged: [StagedImage] = []
+    public private(set) var isInterrupting = false
+    public var kind: ConversationKind { if case .bot = source { return .bot } else { return .codingSession } }
 
     @ObservationIgnored private let client: EngineClient
     @ObservationIgnored private var sessionID: String
@@ -84,6 +91,7 @@ public final class ConversationModel {
             guard let self else { return }
             let stream = await client.events()
             await self.load()
+            await self.loadComposer()
             if let t = self.autoSend { self.draft = t; await self.send() }
             for await event in stream { self.apply(event) }
         }
@@ -100,26 +108,64 @@ public final class ConversationModel {
         }
     }
 
-    public func send() async {
+    /// Sends the draft. The field clears only when the send was accepted: a refused prompt stays in it (and so does a picture).
+    @discardableResult
+    public func send() async -> Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else { return false }
         let id = failedSend?.text == text ? failedSend!.id : makeID()
         do {
-            try await client.send(session: sessionID, text: text, clientMessageId: id)
+            try await client.send(session: sessionID, text: text, clientMessageId: id, images: staged.map(\.path))
             draft = ""
+            staged = []
             errorText = nil
             failedSend = nil
+            return true
         } catch {
             // The words stay in the composer so nothing is lost.
             failedSend = (text, id)
             errorText = "Your message wasn't sent. It is still here."
+            return false
         }
+    }
+
+    // MARK: Composer
+
+    public func loadComposer() async {
+        offers = try? await client.composerOffers(session: sessionID, kind: kind)
+        question = try? await client.pendingQuestion(session: sessionID)
+    }
+    public func setEffort(_ effort: String) async {
+        do { try await client.setModel(session: sessionID, model: nil, effort: effort); offers?.effort = effort }
+        catch { errorText = "That didn't work." }
+    }
+    public func setModel(_ choice: ModelChoice) async {
+        do {
+            let effort = choice.efforts.contains(offers?.effort ?? "") ? offers?.effort : choice.efforts.first
+            try await client.setModel(session: sessionID, model: choice.id, effort: effort)
+            offers?.model = choice.id; offers?.efforts = choice.efforts; offers?.effort = effort
+        } catch { errorText = "That didn't work." }
+    }
+    public func run(_ command: PluginCommand) async {
+        do { try await client.runCommand(session: sessionID, command: command.id) } catch { errorText = "That didn't work." }
+    }
+    public func stage(_ data: Data, thumbnail: Data) async {
+        do { staged.append(StagedImage(path: try await client.stageImage(session: sessionID, data: data), thumbnail: thumbnail)) }
+        catch { errorText = "That picture couldn't be added." }
+    }
+    public func unstage(_ image: StagedImage) { staged.removeAll { $0 == image } }
+    public func answerQuestion(_ answers: [String: String]) async -> Bool {
+        guard let q = question else { return false }
+        do { try await client.answerQuestion(session: sessionID, question: q, answers: answers); question = nil; return true }
+        catch { errorText = "That didn't work. The question is still waiting."; return false }
     }
 
     /// Sends the message that failed again.
     public func retry() async { await send() }
 
     public func stop() async {
+        isInterrupting = true
+        defer { isInterrupting = false }
         do { try await client.stop(session: sessionID) } catch { errorText = "That didn't work." }
     }
 }
