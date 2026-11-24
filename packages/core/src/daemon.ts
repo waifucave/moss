@@ -5499,7 +5499,8 @@ export function stopOnSignals(daemon: RunningDaemon): void {
   // AWAITED (P8a Task 12): `stop()`'s tail drains the queued runtime-state deletions and releases
   // the lock — which unlinks the socket. Exiting without awaiting would leave a stale socket file,
   // the exact regression the CLI's own `daemon run` handler was written to prevent.
-  const shutdown = async () => { await stopWithin(daemon); await daemon.afterStop(); process.exit(0); };
+  // An armed erase (`home.erase`) runs after the stop in the CLI's `daemon run`, the packaged engine's own path.
+  const shutdown = async () => { await stopWithin(daemon); process.exit(0); };
   void daemon.pairStopped.then(shutdown);
   // A newer app brought its engine in (RL): stop as for a signal, and exit so `moss-core supervise` starts the installed copy.
   void daemon.releaseRestart.then(async () => { await stopWithin(daemon, undefined, { keepApp: true }); process.exit(UPDATE_RESTART_EXIT_CODE); });
