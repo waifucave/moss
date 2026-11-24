@@ -8,7 +8,9 @@ import { dirname } from "node:path";
 import { writeHostBundles } from "./bundles";
 import { mossSharedRoots, ensurePluginRunFiles, guardedPluginEnv, pluginBun, pluginHostBunFlags, pluginRunFileChecks, type PluginRunFiles } from "../registry/plugin-run";
 import { checkRunFiles, runCheckArgs, type RunFileCheck } from "./run-file";
-import { fdLink, LINK_LINE_MAX, linesOf, streamPeer, type RpcPeer } from "./link";
+import { randomBytes } from "node:crypto";
+import { WINDOWS_PIPE_PREFIX } from "../platform/transport";
+import { fdLink, LINK_LINE_MAX, linesOf, socketLink, streamPeer, type RpcPeer } from "./link";
 
 export { writeHostBundles } from "./bundles";
 
@@ -77,10 +79,28 @@ export function spawnHostProcess(o: HostProcessLaunch & { graceMs?: number }): {
   checkRunFiles(o.checks ?? [], "the plugin host");
   // Through Bun.spawn: a node:child_process spawn with a descriptor past 2 is refused in Bun code (lane C's S7 finding,
   // `test/platform/child-process-stdio.test.ts`). `detached` makes the child its group's leader.
-  const child = Bun.spawn([...o.cmd], { env: o.env, stdio: ["ignore", "pipe", "pipe", "pipe"], windowsHide: true, ...(o.cwd !== undefined ? { cwd: o.cwd } : {}), ...(group ? { detached: true } : {}) });
+  // Windows: no descriptor 3 (a Bun child's extra stdio there is a handle `fs` can't use), so the link is a named pipe the
+  // daemon listens on before the child starts. Its name is 128 random bits that only this child's environment holds (the
+  // host deletes it once read), the pipe takes ONE connection (a second is closed at once), and it goes with the child.
+  let pipe: { stop(): void } | undefined;
+  let winLink: ReturnType<typeof socketLink> | undefined;
+  let env = o.env;
+  if (!group) {
+    winLink = socketLink(LINK_LINE_MAX);
+    const lk = winLink;
+    const name = `${WINDOWS_PIPE_PREFIX}moss-host-${randomBytes(16).toString("hex")}`;
+    let main: object | undefined;
+    pipe = Bun.listen({ unix: name, socket: {
+      open(s) { if (main !== undefined) return void s.end(); main = s; lk.attach(s); },
+      data(s, d) { if (s === main) lk.data(d); }, drain(s) { if (s === main) lk.drain(); },
+      close(s) { if (s === main) lk.end(); }, error(s) { if (s === main) lk.end(); },
+    } });
+    env = { ...o.env, MOSS_HOST_LINK: name };
+  }
+  const child = Bun.spawn([...o.cmd], { env, stdio: group ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"], windowsHide: true, ...(o.cwd !== undefined ? { cwd: o.cwd } : {}), ...(group ? { detached: true } : {}) });
   noteSpawned(child.pid, child.exited); // C-M1: a plugin host process is never the user to the caller check
   // The daemon's end: a line past LINK_LINE_MAX from the process ends the link (its plugins crash), never buffered on.
-  const link = fdLink(child.stdio[3] as unknown as number, LINK_LINE_MAX);
+  const link = winLink ?? fdLink(child.stdio[3] as unknown as number, LINK_LINE_MAX);
   const peer = streamPeer(link.lines, (line) => link.write(`${line}\n`));
   for (const s of [child.stdout, child.stderr]) {
     void (async () => {
@@ -112,6 +132,8 @@ export function spawnHostProcess(o: HostProcessLaunch & { graceMs?: number }): {
     (timer as { unref?: () => void }).unref?.();
   };
   void child.exited.then(() => {
+    pipe?.stop();
+    winLink?.end();
     peer.close();
     end();
   });

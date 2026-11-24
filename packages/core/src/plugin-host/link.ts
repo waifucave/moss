@@ -217,6 +217,61 @@ export function fdLink(fd: number, maxLine?: number): { lines: AsyncIterable<str
   };
 }
 
+/** The write side of a Bun socket (a named pipe on Windows). */
+interface SocketEnd { write(data: Uint8Array): number }
+
+/** A link over a socket that may not be connected yet, for Windows, where a Bun child's extra stdio descriptor is a handle
+ *  no `fs` or `Bun.file` call takes (measured on a runner: EBADF, and EMFILE on the dup), so the plugin host's link there is
+ *  a named pipe instead. The socket's `data` goes to `data`, its `drain` to `drain`, its close to `end`; `attach` gives it
+ *  the socket once it's there (what was written before is sent then, in order). A write the socket takes only in part is
+ *  kept and sent on `drain`. */
+export function socketLink(maxLine?: number): {
+  lines: AsyncIterable<string>;
+  write(line: string): void;
+  attach(socket: SocketEnd): void;
+  data(chunk: Uint8Array): void;
+  drain(): void;
+  end(): void;
+} {
+  const chunks: Uint8Array[] = [];
+  let wake: (() => void) | undefined;
+  let done = false;
+  async function* bytes(): AsyncGenerator<Uint8Array> {
+    for (;;) {
+      if (chunks.length > 0) { yield chunks.shift()!; continue; }
+      if (done) return;
+      await new Promise<void>((r) => { wake = r; });
+    }
+  }
+  const out: Buffer[] = [];
+  let sock: SocketEnd | undefined;
+  const flush = () => {
+    while (sock !== undefined && out.length > 0) {
+      const head = out[0]!;
+      const n = sock.write(head);
+      if (n < 0) { out.length = 0; return; } // the other end is gone; the reader's close ends the link
+      if (n < head.length) { out[0] = head.subarray(n); return; }
+      out.shift();
+    }
+  };
+  return {
+    lines: linesOf(bytes(), maxLine),
+    write(line) { out.push(Buffer.from(line)); flush(); },
+    attach(socket) { sock = socket; flush(); },
+    data(chunk) { chunks.push(chunk); wake?.(); },
+    drain: flush,
+    end() { done = true; wake?.(); },
+  };
+}
+
+/** The host process's end on Windows: connects to the daemon's pipe `path` (`socketLink`). */
+export async function connectSocketLink(path: string, maxLine?: number): Promise<{ lines: AsyncIterable<string>; write(line: string): void }> {
+  const link = socketLink(maxLine);
+  const socket = await Bun.connect({ unix: path, socket: { data(_s, d) { link.data(d); }, drain() { link.drain(); }, close() { link.end(); }, error() { link.end(); } } });
+  link.attach(socket);
+  return link;
+}
+
 /** An end over a line stream (NDJSON JSON-RPC 2.0): the plugin-host process's stdio. `write` takes one line. Values
  *  are JSON: bytes cross as `{ "$bytes": "<base64>" }`, restored on the other side.
  *
