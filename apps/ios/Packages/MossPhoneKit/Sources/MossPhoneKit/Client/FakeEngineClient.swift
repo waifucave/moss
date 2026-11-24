@@ -32,7 +32,8 @@ public actor FakeEngineClient: EngineClient {
     public private(set) var answered: [(card: String, option: String)] = []
     public private(set) var markedRead: [String] = []
     /// When set, the next call that can fail throws it, once.
-    public var failNext: Failure?
+    public private(set) var failNext: Failure?
+    public func setFail(_ f: Failure?) { failNext = f }
 
     public init(scenario: Scenario = .idle, clock: @escaping @Sendable () -> Int64 = { SampleData.now }) {
         self.clock = clock

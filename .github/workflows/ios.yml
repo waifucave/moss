@@ -1,0 +1,45 @@
+name: iOS apps
+
+# Builds MOSS and MOSS Code for the simulator and runs the shared package's tests. Not gating: it is a separate
+# workflow, and its job may fail without holding a merge.
+on:
+  push:
+    branches: ["lane-int/**", "lane/ia-**"]
+    paths: ["apps/ios/**", "packages/protocol/generated/**", "packages/plugin-sdk/src/ui/faces/**", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["apps/ios/**", "packages/protocol/generated/**", "packages/plugin-sdk/src/ui/faces/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-26
+    continue-on-error: true
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Pick a simulator
+        run: |
+          xcrun simctl list devices available | grep -i iphone | head -5
+      - name: Package tests (simulator, no app host)
+        working-directory: apps/ios/Packages/MossPhoneKit
+        run: |
+          DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
+          xcodebuild test -scheme MossPhoneKit -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd-pkg" CODE_SIGNING_ALLOWED=NO
+      - name: Generate the project
+        run: xcodegen generate
+      - name: Build MOSS
+        run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
+      - name: Build MOSS Code
+        run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSSCode -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
