@@ -2,7 +2,7 @@
 // as the webhook trigger's side; lane I's forwarder is the default ingress.
 //
 // * **One ingress per routine** (review S2): a routine registers with its trigger's named ingress (`ingress:` in the
-//   file, an entry id or a plugin id), else the first one installed, and only that ingress's deliveries for it run; a
+//   file, an entry id or a plugin id), else MOSS's own forwarder by its id, and only that ingress's deliveries for it run; a
 //   delivery for it from any other ingress is dropped.
 // * **Register:** by its key's hash (`webhookKeyHash`), never the key, which stays in the credential store. Each
 //   webhook routine here is registered as the loop finds it (a file written directly, one moved here, a restart), and
@@ -19,6 +19,8 @@ import type { PluginRegistry } from "../contracts/plugin-registry";
 import type { RoutineEngine } from "./engine";
 
 export const INGRESS_WAIT_MS = 60_000;
+/** The ingress a routine that names none comes in through: MOSS's own forwarder (spec §7: "the forwarder by default"). */
+export const DEFAULT_INGRESS_PLUGIN = "moss/forwarder";
 /** How long the loop waits while no ingress is installed, or after every one failed. */
 export const IDLE_WAIT_MS = 5_000;
 /** How long a routine whose registration failed waits before the loop tries it again. */
@@ -65,12 +67,15 @@ export class WebhookIngress {
     return this.#ingresses().length > 0;
   }
 
-  /** The routine's ingress: the one it names (an entry id or a plugin id), else the first installed. */
+  /** The routine's ingress: the one its file names (an entry id or a plugin id), else MOSS's own forwarder, by its id. Never
+   *  "the first installed": an ingress's deliveries reach `deliverWebhook` with no key of the routine's checked here (its
+   *  service checked it), so a plugin that only happened to be first in the synced list must not take routines that
+   *  named none. A third party's ingress takes a routine only when the routine's file names it. */
   #pick(name: string | undefined): Ingress {
     const all = this.#ingresses();
-    const found = name === undefined ? all[0] : all.find((i) => i.entryId === name || i.pluginId === name);
+    const found = name === undefined ? all.find((i) => i.pluginId === DEFAULT_INGRESS_PLUGIN) : all.find((i) => i.entryId === name || i.pluginId === name);
     if (found === undefined) {
-      throw new Error(name === undefined ? "no webhook ingress is installed and reachable here, so the routine has no URL yet" : `no webhook ingress "${name}" is installed here, so the routine has no URL yet`);
+      throw new Error(name === undefined ? "MOSS's webhook forwarder isn't on here, and the routine names no other way in, so it has no URL yet" : `no webhook ingress "${name}" is installed here, so the routine has no URL yet`);
     }
     return found;
   }

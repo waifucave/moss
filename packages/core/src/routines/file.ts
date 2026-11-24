@@ -32,7 +32,7 @@ export type MissedRule = "run-once" | "skip";
 export type RoutineTrigger =
   | { type: "schedule"; spec: string; parsed: RoutineSpec }
   /** `ingress`: the `webhook.ingress` entry it comes in through (an entry id, such as `waifucave`, or a plugin id);
-   *  the first one installed when left out. */
+   *  MOSS's own forwarder when left out. */
   | { type: "webhook"; ingress?: string }
   | { type: string; fields: Record<string, unknown> };
 

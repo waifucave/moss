@@ -14,7 +14,7 @@
           "required": ["webhook"],
           "properties": {
             "webhook": { "const": true },
-            "ingress": { "type": "string", "description": "The webhook.ingress entry it comes in through (an entry id or a plugin id); the first one installed when left out." }
+            "ingress": { "type": "string", "description": "The webhook.ingress entry it comes in through (an entry id or a plugin id); MOSS's own forwarder (moss/forwarder) when left out." }
           }
         },
         "handler": "webhook",
