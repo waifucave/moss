@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELPER_VERSION_MARKER, readHelperVersion } from "./computer-helper-lib";
-import { FORMAT, nextVersion, readCanonical, ROOT, semverTwin, stampInfoPlist, stampProjectYml, MOSS_INFO_PLISTS } from "./version-lib";
+import { FORMAT, nextVersion, OTHER_PKG_DIRS, PKGS, readCanonical, ROOT, semverTwin, stampInfoPlist, stampProjectYml, versionTo, MOSS_INFO_PLISTS } from "./version-lib";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -86,6 +86,40 @@ describe("nextVersion", () => {
   });
   test("a non-canonical current version throws before considering the mode", () => {
     expect(() => nextVersion("0.2.014", "--patch")).toThrow(/#\.###\.#/);
+  });
+});
+
+describe("--to: an exact target (lane RL: 0.124.0 to 1.111.1 is no sequence of the three modes)", () => {
+  test("takes a canonical, strictly newer version", () => {
+    expect(versionTo("0.124.0", "1.111.1")).toBe("1.111.1");
+    expect(versionTo("1.111.1", "1.111.2")).toBe("1.111.2");
+    expect(versionTo("1.111.9", "1.112.0")).toBe("1.112.0");
+  });
+  test("refuses the same version, an older one, and a version off the #.###.# form", () => {
+    expect(() => versionTo("1.111.1", "1.111.1")).toThrow(/not newer/);
+    expect(() => versionTo("1.111.1", "1.110.9")).toThrow(/not newer/);
+    expect(() => versionTo("1.111.1", "0.999.9")).toThrow(/not newer/);
+    expect(() => versionTo("1.111.1", "1.111.10")).toThrow(/#\.###\.#/);
+    expect(() => versionTo("1.111.1", undefined)).toThrow(/#\.###\.#/);
+    expect(() => versionTo("0.2.014", "1.111.1")).toThrow(/#\.###\.#/);
+  });
+});
+
+describe("what a bump stamps", () => {
+  test("every package.json in the workspace that carries the release's version is one the sync stamps, both apps among them", () => {
+    const stamped = new Set([...PKGS.map((p) => `packages/${p}`), ...OTHER_PKG_DIRS]);
+    expect(stamped.has("apps/desktop") && stamped.has("apps/moss")).toBe(true);
+    const release = semverTwin(readCanonical());
+    const carrying: string[] = [];
+    for (const group of ["apps", "packages"]) {
+      for (const d of readdirSync(join(ROOT, group))) {
+        let pkg: { version?: string };
+        try { pkg = JSON.parse(readFileSync(join(ROOT, group, d, "package.json"), "utf8")); } catch { continue; }
+        if (pkg.version === release) carrying.push(`${group}/${d}`);
+      }
+    }
+    expect(carrying.filter((d) => !stamped.has(d))).toEqual([]);
+    for (const d of stamped) expect(carrying).toContain(d);
   });
 });
 

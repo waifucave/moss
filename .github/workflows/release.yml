@@ -83,6 +83,21 @@ jobs:
           version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
           bun scripts/release/check-plugins-tarball.ts "$(ls apps/desktop/out/dist/moss-core-"$version"-*)" "$(ls apps/desktop/out/dist/moss-plugins-"$version"-*.tar.gz)"
 
+      # The daemon's release file answers `--version` in the environment a server's self-update gives it (the same check ci.yml's installers job makes).
+      - name: The daemon's release file answers --version as its self-update runs it
+        run: |
+          version=$(bun -e 'console.log(require("./apps/desktop/package.json").version)')
+          bin=$(ls apps/desktop/out/dist/moss-core-"$version"-*)
+          extra=()
+          if [ "$RUNNER_OS" = Windows ]; then extra=(SystemRoot="${SYSTEMROOT:-$SystemRoot}" windir="${WINDIR:-$windir}"); fi
+          said=$(env -i PATH="$PATH" "${extra[@]}" "$bin" --version)
+          echo "$bin --version: $said"
+          test "$said" = "moss $version"
+
+      # Both apps installed from what was built, checked and removed, on this disposable runner (scripts/release/install-check.ts).
+      - name: Install both apps, check them, and remove them
+        run: bun scripts/release/install-check.ts ${{ matrix.os }}
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: moss-${{ matrix.os }}-${{ inputs.channel }}

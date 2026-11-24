@@ -71,6 +71,27 @@ describe("publish.ts --dry-run", () => {
     }
   });
 
+  test("says where each file would go and whose step it is: the draft, both taps' casks, both winget packages, the Linux repositories", async () => {
+    const dir = folder();
+    try {
+      const r = await run(["--dry-run", "--from", dir]);
+      expect(r.code).toBe(0);
+      const out = r.out;
+      expect(out).toContain(`GitHub waifucave/moss: a DRAFT release v${version} at ${FIXTURE_COMMIT}`);
+      // Each app's update files get a signature at --create-draft, MOSS's under its own names.
+      for (const os of RELEASE_OSES) for (const app of APP_KEYS) expect(out, `${os} ${app}`).toContain(`${appFeedFile(app, "latest", os)}.sig`);
+      expect(out).toContain("Homebrew waifucave/homebrew-moss: Casks/moss-code.rb, Casks/moss.rb");
+      expect(out).toContain(`manifests/w/waifucave/MOSSCode/${version}/`);
+      expect(out).toContain(`manifests/w/waifucave/MOSS/${version}/`);
+      expect(out).toContain("R2 bucket moss-packages");
+      for (const n of installersOf(version, "linux-x64", "moss").filter((f) => /\.(deb|rpm)$/.test(f))) expect(out).toContain(n);
+      expect(out).toContain("nothing signed, uploaded or created");
+      expect(spawned.calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("renders both apps' Homebrew casks and winget manifests from the release's own files", async () => {
     const dir = folder(), to = mkdtempSync(join(tmpdir(), "moss-dry-run-render-"));
     try {

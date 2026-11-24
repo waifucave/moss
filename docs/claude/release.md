@@ -46,10 +46,7 @@ Where the outputs go:
 - MOSS's update files carry MOSS's own names in the same GitHub release (`moss-latest-mac.yml`, `moss-beta-mac.yml`; `MOSS_APP_FEED_PREFIX` in packages/update-feed).
 - MOSS's updater (`@waifucave/moss-app-release/updater`, `feedPrefix`) reads only those files.
 
-Not yet covered:
-- `publish.ts` does not yet upload or sign MOSS's files.
-- Linux packages (`scripts/build-packages.ts`) build MOSS Code only.
-- On Windows and Linux there is no host helper: the host is MOSS Code's own executable, so a MOSS-only install there has no host.
+Covered since the release wave (lane RP, then RL): `publish.ts` uploads and signs both apps' files from the artifact table (`scripts/release/artifacts.ts`); Linux packages (`scripts/build-packages.ts`) build both apps; on Windows and Linux MOSS carries MOSS Code's app as the host (`resources/host/moss-host[.exe]`), so a MOSS-only install has one. Homebrew casks and winget manifests for both apps are rendered from the release's own checksums (`publish.ts --dry-run --from <dirs> --render-to <out>`). What the owner supplies and does by hand for a real release is in [docs/release-by-hand.md](../release-by-hand.md); `bun scripts/bump-version.ts --to <version>` sets an exact newer version (`version:bump:to`).
 
 ### The controller's sign-only try of both apps (this Mac, the Developer ID in the login keychain)
 

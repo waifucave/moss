@@ -39,7 +39,10 @@ import { SIGNATURE_SUFFIX, signFeed, verifyFeed } from "../../packages/update-fe
 import { keychain, signingKey } from "./feed-key";
 import { nameScan } from "./name-scan";
 import { APP_KEYS, appArtifacts, appOfInstaller, engineArtifacts, RELEASE_OSES, type AppKey } from "./artifacts";
-import { renderPackageManagers } from "./package-managers";
+import { renderPackageManagers, CASKS } from "./package-managers";
+import { WINGET_PACKAGE } from "../winget";
+import { REPO_BASE_URL, REPO_BUCKET } from "./linux-repo";
+import { TAP_REPO } from "../publish-tap";
 import { buildCommitFile, checkCoreFeed, checkPluginBunFeed, checkPluginsFeed, isPluginsFeed, checkUpdateInfo, CORE_TARGET, expectedArtifacts, isCoreFeed, isPluginBunFeed, parseChannel, parseCodesignDisplay, parseUpdateInfo, signOnlyCommitProblem, testBuildCommitProblem, type Channel, type ReleaseOs } from "./lib";
 import { coreBinaryFile, parseCoreFeed, parsePluginBunFeed, parsePluginsFeed, pluginBunBinaryFile, pluginsTarballFile } from "../../packages/update-feed/src/index";
 import { PLUGIN_BUN } from "../bundled-binaries";
@@ -320,6 +323,22 @@ export function planListing(plan: ReleasePlan): string[] {
   return lines;
 }
 
+/**
+ * WHERE each file of the release would go, and by whose hand: the dry run's second half. Only the first line is this script's own
+ * (`--create-draft`); the rest are the owner's steps, each named with the command or the place, so a dry run shows the whole release.
+ */
+export function uploadListing(plan: ReleasePlan): string[] {
+  const feedSigs = plan.feeds.map((f) => `${f}${SIGNATURE_SUFFIX}`);
+  const debs = plan.assets.filter((x) => /\.(deb|rpm)$/.test(x.name)).map((x) => x.name);
+  const lines = [
+    `GitHub ${REPO}: a DRAFT release v${plan.version}${plan.channel === "beta" ? " (pre-release)" : ""} at ${plan.commit ?? "(no commit)"}, ${plan.assets.length} files + ${feedSigs.length} feed signatures (${feedSigs.join(", ")}) [publish.ts --create-draft]; the owner publishes the draft`,
+    `Homebrew ${TAP_REPO}: ${APP_KEYS.map((k) => `Casks/${CASKS[k].token}.rb`).join(", ")}, from the release's dmgs' checksums [by hand: copy from --render-to's casks/]`,
+    `winget microsoft/winget-pkgs: ${APP_KEYS.map((k) => `manifests/w/waifucave/${WINGET_PACKAGE[k].split(".")[1]}/${plan.version}/ (${WINGET_PACKAGE[k]}: version, installer and locale files)`).join("; ")} [by hand: a pull request of --render-to's winget/]`,
+    `apt and dnf repositories ${REPO_BASE_URL} (R2 bucket ${REPO_BUCKET}): ${debs.length} packages (${debs.join(", ")}) [linux-repo.ts metadata, sign, upload: the owner's Mac]`,
+  ];
+  return lines;
+}
+
 /** The checks a dry run does not make, each named (it never reaches GitHub, git, the Keychain or codesign). */
 export const DRY_RUN_SKIPS = [
   "the builds' commit is on main (git fetch and merge-base)",
@@ -334,6 +353,8 @@ function dryRun(a: Extract<PublishArgs, { mode: "draft" }>, version: string, pla
   if (plan.problems.length > 0) return 1;
   console.log(`release/publish: DRY RUN: v${version} on ${a.channel}, at ${plan.commit}, ${plan.assets.length} files from ${a.from.join(", ")}:`);
   for (const line of planListing(plan)) console.log(`  ${line}`);
+  console.log("release/publish: it would put, where:");
+  for (const line of uploadListing(plan)) console.log(`  ${line}`);
   for (const s of DRY_RUN_SKIPS) console.log(`release/publish: dry run skips: ${s}`);
   if (a.renderTo !== undefined) {
     const sums = new Map(plan.assets.map((x) => [x.name, createHash("sha256").update(readFileSync(join(x.dir, x.name))).digest("hex")] as const));
