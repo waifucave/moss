@@ -195,9 +195,15 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     const names = await run("busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames", GRANTS);
     expect(outOf(names)).not.toContain("systemd1");
     expect(outOf(names)).not.toContain("portal");
-    const own = await run("busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus RequestName su org.freedesktop.secrets 4", GRANTS);
+    // Owning a name: the real bus grants it outside (`u 1`); inside, the broker's AccessDenied, which busctl prints as
+    // its errno text only (the real bus never answers RequestName with AccessDenied for a free name).
+    const request = "busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus RequestName su org.example.MossProbe 4";
+    const ownOutside = await sh(request, outsideEnv());
+    expect(ownOutside.code).toBe(0);
+    expect(ownOutside.out).toContain("u 1");
+    const own = await run(request, GRANTS);
     expect(code(own)).not.toBe(0);
-    expect(outOf(own)).toContain(REFUSAL);
+    expect(outOf(own)).toContain("Access denied");
   }, 180_000);
 
   test("without grants a run reaches no bus at all, as before", async () => {
