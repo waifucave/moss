@@ -67,15 +67,24 @@ export interface MossView {
 export interface RelayRow {
   mode: "n0" | "off" | "custom";
   url?: string;
+  /** The relay plugins installed (listed by what they bring, never by name): shown and not offered, as the links take none yet. Only `relay()` fills it. */
+  plugins?: { id: string; name: string; why?: string }[];
 }
 
-/** A pairing of this computer with another device (spec §8.1): the code this computer shows, or the four words both show. */
+/** A pairing of this computer with another device (spec §8.1): the code this computer shows (and the text a phone scans) with the time
+ *  it stops working, then the step the engine's add card is at. The four words are never here: the engine draws them on its sealed
+ *  card, and no part of the window is given them. */
 export interface PairingRow {
-  /** The code to enter on the other device (the short code when the engine has one, else the longer pairing code). */
+  /** The short code to enter on the other device, when the engine has one. */
   code?: string;
-  words?: string[];
-  /** The words were confirmed here: the engine's card waits for the person. */
-  confirming?: boolean;
+  /** The pairing's text: what the picture a phone scans holds, and what is typed or pasted on a computer when there is no short code. */
+  qr?: string;
+  /** When the code stops working, in ms. */
+  expiresAt?: number;
+  /** Another device is in: the engine's add card is up (or on its way) and holds the four words. */
+  checking?: boolean;
+  /** The name the other device gave itself, once known. */
+  peerName?: string;
   /** It ended: said in words (a device added, a failure, an expired code). */
   ended?: string;
 }
@@ -202,7 +211,7 @@ export interface SettingsView {
   signIns: { pluginId: string; name: string; index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string }[] | "waiting";
   /** The approval level of each computer (this one first). */
   computers: { name: string; level: string }[] | "waiting";
-  devices: { id: string; name: string; kind: string; here?: boolean }[] | "waiting";
+  devices: { id: string; name: string; kind: string; here?: boolean; online?: boolean; lastSeen?: number }[] | "waiting";
 }
 
 /** One of a plugin's declared bot-scoped settings (a voice plugin's voice for this bot), drawn generically from its schema. */
@@ -311,12 +320,11 @@ export interface MossBridge {
   setBotSetting(bot: string, pluginId: string, key: string, value: unknown): Promise<boolean>;
   /** A computer's approval level: the engine raises a sealed card (a sensitive change), which the router places here. */
   setLevel(computer: string, level: string): Promise<boolean>;
-  /** Pairing another device (spec §8.1), each the person's own press: show a code here, or enter the other device's; the four
-   *  words come back in the view's `pairing`; confirming them and removing a device are each the engine's sealed card, which
-   *  the router places here. The engine's why on a refusal. */
+  /** Pairing another device (spec §8.1), each the person's own press: show a code here, or enter the other device's. The window is
+   *  never given the four words, and has no call that confirms: adding the device and removing one are each the engine's sealed card,
+   *  which the router places here. The engine's why on a refusal. */
   pairBegin(): Promise<{ ok: true } | { ok: false; why: string }>;
   pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }>;
-  pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }>;
   pairCancel(): Promise<boolean>;
   removeDevice(id: string): Promise<boolean>;
   /** A tool's permission (always allow / ask / always block), the person's own, after their press. */

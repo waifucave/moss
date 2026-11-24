@@ -14,7 +14,7 @@ import { FakeApprovalBroker, MemoryAnswerLedger } from "../../contracts/fakes/ap
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
 import { SystemClock } from "../../clock/system-clock";
-import { toBase64 } from "../../identity/bytes";
+import { fromBase64, toBase64 } from "../../identity/bytes";
 import { DeviceKey } from "../../identity/device-key";
 import { generateEd25519 } from "../../identity/keys";
 import { MemoryNetwork } from "../../links/memory-wire";
@@ -303,6 +303,23 @@ describe("peer.call", () => {
     expect(ran.map((r) => r.method)).toEqual(["device.rename"]);
     // The same answer counts once.
     expect(isContractError(await call(good).catch((e: unknown) => e), "refused")).toBe(true);
+  });
+
+  test("a removed device's answer is refused: the signed answer that ran a change before the removal never runs one after it", async () => {
+    const { a, laptop, app, deps, ran, signed } = await setup();
+    const params = { id: laptop.id, name: "Laptop 2" };
+    const call = (answer: unknown) => peerCall(deps, { method: "device.rename", params, as: { kind: "user", client: "app" }, role: "remote", answer }, laptop.id);
+    // Before: its app's answer key is held and signs a card for exactly this call.
+    const first = signed("device.rename", params, app);
+    const sig = (card: ReturnType<typeof signed>) => new TextEncoder().encode(cardAnswerSigningInput({ id: card.card.id, hash: card.card.hash, option: "approve", at: card.at, children: [] }));
+    expect(await a.registry.verifyAnswer(laptop.id, sig(first), fromBase64(first.signature)!)).toBe(true);
+    // The person removes it (the card's yes): the registry says so, and the same key's answers verify nowhere.
+    await a.registry.revoke(laptop.id);
+    expect(await a.registry.verifyAnswer(laptop.id, sig(first), fromBase64(first.signature)!)).toBe(false);
+    const fresh = signed("device.rename", params, app);
+    expect(isContractError(await call(fresh).catch((e: unknown) => e), "refused")).toBe(true);
+    // The call it wanted never ran, and its answer id wasn't spent by the refusal.
+    expect(ran).toEqual([]);
   });
 
   test("a peer method or a role that isn't remote is refused", async () => {

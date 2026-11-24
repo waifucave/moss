@@ -31,7 +31,6 @@ export function SettingsDemo({ start, onRequestLevel = noop, onRemoveDevice = no
       onMakeMain={onRequestLevel}
       onPairBegin={noop}
       onPairJoin={noop}
-      onPairConfirm={noop}
       onPairCancel={noop}
       {...(pairing ? { pairing } : {})}
       {...(extra ? { extraSections: [{ id: "moss-usage#settings", title: "Usage", render: () => <p className="cl-settings__note">The usage plugin draws this page: today's spend by model and by bot.</p> }] } : {})}
@@ -48,7 +47,8 @@ export const settingsStories: Story[] = [
   { id: "settings/levels", title: "Settings: Levels", notes: "Each computer's level (spec §9.1). A pick raises a sealed card, and Settings closes for it; Laptop's change, asked from another device, still waits for its card.", width: 1060, height: 820, render: () => <SettingsDemo start="levels" /> },
   { id: "settings/devices", title: "Settings: Devices", notes: "The paired devices; removing one asks on a card first.", width: 1060, height: 820, render: () => <SettingsDemo start="devices" /> },
   { id: "settings/usage", title: "A section a plugin adds: Usage", notes: "Usage is the usage plugin's (`settings.section`), after MOSS's own; a stand-in draws its page here.", width: 1060, height: 820, render: () => <SettingsDemo start="moss-usage#settings" extra /> },
-  { id: "settings/pairing", title: "Settings: pairing a device", notes: "Both devices show the same four words; adding the device is a sealed card. Make main asks on a card too.", width: 1060, height: 820, render: () => <SettingsDemo start="devices" pairing={{ words: ["amber", "river", "lantern", "moss"] }} /> },
+  { id: "settings/pairing", title: "Settings: pairing a device", notes: "Another device is in: a card on this computer draws the four words, and the person compares them with the other screen. The page never has them. Make main asks on a card too.", width: 1060, height: 820, render: () => <SettingsDemo start="devices" pairing={{ checking: true, peerName: "Pixel" }} /> },
+  { id: "settings/pairing-code", title: "Settings: a code to scan", notes: "The code (and its picture for a phone to scan) with the time it stops working.", width: 1060, height: 820, render: () => <SettingsDemo start="devices" pairing={{ code: "KQ7-M2P", qr: "clover-pair:1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QA", expiresAt: Date.now() + 9 * 60_000 }} /> },
   {
     id: "settings/languages",
     title: "The language chooser",

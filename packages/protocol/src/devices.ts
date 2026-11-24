@@ -238,13 +238,13 @@ export const DEVICES_METHODS = {
   devicePairJoin: defineMethod({
     name: "device.pair.join", owner: "H", roles: ["app", "cli"], userOnly: true,
     params: z.object({ code: utf16(4096, 1) }), result: PairingView,
-    doc: "Joins another device's pairing by its code or QR payload; both then show the same four words.",
+    doc: "Joins another device's pairing by its code or QR payload; both then show the same four words: on the engine's sealed add card, which it raises itself for an app caller (the result carries no words), or in the user's own terminal (the words come back, and `device.pair.confirm` is the check).",
   }),
   devicePairConfirm: defineMethod({
     name: "device.pair.confirm", owner: "H", roles: ["app", "cli"], userOnly: true, change: "sensitive",
     params: z.object({ pairingId: utf16(128, 1), words: z.array(utf16(32)).length(4) }),
     result: ChangeResult,
-    doc: "Confirms the four words; adding a device is a sealed card unless made in the user's own terminal.",
+    doc: "Confirms the four words typed by the user's own terminal (no card), or, from an app that holds them, asks for the sealed add card the engine raises anyway (once per pairing). A page of a plugin never holds the words and the app's door does not offer it this call.",
   }),
   devicePairCancel: defineMethod({
     name: "device.pair.cancel", owner: "H", roles: ["app", "cli"], userOnly: true,
@@ -420,7 +420,11 @@ export const LinkChangedEvent = coreEvent("link_changed", { link: LinkView });
 export const PairingChangedEvent = coreEvent("pairing_changed", {
   pairingId: utf16(128, 1),
   step: z.enum(["waiting", "words", "card", "done", "failed", "expired"]),
+  /** The four words to compare. Only the user's own terminal (role `cli`) ever gets them: an app or a plugin's page sees the
+   *  step only, and the words are drawn by the engine in the add card's sealed frame (`TERMINAL_ONLY_FIELDS`, §5.5). */
   words: z.array(utf16(32)).length(4).optional(),
+  /** The name the other device gave itself, from the step where it is known (shown as text, never trusted). */
+  peerName: utf16(63).optional(),
   reason: Text.optional(),
 });
 export const AccountChangedEvent = coreEvent("account_changed", { account: AccountView });
@@ -450,8 +454,9 @@ export const DEVICES_EVENTS = {
     doc: "A link came up, went down or changed path.",
   }),
   pairingChanged: defineEvent({
-    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairing the user
-    // started in its frame, its four words included; no other plugin does (`capability`).
+    // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairings on this
+    // computer and the other device's name, never the four words: those go to the user's own terminal alone, and everyone else
+    // compares them on the engine's sealed add card. No other plugin hears it (`capability`).
     type: "pairing_changed", owner: "H", roles: ["app", "cli", "layer"], capability: "devices.manage", schema: PairingChangedEvent,
     fixture: { type: "pairing_changed", ts: 1781270000000, pairingId: "pair_1", step: "words", words: ["maple", "orbit", "velvet", "canyon"] },
     doc: "A pairing moved on.",

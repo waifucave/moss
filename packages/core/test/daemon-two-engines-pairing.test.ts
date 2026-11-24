@@ -1,8 +1,9 @@
 // Two real engines pair with no account (spec §8.1, lane DV's row): each a `startDaemon` on a home of its own, over one in-memory
 // network (a source run has no link sidecar, and nothing here leaves the process). The app of each reaches its engine's socket as
-// the app does: A shows a code, B joins it, both show the same four words, the person confirms on each; the add is a sealed card
-// on A (an app caller is not a terminal) and takes effect only when it is approved in the card's frame. Then the device list on
-// both sides, a refused bot-less removal without the card, the removal's own card, and the relay choice kept across a restart.
+// the app does: A shows a code, B joins it. An app is not a terminal: the engine raises the add card itself on each side, drawing
+// the four words only there (never in the app's join result nor in any event an app hears; the user's terminal gets them), and
+// the add takes effect only when the person presses each card in its sealed frame. Then the device list on both sides, the
+// removal's own card, and the relay choice kept across a restart.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,24 +100,42 @@ test("two engines on two temp homes pair without an account, list each other, an
   const a = await engine(root, "Studio", net);
   const b = await engine(root, "Laptop", net);
 
-  // A shows a code; B joins it. Each shows the same four words.
+  // The user's terminal on A hears the words (the one place a typed confirm needs them); the apps never do.
+  const terminal = await rpc(a.daemon.socketPath);
+  expect((await terminal.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "cli", token: a.daemon.tokens.harness, clientName: "test-terminal", features: [] }))["error"]).toBeUndefined();
+  expect((await terminal.request("events.subscribe", { areas: ["devices"] }))["error"]).toBeUndefined();
+
+  // A shows a code; B joins it, both from the app.
   const begun = await ok<{ pairingId: string; qr: string }>(a, "device.pair.begin", {});
-  const joined = await ok<{ pairingId: string; words: string[] }>(b, "device.pair.join", { code: begun.qr });
-  expect(joined.words).toHaveLength(4);
-  // A's app is told the step (`pairing_changed`) and gets the four words; they are B's words.
-  const stepOf = (e: Engine, step: string) => e.app.heard.map((m) => (m["params"] ?? m) as Record<string, unknown>).map((p) => (p["event"] ?? p) as Record<string, unknown>).find((ev) => ev["type"] === "pairing_changed" && ev["step"] === step);
-  await until("A showing the words", async () => stepOf(a, "words") !== undefined);
-  expect(stepOf(a, "words")!["words"]).toEqual(joined.words);
-  // The person confirms on B (a card there too), then on A.
-  const onB = await ok<{ applied: boolean; card?: string }>(b, "device.pair.confirm", { pairingId: joined.pairingId, words: joined.words });
-  if (!onB.applied) await approve(b, onB.card!);
-  const onA = await ok<{ applied: boolean; card?: string }>(a, "device.pair.confirm", { pairingId: begun.pairingId, words: joined.words });
-  // An app caller is not the user's own terminal: the add is a sealed card, and nothing is added until it is approved.
-  expect(onA.applied).toBe(false);
+  const joined = await ok<{ pairingId: string; words?: string[] }>(b, "device.pair.join", { code: begun.qr });
+  // B's app is given no words in the join's answer.
+  expect(joined.words).toBeUndefined();
+  const stepOf = (c: { heard: Record<string, unknown>[] }, step: string) => c.heard.map((m) => (m["params"] ?? m) as Record<string, unknown>).map((p) => (p["event"] ?? p) as Record<string, unknown>).find((ev) => ev["type"] === "pairing_changed" && ev["step"] === step);
+  await until("A's terminal hearing the words", async () => stepOf(terminal, "words") !== undefined);
+  const words = stepOf(terminal, "words")!["words"] as string[];
+  expect(words).toHaveLength(4);
+  // A's app hears the step and the other device's name; never the words.
+  await until("A's app hearing the step", async () => stepOf(a.app, "words") !== undefined);
+  expect(stepOf(a.app, "words")!["peerName"]).toBe("Laptop");
+  expect(JSON.stringify([a.app.heard, b.app.heard])).not.toContain(words[0]!);
+  for (const w of words) for (const c of [a.app, b.app]) expect(JSON.stringify(c.heard)).not.toContain(`"${w}"`);
+  // Nobody asked for a card: the engine drew one on each side, with the four words, and nothing is added yet.
+  const brokerA = a.daemon.mossParts.broker()!;
+  const brokerB = b.daemon.mossParts.broker()!;
+  await until("a card on each side", async () => brokerA.cards().length === 1 && brokerB.cards().length === 1);
+  expect(JSON.stringify(brokerA.cards()[0])).toContain(words.join(" "));
+  expect(JSON.stringify(brokerB.cards()[0])).toContain(words.join(" "));
   expect((await ok<Devices>(a, "device.list", {})).devices).toHaveLength(1);
-  // The card is the engine's own drawing of the four words, whatever the caller drew.
-  expect(JSON.stringify(a.daemon.mossParts.broker()!.cards().find((c) => c.id === onA.card)!)).toContain(joined.words.join(" "));
-  await approve(a, onA.card!);
+  // A page that asks to confirm (any caller but the terminal) gets the same card back, never a second.
+  const again = await ok<{ applied: boolean; card?: string }>(a, "device.pair.confirm", { pairingId: begun.pairingId, words });
+  expect(again).toEqual({ applied: false, card: brokerA.cards()[0]!.id });
+  expect(brokerA.cards()).toHaveLength(1);
+  // The person presses A's card: still nothing, B's has not been pressed.
+  await approve(a, brokerA.cards()[0]!.id);
+  await Bun.sleep(100);
+  expect((await ok<Devices>(a, "device.list", {})).devices).toHaveLength(1);
+  await approve(b, brokerB.cards()[0]!.id);
+  terminal.close();
   await until("both lists holding both computers", async () => (await ok<Devices>(a, "device.list", {})).devices.length === 2 && (await ok<Devices>(b, "device.list", {})).devices.length === 2);
   const listA = (await ok<Devices>(a, "device.list", {})).devices;
   const listB = (await ok<Devices>(b, "device.list", {})).devices;

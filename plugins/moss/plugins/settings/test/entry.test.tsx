@@ -28,9 +28,13 @@ let uiSetFails = false;
 let setEnabledFails = false;
 let setupFails = false;
 let uiAppearance: "light" | "dark" | "system" | undefined;
+let relayNow: { mode: "n0" | "off" | "custom"; url?: string } = { mode: "n0" };
+let relaySetFails = false;
 
 async function mount(params: { section?: string; item?: string } = {}, extra: { component?: EntryComponent; holdReads?: Promise<void>; seed?: Record<string, unknown> } = {}) {
   uiAppearance = undefined;
+  relayNow = { mode: "n0" };
+  relaySetFails = false;
   const core = fakeCore({
     "plugin.list": () => ({ plugins: PLUGINS }),
     "plugin.get": ({ id }) => ({ plugin: detail(PLUGINS.find((p) => p.id === id)!, id === "weather-routine" ? ["notify", "network:api.weather.example"] : ["conversation.read", "call:moss"], id === "weather-routine" ? ["api.weather.example"] : []) }),
@@ -43,10 +47,13 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
     "computer.setLevel": () => ({ applied: false, card: "card-1" }),
     "device.revoke": () => ({ applied: false, card: "card-2" }),
     "main.set": () => ({ applied: false, card: "card-3" }),
-    "device.pair.begin": () => ({ pairingId: "p1", code: "KQ7-M2P", expiresAt: 0 }),
+    "device.pair.begin": () => ({ pairingId: "p1", code: "KQ7-M2P", qr: "clover-pair:1:abcdefghij", expiresAt: Date.now() + 9 * 60_000 }),
+    // The engine and the door give a page no words; a result that carried them anyway is not drawn.
     "device.pair.join": () => ({ pairingId: "p2", words: ["amber", "river", "lantern", "moss"], expiresAt: 0 }),
     "device.pair.confirm": () => ({ applied: false, card: "card-4" }),
     "device.pair.cancel": () => ({ ok: true }),
+    "device.relay.get": () => relayNow,
+    "device.relay.set": (p) => { if (relaySetFails) throw new Error("refused"); relayNow = p as typeof relayNow; return relayNow; },
     "app.openSetup": () => { if (setupFails) throw new Error("refused"); return { opened: true }; },
   });
   const api = fakeApi({
@@ -245,34 +252,40 @@ describe("settings on the runtime", () => {
     void api;
   });
 
-  test("Devices: pairing by a code shown here: the code, the four words the engine's step brings, the confirm (a card), the end", async () => {
+  test("Devices: pairing by a code shown here: the code, its picture and when it stops, the step the engine's card is at (never the four words), the end", async () => {
     const { core } = await mount({ section: "devices" });
     fireEvent.click(screen.getByRole("button", { name: "Show a code" }));
     await act(() => settle());
     expect(core.calls.filter((c) => c.method === "device.pair.begin").length).toBe(1);
     expect(screen.getByText("KQ7-M2P")).toBeTruthy();
+    // What a phone scans, and the time the code stops working.
+    expect(screen.getByRole("img", { name: /scan this/i })).toBeTruthy();
+    expect(document.querySelector("[data-pairing-expiry]")?.textContent).toMatch(/^Works until \d/);
     // Another pairing's step is not this one's.
-    await act(async () => { core.emit("pairing_changed", { pairingId: "other", step: "words", words: ["a", "b", "c", "d"] }); await settle(); });
-    expect(screen.queryByText(/a · b · c · d/)).toBeNull();
-    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "words", words: ["amber", "river", "lantern", "moss"] }); await settle(); });
-    expect(screen.getByText("amber · river · lantern · moss")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "They match" }));
-    await act(() => settle());
-    expect(core.calls.filter((c) => c.method === "device.pair.confirm").map((c) => c.params)).toEqual([{ pairingId: "p1", words: ["amber", "river", "lantern", "moss"] }]);
-    expect(screen.getByRole("button", { name: "Waiting for your OK" })).toBeTruthy();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "other", step: "words", peerName: "Stranger" }); await settle(); });
+    expect(screen.queryByText(/Stranger/)).toBeNull();
+    // The engine's step brings the other device's name; if the words came with it anyway the page would still not draw them.
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "words", peerName: "Pixel", words: ["amber", "river", "lantern", "moss"] }); await settle(); });
+    expect(screen.getByText(/Pixel is in\. A card on this computer asks you/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/amber|lantern/);
+    expect(screen.queryByRole("button", { name: "They match" })).toBeNull();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "card", peerName: "Pixel" }); await settle(); });
+    // Nothing on this page confirms: the card is the engine's, pressed by the person.
+    expect(core.calls.some((c) => c.method === "device.pair.confirm")).toBe(false);
     await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "done" }); await settle(); });
     expect(screen.getByText("The device was added.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     expect(screen.getByRole("button", { name: "Show a code" })).toBeTruthy();
   });
 
-  test("Devices: joining with the other device's code shows the four words at once; a pairing that fails or expires says so; Cancel tells the engine", async () => {
+  test("Devices: joining with the other device's code waits for the engine's card (no words drawn, none sent back); a pairing that fails or expires says so; Cancel tells the engine", async () => {
     const { core } = await mount({ section: "devices" });
     fireEvent.change(screen.getByRole("textbox", { name: "Code from another device" }), { target: { value: " KQ7-M2P " } });
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     await act(() => settle());
     expect(core.calls.filter((c) => c.method === "device.pair.join").map((c) => c.params)).toEqual([{ code: "KQ7-M2P" }]);
-    expect(screen.getByText("amber · river · lantern · moss")).toBeTruthy();
+    expect(screen.getByText(/A card on this computer asks you to compare four words/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/amber|lantern/);
     await act(async () => { core.emit("pairing_changed", { pairingId: "p2", step: "failed", reason: "the words didn't match" }); await settle(); });
     expect(screen.getByText("The pairing didn't finish: the words didn't match")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
@@ -286,6 +299,45 @@ describe("settings on the runtime", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await act(() => settle());
     expect(core.calls.filter((c) => c.method === "device.pair.cancel").map((c) => c.params)).toEqual([{ pairingId: "p1" }]);
+    expect(core.calls.some((c) => c.method === "device.pair.confirm")).toBe(false);
+  });
+
+  test("Devices: each row says what the device is and when it was last seen; the relay is read, chosen and saved at once; a relay plugin is listed and not offered", async () => {
+    const { core } = await mount({ section: "devices" });
+    const row = (name: string) => screen.getByText(name).closest("[data-item]") as HTMLElement;
+    expect(row("Studio").textContent).toContain("Computer");
+    expect(row("Studio").textContent).toContain("Online now");
+    expect(row("iPhone").textContent).toContain("Phone");
+    await act(() => settle());
+    // The engine's choice, read when the page opens.
+    expect(core.calls.some((c) => c.method === "device.relay.get")).toBe(true);
+    const n0 = document.querySelector('[data-relay="n0"]') as HTMLElement;
+    expect(n0.getAttribute("aria-checked")).toBe("true");
+    // A server of one's own takes an https address only; Save sends the choice and the engine applies it.
+    fireEvent.click(document.querySelector('[data-relay="custom"]') as HTMLElement);
+    fireEvent.change(screen.getByRole("textbox", { name: "Relay server's address" }), { target: { value: "http://relay.example.test" } });
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Relay server's address" }), { target: { value: "https://relay.example.test" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.relay.set").map((c) => c.params)).toEqual([{ mode: "custom", url: "https://relay.example.test" }]);
+    expect(screen.getByText("Saved. The links use it now.")).toBeTruthy();
+    fireEvent.click(document.querySelector('[data-relay="off"]') as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.relay.set").map((c) => c.params)).toEqual([{ mode: "custom", url: "https://relay.example.test" }, { mode: "off" }]);
+  });
+
+  test("Devices: a relay choice the engine refuses puts the control back on what the engine holds, and says so", async () => {
+    const { core } = await mount({ section: "devices" });
+    await act(() => settle());
+    relaySetFails = true;
+    fireEvent.click(document.querySelector('[data-relay="off"]') as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "device.relay.set").length).toBe(1);
+    expect(screen.getByText("Relay wasn't changed. Try again.")).toBeTruthy();
+    expect((document.querySelector('[data-relay="n0"]') as HTMLElement).getAttribute("aria-checked")).toBe("true");
   });
 
   test("opened at an item (lane E's useOpen): the row is brought into view and marked, until the user moves on", async () => {

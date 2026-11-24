@@ -26,8 +26,9 @@ function capsOf(pluginId: string): ReadonlySet<string> {
   return caps;
 }
 const verdict = (part: string, method: string, params?: unknown) => treeVerdict(capsOf(part), method, params);
-/** The devices page's calls (`devices.manage`). */
-const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.confirm", "device.pair.cancel", "device.revoke"] as const;
+/** The devices page's calls that are the user's press (`devices.manage`); `device.pair.confirm` is not among them (it is never a page's: `NEVER`),
+ *  and `device.relay.get` is a read. */
+const DEVICE_CALLS = ["device.pair.begin", "device.pair.join", "device.pair.cancel", "device.revoke", "device.relay.set"] as const;
 
 describe("the door for parts: by capability, never by id (F2)", () => {
   test("a read passes for a part whose plugin holds its capability, whichever plugin; a method the table doesn't name isn't its business", () => {
@@ -74,7 +75,16 @@ describe("the door for parts: by capability, never by id (F2)", () => {
     }
   });
 
-  test("the devices page: pairing and removing a device are the user's press under devices.manage, and no part without it gets through", () => {
+  test("the devices page: pairing and removing a device are the user's press under devices.manage, and no part without it gets through; confirming a pairing is no page's call at all", () => {
+    // Nothing for a page to confirm: the engine raises the add card itself, with its own four words. Not this door's, whoever asks.
+    expect(NEVER.has("device.pair.confirm")).toBe(true);
+    for (const caps of [["devices.manage"], ["devices.manage", "devices.read", "plugins.manage"], []]) {
+      expect(treeVerdict(caps, "device.pair.confirm", { pairingId: "p", words: ["a", "b", "c", "d"] })).toMatchObject({ ok: false, owned: true });
+    }
+    expect(Object.hasOwn(TREE_CALLS, "device.pair.confirm")).toBe(false);
+    expect(treeVerdict(["devices.manage"], "device.relay.get")).toMatchObject({ ok: true, by: "devices.manage" });
+    expect(TREE_CALLS["device.relay.get"]?.disposition).toBe("read");
+    expect(treeVerdict(["devices.read"], "device.relay.get")).toMatchObject({ ok: false, owned: true });
     for (const m of DEVICE_CALLS) {
       expect(TREE_CALLS[m]?.disposition).toBe("gesture");
       // Settings holds it; the composer, the shell and a third party's plugin that doesn't ask for it do not.
@@ -445,6 +455,7 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   "ui.pick": { needs: ["plugins.manage"], gesture: true },
   "account.status": { needs: ["account.read"], gesture: false },
   ...Object.fromEntries(DEVICE_CALLS.map((m) => [m, { needs: ["devices.manage"], gesture: true }])),
+  "device.relay.get": { needs: ["devices.manage"], gesture: false },
   "archive.history": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "archive.list": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "models.list": { needs: ["sessions.read", "bots.read"], gesture: false },
@@ -519,7 +530,8 @@ const WORST: Record<string, Worst> = {
   "tool.permissions": "read", // plugin tools by their own names, each with its value and the bots' saved card rules
   "device.pair.begin": "harmless change", // shows a code for another device to enter; nothing is added by it
   "device.pair.join": "user's permission press", // dials out to the device a typed code names and starts a pairing with it; the person's own press, and nothing is added until the add card (which shows the four words itself)
-  "device.pair.confirm": "sealed card", // adding the device: the engine raises the sealed card (or answers it, in the user's terminal only), never this call
+  "device.relay.get": "read", // n0's relays, none, or the address of the person's own server
+  "device.relay.set": "user's permission press", // which relay the links use: a relay sees which devices are online, never what they say; the person's own press, https only, applied at once
   "device.pair.cancel": "harmless change", // ends a pairing under way
   "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
   "tool.setPermission": "user's permission press", // always allow, ask or always block: the user's own press in Settings, never another part

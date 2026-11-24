@@ -77,7 +77,7 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
     botInstructions: (id) => engine.botInstructions(id),
     setLevel: (c, l) => engine.setLevel(c, l),
     relay: () => engine.relay(), setRelay: (c) => engine.setRelay(c),
-    pairBegin: () => engine.pairBegin(), pairJoin: (c) => engine.pairJoin(c), pairConfirm: () => engine.pairConfirm(), pairCancel: () => engine.pairCancel(), removeDevice: (id) => engine.removeDevice(id),
+    pairBegin: () => engine.pairBegin(), pairJoin: (c) => engine.pairJoin(c), pairCancel: () => engine.pairCancel(), removeDevice: (id) => engine.removeDevice(id),
     setPermission: (s, t, p) => engine.setPermission(s, t, p),
     signIn: (p, i, k) => engine.signIn(p, i, k), signOut: (p, i) => engine.signOut(p, i),
     botRecord: (id) => engine.botRecord(id), editBot: (id, patch) => engine.editBot(id, patch), models: () => engine.models(),
@@ -262,37 +262,41 @@ describe("Settings", () => {
     r.unmount();
   });
 
-  test("pairing a device in Settings: a code shown here, the engine's four words, the confirm (the engine's card), the end; removing a device is the engine's card too", async () => {
+  test("pairing a device in Settings: a code shown here with its picture and expiry, the engine's step (never its four words), the end; removing a device is the engine's card too", async () => {
     const { e, engine } = await setup();
     // The page as App draws it: the view's pairing and devices revision follow the engine's steps.
     const draw = () => h(SettingsPage, { bots: [], pairing: engine.view().pairing, devicesRev: engine.view().devicesRev ?? 0 });
     const r = render(draw());
     const redraw = async (): Promise<void> => { await act(async () => { r.rerender(draw()); }); };
     await until(() => r.container.querySelector("[data-device]") !== null);
-    // This computer has no Remove button; the phone does.
+    // This computer has no Remove button; the phone does. A row says what the device is and when it was seen.
     expect(r.container.querySelector("[data-device=devphone000000000001] button")?.textContent).toBe("Remove");
     expect(r.container.querySelector("[data-device]:not([data-device=devphone000000000001]) button")).toBeNull();
+    expect(r.container.querySelector("[data-device=devphone000000000001] [data-device-seen]")?.textContent).toMatch(/^Phone · last seen /);
+    expect(r.container.querySelector("[data-device]:not([data-device=devphone000000000001]) [data-device-seen]")?.textContent).toBe("Computer · online now");
     expect(callsOf(e, "device.pair.begin").length).toBe(0);
     await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-begin]")!); });
     await until(() => engine.view().pairing?.code !== undefined);
     expect(callsOf(e, "device.pair.begin").length).toBe(1);
     await redraw();
     expect(r.container.querySelector("[data-pair-shown]")?.textContent).toBe("KQ7-M2P");
-    // Another pairing's step is not ours; ours brings the four words.
-    e.devicesEvent({ type: "pairing_changed", pairingId: "someone_else", step: "words", words: ["a", "b", "c", "d"] });
+    expect(r.container.querySelector("[data-pair-qr]")).not.toBeNull();
+    expect(r.container.querySelector("[data-pair-expiry]")?.textContent).toMatch(/^Works until \d/);
+    // Another pairing's step is not ours; ours brings the other device's name and a card that has the words.
+    e.devicesEvent({ type: "pairing_changed", pairingId: "someone_else", step: "words", peerName: "Stranger" });
     await settle();
     await redraw();
-    expect(r.container.querySelector("[data-pair-words]")).toBeNull();
-    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "words", words: ["amber", "river", "lantern", "moss"] });
-    await until(() => engine.view().pairing?.words !== undefined);
+    expect(r.container.querySelector("[data-pair-checking]")).toBeNull();
+    // Even if the words came (the engine sends them to a terminal only), the window keeps none and draws none.
+    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "words", peerName: "Pixel", words: ["amber", "river", "lantern", "moss"] });
+    await until(() => engine.view().pairing?.checking === true);
     await redraw();
-    expect(r.container.querySelector("[data-pair-words]")?.textContent).toBe("amber · river · lantern · moss");
-    await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-confirm]")!); });
-    await until(() => engine.view().pairing?.confirming === true);
-    expect(callsOf(e, "device.pair.confirm").length).toBe(1);
-    expect(callsOf(e, "device.pair.confirm")[0]).toEqual({ pairingId: "pair_host", words: ["amber", "river", "lantern", "moss"] });
-    await redraw();
-    expect((r.container.querySelector("[data-pair-confirm]") as HTMLButtonElement).textContent).toBe("Waiting for your OK");
+    expect(r.container.querySelector("[data-pair-checking]")?.textContent).toContain("Pixel is in. A card in this window asks you");
+    expect(r.container.textContent).not.toMatch(/amber|lantern/);
+    expect(JSON.stringify(engine.view())).not.toMatch(/amber|lantern/);
+    expect(r.container.querySelector("[data-pair-confirm]")).toBeNull();
+    // Nothing in this window confirms: the card is the engine's, pressed by the person.
+    expect(callsOf(e, "device.pair.confirm").length).toBe(0);
     // Done: the engine says so, the page says so, and the devices are read again.
     const listed = e.calls().filter((c) => c.method === "device.list").length;
     e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "done" });
@@ -304,14 +308,14 @@ describe("Settings", () => {
     await redraw();
     expect(engine.view().pairing).toBeUndefined();
     expect(callsOf(e, "device.pair.cancel").length).toBe(0);
-    // Joining with the other device's code: its words come at once; a refused pairing says why.
+    // Joining with the other device's code: the card has the words; a refused pairing says why.
     await act(async () => { fireEvent.change(r.container.querySelector("[data-pair-code]")!, { target: { value: " KQ7-M2P " } }); });
     await act(async () => { fireEvent.click(r.container.querySelector("[data-pair-join]")!); });
-    await until(() => engine.view().pairing?.words !== undefined);
+    await until(() => engine.view().pairing?.checking === true);
     expect(callsOf(e, "device.pair.join").length).toBe(1);
     expect(callsOf(e, "device.pair.join")[0]).toEqual({ code: "KQ7-M2P" });
     await redraw();
-    expect(r.container.querySelector("[data-pair-words]")?.textContent).toBe("amber · river · lantern · moss");
+    expect(r.container.querySelector("[data-pair-checking]")).not.toBeNull();
     e.devicesEvent({ type: "pairing_changed", pairingId: "pair_join", step: "failed", reason: "the words didn't match" });
     await until(() => engine.view().pairing?.ended !== undefined);
     await redraw();
@@ -323,7 +327,28 @@ describe("Settings", () => {
     r.unmount();
   });
 
-  test("the guide's relay page: what a relay is for, n0's public relays on by default, the person's own server, none; the cloud computer's and Cloudflare's shown and not offered", async () => {
+  test("Settings: the relay is read, chosen and saved at once; a relay plugin is listed and not offered", async () => {
+    const { e } = await setup();
+    const r = render(h(SettingsPage, { bots: [], devicesRev: 0 }));
+    await until(() => r.container.querySelector("[data-relay=n0] input") !== null && (r.container.querySelector("[data-relay=n0] input") as HTMLInputElement).disabled === false);
+    expect((r.container.querySelector("[data-relay=n0] input") as HTMLInputElement).checked).toBe(true);
+    expect(r.container.querySelector("[data-relay-plugin='moss/relay-cloudflare']")?.textContent).toContain("Cloudflare relay: not offered yet");
+    expect((r.container.querySelector("[data-relay-save]") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-relay=custom] input")!); });
+    await act(async () => { fireEvent.change(r.container.querySelector("[data-relay-url]")!, { target: { value: "http://not-https.example.test" } }); });
+    expect((r.container.querySelector("[data-relay-save]") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.change(r.container.querySelector("[data-relay-url]")!, { target: { value: "https://relay.example.test" } }); });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-relay-save]")!); });
+    await until(() => (r.container.querySelector("[data-relay-note]")?.textContent ?? "") === "Saved. The links use it now.");
+    expect(callsOf(e, "device.relay.set")).toEqual([{ mode: "custom", url: "https://relay.example.test" }]);
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-relay=off] input")!); });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-relay-save]")!); });
+    await until(() => callsOf(e, "device.relay.set").length === 2);
+    expect(callsOf(e, "device.relay.set")[1]).toEqual({ mode: "off" });
+    r.unmount();
+  });
+
+  test("the guide's relay page: what a relay is for, n0's public relays on by default, the person's own server, none; an installed relay plugin shown and not offered", async () => {
     const { e } = await setup();
     const r = render(h(SetupGuide, { setup: undefined, botName: "Alpha", initialStep: "relay", onClose: () => {}, onDone: () => {} }));
     await until(() => r.container.querySelector("[data-setup-relay=n0] input") !== null);
@@ -333,12 +358,11 @@ describe("Settings", () => {
     // n0's relays are the choice until another is saved; saving needs a change.
     expect((r.container.querySelector("[data-setup-relay=n0] input") as HTMLInputElement).checked).toBe(true);
     expect((r.container.querySelector("[data-setup=relay-save]") as HTMLButtonElement).disabled).toBe(true);
-    // The two relay plugins the links don't take yet are shown and cannot be picked.
-    for (const v of ["cloud", "cloudflare"]) {
-      expect((r.container.querySelector(`[data-setup-relay=${v}] input`) as HTMLInputElement).disabled).toBe(true);
-    }
-    expect(text).toContain("Available once you have a cloud computer");
-    expect(text).toContain("Not available in this build yet");
+    // An installed relay plugin the links don't take yet is shown and cannot be picked.
+    await until(() => r.container.querySelector("[data-setup-relay='plugin:moss/relay-cloudflare'] input") !== null);
+    expect((r.container.querySelector("[data-setup-relay='plugin:moss/relay-cloudflare'] input") as HTMLInputElement).disabled).toBe(true);
+    expect(r.container.textContent).toContain("Cloudflare relay");
+    expect(r.container.textContent).toContain("not offered yet");
     // The person's own server: its address, saved through the engine's relay method.
     await act(async () => { fireEvent.click(r.container.querySelector("[data-setup-relay=custom] input")!); });
     await act(async () => { fireEvent.change(r.container.querySelector("[data-setup-relay-url]")!, { target: { value: "http://not-https.example.test" } }); });

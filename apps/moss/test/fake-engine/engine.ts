@@ -430,7 +430,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
       case "plugin.list":
         // Names as the real engine sends them: a plugin's `Text` may be a table of languages (the first as one, the rest
         // as plain strings), which the window must never draw as it is (it once took the whole window down).
-        return { plugins: PLUGINS.map((p) => ({ id: p.id, name: p.id === "fish-audio" ? { en: p.name } : p.name, version: "1.0.0", enabled: p.enabled, state: "running" })) };
+        return { plugins: [...PLUGINS.map((p) => ({ id: p.id, name: p.id === "fish-audio" ? { en: p.name } : p.name, version: "1.0.0", enabled: p.enabled, state: "running" })), { id: "moss/relay-cloudflare", name: "Cloudflare relay", version: "1.0.0", enabled: false, state: "off", reason: "not available in this build yet", labels: ["Relay"] }] };
       case "tool.permissions": {
         piece("tools", method);
         const rows = tools.list();
@@ -487,7 +487,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
       case "account.status":
         return { signedIn: true, provider: "email", user: { id: "u_1", name: "Sam", email: "sam@example.test" } };
       case "device.list":
-        return { devices: [{ id: FAKE_DEVICE, name: "Studio", kind: "desktop", isThis: true }, { id: "devphone000000000001", name: "Phone", kind: "phone" }] };
+        return { devices: [{ id: FAKE_DEVICE, name: "Studio", kind: "desktop", isThis: true }, { id: "devphone000000000001", name: "Phone", kind: "phone", lastSeenAt: 1_780_000_000_000 }] };
       case "computer.list":
         return { computers: [{ name: "Studio", level: "ask-risky" }, { name: "Laptop", level: "ask" }] };
       // Pairing and removing a device, as the engine answers them for the app's own press: a code, the words, and a sealed card
@@ -501,7 +501,8 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
       case "device.pair.begin":
         return { pairingId: "pair_host", qr: "clover-pair:1:AAAA", code: "KQ7-M2P", expiresAt: now + 600_000 };
       case "device.pair.join":
-        return { pairingId: "pair_join", words: ["amber", "river", "lantern", "moss"], expiresAt: now + 600_000 };
+        // The engine gives an app no words (its sealed card draws them): the fake sends none either.
+        return { pairingId: "pair_join", expiresAt: now + 600_000 };
       case "device.pair.confirm":
         return { applied: false, card: "card_pair" };
       case "device.pair.cancel":

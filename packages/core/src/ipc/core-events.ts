@@ -37,6 +37,13 @@ const PLUGIN_WITHHELD: Readonly<Record<string, readonly string[]>> = {
   plugin_changed: ["reason", "waitingFor"],
 };
 
+/** Fields only the user's own terminal (role `cli`) gets, by event type: the pairing's four words. Everyone else, the apps and
+ *  the plugins' pages with them, learn the step; the words are drawn by the engine in the add card's sealed frame (§5.5), so a
+ *  page can neither show them (they would prove nothing) nor hand them back. */
+const TERMINAL_ONLY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  pairing_changed: ["words"],
+};
+
 /** A `core` event as a lane hands it over: its `type`, and `ts` (the shared clock's) unless the sender stamps it. */
 export interface CoreEventInput {
   type: string;
@@ -89,13 +96,15 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
     r.log?.(`[core.event] a ${spec.type} event didn't parse; not sent`);
     return 0;
   }
-  const withheld = PLUGIN_WITHHELD[spec.type];
-  let forPlugins: unknown = parsed.data;
-  if (withheld !== undefined) {
-    const copy = { ...(parsed.data as Record<string, unknown>) };
-    for (const k of withheld) delete copy[k];
-    forPlugins = copy;
-  }
+  const without = (data: unknown, keys: readonly string[] | undefined): unknown => {
+    if (keys === undefined) return data;
+    const copy = { ...(data as Record<string, unknown>) };
+    for (const k of keys) delete copy[k];
+    return copy;
+  };
+  const forTerminal: unknown = parsed.data;
+  const forApps = without(forTerminal, TERMINAL_ONLY_FIELDS[spec.type]);
+  const forPlugins = without(forApps, PLUGIN_WITHHELD[spec.type]);
   let sent = 0;
   for (const conn of r.connections()) {
     if (!spec.roles.includes(conn.role) || !conn.areas.has(spec.area)) continue;
@@ -117,7 +126,7 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
       if (who === undefined || !opts.forPlugin(who, r.pluginCapabilities?.(who) ?? [])) continue;
     }
     try {
-      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : parsed.data);
+      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : conn.role === "cli" ? forTerminal : forApps);
       sent++;
     } catch {
       // closing: its close handler removes it

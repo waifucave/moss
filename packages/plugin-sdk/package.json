@@ -16,6 +16,7 @@
     "./streams": "./src/api/streams.ts",
     "./usage-source": "./src/usage-source/index.ts",
     "./plain": "./src/plain-text.ts",
+    "./qr": "./src/qr.ts",
     "./templates": "./src/templates/index.ts",
     "./schemas/*": "./generated/*"
   },

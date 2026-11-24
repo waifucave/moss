@@ -80,7 +80,6 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
     setLevel: (computer, level) => ipcRenderer.invoke("moss:set-level", { computer, level }),
     pairBegin: () => ipcRenderer.invoke("moss:pair-begin"),
     pairJoin: (code) => ipcRenderer.invoke("moss:pair-join", { code }),
-    pairConfirm: () => ipcRenderer.invoke("moss:pair-confirm"),
     pairCancel: () => ipcRenderer.invoke("moss:pair-cancel"),
     removeDevice: (id) => ipcRenderer.invoke("moss:remove-device", { id }),
     setPermission: (server, tool, permission) => ipcRenderer.invoke("moss:set-permission", { server, tool, permission }),

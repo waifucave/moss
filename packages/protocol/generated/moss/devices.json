@@ -415,7 +415,7 @@
       }
     },
     "device.pair.join": {
-      "doc": "Joins another device's pairing by its code or QR payload; both then show the same four words.",
+      "doc": "Joins another device's pairing by its code or QR payload; both then show the same four words: on the engine's sealed add card, which it raises itself for an app caller (the result carries no words), or in the user's own terminal (the words come back, and `device.pair.confirm` is the check).",
       "owner": "H",
       "direction": "to-daemon",
       "roles": [
@@ -478,7 +478,7 @@
       }
     },
     "device.pair.confirm": {
-      "doc": "Confirms the four words; adding a device is a sealed card unless made in the user's own terminal.",
+      "doc": "Confirms the four words typed by the user's own terminal (no card), or, from an app that holds them, asks for the sealed add card the engine raises anyway (once per pairing). A page of a plugin never holds the words and the app's door does not offer it this call.",
       "owner": "H",
       "direction": "to-daemon",
       "roles": [
@@ -3212,6 +3212,10 @@
               "type": "string",
               "maxLength": 32
             }
+          },
+          "peerName": {
+            "type": "string",
+            "maxLength": 63
           },
           "reason": {
             "anyOf": [

@@ -727,7 +727,8 @@ function wireBridge(): void {
   });
 
   // Pairing a device and removing one (spec §8.1): each the person's own press; the engine raises the sealed card for adding
-  // (the confirm) and for removing, and the router places it in this window. Nothing here applies either.
+  // (itself, once the other device is in: it draws the four words, this window never has them) and for removing, and the router places
+  // it in this window. Nothing here applies either, and there is no call that confirms.
   const pairingPress = (w: BrowserWindow): { ok: false; why: string } | undefined =>
     personPressed(w) ? undefined : { ok: false, why: "Pairing starts only right after your own key press or click." };
   handle("moss:pair-begin", (w) => pairingPress(w) ?? engine.pairBegin());
@@ -743,7 +744,6 @@ function wireBridge(): void {
     if (mode === undefined || !personPressed(w)) return { ok: false as const, why: "The relay is chosen only right after your own key press or click." };
     return engine.setRelay({ mode, ...(url !== undefined ? { url } : {}) });
   });
-  handle("moss:pair-confirm", (w) => pairingPress(w) ?? engine.pairConfirm());
   handle("moss:pair-cancel", (w) => (personPressed(w) ? engine.pairCancel() : false));
   handle("moss:remove-device", (w, a) => {
     const id = str(a.id, 128);

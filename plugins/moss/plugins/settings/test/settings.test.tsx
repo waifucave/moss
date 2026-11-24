@@ -136,13 +136,13 @@ describe("the settings window", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Code from another device" }), { target: { value: "KQ7-M2P" } });
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(onPairJoin).toHaveBeenCalledWith("KQ7-M2P");
-    const onPairConfirm = mock(() => undefined);
     rerender(<SettingsModal {...props} onMakeMain={onMakeMain} onPairBegin={onPairBegin} pairing={{ code: "KQ7-M2P" }} />);
     expect(screen.getByRole("status").textContent).toContain("KQ7-M2P");
-    rerender(<SettingsModal {...props} onPairBegin={onPairBegin} onPairConfirm={onPairConfirm} pairing={{ words: ["amber", "river", "lantern", "moss"] }} />);
-    expect(screen.getByRole("status").textContent).toContain("amber · river · lantern · moss");
-    fireEvent.click(screen.getByRole("button", { name: "They match" }));
-    expect(onPairConfirm).toHaveBeenCalledTimes(1);
+    // Another device is in: the page says a card has the words; it has none to show and no button that confirms.
+    rerender(<SettingsModal {...props} onPairBegin={onPairBegin} pairing={{ checking: true, peerName: "Pixel" }} />);
+    expect(screen.getByRole("status").textContent).toContain("Pixel is in");
+    expect(screen.getByRole("status").textContent).toContain("The words are on the card, not on this page");
+    expect(screen.queryByRole("button", { name: "They match" })).toBeNull();
   });
 });
 

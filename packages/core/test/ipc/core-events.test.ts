@@ -44,6 +44,25 @@ describe("the core.event sender", () => {
     expect(sendCoreEvent({ connections: () => [layer.c] }, pending)).toBe(0); // no registry: no capability
   });
 
+  test("the pairing's four words reach the user's terminal only: the app, a plugin's layer and every other role hear the step and the name", () => {
+    const words = ["maple", "orbit", "velvet", "canyon"];
+    const app = conn("app", ["devices"]), cli = conn("cli", ["devices"]);
+    const layer = conn("layer", ["devices"], { caller: { kind: "plugin", pluginId: "luna" } });
+    const remote = conn("remote", ["devices"]), host = conn("plugin-host", ["devices"], { caller: { kind: "plugin", pluginId: "luna" }, hostProcess: { hostProcess: "own", pluginId: "luna" } as never });
+    const step = { type: "pairing_changed", ts: 3, pairingId: "pair_1", step: "words", peerName: "Pixel", words };
+    sendCoreEvent({ connections: () => [app.c, cli.c, layer.c, remote.c, host.c], pluginCapabilities: () => ["devices.manage"] }, step);
+    const sent = (x: { got: unknown[] }) => (x.got[0] as [string, Record<string, unknown>] | undefined)?.[1];
+    expect(sent(cli)).toEqual(step);
+    for (const other of [app, layer]) {
+      expect(sent(other)).toEqual({ type: "pairing_changed", ts: 3, pairingId: "pair_1", step: "words", peerName: "Pixel" });
+      expect(JSON.stringify(other.got)).not.toContain("maple");
+    }
+    // Whoever else is let through (the schema's roles are app, cli and layer) never gets them either.
+    for (const other of [remote, host]) expect(JSON.stringify(other.got)).not.toContain("maple");
+    // The caller's object is not changed by the cut.
+    expect(step.words).toEqual(words);
+  });
+
   test("a plugin's own events (its host half's ui.send, its store's changes) reach only that plugin's own layer", () => {
     const luna = conn("layer", ["plugins"], { caller: { kind: "plugin", pluginId: "luna" } });
     const sol = conn("layer", ["plugins"], { caller: { kind: "plugin", pluginId: "sol" } });

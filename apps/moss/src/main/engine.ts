@@ -158,7 +158,7 @@ export class MossEngine {
   /** The bot session the window follows live now. */
   private attached: string | undefined;
   /** The pairing the person started in Settings (the engine's steps fill it in), and how often the devices changed. */
-  private pairingNow: { id: string; row: PairingRow; words?: string[] } | undefined;
+  private pairingNow: { id: string; row: PairingRow } | undefined;
   private devicesRev = 0;
   /** The voice plugin's talk command, from the plugins' declarations (voice.ts `talkCommandOf`). */
   private talk: TalkCommand = { why: "Talking waits for the engine's voice plugin list." };
@@ -692,7 +692,7 @@ export class MossEngine {
   async settings(): Promise<SettingsView> {
     const [account, devices, computers, plugins] = await Promise.all([
       this.read<{ signedIn: boolean; user?: { name?: string; email?: string } }>("account", "account.status"),
-      this.read<{ devices: { id: string; name: string; kind: string; isThis?: boolean }[] }>("devices", "device.list"),
+      this.read<{ devices: { id: string; name: string; kind: string; isThis?: boolean; online?: boolean; lastSeenAt?: number }[] }>("devices", "device.list"),
       this.read<{ computers: { name: string; level: string; self?: boolean }[] }>("devices", "computer.list"),
       this.read<{ plugins: { id: string; name: string | { en: string }; enabled: boolean; parent?: string }[] }>("plugins", "plugin.list"),
     ]);
@@ -709,7 +709,7 @@ export class MossEngine {
       account: account === undefined ? "waiting" : { signedIn: account.signedIn, ...(account.user?.name !== undefined ? { name: account.user.name } : {}), ...(account.user?.email !== undefined ? { email: account.user.email } : {}) },
       signIns,
       computers: computers === undefined ? "waiting" : computers.computers.map((c) => ({ name: c.name, level: String(c.level) })),
-      devices: devices === undefined ? "waiting" : devices.devices.map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.isThis === true ? { here: true } : {}) })),
+      devices: devices === undefined ? "waiting" : devices.devices.map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.isThis === true ? { here: true } : {}), ...(d.online === true ? { online: true } : {}), ...(typeof d.lastSeenAt === "number" ? { lastSeen: d.lastSeenAt } : {}) })),
     };
   }
 
@@ -737,30 +737,22 @@ export class MossEngine {
     return (await this.read("plugins", "plugin.settings.set", { id: pluginId, key, value, bot, noSecret: true })) !== undefined;
   }
 
-  // Pairing (spec §8.1). The engine owns the pairing; this keeps the steps it sends for the page. Adding the device (the
-  // confirm) and removing one are the engine's sealed cards: a call here asks, and answers `applied: false` with the card's id.
+  // Pairing (spec §8.1). The engine owns the pairing; this keeps the steps it sends for the page. Adding the device is the engine's
+  // sealed card, raised by the engine itself once the other device is in (it draws the four words; nothing here is given them, and
+  // there is no call that confirms), and so is removing one: the router places each in this window.
   async pairBegin(): Promise<{ ok: true } | { ok: false; why: string }> {
-    const r = await this.act<{ pairingId: string; code?: string; qr?: string }>("device.pair.begin", {}, "Pairing", 15_000);
+    const r = await this.act<{ pairingId: string; code?: string; qr?: string; expiresAt?: number }>("device.pair.begin", {}, "Pairing", 15_000);
     if (!r.ok) return r;
-    this.pairingNow = { id: r.value.pairingId, row: { code: r.value.code ?? r.value.qr ?? "" } };
+    this.pairingNow = { id: r.value.pairingId, row: { ...(r.value.code !== undefined ? { code: r.value.code } : {}), ...(r.value.qr !== undefined ? { qr: r.value.qr } : {}), ...(typeof r.value.expiresAt === "number" ? { expiresAt: r.value.expiresAt } : {}) } };
     this.changed();
     return { ok: true };
   }
 
   async pairJoin(code: string): Promise<{ ok: true } | { ok: false; why: string }> {
-    const r = await this.act<{ pairingId: string; words?: string[] }>("device.pair.join", { code: code.trim() }, "Pairing", 45_000);
+    const r = await this.act<{ pairingId: string }>("device.pair.join", { code: code.trim() }, "Pairing", 45_000);
     if (!r.ok) return r;
-    this.pairingNow = { id: r.value.pairingId, row: r.value.words ? { words: r.value.words } : {}, ...(r.value.words ? { words: r.value.words } : {}) };
+    this.pairingNow = { id: r.value.pairingId, row: { checking: true } };
     this.changed();
-    return { ok: true };
-  }
-
-  async pairConfirm(): Promise<{ ok: true } | { ok: false; why: string }> {
-    const now = this.pairingNow;
-    if (now?.words === undefined) return { ok: false, why: "There are no words to confirm yet." };
-    const r = await this.act("device.pair.confirm", { pairingId: now.id, words: now.words }, "Adding the device", 15_000);
-    if (!r.ok) return r;
-    if (this.pairingNow === now) { now.row = { ...now.row, confirming: true }; this.changed(); }
     return { ok: true };
   }
 
@@ -775,7 +767,11 @@ export class MossEngine {
   /** The relay the links use (the setup guide's relay page, spec §8.3). */
   async relay(): Promise<RelayRow | { waiting: true }> {
     const r = await this.read<RelayRow>("devices", "device.relay.get");
-    return r === undefined ? { waiting: true } : { mode: r.mode, ...(r.url !== undefined ? { url: r.url } : {}) };
+    if (r === undefined) return { waiting: true };
+    // The relay plugins installed, by what they bring (a `Relay` label), never by id.
+    const listed = await this.read<{ plugins: { id: string; name: string | { en: string }; labels?: string[]; reason?: string }[] }>("plugins", "plugin.list");
+    const plugins = (listed?.plugins ?? []).filter((p) => p.labels?.includes("Relay")).map((p) => ({ id: p.id, name: textOf(p.name), ...(p.reason !== undefined ? { why: p.reason.slice(0, 200) } : {}) }));
+    return { mode: r.mode, ...(r.url !== undefined ? { url: r.url } : {}), plugins };
   }
 
   async setRelay(choice: RelayRow): Promise<{ ok: true; relay: RelayRow } | { ok: false; why: string }> {
@@ -791,13 +787,12 @@ export class MossEngine {
   private pairingStep(e: Record<string, unknown>): void {
     const now = this.pairingNow;
     if (now === undefined || e.pairingId !== now.id) return;
-    const words = Array.isArray(e.words) ? (e.words as unknown[]).filter((w): w is string => typeof w === "string") : undefined;
+    // The step and the other device's name only: the engine sends the four words to the user's terminal alone.
+    const peerName = typeof e.peerName === "string" && e.peerName !== "" ? e.peerName.slice(0, 63) : undefined;
     switch (e.step) {
       case "words":
-        if (words !== undefined) { now.words = words; now.row = { ...now.row, words }; }
-        break;
       case "card":
-        now.row = { ...now.row, confirming: true };
+        now.row = { ...now.row, checking: true, ...(peerName !== undefined ? { peerName } : {}) };
         break;
       case "done":
         this.pairingNow = { id: now.id, row: { ended: "The device was added." } };

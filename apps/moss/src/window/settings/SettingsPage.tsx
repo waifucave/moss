@@ -10,8 +10,9 @@ import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge, shortTime } from "../bridge";
 import { Face } from "../faces/Face";
 import { EYES, makeBot, PALETTE, SHAPES, TEMPERS, type Eyes, type Shape, type Temper } from "@waifucave/moss-plugin-sdk/ui/faces";
-import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, PairingRow, SettingsView } from "../../shared/view";
+import type { BotEdit, BotFace, BotRecordRow, BotRow, BotSetting, MemoryFileRow, ModelRow, PairingRow, RelayRow, SettingsView } from "../../shared/view";
 import type { Level } from "@waifucave/moss-protocol";
+import { qrEncode, qrPath } from "@waifucave/moss-plugin-sdk/qr";
 
 export const LEVELS: readonly { value: Level; label: string }[] = [
   { value: "read-only", label: "Read only" },
@@ -142,7 +143,7 @@ function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | unde
             {s.devices.map((d) => (
               <li key={d.id} data-device={d.id}>
                 <span>{d.name}{d.here === true ? " (this computer)" : ""}</span>
-                <span className="muted">{KIND_WORDS[d.kind] ?? d.kind}</span>
+                <span className="muted" data-device-seen>{KIND_WORDS[d.kind] ?? d.kind} · {seenWords(d)}</span>
                 {d.here === true ? null : <button type="button" className="text-button" aria-label={`Remove ${d.name}`} onClick={() => void bridge().removeDevice(d.id).then(() => setDeviceNote("Look for the card to confirm removing it."))}>Remove</button>}
               </li>
             ))}
@@ -151,18 +152,49 @@ function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | unde
         {deviceNote !== undefined ? <p className="add__note" role="status">{deviceNote}</p> : null}
         {s === undefined || s.devices === "waiting" ? null : <PairDevice pairing={props.pairing} />}
       </Card>
+      <Card title="Relay" id="relay" note="When two of your devices can't connect directly (strict routers, a mobile network), a relay carries their traffic. Everything stays end-to-end encrypted: a relay sees which of your devices are online, never what they say.">
+        <RelayChoice />
+      </Card>
     </>
   );
 }
 
-/** Pairing another device without an account (spec §8.1): show a code here and enter it on the other device, or enter the code
- *  the other device shows; then check that both show the same four words. Adding the device is the engine's sealed card, which
- *  the router places in this window; nothing here adds one. */
+function seenWords(d: { here?: boolean; online?: boolean; lastSeen?: number }): string {
+  if (d.here === true || d.online === true) return "online now";
+  return d.lastSeen === undefined ? "not seen yet" : `last seen ${new Date(d.lastSeen).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;
+}
+
+/** The picture of a pairing's text a phone can scan, drawn here from the text. */
+function QrPicture(props: { text: string }) {
+  let drawn: { viewBox: string; d: string } | undefined;
+  try { drawn = qrPath(qrEncode(props.text), 2); } catch { drawn = undefined; }
+  if (drawn === undefined) return null;
+  return (
+    <svg className="ma2-pair__qr" role="img" aria-label="Scan this with the other device's camera" viewBox={drawn.viewBox} shapeRendering="crispEdges" data-pair-qr>
+      <rect width="100%" height="100%" fill="#fff" />
+      <path d={drawn.d} fill="#000" />
+    </svg>
+  );
+}
+
+/** Pairing another device without an account (spec §8.1): show a code here (and a picture of it for a phone), or enter the code
+ *  the other device shows. The four words are never in this window: once the other device is in, the engine raises a sealed card
+ *  that draws them, the router places it here, and the person compares them with the other screen and presses it. */
 export function PairDevice(props: { pairing: PairingRow | undefined }) {
   const p = props.pairing;
   const [code, setCode] = useState("");
   const [why, setWhy] = useState<string | undefined>(undefined);
   const run = (r: Promise<{ ok: true } | { ok: false; why: string }>): void => { void r.then((x) => setWhy(x.ok ? undefined : x.why)); };
+  // The code's own clock: it stops working at its expiry whether or not the engine has said so.
+  const [now, setNow] = useState(() => Date.now());
+  const ticking = p !== undefined && p.ended === undefined && p.checking !== true && p.expiresAt !== undefined;
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ticking, p?.expiresAt]);
+  const lapsed = ticking && p.expiresAt! <= now;
   return (
     <div className="ma2-pair" data-pairing>
       <h3 className="small">Pair a device</h3>
@@ -179,26 +211,71 @@ export function PairDevice(props: { pairing: PairingRow | undefined }) {
         </>
       ) : (
         <div role="status">
-          {p.ended !== undefined ? <p>{p.ended}</p> : p.words !== undefined ? (
-            <>
-              <p className="muted small">Check that both devices show these four words:</p>
-              <p className="ma2-pair__words" data-pair-words><strong>{p.words.join(" · ")}</strong></p>
-            </>
+          {p.ended !== undefined ? <p>{p.ended}</p> : p.checking === true ? (
+            <p className="muted small" data-pair-checking>{p.peerName !== undefined ? `${p.peerName} is in. ` : ""}A card in this window asks you to compare four words with the other device's screen. The words are on the card, not on this page.</p>
+          ) : lapsed ? (
+            <p className="muted small" data-pair-lapsed>The code stopped working. Show a new one to try again.</p>
           ) : (
             <>
-              <p className="muted small">Enter this code on the other device:</p>
-              <p className="ma2-pair__code" data-pair-shown><code>{p.code}</code></p>
+              {p.code !== undefined ? (
+                <>
+                  <p className="muted small">Enter this code on the other device:</p>
+                  <p className="ma2-pair__code" data-pair-shown><code>{p.code}</code></p>
+                </>
+              ) : null}
+              {p.qr !== undefined ? (
+                <>
+                  <p className="muted small">Or scan this with the other device's camera:</p>
+                  <QrPicture text={p.qr} />
+                  <details className="ma2-pair__text"><summary className="muted small">The same, as text to type or paste on the other device</summary><p className="ma2-pair__code" data-pair-text><code>{p.qr}</code></p></details>
+                </>
+              ) : null}
+              {p.expiresAt !== undefined ? <p className="muted small" data-pair-expiry>{`Works until ${new Date(p.expiresAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}.`}</p> : null}
             </>
           )}
           <div className="ma2-pair__row">
-            {p.ended === undefined && p.words !== undefined ? (
-              <button type="button" className="text-button" data-pair-confirm disabled={p.confirming === true} onClick={() => run(bridge().pairConfirm())}>{p.confirming === true ? "Waiting for your OK" : "They match"}</button>
-            ) : null}
-            <button type="button" className="text-button" data-pair-cancel onClick={() => { setWhy(undefined); void bridge().pairCancel(); }}>{p.ended !== undefined ? "OK" : "Cancel"}</button>
+            <button type="button" className="text-button" data-pair-cancel onClick={() => { setWhy(undefined); void bridge().pairCancel(); }}>{p.ended !== undefined || lapsed ? "OK" : "Cancel"}</button>
           </div>
         </div>
       )}
       {why !== undefined ? <p className="add__note" role="alert">{why}</p> : null}
+    </div>
+  );
+}
+
+/** Which relay the links use (spec §8.3): n0's public relays (the default), a server of the person's own, or none. Saved by the
+ *  engine at once. A relay plugin that is installed is listed and not offered: the links take none yet. */
+export function RelayChoice() {
+  const [saved, setSaved] = useState<RelayRow | undefined>(undefined);
+  const [mode, setMode] = useState<RelayRow["mode"]>("n0");
+  const [url, setUrl] = useState("");
+  const [note, setNote] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    void bridge().relay().then((r) => { if ("waiting" in r) { setNote("The engine didn't answer yet."); return; } setSaved(r); setMode(r.mode); setUrl(r.url ?? ""); });
+  }, []);
+  const changed = saved !== undefined && (saved.mode !== mode || (mode === "custom" && (saved.url ?? "") !== url.trim()));
+  const valid = mode !== "custom" || /^https:\/\/[^\s/@]+/i.test(url.trim());
+  const save = async (): Promise<void> => {
+    const r = await bridge().setRelay({ mode, ...(mode === "custom" ? { url: url.trim() } : {}) });
+    if (r.ok) { setSaved({ ...r.relay, ...(saved?.plugins !== undefined ? { plugins: saved.plugins } : {}) }); setUrl(r.relay.url ?? ""); setNote("Saved. The links use it now."); } else { setNote(r.why); if (saved !== undefined) { setMode(saved.mode); setUrl(saved.url ?? ""); } }
+  };
+  const option = (value: RelayRow["mode"], title: string, detail?: string) => (
+    <label className="ma2-relay__option" data-relay={value}>
+      <input type="radio" name="relay" value={value} disabled={saved === undefined} checked={mode === value} onChange={() => { setNote(undefined); setMode(value); }} />
+      <span><strong>{title}</strong>{detail !== undefined ? <> <span className="muted small">{detail}</span></> : null}</span>
+    </label>
+  );
+  return (
+    <div className="ma2-relay" data-relay-settings>
+      {option("n0", "n0's public relays", "On by default. Run by n0, free to use.")}
+      {option("custom", "A server of your own")}
+      {mode === "custom" ? <input className="field" type="url" placeholder="https://relay.example.com" aria-label="Relay server's address" value={url} onChange={(e) => { setNote(undefined); setUrl(e.target.value); }} data-relay-url /> : null}
+      {option("off", "No relay", "Devices that can't reach each other directly won't connect at all.")}
+      {(saved?.plugins ?? []).map((r) => <p key={r.id} className="muted small" data-relay-plugin={r.id}>{`${r.name}: not offered yet${r.why !== undefined ? ` (${r.why})` : ""}. The links don't take a relay plugin in this build.`}</p>)}
+      <div className="ma2-pair__row">
+        <button type="button" className="text-button" data-relay-save disabled={!changed || !valid || (mode === "custom" && url.trim() === "")} onClick={() => void save()}>Save</button>
+      </div>
+      {note !== undefined ? <p className="add__note" role="status" data-relay-note>{note}</p> : null}
     </div>
   );
 }
