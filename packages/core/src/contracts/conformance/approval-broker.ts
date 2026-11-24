@@ -374,6 +374,38 @@ export function runApprovalBrokerConformance(make: ApprovalBrokerFactory): void 
       expect(await broker.answer(two.card.id, { optionId: "approve", hash: two.card.hash, proof: await proof(phone, two.card, "approve") }, from(phone))).toBe("bad-proof");
     });
 
+    test("a card about a device (a revoke naming it) can't be answered by that device, by its link or as an answer another computer relays; another device's answer works", async () => {
+      const clock = new FakeClock();
+      const { registry } = await FakeDeviceRegistry.create({ clock, name: "Studio" });
+      const lost = await makeFakePhone();
+      const mine = await makeFakePhone();
+      await registry.add({ id: lost.id, name: "Lost", kind: "phone", runsCore: false, publicKey: lost.publicKey, answerKey: lost.answerKey }, { via: "account", account: "acct_1" });
+      await registry.add({ id: mine.id, name: "Mine", kind: "phone", runsCore: false, publicKey: mine.publicKey, answerKey: mine.answerKey }, { via: "account", account: "acct_1" });
+      const broker = make({ clock, verify: deviceProofVerifier(registry) });
+      const events: ApprovalEvent[] = [];
+      broker.watch((e) => events.push(e));
+      const at = clock.now();
+      const proof = async (who: FakeDevice, card: Card, option: string): Promise<CardAnswerProof> =>
+        ({ via: "device", device: who.id, at, signature: toBase64(await who.sign(new TextEncoder().encode(cardAnswerSigningInput({ id: card.id, hash: card.hash, option, at, children: [] })))) });
+      const one = await carded(broker, bash({ kind: "change", change: "device-revoke", computers: [], effect: "other", aboutDevice: lost.id }));
+      expect(broker.aboutDevice(one.card.id)).toBe(lost.id);
+      expect(events.find((e) => e.type === "requested")).toMatchObject({ aboutDevice: lost.id });
+      // Its own link, with its own good signature: refused, and the card stays open.
+      expect(await broker.answer(one.card.id, { optionId: "deny", hash: one.card.hash, proof: await proof(lost, one.card, "deny") }, { role: "remote", device: lost.id })).toBe("bad-origin");
+      // Relayed by another computer: the proof names the device, so the same refusal.
+      expect(await broker.answer(one.card.id, { optionId: "deny", hash: one.card.hash, proof: await proof(lost, one.card, "deny") }, { role: "peer", device: "laptop000000000000" })).toBe("bad-origin");
+      expect(broker.cards().map((c) => c.id)).toContain(one.card.id);
+      // Another device's answer still works, here and relayed.
+      expect(await broker.answer(one.card.id, { optionId: "approve", hash: one.card.hash, proof: await proof(mine, one.card, "approve") }, { role: "remote", device: mine.id })).toBe("accepted");
+      expect(await one.decision).toMatchObject({ allowed: true, by: "card" });
+      expect(events.find((e) => e.type === "resolved")).toMatchObject({ aboutDevice: lost.id, device: mine.id });
+      // Still known after it resolved (`card.get` and the resolved event are filtered by it).
+      expect(broker.aboutDevice(one.card.id)).toBe(lost.id);
+      // A card about no device has none.
+      const plain = await carded(broker, bash());
+      expect(broker.aboutDevice(plain.card.id)).toBeUndefined();
+    });
+
     test("a phone or a desktop's app-held key answers; a server, a desktop's link key or a browser never does (N1)", async () => {
       const clock = new FakeClock();
       const { registry } = await FakeDeviceRegistry.create({ clock, name: "Studio" });

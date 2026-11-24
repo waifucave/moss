@@ -5166,7 +5166,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           if (mossServer === undefined) return () => {};
           // A connection that subscribes to `approvals` is told the cards already pending (ipc/moss.ts `pendingCards`).
           const server = mossServer;
-          server.pendingCards = () => broker.cards();
+          server.pendingCards = (device) => broker.cards().filter((c) => device === undefined || broker.aboutDevice(c.id) !== device);
           const unroute = routeBrokerCards(broker, server.surfaces.router);
           return () => { unroute(); server.pendingCards = undefined; };
         },

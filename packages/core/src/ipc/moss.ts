@@ -35,7 +35,7 @@ import { EngineProgramOpener } from "./program-opener";
 import { resolveMossProfile } from "../profile";
 import type { DaemonPair, PairStopReason } from "../platform/pair/policy";
 import type { DaemonPlatform } from "../platform/transport";
-import { sendCoreEvent, type CoreEventInput, type CoreEventOptions } from "./core-events";
+import { deviceOfConn, sendCoreEvent, type CoreEventInput, type CoreEventOptions } from "./core-events";
 
 /** A thrown JSON-RPC error; the server's pump reads `code`, `message` and `data` off it. */
 /** Whether a connection is one of our programs' windows: role `app`, program MOSS or MOSS Code (never the host). */
@@ -288,7 +288,7 @@ export interface MossServer {
   /** The broker's pending cards in full (the daemon sets it once the broker is up): a connection that subscribes to
    *  `approvals` is told each of them (`card_requested`) before the subscription's answer, so no client loses a card by the
    *  order of its calls (a card raised before it subscribed reached no connection). */
-  pendingCards?: () => readonly Card[];
+  pendingCards?: (forDevice: string | undefined) => readonly Card[];
   /** Hears every connection that closed after its hello (its `surface` and `program` still on it), after the server let go
    *  of it: the hook for a lane that keeps state per connection (lane HS's host). Gives back the undo. */
   onClosed(fn: (conn: MossConn) => void): () => void;
@@ -594,7 +594,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       // pending cards to one newly following `approvals`, and every card's place to one newly following `surfaces`, so a
       // client that subscribes after a card was raised or placed still hears it, and nothing told later is overtaken by it.
       const only = { connections: () => [conn][Symbol.iterator](), log: (line: string) => deps.log?.(line) };
-      if (fresh.includes("approvals")) for (const card of server.pendingCards?.() ?? []) sendCoreEvent(only, { type: "card_requested", ts: Date.now(), card });
+      if (fresh.includes("approvals")) for (const card of server.pendingCards?.(deviceOfConn(conn)) ?? []) sendCoreEvent(only, { type: "card_requested", ts: Date.now(), card });
       if (fresh.includes("surfaces")) for (const c of router.list()) sendCoreEvent(only, { type: "card_placed", ts: Date.now(), card: c.card, place: c.place as CardPlacement });
       return { ok: true };
     },

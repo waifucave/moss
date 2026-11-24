@@ -18,12 +18,13 @@ export const cardAudience = (card: { ownedBy?: readonly string[] }) => (pluginId
 /** Forwards `broker`'s events to `send` (the server's `coreEvent`), stamped with the shared clock's `now`. */
 export function approvalCoreEvents(broker: Pick<ApprovalBroker, "watch">, send: (event: CoreEventInput, opts?: CoreEventOptions) => unknown, now: () => number): Unsubscribe {
   // A resolved card is told to the plugins that heard it raised, and to no others.
-  const owners = new Map<string, { ownedBy?: readonly string[] }>();
+  const owners = new Map<string, { ownedBy?: readonly string[]; aboutDevice?: string }>();
   return broker.watch((e) => {
     const ts = now();
     if (e.type === "requested") {
-      owners.set(e.card.id, { ...(e.card.ownedBy === undefined ? {} : { ownedBy: e.card.ownedBy }) });
-      send({ type: "card_requested", ts, card: e.card });
+      owners.set(e.card.id, { ...(e.card.ownedBy === undefined ? {} : { ownedBy: e.card.ownedBy }), ...(e.aboutDevice === undefined ? {} : { aboutDevice: e.aboutDevice }) });
+      // A card about a device is never sent to that device.
+      send({ type: "card_requested", ts, card: e.card }, e.aboutDevice === undefined ? {} : { exceptDevice: e.aboutDevice });
       send({ type: "card_pending", ts, card: cardMetaOf(e.card) }, { forPlugin: cardAudience(e.card) });
       return;
     }
@@ -32,6 +33,6 @@ export function approvalCoreEvents(broker: Pick<ApprovalBroker, "watch">, send: 
     send({
       type: "card_resolved", ts, id: e.cardId, outcome: e.outcome,
       ...(e.optionId === undefined ? {} : { option: e.optionId }), ...(e.device === undefined ? {} : { device: e.device }),
-    }, { forPlugin: cardAudience(owner) });
+    }, { forPlugin: cardAudience(owner), ...(owner.aboutDevice === undefined ? {} : { exceptDevice: owner.aboutDevice }) });
   });
 }

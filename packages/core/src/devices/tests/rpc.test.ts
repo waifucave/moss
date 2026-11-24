@@ -94,6 +94,46 @@ describe("devices methods", () => {
   });
 });
 
+describe("the card that removes a device is never the removed device's", () => {
+  test("a revoke from the app raises a card about that device: it can't answer it (not by its link, not relayed), another device's yes revokes at once", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view, joined } = await showWords(a, b);
+    await b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words! }, terminal);
+    await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words! }, terminal);
+    await waitFor(() => a.registry.get(b.key.id) !== undefined);
+    const res = (await a.call("device.revoke", { id: b.key.id }, app)) as { applied: false; card: string };
+    expect(res.applied).toBe(false);
+    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    expect(card.change).toBe("device-revoke");
+    expect(a.broker.aboutDevice(card.id)).toBe(b.key.id);
+    // The removed device's own answer, on its own link and as a proof another computer relays: refused, whatever it says, and the card stays.
+    const proof = { via: "device" as const, device: b.key.id, at: Date.now(), signature: "AAAA" };
+    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof }, { role: "remote", device: b.key.id })).toBe("bad-origin");
+    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof }, { role: "peer", device: "dev_other" })).toBe("bad-origin");
+    expect(a.broker.cards().map((c) => c.id)).toContain(card.id);
+    expect(a.registry.get(b.key.id)?.revokedAt).toBeUndefined();
+    // The person's own yes at the computer: revoked at once (the links' transport shuts a revoked device's link on this change, `links/tests/transport.test.ts`).
+    expect(await answer(a, card.id, "approve")).toBe("accepted");
+    await waitFor(() => a.registry.get(b.key.id)?.revokedAt !== undefined);
+    expect(a.events.some((e) => e.type === "device_removed")).toBe(true);
+  });
+
+  test("a revoke from the terminal needs no card at all (the person's own act at that computer)", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view, joined } = await showWords(a, b);
+    await b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words! }, terminal);
+    await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words! }, terminal);
+    await waitFor(() => a.registry.get(b.key.id) !== undefined);
+    expect(await a.call("device.revoke", { id: b.key.id }, terminal)).toEqual({ applied: true });
+    expect(a.broker.cards()).toEqual([]);
+    expect(a.registry.get(b.key.id)?.revokedAt).toBeDefined();
+  });
+});
+
 const pluginCaller: Caller = { kind: "plugin", pluginId: "acme/pairer" } as Caller;
 const peerCaller: Caller = { kind: "peer", device: "dev_peer" } as Caller;
 

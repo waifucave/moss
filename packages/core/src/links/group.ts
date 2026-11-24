@@ -172,7 +172,7 @@ export class GroupKeeper {
     const preview = await this.#o.handshake.rollbackPreview(group, key, member).catch(() => undefined);
     // This computer is never dropped by its own removal's rollback, so its card never lists it.
     const dropped = (preview ? read.members.filter((m) => preview.drops.includes(m.key)) : rolledBack(read.members, member, now)).filter((m) => m.key !== g.ownKey);
-    const keeps = await this.#keepsFor(g, group, member, name, dropped);
+    const keeps = await this.#keepsFor(g, group, member, name, dropped, device);
     const eligible = eligibleVoters(read.members, member, now);
     const need = quorumOf(eligible.length);
     const t = now;
@@ -196,7 +196,7 @@ export class GroupKeeper {
 
   /** Asks this device's user which of the keys a removal would roll back to keep: one card, a checkbox each, none
    *  checked. Asked once per removal while the daemon runs; a declined card stops the removal there. */
-  async #keepsFor(g: GroupRecord, group: string, member: string, name: string, dropped: GroupMember[]): Promise<readonly string[]> {
+  async #keepsFor(g: GroupRecord, group: string, member: string, name: string, dropped: GroupMember[], aboutDevice?: string): Promise<readonly string[]> {
     if (dropped.length === 0) return [];
     const id = `${group}|${member}`;
     const known = this.#keeps.get(id);
@@ -204,7 +204,7 @@ export class GroupKeeper {
     if (known) return known;
     const ids = dropped.map((_, i) => `k${i + 1}`);
     const answer = await this.#ask({
-      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke",
+      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", ...(aboutDevice === undefined ? {} : { aboutDevice }),
       fields: {
         title: { type: "text", text: "Remove this device from your devices' group?" },
         what: { type: "text", text: "The device named below let the ones listed under it in during the last 7 days. They leave with it, unless you check them to keep them. Check only the ones you recognise." },
@@ -477,7 +477,7 @@ export class GroupKeeper {
       return (d && this.#o.registry.get(d)?.name) ?? "a device this computer doesn't know";
     });
     const { ok } = await this.#ask({
-      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke",
+      kind: "change", origin: "user", computers: [], effect: "other", change: "device-revoke", ...(target === undefined ? {} : { aboutDevice: target }),
       fields: {
         title: { type: "text", text: "Remove this device from your devices?" },
         what: { type: "text", text: "Another of your devices asks to revoke the device named below." },

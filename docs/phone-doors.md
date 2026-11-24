@@ -116,17 +116,20 @@ a person holding a paired, unlocked phone can:
   (`agent.start`) and send to bots, with no limit on how many messages;
 - start coding sessions in any folder of the home, make up to five bots a day, and send files and pictures within the limits below;
 - remove the person's other devices (`device.revoke`) and move the main computer (`main.set`). Each raises a card, and a phone answers
-  cards with its own answer key, so **the card stops nobody who holds the unlocked phone**: it is a mis-tap check, and a notice on the
-  person's other devices. The owner decided on 2026-11-24 to keep it so (a paired phone is a full remote, its own cards included); nothing
-  in the code changes for it.
+  cards with its own answer key, so **the card stops nobody who holds the unlocked phone** (the card of a removal of a device is not shown
+  to that device; a phone removing another device, or moving the main computer, answers its own card): it is a mis-tap check, and a notice
+  on the person's other devices. The owner decided on 2026-11-24 to keep it so (a paired phone is a full remote, its own cards included).
 
 What the person does about a lost phone: on any of their computers, open Settings, find the phone in the devices list and remove it
-(Settings' devices list calls `device.revoke`; Settings closes while the card waits). Removing raises the same "Revoke this device?" card
-as any removal, and **that card is shown on every paired device, the lost phone included, and the first answer wins** (spec item 91,
-`contracts/approval-broker.ts`). So whoever holds the unlocked phone can answer "no" before the owner says yes. The owner answers on the
-computer at once, and asks again if the card comes back denied; nothing in the engine stops a thief from denying it each time while they
-hold the phone and the app open on the card. (A call from the user's own terminal revokes with no card, `inTerminal` in `devices/rpc.ts`,
-but this repository has no command that makes one, so this page doesn't offer it as a remedy.)
+(Settings' devices list calls `device.revoke`; Settings closes while the card waits). Removing raises the engine's "Revoke this device?"
+card, which the person answers at that computer, in the app's own window. **That card is about the phone it names, and that phone never
+gets it** (PH4, `packages/core/src/approvals/broker.ts`, `ApprovalRequest.aboutDevice`): it is not in the phone's `card.list`, not read by
+its `card.get`, not sent to it as an event (nor when the answer comes: not `card_resolved` either), not replayed when the phone subscribes
+late, and the phone's answer to it is refused by the engine by the answering device's id, whether it comes over the phone's own link or as
+a signed answer another computer relays (the proof names the device). So whoever holds the lost phone cannot deny its removal, and does
+not get a notice that the owner is trying. The cards other computers raise to agree to the same removal (the devices' group's cosign card,
+and its "which keys to keep" card) carry the same mark. Another device, the app at the computer, answers as before, and the first answer
+wins. The mark is on cards about a device's removal only: the other device cards were checked and need none (see below).
 
 Once the card is answered yes, that computer cuts the phone's links at once (the registry's change reaches the transport in the same
 process, `links/transport.ts` `#revoked`, which shuts the link with `CLOSE_REVOKED`; a later connection from its key is closed as revoked;
@@ -136,6 +139,18 @@ service, the push and hooks services and the devices' group, each step kept and 
 the group reaches it, which is when it is next online, and until then that computer still lets the phone in. Removing does not undo
 anything: what the phone started, made, sent or relayed stays, and a guided rotation of the synced keys it held starts; keys it already
 holds cannot be taken back.
+
+A removal started at the computer's own screen. In the desktop app's Settings it raises the card above and the person answers it in the
+app's window. From the user's own terminal (the caller `cli`) the engine revokes with no card at all (`inTerminal`, `devices/rpc.ts`: the
+person's own act at that machine, never a bot's, plugin's or phone's). **The terminal path is a gap in this repository, not a feature:**
+the engine has the call, but `packages/cli` speaks the older protocol to the older server and has no client for the one `device.revoke`
+is on, and no `moss devices` command, so a person cannot type it today. It is noted here and not invented (no new way for a command to
+reach the engine as the user was added).
+
+Other cards that name a device's standing, checked: a rename raises no card (it applies at once); a main-computer change names a
+computer, and a phone is never one; a computer's level raise is refused to every caller but the terminal and a lowering does not cut a
+device off; the answer-key hand-over already refuses an answer from the key it replaces (`own-key-answered`); an add card is about a
+device that is not yet paired and holds no link to receive it.
 
 What bounds a lost phone before then, in order:
 

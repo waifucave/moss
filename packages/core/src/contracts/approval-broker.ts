@@ -143,6 +143,10 @@ export interface ApprovalRequest {
   fields: Partial<Record<CardFieldName, SealedValue>>;
   agent?: AgentPermission;
   change?: ChangeSubject;
+  /** The paired device this card is about (the one a revoke names; a removal's cosign): that device is never SENT the card (not in
+   *  `card.list`, `card.get`, the events or the replay), and can never ANSWER it, whoever relays the answer. Without this, a lost
+   *  phone that is being removed could deny its own removal. */
+  aboutDevice?: string;
   /** A plugin's `confirm` or OK: whose. */
   pluginId?: string;
   /** A call to a plugin's tool: the plugin whose server the router binds it to (set by the core's approval check, never
@@ -251,9 +255,9 @@ export interface CardAnswer {
 
 export type ApprovalEvent =
   /** A new card: the whole of it, for the app's main process and the native iOS app (`card_requested`). */
-  | { type: "requested"; card: Card }
-  /** `card_resolved`; `device` is the paired device whose answer won, when one did. */
-  | { type: "resolved"; cardId: string; outcome: CardOutcome; optionId?: string; device?: string; children?: string[] };
+  | { type: "requested"; card: Card; aboutDevice?: string }
+  /** `card_resolved`; `device` is the paired device whose answer won, when one did. `aboutDevice`: see `ApprovalRequest.aboutDevice`. */
+  | { type: "resolved"; cardId: string; outcome: CardOutcome; optionId?: string; device?: string; children?: string[]; aboutDevice?: string };
 
 /** A card and, once it is resolved, how (`card.get`). */
 export interface CardRecord {
@@ -265,6 +269,8 @@ export interface CardRecord {
   /** The children the answer checked (a plugin OK). */
   children?: string[];
   resolvedAt?: number;
+  /** `ApprovalRequest.aboutDevice`, kept with the record. */
+  aboutDevice?: string;
 }
 
 export interface SavedRule {
@@ -294,6 +300,8 @@ export interface ApprovalBroker {
   /** One card in full, pending or resolved, for the same two: the conversation keeps a resolved card in place, with
    *  its fields and no buttons (`card.get`). Resolved cards are kept as long as their session's log. */
   get(cardId: string): CardRecord | undefined;
+  /** The device a card is about (`ApprovalRequest.aboutDevice`), pending or resolved: what a door that sends cards to a device checks. */
+  aboutDevice(cardId: string): string | undefined;
   /** Pending cards without their text (`cardMetaOf`), for plugins with `approvals`. */
   pending(computer?: string): CardMeta[];
   /** Mints the channel this card's sealed frame answers on (`card.frame`); undefined once it isn't pending. */
