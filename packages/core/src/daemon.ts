@@ -255,6 +255,7 @@ import { createConsoleProfileBroker } from "./auth/console-profile-broker";
 import { resolveAntExecutable } from "./runtime-sdk/bundle-layout";
 import { attachedFacetFor, parkRecoveredSessions } from "./runtime-sdk/messaging";
 import { startModelPlugins, type StartModelPluginsOptions, type StartedModelPlugins } from "./runtime-sdk/model-plugins/start";
+import { accountTokenSource } from "./identity/account-tokens";
 import { userEndpointOf } from "./runtime-sdk/model-plugins/user-endpoint";
 import { createOAuthRenewal } from "./runtime-sdk/model-plugins/oauth-renewal";
 import { isBundledMoss } from "./runtime-sdk/model-plugins/load";
@@ -4431,6 +4432,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         dangerousAdded: () => dangerousDomainsAdded() ?? [],
         // A provider the user pointed at an endpoint of their own: its plugin reaches that origin alone, read live.
         userEndpoint: (id) => userEndpointOf(host.registry.get(id), settings),
+        accountTokens: () => accountTokenSource(daemonLinks?.account, partsClock),
         log: (line) => console.error(line),
       }).then(
         (started) => {
