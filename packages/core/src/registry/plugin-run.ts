@@ -25,7 +25,7 @@
 // neither does with them). The static check (`loaderReach`) stays as `moss plugin validate`'s early error.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { leasesDirAccessProblem, readLeasesDirSecurity } from "../fence/win-sandbox";
+import { ownerOnlyProblem } from "../platform/win-acl";
 import { currentUserSid } from "../platform/win-pipe";
 import { systemDirectory } from "../secrets/private-file";
 import { copyFileSync, linkSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, type Stats } from "node:fs";
@@ -414,7 +414,7 @@ function lockFolderToUser(folder: string): void {
   if (r.status !== 0) throw new Error(`plugin processes can't start: icacls refused to lock ${folder} to this user`);
   // And look: the guard's whole Windows case is this ACL, so what icacls said is not taken for what is there. The owner must be the
   // user, Administrators or SYSTEM and nobody else allowed (the Windows sandbox's own check, fence/win-sandbox.ts).
-  const problem = leasesDirAccessProblem(folder, { security: readLeasesDirSecurity(folder) });
+  const problem = ownerOnlyProblem(folder, sid);
   if (problem !== null) throw new Error(`plugin processes can't start: ${folder} is not owner-only (${problem})`);
   lockedFolders.add(folder);
 }

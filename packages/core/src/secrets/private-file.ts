@@ -15,6 +15,7 @@ import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, ren
 import { basename, dirname, join } from "node:path";
 import { ContractError } from "../contracts/common";
 import { ffiLib, ffiPtr } from "../platform/ffi";
+import { ownerOnlyProblem } from "../platform/win-acl";
 import { bunRunner, windowsUserSid, type Runner } from "../platform/login/live";
 
 /** The durable steps of a write, in the order they happen. */
@@ -82,6 +83,8 @@ export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Pro
   if (sid === undefined) throw new Error("no user SID for the file's ACL");
   const r = await system32(deps.run ?? bunRunner)(["icacls", path, "/inheritance:r", "/grant:r", `*${sid}:F`]);
   if (!r.ok) throw new Error("icacls refused the ACL");
+  const problem = ownerOnlyProblem(path, sid);
+  if (problem !== null) throw new Error(`the file's ACL is not owner-only (${problem})`);
 }
 
 const RENAME_RETRIES = 12;
