@@ -28,6 +28,7 @@ const repo = resolve(import.meta.dir, "../../../..");
 const core = join(repo, "packages/core");
 const { startDaemon } = await import(join(core, "src/daemon"));
 const { FileSecretStore } = await import(join(core, "src/auth/secret-store"));
+const { MossSecretStore, KeychainValues, memoryVault } = await import(join(core, "src/secrets/moss-secret-store"));
 const { FakePluginRegistry } = await import(join(core, "src/contracts/fakes/plugin-registry"));
 const { catalogPointDecl } = await import(join(repo, "packages/plugin-sdk/src/catalogs/index"));
 const { decode, encode } = await import(join(core, "src/links/codec"));
@@ -48,6 +49,9 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-aw-engine-")));
 const home = join(root, "home");
 const userHome = join(root, "user");
 mkdirSync(join(userHome, "project1"), { recursive: true });
+// The engine's own secrets (its device key among them) in memory, as a test daemon keeps them, but ONE store for this
+// harness's whole life: the engine restarted on this home is the same device, with the same link key.
+const contractSecrets = new MossSecretStore({ home, values: new KeychainValues(memoryVault()), status: { backend: "memory", plaintext: false, state: "unlocked" } });
 
 type Ctl = { record(e: { type: string; [k: string]: unknown }): void; signal: AbortSignal };
 /** The scripted "provider": each message is answered with "Echo: <its text>", after a short think. */
@@ -99,7 +103,7 @@ async function connectApp(): Promise<App> {
 
 async function boot(): Promise<void> {
   daemon = await startDaemon({
-    home, secrets: new FileSecretStore(join(home, "secrets.json")), agentProvider: null, appPeer: "none",
+    home, secrets: new FileSecretStore(join(home, "secrets.json")), contractSecrets, agentProvider: null, appPeer: "none",
     links: {
       binary: BIN, sidecar: { relay: "disabled", n0Lookup: false, bind: `127.0.0.1:${LINK_PORT}` }, handshake: null, publicTime: null,
       mainComputer: { watchSleep: false, monotonic: () => performance.now() }, watch: () => () => {}, self: { name: "Studio", os: "linux" },
