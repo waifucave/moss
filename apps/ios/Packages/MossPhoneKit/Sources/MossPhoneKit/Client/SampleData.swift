@@ -17,6 +17,10 @@ public enum SampleData {
         Bot(id: "marlow", name: "Marlow", face: nil, state: .asleep, mainSession: "s_marlow"),
         Bot(id: "sorrel", name: "Sorrel", face: nil, state: .paused, computer: computerName, mainSession: "s_sorrel"),
         Bot(id: "tansy", name: "Tansy", face: nil, state: .idle, computer: computerName, mainSession: "s_tansy"),
+        Bot(id: "ember", name: "Ember", face: nil, state: .idle, computer: computerName, mainSession: "s_ember"),
+        Bot(id: "wren", name: "Wren", face: nil, state: .idle, computer: computerName, mainSession: "s_wren"),
+        Bot(id: "fig", name: "Fig", face: nil, state: .idle, computer: computerName, mainSession: "s_fig"),
+        Bot(id: "briar", name: "Briar", face: nil, state: .idle, computer: computerName, mainSession: "s_briar"),
     ]
 
     public static let summaries: [BotSummary] = [
@@ -27,10 +31,14 @@ public enum SampleData {
         BotSummary(id: "marlow", last: .init(text: "I will pick this up when Studio is on.", from: .bot, at: ago(3 * 86400)), unread: false),
         BotSummary(id: "sorrel", last: nil, unread: false),
         BotSummary(id: "tansy", last: .init(text: "Booked the table for four.", from: .bot, at: ago(5 * 86400)), unread: false),
+        BotSummary(id: "ember", last: .init(text: "Outreach drafts queued for approval.", from: .bot, at: ago(2 * 3600)), unread: true),
+        BotSummary(id: "wren", last: .init(text: "The weekly numbers are in the sheet.", from: .bot, at: ago(4 * 86400)), unread: false),
+        BotSummary(id: "fig", last: .init(text: "I moved the invoices to the shared folder.", from: .bot, at: ago(6 * 86400)), unread: false),
+        BotSummary(id: "briar", last: .init(text: "Nothing new in the inbox since Friday.", from: .bot, at: ago(9 * 86400)), unread: false),
     ]
 
     /// The bots the person pinned: the phone keeps this itself (the engine has no such field).
-    public static let pinned: [String] = ["alpha", "luna", "pip"]
+    public static let pinned: [String] = ["luna", "juniper", "tansy"]
 
     public static func conversation(for bot: String) -> [ChatMessage] {
         switch bot {
@@ -42,6 +50,8 @@ public enum SampleData {
                 ChatMessage(id: "m4", role: .bot, text: "The deploy finished. Nothing needed a retry.", at: ago(240)),
                 ChatMessage(id: "m5", role: .user, text: "Great. Anything waiting on me?", at: ago(200), device: "Laptop"),
                 ChatMessage(id: "m6", role: .bot, text: "One approval is waiting: I would like to clear the old build folder.", at: ago(150)),
+                ChatMessage(id: "m7", role: .bot, text: "The release notes are written up at https://example.com/notes", at: ago(140)),
+                ChatMessage(id: "m8", role: .bot, text: "", at: ago(130), file: ChatFile(name: "Release notes.pdf", detail: "12 pages · 1.2 MB")),
             ]
         default:
             let name = bots.first { $0.id == bot }?.name ?? "Bot"

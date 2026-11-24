@@ -12,6 +12,7 @@ public struct AppLaunch {
         if let i = args.firstIndex(of: "-screen"), i + 1 < args.count, let s = Screen(rawValue: args[i + 1]) { l.screen = s }
         if let i = args.firstIndex(of: "-scenario"), i + 1 < args.count {
             switch args[i + 1] {
+            case "quiet": l.scenario = .quiet
             case "midTurn": l.scenario = .midTurn
             case "unpaired": l.scenario = .unpaired
             case "unreachable": l.scenario = .unreachable
@@ -24,12 +25,15 @@ public struct AppLaunch {
         }
         l.startNew = args.contains("-startNew")
         l.confirmUnpair = args.contains("-confirmUnpair")
+        l.scrollTop = args.contains("-scrollTop")
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
         return l
     }
     /// Opens the new-session sheet, fills nothing, and starts with the preselected choices (for the picture of the result).
     public var startNew = false
     public var confirmUnpair = false
+    /// Opens conversations at their first message (for the picture of the top).
+    public var scrollTop = false
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
 
@@ -43,7 +47,8 @@ public struct MossRoot: View {
     @State private var paired: PairedComputer?
     @State private var showSettings: Bool
     @State private var path: [Bot] = []
-    @State private var tab = 0
+    @State private var showCards = false
+    @State private var showNewBot = false
     private let launch: AppLaunch
 
     public init(launch: AppLaunch = .fromProcess()) {
@@ -56,7 +61,7 @@ public struct MossRoot: View {
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
         _settings = State(initialValue: st)
         _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
-        _tab = State(initialValue: launch.screen == .cards ? 1 : 0)
+        _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
         if launch.screen == .conversation, let alpha = SampleData.bots.first(where: { $0.id == "alpha" }) { _path = State(initialValue: [alpha]) }
     }
@@ -64,29 +69,27 @@ public struct MossRoot: View {
     public var body: some View {
         Group {
             if let paired {
-                TabView(selection: $tab) {
-                    Tab("Bots", systemImage: "face.smiling", value: 0) {
-                        NavigationStack(path: $path) {
-                            BotsScreen(model: bots, computer: paired.name, onSettings: { showSettings = true })
-                                .navigationDestination(for: Bot.self) { bot in
-                                    BotConversationView(bot: bot, client: client, cards: cards, autoSend: launch.sendsOnOpen)
-                                }
+                NavigationStack(path: $path) {
+                    BotsScreen(model: bots, cards: cards, computer: paired.name, onSettings: { showSettings = true }, onBell: { showCards = true },
+                               onNew: { showNewBot = true }, onOpen: { path.append($0) })
+                        .navigationDestination(for: Bot.self) { bot in
+                            BotConversationView(bot: bot, client: client, cards: cards, autoSend: launch.sendsOnOpen)
                         }
-                    }
-                    Tab("Needs you", systemImage: "bell", value: 1) {
-                        NavigationStack { CardsScreen(model: cards, who: { c in c.bot.flatMap { id in SampleData.bots.first { $0.id == id }?.name } ?? "A bot" }) }
-                    }
-                    .badge(cards.waitingCount)
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsScreen(model: settings, appName: "MOSS", onUnpaired: { showSettings = false; self.paired = nil; pairing.retry() }, onDone: { showSettings = false })
                 }
+                .sheet(isPresented: $showCards) {
+                    NeedsYouSheet(cards: cards, who: { c in c.bot.flatMap { id in SampleData.bots.first { $0.id == id }?.name } ?? "A bot" }, onDone: { showCards = false })
+                }
+                .sheet(isPresented: $showNewBot) { NewBotSheet(computer: paired.name, onDone: { showNewBot = false }) }
             } else {
                 PairingScreen(model: pairing, appName: "MOSS", simulatedCamera: true) { paired = $0 }
             }
         }
         .tint(Theme.accent)
         .environment(\.nowMs, SampleData.now)
+        .environment(\.conversationStartsAtTop, launch.scrollTop)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
@@ -106,7 +109,7 @@ public struct MossCodeRoot: View {
     @State private var showNew: Bool
     @State private var newSession: NewSessionModel
     @State private var path: [SessionRow] = []
-    @State private var tab = 0
+    @State private var showCards = false
     private let launch: AppLaunch
 
     public init(launch: AppLaunch = .fromProcess()) {
@@ -120,7 +123,7 @@ public struct MossCodeRoot: View {
         _settings = State(initialValue: st)
         _newSession = State(initialValue: NewSessionModel(client: c, computer: SampleData.computerName))
         _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
-        _tab = State(initialValue: launch.screen == .cards ? 1 : 0)
+        _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
         _showNew = State(initialValue: launch.screen == .newSession)
         if launch.screen == .session, let s = SampleData.sessions.first(where: { $0.id == "c2" }) { _path = State(initialValue: [s]) }
@@ -129,19 +132,14 @@ public struct MossCodeRoot: View {
     public var body: some View {
         Group {
             if let paired {
-                TabView(selection: $tab) {
-                    Tab("Sessions", systemImage: "terminal", value: 0) {
-                        NavigationStack(path: $path) {
-                            SessionsScreen(model: sessions, computer: paired.name, onSettings: { showSettings = true }, onNew: { showNew = true })
-                                .navigationDestination(for: SessionRow.self) { s in
-                                    SessionConversationView(session: s, client: client, cards: cards, autoSend: launch.sendsOnOpen)
-                                }
+                NavigationStack(path: $path) {
+                    SessionsScreen(model: sessions, cards: cards, computer: paired.name, onSettings: { showSettings = true }, onBell: { showCards = true }, onNew: { showNew = true })
+                        .navigationDestination(for: SessionRow.self) { s in
+                            SessionConversationView(session: s, client: client, cards: cards, autoSend: launch.sendsOnOpen)
                         }
-                    }
-                    Tab("Needs you", systemImage: "bell", value: 1) {
-                        NavigationStack { CardsScreen(model: cards, who: { c in c.session.flatMap { id in SampleData.sessions.first { $0.id == id }?.title } ?? "A session" }) }
-                    }
-                    .badge(cards.waitingCount)
+                }
+                .sheet(isPresented: $showCards) {
+                    NeedsYouSheet(cards: cards, who: { c in c.session.flatMap { id in SampleData.sessions.first { $0.id == id }?.title } ?? "A session" }, onDone: { showCards = false })
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsScreen(model: settings, appName: "MOSS Code", onUnpaired: { showSettings = false; self.paired = nil; pairing.retry() }, onDone: { showSettings = false })
@@ -151,7 +149,7 @@ public struct MossCodeRoot: View {
                         showNew = false
                         Task {
                             await sessions.load()
-                            if let row = sessions.sessions.first(where: { $0.id == id }) { tab = 0; path = [row] }
+                            if let row = sessions.sessions.first(where: { $0.id == id }) { path = [row] }
                         }
                     }, onCancel: { showNew = false })
                 }
@@ -161,6 +159,7 @@ public struct MossCodeRoot: View {
         }
         .tint(Theme.accent)
         .environment(\.nowMs, SampleData.now)
+        .environment(\.conversationStartsAtTop, launch.scrollTop)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }

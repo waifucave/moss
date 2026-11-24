@@ -51,6 +51,13 @@ public struct BotSummary: Codable, Hashable, Sendable {
 public enum MessageRole: String, Codable, Sendable { case user, bot, note, agent }
 
 /// One message of a conversation, already read out of the session's events by the client.
+public struct ChatFile: Hashable, Sendable {
+    public var name: String
+    /// "12 pages · 1.2 MB": what the engine says about the file.
+    public var detail: String
+    public init(name: String, detail: String) { self.name = name; self.detail = detail }
+}
+
 public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var id: String
     public var role: MessageRole
@@ -59,8 +66,10 @@ public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var at: Int64
     /// The device a user message came from (`from <device>`), when it was not this phone.
     public var device: String?
-    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil) {
-        self.id = id; self.role = role; self.text = text; self.at = at; self.device = device
+    /// A file the message carries, drawn as its own card.
+    public var file: ChatFile?
+    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil, file: ChatFile? = nil) {
+        self.id = id; self.role = role; self.text = text; self.at = at; self.device = device; self.file = file
     }
 }
 

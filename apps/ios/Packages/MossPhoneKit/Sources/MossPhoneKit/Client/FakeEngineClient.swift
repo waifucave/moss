@@ -7,6 +7,8 @@ public actor FakeEngineClient: EngineClient {
     public enum Scenario: Sendable {
         /// Paired, everything quiet.
         case idle
+        /// Paired, and nothing waits for the person (no cards): the plain list.
+        case quiet
         /// Paired, and Alpha's turn is running (status line, Stop showing).
         case midTurn
         /// Not paired yet.
@@ -60,6 +62,9 @@ public actor FakeEngineClient: EngineClient {
         conversations["s_alpha"] = SampleData.conversation(for: "alpha")
         for s in SampleData.sessions { conversations[s.id] = SampleData.sessionMessages(for: s.id) }
         switch scenario {
+        case .quiet:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            cardList = []
         case .idle: paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
         case .midTurn:
             paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
