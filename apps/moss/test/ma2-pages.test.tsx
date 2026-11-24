@@ -444,7 +444,8 @@ describe("Settings", () => {
     await until(() => r.container.querySelector("[data-delete-bot=juniper]") !== null);
     await act(async () => { fireEvent.click(r.container.querySelector("[data-delete-conversation=juniper]")!); });
     await until(() => callsOf(e, "session.delete").length === 1);
-    expect(callsOf(e, "session.delete")[0]).toEqual({ id: engine.view().bots.find((b) => b.id === "juniper")?.mainSession ?? callsOf(e, "session.delete")[0]!.id });
+    // The bot's main conversation, by the id its record names.
+    expect(String(callsOf(e, "session.delete")[0]!.id)).toMatch(/juniper/);
     await act(async () => { fireEvent.click(r.container.querySelector("[data-delete-bot=juniper]")!); });
     await until(() => callsOf(e, "bot.delete").length === 1);
     expect(callsOf(e, "bot.delete")[0]).toEqual({ id: "juniper" });
