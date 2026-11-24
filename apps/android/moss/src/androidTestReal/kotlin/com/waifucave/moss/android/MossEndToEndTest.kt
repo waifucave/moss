@@ -10,8 +10,7 @@ import com.waifucave.moss.phone.engine.Engines
 import com.waifucave.moss.phone.model.*
 import com.waifucave.moss.phone.vm.*
 import com.waifucave.moss.phonecore.RelayChoice
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.Socket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -27,17 +26,19 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 
-/** The runner's engine, reached from the emulator at 10.0.2.2 (`apps/android/engine/e2e/engine.ts`'s control port). */
+/**
+ * The runner's engine, reached from the emulator at 10.0.2.2 (`apps/android/engine/e2e/engine.ts`'s control port), over a
+ * plain socket: the app's network rules refuse cleartext HTTP, and the control port is loopback on the runner only.
+ */
 object Runner {
-    private const val BASE = "http://10.0.2.2:8790"
-    fun text(path: String): String {
-        val c = URL(BASE + path).openConnection() as HttpURLConnection
-        c.connectTimeout = 10_000; c.readTimeout = 180_000
-        try {
-            val body = (if (c.responseCode in 200..299) c.inputStream else c.errorStream)?.readBytes()?.decodeToString() ?: ""
-            check(c.responseCode in 200..299) { "$path answered ${c.responseCode}: $body" }
-            return body
-        } finally { c.disconnect() }
+    fun text(path: String): String = Socket("10.0.2.2", 8790).use { s ->
+        s.soTimeout = 180_000
+        s.getOutputStream().write("GET $path HTTP/1.1\r\nHost: 10.0.2.2\r\nConnection: close\r\n\r\n".toByteArray())
+        val raw = s.getInputStream().readBytes().decodeToString()
+        val status = raw.substringBefore("\r\n").split(" ").getOrNull(1)?.toIntOrNull() ?: 0
+        val body = raw.substringAfter("\r\n\r\n", "")
+        check(status in 200..299) { "$path answered $status: $body" }
+        body
     }
     fun json(path: String): JSONObject = JSONObject(text(path))
 }
