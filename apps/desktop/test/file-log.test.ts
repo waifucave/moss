@@ -84,6 +84,8 @@ const KEPT: string[] = [
   "layers: moss/island's layer connected to the core",
   "layers: acc-extra's layer connection closed (it no longer shows UI)",
   "files: acc-files: the core keeps no grants yet; the page's token works for the media URL only",
+  "ipc: 5 s in 58.2/s (entries 95, resolve 63, api 40, sealed-visible 19, sealed-frame 18, root-call 18) out 12.2/s (respot 36, api-event 8, child-size 7, shell-provides-changed 5, plugin-frame-ready:1 4, ui.set 2) cpu Browser 4.1% Tab 2.0% GPU 0.3% Sandbox helper 0.0%",
+  "ipc: 5 s in 0.0/s () out 0.0/s () cpu",
   "files: acceptance-media: a drop gave 1 grant(s)",
   "files: acceptance-media: a drop gave 2 grant(s), some refused",
   "files: acc-files: files.pickOpen refused (no key press or click of the user's just before)",
@@ -254,6 +256,9 @@ const REDUCED: [string, string][] = [
   [`prefs: not saved (${SECRET})`, "prefs: not saved"],
   [`tree: acc-copy: session.resend refused (${SECRET})`, "tree: acc-copy: session.resend refused"],
   [`tree: acc-copy: session.resend went through`, "tree: acc-copy: session.resend went through"],
+  [`ipc: 5 s in 1.0/s (entries 5, ${URL_} 3) out 1.0/s () cpu Browser 1.0%`, "ipc: (text not kept in the file)"],
+  [`ipc: 5 s in 1.0/s (entries 5) out 1.0/s (a sentence with words 3) cpu Browser 1.0%`, "ipc: (text not kept in the file)"],
+  [`ipc: 5 s in 1.0/s (entries 5) out 1.0/s (/Users/someone/${SECRET} 3) cpu Browser 1.0%`, "ipc: (text not kept in the file)"],
   [`tree: acc-copy: an unknown method refused (${SECRET})`, "tree: acc-copy: an unknown method refused"],
   [`tree: acc-copy: conversation.messageAction ran acc-copy's ${SECRET}`, "tree: acc-copy: conversation.messageAction ran"],
   [`browser: view browser shows the host's tab ${SECRET}`, "browser: view browser shows the host's tab"],
@@ -336,6 +341,12 @@ describe("what MOSS Code writes to its log file", () => {
     }
     const counter = ipcLine({ seconds: 5, in: new Map([["props", 40], ["size", 20]]), out: new Map([["props", 15]]) } as never, [{ type: "Browser", percent: 4.1 }, { type: "Tab", percent: 2 }]);
     expect(fileLine(counter)).toBe(counter);
+    // The busiest shapes the counter can say: six long channel names a side and many process types are still kept whole.
+    const names = ["sealed-visible-report", "plugin-frame-ready", "shell-provides-changed", "conversation-scroll-state", "tree-call-result", "child-size"];
+    const many = ipcLine({ seconds: 5, in: new Map(names.map((n, i) => [`moss:${n}`, 90 - i])), out: new Map(names.map((n, i) => [n, 50 - i])) } as never,
+      ["Browser", "Tab", "Tab", "GPU", "Utility", "Sandbox helper", "Pepper Plugin Broker", "Zygote"].map((type, i) => ({ type, percent: i + 0.5 })));
+    expect(many.length).toBeGreaterThan(300);
+    expect(fileLine(many)).toBe(many);
   });
 
   test("a line break never splits a line, and a new kind of line is not in the file until it is added", () => {

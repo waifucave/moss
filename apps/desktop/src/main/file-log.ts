@@ -27,6 +27,8 @@ const REF = "[\\w.:/#@+-]{1,100}";
 const W = "[a-z-]{1,24}";
 /** What the app calls a window or a surface (`surfaceName` in index.ts): its fixed phrases, a window number, or a surface's ref. */
 const SURF = `(?:a frame with no window|the main window|the window's strip \\(window \\d{1,6}\\)|the fallback card \\(window \\d{1,6}\\)|window \\d{1,6}|${REF})`;
+/** The ipc counters' pairs: `name count`, comma-separated, none to eight; a name has no space, quote, slash or sentence in it. */
+const IPC_PAIRS = "(?:[\\w:.-]{1,60} \\d{1,9}(?:, [\\w:.-]{1,60} \\d{1,9}){0,7})?";
 /** A card's id, which the file never keeps. */
 const CARD = "\\S{1,100}";
 const OKFAIL = "(?:ok|failed, \\S{1,8})";
@@ -58,7 +60,9 @@ export const KEEP: RegExp[] = [
   kp(String.raw`terminal: a paste of several lines was turned down`),
   kp(String.raw`welcome: this home isn't set up for a first reply; the setup guide opens`),
   kp(String.raw`ipc: counters on \(every 5 s: messages by channel, CPU by process; no payloads\)`),
-  kp(String.raw`ipc: ${DEC} s in ${DEC}/s \([\w:., -]{0,160}\) out ${DEC}/s \([\w:., -]{0,160}\) cpu(?: ${PROC} ${DEC}%){0,16}`),
+  // The counters (ui/ipc-stats.ts `ipcLine`): rates, then the most-sent channels and message types as NAME COUNT pairs (a name is the app's own
+  // channel or message type: letters, digits, `-`, `.`, `:`, at most 60 characters; at most 8 pairs a side), then each process type's CPU share.
+  kp(String.raw`ipc: ${DEC} s in ${DEC}/s \(${IPC_PAIRS}\) out ${DEC}/s \(${IPC_PAIRS}\) cpu(?: ${PROC} ${DEC}%){0,24}`),
   kp(String.raw`diag: cpu over ${DEC} s(?: ${PROC}:\d{1,9} -?${DEC}%){1,40}`),
   // the press check and the refusals
   kp(String.raw`send: refused \((?:not a place the user's words go|MOSS Code isn't running|the frame reported no user activation)\)(?: \(\d{1,6} like it left out\))?`),
