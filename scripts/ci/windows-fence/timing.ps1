@@ -130,14 +130,19 @@ Measure-Step "profile forget" { & $Srt profile forget }
 # 6c. Lane WS7, an assertion, not a timing: patch 0004 writes the parent's FILE_DELETE_CHILD deny on the parent alone,
 #     and a write-denied target carries its own inheritable one. A delete is granted by the parent's FILE_DELETE_CHILD
 #     whatever the child's own DELETE says, so here every object grants that right (Everyone, full control, inherited)
-#     and a fenced command, with a write deny (and then a read deny) on `t`, tries to delete a file in `t`, a file in
-#     `t\sub`, `t\sub` and `t`: each must still be there. The open sibling's file is the control: the same command
-#     deletes it, or the probe proves nothing. Run with the daemon's write-restricted token as well (its control shown).
+#     and a fenced command, with a write deny (and then a read deny) on `t`, tries to rename or move away and to delete a
+#     file in `t`, a file in `t\sub`, `t\sub` and `t`: each must still be there. The open sibling's file is the
+#     control: the same command deletes it, or the probe proves nothing. Run with the daemon's write-restricted token as
+#     well (its control shown).
 $fdcRoot = "C:\ws7-fdc"; $fdcRun = "C:\ws7-fdc-run"; $guardBroken = $false
 New-Item -ItemType Directory -Force -Path $fdcRun | Out-Null
 Set-Content -LiteralPath (Join-Path $fdcRun "probe.cmd") -Value @(
   "@echo off",
   "del /q $fdcRoot\open\f.txt 2>nul",
+  "move /y $fdcRoot\t\f.txt $fdcRoot\open\moved-f.txt >nul 2>nul",
+  "move /y $fdcRoot\t\sub $fdcRoot\open\moved-sub >nul 2>nul",
+  "ren $fdcRoot\t\sub\g.txt g2.txt 2>nul",
+  "ren $fdcRoot\t t2 2>nul",
   "del /q $fdcRoot\t\f.txt 2>nul",
   "del /q $fdcRoot\t\sub\g.txt 2>nul",
   "rd /s /q $fdcRoot\t\sub 2>nul",
@@ -156,9 +161,10 @@ foreach ($case in @(@("--deny-write", @()), @("--deny-read", @()), @("--deny-wri
   $kept = @("t\f.txt", "t\sub\g.txt", "t\sub", "t" | Where-Object { Test-Path -LiteralPath (Join-Path $fdcRoot $_) })
   $control = -not (Test-Path -LiteralPath (Join-Path $fdcRoot "open\f.txt"))
   $label = "$flag$(if ($extra.Count) { ' ' + ($extra -join ' ') })"
-  Write-Output ("delete-guard: {0}: exit {1}; still there: {2} of 4 ({3}); the open sibling's file deleted: {4}" -f $label, $code, $kept.Count, ($kept -join ", "), $control)
+  $moved = @("open\moved-f.txt", "open\moved-sub", "t\sub\g2.txt", "t2" | Where-Object { Test-Path -LiteralPath (Join-Path $fdcRoot $_) })
+  Write-Output ("delete-guard: {0}: exit {1}; still there: {2} of 4 ({3}); moved or renamed: {4}; the open sibling's file deleted: {5}" -f $label, $code, $kept.Count, ($kept -join ", "), $(if ($moved.Count) { $moved -join ", " } else { "none" }), $control)
   if ($code -ne 0) { $out | Select-Object -First 5 | ForEach-Object { Write-Output "  $_" } }
-  if ($kept.Count -ne 4) { $guardBroken = $true; Write-Output "delete-guard: FAILED: a fenced command deleted under $label" }
+  if ($kept.Count -ne 4 -or $moved.Count -ne 0) { $guardBroken = $true; Write-Output "delete-guard: FAILED: a fenced command deleted, moved or renamed under $label" }
   if (-not $extra.Count -and -not $control) { $guardBroken = $true; Write-Output "delete-guard: FAILED: the control was not deleted, so the probe proves nothing ($label)" }
 }
 Remove-Item -Recurse -Force -LiteralPath $fdcRoot, $fdcRun -ErrorAction SilentlyContinue

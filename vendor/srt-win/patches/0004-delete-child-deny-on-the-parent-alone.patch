@@ -25,12 +25,12 @@ DELETE says. So a write deny now carries its own inheritable delete-child deny
 on the target: written with the target's deny, it walks only the target's own
 tree, which that deny walks already.
 
-Files: src/acl.rs.
+Files: src/acl.rs; tests/persistent_grant_access_check.rs (one access-check case).
 
 What changes, and nothing else, per session (`SbAceSet::aces`) and persistent
 (`persistent_aces`): the parent's FILE_DELETE_CHILD deny is written without
 OI|CI; a write-denied target gains `(D;OICI;FILE_DELETE_CHILD)`. Two unit tests
-of the persistent shape follow.
+of the persistent shape follow, and an access check of both entries.
 
 diff --git a/src/acl.rs b/src/acl.rs
 --- a/src/acl.rs
@@ -119,3 +119,66 @@ diff --git a/src/acl.rs b/src/acl.rs
                  format!("(A;OICI;0x1200a9;;;{GROUP})"),
              ]
          );
+diff --git a/tests/persistent_grant_access_check.rs b/tests/persistent_grant_access_check.rs
+--- a/tests/persistent_grant_access_check.rs
++++ b/tests/persistent_grant_access_check.rs
+@@ -285,5 +285,59 @@
+             can(&inherited_from_above, FILE_READ_DATA),
+             "{name}: the order of an explicit allow and an inherited deny changed"
+         );
++    }
++}
++
++/// MOSS patch 0004: the delete-child deny srt-win puts on a denied target's parent is the parent's alone, so the
++/// target no longer inherits it; a write-denied target denies delete-child itself (a delete is granted by the
++/// parent's FILE_DELETE_CHILD whatever the child's own DELETE says), and the parent still denies it on itself.
++/// Each against an allow of everything after the object's own entries, where an inherited allow comes.
++#[test]
++fn delete_child_on_a_write_denied_target_and_its_parent() {
++    const FILE_DELETE_CHILD: u32 = 0x40;
++    const DELETE: u32 = 0x0001_0000;
++    let list = |deny: Option<DenyMask>, deny_fdc: bool| {
++        let mut v = persistent_aces(&PersistentWant {
++            group_sid: AUTHENTICATED_USERS,
++            real_user_sid: SOMEONE_ELSE,
++            capability_sid: None,
++            deny,
++            deny_fdc,
++            deny_delete: false,
++            profile: None,
++        });
++        v.push(AceView {
++            deny: false,
++            inherited: false,
++            flags: 0x3,
++            mask: FILE_ALL_ACCESS.0,
++            sid: AUTHENTICATED_USERS.to_owned(),
++        });
++        v
++    };
++    let target = list(Some(DenyMask::WriteDeny), false);
++    let parent = list(None, true);
++    assert!(
++        target
++            .iter()
++            .any(|a| a.deny && a.mask == FILE_DELETE_CHILD && a.flags & 0x3 == 0x3),
++        "the target's own delete-child deny is inheritable"
++    );
++    assert!(
++        parent
++            .iter()
++            .any(|a| a.deny && a.mask == FILE_DELETE_CHILD && a.flags & 0x3 == 0),
++        "the parent's delete-child deny is the parent's alone"
++    );
++    let ordinary = child_token(false, &[]);
++    assert!(
++        granted(ordinary, SOMEONE_ELSE, &list(None, false), FILE_DELETE_CHILD),
++        "control: the allow gives delete-child"
++    );
++    for (name, tok) in [("ordinary", ordinary), ("write-restricted", child_token(true, &[]))] {
++        let can = |aces: &[AceView], access: u32| granted(tok, SOMEONE_ELSE, aces, access);
++        assert!(!can(&target, FILE_DELETE_CHILD), "{name}: delete-child on a write-denied target");
++        assert!(!can(&target, DELETE), "{name}: delete a write-denied target");
++        assert!(!can(&parent, FILE_DELETE_CHILD), "{name}: delete-child on a denied target's parent");
+     }
+ }

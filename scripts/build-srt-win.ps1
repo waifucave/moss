@@ -53,7 +53,7 @@ $PinnedPatches = @{
   "0001-per-principal-setup-records.patch" = "188ad4c0c5ed37bc9cdba8db821fc5d0a82fb380b79278c300a1507afe81f55d"
   "0002-session-0-named-objects.patch" = "60497de7a7c50a166eb73ff03e91e4cbe6389453d6f73fcfc9e06e029c0b3f81"
   "0003-network-open-principal.patch" = "4c12672bfdc91edd85c88a3b677b502a6c0eb0bf9a5d972fbeee803be7b1cfb9"
-  "0004-delete-child-deny-on-the-parent-alone.patch" = "3c6a8be6e4f4c50b9d0d3efa3f703e6e522539ff2b3d948e648b303a673a20db"
+  "0004-delete-child-deny-on-the-parent-alone.patch" = "2ddf6440be0a1ce31444aa4caa77d16ec15d03642b68b5df6758c8ee581d3e06"
 }
 
 # What the pinned patch set must change (per-principal records; session 0's named objects; a network-open principal;
@@ -69,9 +69,10 @@ $ExpectedPatchFiles = @(
   "vendor/srt-win-src/src/user.rs",
   "vendor/srt-win-src/src/winsta.rs",
   "vendor/srt-win-src/src/wfp.rs",
-  "vendor/srt-win-src/src/acl.rs"
+  "vendor/srt-win-src/src/acl.rs",
+  "vendor/srt-win-src/tests/persistent_grant_access_check.rs"
 )
-$ExpectedPatchAdded = 565
+$ExpectedPatchAdded = 619
 $ExpectedPatchDeleted = 57
 
 function Check-Tools {

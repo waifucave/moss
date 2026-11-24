@@ -74,6 +74,17 @@ jobs:
         timeout-minutes: 20
         run: scripts/ci/windows-fence/remove.ps1
 
+      # Lane WS7: srt-win's own tests of the ACL code the MOSS patches change (patch 0004's entry shapes, and an access
+      # check of the delete-child entries), in the tree the launcher step patched: its release build compiles no test.
+      - name: srt-win's tests of the patched ACL code (acl's unit tests, the access-check cases)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        working-directory: vendor/srt-win-src/vendor/srt-win-src
+        run: |
+          cargo test --locked --lib acl::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --test persistent_grant_access_check
+
   # The daemon as it runs for real: a standard user's, started by its password startup task, so in Session 0 with a
   # password logon. The user's unelevated setup refuses with exit 2; an administrator sets the sandbox up for it from
   # the user's protected copy; the same end-to-end suite runs inside the user's task; the administrator removes it.
