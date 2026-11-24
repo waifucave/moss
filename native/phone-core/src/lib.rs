@@ -60,6 +60,8 @@ pub struct PhoneCore {
     /// Bound on first use with the device key of the identity it names; rebound (the old one closed) once the
     /// identity is replaced.
     endpoint: tokio::sync::Mutex<Option<(String, iroh::Endpoint)>>,
+    /// Pairings showing their words or confirming: the identity is never renewed under one.
+    open_pairings: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for PhoneCore {
@@ -98,7 +100,7 @@ impl PhoneCore {
     #[uniffi::constructor]
     pub fn new(storage: Arc<dyn SecretStorage>, config: CoreConfig) -> Result<Arc<Self>, CoreError> {
         let identity = identity::Identity::load_or_create(&storage, config.device_name.clone(), config.holder, config.os)?;
-        Ok(Arc::new(PhoneCore { storage, identity: std::sync::RwLock::new(Arc::new(identity)), config, endpoint: tokio::sync::Mutex::new(None) }))
+        Ok(Arc::new(PhoneCore { storage, identity: std::sync::RwLock::new(Arc::new(identity)), config, endpoint: tokio::sync::Mutex::new(None), open_pairings: Arc::default() }))
     }
 
     pub fn identity(&self) -> PhoneIdentity {
@@ -118,7 +120,14 @@ impl PhoneCore {
     /// this phone). When it was the last computer paired, the phone's identity goes too: new device and answer keys
     /// are saved over the old items and the endpoint is rebound with them, so a next pairing, even with the same
     /// computer, is a new device to it. While other computers stay paired the identity they know stays.
+    ///
+    /// Forgetting the last computer is refused while a pairing is open (showing its words or confirming): it would
+    /// complete under keys this replaces. Finish or reject it first.
     pub fn forget_computer(&self, id: String) -> Result<(), CoreError> {
+        let others = computers::list(&self.storage)?.iter().any(|c| c.id != id);
+        if !others && self.open_pairings.load(std::sync::atomic::Ordering::Acquire) > 0 {
+            return Err(CoreError::refused("a pairing is open: finish or cancel it before forgetting the last computer"));
+        }
         computers::forget(&self.storage, &id)?;
         if !computers::list(&self.storage)?.is_empty() {
             return Ok(());
@@ -134,7 +143,8 @@ impl PhoneCore {
     pub async fn begin_pairing(self: Arc<Self>, qr: String, app: PhoneApp) -> Result<Arc<Pairing>, CoreError> {
         runtime::spawn(async move {
             let ep = self.endpoint().await?;
-            pairing::begin(&ep, self.ident(), self.storage.clone(), &qr, app).await.map(Arc::new)
+            let open = pairing::OpenPairing::new(self.open_pairings.clone());
+            pairing::begin(&ep, self.ident(), self.storage.clone(), &qr, app, open).await.map(Arc::new)
         })
         .await
     }

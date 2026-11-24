@@ -123,25 +123,12 @@ pub enum ConnEvent {
 }
 
 impl ConnEvent {
+    /// What an event costs the queue: the size of everything it holds, as decoded (escapes included), so the byte cap
+    /// holds for every kind.
     fn weight(&self) -> usize {
         match self {
-            ConnEvent::Notification { params_json, .. } => params_json.len(),
-            ConnEvent::CardRequested { card } => card.card_json.len(),
-            ConnEvent::PendingCards { cards } => cards.iter().map(|c| c.card_json.len()).sum(),
-            ConnEvent::TamperedCard { computers_id } => computers_id.as_ref().map_or(0, String::len),
-            ConnEvent::SessionEvent { item } => match &item.kind {
-                crate::engine::ItemKind::User { text, .. }
-                | crate::engine::ItemKind::Assistant { text }
-                | crate::engine::ItemKind::FromBot { text, .. }
-                | crate::engine::ItemKind::FromSession { text }
-                | crate::engine::ItemKind::FromPlugin { text }
-                | crate::engine::ItemKind::Agent { text }
-                | crate::engine::ItemKind::Routine { text, .. }
-                | crate::engine::ItemKind::Note { text, .. } => text.len(),
-                _ => 256,
-            },
-            ConnEvent::BotChanged { .. } | ConnEvent::BotSummaryChanged { .. } | ConnEvent::SessionChanged { .. } => 1024,
-            _ => 0,
+            ConnEvent::Connecting { .. } | ConnEvent::Up | ConnEvent::Unpaired | ConnEvent::Revoked | ConnEvent::Closed | ConnEvent::Lagged { .. } => 16,
+            e => format!("{e:?}").len(),
         }
     }
 }
@@ -176,6 +163,9 @@ pub struct StagedFile {
 
 /// One chunk of a staged file (`STAGE_FILE_CHUNK_BYTES`).
 pub const STAGE_FILE_CHUNK_BYTES: usize = 512 * 1024;
+/// The chunk sizes a computer may ask for: from 4 KiB to what, as base64 in its request, fits one 1 MiB link frame.
+const STAGE_CHUNK_MIN: usize = 4 * 1024;
+const STAGE_CHUNK_MAX: usize = 768 * 1024 - 4096;
 /// One file at most (`STAGE_FILE_MAX_BYTES`).
 pub const STAGE_FILE_MAX_BYTES: usize = 50 * 1024 * 1024;
 /// One picture at most (`STAGE_IMAGE_MAX_BYTES`: the desktop's line cap less its headroom, as bytes).
@@ -405,6 +395,10 @@ impl Connection {
     #[doc(hidden)]
     pub fn tracked_cards(&self) -> usize {
         self.inner.tracked_cards()
+    }
+    #[doc(hidden)]
+    pub fn queued_event_bytes(&self) -> usize {
+        self.inner.events.q.lock().unwrap().bytes
     }
 }
 
@@ -974,8 +968,29 @@ impl Inner {
     /// request's own fields (a file's name, a picture's type). Each answer must hold strictly more bytes than the last
     /// and no more than were sent, in no more rounds than there are chunks; otherwise, or when the caller stops waiting,
     /// the upload is dropped at the computer.
-    async fn upload(self: &Arc<Self>, method: &'static str, session: &str, mut first: serde_json::Map<String, Value>, data: &[u8], max: usize) -> Result<Value, CoreError> {
+    /// The chunk size and the most a conversation takes, as its composer offers them (`session.composerOffers`: `files`
+    /// or `pictureChunks`). An engine without that door gets the protocol's 512 KiB; a size outside 4 KiB to what fits
+    /// one link frame is refused.
+    async fn limits_for(&self, session: &str, key: &str, local_max: usize) -> Result<(usize, usize), CoreError> {
+        let offers = match self.call("session.composerOffers", json!({ "id": session })).await {
+            Ok(r) => r,
+            Err(CoreError::Rpc { code: -32601 | -32010, .. }) => return Ok((STAGE_FILE_CHUNK_BYTES, local_max)),
+            Err(e) => return Err(e),
+        };
+        let Some(lim) = offers.get(key).filter(|l| l.is_object()) else {
+            return Err(CoreError::refused(if key == "files" { "this conversation takes no files" } else { "this conversation takes no pictures" }));
+        };
+        let chunk = lim.get("chunkBytes").and_then(Value::as_u64).map(|n| n as usize);
+        let Some(chunk) = chunk.filter(|c| (STAGE_CHUNK_MIN..=STAGE_CHUNK_MAX).contains(c)) else {
+            return Err(CoreError::protocol("the computer's chunk size isn't one the link carries"));
+        };
+        let max = lim.get("maxBytes").and_then(Value::as_u64).map_or(local_max, |m| (m as usize).min(local_max));
+        Ok((chunk, max))
+    }
+
+    async fn upload(self: &Arc<Self>, method: &'static str, session: &str, mut first: serde_json::Map<String, Value>, data: &[u8], limits: (usize, usize)) -> Result<Value, CoreError> {
         use base64::Engine;
+        let (chunk_bytes, max) = limits;
         if data.is_empty() || data.len() > max {
             return Err(CoreError::refused(format!("that is more than the computer takes ({} MiB at most)", max >> 20)));
         }
@@ -998,7 +1013,7 @@ impl Inner {
             }
         }
         let mut guard = Drop_ { inner: self.clone(), method, session: session.to_string(), upload: None };
-        let chunk_of = |at: usize| &data[at..data.len().min(at + STAGE_FILE_CHUNK_BYTES)];
+        let chunk_of = |at: usize| &data[at..data.len().min(at + chunk_bytes)];
         first.insert("id".into(), json!(session));
         first.insert("size".into(), json!(data.len()));
         first.insert("dataBase64".into(), json!(b64(chunk_of(0))));
@@ -1007,7 +1022,7 @@ impl Inner {
         guard.upload = Some(upload.clone());
         let mut sent = chunk_of(0).len();
         let mut held = 0usize;
-        let rounds = data.len().div_ceil(STAGE_FILE_CHUNK_BYTES);
+        let rounds = data.len().div_ceil(chunk_bytes);
         for _ in 0..rounds {
             let got = r.get("received").and_then(Value::as_u64).map(|n| n as usize);
             if !got.is_some_and(|g| g > held && g <= sent) {
@@ -1035,7 +1050,8 @@ impl Inner {
     async fn stage_file(self: &Arc<Self>, session: &str, name: &str, data: &[u8]) -> Result<StagedFile, CoreError> {
         let mut first = serde_json::Map::new();
         first.insert("name".into(), json!(name));
-        let r = self.upload("session.stageFile", session, first, data, STAGE_FILE_MAX_BYTES).await?;
+        let limits = self.limits_for(session, "files", STAGE_FILE_MAX_BYTES).await?;
+        let r = self.upload("session.stageFile", session, first, data, limits).await?;
         let path = protocol_path(r.get("path"))?;
         let given = r.get("name").and_then(Value::as_str).unwrap_or(name);
         Ok(StagedFile { computers_name: computers_words(given, 256), path })
@@ -1045,7 +1061,8 @@ impl Inner {
     async fn stage_picture(self: &Arc<Self>, session: &str, media_type: &str, data: &[u8]) -> Result<String, CoreError> {
         let mut first = serde_json::Map::new();
         first.insert("mediaType".into(), json!(media_type));
-        let r = self.upload("session.stagePicture", session, first, data, STAGE_PICTURE_MAX_BYTES).await?;
+        let limits = self.limits_for(session, "pictureChunks", STAGE_PICTURE_MAX_BYTES).await?;
+        let r = self.upload("session.stagePicture", session, first, data, limits).await?;
         protocol_path(r.get("path"))
     }
 

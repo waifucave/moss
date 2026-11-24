@@ -155,7 +155,19 @@ fn the_phone_core_builds_the_engines_bytes() {
     }
 
     // The device-name rule (devices/names.ts): the same verdict on every edge case, and the same cleaned name.
+    // The phone's rule refuses a joiner beside ASCII (the protocol's `joinerInName`); an engine tree from before it still
+    // takes one. Until that tree has the rule, those names are the known difference, checked as such.
+    let engine_has_joiner_rule = v["joinerInName"].as_bool().unwrap_or(false);
+    let ascii_joiner = |n: &str| {
+        let c: Vec<char> = n.chars().collect();
+        (0..c.len()).any(|i| moss_phone_core::visible::is_joiner(c[i]) && moss_phone_core::visible::joiner_between_visible(&c, i) && !moss_phone_core::visible::joiner_in_name(&c, i))
+    };
     for n in v["names"].as_array().unwrap() {
+        let name = n["name"].as_str().unwrap();
+        if !engine_has_joiner_rule && ascii_joiner(name) {
+            assert!(n["ok"].as_bool().unwrap() && !moss_phone_core::names::clean_name(name), "the known difference on {name:?}");
+            continue;
+        }
         let name = n["name"].as_str().unwrap();
         assert_eq!(moss_phone_core::names::clean_name(name), n["ok"].as_bool().unwrap(), "name {name:?}");
     }

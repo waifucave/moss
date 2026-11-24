@@ -121,7 +121,8 @@ pub fn safe_device_name(raw: &str, fallback: &str) -> String {
 /// crosses the FFI from a computer's own text goes through this, in a field named as the computer's. Never for a
 /// protocol value the phone names or signs (a path, an id): those are refused when unclean, not rewritten.
 pub fn computers_words(raw: &str, max: usize) -> String {
-    sealed_escape(raw, false).chars().take(max).collect()
+    // Cut before escaping, so an escape is never cut in half.
+    sealed_escape(&raw.chars().take(max).collect::<String>(), false)
 }
 
 #[cfg(test)]

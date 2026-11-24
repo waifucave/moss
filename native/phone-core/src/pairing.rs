@@ -255,6 +255,24 @@ struct Agreed {
     group: String,
     pair_key: Ed25519Key,
     group_key: Ed25519Key,
+    /// Counts this pairing as open in its core until it is confirmed, rejected or dropped.
+    _open: OpenPairing,
+}
+
+/// One open pairing in a core's count (`PhoneCore::forget_computer` won't renew the identity under it).
+pub struct OpenPairing(Arc<std::sync::atomic::AtomicUsize>);
+
+impl OpenPairing {
+    pub fn new(count: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        OpenPairing(count)
+    }
+}
+
+impl Drop for OpenPairing {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 /// A pairing in progress, showing its four words until the person confirms or rejects them.
@@ -299,7 +317,7 @@ fn reason_of(m: &Cbor) -> String {
 }
 
 /// Dials the computer the QR names and runs the exchange up to the words.
-pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dyn SecretStorage>, qr: &str, app: PhoneApp) -> Result<Pairing, CoreError> {
+pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dyn SecretStorage>, qr: &str, app: PhoneApp, open: OpenPairing) -> Result<Pairing, CoreError> {
     let offer = parse_qr(qr)?;
     if !(offer.expires_at > now_ms()) {
         return Err(CoreError::refused("the pairing has expired"));
@@ -400,7 +418,7 @@ pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dy
         app,
         storage,
         identity,
-        state: Mutex::new(Some(Agreed { conn, send, peer_msg, offer, host, transcript, t, group, pair_key, group_key })),
+        state: Mutex::new(Some(Agreed { conn, send, peer_msg, offer, host, transcript, t, group, pair_key, group_key, _open: open })),
     })
 }
 
@@ -452,6 +470,11 @@ impl Pairing {
 }
 
 async fn confirm(mut s: Agreed, storage: Arc<dyn SecretStorage>, identity: Arc<Identity>, app: PhoneApp) -> Result<PairedComputer, CoreError> {
+    // The keys this pairing began with must still be the phone's: a pairing never completes under keys since replaced.
+    let stored = storage.load(crate::identity::DEVICE_KEY.into())?.map(zeroize::Zeroizing::new);
+    if stored.as_deref().map(Vec::as_slice) != Some(identity.device.seed().as_slice()) {
+        return Err(CoreError::refused("this phone's identity changed since the pairing began: pair again"));
+    }
     let pair_secret = Zeroizing::new(sas::derive_pair_secret(&s.offer.secret, &s.transcript));
     let pair_id = b64url(&sas::derive_pair_id(&*pair_secret));
     // The phone is the joiner: the computer's pair key first.

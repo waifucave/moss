@@ -43,7 +43,7 @@ const NAMES = [
   "Studio", "Kim's phone", "a", "x".repeat(63), "x".repeat(64), "😀".repeat(31) + "x", "😀".repeat(32), "", " ", "   ",
   "a\u202Eb", "a\u200Bb", "\u00ADab", "a\u2028b", "a\u2029b", "a\u0007b", "\u2800", "\u3164", "a\uFFA0", "a\u115F", "\u17B4a",
   "\u0301a", "a\u0301", "a\u0301\u0301\u0301\u0301", "a\u0301\u0301\u0301\u0301\u0301", " \u0301", "a \u0301",
-  "👩\u200D💻", "👩🏽\u200D💻", "🏳\uFE0F\u200D🌈", "می\u200Cخواهم", "\u200Da", "a\u200D", "a\u200D\u200Db", "a \u200Db", "a\u200D b",
+  "👩\u200D💻", "👩🏽\u200D💻", "🏳\uFE0F\u200D🌈", "می\u200Cخواهم", "\u200Da", "a\u200D", "a\u200D\u200Db", "a \u200Db", "a\u200D b", "a\u200Db", "Stu\u200Cdio",
   "🏴\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F", "🇯🇵", "a\u00A0b", "\u00A0", "\u3000x",
   "Ⅻ", "ﬁ", "\uFFF9a", "a\u180Eb", "\uFEFFa", "\u061C", "e\u0308\u0332", "\u{1F600}\u{1F3FB}", "ab\u{E0001}",
 ];
@@ -122,6 +122,8 @@ console.log(JSON.stringify({
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
   names: NAMES.map((n) => ({ name: n, ok: nameProblem(n) === null })),
   typed: TYPED,
+  // Whether this tree's name rule already refuses a joiner beside ASCII (visible-text.ts's joinerInName).
+  joinerInName: typeof protocol.joinerInName === "function",
   visible: typeof protocol.sealedEscape === "function"
     ? VISIBLE_CASES.map((t) => ({ text: t, plain: protocol.sealedEscape(t), name: protocol.sealedEscape(t, true), nameOk: nameProblem(t) === null }))
     : null,
