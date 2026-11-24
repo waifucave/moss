@@ -172,6 +172,7 @@ export function SidebarEntry({ props }: { props: SidebarEntryProps }) {
       account={account}
       onNew={() => go({ kind: "new" })}
       onNewSession={() => go({ kind: "new" })}
+      {...(core ? { onDeleteSession: (id: string) => void (core.call as (m: string, p: unknown) => Promise<unknown>)("session.delete", { id }).catch(() => undefined) } : {})}
       onOpenSettings={() => go({ kind: "settings" })}
       onPlugins={() => go({ kind: "plugins" })}
       collapsed={collapsed}

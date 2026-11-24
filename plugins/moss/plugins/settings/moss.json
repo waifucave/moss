@@ -20,7 +20,8 @@
     "app.settings",
     "tools.permissions",
     "plugins.manage",
-    "account.read"
+    "account.read",
+    "data.delete"
   ],
   "settings": {
     "appearance.textSize": {

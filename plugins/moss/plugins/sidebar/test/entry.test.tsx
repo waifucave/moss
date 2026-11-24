@@ -19,7 +19,7 @@ const SESSIONS = [
 ];
 
 async function mount(route: ShellRoute = { route: "agent", params: { session: "code-1" } }, opts: { entries?: Parameters<typeof runtimeWith>[0]["entries"]; component?: EntryComponent; onWatch?: (listener: (s: SessionView) => void) => void } = {}) {
-  const core = fakeCore({ "account.status": () => ({ signedIn: true, user: { id: "u1", name: "Sam" } }) });
+  const core = fakeCore({ "account.status": () => ({ signedIn: true, user: { id: "u1", name: "Sam" } }), "session.delete": () => ({ applied: false, card: "card-del" }) });
   const api = fakeApi({
     sessions: { list: async () => SESSIONS, get: async (id) => SESSIONS.find((x) => x.id === id)!, watch: (l) => { opts.onWatch?.(l); return () => undefined; }, history: async () => ({ events: [], hasMore: false }), follow: () => () => undefined },
     computers: { list: async () => [computerView("Studio", { device: "d1", level: "ask", link: "self", isMain: true })] },
@@ -41,7 +41,7 @@ async function mount(route: ShellRoute = { route: "agent", params: { session: "c
     </TestLayer>,
   );
   await act(() => settle());
-  return { routes };
+  return { routes, core };
 }
 
 describe("the sidebar entry", () => {
@@ -92,6 +92,17 @@ describe("the sidebar entry", () => {
     expect(screen.getByText("Broke")).toBeTruthy();
   });
 
+
+  test("deleting a session (the deletion lane): its row's button asks the engine once, by id; the engine's card decides", async () => {
+    const { core, routes } = await mount();
+    const button = document.querySelector("[data-delete-session=agent-1]") as HTMLButtonElement;
+    expect(button.getAttribute("aria-label")).toBe("Delete this session…");
+    fireEvent.click(button);
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "session.delete").map((c) => c.params)).toEqual([{ id: "agent-1" }]);
+    // The press asked; it didn't open the session.
+    expect(routes).toEqual([]);
+  });
 
   test("no bot and no switch; a bot's coding task is a code session under its folder; the account, New and the apps", async () => {
     const { routes } = await mount();

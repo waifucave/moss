@@ -27,6 +27,14 @@ export const S = {
   setupGuideDetail: "Add a model provider and pick your default model, step by step.",
   setupGuideOpen: "Open the setup guide",
   setupGuideFailed: "The setup guide didn't open. Try again.",
+  // The deletion lane: each asks, and MOSS's own card names what goes and what stays before anything is deleted.
+  deleteAccount: "Delete account",
+  deleteAccountDetail: "Deletes your account at waifucave for good, and this computer's sign-in. Your conversations and files stay. MOSS asks you on its own card first.",
+  deleteAccountButton: "Delete account…",
+  eraseEverything: "Erase everything",
+  eraseEverythingDetail: "Deletes every conversation, bot, memory, setting, plugin and log MOSS keeps on this computer, and its saved keys. The apps and your projects stay. MOSS asks you on its own card first, then quits and erases.",
+  eraseEverythingButton: "Erase everything…",
+  deletionFailed: "MOSS didn't take the ask. Try again.",
   // Devices.
   devices: "Paired devices",
   devicesDetail: "Every device sees every bot. The main computer runs them. Removing a device, adding one or choosing another main computer asks you on a card first.",

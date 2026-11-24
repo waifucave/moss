@@ -14,7 +14,8 @@
   "capabilities": [
     "computers.read",
     "sessions.read",
-    "account.read"
+    "account.read",
+    "sessions.delete"
   ],
   "contributes": {
     "ui": [

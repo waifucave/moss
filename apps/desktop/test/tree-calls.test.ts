@@ -473,6 +473,11 @@ const EXPECTED: Record<string, { needs: string[]; /** Every one of these as well
   ...Object.fromEntries(DEVICE_CALLS.map((m) => [m, { needs: ["devices.manage"], gesture: true }])),
   "device.relay.get": { needs: ["devices.relay"], gesture: false },
   "device.relay.set": { needs: ["devices.relay"], gesture: true },
+  // The deletion lane: each a press that asks; the engine's sealed card decides.
+  "session.delete": { needs: ["sessions.delete"], gesture: true },
+  "account.delete": { needs: ["data.delete"], gesture: true },
+  "home.erase": { needs: ["data.delete"], gesture: true },
+  "bot.delete": { needs: ["bots.edit"], gesture: true },
   "archive.history": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "archive.list": { needs: [], all: ["sessions.read", "conversation.read"], gesture: false },
   "models.list": { needs: ["sessions.read", "bots.read"], gesture: false },
@@ -551,6 +556,11 @@ const WORST: Record<string, Worst> = {
   "device.relay.set": "user's permission press", // which relay the links use: a relay sees which devices are online, never what they say; the person's own press, https only, applied at once
   "device.pair.cancel": "harmless change", // ends a pairing under way
   "device.revoke": "sealed card", // removing a device: the engine raises the sealed card, and `applied: false` comes back until the user answers it
+  // The deletion lane: each ask raises the engine's sealed card (naming what goes and what stays); `applied: false` comes back until the user answers it.
+  "session.delete": "sealed card",
+  "account.delete": "sealed card",
+  "home.erase": "sealed card",
+  "bot.delete": "sealed card",
   "tool.setPermission": "user's permission press", // always allow, ask or always block: the user's own press in Settings, never another part
   "tool.setAvailability": "user's permission press", // off, on demand or always on: what a model is offered, the user's own press in Settings
   "tool.takeBackRule": "user's permission press", // takes back a card's Always allow for one bot
@@ -689,12 +699,12 @@ describe("the door, table by table: what each entry needs, with what press", () 
   test("no test or table names a bundled id to allow a call: the bundled parts pass by the capabilities their manifests list", async () => {
     // Every call each bundled part makes today, from its own manifest's capabilities.
     const makes: Record<string, string[]> = {
-      "moss/settings": ["ui.settings", "ui.set", "plugin.setEnabled", "plugin.logs", "plugin.list", "plugin.ui", "account.status", "tool.permissions", "tool.setPermission", "tool.setAvailability", "point.active.list", "point.active.set", "computer.list"],
+      "moss/settings": ["ui.settings", "ui.set", "plugin.setEnabled", "plugin.logs", "plugin.list", "plugin.ui", "account.status", "tool.permissions", "tool.setPermission", "tool.setAvailability", "point.active.list", "point.active.set", "computer.list", "account.delete", "home.erase"],
       [PLUGINS_PART]: ["plugin.install", "plugin.remove", "plugin.get", "plugin.settings.get", "plugin.settings.set", "ui.pick", "ui.secret", "plugin.logs", "notify.setMuted", "computer.list", "command.list"],
       [BOT_EDITOR_PART]: ["bot.setUserLayer", "models.list", "plugin.list", "plugin.ui", "ui.secret", "ui.settings"],
       [CONVERSATION_PART]: ["archive.history", "session.resend", "conversation.messageAction"],
       [SHELL_PART]: ["account.status", "computer.list", "agent.backends", "agent.start", "ui.pick"],
-      "moss/sidebar": ["account.status", "computer.list"],
+      "moss/sidebar": ["account.status", "computer.list", "session.delete"],
       "moss/panel": ["session.outputs", "session.context", "session.connectors", "computer.list"],
       "moss/panel-diff": ["session.diff"],
       "moss/archive": ["archive.list", "archive.history"],

@@ -412,6 +412,20 @@ function Page({ props }: { props: SettingsModalProps }) {
               </button>
             </Row>
           ) : null}
+          {props.onDeleteAccount ? (
+            <Row label={S.deleteAccount} detail={S.deleteAccountDetail}>
+              <button type="button" className="cl-settings__button" data-delete-account onClick={props.onDeleteAccount}>
+                {S.deleteAccountButton}
+              </button>
+            </Row>
+          ) : null}
+          {props.onEraseEverything ? (
+            <Row label={S.eraseEverything} detail={S.eraseEverythingDetail}>
+              <button type="button" className="cl-settings__button" data-erase-everything onClick={props.onEraseEverything}>
+                {S.eraseEverythingButton}
+              </button>
+            </Row>
+          ) : null}
         </>
       );
     case "appearance":

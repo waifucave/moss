@@ -117,6 +117,10 @@ export interface SettingsModalProps {
   onOpenLanguage: () => void;
   /** Opens the setup guide again (Account's "Setup guide" row); none: no row. */
   onOpenSetup?: () => void;
+  /** The deletion lane: asks the engine to delete the account (shown when signed in) or to erase everything MOSS keeps
+   *  here. Each ends on the engine's sealed card, which names what goes and what stays; none: no row. */
+  onDeleteAccount?: () => void;
+  onEraseEverything?: () => void;
   onOpenPluginManager?: () => void;
   /** A plugin's logs (spec §5.8). */
   onOpenPluginLogs?: (id: string) => void;

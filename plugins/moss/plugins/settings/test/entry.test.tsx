@@ -55,6 +55,9 @@ async function mount(params: { section?: string; item?: string } = {}, extra: { 
     "device.relay.get": () => relayNow,
     "device.relay.set": (p) => { if (relaySetFails) throw new Error("refused"); relayNow = p as typeof relayNow; return relayNow; },
     "app.openSetup": () => { if (setupFails) throw new Error("refused"); return { opened: true }; },
+    // The deletion lane: from a page each is the engine's card.
+    "account.delete": () => ({ applied: false, card: "card-5" }),
+    "home.erase": () => ({ applied: false, card: "card-6" }),
   });
   const api = fakeApi({
     ...(extra.seed ? { settings: extra.seed } : {}),
@@ -383,6 +386,20 @@ describe("settings on the runtime", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tarot" }));
     await act(() => settle()); // the section's spot resolves through the layer, as in the app
     expect(screen.getByText("Tarot settings")).toBeTruthy();
+  });
+
+  test("Account: Delete account and Erase everything each ask the engine once on the person's press (its card decides), and Settings steps aside", async () => {
+    const { core, closed } = await mount({ section: "account" });
+    expect(core.calls.some((c) => c.method === "account.delete" || c.method === "home.erase")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Delete account…" }));
+    await act(() => settle());
+    expect(core.calls.filter((c) => c.method === "account.delete")).toHaveLength(1);
+    expect(closed()).toBe(1);
+    cleanup();
+    const again = await mount({ section: "account" });
+    fireEvent.click(screen.getByRole("button", { name: "Erase everything…" }));
+    await act(() => settle());
+    expect(again.core.calls.filter((c) => c.method === "home.erase")).toHaveLength(1);
   });
 
   test("Account has a way back to the setup guide (the app menu's item is macOS only): one press asks the app to open it, Settings steps aside; a refusal says so and stays", async () => {

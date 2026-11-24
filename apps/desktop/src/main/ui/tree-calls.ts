@@ -46,6 +46,8 @@ export const COMMANDS_RUN = "commands.run";
 export const USER_SEND = "user.send";
 export const SESSIONS_START = "sessions.start";
 export const SESSIONS_READ = "sessions.read";
+export const SESSIONS_DELETE = "sessions.delete";
+export const DATA_DELETE = "data.delete";
 
 export interface TreeCall {
   disposition: Disposition;
@@ -189,6 +191,13 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   // (main's connection calls as the user), so this door is the gate.
   "device.relay.get": read(DEVICES_RELAY),
   "device.relay.set": press(DEVICES_RELAY),
+  // The deletion lane: asking to delete is the person's own press in the frame; the deletion itself is the engine's
+  // sealed card (it names what goes and what stays), which no part can answer. A code session (`sessions.delete`); the
+  // account and everything MOSS keeps here (`data.delete`); a bot (`bots.edit`, as its other changes).
+  "session.delete": press(SESSIONS_DELETE),
+  "account.delete": press(DATA_DELETE),
+  "home.erase": press(DATA_DELETE),
+  "bot.delete": press(BOTS_EDIT),
   "main.set": { disposition: "card" },
   // Not served by the daemon.
   "models.catalog": { disposition: "unserved" },

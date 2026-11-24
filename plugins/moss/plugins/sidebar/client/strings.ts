@@ -10,6 +10,7 @@ export const S = {
   /** A session with no title yet (the canvas's and the archive's wording): never its raw id. */
   untitled: "Untitled session",
   newSessionIn: (project: string) => `New session in ${project}`,
+  deleteSession: "Delete this session…",
   search: "Search",
   outputs: "Outputs",
   plugins: "Plugins",

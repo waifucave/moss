@@ -88,6 +88,11 @@ function SessionRow({ session, props }: { session: SidebarSession; props: Sideba
           <span className="cl-sidebar__dot" data-status={session.status} role="img" aria-label={S.agentStatus[session.status]} title={S.agentStatus[session.status]} />
         )}
       </button>
+      {props.onDeleteSession && (
+        <button type="button" className="cl-sidebar__close" data-delete-session={session.id} aria-label={S.deleteSession} title={S.deleteSession} onClick={() => props.onDeleteSession?.(session.id)}>
+          <IconClose />
+        </button>
+      )}
       {finished && props.onCloseAgent && (
         <button type="button" className="cl-sidebar__close" aria-label={S.close(session.title)} title={S.close(session.title)} onClick={() => props.onCloseAgent?.(session.id)}>
           <IconClose />

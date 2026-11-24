@@ -116,6 +116,8 @@ export interface SidebarProps {
   onMore?: () => void;
   /** A new session in one project. */
   onNewSession?: (projectId: string) => void;
+  /** The deletion lane: asks the engine to delete a session; its sealed card names what goes and decides. None: no button. */
+  onDeleteSession?: (sessionId: string) => void;
   /** Close a finished agent's or session's tab. */
   onCloseAgent?: (id: string) => void;
   /** Projects drawn folded at first. */
