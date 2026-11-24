@@ -264,7 +264,7 @@ impl Inner {
             self.events.push(ConnEvent::Connecting { attempt });
             let began = Instant::now();
             let end = self.clone().session_once().await;
-            let _ = self.session.send(None);
+            let _ = self.session.send_replace(None);
             match end {
                 End::Revoked => {
                     self.events.push(ConnEvent::Revoked);
@@ -391,7 +391,7 @@ impl Inner {
     }
 
     async fn serve(self: Arc<Self>, s: Arc<Session>) -> End {
-        let _ = self.session.send(Some(s.clone()));
+        let _ = self.session.send_replace(Some(s.clone()));
         self.events.push(ConnEvent::Up);
         let why = s.conn.closed().await;
         s.fail_all("the link dropped");
