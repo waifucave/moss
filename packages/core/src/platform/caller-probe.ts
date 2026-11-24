@@ -39,6 +39,7 @@ function kernel32(): Lib | null {
     GetNamedPipeClientProcessId: { args: ["u64", "ptr"], returns: "i32" },
     GetFileInformationByHandleEx: { args: ["u64", "i32", "ptr", "u32"], returns: "i32" },
     OpenProcess: { args: ["u32", "i32", "u32"], returns: "u64" },
+    GetProcessTimes: { args: ["u64", "ptr", "ptr", "ptr", "ptr"], returns: "i32" },
     CloseHandle: { args: ["u64"], returns: "i32" },
   });
 }
@@ -129,6 +130,14 @@ export function peerPid(fd: number, os: DaemonPlatform = currentOs()): number | 
   return (k.GetNamedPipeClientProcessId!(BigInt(fd), ptr(out)) as number) !== 0 && out[0]! > 0 ? out[0]! : null;
 }
 
+/** When a process was created (FILETIME ticks), or null. */
+function createdAt(h: bigint): bigint | null {
+  const k = kernel32();
+  if (!k) return null;
+  const [c, e, kt, u] = [new BigUint64Array(1), new BigUint64Array(1), new BigUint64Array(1), new BigUint64Array(1)];
+  return (k.GetProcessTimes!(h, ptr(c), ptr(e), ptr(kt), ptr(u)) as number) !== 0 ? c[0]! : null;
+}
+
 /** A process's parent, or `null` (gone, or the OS wouldn't say). */
 export function parentPid(pid: number, os: DaemonPlatform = currentOs()): number | null {
   if (os === "darwin") {
@@ -153,7 +162,13 @@ export function parentPid(pid: number, os: DaemonPlatform = currentOs()): number
     const info = Buffer.alloc(48), ret = new Uint32Array(1); // PROCESS_BASIC_INFORMATION
     if ((n.NtQueryInformationProcess!(h, 0, ptr(info), 48, ptr(ret)) as number) !== 0) return null;
     const ppid = Number(info.readBigUInt64LE(40)); // InheritedFromUniqueProcessId
-    return ppid > 0 ? ppid : null;
+    if (!(ppid > 0)) return null;
+    // A recorded parent is a parent only if it was created before its child: Windows keeps the number of a parent that has
+    // exited, and a later process may reuse it. Without this, every process whose recorded parent died (the system's own,
+    // the runner's) climbs into whichever new process took that number, a daemon's child among them (measured on a runner:
+    // the harness counted as the daemon's own child, and the app's hello was refused).
+    const born = createdAt(h), parentBorn = withProcess(ppid, (ph) => createdAt(ph));
+    return born !== null && parentBorn !== null && parentBorn <= born ? ppid : null;
   });
 }
 
