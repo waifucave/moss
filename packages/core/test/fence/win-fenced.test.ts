@@ -614,7 +614,7 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     expect(s.runs[0]!.signal!.aborted).toBe(true);
     for (let i = 0; i < 50 && wakes.length === 0; i++) await Bun.sleep(10);
     expect(wakes[0]).toMatchObject({ task: ids[0], status: "stopped" });
-    expect(windowsBackgroundOf("bg-b")).toEqual([ids[1]]);
+    expect(windowsBackgroundOf("bg-b")).toEqual([ids[1]!]);
     await stopWindowsBackground("bg-b", ids[1]!);
   }, 30_000);
   test("a refusal that comes at once is the call's answer; never with the escape flag; never without a way to tell its end", async () => {
@@ -625,5 +625,30 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     expect(r).toMatchObject({ isError: true, text: expect.stringContaining("Bash isn't set up") });
     const esc = await t.Bash!.run({ command: "x", run_in_background: true, dangerouslyDisableSandbox: true });
     expect(esc).toMatchObject({ isError: true, text: expect.stringContaining("runs in the foreground") });
+  });
+});
+
+describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
+  test("a fenced path made after the grant is excluded by a fresh grant before the next command; nothing changes when none is", async () => {
+    const m = machine();
+    const s = winFencedSpawner({ fence: m.fence, deps: m.deps, grantAhead: false });
+    const grants = () => m.execs.filter((a) => a[1] === "profile" && a[2] === "grant");
+    const fresh = () => { m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = ""; };
+    fresh();
+    await s.run(runOf(m.home));
+    const first = grants().length;
+    expect(first).toBeGreaterThan(0);
+    fresh();
+    await s.run(runOf(m.home));
+    expect(grants().length).toBe(first); // nothing new: no grant
+    // A place the fence names, made now (say a new key store in the home).
+    const candidate = profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!;
+    expect(candidate).toBeDefined();
+    mkdirSync(candidate, { recursive: true });
+    fresh();
+    await s.run(runOf(m.home));
+    const again = grants();
+    expect(again.length).toBe(first + 1);
+    expect(again[again.length - 1]).toContain(candidate);
   });
 });

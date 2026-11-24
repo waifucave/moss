@@ -41,7 +41,8 @@
 //  8. Reads: the user's profile through srt-win's profile read grant (`grantProfile`), less every `denyRead`. The
 //     grant's exclusions are added to the ones in force, never replacing another engine's (another MOSS home of the
 //     same Windows user); a per-command read deny is dropped only when the grant IN FORCE, read back at that command
-//     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`).
+//     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`). 8b: when the fenced set
+//     gains a path that exists, the grant is made again with it before a command, between commands (`refreshExcludes`).
 //  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
@@ -506,6 +507,10 @@ export function profileExcludeCandidates(fence: Pick<MossFence, "policy" | "cont
 /** The profile read grant, by launcher and MOSS home: made once per process for each home (`grantProfile`), again
  *  after one that failed. */
 const profileGrants = new Map<string, Promise<string | null>>();
+/** Rule 8b: this process's commands past their exclusions' check and not yet ended, every spawner counted. */
+let commandsActive = 0;
+/** The exclusions the last grant this process made succeeded with, by the same key (rule 8b). */
+const grantedExcludes = new Map<string, string[]>();
 
 /** The literal paths the profile read grant in force excludes, from `srt-win profile status` (its `exclusions`: every
  *  protected path, built-in and added, of whichever run made the grant last), or [] when it can't be read or a grant
@@ -656,12 +661,33 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         if (again.some((p) => !excludes.some((e) => fold(e) === fold(p)))) { const r2 = await grant(again); if (r2.code === 0) excludes = again; else r = r2; }
       }
       const took = `${Math.round((Date.now() - started) / 1000)} s`;
-      if (r.code === 0) return null;
+      if (r.code === 0) { grantedExcludes.set(grantKey, excludes); return null; }
       profileGrants.delete(grantKey);
       return `the read grant on your profile didn't complete (srt-win exit ${r.code}, ${took}): commands can't read your home folder yet`;
     })();
     profileGrants.set(grantKey, p);
     return p;
+  };
+  // Rule 8b (lane WS7): the exclusions follow the fenced set. A secret folder made after the grant (a new key store, a
+  // new place the fence names) is excluded only by a per-command deny, which costs its stamp and its parent's every
+  // command; so before a command, when no command of this process holds session grants (srt-win refuses a grant while
+  // one does), the exclusions are read again and, when one was added, the grant is made again with them (a run that
+  // changes only what changed). A command that comes meanwhile waits for it; one that fails (another engine's command,
+  // srt-win's exit 24) leaves the grant as it was, and the per-command denies stand in until a later command tries.
+  let refreshing: Promise<void> | null = null;
+  const counted = new Set<FencedRun>();
+  const refreshExcludes = async (): Promise<void> => {
+    if (refreshing !== null) return refreshing;
+    const had = grantedExcludes.get(grantKey);
+    if (had === undefined || heldGrants.inFlight > 0 || plansInFlight.size > 0 || commandsActive > 0) return;
+    const now = profileExcludes();
+    if (!now.some((p) => !had.some((e) => fold(e) === fold(p)))) return;
+    refreshing = (async () => {
+      const merged = uniq([...had, ...now]);
+      const r = await deps.exec([deps.launcher, "profile", "grant", "--quiet", "--json", ...merged.flatMap((p) => ["--exclude", p])], { timeoutMs: 1_800_000 });
+      if (r.code === 0) grantedExcludes.set(grantKey, merged);
+    })().finally(() => { refreshing = null; });
+    return refreshing;
   };
   // The read grant is made when the spawner is, off any command's path (its first run walks the profile: ~18 s on the
   // runner); a command that comes before it ends waits for it, as before.
@@ -689,11 +715,22 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   };
   return {
     get available() { return !("why" in install()); },
+    // Rule 8b's count: every command of this process from its exclusions' check to its end, so a fresh grant waits
+    // until none is between that check and its own session grant.
     run: async (r: FencedRun): Promise<FencedRunResult> => {
+      try { return await runOne(r); } finally { if (counted.delete(r)) commandsActive--; }
+    },
+  };
+
+  async function runOne(r: FencedRun): Promise<FencedRunResult> {
+    {
       if (r.signal?.aborted) return { kind: "refused", reason: "cancelled before it started" };
       const got = install();
       if ("why" in got) return refuse(got.why);
       const readNote = await grantProfile();
+      if (readNote === null) await refreshExcludes();
+      commandsActive++;
+      counted.add(r);
       const shell: WinShell = r.shell ?? "bash";
       const exe = shell === "powershell" ? deps.shells.powershell : deps.shells.bash;
       if (exe === null) return refuse(shell === "powershell" ? "Windows PowerShell isn't in System32" : "Git for Windows' bash isn't installed (Program Files\\Git, or this user's Programs\\Git)");
@@ -842,8 +879,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // Rule 9: the principal's profile and hive go now, before another command takes it (the reset task, SYSTEM).
         void deps.exec(runResetTaskArgs(deps.ownerSid!), { timeoutMs: 30_000 });
       }
-    },
-  };
+    }
+  }
 
   /** Rules 2 and 9: lease a pool member no command holds (its `.lock`, an OS lock the reset takes too) whose profile
    *  the reset remade since its last command (`isFreshGeneration`: its `.gen` isn't its `.used`). The generation is
