@@ -41,6 +41,7 @@ import { handler, requireUser, type MethodHandler } from "../rpc/handler";
 import { credentialValueRefusal, removeCredential } from "./credentials";
 import { bundledModelProviderOf, modelPluginSlotFor } from "./model-plugins/keychain-tokens";
 import { installedModelPlugins } from "./model-plugins";
+import { activeCatalog } from "./model-plugins/catalog-source";
 import { MOSS_CREDENTIAL_INVENTORY } from "./keychain";
 import { onCardYes, type CardYesOutput } from "../plugin-host/card-yes";
 import type { OAuthRenewal } from "./model-plugins/oauth-renewal";
@@ -295,6 +296,11 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
         if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
         if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
+        // 2026-11-24: only a LOCAL server is had with no key (the catalog's `local-none`: Ollama, LM Studio, llama.cpp, ...).
+        // A remote service that declares no key entry (uncloseai, whose keyless beta closed: "This endpoint needs an API
+        // key, and key registration is closed") is not a provider the person has; it counts only once a key is set for it.
+        const kinds = activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? [];
+        if (!kinds.includes("local-none")) continue;
         out.add(provider);
       }
       return out;

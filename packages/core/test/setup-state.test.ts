@@ -124,6 +124,14 @@ describe("SetupService", () => {
     expect(s.writes).toEqual([]);
   });
 
+  test("(a'') a default named on a remote provider that takes no key and isn't keyless (uncloseai), in a home with no provider: the guide asks for a provider, never a dead model (2026-11-24)", async () => {
+    const { s, service } = world({ stored: "uncloseai/turboderp/Qwen3.8-27B-exl3" });
+    const st = await service.refresh();
+    expect(st).toMatchObject({ ready: false, missing: ["provider", "model"], signedOut: "uncloseai/turboderp/Qwen3.8-27B-exl3" });
+    expect(service.defaultModel()).toBeUndefined();
+    expect(s.writes).toEqual([]);
+  });
+
   test("(b) a default on a keyless local provider with no keys: ready, no guide, nothing written", async () => {
     const { s, service } = world({ stored: "ollama-local/llama3", keyless: ["ollama-local"] });
     const st = await service.refresh();

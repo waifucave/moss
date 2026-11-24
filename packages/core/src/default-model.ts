@@ -165,7 +165,9 @@ export function settledDefault(stored: string | undefined, read: ProvidersRead, 
 export type SetupMissing = "provider" | "model" | "default-provider";
 
 export function setupMissing(present: ReadonlySet<string>, answer: DefaultAnswer): SetupMissing[] {
-  if (answer.signedOut !== undefined) return ["default-provider"];
+  // A named model whose provider isn't had, in a home with no provider at all (2026-11-24: a fresh home whose only "provider"
+  // was a remote keyless service that now needs a key): the person adds a provider, not "signs in again".
+  if (answer.signedOut !== undefined) return present.size === 0 ? ["provider", "model"] : ["default-provider"];
   if (present.size === 0 && answer.model === undefined) return ["provider", "model"];
   return answer.model === undefined ? ["model"] : [];
 }

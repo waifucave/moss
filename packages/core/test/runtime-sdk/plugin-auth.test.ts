@@ -50,6 +50,22 @@ function world(o: { oauth?: () => OAuthRun; xaiDevice?: Parameters<typeof create
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
+describe("keylessProviders: only a local server is had with no key (2026-11-24)", () => {
+  test("a bundled local provider (local-none) is keyless; a bundled REMOTE one with no key entry (uncloseai, whose keyless beta closed) is not", async () => {
+    const OLLAMA = rec("moss/model-ollama-local", "bundled", { contributes: { models: [{ provider: "ollama-local", endpoint: { protocol: "openai-chat", baseUrl: "http://127.0.0.1:11434/v1" } }] } });
+    const UNCLOSE = rec("moss/model-uncloseai", "bundled", { contributes: { models: [{ provider: "uncloseai", endpoint: { protocol: "openai-chat", baseUrl: "https://hermes.ai.unturf.com/v1" } }] } });
+    const records = new Map([OLLAMA, UNCLOSE].map((r) => [r.id, r]));
+    const auth = createPluginAuth({
+      registry: { get: (id) => records.get(id) }, host: { invoke: async () => undefined as never },
+      secrets: new DaemonStore(), pluginSecrets: new MemorySecretStore(), changed: () => {}, credentialChanged: () => {},
+      modelProviders: () => [{ provider: "ollama-local", pluginId: OLLAMA.id }, { provider: "uncloseai", pluginId: UNCLOSE.id }],
+    });
+    expect([...auth.keylessProviders()]).toEqual(["ollama-local"]);
+    // Neither counts as a provider the person added (a bundled plugin is never "signed in" without a key).
+    expect([...await auth.signedInProviders()]).toEqual([]);
+  });
+});
+
 describe("plugin.auth", () => {
   test("the sign-ins are numbered: the models entries' first, then the manifest's own", () => {
     expect(authEntriesOf(THIRD).map((e) => [e.index, e.provider ?? null, (e.entry as { secret: string }).secret])).toEqual([[0, "acme", "key"], [1, null, "extra"]]);
