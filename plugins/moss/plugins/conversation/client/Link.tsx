@@ -29,7 +29,7 @@ export function Link({ href, onOpenLink, className, title, children }: LinkProps
         }}
         onAuxClick={(e) => e.preventDefault()}
       >
-        {children}
+        <bdi>{children}</bdi>
       </a>
     );
   }
@@ -37,7 +37,7 @@ export function Link({ href, onOpenLink, className, title, children }: LinkProps
   if (url === undefined) {
     return (
       <span className={className} data-blocked="">
-        {children}
+        <bdi>{children}</bdi>
       </span>
     );
   }
@@ -45,7 +45,8 @@ export function Link({ href, onOpenLink, className, title, children }: LinkProps
     e.preventDefault();
     onOpenLink?.(url);
   };
-  // The target is never hidden behind other words: unless the words already say it, its host follows them, muted.
+  // The words are isolated (<bdi>): a bidi override or isolate a model left open in them ends with them, and the host that follows is its own
+  // left-to-right run, so the person reads the real host. The target is never hidden behind other words: unless the words already say it, its host follows them, muted.
   const target = targetOf(url);
   const words = wordsOf(children);
   const showTarget = target !== undefined && !wordsShowTarget(words, url);
@@ -62,9 +63,9 @@ export function Link({ href, onOpenLink, className, title, children }: LinkProps
         if (e.button === 1) onOpenLink?.(url);
       }}
     >
-      {children}
+      <bdi>{children}</bdi>
     </a>
-    {showTarget ? <span className="cl-conv-md__host" data-link-host>{` (${target})`}</span> : null}
+    {showTarget ? <bdi className="cl-conv-md__host" dir="ltr" data-link-host>{` (${target})`}</bdi> : null}
     </>
   );
 }

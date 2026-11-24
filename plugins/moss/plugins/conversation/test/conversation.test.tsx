@@ -218,6 +218,25 @@ describe("user and bot messages", () => {
     expect(onOpenLink).toHaveBeenCalledWith("https://evil.example/login");
   });
 
+  test("a bidi override or isolate left open in a link's words cannot reorder the host beside them", () => {
+    const { container } = renderView({ items: [bot(at(0, 1, 0), "[\u202Ebank.com](https://moc.knab/) then [\u2067open isolate](https://evil.example/x) then [\u2066another](https://other.example/)")] });
+    const hosts = [...container.querySelectorAll("[data-link-host]")];
+    expect(hosts.map((h) => h.textContent)).toEqual([" (moc.knab)", " (evil.example)", " (other.example)"]);
+    for (const h of hosts) {
+      // Its own left-to-right run, apart from whatever the words did.
+      expect(h.tagName).toBe("BDI");
+      expect(h.getAttribute("dir")).toBe("ltr");
+    }
+    // The words are isolated too: an override that never closes ends with them.
+    for (const a of container.querySelectorAll(".cl-conv-md__link")) {
+      expect(a.children.length).toBe(1);
+      expect(a.children[0]!.tagName).toBe("BDI");
+    }
+    // The language label of a code block (model text beside the Copy button) is isolated.
+    const code = renderView({ items: [bot(at(0, 1, 0), "```\u202Esh\nnpm test\n```")] });
+    expect(code.container.querySelector(".cl-conv-code__lang bdi")).not.toBeNull();
+  });
+
   test("one link rule: only absolute http, https and mailto reach the host; footnotes stay inside", () => {
     const onOpenLink = mock((_url: string) => undefined);
     const { container } = renderView({

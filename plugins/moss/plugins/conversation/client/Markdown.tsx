@@ -55,7 +55,7 @@ function components(onOpenLink: MarkdownProps["onOpenLink"], onCopy: MarkdownPro
       return (
         <div className="cl-conv-code">
           <div className="cl-conv-code__bar">
-            <span className="cl-conv-code__lang">{language ?? ""}</span>
+            <span className="cl-conv-code__lang"><bdi>{language ?? ""}</bdi></span>
             <CopyButton text={hastText(code).replace(/\n$/, "")} label={S.copyCode} onCopy={onCopy} />
           </div>
           <pre className="cl-conv-code__pre">{children as ReactNode}</pre>

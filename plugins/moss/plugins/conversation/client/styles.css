@@ -386,6 +386,8 @@
 
 .cl-conv-md a:hover,
 .cl-conv-md__host {
+  unicode-bidi: isolate;
+  direction: ltr;
   color: var(--moss-color-text-muted, var(--moss-color-text-secondary));
   font-size: 0.9em;
   overflow-wrap: anywhere;
