@@ -14,6 +14,7 @@ let package = Package(
             name: "MossPhoneCore",
             dependencies: ["MossPhoneCoreFFI"],
             linkerSettings: [
+                .linkedFramework("Network"),
                 .linkedFramework("SystemConfiguration"),
                 .linkedFramework("Security"),
                 .linkedFramework("CoreFoundation"),
