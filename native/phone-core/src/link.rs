@@ -414,6 +414,7 @@ impl Connection {
     }
     /// Poisons the event queue's and the pending calls' locks (a thread panics holding each), as a panic elsewhere
     /// in the core would.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn poison_for_test(&self) {
         let inner = self.inner.clone();

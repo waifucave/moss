@@ -892,6 +892,35 @@ pub async fn run_command(c: &impl Caller, name: &str) -> Result<(), CoreError> {
 
 const FIELD: usize = 8;
 
+/// An enum's own text: an `Other` holds what the computer sent (escaped, up to about 384 bytes).
+fn kind_size(other: Option<&String>) -> usize {
+    other.map_or(0, String::len) + FIELD
+}
+
+impl BotState {
+    fn size(&self) -> usize {
+        kind_size(if let BotState::Other { value } = self { Some(value) } else { None })
+    }
+}
+
+impl MessageFrom {
+    fn size(&self) -> usize {
+        kind_size(if let MessageFrom::Other { value } = self { Some(value) } else { None })
+    }
+}
+
+impl SessionKind {
+    fn size(&self) -> usize {
+        kind_size(if let SessionKind::Other { value } = self { Some(value) } else { None })
+    }
+}
+
+impl SessionStatus {
+    fn size(&self) -> usize {
+        kind_size(if let SessionStatus::Other { value } = self { Some(value) } else { None })
+    }
+}
+
 fn opt(s: &Option<String>) -> usize {
     s.as_ref().map_or(0, String::len) + FIELD
 }
@@ -899,20 +928,21 @@ fn opt(s: &Option<String>) -> usize {
 impl Bot {
     pub fn size(&self) -> usize {
         let face = self.face.as_ref().map_or(0, |f| opt(&f.shape) + opt(&f.color) + opt(&f.eyes) + opt(&f.temper));
-        self.id.len() + self.name.len() + opt(&self.model) + opt(&self.effort) + face + 64 + opt(&self.computer) + self.main_session.len()
+        self.id.len() + self.name.len() + opt(&self.model) + opt(&self.effort) + face + self.state.as_ref().map_or(FIELD, BotState::size) + opt(&self.computer) + self.main_session.len()
     }
 }
 
 impl BotSummary {
     pub fn size(&self) -> usize {
-        self.id.len() + self.last.as_ref().map_or(0, |l| l.text.len() + 64) + FIELD
+        self.id.len() + self.last.as_ref().map_or(0, |l| l.text.len() + l.from.size() + FIELD) + FIELD
     }
 }
 
 impl SessionRow {
     pub fn size(&self) -> usize {
         self.id.len()
-            + 64
+            + self.kind.size()
+            + self.status.size()
             + opt(&self.bot)
             + opt(&self.parent)
             + self.computer.len()

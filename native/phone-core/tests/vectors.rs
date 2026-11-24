@@ -141,7 +141,7 @@ fn the_phone_core_builds_the_engines_bytes() {
         assert_eq!((q.question.as_str(), q.header.as_deref(), q.placeholder.as_deref()), ("Which database?", Some("Database"), Some("Or name one")));
         assert_eq!(q.options[1].preview.as_deref(), Some("file: app.db"));
     } else {
-        eprintln!("this tree has no session.openQuestions yet: checked in tests/hostile.rs only");
+        panic!("the engine's tree has session.openQuestions: its sample must parse");
     }
     if t["session.composerOffers"].is_object() {
         let c = engine::composer_offers(&t["session.composerOffers"]).unwrap();
