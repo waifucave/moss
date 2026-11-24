@@ -1,6 +1,6 @@
 // What a plugin's page can do about pairing, against two real engines (spec §8, §5.5; the standing ruling that the four words and the
 // confirming are a sealed card the person presses). The page is the worst one: it holds every capability, main hands it a fresh key
-// press on EVERY call, and it calls every method its door names, the layer door's whole list, `card.answer` and `device.pair.confirm`,
+// press on EVERY call (main's door is given every capability; the engine's own layer grant is what its OK card gave), and it calls every method its door names, the layer door's whole list, `card.answer` and `device.pair.confirm`,
 // with the pairing's real id, forged words, the other device's id and a made-up card answer. The page's door is main's
 // `routeCall` (apps/desktop), joined to a real app connection and a real layer connection of the engine.
 //
@@ -8,11 +8,12 @@
 //   * nothing the page is handed, a result, an error or an event, holds the four words, nor does any app connection's event;
 //   * the same page, pressing for the person (the positive control), pairs only through the card, and Remove asks on its own card.
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS, allowedMethods, type WritableSocket } from "@waifucave/moss-protocol";
 import { CAPABILITIES } from "../../plugin-sdk/src/catalogs/capabilities";
+import { PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sdk";
 import { catalogPointDecl } from "../../plugin-sdk/src/catalogs/index";
 import { NEVER, TREE_CALLS, routeCall } from "../../../apps/desktop/src/main/ui/tree-calls";
 import { FileSecretStore } from "../src/auth/secret-store";
@@ -56,8 +57,20 @@ async function rpc(path: string) {
 type Conn = Awaited<ReturnType<typeof rpc>>;
 type Engine = { daemon: RunningDaemon; app: Conn };
 
+/** The page's plugin: a third party, approved by the person's OK card and on, holding what a devices page asks for. */
+const PAGE = "acme-page";
+const GRANTED = ["devices.read", "devices.manage", "approvals"];
+
 async function engine(root: string, name: string, net: MemoryNetwork): Promise<Engine> {
   const home = join(root, name);
+  // The page's plugin on A's home: a folder the engine finds, whose OK card the person presses below.
+  if (name === "Studio") {
+    const folder = join(home, "plugins", PAGE);
+    mkdirSync(join(folder, "client"), { recursive: true });
+    writeFileSync(join(folder, "package.json"), JSON.stringify({ type: "module" }));
+    writeFileSync(join(folder, "client", "index.js"), "export default {};\n");
+    writeFileSync(join(folder, "moss.json"), JSON.stringify({ manifest: 1, id: PAGE, name: "Page", version: "1.0.0", engines: { moss: `^${PLUGIN_API_VERSION}` }, client: { entry: "client/index.js" }, capabilities: GRANTED }));
+  }
   const daemon = await startDaemon({
     home, secrets: new FileSecretStore(join(home, "secrets.json")), agentProvider: null, appPeer: "none",
     links: {
@@ -77,7 +90,15 @@ async function engine(root: string, name: string, net: MemoryNetwork): Promise<E
   const hello = await app.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "app", token: readFileSync(join(home, "run", "app.token"), "utf8"), clientName: "test-app", features: [] });
   expect(hello["error"]).toBeUndefined();
   expect((await app.request("events.subscribe", { areas: ["devices", "approvals"] }))["error"]).toBeUndefined();
-  return { daemon, app };
+  const e = { daemon, app };
+  if (name === "Studio") {
+    const stateOf = async () => ((await app.request("plugin.get", { id: PAGE }))["result"] as { plugin: { state: string } } | undefined)?.plugin.state;
+    await until("the page's plugin found", async () => (await stateOf()) !== undefined);
+    const switched = await ok<{ applied: boolean; card: string }>(app, "plugin.setEnabled", { id: PAGE, enabled: true });
+    await press(e, switched.card);
+    await until("the page's plugin running", async () => (await stateOf()) === "running");
+  }
+  return e;
 }
 
 const ok = async <T>(c: Conn, method: string, params?: unknown): Promise<T> => {
@@ -113,9 +134,14 @@ test("a page calling everything it can reach, with a key press on every call, ad
   expect((await terminal.request("events.subscribe", { areas: ["devices"] }))["error"]).toBeUndefined();
 
   // The page's two doors: A's app connection (main's, for what the table names) and a layer connection of the page's own plugin.
-  const { token } = await ok<{ token: string }>(a.app, "layer.token", { pluginId: "acme/page" });
+  const { token } = await ok<{ token: string }>(a.app, "layer.token", { pluginId: PAGE });
   const layer = await rpc(a.daemon.socketPath);
-  expect((await layer.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "layer", token, pluginId: "acme/page", clientName: "page", features: [] }))["error"]).toBeUndefined();
+  expect((await layer.request(METHODS.hello, { protocolVersion: MOSS_PROTOCOL_VERSION, role: "layer", token, pluginId: PAGE, clientName: "page", features: [] }))["error"]).toBeUndefined();
+  // The page's layer is a plugin with every grant: it hears the devices and the cards' areas.
+  expect((await layer.request("events.subscribe", { areas: ["devices", "approvals"] }))["error"]).toBeUndefined();
+  // ... and its grants are real: what it may read, it reads (so a refusal below is the boundary's, not a missing grant).
+  expect((await layer.request("device.list", {}))["error"]).toBeUndefined();
+  // Main's door is given the worst page: every capability the catalog names, whatever the plugin was granted.
   const capabilities = new Set(CAPABILITIES.map((c) => c.name));
   const seen: string[] = [];
   const logs: string[] = [];
@@ -127,7 +153,7 @@ test("a page calling everything it can reach, with a key press on every call, ad
     return r["result"];
   };
   const page = (method: string, params: unknown): Promise<unknown> => routeCall({
-    caller: { windowId: 1, pluginId: "acme/page", capabilities },
+    caller: { windowId: 1, pluginId: PAGE, capabilities },
     method, params,
     takeGesture: () => true,
     request: (m, p) => ask(a.app, m, p),
@@ -183,8 +209,13 @@ test("a page calling everything it can reach, with a key press on every call, ad
   const forbidden = (text: string): string[] => [phrase, ...words.map((w) => `"${w}"`)].filter((w) => text.includes(w));
   expect(forbidden(seen.join("\n"))).toEqual([]);
   expect(forbidden(logs.join("\n"))).toEqual([]);
-  // The page's layer hears nothing of them. The app's own connection is main's: it is told the card (`card_requested`), which main
-  // draws in the sealed frame and forwards to no page; every other event it hears (the pairing's step) has no words.
+  // The page's layer did hear the pairing (the step and the name), so the check that it heard no words has something to fail on.
+  const heardByLayer = events(layer).filter((e) => e["type"] === "pairing_changed");
+  expect(heardByLayer.some((e) => e["step"] === "words" && e["peerName"] === "Laptop")).toBe(true);
+  // The page's layer hears nothing of them. The app's own connection is main's: it is told the card (`card_requested`, fields and
+  // all), which main keeps in its sealed store and draws in the sealed frame; a part gets only the frame's single-use url, never a
+  // field (apps/desktop/src/main/sealed.ts header; `sealedFrameOf` in ui/runtime.ts: "sees nothing of them"). Every other event the
+  // app's connection hears (the pairing's step) has no words.
   expect(forbidden(JSON.stringify(layer.heard))).toEqual([]);
   for (const c of [a.app, b.app]) expect(forbidden(JSON.stringify(events(c).filter((e) => e["type"] !== "card_requested")))).toEqual([]);
   // The terminal did hear them (so the check above could have failed).
