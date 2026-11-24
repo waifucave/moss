@@ -135,7 +135,7 @@ describe("a code session's folder (the owner's scope ruling)", () => {
 });
 
 describe("the files panel across a reload of the window's document (a plugin with its own layer installed)", () => {
-  test("the filter and the open folders stand, the open folders are listed again, and a closed panel starts clean", () => {
+  test("the filter and the open folders stand, the open folders are listed again, and an unmounted panel keeps them", () => {
     sessionStorage.clear();
     render(<FilesPanel root={ROOT} listing={LISTING} onOpen={() => undefined} />);
     fireEvent.click(screen.getByRole("treeitem", { name: "docs" }));
@@ -144,10 +144,9 @@ describe("the files panel across a reload of the window's document (a plugin wit
     reload(() => void render(<FilesPanel root={ROOT} listing={{ [ROOT]: LISTING[ROOT]! }} onList={onList} onOpen={() => undefined} />));
     expect((screen.getByRole("searchbox", { name: "Filter files" }) as HTMLInputElement).value).toBe("moss");
     expect(onList).toHaveBeenCalledWith(`${ROOT}/docs`);
-    // Left and opened again (an unmount): the tree as it first is.
+    // An unmount clears nothing (a part can unmount because its document is being replaced): opened again, the filter stands.
     cleanup();
     render(<FilesPanel root={ROOT} listing={LISTING} onOpen={() => undefined} />);
-    expect((screen.getByRole("searchbox", { name: "Filter files" }) as HTMLInputElement).value).toBe("");
-    expect(screen.queryByRole("treeitem", { name: "moss-spec.md" })).toBeNull();
+    expect((screen.getByRole("searchbox", { name: "Filter files" }) as HTMLInputElement).value).toBe("moss");
   });
 });

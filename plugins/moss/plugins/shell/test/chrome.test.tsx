@@ -145,7 +145,7 @@ describe("the sidebar: never the bot's", () => {
     const attrs = (w: Element) => [...w.attributes].filter((a) => a.name !== "style").map((a) => `${a.name}=${a.value}`).sort();
     const plainAttrs = attrs(plain);
     const plainStyle = plain.getAttribute("style");
-    cleanup();
+    cleanup(); sessionStorage.clear(); // a kept value outlives an unmount: a test that starts over empties the storage itself
     const { container } = render(frame(old, null));
     await act(async () => undefined);
     const w = container.querySelector(".cl-window") as HTMLElement;

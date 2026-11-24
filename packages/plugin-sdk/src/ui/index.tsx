@@ -1676,9 +1676,9 @@ export function useBackendNames(): (backend: string | undefined) => string | und
 /** State that outlives its document's reload in this window (`useState`'s shape): the user's place, a draft. A layer's
  *  document loads again when a plugin with its own layer is installed, turned on or updated (the frames it may hold are
  *  fixed when it is served), and what a part keeps this way is there again, from the first render, so the window shows
- *  the same page with no flash of another. Only a reload: the part's unmount (the user left the page) drops it, as it
- *  drops plain state, and so does a change of `key` (another conversation's draft starts from its own). A value that
- *  can't be stored or read is plain state.
+ *  the same page with no flash of another. An unmount never clears it (the document going away can unmount a part
+ *  before the new document reads the store): the part clears it with `set(undefined)`; a change of `key` reads that key's
+ *  own value (another conversation's draft is its own). A value that can't be stored or read is plain state.
  *
  *  Where it lives: the window's session storage (never `localStorage`), per plugin and key, as JSON. Session storage is
  *  per origin, and every plugin's layer is its own origin (`moss-plugin://<layer>/`): a third-party part's `useKept`
@@ -1713,14 +1713,9 @@ export function useKept<T>(key: string, initial: T | (() => T)): [T, (next: T | 
       /* too large, or no storage: kept for this document only */
     }
   }, [current.k, current.v]);
-  // An unmount, or another key: this one goes. A document that goes away runs no cleanup, so a reload keeps it.
-  useEffect(() => () => {
-    try {
-      globalThis.sessionStorage?.removeItem(storeKey);
-    } catch {
-      /* no storage */
-    }
-  }, [storeKey]);
+  // A kept value is cleared only by the part itself (`set(undefined)`), never by an unmount: a part can unmount because its document is being
+  // replaced (a window's document loads again for a plugin's layer, and the old one's tree can unwind before the new one's first render
+  // reads the store, so an unmount that cleared it left the user's tab or draft gone: Linux window-2, run 45434352854).
   const set = useCallback((next: T | ((prev: T) => T)) => setState((s) => ({ k: s.k, v: typeof next === "function" ? (next as (prev: T) => T)(s.v) : next })), []);
   return [current.v, set];
 }

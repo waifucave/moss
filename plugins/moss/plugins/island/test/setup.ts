@@ -4,4 +4,5 @@ GlobalRegistrator.register({ url: "http://localhost/", width: 1280, height: 800 
 
 const { afterEach } = await import("bun:test");
 const { cleanup } = await import("@testing-library/react");
-afterEach(() => cleanup());
+// A kept value (`useKept`) outlives an unmount, as it must across a document's reload: each test starts with the window's storage empty.
+afterEach(() => { cleanup(); try { sessionStorage.clear(); } catch { /* none */ } });
