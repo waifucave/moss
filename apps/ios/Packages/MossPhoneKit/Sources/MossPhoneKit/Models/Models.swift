@@ -376,7 +376,7 @@ public struct ModelChoice: Identifiable, Hashable, Sendable {
 /// What the composer of one conversation or session may offer, read from the doors a phone may call today. A kind with nothing
 /// behind it is empty or `nil`, and its row is left out of the picker: there are no placeholder rows.
 public struct ComposerOffers: Equatable, Sendable {
-    /// `session.stageImage`: Photos, and Camera where the phone has one. Files have no door on the `remote` list, so there is no Files row.
+    /// `session.stageImage`: Photos, and Camera where the phone has one. Pictures cross the link in chunks (`StagingLimits`).
     public var pictures: Bool
     /// `command.list` and `command.run`: the Plugins row, when any command is listed.
     public var commands: [PluginCommand]
@@ -386,13 +386,15 @@ public struct ComposerOffers: Equatable, Sendable {
     /// `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row.
     public var models: [ModelChoice]
     public var model: String?
-    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil) {
-        self.files = files; self.fileLimit = fileLimit
+    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil, maxFiles: Int? = nil) {
+        self.files = files; self.fileLimit = fileLimit; self.maxFiles = maxFiles
         self.pictures = pictures; self.commands = commands; self.efforts = efforts; self.effort = effort; self.models = models; self.model = model
     }
     /// A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row.
     public var files: Bool = false
     public var fileLimit: Int64?
+    /// How many files one message may carry.
+    public var maxFiles: Int?
     public var isEmpty: Bool { !pictures && !files && commands.isEmpty && efforts.isEmpty && models.isEmpty }
 }
 
@@ -431,6 +433,22 @@ public struct StagedFile: Identifiable, Hashable, Sendable {
     public var name: String
     public var size: Int64
     public init(path: String, name: String, size: Int64) { self.path = path; self.name = name; self.size = size }
+}
+
+/// The paired link's staging limits (the engine's doors for `session.stageFile` and `session.stageImage`): a frame on the link is 1 MiB,
+/// so a file or a picture travels in 512 KiB chunks; a file is at most 50 MiB and a message carries at most 10 files.
+public enum StagingLimits {
+    public static let chunkSize = 512 * 1024
+    public static let maxFileBytes: Int64 = 50 * 1024 * 1024
+    public static let maxFilesPerMessage = 10
+    public static func chunks(of data: Data) -> [Data] {
+        stride(from: 0, to: data.count, by: chunkSize).map { data.subdata(in: $0..<min($0 + chunkSize, data.count)) }
+    }
+}
+
+public struct TooManyFiles: Error, Equatable, Sendable {
+    public var limit: Int
+    public init(limit: Int) { self.limit = limit }
 }
 
 public struct FileTooLarge: Error, Equatable, Sendable {

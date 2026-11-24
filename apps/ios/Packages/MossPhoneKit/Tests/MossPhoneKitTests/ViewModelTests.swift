@@ -249,6 +249,7 @@ final class ViewModelTests: XCTestCase {
         await bot.loadComposer()
         XCTAssertEqual(bot.offers?.pictures, true)
         XCTAssertTrue(bot.offers?.models.isEmpty ?? false)           // a bot's phone composer has no Model row
+        XCTAssertTrue(bot.offers?.efforts.isEmpty ?? false)          // and no Effort row
         let code = ConversationModel(source: .session(SampleData.sessions[1]), client: c)
         await code.loadComposer()
         XCTAssertFalse(code.offers?.models.isEmpty ?? true)
@@ -273,13 +274,43 @@ final class ViewModelTests: XCTestCase {
         let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
         await m.loadComposer()
         XCTAssertEqual(m.offers?.files, true)
-        await m.stageFile(name: "big.zip", size: 50_000_000, data: Data())
+        await m.stageFile(name: "big.zip", size: 60_000_000, data: Data())
         XCTAssertTrue(m.stagedFiles.isEmpty)
         XCTAssertTrue(m.errorText?.contains("too big") ?? false)
         await m.stageFile(name: "report.pdf", size: 1_200_000, data: Data(count: 1_200_000))
         XCTAssertEqual(m.stagedFiles.map(\.name), ["report.pdf"])
         m.unstageFile(m.stagedFiles[0])
         XCTAssertTrue(m.stagedFiles.isEmpty)
+    }
+
+    func testFilesAndPicturesCrossInChunksAndAMessageTakesTenFiles() async throws {
+        let c = fake()
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        await m.loadComposer()
+        await m.stageFile(name: "a.bin", size: 1_300_000, data: Data(count: 1_300_000))
+        let received = await c.chunksReceived
+        XCTAssertEqual(received, [524_288, 524_288, 251_424])
+        XCTAssertTrue(received.allSatisfy { $0 <= StagingLimits.chunkSize })
+        for i in 1..<10 { await m.stageFile(name: "f\(i)", size: 10, data: Data(count: 10)) }
+        XCTAssertEqual(m.stagedFiles.count, 10)
+        await m.stageFile(name: "eleventh", size: 10, data: Data(count: 10))
+        XCTAssertEqual(m.stagedFiles.count, 10)
+        XCTAssertTrue(m.errorText?.contains("10 files") ?? false)
+        let path = try await c.stageImage(session: "s", data: Data(count: 1_100_000))
+        XCTAssertFalse(path.isEmpty)
+        let after = await c.chunksReceived
+        XCTAssertEqual(after.suffix(3), [524_288, 524_288, 51_424])
+    }
+
+    func testAnswerNeedsTheCardThatWasDelivered() async throws {
+        let c = fake()
+        let shown = try await c.cards()
+        var forged = shown[0]; forged.hash = "forged"
+        do { try await c.answer(card: forged, option: forged.options[0]); XCTFail("answered a card it did not deliver") } catch {}
+        var stranger = shown[0]; stranger.id = "card_unknown"
+        do { try await c.answer(card: stranger, option: stranger.options[0]); XCTFail("answered an unknown card") } catch {}
+        let ok = shown.first { $0.expiresAt > SampleData.now }!
+        try await c.answer(card: ok, option: ok.options[0])
     }
 
     func testNewBotPreselectsTheDefaultModelAndCreates() async throws {

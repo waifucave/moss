@@ -154,6 +154,7 @@ public actor FakeEngineClient: EngineClient {
         // A resend with the same client id is not a second message.
         if sent.contains(where: { $0.clientMessageId == clientMessageId }) { return }
         sent.append((session, text, clientMessageId))
+        filesThisMessage[session] = nil
         let m = ChatMessage(id: clientMessageId, role: .user, text: text, at: clock())
         conversations[session, default: []].append(m)
         emit(.message(subject: session, m))
@@ -176,8 +177,9 @@ public actor FakeEngineClient: EngineClient {
         try await maybeFail()
         switch kind {
         case .bot:
+            // A bot gets no model or effort row: the engine's offers for a bot carry neither.
             return ComposerOffers(pictures: true, commands: [PluginCommand(id: "summary.daily", title: "Daily summary")],
-                                  efforts: ["low", "medium", "high"], effort: efforts[session] ?? "medium", files: true, fileLimit: Self.fileLimit)
+                                  files: true, fileLimit: Self.fileLimit, maxFiles: StagingLimits.maxFilesPerMessage)
         case .codingSession:
             let row = sessionList.first { $0.id == session }
             let backend = row?.backend ?? "claude-code"
@@ -186,7 +188,7 @@ public actor FakeEngineClient: EngineClient {
             let current = models[session] ?? row?.model ?? choices.first?.id
             let levels = choices.first { $0.id == current }?.efforts ?? choices.first?.efforts ?? []
             return ComposerOffers(pictures: true, commands: [PluginCommand(id: "tests.run", title: "Run the tests"), PluginCommand(id: "review.diff", title: "Review the diff")],
-                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current, files: true, fileLimit: Self.fileLimit)
+                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current, files: true, fileLimit: Self.fileLimit, maxFiles: StagingLimits.maxFilesPerMessage)
         }
     }
     public func setModel(session: String, model: String?, effort: String?) async throws {
@@ -194,16 +196,23 @@ public actor FakeEngineClient: EngineClient {
         if let model { models[session] = model }
         if let effort { efforts[session] = effort }
     }
+    /// The size of every chunk this fake received, in order: a picture or a file crosses the link in `StagingLimits.chunkSize` pieces.
+    public private(set) var chunksReceived: [Int] = []
+    private var filesThisMessage: [String: Int] = [:]
     public func stageImage(session: String, data: Data) async throws -> String {
         try await maybeFail()
+        chunksReceived += StagingLimits.chunks(of: data).map(\.count)
         let path = "staged/\(session)/image-\(staged.count + 1).png"
         staged.append(path); return path
     }
-    public static let fileLimit: Int64 = 10_000_000
+    public static let fileLimit = StagingLimits.maxFileBytes
     public private(set) var stagedFiles: [String] = []
     public func stageFile(session: String, name: String, data: Data) async throws -> StagedFile {
         try await maybeFail()
         if Int64(data.count) > Self.fileLimit { throw FileTooLarge(limit: Self.fileLimit) }
+        if filesThisMessage[session, default: 0] >= StagingLimits.maxFilesPerMessage { throw TooManyFiles(limit: StagingLimits.maxFilesPerMessage) }
+        filesThisMessage[session, default: 0] += 1
+        chunksReceived += StagingLimits.chunks(of: data).map(\.count)
         let path = "staged/\(session)/\(name)"
         stagedFiles.append(path)
         return StagedFile(path: path, name: name, size: Int64(data.count))
@@ -264,9 +273,16 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Cards
 
-    public func cards() async throws -> [Card] { try await maybeFail(); return cardList }
+    /// The cards this client handed out, by id: the engine answers only from the card the app drew, never from an id alone.
+    private var delivered: [String: Card] = [:]
+    public func cards() async throws -> [Card] {
+        try await maybeFail()
+        for c in cardList { delivered[c.id] = c }
+        return cardList
+    }
     public func answer(card: Card, option: CardOption) async throws {
         try await maybeFail()
+        guard delivered[card.id] == card, card.options.contains(option) else { throw Failure("that is not a card this client delivered") }
         if answeredElsewhereIDs.contains(card.id) { cardList.removeAll { $0.id == card.id }; throw CardAnswerError.answeredElsewhere }
         if card.expiresAt <= clock() { throw CardAnswerError.expired }
         guard cardList.contains(where: { $0.id == card.id }) else { throw CardAnswerError.answeredElsewhere }
@@ -278,6 +294,7 @@ public actor FakeEngineClient: EngineClient {
     /// Raises a card as if the computer had just asked.
     public func raise(_ card: Card) {
         cardList.append(card)
+        delivered[card.id] = card
         emit(.cardRequested(card))
     }
 
