@@ -125,7 +125,7 @@ interface Ctx {
   /** Main presses a key chord in the window (`webContents.sendInputEvent`), from a file the build watches. */
   pressKey?(key: string, modifiers: string[], type?: "down" | "repeat" | "up"): void;
   /** Closes the main window, or opens it again, as the user would (a file the test build watches: MOSS_TEST_WINDOW_FILE). */
-  mainWindow?(what: "close" | "open"): void;
+  mainWindow?(what: "close" | "open" | `move ${number} ${number}`): void;
   /** The daemon's own log, as text (what the core says it told the user). */
   daemonLog?(): string;
   /** The folder the test build's picker gives (MOSS_TEST_PICK) and the plugin it holds. */
@@ -463,10 +463,9 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     // (xvfb: (0, 102), run 45427983543: "a drag began (window at 0, 102; cursor at 225, 23)"), the cursor then reads as above the
     // window and the app takes the drag for over. A real mouse reads the true place, so the harness puts the window at the origin first.
     if (process.platform === "linux") {
-      const main = [...cdp.frames.values()].find((f) => f.type === "page" && f.url === "moss-core://app/" && f.targetId !== undefined);
-      if (main === undefined) fail("the main window has no DevTools target to place at the screen's origin");
-      const w = await cdp.send<{ windowId: number }>("Browser.getWindowForTarget", { targetId: main!.targetId }).catch((e: Error) => fail(`DevTools can't name the main window's place (${e.message})`));
-      await cdp.send("Browser.setWindowBounds", { windowId: w.windowId, bounds: { left: 0, top: 0 } }).catch((e: Error) => fail(`DevTools can't put the main window at the screen's origin (${e.message})`));
+      if (ctx.mainWindow === undefined) fail("the run has no way to put the main window at the screen's origin (the test seam's move)");
+      ctx.mainWindow!("move 0 0");
+      await until("the test seam to put the main window at the origin", 10_000, async () => (ctx.appLog().includes("window: the test seam moves the main window to (0, 0)") ? true : undefined));
       await sleep(600);
     }
     const moved = () => ctx.appLog().split("\n").filter((l) => l.includes("window: moved by its title area"));

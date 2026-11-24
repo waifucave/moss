@@ -2386,8 +2386,8 @@ function startFrontSeam(): void {
 }
 
 /** A test-marked build's stand-in for the user closing and reopening the main window (the background part's row): the file named
- *  by MOSS_TEST_WINDOW_FILE holds `close <n>` or `open <n>`, read every 100 ms; a new line closes the main window or opens it
- *  again, as the tray's Open does. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
+ *  by MOSS_TEST_WINDOW_FILE holds `close <n>`, `open <n>` or `move <x> <y>`, read every 100 ms; a new line closes the main window, opens it
+ *  again (as the tray's Open does) or puts it at a place. Compiled out of a release (the marker gate's TEST_ONLY_APP_STRINGS checks it). */
 function startWindowSeam(): void {
   if ((typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string") && headless && process.env.MOSS_TEST_WINDOW_FILE) {
     const file = process.env.MOSS_TEST_WINDOW_FILE;
@@ -2402,6 +2402,11 @@ function startWindowSeam(): void {
       } else if (word.startsWith("open")) {
         log("window: the test seam opens the main window");
         void openMainWindow();
+      } else if (word.startsWith("move")) {
+        // `move <x> <y>`: the window put at a place (a drag row's start: a press sent through DevTools carries no screen point of its own,
+        // so the drag reads it in the window's own coordinates, right only with the window at the screen's origin).
+        const m = /^move (-?\d+) (-?\d+)(?: \d+)?$/.exec(word);
+        if (m !== null && mainWindow !== undefined && !mainWindow.isDestroyed()) { mainWindow.setPosition(Number(m[1]), Number(m[2])); log(`window: the test seam moves the main window to (${m[1]}, ${m[2]})`); }
       }
     }, 100).unref?.();
   }

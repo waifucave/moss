@@ -6828,7 +6828,7 @@ async function uiPhase(app: { exe: string; args: string[] }, daemonUp: boolean, 
       uiSettings: () => { try { return JSON.parse(readFileSync(join(home, "settings", "ui.json"), "utf8")) as { appearance?: string }; } catch { return {}; } },
       setAppearance: (scheme: "dark" | "light" | "system") => writeFileSync(appearanceFile, scheme),
       pressKey,
-      mainWindow: (what: "close" | "open") => writeFileSync(join(root, "main-window"), `${what} ${++windowSeam}`),
+      mainWindow: (what: "close" | "open" | `move ${number} ${number}`) => writeFileSync(join(root, "main-window"), `${what} ${++windowSeam}`),
       daemonLog: () => readLog(join(logs, `daemon-${daemonRun}.log`)),
       ...(pressable ? {
         pressCard: async (what: string, match: (c: Card) => boolean) => {
