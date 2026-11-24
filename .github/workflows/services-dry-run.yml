@@ -1,0 +1,50 @@
+name: services dry run
+
+# The deploy of the Workers under services/ (accounts, handshake, push, forwarder, web), as a dry run: wrangler's own
+# `deploy --dry-run` packaging on fixture values, with no Cloudflare credential and no secret. It is not part of the gate
+# (ci.yml's `gate` never waits for it): a failure here says the services no longer package or their configuration and the
+# deploy script's manifest have drifted apart. docs/services-deploy.md.
+on:
+  push:
+    paths:
+      - "services/**"
+      - "scripts/services/**"
+      - ".github/workflows/services-dry-run.yml"
+  pull_request:
+    paths:
+      - "services/**"
+      - "scripts/services/**"
+      - ".github/workflows/services-dry-run.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: services-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dry-run:
+    name: services dry run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Non-gating: a red run here never blocks a merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: The deploy script's tests (fixtures; includes wrangler's dry run of every service)
+        run: bun test scripts/services/services-deploy.test.ts
+
+      - name: The dry run itself, with nothing set
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: bun scripts/services/deploy.ts --dry-run
