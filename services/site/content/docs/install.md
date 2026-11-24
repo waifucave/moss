@@ -56,7 +56,7 @@ Removing one app leaves the other working.
 
 ## When you first open MOSS
 
-A setup guide walks you through three steps.
+A setup guide walks you through three steps. [Adding a model provider](/docs/setup/) goes through each in more detail.
 
 **1. Add a model provider.** MOSS needs a model to talk to, and doesn't come with one: you need an account or an API key with a model provider, or a model running on your own computer, with Ollama, LM Studio or another local server. Sign in to a subscription you already have, or paste an API key. You can search the list of providers, and add more than one.
 

@@ -89,7 +89,7 @@ export async function buildSite(opts: BuildOptions = {}): Promise<BuildResult> {
   put("/privacy/", "Privacy: MOSS", "MOSS's privacy policy comes with the first release.", html`<section class="wrap lost">
 <h1>Privacy</h1>
 <p class="lead">MOSS's privacy policy is coming with the first release.</p>
-<p>Until then, the landing page says <a href="/#privacy">what leaves your computer</a>.</p>
+<p>Until then, <a href="/docs/privacy/">What leaves your computer</a> says what MOSS's code sends, and to whom.</p>
 </section>`, false);
   put("/terms/", "Terms: MOSS", "MOSS's terms of use come with the first release.", html`<section class="wrap lost">
 <h1>Terms</h1>

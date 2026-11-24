@@ -231,10 +231,11 @@ ${picture({ name: "moss-setup", alt: "MOSS's setup guide, step 1 of 3: Welcome t
 <li><strong>Updates</strong> come from this project's releases on GitHub. Both apps check when they start and every 4 hours, download a new version on their own and install it when MOSS has nothing running. There is no switch to turn this off. GitHub sees your IP address and which version you have.</li>
 <li><strong>Paired devices</strong> find each other through a small WaifuCave service, and learn their own network address from Cloudflare's and Google's public STUN servers. n0's address lookup helps them find each other, and when two can't connect directly, a relay carries their traffic: n0's public relays unless you pick your own. What passes between your devices is encrypted end to end, but a relay sees their IP addresses, which are online and how much they send.</li>
 <li><strong>The time</strong>: while your devices are linked, they ask Cloudflare's and Google's public time servers, so they agree on it.</li>
+<li><strong>Webhook routines</strong> get the calls that start them through a WaifuCave forwarder, which seals each one for your computers on arrival and holds it at most 7 days.</li>
 <li><strong>Downloads you OK</strong> come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave. A plugin can then reach what its card said it may.</li>
 <li><strong>Your keys</strong> stay on your computer: in the Keychain on macOS, and on Windows and Linux in an encrypted file whose key your system's secret store keeps (or, with no secret store, a key file only you can read).</li>
 </ul>
-<p class="note">MOSS has no analytics, no telemetry and no crash reports. You don't need an account: devices pair with a code. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
+<p class="note"><a href="/docs/privacy/">Each of these in full</a>. MOSS has no analytics, no telemetry and no crash reports. You don't need an account: devices pair with a code. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
 </div>
 </div>
 </section>`;

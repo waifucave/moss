@@ -1,8 +1,8 @@
 // The site builds, in both release states, with no broken link and nothing loaded from another host; its download area names the files the release scripts make; its docs outline points at files that exist.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { buildSite, type BuildResult } from "../src/build";
 import { checkSite } from "../src/check";
 import { configProblem, readConfig, REPO_ROOT, SITE_DIR, withSwitches } from "../src/config";
@@ -11,7 +11,7 @@ import { allInstallerNames, releaseUrl } from "../src/downloads";
 import { renderDoc } from "../src/markdown";
 import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
 import { runCodeCommand } from "../../../packages/cli/src/code-cli";
-import { runPluginCommand } from "../../../packages/cli/src/moss-plugin-cli";
+import { MOSS_PLUGIN_VERBS, runPluginCommand, runPluginDev, runPluginList } from "../../../packages/cli/src/moss-plugin-cli";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -193,14 +193,49 @@ describe("the commands the docs print", () => {
     }
   });
 
-  test("every printed switch command names a plugin, and the CLI takes it as printed", async () => {
-    const switches = commands.filter((c) => /^moss plugin (enable|disable)\b/.test(c));
-    expect(switches.length).toBeGreaterThan(0);
-    for (const line of switches) {
+  test("every printed command is one the moss command has", () => {
+    const top = new Set([...readFileSync(join(REPO_ROOT, "packages", "cli", "src", "main.ts"), "utf8").matchAll(/^  case "([a-z-]+)":/gm)].map((m) => m[1]!));
+    const pluginVerbs = new Set<string>(["list", "dev", "logs", "new", "validate", ...MOSS_PLUGIN_VERBS]);
+    for (const c of commands) {
+      const [, word, verb] = c.split(/\s+/);
+      expect([c, top.has(word!)]).toEqual([c, true]);
+      if (word === "plugin") expect([c, pluginVerbs.has(verb!)]).toEqual([c, true]);
+    }
+  });
+
+  test("every printed plugin command runs as printed through the CLI's own code", async () => {
+    const lines = commands.filter((c) => c.startsWith("moss plugin "));
+    expect(lines.length).toBeGreaterThan(5);
+    // The folders the pages make with `moss plugin new`, made here the same way, for the commands that name them.
+    const work = mkdtempSync(join(root, "plugin-commands-"));
+    for (const line of lines) {
       const [, , verb, ...args] = line.split(/\s+/);
+      if (verb !== "new") continue;
+      const [template, folder] = args;
+      const made = templateFiles(template!, { id: folder!, name: folder! });
+      if ("error" in made) throw new Error(`${line}: ${made.error}`);
+      for (const [file, text] of Object.entries(made.files)) {
+        mkdirSync(dirname(join(work, folder!, file)), { recursive: true });
+        writeFileSync(join(work, folder!, file), text);
+      }
+    }
+    const answers: Record<string, unknown> = {
+      "plugin.list": { plugins: [] }, "plugin.setEnabled": { applied: true }, "plugin.install": { id: "x", state: "found" },
+      "plugin.dev.add": { applied: false }, "plugin.dev.renew": { expiresAt: Date.now() + 86_400_000 },
+    };
+    for (const line of lines) {
+      const [, , verb, ...args] = line.split(/\s+/);
+      if (verb === "new" || verb === "validate") {
+        // new: made above; validate: of a folder a printed `new` made.
+        if (verb === "validate") expect([line, existsSync(join(work, args[0]!))]).toEqual([line, true]);
+        continue;
+      }
       const calls: string[] = [];
-      const r = await runPluginCommand(verb!, args, async (method) => { calls.push(method); return { applied: true }; }, { cwd: SITE_DIR, confirm: async () => false });
-      expect([line, r.code, calls]).toEqual([line, 0, ["plugin.setEnabled"]]);
+      const call = async (method: string): Promise<unknown> => { calls.push(method); return answers[method] ?? {}; };
+      const r = verb === "list" ? await runPluginList(args, call)
+        : verb === "dev" ? await runPluginDev(args, call, work)
+        : await runPluginCommand(verb!, args, call, { cwd: work, confirm: async () => true });
+      expect([line, r.code, calls.length > 0]).toEqual([line, 0, true]);
     }
     // No printed plugin command is a bare verb missing what it acts on.
     for (const c of commands) expect([c, /^moss plugin (enable|disable|install|remove|dev|info|logs)\s*$/.test(c)]).toEqual([c, false]);

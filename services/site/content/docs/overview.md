@@ -55,9 +55,10 @@ MOSS keeps your conversations, memory, settings and logs in `~/.moss`, on your c
 - **Web searches go to Exa**, a search company, and this is on from the start, with no account or key. Exa gets the words searched for and your IP address. There is no separate switch: to stop it, switch off the *Web search and fetch* plugin in MOSS Code, or with `moss plugin disable moss/web` in a terminal. Pages a bot reads are fetched straight from your computer.
 - **Updates** come from the project's releases on GitHub. Both apps check when they start and every 4 hours, download a new version on their own, and install it when MOSS has nothing running. This can't be turned off. GitHub sees your IP address and the version you have.
 - **Paired devices** find each other through a small WaifuCave service, learn their own network address from Cloudflare's and Google's public STUN servers, use n0's address lookup, and, when they can't connect directly, talk through a relay: n0's public relays, unless you choose your own. What passes between your devices is encrypted end to end; a relay still sees their IP addresses, which are online, and how much they send. While devices are linked they also ask Cloudflare's and Google's public time servers for the time.
+- **Webhook routines**, a routine that starts when a service calls its webhook, get that call through a WaifuCave forwarder, which seals it for your computers on arrival and holds it at most 7 days.
 - **Downloads you OK on a card** come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave it. A plugin can then reach what its card said it may.
 
-MOSS has no analytics, no telemetry and no crash reports. You don't need an account: your devices pair with a code.
+MOSS has no analytics, no telemetry and no crash reports. You don't need an account: your devices pair with a code. [What leaves your computer](/docs/privacy/) has each of these in full.
 
 ## Plugins
 
