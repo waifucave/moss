@@ -107,6 +107,45 @@ for (const [label, make] of backends) {
       await expect(store.set(plugin("x"), "y")).rejects.toMatchObject({ code: "locked" });
     });
 
+    test("generated sequences of writes, removals, crashes and a harmed index: every read is the last value written", async () => {
+      const refs: SecretRef[] = [plugin("A"), plugin("B"), { owner: { kind: "core" }, name: "C" }, { owner: { kind: "device" }, name: "D" }];
+      const keyOf = (r: SecretRef) => (r.owner.kind === "plugin" ? `plugin:${r.owner.pluginId}` : r.owner.kind) + `/${r.name}`;
+      for (const seed of [1, 2, 3, 4, 5, 6]) {
+        let s = seed * 2654435761 >>> 0;
+        const rnd = (n: number) => { s = (s * 1103515245 + 12345) >>> 0; return (s >>> 8) % n; };
+        const h = home();
+        const values = make();
+        const open = () => new MossSecretStore({ home: h, values: values(h), status: MEMORY, log: () => {} });
+        const model = new Map<string, string>();
+        for (let step = 0; step < 120; step++) {
+          const ref = refs[rnd(refs.length)]!;
+          const op = rnd(10);
+          const value = `v${seed}-${step}`;
+          if (op <= 3) {
+            const r = await open().set(ref, value).then(() => true, () => false);
+            if (r) model.set(keyOf(ref), value);
+          } else if (op <= 5) {
+            const r = await open().delete(ref).then(() => true, () => false);
+            if (r) model.delete(keyOf(ref));
+          } else if (op === 6) {
+            await values(h).set(keyOf(ref), value); // a crash after the value and before the index
+            model.set(keyOf(ref), value);
+          } else if (op === 7) {
+            if (existsSync(INDEX(h))) writeFileSync(INDEX(h), readFileSync(INDEX(h)).subarray(0, rnd(40)));
+          } else if (op === 8) {
+            rmSync(rnd(2) === 0 ? INDEX(h) : INDEX_BAK(h), { force: true });
+          } else {
+            // The person starts the list afresh (both copies and the note gone); the values stay.
+            open().dropIndex();
+          }
+          for (const r of refs) {
+            const got = await open().get(r);
+            expect([seed, step, keyOf(r), got?.value.reveal() ?? null]).toEqual([seed, step, keyOf(r), model.get(keyOf(r)) ?? null]);
+          }
+        }
+      }
+    }, 60_000);
+
     test("a crash after the value was written and before the index: the value reads, and nothing is made over it", async () => {
       const h = home();
       const values = make();

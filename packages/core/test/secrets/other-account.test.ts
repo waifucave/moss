@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encryptedFileStatus } from "../../src/contracts/secret-store";
 import { fileSecretsBackend } from "../../src/secrets/file-backend";
@@ -18,7 +17,9 @@ const sudoWorks = process.platform === "linux" && process.env.CI !== undefined &
 describe.skipIf(!sudoWorks)("another account on this computer", () => {
   test("reads none of the secrets file, its key file, its previous copy or the index, even with every folder opened", async () => {
     const user = `moss-se-${Math.random().toString(36).slice(2, 8)}`;
-    const h = realpathSync(mkdtempSync(join(tmpdir(), "moss-other-")));
+    // Under /tmp itself, not the preload's per-process root (made 0700): every folder above the home must be one the other
+    // user can pass through, or the control below could not read. This exact folder is removed after.
+    const h = realpathSync(mkdtempSync("/tmp/moss-other-"));
     const VALUE = ["other", "account", Math.random().toString(36).slice(2)].join("-");
     expect(Bun.spawnSync(["sudo", "-n", "useradd", "--no-create-home", "--shell", "/usr/sbin/nologin", user]).exitCode).toBe(0);
     try {

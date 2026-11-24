@@ -181,6 +181,10 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       expect(theirsBash.text.toLowerCase().includes(target)).toBe(false);
     } finally {
       await store.dispose();
+      // The tests after this one read the hand-written stand-in: put it back, and take away what the store wrote.
+      for (const p of [file, join(moss, "credentials"), join(moss, "run", "secrets-file.lock"), join(moss, "run", "secrets-index.lock")]) rmSync(p, { recursive: true, force: true });
+      for (const n of readdirSync(join(moss, "run"))) if (n.endsWith(".tmp")) rmSync(join(moss, "run", n), { force: true });
+      writeFileSync(file, `${SECRET}\n`);
     }
   }, 900_000);
 
