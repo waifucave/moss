@@ -392,7 +392,7 @@ describe("Clover→MOSS rename residue", () => {
     expect(analyzeNever("infra/sandbox/profile.sb", `(deny file-write* (subpath "/Applications/Clover.app"))`).never.map((n) => n.id)).toEqual(["clover-app"]);
   });
 
-  // A crypto or wire tag is a value already on the wire and on disk: the deployed services verify it, clients that keep
+  // A crypto or wire tag is a value already on the wire and on disk: data already on disk was made under it, clients that keep
   // the old name speak it, and the state stage 2 carries over was signed or derived under it. The identifier around it
   // is renamed, the string is not, so this table fails the moment one of them is changed to the new name.
   // The three groups are the allowlist's: `wire-deployed-services`, `wire-clients-keep-name`, `disk-signed-or-derived-state`.

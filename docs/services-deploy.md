@@ -1,5 +1,7 @@
 # Deploying the services (lane DP, 2026-11-24)
 
+Nothing is deployed. Cloudflare was asked read-only on 2026-11-24 and none of the Workers named below exists on the owner's account, under the old names or any `moss-*` name, so the Workers are named `moss-accounts`, `moss-handshake`, `moss-push`, `moss-forwarder`, `moss-web`, `moss-relay` (and `moss-hello`, which is never deployed). The signature, key and header tags in the wire code (the account and handshake statements, the authorization header, the box label) keep their old spellings: no service verifies them, but data already on the owner's disk was made under them and the residue test pins them.
+
 The small services phones and other devices need live under `services/`. They are built and tested and have never been deployed. This page
 says what each is, what it takes to deploy it, and how the owner does it with one command. Nothing here deploys anything: the script's
 only mode that runs without the owner's own flag is a dry run, and the dry run touches no account. The contract is `docs/moss-spec.md` §8
@@ -23,13 +25,13 @@ only (secrets already in Cloudflare stay). `--strict` makes the dry run fail whi
 
 | # | Service | Worker | Where | Why here |
 |---|---|---|---|---|
-| 1 | `services/accounts` | (its `env.production.name`) | `<domain>/auth/*` (or a host of its own) | the others bind to it (Cloudflare refuses a service binding to a Worker that does not exist) and fetch its public keys on their first request |
-| 2 | `services/handshake` | (its `env.production.name`) | `handshake.<domain>` | after accounts |
-| 3 | `services/push` | (its `env.production.name`) | `push.<domain>` | after accounts |
-| 4 | `services/forwarder` | (its `env.production.name`) | `hooks.<domain>` | after accounts |
-| 5 | `services/web` | (its `env.production.name`) | `<web label>.<domain>` (the label services/web/wrangler.jsonc names) | after the handshake: its `/config.json` points at it (the handshake's `WEB_ORIGINS` names this host, which does not need to exist yet) |
-| - | `services/relay` | (its `env.production.name`) | the user's own `workers.dev` address | NOT in the owner's deploy: each user runs it in their own Cloudflare account (spec §8.3); `--only relay` with `MOSS_RELAY_ORIGIN` and `MOSS_RELAY_KEY` |
-| - | `services/hello` | (its `env.production.name`) | never | the layout's example and the emulator's smoke test |
+| 1 | `services/accounts` | `moss-<service>` | `<domain>/auth/*` (or a host of its own) | the others bind to it (Cloudflare refuses a service binding to a Worker that does not exist) and fetch its public keys on their first request |
+| 2 | `services/handshake` | `moss-<service>` | `handshake.<domain>` | after accounts |
+| 3 | `services/push` | `moss-<service>` | `push.<domain>` | after accounts |
+| 4 | `services/forwarder` | `moss-<service>` | `hooks.<domain>` | after accounts |
+| 5 | `services/web` | `moss-<service>` | `app.moss.<domain>` (a placeholder host; the owner picks the final one; it is set in `services/web/wrangler.jsonc` and in the companion-web plugin's `DEFAULT_WEB`, and a test fails if they differ) | after the handshake: its `/config.json` points at it (the handshake's `WEB_ORIGINS` names this host, which does not need to exist yet) |
+| - | `services/relay` | `moss-<service>` | the user's own `workers.dev` address | NOT in the owner's deploy: each user runs it in their own Cloudflare account (spec §8.3); `--only relay` with `MOSS_RELAY_ORIGIN` and `MOSS_RELAY_KEY` |
+| - | `services/hello` | `moss-<service>` | never | the layout's example and the emulator's smoke test |
 
 `services/shared` is not a Worker: the Workers bundle it.
 

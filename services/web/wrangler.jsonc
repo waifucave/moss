@@ -1,11 +1,12 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  // clover.waifucave.com: the web companion's page (spec §8.4). The Worker serves the built page (dist/, from
+  // app.moss.waifucave.com (a PLACEHOLDER host: the owner picks the final one; it must then match DEFAULT_WEB in
+  // plugins/moss/plugins/companion-web/host/index.ts, which services-deploy.test.ts checks): the web companion's page (spec §8.4). The Worker serves the built page (dist/, from
   // `bun run build`) with its security headers, and /config.json with the handshake's address.
   //
   // The top level is the local profile; env.production is what the first deploy at the live gates would use.
-  // Nothing here has been deployed.
-  "name": "clover-web-local",
+  // Nothing here has been deployed (no Worker with these names exists on the owner's Cloudflare account, checked read-only on 2026-11-24).
+  "name": "moss-web-local",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
@@ -18,10 +19,10 @@
   },
   "env": {
     "production": {
-      "name": "clover-web",
+      "name": "moss-web",
       "workers_dev": false,
       "observability": { "enabled": false },
-      "routes": [{ "pattern": "clover.waifucave.com", "custom_domain": true }],
+      "routes": [{ "pattern": "app.moss.waifucave.com", "custom_domain": true }],
       "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": true },
       "vars": {
         "HANDSHAKE_ORIGIN": "https://handshake.waifucave.com",

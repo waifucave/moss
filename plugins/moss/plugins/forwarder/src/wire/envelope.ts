@@ -36,7 +36,7 @@ const WRAPPED_BYTES = 32 + 16;
 const RECIPIENT_BYTES = KID_BYTES + ENC_BYTES + WRAPPED_BYTES;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 const INFO_LABEL = concat(utf8("clover forwarder v1"), Uint8Array.of(0));
 
 export interface EnvelopeRecipient {
@@ -78,7 +78,7 @@ export interface EnvelopeHeader {
   kids: Bytes[];
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /** The 8-byte key id of a forwarder public key. */
 export async function keyId(publicKey: Uint8Array): Promise<Bytes> {
   return (await sha256(concat(utf8("clover forwarder kid"), publicKey))).slice(0, KID_BYTES);

@@ -132,13 +132,7 @@ export const MOSS_ALLOWLIST: readonly AllowlistEntry[] = [
   {
     id: "web-companion-site",
     regex: /\bclover\.waifucave\.com\b/g,
-    why: "live infrastructure, moves with the owner's DNS: the web companion's site is served at clover.waifucave.com and clover.waifucave.com does not exist yet (stage 2)",
-  },
-  {
-    id: "worker-names",
-    regex: /(?<![A-Za-z0-9_-])clover-(?:accounts|forwarder|handshake|hello|push|relay|web)(?:-local)?(?![A-Za-z0-9_-])/g,
-    files: ["services/*/wrangler.jsonc"],
-    why: "live infrastructure: the deployed Cloudflare Worker names and the service bindings that name them, which move with a deliberate deploy, so a deploy from this tree updates the live Workers and never creates new ones",
+    why: "the web companion's old placeholder host, still named in the spec, the SDK catalog and a few test fixtures until the owner picks the final host (the Workers and the companion plugin already use app.moss.waifucave.com, also a placeholder); it never existed in DNS",
   },
   // ── Crypto and wire tags: the value is already on the wire or on disk, so it keeps its old spelling ─
   // Identifier names may be renamed; the string a signature, a MAC, a key derivation or a protocol check covers may not.

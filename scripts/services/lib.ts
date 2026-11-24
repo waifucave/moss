@@ -58,10 +58,10 @@ export function loadEnvFile(path: string): Record<string, string> {
 
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 
-/** The first label of the web page's production host in services/web/wrangler.jsonc: the name the web companion plugin already has built in. */
-export function defaultWebLabel(root = REPO_ROOT): string {
+/** The web page's production host in services/web/wrangler.jsonc without its zone (`app.moss` for app.moss.waifucave.com): the name the web companion plugin has built in. The owner picks the final host. */
+export function defaultWebPrefix(root = REPO_ROOT): string {
   const base = parseJsonc(readFileSync(join(root, "services/web/wrangler.jsonc"), "utf8")) as { env: { production: { routes: { pattern: string }[] } } };
-  return base.env.production.routes[0]!.pattern.split(".")[0]!;
+  return base.env.production.routes[0]!.pattern.replace(/\.waifucave\.com$/, "");
 }
 
 /** The Worker's name: `env.production.name` in its wrangler.jsonc. */
@@ -80,7 +80,7 @@ export function resolveSettings(env: Env): Settings {
     hooks: host("MOSS_HOOKS_HOST", "hooks"),
     handshake: host("MOSS_HANDSHAKE_HOST", "handshake"),
     push: host("MOSS_PUSH_HOST", "push"),
-    web: host("MOSS_WEB_HOST", defaultWebLabel()),
+    web: host("MOSS_WEB_HOST", defaultWebPrefix()),
   };
   const accountsPrefix = ownHost ? "" : "/auth";
   const issuer = `https://${hosts.accounts}${accountsPrefix}`;

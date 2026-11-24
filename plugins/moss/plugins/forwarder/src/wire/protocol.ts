@@ -53,7 +53,7 @@ export const HOOK_KEY_RE = /^[A-Za-z0-9._~-]{16,512}$/;
 /** The shortest key the plugin registers: 43 characters, the base64url of MOSS's 32 random bytes. */
 export const MIN_ROUTINE_KEY_LENGTH = 43;
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /**
  * What the service keeps of a routine's key: SHA-256 of "clover hook key v1|" + key. The computer registers
  * this hash and the edge hashes the key a sender presents, so the key itself is never stored by waifucave.

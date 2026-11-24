@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, type Io, type RunResult } from "./deploy";
-import { defaultWebLabel, generateSecret, nameStates, orderServices, parseEnvFile, parseJsonc, renderConfig, resolveSettings, settingsProblems, workerName, REPO_ROOT } from "./lib";
+import { defaultWebPrefix, generateSecret, nameStates, orderServices, parseEnvFile, parseJsonc, renderConfig, resolveSettings, settingsProblems, workerName, REPO_ROOT } from "./lib";
 import { BUILT_IN_ADDRESSES, ENV_NAMES, SERVICES } from "./manifest";
 import { main as postDeploy, settingsReport, smoke } from "./post-deploy";
 
@@ -73,7 +73,7 @@ describe("the files agree", () => {
 
   test("the addresses the engine has built in are the ones post-deploy compares against", () => {
     for (const { url, file } of Object.values(BUILT_IN_ADDRESSES)) expect(read(file)).toContain(url);
-    expect(read("plugins/moss/plugins/companion-web/host/index.ts")).toContain(`https://${defaultWebLabel()}.waifucave.com`);
+    expect(read("plugins/moss/plugins/companion-web/host/index.ts")).toContain(`https://${defaultWebPrefix()}.waifucave.com`);
   });
 
   test("the secret and variable names the manifest lists for push exist in the push Worker's Env", () => {
@@ -99,7 +99,7 @@ describe("rendering and order", () => {
     expect(accounts.main.startsWith("/")).toBe(true);
     const web = renderConfig(REPO_ROOT, SERVICES.find((x) => x.id === "web")!, s).config as { assets: { directory: string }; routes: unknown[] };
     expect(web.assets.directory).toBe(join(REPO_ROOT, "services/web/dist"));
-    expect(web.routes).toEqual([{ pattern: `${defaultWebLabel()}.example.test`, custom_domain: true }]);
+    expect(web.routes).toEqual([{ pattern: `${defaultWebPrefix()}.example.test`, custom_domain: true }]);
   });
 
   test("an accounts host of its own drops the path prefix", () => {
@@ -158,7 +158,7 @@ describe("the dry run", () => {
     expect(order.map((o) => o.slice(2))).toEqual(["accounts", "handshake", "push", "forwarder", "web"].map((id) => names.find((n) => n.startsWith(`${id}:`))!));
     expect(order.map((o) => o[0])).toEqual(["1", "2", "3", "4", "5"]);
     expect(text).toContain("why here: after accounts");
-    expect(text).toContain(`${defaultWebLabel()}.example.test (custom domain)`);
+    expect(text).toContain(`${defaultWebPrefix()}.example.test (custom domain)`);
     expect(text).toContain("every required name is set");
     expect(text).not.toContain(SENTINEL);
     expect(text).not.toContain("fixture-");
@@ -273,7 +273,7 @@ describe("post-deploy", () => {
     const other = settingsReport(resolveSettings({ MOSS_SERVICES_DOMAIN: "example.test" }), true).join("\n");
     expect(other).toContain("NOT the addresses built into today's builds");
     expect(other).toContain("packages/core/src/identity/account-config.ts");
-    expect(other).toContain(`https://${defaultWebLabel()}.example.test`);
+    expect(other).toContain(`https://${defaultWebPrefix()}.example.test`);
   });
 
   test("the smoke check passes live-looking Workers and fails an absent route, an empty key set and a private key", async () => {

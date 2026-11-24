@@ -12,7 +12,7 @@ export async function hasKey(request: Request, relayKey: string): Promise<boolea
 
 let derived: { relayKey: string; key: Promise<CryptoKey> } | null = null;
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 function ticketKey(relayKey: string): Promise<CryptoKey> {
   if (derived?.relayKey !== relayKey) {
     derived = {

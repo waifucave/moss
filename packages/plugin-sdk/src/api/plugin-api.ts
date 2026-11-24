@@ -256,7 +256,7 @@ export interface CompanionHandler {
   pairing?(args: { code: string; expiresAt: number }, ctx: HandlerContext): Promise<{ url?: string; qr?: string }>;
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 /** What `register` takes in place of a routine's key: base64url (no padding) of SHA-256 over
  *  `clover hook key v1|<key>`, as the waifucave forwarder's service stores it. */
 export async function webhookKeyHash(key: string): Promise<string> {

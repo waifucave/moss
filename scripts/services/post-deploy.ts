@@ -7,7 +7,7 @@
 //       only our Worker would give) and says pass or fail for each. Exit 1 when one fails.
 //
 // Names come from the same environment as deploy.ts (services/deploy.env.example); no secret is read or printed.
-import { defaultWebLabel, loadEnvFile, resolveSettings, type Env } from "./lib";
+import { defaultWebPrefix, loadEnvFile, resolveSettings, type Env } from "./lib";
 import { BUILT_IN_ADDRESSES, PARKED_PLUGINS, SERVICES, type ServiceId, type Settings, type SmokeSpec } from "./manifest";
 
 export interface Io {
@@ -36,7 +36,7 @@ export function addresses(s: Settings): { accounts: string; hooks: string; push:
 export function settingsReport(s: Settings, domainGiven: boolean): string[] {
   const a = addresses(s);
   const lines: string[] = [];
-  const builtIn: Record<keyof typeof a, string> = { ...Object.fromEntries(Object.entries(BUILT_IN_ADDRESSES).map(([k, v]) => [k, v.url])), web: `https://${defaultWebLabel()}.waifucave.com` } as Record<keyof typeof a, string>;
+  const builtIn: Record<keyof typeof a, string> = { ...Object.fromEntries(Object.entries(BUILT_IN_ADDRESSES).map(([k, v]) => [k, v.url])), web: `https://${defaultWebPrefix()}.waifucave.com` } as Record<keyof typeof a, string>;
   const same = (Object.keys(a) as (keyof typeof a)[]).every((k) => a[k] === builtIn[k]);
   lines.push("deployed addresses");
   for (const k of Object.keys(a) as (keyof typeof a)[]) lines.push(`  ${k.padEnd(10)} ${a[k]}`);

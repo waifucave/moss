@@ -66,7 +66,7 @@ export interface FakeHandshakeOptions {
   rollbackMs?: number;
 }
 
-// Keeps its old spelling on purpose: the owner's deployed services verify against this value, so it stays until they move.
+// Keeps its old spelling on purpose: data already on disk (paired devices, sealed boxes, signed records) was made under this value, so it stays. No service is deployed.
 export function startFakeHandshake(opts: FakeHandshakeOptions = {}): FakeHandshake {
   const pairs = new Map<string, Pair>();
   const ended = new Set<string>();
