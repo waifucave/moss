@@ -1,5 +1,5 @@
 // Draws the two app icons (opaque, full-bleed 1024 squares: iOS rounds the corners itself).
-// MOSS: the coral bot tile of apps/moss/build/icon.svg (coral, two ink eyes). MOSS Code: the Shards mark on Night.
+// MOSS: the coral bot tile of apps/moss/build/icon.svg (coral, two ink eyes). MOSS Code: the Shards mark, light shards on a gold tile.
 // Run: swift Scripts/make-icons.swift <repo root> <apps/ios dir>
 import AppKit
 
@@ -27,12 +27,15 @@ render({ c in
     c.fillEllipse(in: CGRect(x: 0.56 * S, y: 0.40 * S, width: 0.17 * S, height: 0.22 * S))
 }, to: out + "/Apps/MOSS/Assets.xcassets/AppIcon.appiconset/icon.png")
 
-// MOSS Code: parse the mark's M/L/Z polylines, fit them into the middle of the Night tile.
+// MOSS Code: parse the mark's M/L/Z polylines, fit them into the middle of the gold tile.
 let svg = try! String(contentsOfFile: root + "/assets/brand/moss-code/mark/shards-mark-on-dark.svg", encoding: .utf8)
 var paths: [[CGPoint]] = []
-let dRegex = try! NSRegularExpression(pattern: #" d="([^"]+)""#)
+// the mark's first path is the gold disc; the paths after it are the light shards, which are all this icon draws
+let dRegex = try! NSRegularExpression(pattern: #"fill="(#[0-9A-Fa-f]{6})" d="([^"]+)""#)
 for m in dRegex.matches(in: svg, range: NSRange(svg.startIndex..., in: svg)) {
-    let d = String(svg[Range(m.range(at: 1), in: svg)!])
+    let fill = String(svg[Range(m.range(at: 1), in: svg)!])
+    if fill.uppercased() == "#E5A72E" { continue }
+    let d = String(svg[Range(m.range(at: 2), in: svg)!])
     var cur: [CGPoint] = []
     let scanner = d.replacingOccurrences(of: "M", with: " M ").replacingOccurrences(of: "L", with: " L ").replacingOccurrences(of: "Z", with: " Z ")
     var tokens = scanner.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
@@ -47,10 +50,10 @@ for m in dRegex.matches(in: svg, range: NSRange(svg.startIndex..., in: svg)) {
     tokens.removeAll()
 }
 render({ c in
-    c.setFillColor(color(0x161A33)); c.fill(CGRect(x: 0, y: 0, width: S, height: S))
+    c.setFillColor(color(0xE5A72E)); c.fill(CGRect(x: 0, y: 0, width: S, height: S))
     // the mark's viewBox is 86 86 828 828; draw it at 62% of the tile
     let side = 0.62 * S, k = side / 828, o = (S - side) / 2
-    c.setFillColor(color(0xE5A72E))
+    c.setFillColor(color(0xF6F4EE))
     for p in paths {
         c.beginPath()
         for (i, q) in p.enumerated() {
