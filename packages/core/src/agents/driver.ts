@@ -17,7 +17,17 @@ import { isContractError } from "../contracts/common";
 import type { SessionDriver, TurnControl, TurnEnd, TurnInput } from "../contracts/session-host";
 import type { ToolApp, ToolDisplay, TurnOrigin } from "@waifucave/moss-protocol";
 
+/** How long an agent started early (`AgentDriver.warm`) waits for the first message of its session. A session the person
+ *  opened and never wrote in must not keep an agent process running for good: after this, the process is stopped, and the
+ *  first message (whenever it comes) starts it as it always did. */
+export const WARM_IDLE_MS = 10 * 60_000;
+
 export interface AgentDriverOptions {
+  /** Runs `fn` once after `ms` (the manager's clock) and gives the way to cancel it. Absent: an agent started early
+   *  is never stopped for waiting. */
+  after?(ms: number, fn: () => void): () => void;
+  /** How long `warm`'s agent may wait for the first message. Default `WARM_IDLE_MS`. */
+  warmIdleMs?: number;
   /** Starts the agent (or reattaches to it); called by the first turn, or before it by `warm` (`warm: true`: the session
    *  was opened and nobody has typed yet, so a start that would ask the person anything fails instead of asking). */
   start(o?: { warm?: boolean }): Promise<AgentSession>;
@@ -96,6 +106,8 @@ export class AgentDriver implements SessionDriver {
   #pendingModel: { model: string; effort?: string } | undefined;
   /** The `agent_started` record of the running process was made (by the first turn that ran on it). */
   #announced = false;
+  /** Cancels the stop of an agent started early that nobody has written to. */
+  #idleOff: (() => void) | undefined;
   /** The calls seen, by id, for their end's display. */
   readonly #calls = new Map<string, { title: string; rawInput: unknown }>();
 
@@ -126,7 +138,20 @@ export class AgentDriver implements SessionDriver {
    *  fails here is simply made again, as it always was, by the first turn. */
   async warm(): Promise<void> {
     if (this.#stopping || this.#ended || this.#session || this.#starting) return;
-    await this.#ensure(true).then(() => undefined, () => undefined);
+    const ok = await this.#ensure(true).then(() => true, () => false);
+    // Nobody has typed: it is let go after `WARM_IDLE_MS` if no turn has begun by then.
+    if (ok && this.#origin === undefined && !this.#announced && this.#opts.after !== undefined) {
+      this.#idleOff?.();
+      this.#idleOff = this.#opts.after(this.#opts.warmIdleMs ?? WARM_IDLE_MS, () => {
+        this.#idleOff = undefined;
+        if (this.#origin === undefined && !this.#announced) void this.#release();
+      });
+    }
+  }
+
+  #cancelIdle(): void {
+    this.#idleOff?.();
+    this.#idleOff = undefined;
   }
 
   async #ensure(warm = false): Promise<AgentSession> {
@@ -193,6 +218,7 @@ export class AgentDriver implements SessionDriver {
 
   async #turn(input: TurnInput, ctl: TurnControl): Promise<TurnEnd> {
     if (this.#stopping) return { reason: "stopped" };
+    this.#cancelIdle();
     this.#origin = ctl.origin;
     this.#signal = ctl.signal;
     try { this.#opts.turnStarted?.(input, ctl.origin); } catch { /* an observer never stops a turn */ }
@@ -310,6 +336,7 @@ export class AgentDriver implements SessionDriver {
   }
 
   async stop(): Promise<void> {
+    this.#cancelIdle();
     this.#stopping = true;
     await this.#shutdown();
   }
@@ -317,6 +344,7 @@ export class AgentDriver implements SessionDriver {
   /** The daemon is closing: the agent's process ends, and the session isn't ended (no `ended`), so a later daemon
    *  can reattach it. */
   async detach(): Promise<void> {
+    this.#cancelIdle();
     this.#stopping = true;
     this.#ended = true;
     const s = this.#session ?? (await this.#starting?.catch(() => undefined));

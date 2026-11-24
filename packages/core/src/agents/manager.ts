@@ -795,6 +795,10 @@ export class AgentManager {
     } as Entry;
     let started = false;
     entry.driver = new AgentDriver({
+      after: (ms, fn) => {
+        const h = this.#o.clock.setTimeout(fn, ms);
+        return () => this.#o.clock.clearTimeout(h);
+      },
       start: async (o) => {
         if (started) {
           // Started again after a turn failed: the old process's token went with it, so a fresh one; and the agent takes up its
