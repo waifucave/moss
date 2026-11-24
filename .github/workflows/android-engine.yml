@@ -77,11 +77,11 @@ jobs:
           path: apps/android/engine/phonecore/kotlin/
           if-no-files-found: warn
           retention-days: 7
-      - name: Build both apps in both variants, the instrumented tests, and the JVM tests
+      - name: Build both apps in both variants, the instrumented tests, and the engine client's JVM tests
         working-directory: apps/android
         run: >
-          gradle --no-daemon --stacktrace
-          :engine:testDebugUnitTest :shared:testDebugUnitTest
+          gradle --no-daemon --stacktrace --continue
+          :engine:testDebugUnitTest
           :moss:assembleFakeDebug :code:assembleFakeDebug
           :moss:assembleRealDebug :code:assembleRealDebug
           :moss:assembleRealDebugAndroidTest :code:assembleRealDebugAndroidTest
@@ -114,6 +114,12 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           working-directory: apps/android
           script: gradle --no-daemon --stacktrace :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
+      # :shared's JVM tests and pictures, without the native library (Robolectric fetches its Android jar from Maven Central
+      # on a cold cache: last, so a failed download can't hold the emulator proof).
+      - name: The screens' JVM tests
+        if: always()
+        working-directory: apps/android
+        run: gradle --no-daemon --stacktrace :shared:testDebugUnitTest
       - name: Logs
         if: always()
         run: |

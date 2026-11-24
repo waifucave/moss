@@ -271,17 +271,15 @@ class CoreEngineClient(
         return synchronized(this) { devices }?.firstOrNull { it.id == id }?.name ?: "another device"
     }
 
-    /** Follows a session live from now; at most a few at once (the oldest let go). */
-    private fun follow(session: String, lastSeq: Long?) {
+    /** Follows a session live from now, before its page is handed over; at most a few at once (the oldest let go). */
+    private suspend fun follow(session: String, lastSeq: Long?) {
         val drop = synchronized(this) {
             val known = followed.remove(session)
             followed[session] = maxOf(known ?: 0, lastSeq ?: 0)
             if (followed.size > 8) followed.keys.first().also { followed.remove(it) } else null
         }
-        scope.launch {
-            runCatching { calls.sessionAttach(session, null) }
-            if (drop != null) runCatching { connection()?.call("session.detach", JsonObject(mapOf("id" to kotlinx.serialization.json.JsonPrimitive(drop))).toString()) }
-        }
+        try { calls.sessionAttach(session, null) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(tag, "following a session failed: ${e.javaClass.simpleName}") }
+        if (drop != null) scope.launch { runCatching { connection()?.call("session.detach", JsonObject(mapOf("id" to kotlinx.serialization.json.JsonPrimitive(drop))).toString()) } }
     }
 
     /** A message's time back to the seq the engine pages by (`before` is a seq there, a time on the screens). */
