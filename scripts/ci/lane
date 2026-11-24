@@ -1,44 +1,156 @@
 #!/bin/bash
 # lane: run CI on GitHub for the branch you are on, so many lanes can be checked at once without queuing on one Mac.
 #
-#   scripts/ci/lane start [--only acceptance|acceptance-linux]   push this branch, start CI on it, print the run's number and address
-#   scripts/ci/lane wait [run]                  block until the run ends, print each job's result and time; exits 0
+#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux]
+#                                               push this branch, start CI on it, print the run's number and address.
+#                                               The run is SCOPED: the jobs your branch's changes since its merge-base with
+#                                               origin/lane-int/moss need (every area you touched with its full checks, the acceptance
+#                                               units you touched; a path no area maps runs everything). --all runs every job but the PARKED ones.
+#                                               PARKED (swift, cowork): macOS jobs for parts the first release does not ship (the old Chrome
+#                                               extension's native host, Cowork's launcher and libkrun queue). They run only when their own
+#                                               sources changed since the merge-base, --all or not; --parked runs them whatever you changed.
+#   scripts/ci/lane wait [run]                  block until the run ends, print each job's result and time and the run's scope; exits 0
 #                                               when the `lane gate` job passed (Windows aside), 1 when it did not
 #   scripts/ci/lane failures [run]              each failed job's failing steps and the error lines of their logs
+#   scripts/ci/lane rerun [run]                 run only the failed jobs of a finished run again, ONCE (a second rerun is refused: find the
+#                                               cause); then scripts/ci/lane wait
+#   scripts/ci/lane result [sha]                the gate and every check that is not green, from the commit's check-runs (the run's job
+#                                               list often answers HTTP 502; this does not need it); default: HEAD
 #
-# `run` defaults to the newest run of this branch's HEAD commit. `--only acceptance` runs just the acceptance units
-# (and the names and layout checks), to run them again after a fix. What a lane reads is `lane gate`: every job but the
-# Windows ones, plus the acceptance run (a red Windows job shows in the table and does not fail the lane gate).
-# It needs `gh`, signed in with access to this repository. It pushes only the branch you are on and starts only ci.yml.
+# `run` defaults to the newest run of this branch's HEAD commit. `--only acceptance` runs just the acceptance units (and the names and
+# layout checks), to run them again after a fix. What a lane reads is `lane gate`: every job but the Windows ones, plus the acceptance
+# run (a red Windows job shows in the table and does not fail the lane gate). The gate prints its scope: which areas ran and which were
+# skipped as untouched, so a green over a scoped run is never read as a full run.
+# It needs `gh`, signed in with access to this repository, and `jq`. It pushes only the branch you are on and starts only ci.yml.
+# LANE_BASE_REF names another integration branch to count your changes from (default origin/lane-int/moss).
 set -u
 say() { echo "lane: $*" >&2; }
 die() { say "$*"; exit 2; }
 command -v gh >/dev/null || die "the GitHub CLI (gh) is not installed"
+command -v jq >/dev/null || die "jq is not installed"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 sha="$(git rev-parse HEAD)"
 [ "$branch" != HEAD ] || die "a detached HEAD: check out your lane's branch"
 case "$branch" in main) die "this is main: CI for main runs through the merge queue" ;; esac
+base_ref="${LANE_BASE_REF:-origin/lane-int/moss}"
+# What a lane's changes are counted from can only be an integration branch or main: `LANE_BASE_REF=HEAD` (or a branch of your own) counts nothing and
+# would start a run that checks nothing.
+case "$base_ref" in origin/lane-int/?*|origin/main) ;; *) die "LANE_BASE_REF is $base_ref: it can only be origin/lane-int/<name> or origin/main (a base that is your own branch counts no change)" ;; esac
 
 # The newest run of CI for this branch at this commit (any event: a push to lane-int/* or a manual run).
 find_run() {
   gh run list --workflow ci.yml --branch "$branch" --limit 20 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$sha\")][0].databaseId // empty" 2>/dev/null
 }
 
+# jq: one job as `conclusion<TAB>minutes<TAB>name<TAB>id`; an unfinished job has no conclusion (its status instead) and its time reads "-".
+JOB_TSV='[(.conclusion // .status), (if (.completed_at // .completedAt // "") < "2000" or (.started_at // .startedAt // "") < "2000" then "-" else "\((((.completed_at // .completedAt)|fromdateiso8601) - ((.started_at // .startedAt)|fromdateiso8601)) / 60 | floor)m" end), .name, (.id | tostring)] | @tsv'
+
+# The run's head commit (one call about the run, not its job list).
+run_sha() { gh api "repos/{owner}/{repo}/actions/runs/$1" --jq .head_sha 2>/dev/null; }
+
+# The run's jobs, one line each: from the run's job list, or, when that answers an error (HTTP 502 is common), from the commit's
+# check-runs, which are the same jobs.
+jobs_tsv() {
+  local run="$1" out="" try
+  for try in 1 2; do
+    out="$(gh api --paginate "repos/{owner}/{repo}/actions/runs/$run/jobs?per_page=100" --jq ".jobs[] | $JOB_TSV" 2>/dev/null)" && [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+    [ "$try" = 1 ] && sleep "${LANE_TEST_RETRY_SLEEP:-5}"
+  done
+  local rsha; rsha="$(run_sha "$run")"; [ -n "$rsha" ] || rsha="$sha"
+  say "the run's job list did not answer: reading the check-runs of ${rsha:0:9} instead"
+  out="$(gh api --paginate "repos/{owner}/{repo}/commits/$rsha/check-runs?per_page=100&filter=latest" --jq ".check_runs[] | select(.html_url | contains(\"/runs/$run/\")) | $JOB_TSV" 2>/dev/null)" || out=""
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# The scope lines the run's `lane gate` job annotated (args: its check-run id).
+scope_lines() {
+  gh api "repos/{owner}/{repo}/check-runs/$1/annotations" --jq '.[] | select((.title // "") | startswith("scope")) | "scope: \(.message)"' 2>/dev/null
+}
+
+# Print the scope of a finished run whose jobs are in $1 (jobs_tsv's lines).
+print_scope() {
+  local id lines
+  id="$(printf '%s\n' "$1" | awk -F'\t' '$3 == "lane gate" {print $4; exit}')"
+  [ -n "$id" ] || return 0
+  lines="$(scope_lines "$id")"
+  if [ -n "$lines" ]; then
+    printf '%s\n' "$lines"
+    case "$lines" in *"(0 file(s) changed"*) echo "lane: WARNING: this run counted ZERO changed files, so it checked almost nothing; its green means nothing. Start it again from a branch that has your commits (scripts/ci/lane start)." ;; esac
+    case "$lines" in *"SCOPED RUN"*) echo "lane: this is a SCOPED run: an area listed as skipped did not run because your changes do not touch it; the integration branch's own run covers everything. scripts/ci/lane start --all runs every job." ;; esac
+  else
+    echo "scope: not reported by this run (it ran before scoped starts, or the annotation is not readable): read it as a full run only if it was started with --all"
+  fi
+}
+
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   start)
-    only=all
-    if [ "${1:-}" = "--only" ]; then only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ]; } || die "--only takes acceptance or acceptance-linux"; shift 2; fi
+    only=all; scope=scoped; parked=false
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all) scope=all; shift ;;
+        --parked) parked=true; shift ;;
+        --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ]; } || die "--only takes acceptance or acceptance-linux"; shift 2 ;;
+        *) die "unknown option $1 (scripts/ci/lane with no arguments prints the usage)" ;;
+      esac
+    done
     [ -z "$(git status --porcelain --untracked-files=no)" ] || say "note: uncommitted changes are not in the run (it runs what is pushed)"
     case "$branch" in
-      lane-int/*) say "pushing $branch: a push to an integration branch starts CI by itself"
+      lane-int/*) say "pushing $branch: a push to an integration branch starts CI by itself, and runs every area"
         git push origin "HEAD:refs/heads/$branch" >&2 || die "the push failed"
-        for i in $(seq 1 12); do run="$(find_run)"; [ -n "$run" ] && break; sleep 5; done ;;
+        for i in $(seq 1 12); do run="$(find_run)"; [ -n "$run" ] && break; sleep "${LANE_TEST_POLL:-5}"; done ;;
       *) git push origin "HEAD:refs/heads/$branch" >&2 || die "the push failed"
+        args=(-f "only=$only")
+        if [ "$only" = all ]; then
+          git fetch origin "${base_ref#origin/}" >/dev/null 2>&1 || say "note: could not refresh $base_ref; counting from the copy here"
+          mb="$(git merge-base HEAD "$base_ref" 2>/dev/null)" || mb=""
+          # A shallow checkout (a depth-limited fetch writes .git/shallow) has a cut-off history: a merge-base found in it can be wrong,
+          # and the diff from it too small. No merge-base, or a shallow one, is every job.
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+            say "this checkout is shallow (git fetch --unshallow repairs it): its merge-base cannot be trusted, so the run starts EVERY job"
+            mb=""
+          fi
+          top="$(git rev-parse --show-toplevel)"
+          plan=("$top/scripts/pinned-bun" "$top/scripts/ci/plan.ts")
+          # A merge-base equal to HEAD (nothing of yours since it) counts no file: a scoped run over nothing runs nothing, so it is every job instead.
+          if [ -n "$mb" ] && [ "$scope" = scoped ] && [ -z "$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null | head -1)" ]; then
+            say "NO CHANGED FILE since the merge-base with $base_ref (${mb:0:9}): a scoped run over nothing would check nothing, so this run starts EVERY job"
+            mb=""
+          fi
+          if [ -n "$mb" ]; then
+            # The base goes with --all too: the PARKED areas (swift, cowork) take only their own sources from the diff, whatever the scope.
+            args+=(-f "scope=$scope" -f "base=$mb")
+            if [ "$scope" = scoped ]; then
+              say "scoped run: your changes since ${mb:0:9} (the merge-base with $base_ref); --all runs every job but the parked ones"
+              plan+=(--base "$mb")
+            else
+              say "full run: every area but the parked ones (swift, cowork), which run only for their own sources changed since ${mb:0:9}"
+              plan+=(--all --parked-base "$mb")
+            fi
+            [ "$parked" = true ] && plan+=(--parked)
+          else
+            say "no usable merge-base with $base_ref: running every job, the parked ones too (fail closed)"
+            args+=(-f scope=all)
+            parked=true
+            plan+=(--all --parked)
+          fi
+          [ "$parked" = true ] && args+=(-f parked=true)
+          # Said on EVERY start, so --all is never read as "every job": the parked areas run for their own sources only.
+          if [ "$parked" = true ]; then
+            say "parked areas (swift: the old Chrome extension's native host; cowork: Cowork's launcher and libkrun queue): INCLUDED (--parked, or a base that could not be used)"
+          else
+            say "parked areas (swift: the old Chrome extension's native host; cowork: Cowork's launcher and libkrun queue): run ONLY when their own sources changed since the merge-base, --all or not; --parked runs them"
+          fi
+          # What it will start, from ci.yml's own conditions (best effort: the run's own scope line is the record).
+          if [ -x "$top/scripts/pinned-bun" ] && [ -f "$top/scripts/ci/plan.ts" ]; then "${plan[@]}" 2>/dev/null | sed 's/^/lane: this run: /' >&2 || true; fi
+        else
+          args+=(-f scope=all)
+        fi
         before="$(find_run)"
-        gh workflow run ci.yml --ref "$branch" -f "only=$only" >&2 || die "could not start ci.yml on $branch"
+        gh workflow run ci.yml --ref "$branch" "${args[@]}" >&2 || die "could not start ci.yml on $branch"
         run=""
-        for i in $(seq 1 12); do sleep 5; run="$(find_run)"; [ -n "$run" ] && [ "$run" != "$before" ] && break; run=""; done ;;
+        for i in $(seq 1 12); do sleep "${LANE_TEST_POLL:-5}"; run="$(find_run)"; [ -n "$run" ] && [ "$run" != "$before" ] && break; run=""; done ;;
     esac
     [ -n "${run:-}" ] || die "no run of $sha showed up yet: scripts/ci/lane wait finds it later"
     echo "run $run  $(gh run view "$run" --json url --jq .url)"
@@ -51,31 +163,62 @@ case "$cmd" in
     while :; do
       st="$(gh run view "$run" --json status --jq .status 2>/dev/null || true)"
       [ "$st" = completed ] && break
-      sleep 60
+      sleep "${LANE_TEST_WAIT_POLL:-60}"
     done
     conclusion="$(gh run view "$run" --json conclusion --jq '.conclusion' 2>/dev/null || true)"
-    # An unfinished job has no end time (0001-01-01): its time reads "-".
-    gh run view "$run" --json url,jobs --jq '
-      "url: \(.url)",
-      (.jobs | sort_by(.name)[] | select(.conclusion != "skipped") |
-        "\(.conclusion)\t\(if .completedAt < "2000" or .startedAt < "2000" then "-" else "\(((.completedAt|fromdateiso8601) - (.startedAt|fromdateiso8601)) / 60 | floor)m" end)\t\(.name)")'
+    echo "url: $(gh run view "$run" --json url --jq .url 2>/dev/null)"
+    if ! rows="$(jobs_tsv "$run")"; then
+      echo "lane gate: unknown (neither the job list nor the check-runs answered: scripts/ci/lane result ${sha:0:9} later; the run's conclusion is ${conclusion:-unknown})"
+      exit 1
+    fi
+    printf '%s\n' "$rows" | awk -F'\t' '$1 != "skipped" {print $1 "\t" $2 "\t" $3}' | sort -t$'\t' -k3,3
     if [ "$conclusion" = cancelled ]; then
       echo "lane gate: cancelled (a newer run on this branch superseded it, or it was cancelled by hand): wait for the newer run: scripts/ci/lane wait"
       exit 1
     fi
-    gate="$(gh run view "$run" --json jobs --jq '[.jobs[] | select(.name == "lane gate")][0].conclusion // "none"')"
-    ran_suites="$(gh run view "$run" --json jobs --jq '[.jobs[] | select(.name == "typecheck")][0].conclusion // "none"')"
+    gate="$(printf '%s\n' "$rows" | awk -F'\t' '$3 == "lane gate" {print $1; exit}')"; gate="${gate:-none}"
+    ran_suites="$(printf '%s\n' "$rows" | awk -F'\t' '$3 == "typecheck" {print $1; exit}')"; ran_suites="${ran_suites:-none}"
     echo "lane gate: $gate"
+    print_scope "$rows"
     if [ "$gate" = success ] && [ "$ran_suites" = skipped ]; then
       echo "lane: the suites did not run (an --only acceptance run): this is not a full green; run scripts/ci/lane start for that"
     fi
     [ "$gate" = success ] ;;
   failures)
     run="${1:-$(find_run)}"; [ -n "$run" ] || die "no run of $sha: scripts/ci/lane start first"
-    gh run view "$run" --json jobs --jq '.jobs[] | select(.conclusion == "failure" and .name != "gate" and .name != "lane gate") | "\(.databaseId)\t\(.name)\t\([.steps[] | select(.conclusion == "failure") | .name] | join("; "))"' |
-    while IFS=$'\t' read -r id name steps; do
-      echo "== $name  (failed: $steps)"
+    rows="$(jobs_tsv "$run")" || die "neither the job list nor the check-runs answered: try scripts/ci/lane result ${sha:0:9}"
+    printf '%s\n' "$rows" | awk -F'\t' '$1 == "failure" && $3 != "gate" && $3 != "lane gate" {print $4 "\t" $3}' |
+    while IFS=$'\t' read -r id name; do
+      steps="$(gh api "repos/{owner}/{repo}/actions/jobs/$id" --jq '[.steps[] | select(.conclusion == "failure") | .name] | join("; ")' 2>/dev/null)"
+      echo "== $name  (failed: ${steps:-unknown})"
       gh run view "$run" --job "$id" --log-failed 2>/dev/null | grep -aE "error:|\(fail\)|##\[error\][^-]|FAIL|✗| [1-9][0-9]* fail$|acceptance: step [0-9]+: (FAIL|BLOCKED)" | sed -E 's/^[^	]*\t[^	]*\t[0-9TZ:.-]+ //' | perl -pe 's/(\e|\^\[)\[[0-9;]*m//g' | cut -c1-300 | awk '!seen[$0]++' | head -25
     done ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  rerun)
+    run="${1:-$(find_run)}"; [ -n "$run" ] || die "no run of $sha: scripts/ci/lane start first"
+    info="$(gh api "repos/{owner}/{repo}/actions/runs/$run" --jq '"\(.status) \(.run_attempt) \(.conclusion // "none")"' 2>/dev/null)" || die "could not read run $run"
+    read -r st attempt concl <<<"$info"
+    [ "$st" = completed ] || die "run $run is $st: rerun takes a finished run (scripts/ci/lane wait first)"
+    [ "$concl" != success ] || die "run $run passed: nothing to run again"
+    [ "$attempt" -le 1 ] || die "run $run was already run again (attempt $attempt): a job that fails twice is a fault to find, not to retry: scripts/ci/lane failures $run"
+    gh run rerun "$run" --failed >&2 || die "could not start the rerun of run $run's failed jobs"
+    say "run $run: its failed jobs run again (attempt 2), with the jobs that wait on them (the gates). Report both results; an acceptance unit that failed is a fault until proven otherwise."
+    say "now: scripts/ci/lane wait $run" ;;
+  result)
+    target="${1:-$sha}"
+    full="$(git rev-parse --verify --quiet "${target}^{commit}" 2>/dev/null)" && target="$full"
+    all="$(gh api --paginate "repos/{owner}/{repo}/commits/$target/check-runs?per_page=100&filter=latest" --jq '.check_runs[] | {run: ((.html_url | capture("/runs/(?<r>[0-9]+)/") | .r) // "-"), state: (.conclusion // .status), name: .name, id: .id}' 2>/dev/null)" || die "the check-runs of ${target:0:9} did not answer (rate limit? gh api rate_limit --jq .resources.core)"
+    [ -n "$all" ] || die "no checks on ${target:0:9} yet"
+    printf '%s\n' "$all" | jq -rs '
+      group_by(.run)[] |
+      . as $g |
+      ($g | map(select(.state != "skipped" and .state != "neutral"))) as $ran |
+      ($g | map(select(.name == "lane gate" or .name == "gate"))) as $gates |
+      "run \($g[0].run): \($ran | length) checks, \($g | length - ($ran | length)) skipped" +
+        (if ($gates | length) == 0 then " (no gate in it: not a ci.yml run)" else "" end),
+      ($gates[] | "  \(.name): \(.state)"),
+      ($ran | map(select(.state != "success" and .name != "gate" and .name != "lane gate")) | if length == 0 then "  every other check: success" else (.[] | "  \(.state)\t\(.name)") end)
+    '
+    # The scope the lane gate reported, for each run that has one.
+    printf '%s\n' "$all" | jq -r 'select(.name == "lane gate") | .id' | while read -r id; do scope_lines "$id" | head -3; done ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

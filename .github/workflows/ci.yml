@@ -20,12 +20,34 @@ on:
         type: choice
         options: [all, acceptance, acceptance-linux]
         default: all
+      # scripts/ci/lane start sets these two: a lane's run is as big as its change. `scoped` runs the jobs the files changed since `base`
+      # need (scripts/ci-changes.ts: the same areas a pull request gets, with every one's FULL checks and the acceptance units it
+      # touches); a path no area maps, or a base that cannot be read, runs everything. `all` (the default here) runs every job.
+      scope:
+        description: "all: every area. scoped: only the areas the files changed since `base` touch (a path no area maps runs everything)"
+        type: choice
+        options: [all, scoped]
+        default: all
+      base:
+        description: "the commit the lane's changes are counted from (its merge-base with the integration branch); `all` with a base still runs the parked areas for their own sources changed since it"
+        type: string
+        default: ""
+      # PARKED areas (scripts/ci-changes.ts PARKED): the old Chrome extension's native host (`swift`) and Cowork's launcher and libkrun queue
+      # (`cowork`) build parts the first release does not ship, on a macOS runner. They run only when their own sources changed; this runs them anyway.
+      parked:
+        description: "true: also run the parked areas (swift, cowork), whatever changed"
+        type: boolean
+        default: false
 
-# One run per branch: a new push to a pull request or an integration branch, or a new manual run on a branch, cancels
-# the run it supersedes (a merge-queue group's run is never cancelled; two manual runs of different `only` don't meet).
+# One run per branch: a new push to a pull request, or a new manual run on a branch, cancels the run it supersedes (a merge-queue
+# group's run is never cancelled; two manual runs of different `only` don't meet). A push to an integration branch is the exception:
+# a run that is running finishes, and at most ONE newer push waits behind it (a still newer push replaces the waiting one), so the
+# branch's tip gets whole runs at the pace the runners allow, instead of every run being cancelled by the next merge (2026-11-24: on
+# lane-int/moss six pushes in a row were cancelled and the tip was rarely tested as a whole). The price is the runner time of a run
+# that is no longer the tip's when it ends, at most one at a time per integration branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-${{ github.event.inputs.only }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' && github.event_name != 'push' }}
 
 # A-M1: the `@waifucave` scope (the agent SDK's packages, `@waifucave/moss-*`, `@waifucave/mochi2d` and the owner's
 # other packages) comes from GitHub Packages, which wants a token even to read. Every job may read it with this
@@ -91,6 +113,16 @@ jobs:
       link: ${{ steps.areas.outputs.link }}
       linuxrepo: ${{ steps.areas.outputs.linuxrepo }}
       adapters: ${{ steps.areas.outputs.adapters }}
+      acceptance: ${{ steps.areas.outputs.acceptance }}
+      cowork: ${{ steps.areas.outputs.cowork }}
+      windows: ${{ steps.areas.outputs.windows }}
+      corelinux: ${{ steps.areas.outputs.corelinux }}
+      # The acceptance units this run starts (a JSON list: the matrix of `acceptance` and `acceptance-linux`) and what the run says
+      # about its own size (printed by `lane gate`, so a green gate is never mistaken for a full run).
+      acceptance_units: ${{ steps.areas.outputs.acceptance_units }}
+      scope: ${{ steps.areas.outputs.scope }}
+      scope_ran: ${{ steps.areas.outputs.scope_ran }}
+      scope_skipped: ${{ steps.areas.outputs.scope_skipped }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -105,15 +137,35 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           ONLY: ${{ github.event.inputs.only }}
+          SCOPE: ${{ github.event.inputs.scope }}
+          BASE: ${{ github.event.inputs.base }}
+          PARKED_IN: ${{ github.event.inputs.parked }}
           GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
+          # The parked areas take only their own sources from the diff (the lane's base, or the pull request's or group's); `parked: true` runs them.
+          parked=""; [ "$PARKED_IN" = true ] && parked="--parked"
           case "$EVENT" in
-            pull_request) bun scripts/ci-changes.ts --base HEAD^1 ;;
+            pull_request) bun scripts/ci-changes.ts --queue --base HEAD^1 --why "a pull request" ;;
             merge_group)
               git fetch --no-tags --depth=1 origin "$GROUP_BASE" || true
-              bun scripts/ci-changes.ts --base "$GROUP_BASE" ;;
-            # A manual run of the acceptance alone: no change, so no area (the acceptance job takes none).
-            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ]; then bun scripts/ci-changes.ts --base HEAD; else bun scripts/ci-changes.ts --all; fi ;;
+              bun scripts/ci-changes.ts --queue --base "$GROUP_BASE" --why "a merge-queue group" ;;
+            # A push to an integration branch is the tip: every area.
+            push) bun scripts/ci-changes.ts --all --why "a push to an integration branch runs everything" ;;
+            # A manual run of the acceptance alone: no change, so no area but the acceptance run (every unit of it).
+            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ]; then
+                 bun scripts/ci-changes.ts --only-acceptance --why "a manual run of only: $ONLY"
+               elif [ "$SCOPE" = scoped ] && [ -n "$BASE" ]; then
+                 # The lane's own changes since its merge-base with the integration branch; a base this runner cannot fetch runs everything.
+                 git fetch --no-tags --depth=1 origin "$BASE" || true
+                 bun scripts/ci-changes.ts --refuse-empty --base "$BASE" $parked --why "a manual scoped run"
+               elif [ "$SCOPE" = scoped ]; then
+                 bun scripts/ci-changes.ts --all --parked --why "a scoped run with no base commit: fail closed"
+               elif [ -n "$BASE" ]; then
+                 git fetch --no-tags --depth=1 origin "$BASE" || true
+                 bun scripts/ci-changes.ts --all --parked-base "$BASE" $parked --why "a manual run of everything"
+               else
+                 bun scripts/ci-changes.ts --all $parked --why "a manual run of everything"
+               fi ;;
           esac
 
   # Always, whatever changed: the rename's residue and the live install's names over every tracked file, the rename's
@@ -140,7 +192,7 @@ jobs:
         run: bun test test/rename/
 
       - name: The rename's rules, the layout, the workspaces and the CI areas
-        run: bun test scripts/rename/ scripts/layout.test.ts scripts/workspaces.test.ts scripts/ci-changes.test.ts
+        run: bun test scripts/rename/ scripts/layout.test.ts scripts/workspaces.test.ts scripts/ci-changes.test.ts scripts/ci/test-reads.test.ts scripts/ci/queue-map.test.ts
 
       # The headless shell's pin (lane L's, plugins/moss/plugins/browser/headless-shell.pins.json) follows the app's
       # Electron: the same Chromium milestone (spec §12.1). It warns while the file doesn't exist yet.
@@ -755,7 +807,7 @@ jobs:
   windows-fence:
     name: windows fence
     needs: changes
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true')
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.windows == 'true')
     uses: ./.github/workflows/windows-fence.yml
 
   # The link sidecar (native/link, lane H's moss-link, iroh) on Windows and Linux, x64 and arm64: it is built, and
@@ -1175,7 +1227,8 @@ jobs:
   core-linux:
     name: core · linux ${{ matrix.shard }}/3
     needs: changes
-    if: needs.changes.outputs.core == 'true'
+    # `core`: the core's sources and what its macOS tests read (the macOS legs run too); `corelinux`: what only these Linux shards read.
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.corelinux == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -1287,14 +1340,17 @@ jobs:
   # under the lockfile. scripts/heavy's exclusive lock is free on a fresh runner and is taken as on a Mac.
   acceptance:
     name: acceptance · ${{ matrix.unit }}
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux'
+    needs: changes
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.acceptance == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        # THE line a new unit is added on (scripts/ci/acceptance-units.ts says what stays off it, and why).
-        unit: [chain, window-1, window-2, window-3, workshop, plugin-app, browser, bundled-tools, examples, reopen, host, cards, moss, setup, arrivals, addons, archive, acp, workshop-points, models, builder-examples, browser-host, surface-copy-host, canvas, canvas-app]
+        # The units this run needs (scripts/ci-changes.ts: every unit on a push to an integration branch and a full or acceptance-only
+        # manual run, the units the change touches on a scoped one). THE list a new unit is added to is `ON_GITHUB` in
+        # scripts/ci/acceptance-units.ts (which also says what stays off it, and why).
+        unit: ${{ fromJSON(needs.changes.outputs.acceptance_units) }}
     env:
       MOSS_PINNED_BUN: "0"
       # Row 37 counts a hidden page's 100 ms ticks over 3 s (30 on a free machine, about 3 when throttled; the bar is 20): a shared runner
@@ -1352,13 +1408,14 @@ jobs:
   # (scripts/acceptance/not-on-linux.ts), or the unit is red, which is the list of what a person on Linux would meet.
   acceptance-linux:
     name: acceptance-linux · ${{ matrix.unit }}
-    if: github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.acceptance == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        unit: [chain, window-1, window-2, window-3, workshop, plugin-app, browser, bundled-tools, examples, reopen, host, cards, moss, setup, arrivals, addons, archive, acp, workshop-points, models, builder-examples, browser-host, surface-copy-host, canvas, canvas-app]
+        unit: ${{ fromJSON(needs.changes.outputs.acceptance_units) }}
     env:
       MOSS_PINNED_BUN: "0"
       MOSS_ACCEPT_TICK_MIN: "10"
@@ -1424,6 +1481,31 @@ jobs:
     permissions:
       contents: read
     steps:
+      # A green lane gate over a scoped run says so: which areas ran and which were skipped as untouched, and how many acceptance
+      # units. The same lines go to the run's summary and to two annotations (`scripts/ci/lane wait` and `lane result` print them).
+      - name: Scope of this run
+        env:
+          SCOPE: ${{ needs.changes.outputs.scope }}
+          RAN: ${{ needs.changes.outputs.scope_ran }}
+          SKIPPED: ${{ needs.changes.outputs.scope_skipped }}
+          UNITS: ${{ needs.changes.outputs.acceptance_units }}
+        run: |
+          echo "scope: ${SCOPE:-unknown (the changes job gave no scope: read it as a partial run)}"
+          echo "scope: ran: ${RAN:-none}"
+          echo "scope: skipped as untouched: ${SKIPPED:-none}"
+          echo "scope: acceptance units: ${UNITS:-none}"
+          echo "::notice title=scope::${SCOPE:-unknown}. Ran: ${RAN:-none}. Skipped as untouched: ${SKIPPED:-none}."
+          echo "::notice title=scope units::acceptance units: ${UNITS:-none}"
+          {
+            echo "### Scope of this run"
+            echo
+            echo "${SCOPE:-unknown}"
+            echo
+            echo "- ran: ${RAN:-none}"
+            echo "- skipped as untouched: ${SKIPPED:-none}"
+            echo "- acceptance units: ${UNITS:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Every job passed, or was not needed
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -1438,7 +1520,8 @@ jobs:
   swift:
     name: swift (WinterBrowserHost)
     needs: changes
-    # On demand only (workflow_dispatch), off the gate's macOS runners (owner's ruling, November 7).
+    # On demand only (workflow_dispatch), off the gate's macOS runners (owner's ruling, November 7), and only when the host's own folder changed
+    # (scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`): the first release does not ship the old Chrome extension's host.
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
@@ -1454,8 +1537,10 @@ jobs:
   # signs ad-hoc (`codesign --sign -`) in a temp directory; nothing touches a Keychain or `~/.moss*`. No bun, no workspace install: the package imports nothing but the system.
   swift-cowork-launcher:
     name: swift (WinterCoworkLauncher)
-    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux'
+    needs: changes
+    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
+    # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
     runs-on: macos-latest
     permissions:
       contents: read
@@ -1478,8 +1563,10 @@ jobs:
   # (success when the change is out of scope), so it can become a required check without ever being "skipped".
   libkrun-queue:
     name: libkrun patch queue
-    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run. Skipped, the job reports success.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux'
+    needs: changes
+    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
+    # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`. Skipped, the job reports success.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
