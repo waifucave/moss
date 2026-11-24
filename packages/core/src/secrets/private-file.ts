@@ -214,12 +214,14 @@ function lockMtime(lockPath: string, now: number): number {
 /** The locks the work under way holds (outermost first), so a write inside it can check before each rename that every
  *  one is still its own (lane SE review: a holder paused past `LOCK_STALE_MS`, a lid closed during a keyring prompt or a
  *  suspended VM, is taken over; when it resumes, its read-change-write must not land over the new holder's). */
-const heldLocks = new AsyncLocalStorage<readonly { path: string; stillMine: () => boolean }[]>();
+// A lease is checked only while its hold lasts: work started inside the hold that runs on after it ends (a change
+// listener, a note written without waiting) inherits the store, and is not refused once the lock is let go.
+const heldLocks = new AsyncLocalStorage<readonly { path: string; stillMine: () => boolean; released: boolean }[]>();
 
 /** Throws `locked` when the work under way lost any lock it holds: the write is dropped, never put over a newer one. */
 export function assertLocksHeld(): void {
   for (const l of heldLocks.getStore() ?? []) {
-    if (!l.stillMine()) throw new ContractError("locked", `this process lost the lock ${basename(l.path)} while it was paused: its write was dropped, so a newer one is never overwritten`);
+    if (!l.released && !l.stillMine()) throw new ContractError("locked", `this process lost the lock ${basename(l.path)} while it was paused: its write was dropped, so a newer one is never overwritten`);
   }
 }
 
@@ -275,8 +277,9 @@ export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>,
   const before = inProcess.get(lockPath) ?? Promise.resolve();
   const run = before.then(async () => {
     const lock = await takeFileLock(lockPath, waitMs, renewMs);
-    try { return await heldLocks.run([...(heldLocks.getStore() ?? []), { path: lockPath, stillMine: lock.stillMine }], fn); }
-    finally { await lock.release(); }
+    const lease = { path: lockPath, stillMine: lock.stillMine, released: false };
+    try { return await heldLocks.run([...(heldLocks.getStore() ?? []), lease], fn); }
+    finally { lease.released = true; await lock.release(); }
   });
   const tail = run.catch(() => undefined);
   inProcess.set(lockPath, tail);

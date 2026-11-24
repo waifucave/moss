@@ -6,7 +6,7 @@ import { encryptedFileStatus, type SecretRef } from "../../src/contracts/secret-
 import type { ApiCallContext } from "../../src/plugin-host/api/router";
 import { keysApi } from "../../src/plugin-host/api/keys";
 import { EncryptedFileValues, MossSecretStore, memoryVault, vaultKey } from "../../src/secrets/moss-secret-store";
-import { setWindowsAclForTests, withSecretsLock, type PrivateFileStep } from "../../src/secrets/private-file";
+import { setWindowsAclForTests, withSecretsLock, writePrivateFile, type PrivateFileStep } from "../../src/secrets/private-file";
 
 // The second review of lane SE (2026-11-24): each fix with the test that failed before it.
 
@@ -78,6 +78,18 @@ describe("2: a holder taken over while paused never writes over the new holder",
     rmSync(lock);
     expect(await readsAs(w.open(), ref("K"))).toBe("1");
     expect(readFileSync(join(w.h, "credentials", "index.json")).equals(index)).toBe(true);
+  });
+
+  test("work started inside a lock and running after its release is not refused (the held-lock check ends with the hold)", async () => {
+    const h = home();
+    const lock = join(h, "run", "x.lock");
+    let later: Promise<unknown> = Promise.resolve();
+    await withSecretsLock(lock, async () => {
+      // A watcher kicked off inside the hold, writing after it ends (the store's change listeners, the index's note).
+      later = new Promise((r) => setTimeout(r, 30)).then(() => writePrivateFile(join(h, "after.txt"), "after"));
+    });
+    await expect(later).resolves.toBeUndefined();
+    expect(readFileSync(join(h, "after.txt"), "utf8")).toBe("after");
   });
 
   test("a renewed lock is renamed into place: no renewal file is left, and the lock reads whole throughout", async () => {
