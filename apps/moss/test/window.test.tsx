@@ -196,6 +196,33 @@ describe("the composer and dropped things", () => {
     r.unmount();
   });
 
+  test("a send the press check refused (a busy machine) says why, keeps the words, and pressing Send again goes; a call that fails outright says so the same way", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });
+    const bridge = (window as unknown as { moss: MossBridge }).moss;
+    const sent: unknown[][] = [];
+    const busy = "Your computer was too busy to confirm that press in time. Nothing was lost: press again.";
+    const answers: (() => Promise<{ ok: true } | { ok: false; why: string }>)[] = [
+      async () => ({ ok: false, why: busy }),
+      async () => { throw new Error("Error invoking remote method 'moss:send': Error: not MOSS's window"); },
+      async () => ({ ok: true }),
+    ];
+    bridge.send = (...a: unknown[]) => { sent.push(a); return answers.shift()!(); };
+    const box = r.container.querySelector("textarea")!;
+    await act(async () => { fireEvent.change(box, { target: { value: "hello juniper" } }); });
+    await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe(busy);
+    expect((r.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("hello juniper");
+    await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
+    expect(r.container.querySelector(".composer__why")?.textContent).toBe("MOSS couldn't send just now. Your message is still here: press Send again.");
+    expect((r.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("hello juniper");
+    await act(async () => { fireEvent.click(r.container.querySelector("button.send")!); });
+    expect(sent).toHaveLength(3);
+    expect((r.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("");
+    expect(r.container.querySelector(".composer__why")).toBeNull();
+    r.unmount();
+  });
+
   test("an eleventh file in one message is said, a chip's x and another bot shown both tell main to let go of the ids", async () => {
     const { fireEvent } = await import("@testing-library/react");
     const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [] });

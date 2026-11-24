@@ -13,7 +13,7 @@ import {
   ACTIVITY_STATES, CardPlacement, CORE_EVENT_NOTIFICATION, PICTURE_FRAME_NOTIFICATION,
   type ActivityState, type ActivityView, type BotRecordView, type BotSummary, type PictureView, type RoutineView,
 } from "@waifucave/moss-protocol";
-import { RpcCallError } from "./client";
+import { CLIENT_ERR, RpcCallError } from "./client";
 import { MAIN_WINDOW_ID } from "./identity";
 import { oneLine, safeDetail } from "../shared/status-line";
 import type { SealedFrames } from "./sealed";
@@ -538,11 +538,15 @@ export class MossEngine {
 
   async send(bot: string, text: string, clientMessageId: string, images: readonly { mediaType: "image/png" | "image/jpeg" | "image/webp"; data: string }[] = [], files: readonly { path: string }[] = []): Promise<{ ok: true } | { ok: false; why: string }> {
     const client = this.client;
-    if (client === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    if (client === undefined) { this.log("send: refused by the engine connection (MOSS isn't connected to its engine)"); return { ok: false, why: "MOSS isn't connected to its engine." }; }
+    const started = Date.now();
     try {
       await client.request("user.send", { to: { bot }, text, clientMessageId, ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) }, 30_000);
       return { ok: true };
     } catch (err) {
+      // One line: how it failed and after how long, never the error's own words (an engine's error can quote the call).
+      const how = err instanceof RpcCallError ? (err.code === CLIENT_ERR.TIMEOUT ? "no answer in time" : err.code === CLIENT_ERR.CLOSED ? "the connection closed" : `the engine refused (code ${err.code})`) : "failed";
+      this.log(`send: the engine took nothing (${how}, ${Date.now() - started} ms after the call)`);
       // The engine's plain sentence about a file (too many, too big, a folder, MOSS's own) is shown as it is.
       if (err instanceof RpcCallError && (err.data as { code?: unknown } | undefined)?.code === "file_reference_invalid") return { ok: false, why: err.message };
       return { ok: false, why: notServed(err) ? "Sending isn't served by this engine yet." : "The engine didn't take the message." };

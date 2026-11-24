@@ -8,7 +8,9 @@
   "exports": {
     "./release": "./src/release.ts",
     "./engine-launch": "./src/engine-launch.ts",
-    "./updater": "./src/updater.ts"
+    "./updater": "./src/updater.ts",
+    "./app-log": "./src/app-log.ts",
+    "./stall-watch": "./src/stall-watch.ts"
   },
   "scripts": {
     "test": "bun test",

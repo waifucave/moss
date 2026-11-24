@@ -246,7 +246,10 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
   const send = async (): Promise<void> => {
     const t = text.trim();
     if (t === "" && images.length === 0 && files.length === 0) return;
-    const r = await bridge().send(props.bot.id, t, images.map((i) => i.id), files.map((f) => f.id));
+    // A refusal (the press check's, the engine's) keeps the words and the pictures here and says why; a call that fails outright says
+    // so the same way, and pressing Send again is a new press.
+    const r = await bridge().send(props.bot.id, t, images.map((i) => i.id), files.map((f) => f.id))
+      .catch((): { ok: false; why: string } => ({ ok: false, why: "MOSS couldn't send just now. Your message is still here: press Send again." }));
     if (r.ok) { setText(""); setImages([]); setFiles([]); setWhy(undefined); } else setWhy(r.why);
   };
   // What the window keeps (names and ids): a message carries at most 4 pictures and 10 files. What won't fit is let go of in main

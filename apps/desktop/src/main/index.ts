@@ -45,6 +45,7 @@ import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type Co
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
 import { AppLog, appLogPath } from "./app-log";
+import { StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
@@ -514,7 +515,7 @@ async function ready(): Promise<void> {
     // A part's gestured call spends only a press that landed in its own frame (F2, read 52).
     takeGesture: (windowId, frameId, arrived) => {
       const ok = sends.takeIn(windowId, frameId, arrived);
-      if (!ok) log(`press: a call from frame ${frameId} found no press of its own (the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})`);
+      if (!ok) log(`press: a call from frame ${frameId} found no press of its own (${sends.whyNot(windowId, frameId, arrived)}; the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})`);
       return ok;
     },
     settleGesture: (windowId) => sends.settle(windowId),
@@ -778,7 +779,7 @@ async function ready(): Promise<void> {
         // The press must have landed in THIS frame (F2, read 52): a press in another frame of the window is not this sender's.
         const arrived = Date.now();
         await sends.settle(windowId);
-        if (!sends.takeIn(windowId, frameId, arrived)) return refuse("the main process saw no key press or click land in this frame just before", "the user's words go only right after their own key press or click");
+        if (!sends.takeIn(windowId, frameId, arrived)) return refuse(`the main process saw no key press or click land in this frame just before (${sends.whyNot(windowId, frameId, arrived)})`, "the user's words go only right after their own key press or click");
       }
       try {
         return await client.request<{ seq?: number }>("user.send", { to: target, text: message.text, ...(images.length > 0 ? { images } : {}), clientMessageId: randomUUID() }, 30_000);
@@ -3031,7 +3032,7 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 }
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
-const sends = new SendGate();
+const sends = new SendGate(Date.now, new StallWatch());
 // A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse
 // press landed, bound to the frame the report came from (never a payload). First report wins; one with no recent press is dropped.
 ipcMain.on("moss:press-seen", (event) => {
