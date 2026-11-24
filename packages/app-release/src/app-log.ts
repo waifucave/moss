@@ -4,7 +4,7 @@
 // `moss-app.log`, so the two programs' lines never interleave. Size-capped (it keeps the last file and the one before it),
 // appended a line at a time, owner-only, and holding only what the app wrote about itself: no key, and no message content
 // (the lines name methods and reasons, never a call's params).
-import { appendFileSync, chmodSync, constants, lstatSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync, renameSync, statSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const APP_LOG_MAX_BYTES = 1_000_000;
@@ -58,7 +58,8 @@ export class AppLog {
         try { chmodSync(`${this.file}.1`, 0o600); } catch { /* best effort */ }
         this.size = 0;
       }
-      appendFileSync(this.file, text, { mode: 0o600, flag: APPEND_FLAGS });
+      const fd = openSync(this.file, APPEND_FLAGS, 0o600);
+      try { writeSync(fd, text); } finally { closeSync(fd); }
       this.size += text.length;
     } catch { /* the log is best effort */ }
   }
