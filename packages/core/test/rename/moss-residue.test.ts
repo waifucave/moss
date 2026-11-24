@@ -369,7 +369,9 @@ describe("Clover→MOSS rename residue", () => {
     expect(unpermitted("packages/core/src/daemon.ts", `import { x } from "@waifucave/clover-core";`)).toBe(1);
     expect(unpermitted("packages/core/src/runtime-sdk/turn-loop/glossary.ts", `meta["clover/load"]`)).toBe(0);
     expect(unpermitted("packages/core/src/daemon.ts", `meta["clover/load"]`)).toBe(1);
-    expect(unpermitted("packages/core/src/daemon.ts", `const ios = "com.waifucave.clover.ios";`)).toBe(0);
+    // The iOS app's repo name passes; its old bundle id no longer does (the push service's topics are configuration now).
+    expect(unpermitted("packages/core/src/daemon.ts", `const repo = "waifucave/clover-ios";`)).toBe(0);
+    expect(unpermitted("packages/core/src/daemon.ts", `const ios = "com.waifucave.clover.ios";`)).toBe(1);
     expect(unpermitted("packages/core/src/daemon.ts", `const app = "com.waifucave.clover.code";`)).toBe(1);
     // The plant is Alpha's, in its own files only.
     expect(unpermitted("plugins/alpha/client/grass.tsx", "const clover = leaf();")).toBe(0);

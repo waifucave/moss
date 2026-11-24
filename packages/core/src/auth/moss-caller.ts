@@ -72,6 +72,9 @@ export interface CallerInput {
   readonly hostPid?: number;
   /** The link sidecar's pid (lane H): the only local process that says hello as `remote`, `web` or `peer`. */
   readonly linkPid?: number;
+  /** The OS of a paired device, from the device registry's record of it (never from anything its hello said): a `remote`
+   *  connection is labelled `ios` or `android` by it. Absent, or an OS that isn't a phone's: `ios`, as before. */
+  readonly deviceOs?: (device: string) => string | undefined;
   /** This daemon's pid (`process.pid`). */
   readonly daemonPid?: number;
   /** Whether an `app` peer is the signed MOSS app (`peer-signature.ts`): the OS's check (`defaultAppPeerCheck`), or
@@ -80,6 +83,12 @@ export interface CallerInput {
 }
 
 const notTheUser = (message: string): HelloRefusal => ({ code: MOSS_ERR.NOT_THE_USER, message });
+
+/** The client kind a `remote` connection is, from its device's recorded OS: `android` for an Android phone, `ios` for the rest
+ *  (an iPhone, and a record that has none). A label for the caller's own record and no behaviour: no method reads it. */
+export function remoteClientOf(os: string | undefined): "ios" | "android" {
+  return os === "android" ? "android" : "ios";
+}
 
 /** Who a connection counts as, or why its hello is refused. */
 export function resolveMossCaller(input: CallerInput): Caller | HelloRefusal {
@@ -118,7 +127,7 @@ export function resolveMossCaller(input: CallerInput): Caller | HelloRefusal {
         return { code: MOSS_ERR.PROCESS_REFUSED, message: `a ${binding.role} connection comes only from the link sidecar` };
       }
       return binding.role === "peer" ? { kind: "peer", device: binding.device }
-        : { kind: "user", client: binding.role === "remote" ? "ios" : "web", device: binding.device };
+        : { kind: "user", client: binding.role === "remote" ? remoteClientOf(input.deviceOs?.(binding.device)) : "web", device: binding.device };
   }
 }
 

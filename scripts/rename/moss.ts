@@ -111,8 +111,8 @@ export const MOSS_ALLOWLIST: readonly AllowlistEntry[] = [
   },
   {
     id: "ios-app",
-    regex: /(?<![A-Za-z0-9_.])clover-ios(?![A-Za-z0-9_])|\bcom\.waifucave\.clover\.ios(?:\.test)?\b/g,
-    why: "the iOS app's own repo (`waifucave/clover-ios`) and bundle id (`com.waifucave.clover.ios`), which that repo defines",
+    regex: /(?<![A-Za-z0-9_.])clover-ios(?![A-Za-z0-9_])/g,
+    why: "the iOS app's own repo (`waifucave/clover-ios`), which that repo defines",
   },
   // ── The plant ────────────────────────────────────────────────────────────────────────────────────
   {

@@ -135,6 +135,22 @@ describe("remote clients over links, on the MOSS server", () => {
     expect(spent).toEqual([h.token]);
   });
 
+  test("a phone's connection is labelled by the OS its record has: android for an Android phone, ios for the rest; the hello can't change it", async () => {
+    const os = new Map<string, string>([["a".repeat(32), "android"], ["i".repeat(32), "ios"]]);
+    const tokens = new MossTokens({ appToken: "a".repeat(43), verifyCli: async () => false });
+    const s = createMossServer({ tokens, processes: new SessionProcesses(), serverVersion: "test", deviceId: "d".repeat(32), deviceOs: (d) => os.get(d) });
+    stops.push(() => s.dispose());
+    const hello = (device: string, extra: Record<string, unknown> = {}) => ({ protocolVersion: MOSS_PROTOCOL_VERSION, role: "remote", device, clientName: "iPhone", token: tokens.mint({ role: "remote", device }), ...extra });
+    const link = (device: string) => ({ device, role: "remote" as const });
+    const clients: [string, string][] = [];
+    let n = 40;
+    for (const [name, device, extra] of [["android record", "a".repeat(32), { clientName: "iPhone", client: "ios" }], ["ios record", "i".repeat(32), { client: "android", os: "android" }], ["no record", "n".repeat(32), {}]] as const) {
+      const r = await s.linkHello(n++, hello(device, extra), link(device), () => {});
+      clients.push([name, (r.conn.caller as { client: string }).client]);
+    }
+    expect(clients).toEqual([["android record", "android"], ["ios record", "ios"], ["no record", "ios"]]);
+  });
+
   test("each minted token is spent by its hello, and the server closes a link connection itself", async () => {
     const { tokens, server: s } = server();
     const phone = "p".repeat(32);

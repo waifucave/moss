@@ -6,8 +6,7 @@
   // The top level is the local profile that the tests use, where every outbound request goes to local fakes of
   // APNs and the Web Push services; env.production is what the first deploy at the live gates would use.
   // One APNs topic per phone app (APNS_TOPIC_MOSS, APNS_TOPIC_CODE): the apps' bundle ids are configuration, set at the live
-  // gates. The iOS app that exists today keeps its own repo's id, com.waifucave.clover.ios; which of the two new apps
-  // it becomes is for the owner to say, and the id is then set here, never in code.
+  // gates, never in code.
   // Nothing here has been deployed. Secrets are never in this file: APNS_PRIVATE_KEY and VAPID_PRIVATE_KEY come
   // from `wrangler secret put` (production) or the test harness (local).
   "name": "clover-push-local",

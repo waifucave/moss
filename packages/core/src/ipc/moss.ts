@@ -23,7 +23,7 @@ import { doorMessage, inertAdmission, judgeHello, refusalMessage, type HelloVerd
 import { createHash } from "node:crypto";
 import { ERR_UNAUTHORIZED, isRefusal, type MossTokens } from "../auth/moss-tokens";
 import { proveDaemon } from "../platform/pair/run-files";
-import { capabilityRefusal, gateMossRequest, resolveMossCaller, type SessionProcesses } from "../auth/moss-caller";
+import { capabilityRefusal, gateMossRequest, remoteClientOf, resolveMossCaller, type SessionProcesses } from "../auth/moss-caller";
 import { probePeer, socketFd, WindowsPipePeers, type PeerFacts } from "../platform/caller-probe";
 import { peerHandle, type PeerHandle } from "../platform/peer-handle";
 import { defaultAppPeerCheck, type AppPeerPolicy } from "../platform/peer-signature";
@@ -171,6 +171,8 @@ export interface MossServerDeps {
   hostPidOf?(hostProcess: "moss" | "shared" | "own", pluginId?: string): number | undefined;
   /** The link sidecar's pid (lane H): the only local process that says hello as `remote`, `web` or `peer`. */
   linkPid?(): number | undefined;
+  /** The OS the device registry records for a paired device, which labels a phone's connection `ios` or `android`. */
+  deviceOs?(device: string): string | undefined;
   /** This run's app token, for `protocol.prove` (the app's check of the daemon before its hello). */
   readonly appToken?: string;
   /** Other lanes' MOSS methods, by wire name. */
@@ -740,7 +742,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
           if (typeof r === "string") signed = r;
           return r;
         };
-        const resolved = resolveMossCaller({ binding, peer, processes: deps.processes, appPeer: namesProgram, ...(hostPid !== undefined ? { hostPid } : {}), ...(linkPid !== undefined ? { linkPid } : {}) });
+        const resolved = resolveMossCaller({ binding, peer, processes: deps.processes, appPeer: namesProgram, ...(hostPid !== undefined ? { hostPid } : {}), ...(linkPid !== undefined ? { linkPid } : {}), ...(deps.deviceOs !== undefined ? { deviceOs: deps.deviceOs } : {}) });
         if ("code" in resolved) throw new MossRpcError(resolved.code, resolved.message);
         caller = resolved;
         if (binding.role === "plugin-host") hostProcess = { hostProcess: binding.hostProcess, ...(binding.pluginId ? { pluginId: binding.pluginId } : {}) };
@@ -785,7 +787,7 @@ export function createMossServer(deps: MossServerDeps): MossServer {
       if (binding.role !== link.role || !("device" in binding) || binding.device !== link.device) throw new MossRpcError(ERR_UNAUTHORIZED, "the token is for another device or role");
       // The device may have been revoked while the token was checked: asked again just before it's registered.
       if (link.stillLinked !== undefined && !link.stillLinked()) throw new MossRpcError(MOSS_ERR.ROLE_REFUSED, "the device is no longer paired");
-      const caller: Caller = { kind: "user", client: link.role === "remote" ? "ios" : "web", device: link.device };
+      const caller: Caller = { kind: "user", client: link.role === "remote" ? remoteClientOf(deps.deviceOs?.(link.device)) : "web", device: link.device };
       const r = register(connId, h, caller, write, {});
       if (end) ends.set(connId, end);
       return r;
