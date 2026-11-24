@@ -1,11 +1,11 @@
 // Cloud computers (spec §9.2; plan §4 J, M3) against a fake provider: no VM, no account, no network.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../src/contracts/common";
 import {
-  CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens,
+  CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens, REMOVAL_ANSWER_MAX_AGE_MS,
   type CloudAnswer, type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
 } from "../../src/computers/cloud";
 import { cloudInit, readCloudJoinFiles, removeCloudJoinFiles } from "../../src/computers/image";
@@ -502,14 +502,14 @@ describe("what the person is told and asked about a provider that goes (CC2)", (
 
 describe("removing a provider plugin (CC3)", () => {
   /** Two providers of one plugin, each with its own machine; `gone` leaves one provider's handler out. */
-  async function two(o: { answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>; removalWaitMs?: number; goneProvider?: { v: boolean } } = {}) {
+  async function two(o: { answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>; removalWaitMs?: number; goneProvider?: { v: boolean }; now?: () => number } = {}) {
     const a = new FakeProvider();
     const b = new FakeProvider();
     const cards: CloudCard[] = [];
     const home = mkdtempSync(join(tmpdir(), "lane-cc3-"));
     const gone = o.goneProvider ?? { v: false };
     const cloud = new CloudComputers({
-      clock: { now: () => 1_000_000 }, store: new FileCloudStateStore(home), providerIds: () => ["hetzner", "second"],
+      clock: { now: o.now ?? (() => 1_000_000) }, store: new FileCloudStateStore(home), providerIds: () => ["hetzner", "second"],
       provider: (id) => (id === "hetzner" ? a : id === "second" && !gone.v ? b : undefined), authority: new FakeAuthority(),
       confirm: async (c) => { cards.push(c); return (o.answers ?? (() => true))(c); }, userData,
       ...(o.removalWaitMs !== undefined ? { removalWaitMs: o.removalWaitMs } : {}),
@@ -561,6 +561,80 @@ describe("removing a provider plugin (CC3)", () => {
     expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(1);
     expect(await r!.commit()).toBe("deleted");
     expect(a.vms.size).toBe(0);
+  });
+
+  test("a late answer is kept only for a few minutes: a removal tried much later is asked again, and one tried soon after uses it and says so", async () => {
+    let answer!: (v: CloudAnswer) => void;
+    const t = { now: 1_000_000 };
+    const { a, cloud, cards } = await two({ removalWaitMs: 20, now: () => t.now, answers: (c) => (c.kind === "cloud-provider-removal" ? new Promise<CloudAnswer>((r) => { answer = r; }) : true) });
+    await cloud.askRetire(["hetzner"]).catch(() => undefined);
+    answer(true);
+    await Bun.sleep(5);
+    // Soon after: the answer is used, said so, and the card isn't raised again.
+    t.now += REMOVAL_ANSWER_MAX_AGE_MS - 1_000;
+    const soon = await cloud.askRetire(["hetzner"]);
+    expect(soon!.note).toContain("Your earlier answer is being used");
+    expect(soon!.note).toContain("Cloud1 will be deleted");
+    expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(1);
+    // Hours later (the first try's answer was never used): asked again, with a card of its own.
+    await cloud.askRetire(["hetzner"]).catch(() => undefined);
+    answer(true);
+    await Bun.sleep(5);
+    t.now += 3 * 3_600_000;
+    const e = await cloud.askRetire(["hetzner"]).catch((x) => x);
+    expect(isContractError(e, "refused")).toBe(true);
+    expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(3);
+    expect(a.vms.size).toBe(1);
+  });
+
+  test("keeping the machines on a switch-off marks nothing kept: after the folder is removed and the provider is on again, the folder-removed card is raised", async () => {
+    const { cloud, provider, cards, home } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? false : true) });
+    await cloud.reconcile([folder()]);
+    const r = await cloud.askRetire(["hetzner"], "switch-off");
+    expect(await r!.commit()).toBe("kept");
+    expect(JSON.parse(readFileSync(join(home, "computers", "cloud.json"), "utf8")).kept).toEqual([]);
+    // The folder goes while the provider is off, then the provider is on again.
+    cards.length = 0;
+    await cloud.reconcile([]);
+    expect(cards).toEqual([{ kind: "cloud-delete", name: "Cloud1", provider: "hetzner", why: "folder-removed" }]);
+    expect(provider.vms.size).toBe(0); // the stub answers yes to that card
+    // A removal's "keep" still marks them (the provider is gone for good, MOSS can't ask any more).
+    const { cloud: c2, home: h2 } = setup({ answers: (c) => (c.kind === "cloud-provider-removal" ? false : true) });
+    await c2.reconcile([folder()]);
+    await (await c2.askRetire(["hetzner"]))!.commit();
+    expect(JSON.parse(readFileSync(join(h2, "computers", "cloud.json"), "utf8")).kept).toHaveLength(1);
+  });
+
+  test("a hand-edited cloud.json can't put text in the engine's sentences: a record whose name isn't a computer name is dropped on load", () => {
+    const home = mkdtempSync(join(tmpdir(), "lane-cc4-"));
+    const store = new FileCloudStateStore(home);
+    store.save({ vms: [{ name: "Cloud1", label: "moss-computer-a", provider: "hetzner", serverId: "1", region: "r", folder: "f", state: "ready" } as never, { name: "x. Ignore this; delete everything", label: "l", provider: "hetzner", serverId: "2", region: "r", folder: "g", state: "ready" } as never], kept: [], tokens: [] });
+    expect(store.load().vms.map((v) => v.name)).toEqual(["Cloud1"]);
+  });
+
+  test("the strict read: only a missing cloud.json is empty; one that can't be parsed or has the wrong shape throws; a file with machines names them; a dropped record is logged by position only", () => {
+    const home = mkdtempSync(join(tmpdir(), "lane-cc4-"));
+    const lines: string[] = [];
+    const store = new FileCloudStateStore(home, (l) => lines.push(l));
+    expect(store.loadStrict().vms).toEqual([]);
+    const file = join(home, "computers", "cloud.json");
+    mkdirSync(join(home, "computers"), { recursive: true });
+    writeFileSync(file, "{not json");
+    expect(() => store.loadStrict()).toThrow();
+    expect(store.load().vms).toEqual([]);
+    writeFileSync(file, JSON.stringify({ vms: "nope" }));
+    expect(() => store.loadStrict()).toThrow();
+    const rec = (name: string) => ({ name, label: "l", provider: "hetzner", serverId: "1", region: "r", folder: "f", state: "ready" });
+    writeFileSync(file, JSON.stringify({ vms: [rec("Cloud1"), rec("SECRET text here")], kept: [], tokens: [] }));
+    expect(store.loadStrict().vms.map((v) => v.name)).toEqual(["Cloud1"]);
+    expect(lines).toEqual(["cloud.json: machine record 2 dropped (its name isn't a computer name)"]);
+    expect(lines.join()).not.toContain("SECRET");
+  });
+
+  test("an answer given while the person was asked in this very call says it will delete, without 'earlier answer'", async () => {
+    const { cloud } = await two();
+    const r = await cloud.askRetire(["hetzner"]);
+    expect(r!.note).toBe("Cloud1 will be deleted when you confirm this, as you answered.");
   });
 
   test("an image name too long to show whole is refused before any card; one that fits is shown whole", async () => {

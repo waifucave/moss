@@ -461,24 +461,34 @@ export class PairingService {
       return refuse("the pairing has expired");
     }
     // A device turned away over its record is told why by code, and the host's person in plain words (a note on the pairing, which
-    // goes on waiting for the right device; never any of the other device's own text).
+    // goes on waiting for the right device; never any of the other device's own text). The note is set only for a device that holds the
+    // pair secret: whoever can address the pairing (its id is in every client's view of it, not only in the code) could otherwise set
+    // or flip it with a hello of any record. So the record is read first without its content rules (`unvetted` takes the first rule it
+    // breaks), the proof is checked over it as the device sent it, and only then is the device turned away or the pairing taken on.
     const turnAway = (code: PairRefusal) => {
       p.note = HOST_NOTE[code];
       this.#emit(p);
       refuse(REFUSAL_CORE[code], code);
     };
-    const joiner = this.#readSide(h, conn.peerKey);
-    if (typeof joiner === "string") return turnAway(joiner);
-    if ((await deviceIdFor(conn.peerKey)) !== joiner.record.id) return turnAway("record");
-    if (this.#o.registry.get(joiner.record.id)?.revokedAt !== undefined) return refuse("this device was revoked: pair it with a new key");
-    if (this.#o.registry.get(joiner.record.id)) return refuse("already paired");
-    if (!(h.commit instanceof Uint8Array) || h.commit.length !== 32) return refuse("not a pairing");
-    const joinerPart = joinerTranscript(p.id, this.#o.self.publicKey, sideForTranscript(joiner), h.commit);
-    if (!(h.proof instanceof Uint8Array) || !verifyPairProof(p.secret, PAIR_PROOF_JOINER, joinerPart, h.proof)) {
+    const badProof = () => {
       // One wrong proof ends the pairing, so a short code can't be guessed at online.
       this.#fail(p, "a device tried the pairing without its secret");
       return refuse("bad proof");
-    }
+    };
+    const unvetted: { code?: PairRefusal } = {};
+    const joiner = this.#readSide(h, conn.peerKey, unvetted);
+    const commitOk = h.commit instanceof Uint8Array && h.commit.length === 32;
+    const joinerPart = typeof joiner !== "string" && commitOk ? joinerTranscript(p.id, this.#o.self.publicKey, sideForTranscript(joiner), h.commit as Uint8Array) : undefined;
+    const proven = joinerPart !== undefined && h.proof instanceof Uint8Array && verifyPairProof(p.secret, PAIR_PROOF_JOINER, joinerPart, h.proof);
+    // A record whose make-up is broken (its shape, its keys) can't be checked against the proof, so the device is told why by code and the
+    // host's person is told nothing: no note, and the pairing goes on waiting.
+    if (typeof joiner === "string") return refuse(REFUSAL_CORE[joiner], joiner);
+    if (unvetted.code !== undefined) return proven ? turnAway(unvetted.code) : badProof();
+    if ((await deviceIdFor(conn.peerKey)) !== joiner.record.id) return proven ? turnAway("record") : badProof();
+    if (this.#o.registry.get(joiner.record.id)?.revokedAt !== undefined) return refuse("this device was revoked: pair it with a new key");
+    if (this.#o.registry.get(joiner.record.id)) return refuse("already paired");
+    if (joinerPart === undefined) return refuse("not a pairing");
+    if (!proven) return badProof();
     p.conn = conn;
     this.#bind(p, stream, reader, early);
     p.peer = joiner;
@@ -489,7 +499,7 @@ export class PairingService {
     p.fresh = hostGroup === null && joiner.group === null;
     p.t = Math.floor(this.#o.clock.now());
     const transcript = fullTranscript(joinerPart, sideForTranscript(mine, false), { t: p.t, group: p.group, nonce: p.nonce });
-    p.peerCommit = own(h.commit);
+    p.peerCommit = own(h.commit as Uint8Array); // 32 bytes: `joinerPart` exists only then
     await this.#send(p, ["welcome", {
       v: 1, device: mine.record, ...this.#answerKeyProof(), pairKey: mine.pairKey, groupKey: mine.groupKey, group: p.group, fresh: p.fresh, t: p.t, account: mine.account,
       nonce: p.nonce, proof: pairProof(p.secret, PAIR_PROOF_HOST, transcript),
@@ -755,17 +765,26 @@ export class PairingService {
     };
   }
 
-  #readSide(m: Record<string, unknown>, key: Bytes): Side | PairRefusal {
+  /** The other device's record as its hello sent it. `soft` takes the content rules (name, kind, os, app) as notes instead of refusals: the
+   *  first one the record breaks is left in `soft.code` and the side is built as sent, so the caller can check the pair-secret proof over it
+   *  before saying anything about what is wrong with it. What the record is made of (its shape, its keys) is refused at once either way. */
+  #readSide(m: Record<string, unknown>, key: Bytes, soft?: { code?: PairRefusal }): Side | PairRefusal {
+    const content = (code: PairRefusal): PairRefusal | undefined => {
+      if (soft === undefined) return code;
+      soft.code ??= code;
+      return undefined;
+    };
     const d = m.device as Record<string, unknown> | undefined;
     if (!d || typeof d !== "object") return "record";
     if (typeof d.id !== "string" || typeof d.name !== "string" || typeof d.kind !== "string" || typeof d.runsCore !== "boolean" || typeof d.publicKey !== "string") return "record";
     // What the other device calls itself is its own word, from a stranger's machine until the person has checked the four words:
     // the one rule for a name (`devices/names.ts`), a kind and an os from the enums, and the same rule for the tree name it may bring.
     // This is the one place a peer's record is validated, and the reason is one of a closed set (`PairRefusal`), never the peer's text.
-    if (nameProblem(d.name) !== null) return "name";
-    if (!DeviceKind.safeParse(d.kind).success) return "kind";
-    if (d.os !== undefined && !DeviceOs.safeParse(d.os).success) return "os";
-    if (d.computer !== undefined && (typeof d.computer !== "string" || nameProblem(d.computer) !== null)) return "name";
+    let refused: PairRefusal | undefined;
+    if (nameProblem(d.name) !== null && (refused = content("name"))) return refused;
+    if (!DeviceKind.safeParse(d.kind).success && (refused = content("kind"))) return refused;
+    if (d.os !== undefined && !DeviceOs.safeParse(d.os).success && (refused = content("os"))) return refused;
+    if (d.computer !== undefined && (typeof d.computer !== "string" || nameProblem(d.computer) !== null) && (refused = content("name"))) return refused;
     if (d.publicKey !== toBase64(key)) return "record";
     if (!helloKeysStrict(m)) return "record";
     if (m.group !== null && typeof m.group !== "string") return "record";
@@ -791,8 +810,11 @@ export class PairingService {
     let app: DeviceRecord["app"];
     if (d.app !== undefined) {
       const parsed = PhoneApp.safeParse(d.app);
-      if (!parsed.success || d.kind !== "phone") return "app";
-      app = parsed.data;
+      if (!parsed.success || d.kind !== "phone") {
+        const code = content("app");
+        if (code) return code;
+        app = d.app as DeviceRecord["app"];
+      } else app = parsed.data;
     }
     const record: Side["record"] = {
       id: d.id, name: d.name, kind: d.kind as DeviceRecord["kind"], runsCore: d.runsCore, publicKey: d.publicKey,

@@ -52,12 +52,14 @@ import type { CoreEventInput, CoreEventOptions } from "./ipc/core-events";
 import { MossRpcError, type BridgeGate, type CodeAgentDoor, type MossConn } from "./ipc/moss";
 import { embeddedSessionOptions } from "./runtime-sdk/turn-loop/embedded-session";
 import { ERR } from "@waifucave/moss-protocol";
-import type { BotSide, BotSideOptions } from "./bots/wiring";
+import type { BotSide, BotSideOptions, ComposerSources } from "./bots/wiring";
+import { commandViews } from "./commands/views";
 import { createBotSide } from "./bots/wiring";
 import { LeaseMainComputer, soleComputer, type MainComputer } from "./bots/main-computer";
 import type { DriverFactory } from "./bots/service";
 import type { Clock } from "./contracts/clock";
 import { grantsInForce, type PluginRegistry } from "./contracts/plugin-registry";
+import { mayStartSessions } from "./contracts/device-registry";
 import { startComputerNode, type ComputerNode, type ComputerNodeOptions } from "./computers/node";
 import { computerMethods } from "./computers/rpc";
 import { nodeParts, type SafetyReviewer } from "./computers/node-parts";
@@ -92,6 +94,8 @@ export interface DaemonBotsInput {
   hasKeyFor?: BotSideOptions["hasKeyFor"];
   /** Whether a model can be set as a bot's (`bot.setUserLayer`; models-list.ts `modelOffer`). */
   modelOffer?: BotSideOptions["modelOffer"];
+  /** The models a session may run, as `models.list {session}` lists them: with it, a phone's `session.composerOffers` is served. */
+  composerModels?: ComposerSources["models"];
   /** What MOSS's own bundled plugin chose for a bot, from its verified staged bytes (a loaded tag equal to it asks
    *  nothing). */
   bundledChoice?: BotSideOptions["bundledChoice"];
@@ -585,7 +589,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
         closers.push(() => sync.close());
       }
       await s.start();
-      Object.assign(input.handlers, laneMethodHandlers(s.methods({ localDevice: links?.key.id ?? "local" })));
+      Object.assign(input.handlers, laneMethodHandlers(s.methods({ localDevice: links?.key.id ?? "local", ...(links ? { phoneMay: (device: string) => mayStartSessions(links.registry.get(device)) } : {}), ...(b.composerModels === undefined ? {} : { composer: { models: b.composerModels, commands: () => commandViews(b.registry).map((c) => ({ name: c.name, description: c.description })) } }) })));
       // The session panels' reads: a coding session's or an agent's changes (its folder on this computer, through the
       // tree), its outputs, its context use and its connectors (sessions/panel-reads.ts).
       const treeOf = node?.tree;

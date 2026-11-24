@@ -43,3 +43,27 @@ jobs:
         run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
       - name: Build MOSS Code
         run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSSCode -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
+      - name: Release builds carry no launch-argument door
+        run: |
+          for S in MOSS MOSSCode; do
+            xcodebuild -project MOSSPhone.xcodeproj -scheme $S -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd-rel" CODE_SIGNING_ALLOWED=NO build
+          done
+          FOUND=0
+          for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
+            BIN="$APP/$(basename "$APP" .app)"
+            for A in -newBotTry -newBot -scenario -screen -confirmUnpair -startNew -scrollTop -scrollTo -draft -picker -focus; do
+              if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qx -e "$A"; then echo "release build of $(basename "$APP") reads launch argument $A"; FOUND=1; fi
+            done
+          done
+          [ "$FOUND" = 0 ] && echo "no launch argument in either Release build"
+          exit $FOUND
+      - name: Accessibility audits at the default and the largest text size (MOSS)
+        continue-on-error: true
+        run: |
+          DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSS -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-moss.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400
+      - name: Accessibility audits at the default and the largest text size (MOSS Code)
+        continue-on-error: true
+        run: |
+          DEST="platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -o 'iPhone [0-9A-Za-z ]*' | head -1 | sed 's/ *$//')"
+          xcodebuild test -project MOSSPhone.xcodeproj -scheme MOSSCode -destination "$DEST" -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/ui-code.log" | grep -E "AUDIT|error:|Executed|TEST (SUCC|FAIL)" | cut -c1-400

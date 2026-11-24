@@ -335,6 +335,38 @@ describe("pairing", () => {
       expect(host.registry.list().filter((d) => d.kind === "phone")).toEqual([]);
     });
 
+    // The host's "a device tried to join and was turned away" note says something only to a device that holds the pair secret: a hello
+    // from anyone else, with any record, sets nothing (the PD2 reviewer's note).
+    test("a hello whose record the rules refuse sets no note unless its proof holds: a changed name, a wrong secret, and a broken record", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const view = await host.pairing.begin();
+      // 1. The name is changed on the wire after the joiner signed: the proof no longer holds, so nothing is said and the pairing ends.
+      const changed = await device(net, "Laptop", { rewriteHello: (d) => { d.name = "Pi\u200Bxel"; } });
+      expect(isContractError(await changed.pairing.join(view.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+      await waitFor(() => host.pairing.get(view.pairingId)?.status === "failed");
+      expect(host.pairing.get(view.pairingId)?.note).toBeUndefined();
+      expect(host.pairing.get(view.pairingId)?.error).toContain("without its secret");
+      // 2. A QR with the wrong secret and a refused kind: the same.
+      const host2 = await device(net, "Studio");
+      const view2 = await host2.pairing.begin();
+      const stranger = await device(net, "Stranger", { rewriteHello: (d) => { d.kind = "toaster"; } });
+      expect(isContractError(await stranger.pairing.join(await forgeQrSecret(view2.qr!)).catch((e: unknown) => e), "refused")).toBe(true);
+      await waitFor(() => host2.pairing.get(view2.pairingId)?.status === "failed");
+      expect(host2.pairing.get(view2.pairingId)?.note).toBeUndefined();
+      // 3. A record that is broken (its public key isn't the one on the connection) can't be checked against a proof: no note, and the
+      //    pairing waits on for the right device.
+      const host3 = await device(net, "Studio");
+      const view3 = await host3.pairing.begin();
+      const broken = await device(net, "Broken", { rewriteHello: (d) => { d.publicKey = "AAAA"; } });
+      expect(isContractError(await broken.pairing.join(view3.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+      expect(host3.pairing.get(view3.pairingId)?.status).toBe("waiting");
+      expect(host3.pairing.get(view3.pairingId)?.note).toBeUndefined();
+      const fine = await device(net, "Fine");
+      await fine.pairing.join(view3.qr!);
+      await waitFor(() => host3.pairing.get(view3.pairingId)?.status === "words");
+    });
+
     test("(control) the same rewriting wire, changing nothing, pairs", async () => {
       const net = new MemoryNetwork();
       const host = await device(net, "Studio");

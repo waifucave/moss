@@ -67,9 +67,27 @@ export function nextVersion(current: string, mode: string): string {
   throw new Error(`unknown mode ${mode} (use --patch | --feature | --major)`);
 }
 
-const PKGS = ["cli", "core", "protocol", "plugin-sdk"];
+/**
+ * `--to <version>`: an exact target, for the one jump the three bump modes cannot make (0.124.0 to 1.111.1 is a major step AND a
+ * feature number: `--major` always lands on `.000.0`). The target must be a canonical `#.###.#` and strictly newer than the
+ * current one, so a typo or a stale checkout can't move the release backwards past what updaters already saw.
+ */
+export function versionTo(current: string, target: string | undefined): string {
+  const cur = current.match(FORMAT);
+  if (!cur) throw new Error(`VERSION "${current}" does not match #.###.# (e.g. 0.111.0)`);
+  const t = (target ?? "").match(FORMAT);
+  if (!t) throw new Error(`--to takes a version in the #.###.# form (e.g. 1.111.1), not "${target ?? ""}"`);
+  for (let i = 1; i <= 3; i++) {
+    const a = Number(cur[i]), b = Number(t[i]);
+    if (b > a) return target!;
+    if (b < a) break;
+  }
+  throw new Error(`--to ${target} is not newer than the current ${current}`);
+}
+
+export const PKGS = ["cli", "core", "protocol", "plugin-sdk"];
 /** M-M0: other stamped package.jsons, by repo path — the two apps (MOSS Code and MOSS), whose versions electron-builder reads. */
-const OTHER_PKG_DIRS = ["apps/desktop", "apps/moss"];
+export const OTHER_PKG_DIRS = ["apps/desktop", "apps/moss"];
 
 /** The generated Info.plists (in apple/Winter/Support) that carry MOSS's version: Winter Headless's (the old Mac app's left the repo). */
 export const MOSS_INFO_PLISTS = ["WinterHeadless-Info.plist"] as const;

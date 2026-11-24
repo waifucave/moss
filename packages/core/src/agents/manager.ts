@@ -473,6 +473,19 @@ export class AgentManager {
     return loc.path;
   }
 
+  /** A file the user named in a message, as the agent can open it: the real path of a folder-tree path (`home/<Computer>/…`) on this
+   *  computer, which an agent that runs on the host's own files can't use as written. Anything else (an absolute path, another
+   *  computer's, one the tree doesn't name) is left as it was. */
+  #hostPathOf(path: string): string {
+    if (!/^home(\/|$)/.test(path)) return path;
+    try {
+      const loc = this.#o.tree.resolve(path);
+      return loc.area === "home" && loc.computer === this.#o.computer ? loc.path : path;
+    } catch {
+      return path;
+    }
+  }
+
   /** The hooks an ACP backend takes for a session: its transcript, and the token's binding to the agent's pid. */
   wire(sessionId: string): AgentWire {
     const e = this.#entries.get(sessionId);
@@ -830,7 +843,7 @@ export class AgentManager {
       toolShows: entry.shows,
       started: (s) => this.#o.modelsReported?.(backend, s),
       // A turn another computer sent carries the prompt it built there (its images read there).
-      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title),
+      promptOf: async (input) => peerPromptOf(input) ?? promptOf(input, (id) => this.#o.host.get(id)?.title, (path) => this.#hostPathOf(path)),
       redact: (v) => transcript.redacted(v),
       // A paused agent is sent no new prompt until the switch is back.
       beforeTurn: async (session) => {
@@ -1871,7 +1884,7 @@ const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "imag
 
 /** What a session input says to the agent: a message from its bot is its next prompt as written (§9.3); another session's is
  *  framed as that session's (`titleOf` gives its title), never as the user's words (§9.5). */
-export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
+export async function promptOf(input: TurnInput, titleOf?: (session: string) => string | undefined, filePath: (path: string) => string = (p) => p): Promise<{ text: string; images?: { mimeType: string; data: string }[] }> {
   switch (input.from) {
     case "user": {
       const images = (input.images ?? []).flatMap((img) => {
@@ -1883,7 +1896,8 @@ export async function promptOf(input: TurnInput, titleOf?: (session: string) => 
           return [];
         }
       });
-      const files = (input.files ?? []).map((f) => `[File #${f.n}: ${f.path}]`).join("\n");
+      // The agent is told where each file really is (a message names it by its folder-tree path).
+      const files = (input.files ?? []).map((f) => `[File #${f.n}: ${filePath(f.path)}]`).join("\n");
       return { text: files ? `${input.text}\n\n${files}` : input.text, ...(images.length ? { images } : {}) };
     }
     case "bot":

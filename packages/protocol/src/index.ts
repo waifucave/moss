@@ -10,6 +10,7 @@ export * from "./cowork";
 // gathers them. Names here never repeat one of the inherited exports above.
 export * from "./common";
 export * from "./strings";
+export * from "./visible-text";
 export * from "./roles";
 export * from "./rpc";
 export * from "./plugins";

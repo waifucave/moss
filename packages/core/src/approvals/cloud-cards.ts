@@ -41,7 +41,7 @@ export type CloudCardRequest =
   | { kind: "cloud-make-main"; name: string }
   /** A computer provider plugin is being removed while it still has machines: delete them, or keep them (and keep
    *  paying; MOSS can no longer manage them). */
-  | { kind: "cloud-provider-removal"; provider: string; machines: string[] };
+  | { kind: "cloud-provider-removal"; provider: string; machines: string[]; action?: "switch-off" };
 
 /** MOSS's own words for each card. */
 export const CLOUD_CARD_TEXT = {
@@ -50,6 +50,11 @@ export const CLOUD_CARD_TEXT = {
     title: "Create a cloud computer from a custom image",
     what: "Create a cloud computer from the image shown, which is not MOSS's own? It costs money while it exists. MOSS will not pair it by itself: whatever that image runs is not MOSS's, so you pair it yourself afterwards, with the four words.",
     yes: "Create", no: "Not now",
+  },
+  "cloud-provider-switch-off": {
+    title: "This provider still has cloud computers",
+    what: "Switching this provider off leaves its cloud computers running and billing, and MOSS can't manage them while it is off. Delete them first, or keep them and keep paying until you switch it on again or delete them in the provider's own console?",
+    yes: "Delete them", no: "Keep them and keep paying",
   },
   "cloud-provider-removal": {
     title: "This provider still has cloud computers",
@@ -160,7 +165,7 @@ export function cloudCardRequest(card: CloudCardRequest, origin: TurnOrigin = "r
       } };
     }
     case "cloud-provider-removal": {
-      const t = CLOUD_CARD_TEXT["cloud-provider-removal"];
+      const t = CLOUD_CARD_TEXT[card.action === "switch-off" ? "cloud-provider-switch-off" : "cloud-provider-removal"];
       return { ...base, change: "computer-delete", options: yesNo(t), fields: {
         title: title(t.title), what: title(t.what), detail: details([["provider", card.provider], ["cloud computers", card.machines.join(", ")]]),
       } };

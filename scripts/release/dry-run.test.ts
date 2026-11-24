@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appFeedFile, APP_KEYS, expectedArtifacts, installersOf, RELEASE_OSES } from "./artifacts";
 import { FIXTURE_COMMIT, writeReleaseFixture } from "./fixture";
+import { SIGN_ONLY_LABEL, writeBuildCommit } from "./lib";
 import * as publish from "./publish";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -65,6 +66,27 @@ describe("publish.ts --dry-run", () => {
       for (const s of publish.DRY_RUN_SKIPS) expect(r.out).toContain(`dry run skips: ${s}`);
       expect(r.out).toContain("nothing signed, uploaded or created");
       // Not one of gh, git, codesign, xcrun, security (the Keychain), hdiutil, ditto or curl was called.
+      expect(spawned.calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("says where each file would go and whose step it is: the draft, both taps' casks, both winget packages, the Linux repositories", async () => {
+    const dir = folder();
+    try {
+      const r = await run(["--dry-run", "--from", dir]);
+      expect(r.code).toBe(0);
+      const out = r.out;
+      expect(out).toContain(`GitHub waifucave/moss: a DRAFT release v${version} at ${FIXTURE_COMMIT}`);
+      // Each app's update files get a signature at --create-draft, MOSS's under its own names.
+      for (const os of RELEASE_OSES) for (const app of APP_KEYS) expect(out, `${os} ${app}`).toContain(`${appFeedFile(app, "latest", os)}.sig`);
+      expect(out).toContain("Homebrew waifucave/homebrew-moss: Casks/moss-code.rb, Casks/moss.rb");
+      expect(out).toContain(`manifests/w/waifucave/MOSSCode/${version}/`);
+      expect(out).toContain(`manifests/w/waifucave/MOSS/${version}/`);
+      expect(out).toContain("R2 bucket moss-packages");
+      for (const n of installersOf(version, "linux-x64", "moss").filter((f) => /\.(deb|rpm)$/.test(f))) expect(out).toContain(n);
+      expect(out).toContain("nothing signed, uploaded or created");
       expect(spawned.calls).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -135,6 +157,23 @@ describe("publish.ts --dry-run", () => {
     }
   });
 
+  test("a sign-only or a test-marked build is refused by the release step, from any system's BUILD-COMMIT", async () => {
+    for (const [os, mark] of [["mac", "sign-only"], ["win", "sign-only"], ["linux-x64", "test"]] as const) {
+      const dir = folder();
+      try {
+        const file = join(dir, `BUILD-COMMIT-${os}.txt`);
+        writeBuildCommit(dir, os, FIXTURE_COMMIT, mark);
+        expect(readFileSync(file, "utf8")).toContain(mark === "sign-only" ? SIGN_ONLY_LABEL : "test build");
+        const r = await run(["--dry-run", "--from", dir]);
+        expect(r.code, `${os} ${mark}`).toBe(1);
+        expect(r.err).toContain(mark === "sign-only" ? "sign-only" : "test-marked");
+        expect(r.out).not.toContain("DRY RUN: v");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("it creates nothing: --create-draft is refused beside it, and --render-to needs it", () => {
     expect(() => publish.parsePublishArgs(["--dry-run", "--create-draft", "--from", "x"])).toThrow(/dry-run never creates/);
     expect(() => publish.parsePublishArgs(["--render-to", "x", "--from", "x"])).toThrow(/--render-to is for --dry-run/);
@@ -150,6 +189,27 @@ describe("publish.ts --dry-run", () => {
       expect(r.out).not.toContain("moss-latest-mac.yml");
       expect(r.out).toContain("moss-beta-mac.yml");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a release with Linux packages needs the repositories' keyring (lane RL)", () => {
+  test("the real plan refuses, with the reason, while packaging/linux/moss-archive-keyring.asc is not committed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "moss-no-keyring-root-"));
+    const dir = folder();
+    try {
+      mkdirSync(join(root, "apps", "desktop"), { recursive: true });
+      writeFileSync(join(root, "apps", "desktop", "package.json"), JSON.stringify({ version }));
+      const lines: string[] = [];
+      const err = console.error, log = console.log;
+      console.error = (l: string) => lines.push(String(l)); console.log = () => {};
+      let code: number;
+      try { code = await publish.main(["--from", dir], root); } finally { console.error = err; console.log = log; }
+      expect(code).toBe(1);
+      expect(lines.join("\n")).toContain("the Linux repositories' public key has not been made");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -23,7 +23,7 @@ describe("a sealed field's page", () => {
     const list: Extract<SealedValue, { type: "list" }> = { type: "list", items: ["one", "two"] };
     expect(fieldPage({ cardId: "card_x", token: TOKEN, field: "detail", value: list })).toContain("<li>one</li>");
     const rows: Extract<SealedValue, { type: "rows" }> = { type: "rows", rows: [{ label: "site", value: "ev.example" }] };
-    expect(fieldPage({ cardId: "card_x", token: TOKEN, field: "detail", value: rows })).toContain("<dt>site</dt><dd>ev.example</dd>");
+    expect(fieldPage({ cardId: "card_x", token: TOKEN, field: "detail", value: rows })).toContain("<dt>site</dt><dd><bdi>ev.example</bdi></dd>");
   });
 
   test("the page stays text: markup in a field's content is escaped", () => {

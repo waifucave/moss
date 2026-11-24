@@ -83,8 +83,12 @@ const pidOf = (w: World, n = 0): number => Number(w.report("started")[n]!["pid"]
 describe("an agent started early does not wait for ever", () => {
   test("no first message in 10 minutes: its process is stopped, and the first message then starts it as it always did", async () => {
     const w = (world = new World({ script: [[{ say: "one" }]] }));
+    const base = w.clock.pending();
     const r = await w.manager.start({ caller: USER(1), backend: "fake", prompt: "", root: "home/Studio/project1" });
     await waitFor(() => w.report("started").length === 1 || undefined, "the agent up");
+    // The process reports "started" before the driver arms its idle timer (it arms it when the start has returned): a fake-clock
+    // step taken in between finds no timer, and the 10 minutes then run from the step, never ending in this test. The step waits for the timer.
+    await waitFor(() => w.clock.pending() > base || undefined, "the idle timer armed on the clock");
     const first = pidOf(w);
     expect(alive(first)).toBe(true);
     w.clock.advance(WARM_IDLE_MS - 1000);

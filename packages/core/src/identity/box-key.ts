@@ -6,7 +6,7 @@
 // HPKE here is RFC 9180's base mode on node:crypto; tests check it against the forwarder plugin's WebCrypto one.
 import { createCipheriv, createDecipheriv, createHmac, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { ContractError } from "../contracts/common";
-import type { SecretRef, SecretStore } from "../contracts/secret-store";
+import { getOrCreateSecret, type SecretRef, type SecretStore } from "../contracts/secret-store";
 import { type Bytes, concat, fromBase64, fromBase64Url, own, toBase64, toBase64Url, utf8 } from "./bytes";
 
 export const BOX_KEY_REF: SecretRef = { owner: { kind: "device" }, name: "device:box-key" };
@@ -27,16 +27,14 @@ export class BoxKey {
   }
 
   static async loadOrCreate(store: Pick<SecretStore, "get" | "set">): Promise<BoxKey> {
-    const stored = await store.get(BOX_KEY_REF);
-    if (stored) {
-      const raw = fromBase64(stored.value.reveal());
-      if (!raw || raw.length !== 32) throw new ContractError("invalid", "the stored box key isn't an X25519 key");
-      return new BoxKey(createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, raw]), format: "der", type: "pkcs8" }));
-    }
-    const { privateKey } = generateKeyPairSync("x25519");
-    const raw = (privateKey.export({ format: "der", type: "pkcs8" }) as Buffer).subarray(PKCS8_PREFIX.length);
-    await store.set(BOX_KEY_REF, toBase64(raw), { synced: false });
-    return new BoxKey(privateKey);
+    // Read, or made and written, in one step across processes: two starting on a fresh home make one key, not two.
+    const stored = await getOrCreateSecret(store, BOX_KEY_REF, () => {
+      const { privateKey } = generateKeyPairSync("x25519");
+      return toBase64((privateKey.export({ format: "der", type: "pkcs8" }) as Buffer).subarray(PKCS8_PREFIX.length));
+    }, { synced: false });
+    const raw = fromBase64(stored.value.reveal());
+    if (!raw || raw.length !== 32) throw new ContractError("invalid", "the stored box key isn't an X25519 key");
+    return new BoxKey(createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, raw]), format: "der", type: "pkcs8" }));
   }
 
   static generate(): BoxKey {

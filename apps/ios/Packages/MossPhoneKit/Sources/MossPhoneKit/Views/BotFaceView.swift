@@ -1,6 +1,6 @@
 import SwiftUI
 
-final class TickBox { var last: Date?; var made = false }
+final class TickBox { var last: Date?; var made = false; var fit: Double?; var ax = 500.0; var ay = 500.0 }
 
 /// A bot's own living face, drawn by the kit (`FaceEngine`). Still when Reduce Motion is on.
 public struct BotFaceView: View {
@@ -14,6 +14,7 @@ public struct BotFaceView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    static let canvasScale: CGFloat = 1.12
     public init(name: String, face: BotFaceSpec?, mood: Mood = .idle, size: CGFloat) {
         self.name = name; self.face = face; self.mood = mood; self.size = size
     }
@@ -30,11 +31,23 @@ public struct BotFaceView: View {
                 if !clock.made { engine.make(key: key, name: name, face: face, mood: mood.rawValue); clock.made = true }
                 guard let pose = engine.pose(key: key, dt: reduceMotion ? 0 : dt, px: Double(size), dark: scheme == .dark) else { return }
                 let s = min(canvasSize.width, canvasSize.height) / 1000
+                // The kit draws a shape with air around it; scale so the shape's own longer side fills the face's box (the canvas
+                // is a little larger than the box, so a squash or a bounce is not cut off), centred on where it first stood.
+                if clock.fit == nil {
+                    let xs = pose.outline.compactMap { $0.count == 2 ? $0[0] : nil }, ys = pose.outline.compactMap { $0.count == 2 ? $0[1] : nil }
+                    if let x0 = xs.min(), let x1 = xs.max(), let y0 = ys.min(), let y1 = ys.max() {
+                        let ext = max((x1 - x0) * pose.sx, (y1 - y0) * pose.sy)
+                        clock.fit = ext > 1 ? (1000 / Double(Self.canvasScale)) / ext : 1
+                        clock.ax = pose.x + ((x0 + x1) / 2 - 500) * pose.sx
+                        clock.ay = pose.y + ((y0 + y1) / 2 - pose.foot) * pose.sy
+                    } else { clock.fit = 1 }
+                }
                 var c = ctx
                 c.translateBy(x: (canvasSize.width - 1000 * s) / 2, y: (canvasSize.height - 1000 * s) / 2)
                 c.scaleBy(x: s, y: s)
-                c.translateBy(x: 50, y: 50)
-                c.scaleBy(x: 0.9, y: 0.9)
+                c.translateBy(x: 500, y: 500)
+                c.scaleBy(x: clock.fit ?? 1, y: clock.fit ?? 1)
+                c.translateBy(x: -clock.ax, y: -clock.ay)
                 c.translateBy(x: pose.x, y: pose.y)
                 c.rotate(by: .radians(pose.roll))
                 c.scaleBy(x: pose.sx, y: pose.sy)
@@ -43,6 +56,7 @@ public struct BotFaceView: View {
                 for eye in pose.eyes { c.fill(path(flat: eye), with: .color(Theme.ink)) }
             }
         }
+        .frame(width: size * Self.canvasScale, height: size * Self.canvasScale)
         .frame(width: size, height: size)
         .onDisappear { FaceEngine.shared.drop(key: key); clock.made = false }
         .onChange(of: mood) { _, m in if clock.made { FaceEngine.shared.setMood(key: key, mood: m.rawValue) } }

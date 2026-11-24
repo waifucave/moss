@@ -4,7 +4,7 @@
 // the core only wrapped in a `Secret`, for the link sidecar's stdin (never its arguments, environment or a file).
 import { ContractError } from "../contracts/common";
 import { deviceIdFor } from "../contracts/device-registry";
-import type { Secret, SecretRef, SecretStore } from "../contracts/secret-store";
+import { getOrCreateSecret, type Secret, type SecretRef, type SecretStore } from "../contracts/secret-store";
 import { type Bytes, toBase64 } from "./bytes";
 import { type Ed25519Key, ed25519FromSecret, generateEd25519 } from "./keys";
 
@@ -24,11 +24,9 @@ export class DeviceKey {
   /** The key in the store, or a new one written there first. A store that is locked answers `locked`. */
   static async loadOrCreate(store: Pick<SecretStore, "get" | "set">, ref: SecretRef = DEVICE_KEY_REF): Promise<DeviceKey> {
     if (ref.owner.kind !== "device") throw new ContractError("invalid", "the device key is a device item");
-    const stored = await store.get(ref);
-    if (stored) return DeviceKey.fromKey(ed25519FromSecret(stored.value));
-    const key = generateEd25519();
-    await store.set(ref, key.seed(), { synced: false });
-    return DeviceKey.fromKey(key);
+    // Read, or made and written, in one step across processes: two starting on a fresh home make one key, not two.
+    const stored = await getOrCreateSecret(store, ref, () => generateEd25519().seed(), { synced: false });
+    return DeviceKey.fromKey(ed25519FromSecret(stored.value));
   }
 
   static async fromKey(key: Ed25519Key): Promise<DeviceKey> {

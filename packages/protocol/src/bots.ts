@@ -38,6 +38,10 @@ export const BOT_INSTRUCTIONS_FILE = "instructions/instructions.md";
 /** The move's journal, under the home: written once, when every plugin bot has been moved or left. In the fenced
  *  `user-layers/` folder (a subfolder, so the user layers' loader, which reads the folder's own `.json` files, skips it). */
 export const BOT_MOVE_JOURNAL = "user-layers/moved/bots.json";
+/** How many bots one paired phone (one device) may make in any 24 hours (the owner's follow-up of 2026-11-24 to PH3). A person
+ *  makes a few bots a day at most; five leaves room for that and for a bad afternoon of trying names, and bounds a lost phone to
+ *  five bots a day, which the owner archives on the desktop when he revokes it. The desktop's create has no cap. */
+export const PHONE_BOT_CREATES_PER_DAY = 5;
 
 /** The living-bots kit's traits (§6.9; the controller's ruling of 2026-11-17): a name makes them all, and the person may
  *  pin each of the four. The allowed values mirror the kit's own lists (`apps/moss`'s `SHAPES`, `PALETTE`'s names,
@@ -176,11 +180,14 @@ export const BOTS_METHODS = {
     doc: "Every bot as engine data: its record, its main session and the size of its instructions.",
   }),
   botCreate: defineMethod({
-    /** The user's, in MOSS's window or the CLI. A bot making a bot is an open point (the lane map's undefined points). */
-    name: "bot.create", owner: "BT", roles: ["app", "cli"], userOnly: true,
+    /** The user's, in MOSS's window or the CLI, and from a paired phone (the owner's decision of 2026-11-24, as `agent.start`): a
+     *  phone with an answer key the registry still holds, checked at each call, naming a name and a model only (`instructions`,
+     *  `effort` and `face` from a phone are refused, not dropped), at most `PHONE_BOT_CREATES_PER_DAY` a day per device. A bot
+     *  making a bot is an open point (the lane map's undefined points). */
+    name: "bot.create", owner: "BT", roles: ["app", "cli", "remote"], userOnly: true,
     params: z.object({ name: Text, instructions: utf16(200_000).optional(), model: utf16(200).optional(), effort: utf16(32).optional(), face: BotFace.optional() }),
     result: z.object({ bot: BotRecordView }),
-    doc: "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name.",
+    doc: "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name. From a paired phone it is the same call with the same name and model checks, and takes the name and the model only: a call that also carries instructions, an effort or a face is refused, so the app learns (the phone sets those on the desktop). It works only while the phone is paired with an answer key, and each device makes at most " + PHONE_BOT_CREATES_PER_DAY + " bots in any 24 hours (the desktop's own create has no such cap). The phone changes, archives, restores or removes no bot and sets no user layer.",
   }),
   botEdit: defineMethod({
     /** The app's and the user's terminal; a plugin's door to it (`bots.edit`, through the app's door for parts) is lane

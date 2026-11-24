@@ -594,7 +594,7 @@ function pressOf(w: BrowserWindow, what: string): WriteTake {
   // A test-marked build may stand in for the person's press (the label tested inline, so a real build has none of it).
   if ((typeof __MOSS_TEST_BUILD__ === "string") && process.env.MOSS_TEST_PRESSES === "1") return { ok: true, how: "click", stalledMs: 0 };
   // A frame looping on a refused write can't rotate the log away: five lines per write kind in ten seconds, then the count.
-  const said = refusalLines.check(what);
+  const said = refusalLines.check(what, String(w.id));
   if (said.ok) log(`${what}: refused by the press check (${r.check}${r.overMs !== undefined ? `, ${r.overMs} ms past its bound` : ""}${r.stalledMs !== undefined && r.stalledMs > 0 ? `; the process itself was not running for ${r.stalledMs} ms` : ""})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
   return r;
 }

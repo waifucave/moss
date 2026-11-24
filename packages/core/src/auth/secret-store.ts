@@ -17,6 +17,9 @@ export interface SecretStore {
    * than blanks, so a removed credential leaves no row behind at all.
    */
   delete(name: string): Promise<boolean>;
+  /** The item, or the one `make` gives written first, in one step across processes where the backend can (the secrets
+   *  file on Windows and Linux); absent where it can't (the Keychain). `made` says which. A blank item is absent. */
+  getOrCreate?(name: string, make: () => string): Promise<{ value: string; made: boolean }>;
 }
 
 // DD branch review rider: resolved ONCE at module load (unlike `launchdLabel()`'s call-time
@@ -106,6 +109,12 @@ export class KeychainSecretStore implements SecretStore {
   }
   async set(name: string, value: string): Promise<void> {
     await this.backend.set({ service: this.service, name, value });
+  }
+  /** Present only over a backend that can read and write in one hold (`fileSecretsBackend`'s `getOrSet`). */
+  get getOrCreate(): ((name: string, make: () => string) => Promise<{ value: string; made: boolean }>) | undefined {
+    const b = this.backend as { getOrSet?: (a: { service: string; name: string }, make: () => string) => Promise<{ value: string; made: boolean }> };
+    if (typeof b.getOrSet !== "function") return undefined;
+    return (name, make) => b.getOrSet!({ service: this.service, name }, make);
   }
   /** The backend's delete (`Bun.secrets.delete`'s contract) already answers the exact boolean this interface promises ("true if a
    *  credential was deleted, false if not found"), so nothing is re-derived here. WS-27: a migration

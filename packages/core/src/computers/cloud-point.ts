@@ -76,6 +76,64 @@ export function cloudFolders(registry: PluginRegistry): { folders: CloudFolder[]
   return { folders, held };
 }
 
+/** The ids of a plugin's (or its children's) `computerProviders` entries, active or not. */
+export function providerEntryIds(registry: PluginRegistry, pluginId: string): string[] {
+  return registry.entries("computerProviders")
+    .filter((c) => (c.pluginId === pluginId || c.pluginId.startsWith(`${pluginId}/`)) && c.entryId)
+    .map((c) => c.entryId!);
+}
+
+/** What this computer knows without the cloud parts: the other computers that run the core (`undefined`: the device
+ *  registry can't be read), and its own record's machines for these providers (throws when that record can't be read). */
+export interface LoneComputerCheck {
+  otherComputers(): string[] | undefined;
+  machinesOf(providerIds: string[]): string[];
+}
+
+/** What stops a plugin that provides cloud computers from being removed or switched off while this computer's cloud
+ *  computers aren't running: its machines could not be asked about, and would be left billing unasked. `undefined` for a
+ *  plugin that provides none. Used until the computer node is up, and for good on a computer whose node never started. */
+export function cloudNotRunningRefusal(
+  registry: PluginRegistry, pluginId: string, action: "remove" | "switch-off" = "remove", here: LoneComputerCheck = { otherComputers: () => [], machinesOf: () => [] },
+): ContractError | undefined {
+  const ids = providerEntryIds(registry, pluginId);
+  if (ids.length === 0) return undefined;
+  const verb = action === "remove" ? "remove it" : "switch it off";
+  // Only a lone computer may let a provider go unasked. In a group the machines are the MAIN's (§9.2; a computer that isn't
+  // the main keeps no record of them, and a removal syncs as a delete), and which computer is main isn't known before the
+  // lease is: so every group member, the main included, is sent to the main by name. (A main with no machines is refused
+  // too, on purpose: telling it from a member needs the parts that aren't up; once they are, it goes at once.)
+  const others = here.otherComputers();
+  if (others === undefined) {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's list of other computers can't be read yet, so what to do with their machines can't be asked: wait a minute or restart MOSS and ${verb} again`);
+  }
+  if (others.length > 0) {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's cloud computers aren't running, and it is not the only computer: ${verb} on the main computer (${others.join(", ")}${others.length > 1 ? ": whichever is main" : ""}), where you are asked what to do with their machines`);
+  }
+  // This computer's own record: a file that can't be read is not "no machines".
+  let machines: string[];
+  try {
+    machines = here.machinesOf(ids);
+  } catch {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's record of them (cloud.json) can't be read, so it can't be known whether any machine would be left billing: fix or remove that file, or wait a minute or restart MOSS and ${verb} again`);
+  }
+  // It lists none: nothing can be left billing, so nothing to ask.
+  if (machines.length === 0) return undefined;
+  return new ContractError("refused", `${pluginId} provides cloud computers (${machines.join(", ")}), and this computer's cloud computers aren't running (still starting, or they did not start: see the daemon log), so what to do with the machines can't be asked: wait a minute or restart MOSS and ${verb} again, or ${verb} on the main computer if another computer is the main`);
+}
+
+/** The question before a plugin goes (removed or switched off), whichever state this computer's cloud computers are in:
+ *  `point` once they run (it asks, or refuses on a computer that isn't the main); `undefined` before that or when the node
+ *  never started, where a plugin that provides cloud computers is refused. */
+export function askBeforeProviderGoes(
+  point: CloudPoint | undefined, registry: PluginRegistry | undefined, pluginId: string, action: "remove" | "switch-off",
+  here?: LoneComputerCheck,
+): Promise<{ commit: () => Promise<void>; note: string } | undefined> {
+  if (point) return point.guardRemoval(pluginId, action);
+  const refusal = registry ? cloudNotRunningRefusal(registry, pluginId, action, here) : undefined;
+  return refusal ? Promise.reject(refusal) : Promise.resolve(undefined);
+}
+
 /** The ids of the active `computerProviders` entries. */
 export function providerIds(registry: PluginRegistry): string[] {
   return registry.entries("computerProviders").flatMap((c) => (c.state === "active" && c.entryId ? [c.entryId] : []));
@@ -164,16 +222,14 @@ export class CloudPoint {
    *  provider anywhere else would remove it on the main with no question, and the machines would keep billing. So on any
    *  other computer removing a plugin that provides cloud computers is refused, naming where to do it (the question is not
    *  forwarded: the main may be asleep or away, and a question that can't be answered anywhere holds the removal open). */
-  async guardRemoval(pluginId: string): Promise<(() => Promise<void>) | undefined> {
-    const ids = this.#registry.entries("computerProviders")
-      .filter((c) => (c.pluginId === pluginId || c.pluginId.startsWith(`${pluginId}/`)) && c.entryId)
-      .map((c) => c.entryId!);
+  async guardRemoval(pluginId: string, action: "remove" | "switch-off" = "remove"): Promise<{ commit: () => Promise<void>; note: string } | undefined> {
+    const ids = providerEntryIds(this.#registry, pluginId);
     if (ids.length === 0) return undefined;
     if (!this.#active()) {
-      throw new ContractError("refused", `${pluginId} provides cloud computers, and only the main computer manages them: remove it on the main computer, where you are asked what to do with their machines`);
+      throw new ContractError("refused", `${pluginId} provides cloud computers, and only the main computer manages them: ${action === "remove" ? "remove" : "switch"} it ${action === "remove" ? "" : "off "}on the main computer, where you are asked what to do with their machines`.replace("  ", " "));
     }
-    const r = await this.#cloud.askRetire(ids);
-    return r === undefined ? undefined : async () => void (await r.commit());
+    const r = await this.#cloud.askRetire(ids, action);
+    return r === undefined ? undefined : { note: r.note, commit: async () => void (await r.commit()) };
   }
 
   /** What lane H's authenticated pairing door calls when a device presents a cloud computer's token. */

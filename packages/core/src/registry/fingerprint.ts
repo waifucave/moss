@@ -6,6 +6,11 @@ import { join } from "node:path";
 /** The most entries a fingerprint looks at in one folder. */
 export const FINGERPRINT_ENTRIES = 5_000;
 
+/** A directory or file stamped this recently (ms) when a walk saw it can't be trusted to show its next change: the filesystem
+ *  clock ticks coarsely (a few ms on Linux), so a change in the same tick leaves the same stamp. A walk that saw one is
+ *  repeated in full by the next look, until a walk sees none. */
+export const FINGERPRINT_RACY_MS = 50;
+
 /** What the walks did, for the tests: `readdirs` is how many directory listings were read. */
 export const fingerprintStats = { readdirs: 0 };
 
@@ -23,20 +28,25 @@ interface Walk {
   files: { path: string; name: string }[];
   /** The lines of the directories (their names), which don't change while no directory does. */
   dirLines: string[];
+  /** Something it saw was stamped within `FINGERPRINT_RACY_MS` of the walk: a cheap look at it again can't be trusted. */
+  racy: boolean;
 }
 
 const dirKey = (path: string): string | undefined => {
   try { const st = lstatSync(path); return `${st.mtimeMs}:${st.ctimeMs}:${st.ino}`; } catch { return undefined; }
 };
+const recent = (mtimeMs: number, ctimeMs: number): boolean => Math.abs(Date.now() - Math.max(mtimeMs, ctimeMs)) < FINGERPRINT_RACY_MS;
 
 function walkFolder(folder: string): Walk {
   const lines: string[] = [];
   const dirs: Walk["dirs"] = [];
   const files: Walk["files"] = [];
   const dirLines: string[] = [];
+  let racy = false;
   const walk = (dir: string, rel: string): void => {
     // The stat first: a change after it shows in the next look as a different key, never as a missed one.
     const key = dirKey(dir);
+    try { const st = lstatSync(dir); if (recent(st.mtimeMs, st.ctimeMs)) racy = true; } catch { /* gone */ }
     let entries: Dirent[];
     try { fingerprintStats.readdirs++; entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     dirs.push({ path: dir, key: key ?? "" });
@@ -45,11 +55,11 @@ function walkFolder(folder: string): Walk {
       if (e.name === "node_modules" || e.name === ".git") continue;
       const path = join(dir, e.name);
       if (e.isDirectory()) { const line = `${rel}${e.name}/`; lines.push(line); dirLines.push(line); walk(path, `${rel}${e.name}/`); continue; }
-      try { const st = lstatSync(path); lines.push(`${rel}${e.name}:${st.size}:${st.mtimeMs}`); files.push({ path, name: `${rel}${e.name}` }); } catch { /* gone meanwhile */ }
+      try { const st = lstatSync(path); if (recent(st.mtimeMs, st.ctimeMs)) racy = true; lines.push(`${rel}${e.name}:${st.size}:${st.mtimeMs}`); files.push({ path, name: `${rel}${e.name}` }); } catch { /* gone meanwhile */ }
     }
   };
   walk(folder, "");
-  return { print: lines.sort().join("\n"), dirs, files, dirLines };
+  return { print: lines.sort().join("\n"), dirs, files, dirLines, racy };
 }
 
 /**
@@ -66,7 +76,7 @@ export class FingerprintCache {
   print(folder: string): string {
     const last = this.#walks.get(folder);
     // A folder that wasn't there (no directory listed) has nothing to compare: it is walked until it is.
-    if (last !== undefined && !last.capped && last.dirs.length > 0) {
+    if (last !== undefined && !last.capped && !last.racy && last.dirs.length > 0) {
       const again = this.#again(last);
       if (again !== undefined) return again;
     }

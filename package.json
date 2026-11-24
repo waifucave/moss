@@ -13,6 +13,7 @@
     "version:bump": "bun run scripts/bump-version.ts",
     "version:bump:feature": "bun run scripts/bump-version.ts --feature",
     "version:bump:major": "bun run scripts/bump-version.ts --major",
+    "version:bump:to": "bun run scripts/bump-version.ts --to",
     "tap:publish": "bun run scripts/publish-tap.ts",
     "build:winter": "bun run scripts/build-winter.ts",
     "build:daemon": "bun run scripts/build-daemon.ts",

@@ -105,6 +105,8 @@ import { partsServe } from "./runtime-sdk/turn-loop/only-backends";
 import { AgentStarts, agentStartPolicy } from "./agents/start-policy";
 import { computerNameFor } from "./devices/registry";
 import { joinCloudComputerUntilPaired } from "./computers/cloud-join";
+import { askBeforeProviderGoes } from "./computers/cloud-point";
+import { FileCloudStateStore } from "./computers/cloud";
 import { readCloudJoinFiles } from "./computers/image";
 import { startPluginHost, type DaemonPluginHost, type MainHere } from "./plugin-host/daemon-host";
 import { pluginBotSettings } from "./bots/plugin-bot-settings";
@@ -269,7 +271,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
-import { catalogModelListings, contributedProviders, modelOffer, modelsMethods } from "./runtime-sdk/models-list";
+import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
 import { recoverRunRoots, rootRecoveryDetail, type RootReconcile } from "./runtime-state/root-recovery";
@@ -3608,7 +3610,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     ...Object.keys((await credentialPresenceFrom(secrets)).byProvider),
     ...(await pluginAuth?.signedInProviders().catch(() => new Set<string>()) ?? []),
   ]);
-  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods({
+  const modelsDeps: ModelsListDeps = {
     signedIn: signedInNow,
     defaultModel: () => liveModel?.() || undefined,
     // An agent session's own models (lane MS): what its agent reported, else the agent's list as known; any other
@@ -3620,7 +3622,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       const options = selectableOptions(info.session, { modelOption: info.backend.quirks.config.modelOption, effortOption: info.backend.quirks.config.effortOption, ...(info.backend.readOnlyMode ? { readOnlyOption: info.backend.readOnlyMode.option } : {}) });
       return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists), options };
     },
-  })));
+  };
+  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods(modelsDeps)));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
   if (settings) Object.assign(mossLaneHandlers, laneMethodHandlers(setupMethods(setup)));
   // The relay the device links use (§8.3, the setup guide's relay page): n0's by default; the choice is kept in the settings and put to
@@ -4132,7 +4135,23 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   /** The install door for a component's `plugins.install`, handed out by the registry's methods once they're made. */
   let componentInstall: ComponentInstallDoor | undefined;
   // Set once this computer's node is up (it is the cloud computers' part): asks about a provider plugin's machines before it is removed.
-  let beforeCloudPluginRemoved: ((id: string) => Promise<(() => Promise<void>) | undefined>) | undefined;
+  let beforeCloudPluginRemoved: ((id: string, action: "remove" | "switch-off") => Promise<{ commit: () => Promise<void>; note: string } | undefined>) | undefined;
+  // The question before a provider plugin goes (removed or switched off). Until the parts are up, and for good on a
+  // computer whose node never started, a plugin that provides cloud computers is refused: its machines could not be asked
+  // about and would be left billing unasked.
+  const askCloudComputers = async (id: string, action: "remove" | "switch-off"): Promise<{ commit: () => Promise<void>; note: string } | undefined> => {
+    if (beforeCloudPluginRemoved) return beforeCloudPluginRemoved(id, action);
+    // Its own record of machines (`cloud.json`), read now: the parts that keep it aren't up.
+    const machinesOf = (ids: string[]) => new FileCloudStateStore(mossHome, (l) => console.error(l)).loadStrict().vms.filter((v) => ids.includes(v.provider)).map((v) => v.name);
+    // The other computers that run the core, from the device registry (readable without the parts); no links at all is a lone computer.
+    const otherComputers = (): string[] | undefined => {
+      if (opts.links === false) return [];
+      if (ownDevices === undefined) return undefined;
+      const self = ownDevices.self().id;
+      return ownDevices.list().filter((d) => d.runsCore && d.id !== self).map((d) => d.computer ?? d.name);
+    };
+    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action, { otherComputers, machinesOf });
+  };
   // The main computer, for a host half whose `host.start` is `main`: not known until the links and the parts are up
   // (the lease), so such a host half waits; with no links, this computer is its own main.
   let pluginMain: MainHere | undefined | "later" = opts.links === false ? undefined : "later";
@@ -4380,7 +4399,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...glossaryMethods(glossary),
       // Its sealed cards (a development folder from the app, a removal or an update from the Plugins page) ask on the
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
-      ...pluginRegistryMethods({ beforeRemove: (id) => (beforeCloudPluginRemoved ? beforeCloudPluginRemoved(id) : Promise.resolve(undefined)), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
+      ...pluginRegistryMethods({ beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
     };
     const host = pluginHost;
@@ -4675,6 +4694,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       pluginSettings: pluginBotSettings({ registry, backend: filePluginSettings(mossHome), settings: () => pluginHost?.settings }),
       // A bot's model is one a plugin that is on offers (as the picker lists it), or one whose plugin is on while the
       // model plugins are still taking it in (their start or a rebuild), which the session then reopens on.
+      composerModels: (session) => listModels(modelsDeps, { session }),
       modelOffer: (model) => modelOffer(model, {
         catalog: activeCatalog(),
         settling: installedModelPlugins() === undefined || installedModelPlugins()!.rebuilding,
@@ -5150,7 +5170,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         log: (line) => console.error(line),
       });
       const cloudPoint = daemonParts.node?.cloud;
-      if (cloudPoint) beforeCloudPluginRemoved = (id) => cloudPoint.guardRemoval(id);
+      if (cloudPoint) beforeCloudPluginRemoved = (id, action) => cloudPoint.guardRemoval(id, action);
       okTicks.flush();
       if (partsStopping) return void (await closeStarted());
       // The lease is read now: a `host.start: "main"` host half starts here when this computer is the main (no lease

@@ -17,6 +17,10 @@ public enum SampleData {
         Bot(id: "marlow", name: "Marlow", face: nil, state: .asleep, mainSession: "s_marlow"),
         Bot(id: "sorrel", name: "Sorrel", face: nil, state: .paused, computer: computerName, mainSession: "s_sorrel"),
         Bot(id: "tansy", name: "Tansy", face: nil, state: .idle, computer: computerName, mainSession: "s_tansy"),
+        Bot(id: "ember", name: "Ember", face: nil, state: .idle, computer: computerName, mainSession: "s_ember"),
+        Bot(id: "wren", name: "Wren", face: nil, state: .idle, computer: computerName, mainSession: "s_wren"),
+        Bot(id: "fig", name: "Fig", face: nil, state: .idle, computer: computerName, mainSession: "s_fig"),
+        Bot(id: "briar", name: "Briar", face: nil, state: .idle, computer: computerName, mainSession: "s_briar"),
     ]
 
     public static let summaries: [BotSummary] = [
@@ -27,10 +31,14 @@ public enum SampleData {
         BotSummary(id: "marlow", last: .init(text: "I will pick this up when Studio is on.", from: .bot, at: ago(3 * 86400)), unread: false),
         BotSummary(id: "sorrel", last: nil, unread: false),
         BotSummary(id: "tansy", last: .init(text: "Booked the table for four.", from: .bot, at: ago(5 * 86400)), unread: false),
+        BotSummary(id: "ember", last: .init(text: "Outreach drafts queued for approval.", from: .bot, at: ago(2 * 3600)), unread: true),
+        BotSummary(id: "wren", last: .init(text: "The weekly numbers are in the sheet.", from: .bot, at: ago(4 * 86400)), unread: false),
+        BotSummary(id: "fig", last: .init(text: "I moved the invoices to the shared folder.", from: .bot, at: ago(6 * 86400)), unread: false),
+        BotSummary(id: "briar", last: .init(text: "Nothing new in the inbox since Friday.", from: .bot, at: ago(9 * 86400)), unread: false),
     ]
 
     /// The bots the person pinned: the phone keeps this itself (the engine has no such field).
-    public static let pinned: [String] = ["alpha", "luna", "pip"]
+    public static let pinned: [String] = ["luna", "juniper", "tansy"]
 
     public static func conversation(for bot: String) -> [ChatMessage] {
         switch bot {
@@ -42,6 +50,8 @@ public enum SampleData {
                 ChatMessage(id: "m4", role: .bot, text: "The deploy finished. Nothing needed a retry.", at: ago(240)),
                 ChatMessage(id: "m5", role: .user, text: "Great. Anything waiting on me?", at: ago(200), device: "Laptop"),
                 ChatMessage(id: "m6", role: .bot, text: "One approval is waiting: I would like to clear the old build folder.", at: ago(150)),
+                ChatMessage(id: "m7", role: .bot, text: "The release notes are written up at https://example.com/notes", at: ago(140)),
+                ChatMessage(id: "m8", role: .bot, text: "", at: ago(130), file: ChatFile(name: "Release notes.pdf", detail: "12 pages · 1.2 MB")),
             ]
         default:
             let name = bots.first { $0.id == bot }?.name ?? "Bot"
@@ -69,6 +79,14 @@ public enum SampleData {
                    backend: "cursor", model: "auto", root: "home/Studio/tools"),
     ]
 
+    /// Questions waiting in a conversation, by session id.
+    public static let questions: [String: AskQuestion] = [
+        "c4": AskQuestion(callId: "ask_1", header: "Tag colour", text: "Which colour should the new tag have?",
+                          options: [.init(label: "Green", detail: "Matches the success states"), .init(label: "Amber", detail: "Stands out on the white page"), .init(label: "Grey", detail: "Quiet, like the other tags")]),
+        "s_luna": AskQuestion(callId: "ask_2", header: "Receipts", text: "Which folder should I keep this week's receipts in?",
+                              options: [.init(label: "Receipts 2026"), .init(label: "Taxes"), .init(label: "A new folder")]),
+    ]
+
     public static func sessionMessages(for id: String) -> [ChatMessage] {
         switch id {
         case "c1":
@@ -80,6 +98,10 @@ public enum SampleData {
             ]
         case "c2":
             return [
+                ChatMessage(id: "c2-a", role: .user, text: "Which settings pages still use the old form?", at: ago(20000)),
+                ChatMessage(id: "c2-b", role: .agent, text: "Four of them: profile, billing, notifications and the API keys page.", at: ago(19500)),
+                ChatMessage(id: "c2-c", role: .user, text: "Move them one by one and run the tests after each.", at: ago(19000)),
+                ChatMessage(id: "c2-d", role: .agent, text: "Starting with profile. I will keep the old component until all four are done.", at: ago(18500)),
                 ChatMessage(id: "c2-1", role: .user, text: "Move the settings page to the new form component.", at: ago(8900)),
                 ChatMessage(id: "c2-2", role: .agent, text: "Done in 12 files. I want to delete the old form folder, which needs your approval.", at: ago(700)),
             ]
@@ -129,4 +151,32 @@ public enum SampleData {
                 CardOption(id: "deny", kind: .deny, label: "Don't send"),
              ]),
     ]
+
+    public static let backends: [AgentBackend] = [
+        AgentBackend(id: "moss-code", name: "MOSS Code"), AgentBackend(id: "claude-code", name: "Claude Code"),
+        AgentBackend(id: "codex", name: "Codex"), AgentBackend(id: "gemini", name: "Gemini"), AgentBackend(id: "opencode", name: "OpenCode"),
+    ]
+    public static func options(for backend: String) -> BackendOptions {
+        switch backend {
+        case "claude-code":
+            return BackendOptions(backend: backend, models: [
+                ModelOption(id: "claude-opus", name: "Opus", efforts: ["low", "medium", "high"], defaultEffort: "high"),
+                ModelOption(id: "claude-sonnet", name: "Sonnet", efforts: ["low", "medium", "high"], defaultEffort: "medium"),
+            ], defaultModel: "claude-opus", defaultEffort: "high")
+        case "codex":
+            return BackendOptions(backend: backend, models: [ModelOption(id: "gpt-5-codex", name: "GPT-5 Codex", efforts: ["low", "medium", "high"], defaultEffort: "medium")],
+                                  defaultModel: "gpt-5-codex", defaultEffort: "medium")
+        case "moss-code":
+            return BackendOptions(backend: backend, models: [ModelOption(id: "kimi-k3", name: "Kimi K3", efforts: ["medium", "high"], defaultEffort: "medium"),
+                                                             ModelOption(id: "gpt-5", name: "GPT-5", efforts: ["low", "medium", "high"], defaultEffort: "medium")],
+                                  defaultModel: "kimi-k3", defaultEffort: "medium")
+        default:
+            // An agent whose models are unknown until it starts.
+            return BackendOptions(backend: backend, known: false, models: [])
+        }
+    }
+    public static let recentStart = RecentStart(
+        last: .init(backend: "claude-code", model: "claude-sonnet", effort: "medium"),
+        byBackend: [.init(backend: "claude-code", model: "claude-sonnet", effort: "medium"), .init(backend: "codex", model: "gpt-5-codex", effort: "high")],
+        roots: ["home/Studio/moss", "home/Studio/website", "home/Studio/tools"])
 }

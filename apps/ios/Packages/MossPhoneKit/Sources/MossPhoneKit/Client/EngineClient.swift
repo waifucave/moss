@@ -41,14 +41,52 @@ public protocol EngineClient: AnyObject, Sendable {
 
     /// `session.send` with a `UserMessageInput` (the client id makes a resend one message). Bots' conversations and
     /// coding sessions are both sessions, so one call serves both.
-    func send(session: String, text: String, clientMessageId: String) async throws
+    func send(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws
     /// `session.interrupt`: Stop.
     func stop(session: String) async throws
 
-    /// `card.list`, and `card.answer` with a signed answer over the card's hash.
+    /// `card.list`, and `card.answer` with a signed answer over the card's hash. `answer` throws `CardAnswerError` when the
+    /// card expired or another device answered it first.
     func cards() async throws -> [Card]
     func answer(card: Card, option: CardOption) async throws
+    /// The engine's answer to which cards this app shows (MOSS the bots' cards, MOSS Code the rest, and every pending card
+    /// when the other app is not installed): a setting of the client's answer, never a split the screens hard-code.
+    func shows(_ card: Card, in app: PhoneApp) async -> Bool
+
+    /// Starting a coding session (MOSS Code): `agent.backends`, `agent.options`, `agent.recent`, `agent.start`.
+    /// `startSession` returns the new session's id; `sessions()` then lists it.
+    func backends() async throws -> [AgentBackend]
+    func startOptions(backend: String) async throws -> BackendOptions
+    func recentStart() async throws -> RecentStart
+    func startSession(_ request: StartRequest) async throws -> String
+
+    /// The composer's rows: what this conversation or session offers through the doors a phone may call. Nothing offered, no row.
+    func composerOffers(session: String, kind: ConversationKind) async throws -> ComposerOffers
+    /// `session.setModel` (a bot's effort too).
+    func setModel(session: String, model: String?, effort: String?) async throws
+    /// `session.stageImage`: the staged picture's path, for `send(images:)`.
+    func stageImage(session: String, data: Data) async throws -> String
+    /// A file for the next message, up to the engine's limit (`FileTooLarge` when over it). The shape follows the engine's door.
+    func stageFile(session: String, name: String, data: Data) async throws -> StagedFile
+    /// Making a bot from the phone: the models on offer, and the new bot (its conversation opens next).
+    func newBotOptions() async throws -> NewBotOptions
+    func createBot(name: String, model: String?) async throws -> Bot
+    /// `command.run`.
+    func runCommand(session: String, command: String) async throws
+    /// The question waiting in a conversation, if any, and `session.answer`.
+    func pendingQuestion(session: String) async throws -> AskQuestion?
+    func answerQuestion(session: String, question: AskQuestion, answers: [String: String]) async throws
+
+    /// The state of the link now (`events()` tells the changes), and forgetting this computer.
+    func connectionState() async -> ConnectionState
+    func unpair() async
 
     /// `events.subscribe`: what happens next, until the stream is dropped.
     func events() async -> AsyncStream<EngineEvent>
+}
+
+public extension EngineClient {
+    func send(session: String, text: String, clientMessageId: String) async throws {
+        try await send(session: session, text: text, clientMessageId: clientMessageId, images: [], files: [])
+    }
 }

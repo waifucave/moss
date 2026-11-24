@@ -45,6 +45,7 @@ import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type Co
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
 import { AppLog, appLogPath, LineLimiter } from "./app-log";
+import { fileLine } from "./file-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
@@ -216,14 +217,19 @@ app.commandLine.appendSwitch("no-proxy-server");
 const session_ = linuxSession(process.env);
 registerSchemes();
 
+// Bots can read `<home>/logs`, so the file gets only what `fileLine` (file-log.ts) lets through: checks, numbers, lifecycle lines and error
+// kinds, never an error's message or stack, a card's id or a page's address. The process's output keeps every line. A test-marked or acceptance
+// build (never a person's, its home is a temporary one) writes the raw line to the file too: the acceptance run reads its steps' evidence there
+// (with the time of each line), and the filter itself is held by file-log.test.ts.
+const rawFileLines = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 const appLog = new AppLog(appLogPath(home));
 function log(line: string): void {
   process.stdout.write(`[moss-app] ${line}\n`);
-  appLog.write(line);
+  appLog.write(rawFileLines ? line : fileLine(line));
 }
 
 // A packaged app never shows Electron's "A JavaScript error occurred in the main process" box: an uncaught exception or
-// an unhandled rejection is one line and its stack in app.log, and the app goes on. A test-marked or acceptance build
+// an unhandled rejection is one line in the process's output with its stack (the file gets its kind only, `fileLine`), and the app goes on. A test-marked or acceptance build
 // keeps the default loud behaviour, so a run still fails on one.
 if (app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string") {
   const note = (kind: string, err: unknown): void => {
@@ -516,7 +522,7 @@ async function ready(): Promise<void> {
     takeGesture: (windowId, frameId, arrived) => {
       const ok = sends.takeIn(windowId, frameId, arrived);
       // A frame looping on refused calls can't rotate the log away: five lines per frame in ten seconds, then the count.
-      const said = ok ? undefined : refusalLines.check(`press:${frameId}`);
+      const said = ok ? undefined : refusalLines.check(`press:${frameId}`, String(windowId));
       if (said?.ok === true) log(`press: a call from frame ${frameId} found no press of its own (${sends.whyNot(windowId, frameId, arrived)}; the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
       return ok;
     },
@@ -763,7 +769,7 @@ async function ready(): Promise<void> {
       // Everything that can be refused is refused first, so a refused call spends nobody's gesture. Each refusal says why in
       // the app's log (the reason only, never the words) and reaches the person as the error the sender shows.
       const refuse = (reason: string, say = reason): never => {
-        const said = refusalLines.check(`send:${frameId}`);
+        const said = refusalLines.check(`send:${frameId}`, String(windowId));
         if (said.ok) log(`send: refused (${reason})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
         throw new LayerError(say);
       };
@@ -3036,7 +3042,8 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
 const sends = new SendGate(Date.now, new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) }));
-/** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log). */
+/** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log), and 30 a minute
+ *  for all of one window's frames together (a plugin that makes frame after frame is a new frame each time). */
 const refusalLines = new LineLimiter();
 // A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse
 // press landed, bound to the frame the report came from (never a payload). First report wins; one with no recent press is dropped.

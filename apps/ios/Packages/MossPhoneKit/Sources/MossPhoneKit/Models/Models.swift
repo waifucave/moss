@@ -51,6 +51,13 @@ public struct BotSummary: Codable, Hashable, Sendable {
 public enum MessageRole: String, Codable, Sendable { case user, bot, note, agent }
 
 /// One message of a conversation, already read out of the session's events by the client.
+public struct ChatFile: Hashable, Sendable {
+    public var name: String
+    /// "12 pages · 1.2 MB": what the engine says about the file.
+    public var detail: String
+    public init(name: String, detail: String) { self.name = name; self.detail = detail }
+}
+
 public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var id: String
     public var role: MessageRole
@@ -59,8 +66,10 @@ public struct ChatMessage: Identifiable, Hashable, Sendable {
     public var at: Int64
     /// The device a user message came from (`from <device>`), when it was not this phone.
     public var device: String?
-    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil) {
-        self.id = id; self.role = role; self.text = text; self.at = at; self.device = device
+    /// A file the message carries, drawn as its own card.
+    public var file: ChatFile?
+    public init(id: String, role: MessageRole, text: String, at: Int64, device: String? = nil, file: ChatFile? = nil) {
+        self.id = id; self.role = role; self.text = text; self.at = at; self.device = device; self.file = file
     }
 }
 
@@ -236,7 +245,9 @@ public struct Card: Identifiable, Codable, Hashable, Sendable {
 public struct PairedComputer: Hashable, Sendable {
     public var name: String
     public var deviceName: String
-    public init(name: String, deviceName: String) { self.name = name; self.deviceName = deviceName }
+    /// When the link last carried anything (epoch ms), if it ever has.
+    public var lastSeen: Int64?
+    public init(name: String, deviceName: String, lastSeen: Int64? = nil) { self.name = name; self.deviceName = deviceName; self.lastSeen = lastSeen }
 }
 
 /// What a scanned code starts: the id of the pairing and the four words both screens show.
@@ -259,4 +270,203 @@ public enum EngineEvent: Hashable, Sendable {
     case sessionChanged(SessionRow)
     case cardRequested(Card)
     case cardResolved(id: String)
+    case connection(ConnectionState)
+}
+
+
+// MARK: Link state, apps, starting a session
+
+/// Whether the link to the paired computer is carrying anything now.
+public enum ConnectionState: Hashable, Sendable {
+    case connected
+    /// The computer cannot be reached; `since` is when the link was last up (epoch ms), if known.
+    case unreachable(since: Int64?)
+}
+
+/// Which phone app is asking, for the client's answer to which cards to show it.
+public enum PhoneApp: String, Hashable, Sendable { case moss, code }
+
+/// Why an answer to a card did not count.
+public enum CardAnswerError: Error, Equatable, Sendable {
+    case expired
+    case answeredElsewhere
+}
+
+/// An agent backend a person can start a session with (`agent.backends`, `userStartable` only).
+public struct AgentBackend: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public init(id: String, name: String) { self.id = id; self.name = name }
+}
+
+/// A model a backend offers before any session exists (`BackendModelOption`).
+public struct ModelOption: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var efforts: [String]
+    public var defaultEffort: String?
+    public init(id: String, name: String, efforts: [String] = [], defaultEffort: String? = nil) {
+        self.id = id; self.name = name; self.efforts = efforts; self.defaultEffort = defaultEffort
+    }
+}
+
+/// What a backend offers to start with (`AgentBackendOptions`). `known: false` means unknown until it starts.
+public struct BackendOptions: Hashable, Sendable {
+    public var backend: String
+    public var known: Bool
+    public var models: [ModelOption]
+    public var defaultModel: String?
+    public var defaultEffort: String?
+    public init(backend: String, known: Bool = true, models: [ModelOption], defaultModel: String? = nil, defaultEffort: String? = nil) {
+        self.backend = backend; self.known = known; self.models = models; self.defaultModel = defaultModel; self.defaultEffort = defaultEffort
+    }
+}
+
+/// The person's last start (`RecentStart`): preselects the agent, its model and effort, and lists folders used before.
+public struct RecentStart: Hashable, Sendable {
+    public struct Choice: Hashable, Sendable {
+        public var backend: String
+        public var model: String?
+        public var effort: String?
+        public init(backend: String, model: String? = nil, effort: String? = nil) { self.backend = backend; self.model = model; self.effort = effort }
+    }
+    public var last: Choice?
+    public var byBackend: [Choice]
+    /// Folders started in last, newest first.
+    public var roots: [String]
+    public init(last: Choice? = nil, byBackend: [Choice] = [], roots: [String] = []) { self.last = last; self.byBackend = byBackend; self.roots = roots }
+}
+
+/// What `agent.start` takes (`backend`, `computer`, `root`, `model`, `effort`).
+public struct StartRequest: Hashable, Sendable {
+    public var backend: String
+    public var computer: String
+    public var root: String
+    public var model: String?
+    public var effort: String?
+    public init(backend: String, computer: String, root: String, model: String? = nil, effort: String? = nil) {
+        self.backend = backend; self.computer = computer; self.root = root; self.model = model; self.effort = effort
+    }
+}
+
+public enum StartError: Error, Equatable, Sendable {
+    /// The engine refused the folder (outside the fence, or it holds the MOSS home).
+    case folderRefused
+    /// The agent is not installed on that computer.
+    case notInstalled
+}
+
+// MARK: Composer
+
+/// A plugin's command the person may run from a conversation (`command.list`, `command.run`).
+public struct PluginCommand: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var title: String
+    public init(id: String, title: String) { self.id = id; self.title = title }
+}
+
+/// A model a session lets the person switch to (`models.list {session}`, `session.setModel`).
+public struct ModelChoice: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var efforts: [String]
+    public init(id: String, name: String, efforts: [String] = []) { self.id = id; self.name = name; self.efforts = efforts }
+}
+
+/// What the composer of one conversation or session may offer, read from the doors a phone may call today. A kind with nothing
+/// behind it is empty or `nil`, and its row is left out of the picker: there are no placeholder rows.
+public struct ComposerOffers: Equatable, Sendable {
+    /// `session.stageImage`: Photos, and Camera where the phone has one. Pictures cross the link in chunks (`StagingLimits`).
+    public var pictures: Bool
+    /// `command.list` and `command.run`: the Plugins row, when any command is listed.
+    public var commands: [PluginCommand]
+    /// `session.setModel`'s effort: the session's own levels and the one set now. Empty: no Effort row.
+    public var efforts: [String]
+    public var effort: String?
+    /// `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row.
+    public var models: [ModelChoice]
+    public var model: String?
+    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil, maxFiles: Int? = nil, fileKeptDays: Int? = nil) {
+        self.files = files; self.fileLimit = fileLimit; self.maxFiles = maxFiles; self.fileKeptDays = fileKeptDays
+        self.pictures = pictures; self.commands = commands; self.efforts = efforts; self.effort = effort; self.models = models; self.model = model
+    }
+    /// A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row.
+    public var files: Bool = false
+    public var fileLimit: Int64?
+    /// How many files one message may carry.
+    public var maxFiles: Int?
+    /// A coding session keeps the files it received this many days.
+    public var fileKeptDays: Int?
+    public var isEmpty: Bool { !pictures && !files && commands.isEmpty && efforts.isEmpty && models.isEmpty }
+}
+
+public enum ConversationKind: Sendable { case bot, codingSession }
+
+/// A picture staged for the next message (`session.stageImage` wrote it; `path` is what `session.send` takes).
+public struct StagedImage: Identifiable, Hashable, Sendable {
+    public var id: String { path }
+    public var path: String
+    public var thumbnail: Data
+    public init(path: String, thumbnail: Data) { self.path = path; self.thumbnail = thumbnail }
+}
+
+/// An `AskUserQuestion` waiting in a conversation (`session.answer` answers it).
+public struct AskQuestion: Identifiable, Hashable, Sendable {
+    public struct Option: Hashable, Sendable {
+        public var label: String
+        public var detail: String?
+        public init(label: String, detail: String? = nil) { self.label = label; self.detail = detail }
+    }
+    public var callId: String
+    public var header: String?
+    public var text: String
+    public var options: [Option]
+    public var multiSelect: Bool
+    public var id: String { callId }
+    public init(callId: String, header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {
+        self.callId = callId; self.header = header; self.text = text; self.options = options; self.multiSelect = multiSelect
+    }
+}
+
+/// A file staged for the next message: what the engine wrote, and how it reads in the chip.
+public struct StagedFile: Identifiable, Hashable, Sendable {
+    public var id: String { path }
+    public var path: String
+    public var name: String
+    public var size: Int64
+    public init(path: String, name: String, size: Int64) { self.path = path; self.name = name; self.size = size }
+}
+
+/// The paired link's staging limits (the engine's doors for `session.stageFile` and `session.stageImage`): a frame on the link is 1 MiB,
+/// so a file or a picture travels in 512 KiB chunks; a file is at most 50 MiB and a message carries at most 10 files.
+public enum StagingLimits {
+    public static let chunkSize = 512 * 1024
+    public static let maxFileBytes: Int64 = 50 * 1024 * 1024
+    public static let maxFilesPerMessage = 10
+    public static func chunks(of data: Data) -> [Data] {
+        stride(from: 0, to: data.count, by: chunkSize).map { data.subdata(in: $0..<min($0 + chunkSize, data.count)) }
+    }
+}
+
+/// The engine refused `bot.create` and said why, in its own words (a phone may make 5 bots a day).
+public struct BotCreateRefused: Error, Equatable, Sendable {
+    public var message: String
+    public init(message: String) { self.message = message }
+}
+
+public struct TooManyFiles: Error, Equatable, Sendable {
+    public var limit: Int
+    public init(limit: Int) { self.limit = limit }
+}
+
+public struct FileTooLarge: Error, Equatable, Sendable {
+    public var limit: Int64
+    public init(limit: Int64) { self.limit = limit }
+}
+
+/// What a new bot is made from: the models the computer offers, and its default.
+public struct NewBotOptions: Hashable, Sendable {
+    public var models: [ModelChoice]
+    public var defaultModel: String?
+    public init(models: [ModelChoice], defaultModel: String? = nil) { self.models = models; self.defaultModel = defaultModel }
 }

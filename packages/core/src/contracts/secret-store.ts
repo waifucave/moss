@@ -128,6 +128,21 @@ export interface SecretStore {
   watch(fn: (change: SecretChange) => void): () => void;
 }
 
+/** The item, or the one `make` gives written first, for everything that makes an item when it finds none (lane SE). A
+ *  store that can do both in one step across processes (`MossSecretStore.getOrCreate`, under its index's lock) does;
+ *  any other (a fake, a test's memory store) is asked to read, then to write. */
+export async function getOrCreateSecret(
+  store: Pick<SecretStore, "get" | "set">, ref: SecretRef, make: () => string | Secret, opts: { synced?: boolean } = {},
+): Promise<SecretValue> {
+  const atomic = (store as { getOrCreate?: (r: SecretRef, m: () => string | Secret, o: { synced?: boolean }) => Promise<SecretValue> }).getOrCreate;
+  if (typeof atomic === "function") return atomic.call(store, ref, make, opts);
+  const found = await store.get(ref);
+  if (found !== null) return found;
+  const made = make();
+  const meta = await store.set(ref, made, opts);
+  return { value: made instanceof Secret ? made : new Secret(made), generation: meta.generation };
+}
+
 export function secretOwnerKey(owner: SecretOwner): string {
   return owner.kind === "plugin" ? `plugin:${owner.pluginId}` : owner.kind;
 }

@@ -159,7 +159,7 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
   const { registry, pairing } = deps;
   /** A device's card (§5.5): the engine's own title and sentence, and what a device calls itself only as the value of a row of its
    *  own, never inside a sentence, so no character in a name can close or continue what the engine says. */
-  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string }[]): ApprovalRequest => ({
+  const changeCard = (change: "device-add" | "device-revoke", title: string, what: string | undefined, rows: { label: string; value: string; name?: true }[]): ApprovalRequest => ({
     kind: "change", origin: "user", computers: [], effect: "other", change,
     fields: { title: { type: "text", text: title }, ...(what === undefined ? {} : { what: { type: "text", text: what } }), detail: { type: "rows", rows } },
   });
@@ -187,9 +187,9 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
       const ctl = new AbortController();
       withdraw.set(pairingId, ctl);
       const opened = await deps.openCard(changeCard("device-add", "Add this device?", `Check that these four words are the same on the other device's screen: ${real.join(" ")}`, [
-        { label: "The name it gives itself", value: peer.name },
+        { label: "The name it gives itself", value: peer.name, name: true },
         { label: "What it says it is", value: peer.kind },
-        { label: "It would join", value: registry.self().name },
+        { label: "It would join", value: registry.self().name, name: true },
       ]), { signal: ctl.signal });
       if (!opened.card) {
         // Answered before its id was known: still a card's answer, never the user's terminal.
@@ -278,7 +278,7 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await run();
         return { applied: true };
       }
-      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [{ label: "The device", value: d.name }, { label: "What it is", value: d.kind }]));
+      const opened = await deps.openCard(changeCard("device-revoke", "Revoke this device?", undefined, [{ label: "The device", value: d.name, name: true }, { label: "What it is", value: d.kind }]));
       if (!opened.card) {
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
         await run();
@@ -492,7 +492,8 @@ function mustMain(deps: Pick<DevicesMethodsDeps, "main">): NonNullable<DevicesMe
 
 const mainCard = (name: string): ApprovalRequest => ({
   kind: "change", origin: "user", computers: [], effect: "other", change: "main-computer",
-  fields: { title: { type: "text", text: `Make ${name} the main computer?` }, detail: { type: "list", items: [name] } },
+  // This computer's name is a row of its own, never a word inside the engine's title (the add card does the same).
+  fields: { title: { type: "text", text: "Make this computer the main computer?" }, detail: { type: "rows", rows: [{ label: "This computer", value: name, name: true }] } },
 });
 
 /** Makes this computer the main one: at once from the user's terminal, otherwise once its card is approved. */

@@ -3,10 +3,14 @@
 // (or any test file) can call `os.tmpdir()`. See ./per-process-tmp.ts. Every `mkdtempSync(join(tmpdir(), …))`
 // in this file therefore lands inside that root too.
 import "./per-process-tmp";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LEGACY_HOME_ENV } from "../src/legacy-names";
+// The folder a phone's files for a coding session are put in is BESIDE the MOSS home (`~/.moss` gives `~/.moss-received`; bots/staged-files.ts).
+// With this set, that folder must be inside this run's own temp root or nothing is written: a test (or a daemon a test spawns, which inherits
+// this) that ever resolved the person's real home can't make or fill the real `~/.moss-received`.
+process.env.MOSS_TEST_WRITE_ROOT = realpathSync(tmpdir());
 // Cowork fences can inspect file identity to reject hard-link aliases. Inject the coordination root
 // before any fence is constructed so even metadata checks never probe the production user ledger.
 process.env.WINTER_COWORK_COORDINATION_DIR = mkdtempSync(join(tmpdir(), "moss-test-cowork-coordination-"));

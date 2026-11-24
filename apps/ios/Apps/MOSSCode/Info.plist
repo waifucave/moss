@@ -21,7 +21,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
-	<string>MOSS Code uses the camera only to read the pairing code shown on your computer. Nothing is recorded.</string>
+	<string>MOSS Code uses the camera to read the pairing code shown on your computer, and to take a picture you choose to send. Nothing is recorded otherwise.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

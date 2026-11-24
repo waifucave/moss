@@ -7,6 +7,8 @@ import { ContractError } from "../contracts/common";
 import type { DurableSessionHost } from "../sessions/durable-host";
 import { projectRecords, readsSealed, type WireEvent } from "../sessions/wire";
 import { handler, requireUser, type MethodHandler } from "../rpc/handler";
+import { isPhoneCaller, requirePairedPhone, type PhoneMay } from "../rpc/phone-door";
+import { PhoneBotCap } from "./phone-bot-cap";
 import type { PluginBotSettings } from "./plugin-bot-settings";
 import type { BotService } from "./service";
 
@@ -15,6 +17,12 @@ export interface BotRecordMethodsDeps {
   host: Pick<DurableSessionHost, "history" | "length">;
   /** Every plugin's bot-scoped settings for one bot, with their schema (`bot.pluginSettings`); without it, not served. */
   pluginSettingViews?: PluginBotSettings["views"];
+  /** Whether the paired phone `device` may act on this computer now (`mayStartSessions` over the device registry's record of it).
+   *  `bot.create` from a phone's connection (`remote`) is refused unless this says yes; without it none is let make a bot. */
+  phoneMay?: PhoneMay;
+  /** MOSS's home, where a phone's day count of made bots is kept (`transcripts/.phone-bot-creates.json`), and the clock that dates it.
+   *  Without them a phone's create is refused: the cap can't be kept. */
+  capHome?: { home: string; now: () => number; perDay?: number };
 }
 
 const SCAN_STEP = 200;
@@ -27,6 +35,7 @@ export function botRecordMethods(deps: BotRecordMethodsDeps): Record<string, Met
   };
   const store = bots.records;
   if (store === undefined) return status;
+  const cap = deps.capHome === undefined ? undefined : new PhoneBotCap(deps.capHome);
   const must = (id: string) => {
     if (!store.has(id)) throw new ContractError("not_found", `no bot ${id}`);
   };
@@ -34,12 +43,28 @@ export function botRecordMethods(deps: BotRecordMethodsDeps): Record<string, Met
     ...status,
     [M.botRecords.name]: handler(M.botRecords, async () => ({ bots: store.list() })),
     [M.botCreate.name]: handler(M.botCreate, async ({ name, instructions, model, effort, face }, ctx) => {
-      requireUser(ctx, "make a bot");
-      const bot = await bots.createBot({
-        name, ...(instructions === undefined ? {} : { instructions }), ...(model === undefined ? {} : { model }),
-        ...(effort === undefined ? {} : { effort }), ...(face === undefined ? {} : { face }),
-      }, { kind: "user" });
-      return { bot };
+      const caller = requireUser(ctx, "make a bot");
+      // A phone's call (the owner's decision of 2026-11-24): the same call, from a phone that is still paired with an answer key
+      // now. It is the person's own act from that device, as the desktop's is from the app, with two limits the desktop doesn't have.
+      requirePairedPhone(caller, deps.phoneMay, "make a bot");
+      let taken: number | undefined;
+      if (isPhoneCaller(caller)) {
+        // "A name and a model, exactly as the desktop's plus does": anything else is refused, not dropped, so the app learns.
+        const extra = [instructions !== undefined && "instructions", effort !== undefined && "effort", face !== undefined && "face"].filter((k) => k !== false);
+        if (extra.length > 0) throw new ContractError("refused", `a phone makes a bot with a name and a model only; set the ${extra.join(" and ")} on the desktop`);
+        if (cap === undefined) throw new ContractError("refused", "this engine can't count a phone's bots, so a phone can't make one here");
+        taken = cap.take(caller.device!);
+      }
+      try {
+        const bot = await bots.createBot({
+          name, ...(instructions === undefined ? {} : { instructions }), ...(model === undefined ? {} : { model }),
+          ...(effort === undefined ? {} : { effort }), ...(face === undefined ? {} : { face }),
+        }, { kind: "user" });
+        return { bot };
+      } catch (err) {
+        if (taken !== undefined) cap!.give(caller.device!, taken);
+        throw err;
+      }
     }),
     [M.botEdit.name]: handler(M.botEdit, async ({ id, patch }, ctx): Promise<ChangeResult> => {
       requireUser(ctx, "change a bot");

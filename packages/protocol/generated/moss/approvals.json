@@ -333,6 +333,10 @@
                                 "value": {
                                   "type": "string",
                                   "maxLength": 4000
+                                },
+                                "name": {
+                                  "type": "boolean",
+                                  "const": true
                                 }
                               },
                               "required": [
@@ -763,6 +767,10 @@
                               "value": {
                                 "type": "string",
                                 "maxLength": 4000
+                              },
+                              "name": {
+                                "type": "boolean",
+                                "const": true
                               }
                             },
                             "required": [
@@ -1584,6 +1592,10 @@
                               "value": {
                                 "type": "string",
                                 "maxLength": 4000
+                              },
+                              "name": {
+                                "type": "boolean",
+                                "const": true
                               }
                             },
                             "required": [
