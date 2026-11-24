@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { units } from "./acceptance/shards";
 import { NOT_ON_GITHUB, ON_GITHUB } from "./ci/acceptance-units";
 import { planForFiles } from "./ci/plan";
-import { acceptanceUnits, areasFor, CI_AREA_NAMES, isKnown, matches, matchesAny, scopeOf, unmapped, type CiArea } from "./ci-changes";
+import { acceptanceUnits, areasFor, CI_AREA_NAMES, isKnown, matches, matchesAny, PARKED, scopeOf, unmapped, type CiArea } from "./ci-changes";
 
 const on = (changed: string[]): CiArea[] => CI_AREA_NAMES.filter((a) => areasFor(changed)[a]);
+/** Every area but the PARKED ones: what a run of everything takes (the parked ones only for their own sources). */
+const EVERY = CI_AREA_NAMES.filter((a) => !PARKED.includes(a));
 
 describe("ci-changes", () => {
   test("patterns: a folder prefix, a one-folder file prefix, globs, and exact paths", () => {
@@ -216,22 +218,41 @@ describe("ci-changes", () => {
     expect(on(["packages/test-harness/src/workers.ts"])).not.toContain("core");
   });
 
-  test("the Swift tests run for apple/ and CI's own definition, and not for the protocol or the CLI", () => {
+  test("the browser host's Swift tests run for its own folder only: not the rest of apple/, CI's own definition, the core, the toolchain or a lockfile", () => {
     expect(on(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"])).toEqual(["scripts", "swift"]);
+    expect(on(["apple/ComputerUse/WinterBrowserHost/PROTOCOL.md"])).toContain("swift");
+    for (const f of ["apple/ComputerUse/WinterCUCore/Package.swift", "apple/ComputerUse/PROTOCOL.md", "apple/Winter/project.yml", "apple/Cowork/WinterCoworkLauncher/Package.swift"]) expect(on([f]), f).not.toContain("swift");
     expect(on(["packages/protocol/generated/fixtures/x.json"])).not.toContain("swift");
     expect(on(["packages/protocol/src/methods.ts"])).not.toContain("swift");
     expect(on(["packages/cli/src/main.ts"])).not.toContain("swift");
-    // Only apple/ and CI's own definition run them: not the core, the toolchain or a lockfile.
     expect(on(["packages/core/src/daemon.ts"])).not.toContain("swift");
-    for (const g of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml"]) expect(on([g]), g).not.toContain("swift");
-    expect(on(["scripts/ci-changes.ts"])).toContain("swift");
+    for (const g of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml", ".github/workflows/ci.yml", "scripts/ci-changes.ts"]) expect(on([g]), g).not.toContain("swift");
   });
 
-  test("CI itself runs every area but the installers; the toolchain, the root manifest or a lockfile every area but the Swift kits and the installers; so does no diff", () => {
-    for (const f of [".github/workflows/ci.yml", "scripts/ci-changes.ts"]) expect(on([f])).toEqual(CI_AREA_NAMES.filter((a) => a !== "installers"));
-    // (the Cowork launcher's Swift tests are CI's own definition's too, like the browser host's)
-    for (const f of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml", ".npmrc", ".gitattributes"]) expect(on([f]), f).toEqual(CI_AREA_NAMES.filter((a) => a !== "swift" && a !== "installers" && a !== "cowork"));
-    expect(CI_AREA_NAMES.filter((a) => areasFor(undefined)[a])).toEqual(CI_AREA_NAMES);
+  test("Cowork's launcher and libkrun queue run for Cowork's own sources only (the Swift packages, the engine's cowork folder)", () => {
+    for (const f of ["apple/Cowork/WinterCoworkLauncher/Package.swift", "apple/Cowork/WinterCoworkLibkrun/scripts/prepare_queue.py", "packages/core/src/cowork/native/launcher.ts"]) expect(on([f]), f).toContain("cowork");
+    for (const f of ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift", "packages/core/src/daemon.ts", "packages/protocol/src/cowork.ts", ".github/workflows/ci.yml", "scripts/ci-changes.ts", "bun.lock", ".bun-version"]) expect(on([f]), f).not.toContain("cowork");
+  });
+
+  test("the parked areas (swift, cowork): not for --all, a no-diff run or an unmapped path; for their own sources in another diff, a base that could not be read, or --parked", () => {
+    expect([...PARKED]).toEqual(["swift", "cowork"]);
+    for (const a of PARKED) {
+      expect(areasFor(undefined)[a], `${a}: no diff`).toBe(false);
+      expect(areasFor(["newtop/x.ts"])[a], `${a}: unmapped`).toBe(false);
+      expect(areasFor(undefined, "all")[a], `${a}: forced`).toBe(true);
+      expect(areasFor(["newtop/x.ts"], "all")[a], `${a}: forced, unmapped`).toBe(true);
+    }
+    // `--all` with the lane's own diff: every other area (the first release's own), and the parked ones for their own sources.
+    expect(CI_AREA_NAMES.filter((x) => areasFor(undefined, ["docs/a.md"])[x])).toEqual(EVERY);
+    expect(CI_AREA_NAMES.filter((x) => areasFor(undefined, ["apple/Cowork/WinterCoworkLauncher/Package.swift"])[x])).toEqual(CI_AREA_NAMES.filter((x) => x !== "swift"));
+    expect(areasFor(undefined, ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).swift).toBe(true);
+    expect(areasFor(undefined, ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).cowork).toBe(false);
+  });
+
+  test("CI itself runs every area but the installers and the parked ones; the toolchain, the root manifest or a lockfile likewise; no diff runs every area but the parked ones", () => {
+    for (const f of [".github/workflows/ci.yml", "scripts/ci-changes.ts"]) expect(on([f])).toEqual(EVERY.filter((a) => a !== "installers"));
+    for (const f of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml", ".npmrc", ".gitattributes"]) expect(on([f]), f).toEqual(EVERY.filter((a) => a !== "installers"));
+    expect(CI_AREA_NAMES.filter((a) => areasFor(undefined)[a])).toEqual(EVERY);
   });
 
   test("ci.yml has a job, or a matrix of them, behind every area, and the gate waits for them all", () => {
@@ -299,7 +320,7 @@ describe("CI for the lanes", () => {
     expect(ci.concurrency.group).toContain("github.head_ref || github.ref");
     // A manual run of the acceptance alone is its own group.
     expect(ci.concurrency.group).toContain("github.event.inputs.only");
-    expect(Object.keys(ci.on.workflow_dispatch?.inputs ?? {})).toEqual(["only", "scope", "base"]);
+    expect(Object.keys(ci.on.workflow_dispatch?.inputs ?? {})).toEqual(["only", "scope", "base", "parked"]);
     // The scope input defaults to everything: only `scripts/ci/lane start` asks for a scoped run, with the base it counts from.
     expect((ci.on.workflow_dispatch!.inputs!.scope as { default: string }).default).toBe("all");
   });
@@ -406,7 +427,9 @@ describe("the path-to-area map", () => {
     { name: "an app of the desktop's", files: ["apps/moss/src/main/press.ts", "apps/desktop/src/main/ui/brokers.ts"], areas: ["workspaces", "app", "packages", "typecheck", "scripts", "acceptance"], units: "all" },
     { name: "an app's tests only", files: ["apps/moss/test/press-sequences.test.ts"], areas: ["workspaces", "app", "typecheck", "scripts"], units: [] },
     { name: "the SDK's examples directory", files: ["examples/sample-echo/src/index.ts"], areas: ["workspaces", "typecheck"], units: [] },
-    { name: "the Cowork launcher", files: ["apple/Cowork/WinterCoworkLauncher/Package.swift"], areas: ["scripts", "swift", "cowork"], units: [] },
+    { name: "the Cowork launcher", files: ["apple/Cowork/WinterCoworkLauncher/Package.swift"], areas: ["scripts", "cowork"], units: [] },
+    { name: "the old Chrome extension's native host", files: ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"], areas: ["scripts", "swift"], units: [] },
+    { name: "the rest of apple/ (the Computer Use core)", files: ["apple/ComputerUse/WinterCUCore/Package.swift"], areas: ["scripts"], units: [] },
     { name: "the brand assets and the release notes", files: ["assets/brand/lockup-on-dark.svg", "releases/notes/0.113.0.md"], areas: ["scripts"], units: [] },
   ];
 
@@ -422,11 +445,11 @@ describe("the path-to-area map", () => {
   test("a path no area maps runs every area and every unit (fail closed), the inert ones run none", () => {
     for (const f of ["newtop/x.ts", "apps/android/build.gradle", "native/newlib/src/lib.rs", "Makefile", "docs-but-not/x.md"]) {
       expect([f, isKnown(f)]).toEqual([f, false]);
-      expect(on([f]), f).toEqual([...CI_AREA_NAMES]);
+      expect(on([f]), f).toEqual(EVERY);
       expect(acceptanceUnits([f]), f).toEqual([...ON_GITHUB]);
     }
     // One stray path in an otherwise small change: everything.
-    expect(on(["docs/a.md", "apps/android/x.kt"])).toEqual([...CI_AREA_NAMES]);
+    expect(on(["docs/a.md", "apps/android/x.kt"])).toEqual(EVERY);
     for (const f of ["docs/a/b.md", "README.md", "CONTRIBUTING.md", ".gitignore"]) expect([f, isKnown(f), on([f])]).toEqual([f, true, []]);
     // A change with no files (an empty diff) runs nothing; no diff to go on runs everything.
     expect(on([])).toEqual([]);
@@ -537,9 +560,14 @@ describe("the scope a run states", () => {
     expect(s.ran).toEqual(["scripts"]);
     expect(s.skipped).toContain("acceptance");
     expect(all(undefined).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units");
-    // CI's own definition runs every area but the installers: still a scoped run, which says so.
-    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 21 of 22 areas ran, 1 skipped as untouched; 25 of 25 acceptance units");
+    // ... and it says the parked areas stayed out, and how to run them.
+    expect(all(undefined).scope).toContain("parked, not run (none of their own sources changed): swift cowork; lane start --parked runs them");
+    // CI's own definition runs every area but the installers and the parked ones: still a scoped run, which says so.
+    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 19 of 22 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
     expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
+    // A change to a parked area's own sources runs it, and the full run then has nothing left out but the installers' kind of skips.
+    expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).ran).toContain("swift");
+    expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).scope).not.toContain("parked, not run");
   });
 
   test("a path no area maps says so in the scope: the run is full because it could not be sure", () => {
@@ -554,11 +582,16 @@ describe("the scope a run states", () => {
   });
 
   test("the CLI prints the same lines the workflow's outputs carry", () => {
-    const run = (args: string[]) => Bun.spawnSync(["bun", join(import.meta.dir, "ci-changes.ts"), ...args], { stdout: "pipe", env: { ...process.env, GITHUB_OUTPUT: "" } }).stdout.toString();
+    const run = (args: string[]) => Bun.spawnSync([process.execPath, join(import.meta.dir, "ci-changes.ts"), ...args], { stdout: "pipe", env: { ...process.env, GITHUB_OUTPUT: "" } }).stdout.toString();
     const out = run(["--all", "--why", "a push to an integration branch runs everything"]);
     expect(out).toContain("acceptance=true");
     expect(out).toContain(`acceptance_units=${JSON.stringify([...ON_GITHUB])}`);
-    expect(out).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (a push to an integration branch runs everything)");
+    expect(out).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (a push to an integration branch runs everything; parked, not run");
+    expect(out).toContain("swift=false\n");
+    expect(out).toContain("cowork=false\n");
+    // `--parked` runs them; `--parked-base` runs them for the lane's own diff (the base is read from this repository's history).
+    expect(run(["--all", "--parked", "--why", "x"])).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (x)");
+    expect(run(["--all", "--parked-base", "0000000000000000000000000000000000000000", "--why", "x"])).toContain("cowork=true\n");
     expect(run(["--only-acceptance", "--why", "x"])).toContain("workspaces=false\n");
     // A base that cannot be read here runs every area, and the scope says why.
     const bad = run(["--base", "0000000000000000000000000000000000000000", "--why", "a manual scoped run"]);

@@ -1,11 +1,14 @@
 #!/bin/bash
 # lane: run CI on GitHub for the branch you are on, so many lanes can be checked at once without queuing on one Mac.
 #
-#   scripts/ci/lane start [--all] [--only acceptance|acceptance-linux]
+#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux]
 #                                               push this branch, start CI on it, print the run's number and address.
 #                                               The run is SCOPED: the jobs your branch's changes since its merge-base with
 #                                               origin/lane-int/moss need (every area you touched with its full checks, the acceptance
-#                                               units you touched; a path no area maps runs everything). --all runs every job.
+#                                               units you touched; a path no area maps runs everything). --all runs every job but the PARKED ones.
+#                                               PARKED (swift, cowork): macOS jobs for parts the first release does not ship (the old Chrome
+#                                               extension's native host, Cowork's launcher and libkrun queue). They run only when their own
+#                                               sources changed since the merge-base, --all or not; --parked runs them whatever you changed.
 #   scripts/ci/lane wait [run]                  block until the run ends, print each job's result and time and the run's scope; exits 0
 #                                               when the `lane gate` job passed (Windows aside), 1 when it did not
 #   scripts/ci/lane failures [run]              each failed job's failing steps and the error lines of their logs
@@ -79,10 +82,11 @@ print_scope() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   start)
-    only=all; scope=scoped
+    only=all; scope=scoped; parked=false
     while [ $# -gt 0 ]; do
       case "$1" in
         --all) scope=all; shift ;;
+        --parked) parked=true; shift ;;
         --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ]; } || die "--only takes acceptance or acceptance-linux"; shift 2 ;;
         *) die "unknown option $1 (scripts/ci/lane with no arguments prints the usage)" ;;
       esac
@@ -94,7 +98,7 @@ case "$cmd" in
         for i in $(seq 1 12); do run="$(find_run)"; [ -n "$run" ] && break; sleep "${LANE_TEST_POLL:-5}"; done ;;
       *) git push origin "HEAD:refs/heads/$branch" >&2 || die "the push failed"
         args=(-f "only=$only")
-        if [ "$scope" = scoped ] && [ "$only" = all ]; then
+        if [ "$only" = all ]; then
           git fetch origin "${base_ref#origin/}" >/dev/null 2>&1 || say "note: could not refresh $base_ref; counting from the copy here"
           mb="$(git merge-base HEAD "$base_ref" 2>/dev/null)" || mb=""
           # A shallow checkout (a depth-limited fetch writes .git/shallow) has a cut-off history: a merge-base found in it can be wrong,
@@ -103,16 +107,28 @@ case "$cmd" in
             say "this checkout is shallow (git fetch --unshallow repairs it): its merge-base cannot be trusted, so the run starts EVERY job"
             mb=""
           fi
+          top="$(git rev-parse --show-toplevel)"
+          plan=("$top/scripts/pinned-bun" "$top/scripts/ci/plan.ts")
           if [ -n "$mb" ]; then
-            args+=(-f scope=scoped -f "base=$mb")
-            say "scoped run: your changes since ${mb:0:9} (the merge-base with $base_ref); --all runs every job"
-            # What it will start, from ci.yml's own conditions (best effort: the run's own scope line is the record).
-            top="$(git rev-parse --show-toplevel)"
-            if [ -x "$top/scripts/pinned-bun" ] && [ -f "$top/scripts/ci/plan.ts" ]; then "$top/scripts/pinned-bun" "$top/scripts/ci/plan.ts" --base "$mb" 2>/dev/null | sed 's/^/lane: this run: /' >&2 || true; fi
+            # The base goes with --all too: the PARKED areas (swift, cowork) take only their own sources from the diff, whatever the scope.
+            args+=(-f "scope=$scope" -f "base=$mb")
+            if [ "$scope" = scoped ]; then
+              say "scoped run: your changes since ${mb:0:9} (the merge-base with $base_ref); --all runs every job but the parked ones"
+              plan+=(--base "$mb")
+            else
+              say "full run: every area but the parked ones (swift, cowork), which run only for their own sources changed since ${mb:0:9}"
+              plan+=(--all --parked-base "$mb")
+            fi
+            [ "$parked" = true ] && plan+=(--parked)
           else
-            say "no usable merge-base with $base_ref: running every job (fail closed)"
+            say "no usable merge-base with $base_ref: running every job, the parked ones too (fail closed)"
             args+=(-f scope=all)
+            parked=true
+            plan+=(--all --parked)
           fi
+          [ "$parked" = true ] && args+=(-f parked=true)
+          # What it will start, from ci.yml's own conditions (best effort: the run's own scope line is the record).
+          if [ -x "$top/scripts/pinned-bun" ] && [ -f "$top/scripts/ci/plan.ts" ]; then "${plan[@]}" 2>/dev/null | sed 's/^/lane: this run: /' >&2 || true; fi
         else
           args+=(-f scope=all)
         fi

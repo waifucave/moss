@@ -114,8 +114,8 @@ export function planFor(areas: Record<CiArea, boolean>, units: readonly string[]
 }
 
 /** The plan for the files changed (`undefined`: every area) as a lane's manual run takes them: the areas ci-changes.ts selects. */
-export function planForFiles(changed: readonly string[] | undefined, event: PlanEvent = "workflow_dispatch", only = "all", root = ROOT): Plan & { areas: CiArea[]; units: string[] } {
-  const areas = areasFor(changed);
+export function planForFiles(changed: readonly string[] | undefined, event: PlanEvent = "workflow_dispatch", only = "all", root = ROOT, parked?: readonly string[] | "all"): Plan & { areas: CiArea[]; units: string[] } {
+  const areas = areasFor(changed, parked);
   const units = areas.acceptance ? acceptanceUnits(changed) : [];
   return { ...planFor(areas, units, event, only, root), areas: CI_AREA_NAMES.filter((a) => areas[a]), units };
 }
@@ -131,7 +131,10 @@ if (import.meta.main) {
     : base !== undefined ? (() => { try { return execFileSync("git", ["diff", "--name-only", "--no-renames", base, "HEAD"], { encoding: "utf8" }).split("\n").filter(Boolean); } catch { return undefined; } })()
     : undefined;
   const event = (flag("--event") ?? "workflow_dispatch") as PlanEvent;
-  const p = planForFiles(changed, event, flag("--only") ?? "all");
+  // The parked areas (ci-changes.ts PARKED): `--parked-base` is the lane's own diff when `--all` is given; `--parked` runs them.
+  const parkedBase = flag("--parked-base");
+  const parkedDiff = parkedBase === undefined ? undefined : (() => { try { return execFileSync("git", ["diff", "--name-only", "--no-renames", parkedBase, "HEAD"], { encoding: "utf8" }).split("\n").filter(Boolean); } catch { return "all" as const; } })();
+  const p = planForFiles(changed, event, flag("--only") ?? "all", ROOT, argv.includes("--parked") ? "all" : parkedDiff);
   console.log(`${p.checks} checks start (${p.macos} on macOS, ${p.windows} on Windows), ${p.skipped.length} jobs skipped; areas: ${p.areas.join(" ") || "none"}; acceptance units: ${p.units.length} of ${ON_GITHUB.length}`);
   if (argv.includes("--list")) for (const j of p.jobs) console.log(`  ${j.id}\t${j.checks}\t${j.macos} macOS`);
 }

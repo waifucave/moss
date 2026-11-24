@@ -37,10 +37,16 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     for (const id of ["acceptance-linux", "swift", "swift-cowork-launcher", "libkrun-queue"]) expect(p.skipped).toContain(id);
   });
 
-  test("a manual run of everything is a push's and the dispatch-only jobs: the Linux acceptance, the Swift kits, Cowork", () => {
+  test("a manual run of everything is a push's and the Linux acceptance: the parked Swift kits and Cowork stay out; --parked adds them", () => {
     const push = ids(undefined, "push");
     const dispatch = ids(undefined, "workflow_dispatch");
-    expect(dispatch.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux", "libkrun-queue", "swift", "swift-cowork-launcher"]);
+    expect(dispatch.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux"]);
+    const parked = planForFiles(undefined, "workflow_dispatch", "all", undefined, "all").jobs.map((j) => j.id);
+    expect(parked.filter((id) => !push.includes(id)).sort()).toEqual(["acceptance-linux", "libkrun-queue", "swift", "swift-cowork-launcher"]);
+    // ... and the lane's own diff does it (what `lane start --all` sends): the host's folder runs the host's job and not Cowork's.
+    const own = planForFiles(undefined, "workflow_dispatch", "all", undefined, ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).jobs.map((j) => j.id);
+    expect(own).toContain("swift");
+    expect(own).not.toContain("swift-cowork-launcher");
     expect(planForFiles(undefined, "workflow_dispatch").jobs.find((j) => j.id === "acceptance-linux")!.checks).toBe(ON_GITHUB.length);
   });
 
@@ -75,8 +81,10 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     expect(ids(["apple/Cowork/WinterCoworkLauncher/Package.swift"])).toEqual(expect.arrayContaining(["swift-cowork-launcher", "libkrun-queue"]));
     expect(ids(["packages/core/src/daemon.ts"])).not.toContain("swift-cowork-launcher");
     expect(ids(["packages/core/src/daemon.ts"])).not.toContain("libkrun-queue");
-    // CI's own definition changes everything.
-    expect(ids([".github/workflows/ci.yml"])).toEqual(expect.arrayContaining(["swift-cowork-launcher", "libkrun-queue", "acceptance"]));
+    expect(ids(["packages/core/src/cowork/native/launcher.ts"])).toEqual(expect.arrayContaining(["swift-cowork-launcher", "libkrun-queue"]));
+    // CI's own definition changes nearly everything, and neither Cowork's jobs nor the browser host's (parked: their own sources only).
+    expect(ids([".github/workflows/ci.yml"])).toEqual(expect.arrayContaining(["acceptance"]));
+    for (const id of ["swift-cowork-launcher", "libkrun-queue", "swift"]) expect(ids([".github/workflows/ci.yml"])).not.toContain(id);
   });
 
   test("an acceptance-only manual run starts the acceptance (both machines), the names check and the gates, and no suite", () => {

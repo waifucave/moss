@@ -29,9 +29,15 @@ on:
         options: [all, scoped]
         default: all
       base:
-        description: "scoped: the commit the lane's changes are counted from (its merge-base with the integration branch)"
+        description: "the commit the lane's changes are counted from (its merge-base with the integration branch); `all` with a base still runs the parked areas for their own sources changed since it"
         type: string
         default: ""
+      # PARKED areas (scripts/ci-changes.ts PARKED): the old Chrome extension's native host (`swift`) and Cowork's launcher and libkrun queue
+      # (`cowork`) build parts the first release does not ship, on a macOS runner. They run only when their own sources changed; this runs them anyway.
+      parked:
+        description: "true: also run the parked areas (swift, cowork), whatever changed"
+        type: boolean
+        default: false
 
 # One run per branch: a new push to a pull request, or a new manual run on a branch, cancels the run it supersedes (a merge-queue
 # group's run is never cancelled; two manual runs of different `only` don't meet). A push to an integration branch is the exception:
@@ -131,8 +137,11 @@ jobs:
           ONLY: ${{ github.event.inputs.only }}
           SCOPE: ${{ github.event.inputs.scope }}
           BASE: ${{ github.event.inputs.base }}
+          PARKED_IN: ${{ github.event.inputs.parked }}
           GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
+          # The parked areas take only their own sources from the diff (the lane's base, or the pull request's or group's); `parked: true` runs them.
+          parked=""; [ "$PARKED_IN" = true ] && parked="--parked"
           case "$EVENT" in
             pull_request) bun scripts/ci-changes.ts --base HEAD^1 --why "a pull request" ;;
             merge_group)
@@ -146,11 +155,14 @@ jobs:
                elif [ "$SCOPE" = scoped ] && [ -n "$BASE" ]; then
                  # The lane's own changes since its merge-base with the integration branch; a base this runner cannot fetch runs everything.
                  git fetch --no-tags --depth=1 origin "$BASE" || true
-                 bun scripts/ci-changes.ts --base "$BASE" --why "a manual scoped run"
+                 bun scripts/ci-changes.ts --base "$BASE" $parked --why "a manual scoped run"
                elif [ "$SCOPE" = scoped ]; then
-                 bun scripts/ci-changes.ts --all --why "a scoped run with no base commit: fail closed"
+                 bun scripts/ci-changes.ts --all --parked --why "a scoped run with no base commit: fail closed"
+               elif [ -n "$BASE" ]; then
+                 git fetch --no-tags --depth=1 origin "$BASE" || true
+                 bun scripts/ci-changes.ts --all --parked-base "$BASE" $parked --why "a manual run of everything"
                else
-                 bun scripts/ci-changes.ts --all --why "a manual run of everything"
+                 bun scripts/ci-changes.ts --all $parked --why "a manual run of everything"
                fi ;;
           esac
 
@@ -1505,7 +1517,8 @@ jobs:
   swift:
     name: swift (WinterBrowserHost)
     needs: changes
-    # On demand only (workflow_dispatch), off the gate's macOS runners (owner's ruling, November 7).
+    # On demand only (workflow_dispatch), off the gate's macOS runners (owner's ruling, November 7), and only when the host's own folder changed
+    # (scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`): the first release does not ship the old Chrome extension's host.
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
@@ -1522,8 +1535,8 @@ jobs:
   swift-cowork-launcher:
     name: swift (WinterCoworkLauncher)
     needs: changes
-    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when apple/Cowork changed
-    # (or CI itself did: a full manual run takes every area).
+    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
+    # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`.
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
     runs-on: macos-latest
     permissions:
@@ -1548,8 +1561,8 @@ jobs:
   libkrun-queue:
     name: libkrun patch queue
     needs: changes
-    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when apple/Cowork changed
-    # (or CI itself did: a full manual run takes every area). Skipped, the job reports success.
+    # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
+    # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`. Skipped, the job reports success.
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -21,6 +21,10 @@ name: Spike S6 · folder-tree mounts
 on:
   push:
     branches: [lane/j-m0]
+    # The spike's own sources only (2026-11-24): a push to the branch for anything else no longer starts Linux, Windows and macOS legs.
+    paths:
+      - spikes/s6-mounts/**
+      - .github/workflows/spike-s6.yml
   workflow_dispatch:
 
 permissions:

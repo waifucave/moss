@@ -78,9 +78,9 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // (not the acceptance harness and CI's own scripts: no `*.darwin.test.ts` reads them, and a macOS job per leg is the dear part of a lane's run)
   scriptsmac: ["scripts/", "!scripts/acceptance/", "!scripts/ci/"],
   codegen: ["packages/protocol/"],
-  // the browser host's Swift tests (apple/ComputerUse/WinterBrowserHost), on a macOS runner: the apple/ tree and nothing
-  // else (SWIFT_GLOBAL). The old Mac app's kits left this repository.
-  swift: ["apple/"],
+  // PARKED (see PARKED): the browser host's Swift tests (apple/ComputerUse/WinterBrowserHost), on a macOS runner: that folder and nothing
+  // else. The old Mac app's kits left this repository.
+  swift: ["apple/ComputerUse/WinterBrowserHost/"],
   verify: [...CORE, "packages/cli/", "scripts/verify-", "scripts/stage-runtimes.ts", "scripts/fetch-ant.ts", "scripts/build-winter.ts", "VERSIONS.json"],
   // the tree and the computers on Linux and Windows (macOS runs them in the core suite): their code, their tests and
   // lane B's conformance suites for them
@@ -105,12 +105,16 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // harness and the pins of its driver. Which UNITS a change starts is scripts/ci/acceptance-scope.ts (a step file starts its own unit); this
   // area is true when it starts any. iOS and the phone core are not in it: no unit starts them.
   acceptance: [...ACCEPTANCE_ALL, "scripts/acceptance/"],
-  // the Cowork Swift launcher's tests (a macOS job) and the libkrun patch queue's guards: apple/Cowork only, on a manual run. Cowork is paused (spec §12).
-  cowork: ["apple/Cowork/"],
+  // PARKED: the Cowork Swift launcher's tests (a macOS job) and the libkrun patch queue's guards: Cowork's own sources only (the Swift
+  // packages and the engine's cowork folder), on a manual run. Cowork is paused (spec §12).
+  cowork: ["apple/Cowork/", "packages/core/src/cowork/"],
 };
 
-/** The CI_GLOBAL changes that still run the Swift kits: CI's own definition, not the toolchain or the lockfiles. */
-export const SWIFT_GLOBAL: readonly Pattern[] = [".github/workflows/ci.yml", "scripts/ci-changes.ts"];
+/** Areas that build parts the first release does not ship, on a macOS runner (the old Chrome extension's native host, Cowork's launcher):
+ *  they run ONLY when their own sources change (CI_AREAS), never for CI's own definition, the toolchain, a lockfile, an unmapped path
+ *  or `--all` (a lane's `--all` and a no-diff run leave them out; `--parked` and `lane start --parked` run them). Nothing is deleted:
+ *  the jobs, the workflows and the sources stay, and the gate treats a skipped one as passed. */
+export const PARKED: readonly CiArea[] = ["swift", "cowork"];
 
 export const CI_AREA_NAMES = Object.keys(CI_AREAS) as CiArea[];
 
@@ -140,10 +144,10 @@ export function matches(path: string, pattern: Pattern): boolean {
   return path === pattern;
 }
 
-/** Areas CI_GLOBAL turns on only through these of its files: the Swift kits through CI's own definition, and the
- *  installers' release build (a macOS and a Windows machine for a quarter of an hour) through none, so a change keeps
- *  to three macOS jobs. A push to main still runs every area. */
-export const NARROW_GLOBAL: Readonly<Partial<Record<CiArea, readonly Pattern[]>>> = { swift: SWIFT_GLOBAL, installers: [], cowork: SWIFT_GLOBAL };
+/** Areas CI_GLOBAL turns on only through these of its files: the installers' release build (a macOS and a Windows machine for a
+ *  quarter of an hour) through none, so a change keeps to three macOS jobs, and the parked areas through none either. A push to
+ *  main still runs every other area. */
+export const NARROW_GLOBAL: Readonly<Partial<Record<CiArea, readonly Pattern[]>>> = { swift: [], installers: [], cowork: [] };
 
 /** Whether a path is in any list of this file (an area, CI_GLOBAL, CI_INERT): the ones that are not run every area. */
 export function isKnown(path: string): boolean {
@@ -156,17 +160,19 @@ export function unmapped(changed: readonly string[]): string[] {
   return changed.filter((p) => !isKnown(p));
 }
 
-function everyArea(): Record<CiArea, boolean> {
-  return Object.fromEntries(CI_AREA_NAMES.map((a) => [a, true])) as Record<CiArea, boolean>;
-}
-
-/** The areas `changed` needs. `undefined` (no diff to go on) and a diff holding a path no list knows run every area. */
-export function areasFor(changed: readonly string[] | undefined): Record<CiArea, boolean> {
-  if (changed === undefined || unmapped(changed).length > 0) return everyArea();
-  const touches = (patterns: readonly Pattern[]): boolean => changed.some((p) => matchesAny(p, patterns));
+/** The areas `changed` takes (every one for no diff or a path no area maps), but for the PARKED ones, which only their own sources
+ *  take. `parked` says what decides those: the default is `changed` itself (no diff: none), a list of paths is another diff
+ *  (`lane start --all` keeps them to the lane's own changes), "all" runs them (a base that could not be read, `--parked`). */
+export function areasFor(changed: readonly string[] | undefined, parked?: readonly string[] | "all"): Record<CiArea, boolean> {
+  const decides = parked ?? changed;
+  const ownSources = (a: CiArea): boolean => decides === "all" || (decides !== undefined && decides.some((p) => matchesAny(p, CI_AREAS[a])));
+  const touched = changed === undefined || unmapped(changed).length > 0 ? undefined : changed;
+  const touches = (patterns: readonly Pattern[]): boolean => touched !== undefined && touched.some((p) => matchesAny(p, patterns));
   const all = touches(CI_GLOBAL);
   return Object.fromEntries(CI_AREA_NAMES.map((a) => {
-    if (a === "acceptance") return [a, acceptanceUnits(changed).length > 0];
+    if (PARKED.includes(a)) return [a, ownSources(a)];
+    if (touched === undefined) return [a, true];
+    if (a === "acceptance") return [a, acceptanceUnits(touched).length > 0];
     const narrow = NARROW_GLOBAL[a];
     return [a, (narrow === undefined ? all : touches(narrow)) || touches(CI_AREAS[a])];
   })) as Record<CiArea, boolean>;
@@ -194,12 +200,15 @@ export function scopeOf(input: { changed: readonly string[] | undefined; areas: 
   const skipped = CI_AREA_NAMES.filter((a) => !input.areas[a]);
   const units = `${input.units.length} of ${ON_GITHUB.length} acceptance units`;
   if (input.onlyAcceptance === true) return { scope: `ACCEPTANCE ONLY: ${units}; no other area (${input.why})`, ran, skipped };
-  const full = skipped.length === 0 && input.units.length === ON_GITHUB.length;
-  if (input.changed === undefined) return { scope: `FULL RUN: every area, ${units} (${input.why})`, ran, skipped };
+  const full = skipped.every((a) => PARKED.includes(a)) && input.units.length === ON_GITHUB.length;
+  const parkedOff = skipped.filter((a) => PARKED.includes(a));
+  // A run of everything still leaves the parked areas to their own sources; it says so, so "FULL" is never read as "all of them".
+  const note = parkedOff.length > 0 ? `; parked, not run (none of their own sources changed): ${parkedOff.join(" ")}; lane start --parked runs them` : "";
+  if (input.changed === undefined) return { scope: `FULL RUN: every area, ${units} (${input.why}${note})`, ran, skipped };
   const stray = unmapped(input.changed);
   const files = `${input.changed.length} file(s) changed${input.base !== undefined ? ` since ${input.base}` : ""}`;
-  if (stray.length > 0) return { scope: `FULL RUN: every area, ${units}: ${stray.length} changed path(s) no area maps, e.g. ${stray.slice(0, 3).join(", ")} (fail closed; ${files})`, ran, skipped };
-  if (full) return { scope: `FULL RUN: every area, ${units}, as the ${files} touched them all (${input.why})`, ran, skipped };
+  if (stray.length > 0) return { scope: `FULL RUN: every area, ${units}: ${stray.length} changed path(s) no area maps, e.g. ${stray.slice(0, 3).join(", ")} (fail closed; ${files}${note})`, ran, skipped };
+  if (full) return { scope: `FULL RUN: every area, ${units}, as the ${files} touched them all (${input.why}${note})`, ran, skipped };
   return { scope: `SCOPED RUN: ${ran.length} of ${CI_AREA_NAMES.length} areas ran, ${skipped.length} skipped as untouched; ${units} (${files}; ${input.why})`, ran, skipped };
 }
 
@@ -208,8 +217,14 @@ if (import.meta.main) {
   const flag = (name: string): string | undefined => { const at = argv.indexOf(name); return at === -1 ? undefined : (argv[at + 1] ?? ""); };
   const onlyAcceptance = argv.includes("--only-acceptance");
   const base = flag("--base");
+  const parkedBase = flag("--parked-base");
   const changed = onlyAcceptance ? [] : argv.includes("--all") || base === undefined ? undefined : changedSince(base);
-  const areas: Record<CiArea, boolean> = onlyAcceptance ? { ...(Object.fromEntries(CI_AREA_NAMES.map((a) => [a, false])) as Record<CiArea, boolean>), acceptance: true } : areasFor(changed);
+  // The parked areas (PARKED): their own sources in the diff, else nothing. A forced run (`--parked`), or a diff that could not be read
+  // (a base this runner cannot fetch), runs them: not knowing is not a reason to skip.
+  const parkedDiff = parkedBase === undefined ? undefined : changedSince(parkedBase);
+  const unreadable = (base !== undefined && !argv.includes("--all") && changed === undefined) || (parkedBase !== undefined && parkedDiff === undefined);
+  const parked = argv.includes("--parked") || unreadable ? "all" : parkedDiff;
+  const areas: Record<CiArea, boolean> = onlyAcceptance ? { ...(Object.fromEntries(CI_AREA_NAMES.map((a) => [a, false])) as Record<CiArea, boolean>), acceptance: true } : areasFor(changed, parked);
   const units = onlyAcceptance ? [...ON_GITHUB] : areas.acceptance ? acceptanceUnits(changed) : [];
   let why = flag("--why") ?? (changed === undefined ? "no diff to go on" : "the diff decides");
   if (base !== undefined && !argv.includes("--all") && !onlyAcceptance && changed === undefined) why = `the base ${base.slice(0, 12)} could not be read here: fail closed. ${why}`;

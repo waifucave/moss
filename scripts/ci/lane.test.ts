@@ -116,8 +116,14 @@ describe("lane start", () => {
     writeFileSync(join(dir, "gh.log"), "");
     writeFileSync(join(fixDir, "runlist.json"), "[]");
     lane(["start", "--all"]);
-    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("-f only=all -f scope=all");
-    expect(readFileSync(join(dir, "gh.log"), "utf8")).not.toContain("base=");
+    // --all runs every area but the parked ones; the base goes too, so those take their own sources from the lane's diff.
+    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain(`-f only=all -f scope=all -f base=${mergeBase}`);
+    expect(readFileSync(join(dir, "gh.log"), "utf8")).not.toContain("parked=true");
+
+    writeFileSync(join(dir, "gh.log"), "");
+    writeFileSync(join(fixDir, "runlist.json"), "[]");
+    lane(["start", "--parked"]);
+    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain(`-f scope=scoped -f base=${mergeBase} -f parked=true`);
 
     writeFileSync(join(dir, "gh.log"), "");
     writeFileSync(join(fixDir, "runlist.json"), "[]");
@@ -130,7 +136,7 @@ describe("lane start", () => {
     writeFileSync(join(fixDir, "runlist.json"), "[]");
     const r = lane(["start"], { LANE_BASE_REF: "origin/no-such-branch" });
     expect(r.err).toContain("no usable merge-base with origin/no-such-branch: running every job");
-    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("-f scope=all");
+    expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("-f scope=all -f parked=true");
   });
 
   test("a shallow checkout starts everything and says why: its merge-base cannot be trusted", () => {
@@ -145,7 +151,7 @@ describe("lane start", () => {
     const r = Bun.spawnSync(["bash", LANE, "start"], { cwd: shallow, stdout: "pipe", stderr: "pipe", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, FAKE_FIX: fixDir, FAKE_SHA: sha, FAKE_LOG: join(dir, "gh.log"), LANE_TEST_POLL: "0" } });
     expect(r.stderr.toString()).toContain("this checkout is shallow");
     const log = readFileSync(join(dir, "gh.log"), "utf8");
-    expect(log).toContain("-f scope=all");
+    expect(log).toContain("-f scope=all -f parked=true");
     expect(log).not.toContain("base=");
   });
 

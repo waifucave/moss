@@ -2,7 +2,10 @@ name: Clover S9 layers
 on:
   push:
     branches: [main, lane/e-m0, lane/e-m1]
-    paths: ['spikes/s9-layers/**', '.github/workflows/spike-s9.yml', 'apps/desktop/**/package.json', 'apps/desktop/package.json', 'bun.lock', 'pnpm-lock.yaml']
+    # The spike's own sources, and the one file its run reads outside them: apps/desktop/package.json (run.mjs fails when the app's Electron pin differs from
+    # the spike's: that guards the Electron the release ships, so it stays). Not the lockfiles or the desktop's other manifests (parked 2026-11-24): the spike
+    # installs from its own npm lockfile and reads no other file.
+    paths: ['spikes/s9-layers/**', '.github/workflows/spike-s9.yml', 'apps/desktop/package.json']
   workflow_dispatch:
 permissions:
   contents: read
