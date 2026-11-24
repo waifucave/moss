@@ -150,7 +150,14 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
     case "devices":
       return ok("device.list", {});
     case "waitDevice":
-      await until("the phone in the device list", async () => (await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.id));
+      try {
+        await until("the phone in the device list", async () => (await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.id), 15_000);
+      } catch (err) {
+        // What the engine's pairing said (its steps and error), the words left out.
+        const steps = heard.map((m) => (m.params ?? m) as Record<string, unknown>).map((p) => (p.event ?? p) as Record<string, unknown>)
+          .filter((ev) => ev.type === "pairing_changed").map(({ words: _w, ...rest }) => rest);
+        throw new Error(`${(err as Error).message}; the engine's pairing events: ${JSON.stringify(steps)}`);
+      }
       return true;
     case "raiseCard": {
       // A change card: always a card, whatever the level (rule 1).
