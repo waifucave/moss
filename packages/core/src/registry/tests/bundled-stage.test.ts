@@ -9,6 +9,7 @@ import { NOT_AVAILABLE_YET, PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sd
 import { measureBundledTree } from "../../bundled-plugins-dir";
 import { FakeApprovalBroker } from "../../contracts/fakes/approval-broker";
 import { grantsInForce } from "../../contracts/plugin-registry";
+import { notYetReason } from "../../contracts/plugin-registry-rules";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
 import { startPluginHost } from "../../plugin-host/daemon-host";
@@ -106,7 +107,7 @@ describe("the dev stage from the repository's plugins/", () => {
         [
           "moss/companion-ios", "moss/companion-web", "moss/provider-gcp",
           "moss/provider-hetzner", "moss/push", "moss/relay-cloudflare",
-        ].map((id) => `${id}: off (${NOT_AVAILABLE_YET})`),
+        ].map((id) => `${id}: off (${notYetReason(all.find((p) => p.id === id)?.manifest)})`),
       );
       const parked = (e: { pluginId: string }) => all.some((p) => p.id === e.pluginId && notYet(p));
       // None of them offers a server to any session (the bots' tool lists and their instructions come from these), a

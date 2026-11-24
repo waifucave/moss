@@ -113,6 +113,16 @@ export function registryChanges(before: RegistrySnapshot, after: RegistrySnapsho
 
 /** Whether a plugin carries the not-yet mark in MOSS's own tree: the mark, the tree's install source bundled, and
  *  its top id MOSS's. */
+/** The reason a parked plugin shows: its manifest's own `availability.note` (English, one line, at most 200 characters),
+ *  else the fixed `NOT_AVAILABLE_YET`. */
+export function notYetReason(manifest: unknown): string {
+  const note = (manifest as { availability?: { note?: unknown } } | undefined)?.availability?.note;
+  const text = typeof note === "string" ? note : typeof note === "object" && note !== null ? (note as { en?: unknown }).en : undefined;
+  if (typeof text !== "string") return NOT_AVAILABLE_YET;
+  const line = text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim().slice(0, 200);
+  return line === "" ? NOT_AVAILABLE_YET : line;
+}
+
 export function notYet(held: Pick<RegistryPlugin, "id" | "manifest" | "source">, top: Pick<RegistryPlugin, "source"> | undefined): boolean {
   return (held.manifest as { availability?: { status?: string } }).availability?.status === "not-yet"
     && (top?.source ?? held.source) === "bundled"
@@ -137,7 +147,7 @@ export function computeRegistry(plugins: ReadonlyMap<string, RegistryPlugin>, op
     // MOSS's own plugin this build can't run yet (`availability`): listed, off, never started, whatever its switch and
     // OK say (both kept as they are). It counts only in a tree installed as MOSS's own (its install source, beside the
     // validator's rule on the top id), so no other plugin can read as one of MOSS's.
-    else if (notYet(held, top)) offReason.set(id, { state: "off", reason: NOT_AVAILABLE_YET });
+    else if (notYet(held, top)) offReason.set(id, { state: "off", reason: notYetReason(held.manifest) });
     else if (held.refused || (top?.refused ?? false)) offReason.set(id, { state: "refused" });
     else if (!held.approved || !(top?.approved ?? true)) offReason.set(id, { state: "found", reason: "waiting for your OK" });
     // Its `platforms` leave this computer out: off here, after its OK (installing it still asks, as any install).

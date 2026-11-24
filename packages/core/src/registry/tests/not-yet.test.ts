@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogPointDecl, NOT_AVAILABLE_YET, parseJsonc, PLUGIN_API_VERSION } from "@waifucave/moss-plugin-sdk";
 import { grantsInForce } from "../../contracts/plugin-registry";
+import { notYetReason } from "../../contracts/plugin-registry-rules";
 import { FakeApprovalBroker } from "../../contracts/fakes/approval-broker";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
@@ -164,7 +165,7 @@ describe("a plugin not available in this build yet", () => {
       const after = new RegistryCore({ catalog: catalogPointDecl, store });
       put(after, marked, "sha256:2");
       const r = after.get(id)!;
-      expect([r.state, r.reason, r.enabled, r.okHash]).toEqual(["off", NOT_AVAILABLE_YET, true, "sha256:2"]);
+      expect([r.state, r.reason, r.enabled, r.okHash]).toEqual(["off", notYetReason(marked), true, "sha256:2"]);
       expect(grantsInForce(r)).toEqual([]);
       for (const point of points(marked)) expect([point, after.entries(point).filter((e) => e.pluginId === id)]).toEqual([point, []]);
       expect(after.okCards()).toEqual([]);
@@ -220,6 +221,17 @@ describe("a plugin not available in this build yet", () => {
     expect([reg.get("moss/browser")!.state, reg.get("moss/browser")!.reason]).toEqual(["off", "its parent is off"]);
     expect([grantsInForce(reg.get("moss")), grantsInForce(reg.get("moss/browser"))]).toEqual([[], []]);
     expect(reg.entries("mcpServers")).toEqual([]);
+  });
+
+  test("a marked plugin with a note shows the note, one line, as its reason; its switch is refused as any parked one's", async () => {
+    const reg = new RegistryCore({ catalog: catalogPointDecl, store: memoryRegistryStore() });
+    const noted = (note: unknown) => ({ ...forwarder(true), availability: { status: "not-yet", reason: "webhook-keys", note } }) as unknown as Manifest;
+    reg.putAll([tree(true, "sha256:1")[0]!, { ...tree(true, "sha256:1")[1]!, manifest: noted({ en: "Waits for\nhooks.waifucave.com to be running." }) }]);
+    expect([reg.get("moss/forwarder")!.state, reg.get("moss/forwarder")!.reason]).toEqual(["off", "Waits for hooks.waifucave.com to be running."]);
+    await expect(reg.setEnabled("moss/forwarder", true)).rejects.toThrow("isn't available in this build yet");
+    expect(notYetReason(noted("x".repeat(300))).length).toBe(200);
+    expect(notYetReason(noted({ en: " " }))).toBe(NOT_AVAILABLE_YET);
+    expect(notYetReason(noted(undefined))).toBe(NOT_AVAILABLE_YET);
   });
 
   test("an invalid marked plugin reads invalid; fixed, it reads not available", () => {

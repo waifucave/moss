@@ -5,7 +5,7 @@
     "en": "Carries your devices' encrypted traffic through a relay in your own Cloudflare account when they can't connect directly, and keeps encrypted sync mail for a device that is away. The relay sees which of your devices talk and how much, never what."
   },
   "engines": { "moss": "^1.0.0" },
-  "availability": { "status": "not-yet", "reason": "device-id" },
+  "availability": { "status": "not-yet", "reason": "device-id", "note": { "en": "Not usable yet: MOSS's device links can't go through this relay until it speaks the relay protocol they use." } },
   "host": { "entry": "host/index.ts", "runtime": "bun", "start": "each" },
   "capabilities": ["devices.read", "network:*.workers.dev"],
   "settings": {

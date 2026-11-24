@@ -3,13 +3,13 @@
 // come from the contract's rules (`computeRegistry`), as the fake's do, so the conformance suite pins both. Where
 // plugins come from (folders, their tree hashes and what a change since the OK does) is `folders.ts`'s; this takes
 // each one as a `RegistryInput`.
-import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, GRANT_REVISION, NOT_AVAILABLE_YET, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/moss-protocol";
+import { APP_PARTS_SUFFIX, BUNDLED_ROOT_PLUGIN, GRANT_REVISION, type PluginClass, type PluginProvenance, type PluginSource, type PluginState, type ValidationIssue } from "@waifucave/moss-protocol";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import type {
   ApproveResult, Contribution, InstallFrom, PluginRecord, PluginRegistry, RegisteredPoint, RegistryChange, SwitchResult,
 } from "../contracts/plugin-registry";
 import {
-  EMPTY_SNAPSHOT, computeRegistry, grantAsksAgain, parentOf, registryChanges, type RegistryPlugin, type RegistrySnapshot,
+  EMPTY_SNAPSHOT, computeRegistry, grantAsksAgain, notYet, parentOf, registryChanges, type RegistryPlugin, type RegistrySnapshot,
 } from "../contracts/plugin-registry-rules";
 import type { CoreEntries, Manifest, PointDecl } from "../contracts/sdk-types";
 import { botNameOf, contributionLabels, pluginParts } from "@waifucave/moss-plugin-sdk";
@@ -156,7 +156,7 @@ export class RegistryCore implements PluginRegistry {
     if (id === BUNDLED_ROOT_PLUGIN && held.input.source === "bundled" && !enabled) throw new ContractError("refused", "MOSS's own plugin holds Settings; it stays on");
     if (state === "refused" || state === "invalid") throw new ContractError("refused", `${id} is ${state}; it can't be switched`);
     // The rules' not-yet state (the mark in MOSS's own tree): its switch stays as it is.
-    if (state === "off" && this.#snap.records.get(id)?.reason === NOT_AVAILABLE_YET) {
+    if (state === "off" && notYet(held.input, this.#plugins.get(parentOf(id) ?? id)?.input)) {
       throw new ContractError("refused", `${id} isn't available in this build yet, so it can't be turned on or off`);
     }
     // A found plugin's switch is its sealed OK card (S2): nothing loads until the user's yes on it.
