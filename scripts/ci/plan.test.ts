@@ -51,7 +51,7 @@ describe("planFor: the checks and macOS runners a run starts", () => {
   });
 
   test("the iPhone apps and the phone core start no macOS job and no desktop acceptance", () => {
-    for (const files of [["apps/ios/project.yml"], ["apps/ios/Packages/MossPhoneKit/Package.swift", ".github/workflows/ios.yml"], ["native/phone-core/src/lib.rs"]]) {
+    for (const files of [["apps/ios/project.yml"], ["apps/ios/Packages/MossPhoneKit/Package.swift"], ["native/phone-core/src/lib.rs"]]) {
       const p = planForFiles(files);
       expect(p.macos, files.join()).toBe(0);
       expect(p.jobs.map((j) => j.id), files.join()).not.toContain("acceptance");
@@ -60,15 +60,24 @@ describe("planFor: the checks and macOS runners a run starts", () => {
     }
   });
 
-  test("a CI script or the acceptance harness's test takes none of the scripts' macOS legs; one unit's step file starts that unit", () => {
-    expect(planForFiles(["scripts/ci/lane"]).macos).toBe(0);
-    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(0);
+  test("a CI script or the acceptance harness's test takes none of the scripts' own macOS legs, but the core's (its scans walk scripts/); one unit's step file starts that unit", () => {
+    expect(areasFor(["scripts/ci/weston.sh"]).scriptsmac).toBe(false);
+    expect(areasFor(["scripts/acceptance/sealed-press.test.ts"]).scriptsmac).toBe(false);
+    // the three macOS legs the core's suite runs on (its daemon-spawn pin reads every script)
+    expect(planForFiles(["scripts/ci/weston.sh"]).macos).toBe(3);
+    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(3);
     const p = planForFiles(["scripts/acceptance/canvas-step.ts"]);
     expect(p.jobs.find((j) => j.id === "acceptance")!.checks).toBe(1);
-    expect(p.macos).toBe(1);
+    expect(p.macos).toBe(4);
     expect(p.units).toEqual(["canvas"]);
     // The Linux acceptance takes the same one unit.
     expect(p.jobs.find((j) => j.id === "acceptance-linux")!.checks).toBe(1);
+  });
+
+  test("the iPhone workflow's own edit takes the core's suite (one of its tests reads every workflow's triggers): 3 macOS legs", () => {
+    const p = planForFiles([".github/workflows/ios.yml"]);
+    expect(p.areas).toEqual(["core", "scripts"]);
+    expect(p.macos).toBe(3);
   });
 
   test("a change to the Cowork launcher takes its Swift job and the patch queue's; nothing else does", () => {
