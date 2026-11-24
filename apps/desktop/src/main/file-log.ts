@@ -13,6 +13,8 @@
 // source word and "text not kept". A new log line is therefore never in the file until it is added here: the test in
 // test/file-log.test.ts counts the literal logging call sites in every file of the app and fails on a new one.
 
+import { isKnownTreeMethod } from "./ui/tree-calls";
+
 const V = "[\\w.+-]{1,40}";
 /** An Electron process type as the metrics name it ("Browser", "Tab", "GPU", "Sandbox helper", "Pepper Plugin Broker"): one to three words. */
 const PROC = "[A-Za-z.-]{1,24}(?: [A-Za-z]{1,12}){0,2}";
@@ -101,7 +103,7 @@ export const KEEP: RegExp[] = [
 ];
 
 /** Lines that carry someone else's text, rewritten to their fixed part (and the id, number or kind the pattern names). */
-export const REDUCE: [RegExp, string][] = [
+export const REDUCE: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/^main: (uncaught exception|unhandled rejection):[\s\S]*/, "main: $1 (text not kept in the file)"],
   [/^updater: .*; (starting again|quitting)$/, "updater: recovering (reason not kept); $1"],
   [/^window: shown while headless \(.*/, "window: shown while headless"],
@@ -190,7 +192,9 @@ export const REDUCE: [RegExp, string][] = [
   [/^layers: ([\w:.-]{1,60}) failed: .*/, "layers: $1 failed"],
   [/^layers: a call from frame .*/, "layers: a call from a frame bound to no mount"],
   // A page's call through the tree: the part (one id token), the method and the outcome; a reason or a result is the page's or the plugin's.
-  [/^tree: ([\w.:/#@+-]{1,100}): ([\w.]{1,60}) (refused|went through|ran)\b.*/, "tree: $1: $2 $3"],
+  // The method is a page's own text unless main knows it: a made-up one is written as "an unknown method" (the source says it so too).
+  [/^tree: ([\w.:/#@+-]{1,100}): ([\w.]{1,60}) (refused|went through|ran)\b.*/, (m) => `tree: ${m[1]}: ${isKnownTreeMethod(m[2]!) ? m[2] : "an unknown method"} ${m[3]}`],
+  [/^tree: ([\w.:/#@+-]{1,100}): an unknown method (refused|went through|ran)\b.*/, "tree: $1: an unknown method $2"],
   [/^browser: view ([\w-]{1,40}) shows the host's tab .*/, "browser: view $1 shows the host's tab"],
   [/^layers: a message to \S+ was lost\b.*/, "layers: a message to a mount was lost"],
   [/^layers: \S+ \(\S+\): refused a document load \(.*; a fresh address went less than a second ago\)$/, "layers: a document load was refused (a fresh address went less than a second ago)"],
@@ -214,7 +218,7 @@ export function fileLine(line: string): string {
   for (const [r, to] of REDUCE) {
     const m = r.exec(one);
     // Only the fixed text and the pieces the pattern names: nothing of the line outside them is carried over.
-    if (m !== null) return to.replace(/\$(\d)/g, (_, n: string) => m[Number(n)] ?? "");
+    if (m !== null) return typeof to === "function" ? to(m) : to.replace(/\$(\d)/g, (_, n: string) => m[Number(n)] ?? "");
   }
   const source = /^([A-Za-z][A-Za-z -]{0,24}):/.exec(one)?.[1];
   return `${source ?? "log"}: (text not kept in the file)`;

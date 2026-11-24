@@ -216,6 +216,12 @@ export const NEVER = new Set(["card.answer", "card.confirm", "device.pair.confir
 /** The methods the `layer` role has: one a part without the table's capability falls to the layer door for. */
 const LAYER_METHODS = allowedMethods("layer");
 
+/** Whether `method` is one main knows: the table's, the layer door's, or one it never takes. A page can send any string as a method; a line
+ *  of the log (which bots can read) names only a known one (`loggedMethod`), never a page's own text. */
+export const isKnownTreeMethod = (method: string): boolean => Object.hasOwn(TREE_CALLS, method) || LAYER_METHODS.has(method) || NEVER.has(method) || SEND_ONLY.has(method);
+/** The method as a log line may say it. */
+export const loggedMethod = (method: string): string => (isKnownTreeMethod(method) ? method : "an unknown method");
+
 export type TreeVerdict =
   | { ok: true; call: TreeCall; /** The capability that let it through, if any. */ by?: string }
   | { ok: false; why: string; /** The method is the table's to refuse (not a fall-through to the layer door). */ owned: boolean };
@@ -551,14 +557,14 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   const verdict = treeVerdict(c.capabilities, r.method, r.params);
   if (!verdict.ok) {
     if (!verdict.owned) return r.layer();
-    r.log(`tree: ${part}: ${r.method} refused (${verdict.why})`);
+    r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (${verdict.why})`);
     throw r.refuse(verdict.why);
   }
   const has = (cap: string) => holds(c.capabilities, cap);
   if (verdict.call.byKind === true) {
     const why = await byKindWhy(r, has);
     if (why !== undefined) {
-      r.log(`tree: ${part}: ${r.method} refused (${why})`);
+      r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (${why})`);
       throw r.refuse(why);
     }
   }
@@ -575,7 +581,7 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
     }
   }
   if (verdict.call.disposition === "gesture" && !listing && !r.takeGesture(c.windowId)) {
-    r.log(`tree: ${part}: ${r.method} refused (no key press or click of the user's just before)`);
+    r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (no key press or click of the user's just before)`);
     throw r.refuse(`${r.method} goes only right after the user's own key press or click`);
   }
   if (r.method === "ui.set") {
@@ -614,7 +620,7 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   if (PAGE_METHODS.has(r.method)) {
     const shaped = pageParams(r.method, r.params, part, r.tokens ?? new PickTokens());
     if ("why" in shaped) {
-      r.log(`tree: ${part}: ${r.method} refused (${shaped.why})`);
+      r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (${shaped.why})`);
       throw r.refuse(shaped.why);
     }
     // A key never passes through a page: main looks the field's kind up itself (the core refuses it too, `noSecret`).
@@ -668,13 +674,13 @@ async function editorSetting(r: TreeRoute, part: string): Promise<unknown> {
   const listed = (await r.request("bot.list", {})) as { bots?: { id?: unknown }[] } | undefined;
   const bot = typeof raw.bot === "string" ? (listed?.bots ?? []).find((b) => b.id === raw.bot)?.id : undefined;
   if (typeof bot !== "string" || raw.id !== bot) {
-    r.log(`tree: ${part}: ${r.method} refused (not the edited bot's own plugin)`);
+    r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (not the edited bot's own plugin)`);
     throw r.refuse("the Edit page reads and writes its own bot's settings only");
   }
   if (r.method === "plugin.settings.get") return r.request("plugin.settings.get", { id: bot, bot });
   const shaped = pageParams(r.method, { ...raw, id: bot, bot }, part, r.tokens ?? new PickTokens(), true);
   if ("why" in shaped) {
-    r.log(`tree: ${part}: ${r.method} refused (${shaped.why})`);
+    r.log(`tree: ${part}: ${loggedMethod(r.method)} refused (${shaped.why})`);
     throw r.refuse(shaped.why);
   }
   const s = shaped.params as { key: string; value: unknown };
