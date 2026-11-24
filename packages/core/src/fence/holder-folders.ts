@@ -10,8 +10,10 @@
 // it. Never through a link: a link on the way stops the making there.
 import { lstatSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { pathWithin } from "./fold";
 
-const inside = (p: string, root: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
+// POSIX only (`makeHolderFolders`); by fold.ts's one comparison (lane WS8), the disk's own case rule.
+const inside = (p: string, root: string) => pathWithin(p, root, process.platform === "darwin" ? "macos" : "linux");
 
 /** Makes the missing folders strictly between a writable root (`roots`) and each item (for an `agentOwned` one, its
  *  folder's parent), outside `skip` (the MOSS home, which the core lays out itself). POSIX only; returns the folders

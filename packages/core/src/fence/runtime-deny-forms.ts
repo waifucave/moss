@@ -26,6 +26,7 @@
 // expands a glob by walking its folder at each command, and its folders have no such privacy settings.
 import { realpathSync } from "node:fs";
 import { posix } from "node:path";
+import { pathWithin } from "./fold";
 import type { Os } from "@waifucave/moss-protocol";
 import { secretReadPlaces } from "../contracts/fence";
 import { anyCase } from "./sandbox-settings";
@@ -68,9 +69,9 @@ function withGlobAt(path: string, index: number): string | undefined {
   return names.join("/");
 }
 
+/** macOS only (`runtimeDenyForms`): by fold.ts's one comparison (lane WS8). */
 function inside(path: string, root: string): boolean {
-  const p = path.toLowerCase(), r = root.toLowerCase().replace(/\/+$/, "");
-  return p === r || p.startsWith(`${r}/`);
+  return pathWithin(path, root, "macos");
 }
 
 /** The deny entries as the runtime is handed them on macOS (see the file's header); elsewhere, as they are. An entry

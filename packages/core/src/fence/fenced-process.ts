@@ -11,10 +11,11 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, realpathSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { fenceContextFor } from "../contracts/fence";
 import type { MossFence } from "./fence";
+import { pathWithin } from "./fold";
 import { bwrapPlan, heldFolderNote } from "./linux-bwrap";
 import { unixSocketFilter } from "./seccomp";
 import { BROKER_LIMITS, type CredentialPolicy, type SecretBackend, serveSandboxBus, sessionBusSecrets, unixBusPath } from "./linux-secret-broker";
@@ -117,7 +118,7 @@ class SessionConfigs {
       const changed = isTooBig(now) && now !== before ? [{ dotted: "a file too big to check" }] : watchedGitChanges(before, now);
       if (changed.length === 0) { t.set(p, now); continue; }
       const keys = changed.map((c) => c.dotted).join(", ");
-      const mine = at !== undefined && at.writable.some((w) => p.startsWith(w.endsWith("/") ? w : `${w}/`));
+      const mine = at !== undefined && at.writable.some((w) => under(p, w) && !under(w, p)); // strictly inside
       if (mine) {
         try { unlinkSync(p); links.push(`${p}: removed a link planted as a git config (risky git keys: ${keys})`); t.delete(p); }
         catch { links.push(`${p}: kept a link planted as a git config (risky git keys: ${keys}): could not remove it`); }
@@ -667,13 +668,18 @@ export function repoConfigFiles(repoRoot: string): string[] {
     const line = (readIfFile(join(repoRoot, ".git")) ?? "").split("\n")[0] ?? "";
     const m = /^gitdir:\s*(.+?)\s*$/.exec(line);
     if (m === null) return out;
-    const g = m[1]!.startsWith("/") ? m[1]! : join(repoRoot, m[1]!);
+    const g = isAbsolute(m[1]!) ? m[1]! : join(repoRoot, m[1]!);
     out.push(join(g, "config"));
-    const common = g.replace(/\/worktrees\/[^/]+\/?$/, "");
+    const common = g.replace(/[\\/]worktrees[\\/][^\\/]+[\\/]?$/, "");
     if (common !== g) out.push(join(common, "config"));
   } catch { /* unreadable: nothing to watch */ }
   return out;
 }
+
+/** This computer's OS for path comparisons, and "is `p` `root` or under it" by fold.ts's one comparison (lane WS8:
+ *  these checks knew only `/`, on a door that serves Windows too). */
+const HOST_OS: Os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+const under = (p: string, root: string): boolean => pathWithin(p, root, HOST_OS);
 
 /** How many folders a watched session's writable folders are looked over for repos at each `recheck`, at any depth.
  *  Past it the walk stops and says so (`stopped`); a repo it didn't reach is the documented miss (the fence judges
@@ -742,7 +748,6 @@ function sessionConfigFiles(home: string, cwd: string, writable: readonly string
  *  tool call. Missing files are watched too: a file that appears is reverted when it carries a watched key. */
 function watchedConfigFiles(home: string, cwd: string): string[] {
   const out = new Set([join(home, ".gitconfig"), join(home, ".config", "git", "config")]);
-  const under = (p: string, root: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
   let at: string | null = cwd;
   const seen = new Set<string>();
   while (at !== null && !seen.has(at) && (at === home || under(at, home))) {
@@ -784,7 +789,7 @@ export function includeTargets(text: string | null, baseDir: string, home: strin
     if (!isInclude) continue;
     const raw = k.value.trim();
     if (raw === "") continue;
-    const abs = raw.startsWith("~/") ? join(home, raw.slice(2)) : raw.startsWith("/") ? raw : join(baseDir, raw);
+    const abs = raw.startsWith("~/") ? join(home, raw.slice(2)) : isAbsolute(raw) ? raw : join(baseDir, raw);
     if (/[*?\[\]{}]/.test(abs)) {
       // A glob: expand it where the platform can, otherwise skip (never guess).
       try {
@@ -827,7 +832,6 @@ export function mkdirNoLinks(target: string): void {
  *  would fire from. Climbs without following links — a link on the way up stops the climb — and stays under the
  *  home. A `.git` file (a linked worktree) is resolved through its `gitdir:` line; anything else resolves null. */
 export function ownRepoHooks(cwd: string, home: string): string | null {
-  const under = (p: string, root: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
   let at = cwd;
   for (;;) {
     let me: ReturnType<typeof lstatSync> | undefined;

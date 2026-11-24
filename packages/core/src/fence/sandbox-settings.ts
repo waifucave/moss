@@ -30,6 +30,7 @@ import type { Level, Os } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, secretReadPlaces, segmentMatches, type SandboxPolicy } from "../contracts/fence";
 import { gitRunLaterPlaces, pathClass } from "../approvals/ordinary-paths";
 import { PROJECT_DENIES, PROJECT_WHOLE_DENIES } from "../registry/plugin-fence";
+import { pathKey, pathWithin } from "./fold";
 import { gitTemplateDir } from "./layout";
 
 export interface SandboxSettingsOptions {
@@ -76,9 +77,11 @@ export function sandboxSettingsOf(policy: SandboxPolicy, home: string, o: Sandbo
   const list = o.list ?? realList;
   const plain = o.plain ?? realPlain;
   const file = o.file ?? realNonFolder;
-  const fold = (s: string) => (o.windows ? s.toLowerCase() : s);
-  const same = (a: string, b: string) => fold(a) === fold(b);
-  const inside = (a: string, root: string) => same(a, root) || fold(a).startsWith(fold(root.endsWith(p.sep) ? root : `${root}${p.sep}`));
+  // The one comparison (fold.ts's `pathKey`, lane WS8): on Windows `/` and `\` both, a device prefix and `..` taken,
+  // names as NTFS opens them; before, a `/` spelling of a path under a kept or denied folder looked outside it.
+  const keyOs: Os = o.windows ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+  const same = (a: string, b: string) => pathKey(a, keyOs) === pathKey(b, keyOs);
+  const inside = (a: string, root: string) => pathWithin(a, root, keyOs);
   const isPattern = (d: string) => d.includes("*");
   const open = policy.botAccess;
   const outputs = p.join(home, "outputs");
@@ -124,8 +127,9 @@ export function sandboxSettingsOf(policy: SandboxPolicy, home: string, o: Sandbo
 
   /** Whether a policy glob would cover a kept folder (`bots/*\/memory` for a runner that keeps a memory). */
   const globCovers = (glob: string, keep: string): boolean => {
-    const g = glob.split(p.sep).filter((s) => s !== "");
-    const k = keep.split(p.sep).filter((s) => s !== "");
+    // By key (lane WS8): a `/` spelling on Windows was one segment before.
+    const g = pathKey(glob, keyOs).split("/").filter((s) => s !== "");
+    const k = pathKey(keep, keyOs).split("/").filter((s) => s !== "");
     return g.length <= k.length && g.every((seg, i) => segmentMatches(k[i]!, seg, o.windows ? "windows" : "macos"));
   };
 
@@ -199,8 +203,9 @@ export function botSandboxSettings(policy: SandboxPolicy, o: {
   list?: (dir: string) => readonly { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
 }): SandboxSettingsConfig {
   const wide = o.level === "accept-edits" || o.level === "automatic";
-  const fold = (s: string) => (o.windows ? s.toLowerCase() : s).replace(/[\\/]+$/, "");
   const os: Os = o.windows ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+  // The one comparison (lane WS8): separators, a trailing one, a device prefix and `..` included, not case alone.
+  const fold = (s: string) => pathKey(s, os);
   // A root whose path has a control character is never drawn (a newline would be written raw into the profile).
   const drawable = (r: string) => !CONTROL.test(r);
   // At accept edits the home is written out as its ordinary top-level folders (the coordinator's ruling on stage 2):
@@ -378,16 +383,14 @@ function configNamed(roots: readonly string[], o: { userHome: string; os: Os }):
 /** Whether the last look for repositories' configs went through everything under the roots (tests, the report). */
 export function scanComplete(): boolean | undefined { return scanCache?.complete; }
 
-// Windows takes "/" for a backslash in a path (a bot writes `C:\Users\x/.moss/scratch/y`), so both are one separator there: left apart, a path
-// spelled with "/" is not inside its own root, and every judgement of it (a run-later place, a covered root) goes the wrong way.
-const foldOf = (s: string, os: Os) => (os === "linux" ? s : os === "windows" ? s.toLowerCase().replace(/\//g, "\\") : s.toLowerCase());
+// Windows takes "/" for a backslash in a path (a bot writes `C:\Users\x/.moss/scratch/y`), so both are one separator there
+// (the acceptance lane's fix, folded into fold.ts's `pathKey` by lane WS8 with the rest of the spellings Windows takes).
 /** Whether `root` holds `path` (strictly, or is it). */
 function holdsFolded(root: string, path: string, os: Os): boolean { return isInsideOrSame(path, root, os); }
+/** By fold.ts's `pathKey` (lane WS8): a `..`, a `\\?\` prefix and a `/` spelling on Windows are taken, where before only
+ *  case and a trailing separator were; a relative path is inside no absolute one. */
 function isInsideOrSame(path: string, root: string, os: Os): boolean {
-  const sep = os === "windows" ? "\\" : "/";
-  const a = foldOf(path, os).replace(/[\\/]+$/, "");
-  const r = foldOf(root, os).replace(/[\\/]+$/, "");
-  return a === r || a.startsWith(r.endsWith(sep) ? r : r + sep);
+  return pathWithin(path, root, os);
 }
 
 /** A deny glob as the runtime renders it (`**\/` any folders or none, `*` within one name, a closed `[…]` a class,
@@ -408,5 +411,7 @@ export function denyRegex(glob: string, os: Os): RegExp {
 
 /** Whether a deny covers `root` (the root itself, or a folder that holds it). */
 export function rootCovered(root: string, denies: readonly string[], os: Os): boolean {
-  return denies.some((d) => (d.includes("*") ? denyRegex(d, os).test(root) : isInsideOrSame(root, d, os)));
+  // Both sides by key (lane WS8): `denyRegex` knows only `/`, so on Windows a path strictly under a glob-denied folder
+  // (`C:\Users\u\proj\.git\hooks\x` under `…\**\.git\hooks`) didn't match before; keys are `/`-joined and folded.
+  return denies.some((d) => (d.includes("*") ? denyRegex(pathKey(d, os), os).test(pathKey(root, os)) : isInsideOrSame(root, d, os)));
 }

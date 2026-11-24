@@ -23,7 +23,7 @@ import {
   type SandboxPolicy,
 } from "../contracts/fence";
 import { canonicalPath, linksOnTheWay, TooManyLinks } from "./canonical";
-import { foldPath, nonAsciiAlias } from "./fold";
+import { components, foldPath, nonAsciiAlias } from "./fold";
 import { instructionsReach } from "../bots/made-by";
 import { otherInstallReadDenied, otherInstallReadPatterns } from "../other-installs";
 import { botFolders, fenceLayout, globalHooksPathDirs, loginStartPaths, pendingFenced, type LaidOutKind } from "./layout";
@@ -509,7 +509,10 @@ export class MossFence implements Fence {
     for (const p of paths) {
       const f = foldPath(p, this.os);
       if (!f.startsWith(`${root}/`)) continue;
-      const rest = p.slice(plugins.length + 1).split(/[\/]/);
+      // What follows the plugins folder, as the path spells it, by components (lane WS8): `foldPath` maps components one
+      // to one, so the count lines up; before, the raw path was sliced by the folder's length and split on `/` only,
+      // so on Windows `plugins\<id>\x` was one name and a new plugin folder went unseen.
+      const rest = components(p, this.os).slice(components(plugins, this.os).length);
       if (rest.length < 2 || rest[0] === undefined || rest[0].startsWith(".") || !isAnyPluginId(rest[0])) continue;
       if (this.#knownPlugin(rest[0])) continue;
       try { lstatSync(joinHome(plugins, this.os, rest[0])); continue; } catch { /* not there: a new folder */ }

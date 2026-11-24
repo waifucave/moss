@@ -36,6 +36,7 @@ import { isAbsolute, join, posix, win32 } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { agentConfigEntries, autoRunEntries, type FencedKind, type RunLaterEntry, type RunLaterExtras } from "../contracts/fence";
 import { linkedRouterSupportsRunHome } from "../runtime-sdk/run-home-support";
+import { pathKey, pathWithin } from "./fold";
 import { parseGitConfigWatched } from "./git-config";
 import { SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_SEALED_KEY_FILE_NAME } from "../secrets/secret-files";
 import { runLaterExtras } from "./run-later";
@@ -134,10 +135,10 @@ function loginStartFolderSet(home: string, mossHome: string, os: Os): Set<string
 
 /** `paths` without duplicates and without any inside one of `folders` (other than itself). */
 function withoutNested(paths: readonly string[], os: Os, folders: ReadonlySet<string>): string[] {
-  const sep = os === "windows" ? "\\" : "/";
   const out: string[] = [];
   for (const x of new Set(paths)) {
-    if ([...folders].some((f) => f !== x && x.startsWith(`${f}${sep}`))) continue;
+    // By fold.ts's one comparison (lane WS8): a `/` spelling on Windows is inside too.
+    if ([...folders].some((f) => pathKey(f, os) !== pathKey(x, os) && pathWithin(x, f, os))) continue;
     out.push(x);
   }
   return out;

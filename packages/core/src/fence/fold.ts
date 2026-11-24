@@ -37,6 +37,51 @@ export function foldPath(path: string, os: Os): string {
   return out.join("/");
 }
 
+/** Lane WS8, the ONE way the fence compares two paths for "the same" and "inside" (the Windows acceptance lane's two
+ *  audits: comparisons that knew only `/` let a path strictly under a Windows deny look outside it). A path's key:
+ *   - Windows: a device prefix stripped (`\\?\C:\x` is `C:\x`, `\\?\UNC\s\share` and `\\.\UNC\…` are `\\s\share`),
+ *     `/` and `\` both separators and runs of them one, `.` dropped, `..` taken lexically as Windows itself takes it
+ *     before any link is followed (never above the drive or share), each name as the disk opens it (`diskName`:
+ *     trailing dots and spaces dropped, `name::$DATA` and `name:stream` naming `name`) and folded (`foldName`), the
+ *     drive letter lowercased. A drive-relative `C:x` (relative to that drive's current folder) and a relative path
+ *     get a key of their own (`?rel:`), so they are never the same as, or inside, an absolute path: callers compare
+ *     absolute paths.
+ *   - macOS: `/` only, the same steps, folded (APFS compares names case-blind). Linux: the same, NOT folded (its
+ *     disks are case-sensitive, and a fold there would make one folder count as another: kept where it isn't).
+ *  What only the disk knows is not done here: links, and 8.3 short names (`PROGRA~1`); compare `canonicalPath`s
+ *  (canonical.ts) where those matter. Keys are `/`-joined: `c:/users/u/.moss`, `//server/share/x`, `/home/u`. */
+export function pathKey(path: string, os: Os): string {
+  let p = os === "windows" ? path.replace(/\//g, "\\") : path;
+  let lead: string;
+  let fixed = 0; // components `..` never removes (a drive, or a share's server and name)
+  const out: string[] = [];
+  if (os === "windows") {
+    const device = /^\\\\[?.]\\(UNC\\)?/i.exec(p);
+    if (device !== null) p = (device[1] !== undefined ? "\\\\" : "") + p.slice(device[0].length);
+    if (p.startsWith("\\\\")) { lead = "//"; p = p.slice(2); fixed = 2; }
+    else if (/^[A-Za-z]:\\/.test(p)) { lead = ""; out.push(p.slice(0, 2).toLowerCase()); p = p.slice(3); fixed = 1; }
+    else if (/^[A-Za-z]:/.test(p)) { lead = `?rel:${p.slice(0, 2).toLowerCase()}/`; p = p.slice(2); }
+    else if (p.startsWith("\\")) { lead = "/"; p = p.slice(1); }
+    else lead = "?rel:";
+  } else if (p.startsWith("/")) { lead = "/"; p = p.slice(1); }
+  else lead = "?rel:";
+  const fold = (n: string) => (os === "linux" ? n : foldName(n));
+  for (const raw of p.split(os === "windows" ? /\\+/ : /\/+/)) {
+    if (raw === "" || raw === ".") continue;
+    if (raw === "..") { if (out.length > fixed) out.pop(); continue; }
+    out.push(fold(diskName(raw, os)));
+  }
+  return lead + out.join("/");
+}
+
+/** Whether `path` is `root` or lies under it, by `pathKey` (a relative or drive-relative path is inside no absolute
+ *  root, and the reverse). */
+export function pathWithin(path: string, root: string, os: Os): boolean {
+  const p = pathKey(path, os), r = pathKey(root, os);
+  if (p === r) return true;
+  return p.startsWith(r.endsWith("/") ? r : `${r}/`);
+}
+
 /** The second wall, as B's contract builds it (`nonAsciiAlias`, B-M1 #179; the controller's ruling): a name that
  *  isn't ASCII where MOSS names things itself is refused, whatever a disk might fold it to. That is the MOSS home's
  *  own top level and any folder under it that holds a fenced item (`plugins-state/` for `plugins-state/oks`). A bot's
