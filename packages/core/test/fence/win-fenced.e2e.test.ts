@@ -22,6 +22,10 @@ import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
 import type { CoreToolDef } from "../../src/runtime-sdk/turn-loop/servers";
+import { createThrowawaySecretStore } from "@waifucave/moss-test-harness";
+import { encryptedFileStatus } from "../../src/contracts/secret-store";
+import { fileSecretsBackend } from "../../src/secrets/file-backend";
+import { EncryptedFileValues, MossSecretStore, vaultKey } from "../../src/secrets/moss-secret-store";
 
 const run = process.platform === "win32" && process.env.MOSS_WIN_FENCE_E2E === "1";
 const home = process.env.USERPROFILE ?? "C:\\Users\\nobody";
@@ -134,6 +138,50 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const note = await call(tools.Bash!, { command: `cat '${join(moss, "notes", "readme.txt").replace(/\\/g, "/")}' '${join(home, "ws-e2e-plain", "plain.txt").replace(/\\/g, "/")}'` });
     expect(note.text).toContain("a note any bot may read");
     expect(note.text).toContain("an ordinary file in the home");
+  }, 900_000);
+
+  test("the files the real store wrote (the secrets file, its previous copy, the index) and the key in Credential Manager: the principal reads none of them (lane SE)", async () => {
+    // The store itself writes them, as the daemon does on Windows (owner-only ACL, the key in the user's Credential Manager
+    // under a throwaway service); the test's earlier hand-written stand-in goes first.
+    const store = createThrowawaySecretStore({ id: `wfe-${process.pid}` });
+    const vault = { get: (n: string) => store.get(n), set: (n: string, v: string) => store.set(n, v), delete: (n: string) => store.delete(n) };
+    const file = join(moss, "secrets.enc");
+    rmSync(file, { force: true });
+    try {
+      const flat = fileSecretsBackend({ home: moss, service: store.service, os: "windows", vault: () => vault, interactive: false, moveFrom: null, log: () => {} });
+      await flat.set({ service: store.service, name: "anthropic:default", value: SECRET });
+      await flat.set({ service: store.service, name: "anthropic:default", value: `${SECRET}-2` }); // the previous copy exists
+      const contract = new MossSecretStore({ home: moss, values: new EncryptedFileValues(file, vaultKey(vault, file), "credential-manager"), status: encryptedFileStatus("credential-manager") });
+      await contract.set({ owner: { kind: "device" }, name: "device:link-key" }, SECRET);
+      expect(await store.get("secrets-file-key")).not.toBeNull(); // the key is in the user's Credential Manager
+      const files = [file, join(moss, "credentials", "secrets.enc.bak"), join(moss, "credentials", "index.json"), join(moss, "credentials", "index.json.bak")];
+      // A leak is found by each file's own first bytes (ciphertext and names, not the dummy), as base64.
+      const needleOf = (p: string) => readFileSync(p).subarray(0, 30).toString("base64");
+      for (const p of files) {
+        const needle = needleOf(p);
+        // The control: the user reads the bytes the same way the principal's commands try to.
+        const own = Bun.spawnSync(["powershell", "-NoProfile", "-Command", `[Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}'))`]).stdout.toString();
+        expect([p, own.includes(needle)]).toEqual([p, true]);
+        const b = await call(tools.Bash!, { command: `base64 -w0 '${p.replace(/\\/g, "/")}'; cat '${p.replace(/\\/g, "/")}' | base64 -w0; echo done` });
+        expect(b.text).toContain("done");
+        expect([p, b.text.includes(needle)]).toEqual([p, false]);
+        const ps = await call(tools.PowerShell!, { command: `try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('${p}')) } catch { 'DENIED' }; 'done'` });
+        expect(ps.text).toContain("done");
+        expect([p, ps.text.includes(needle)]).toEqual([p, false]);
+      }
+      // Credential Manager is per user: the principal's own lists nothing of the user's. The control: the user's lists the key.
+      const target = store.service.toLowerCase();
+      const mine = Bun.spawnSync(["cmdkey", "/list"]).stdout.toString().toLowerCase();
+      expect(mine.includes(target)).toBe(true);
+      const theirs = await call(tools.PowerShell!, { command: "cmdkey /list; 'done'" });
+      expect(theirs.text).toContain("done");
+      expect(theirs.text.toLowerCase().includes(target)).toBe(false);
+      const theirsBash = await call(tools.Bash!, { command: "cmdkey.exe /list; echo done" });
+      expect(theirsBash.text).toContain("done");
+      expect(theirsBash.text.toLowerCase().includes(target)).toBe(false);
+    } finally {
+      await store.dispose();
+    }
   }, 900_000);
 
   test("no network: a public address, a loopback listener outside the proxy range and the metadata address are refused", async () => {
