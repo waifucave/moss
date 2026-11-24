@@ -45,6 +45,7 @@ import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type Co
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
 import { AppLog, appLogPath, LineLimiter } from "./app-log";
+import { fileLine } from "./file-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
@@ -216,14 +217,16 @@ app.commandLine.appendSwitch("no-proxy-server");
 const session_ = linuxSession(process.env);
 registerSchemes();
 
+// Bots can read `<home>/logs`, so the file gets only what `fileLine` (file-log.ts) lets through: checks, numbers, lifecycle lines and error
+// kinds, never an error's message or stack, a card's id or a page's address. The process's output keeps every line (the acceptance run reads it).
 const appLog = new AppLog(appLogPath(home));
 function log(line: string): void {
   process.stdout.write(`[moss-app] ${line}\n`);
-  appLog.write(line);
+  appLog.write(fileLine(line));
 }
 
 // A packaged app never shows Electron's "A JavaScript error occurred in the main process" box: an uncaught exception or
-// an unhandled rejection is one line and its stack in app.log, and the app goes on. A test-marked or acceptance build
+// an unhandled rejection is one line in the process's output with its stack (the file gets its kind only, `fileLine`), and the app goes on. A test-marked or acceptance build
 // keeps the default loud behaviour, so a run still fails on one.
 if (app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string") {
   const note = (kind: string, err: unknown): void => {
