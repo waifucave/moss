@@ -571,7 +571,7 @@ describe("a bot's calls: what MOSS knows beyond a tool's name", () => {
   };
   const levels: Record<string, Level> = { Studio: "ask-risky", Laptop: "automatic" };
   const check = botApprovalCheck(recorder, {
-    hostTools: () => ["SendMessage", "ListAgents", "TaskStop", "Agent", "Glossary", "PluginValidate", "PluginStatus", "PluginInstall"], bundledTool: bundled, toolPlugin: (_c, tool) => (tool.startsWith("mcp__web__") ? "moss/web" : undefined), readOnlyTool: readOnly, seenUrl: (c, u) => seen.seen(c.sessionId, u),
+    hostTools: () => ["SendMessage", "ListAgents", "TaskStop", "Agent", "AgentModels", "Glossary", "PluginValidate", "PluginStatus", "PluginInstall"], bundledTool: bundled, toolPlugin: (_c, tool) => (tool.startsWith("mcp__web__") ? "moss/web" : undefined), readOnlyTool: readOnly, seenUrl: (c, u) => seen.seen(c.sessionId, u),
     fetchBudget: (c, u) => seen.take(c.sessionId, u), messageTarget: (_c, to) => targets[to], levelOf: (c) => levels[c],
   });
   const call = async (tool: string, input: Record<string, unknown>) => {
@@ -582,8 +582,10 @@ describe("a bot's calls: what MOSS knows beyond a tool's name", () => {
 
   test("the core tools: listing is a read; stopping a task and starting an agent are contained", async () => {
     expect(await call("ListAgents", {})).toMatchObject({ effect: "read" });
+    // What an agent offers (its model list) starts nothing: a read, no card.
+    expect(await call("AgentModels", { backend: "codex" })).toMatchObject({ effect: "read" });
     for (const t of ["TaskStop", "Agent"]) expect([t, await call(t, { id: "x" })]).toMatchObject([t, { effect: "other", contained: true }]);
-    expect([...CORE_TOOL_RULES.keys()].sort()).toEqual(["Agent", "AppScreenshot", "EditBotInstructions", "Glossary", "ListAgents", "MakeBot", "PluginInstall", "PluginStatus", "PluginValidate", "RequestAccess", "SendMessage", "TaskStop"]);
+    expect([...CORE_TOOL_RULES.keys()].sort()).toEqual(["Agent", "AgentModels", "AppScreenshot", "EditBotInstructions", "Glossary", "ListAgents", "MakeBot", "PluginInstall", "PluginStatus", "PluginValidate", "RequestAccess", "SendMessage", "TaskStop"]);
     // Loading an on-demand tool is a read: its own call is judged after (the 14c workshop row's red was Glossary's card).
     expect(await call("Glossary", { load: "mcp__builder__PluginNew" })).toMatchObject({ effect: "read" });
     expect(await call("Glossary", { query: "build a plugin" })).toMatchObject({ effect: "read" });

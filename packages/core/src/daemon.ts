@@ -4782,7 +4782,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         const check = broker === undefined ? undefined : botApprovalCheck(broker, {
           // The core's Agent and TaskStop too, once lane K's agents are up (`botCoreTools`): never taken for the runtime's own;
           // and lane C's RequestAccess.
-          hostTools: (ctx) => [...(side()?.tools(ctx.sessionId) ?? []).map((t) => t.name), GLOSSARY_TOOL_NAME, REQUEST_ACCESS_TOOL, ...(agents() === undefined ? [] : ["Agent", "TaskStop"])],
+          hostTools: (ctx) => [...(side()?.tools(ctx.sessionId) ?? []).map((t) => t.name), GLOSSARY_TOOL_NAME, REQUEST_ACCESS_TOOL, ...(agents() === undefined ? [] : ["Agent", "AgentModels", "TaskStop"])],
           home: opts.parts?.userHome ?? homedir(), localComputer: main.self, fence, mossHome,
           levelOf: (c) => node?.registry.get(c)?.level,
           // The drop: a bot's file-tool write into a folder it makes new in the plugins folder names it as the builder.
@@ -4858,7 +4858,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         });
         const baseTools = botCoreTools({
           side: { tools: (id) => side()?.tools(id) ?? [] },
-          agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf },
+          agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf, modelsOf: (backend) => startOptions.options(backend) },
           // Lane WS7: on Windows the core's background commands stop by their id through TaskStop.
           ...(process.platform === "win32" ? { stopTask: (ctx: BotSessionContext, id: string) => stopWindowsBackground(ctx.sessionId, id) } : {}),
         });

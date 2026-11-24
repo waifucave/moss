@@ -30,6 +30,8 @@ export interface BotCoreToolsOptions {
     levelOf?: (ctx: BotSessionContext) => Level | undefined;
     /** Plugins' agent definitions, by Glossary's name (`agentDefinitionOf`). */
     definition?: AgentToolOptions["definition"];
+    /** What an agent backend offers to start with (`agent.options`), for `Agent`'s model check and `AgentModels`. */
+    modelsOf?: AgentToolOptions["modelsOf"];
   };
 }
 
@@ -44,6 +46,7 @@ export function botCoreTools(o: BotCoreToolsOptions): NonNullable<BotDriverDeps[
       }, {
         ...(o.agents.backends === undefined ? {} : { backends: o.agents.backends }),
         ...(o.agents.definition === undefined ? {} : { definition: o.agents.definition }),
+        ...(o.agents.modelsOf === undefined ? {} : { modelsOf: o.agents.modelsOf }),
         botModel: () => ctx.current().model,
         ...(o.stopTask === undefined ? {} : {
           stopRuntimeTask: async (id: string) => (await o.stopTask!(ctx, id)) ?? { text: `TaskStop: none of your background agents or commands has the id ${id}`, isError: true },

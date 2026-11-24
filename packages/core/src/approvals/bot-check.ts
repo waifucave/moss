@@ -72,6 +72,8 @@ const TITLES: Record<ActionEffect, string> = {
  *  a tool. */
 export const CORE_TOOL_RULES: ReadonlyMap<string, "read" | "contained"> = new Map([
   ["ListAgents", "read"], ["SendMessage", "contained"], ["TaskStop", "contained"], ["Agent", "contained"],
+  // What an agent backend offers (its model list): nothing is started.
+  ["AgentModels", "read"],
   // Asking itself costs nothing: the tool raises its own card for what it asks (`request-access.ts`).
   ["RequestAccess", "read"],
   // Lane B's plugin workshop (registry/workshop.ts): checking a folder and reading the bot's own plugin's state are

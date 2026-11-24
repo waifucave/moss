@@ -381,8 +381,8 @@ describe("the bot keeps control", () => {
   test("the bot's tools: Agent and TaskStop; lane D's ListAgents gets the agent rows from the hooks", async () => {
     const w = make({ script: [[{ wait: true }]] });
     const tools = agentToolDefs(w.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"] });
-    expect(tools.map((t) => t.name)).toEqual(["Agent", "TaskStop"]);
-    const [agent, taskStop] = tools;
+    expect(tools.map((t) => t.name)).toEqual(["Agent", "AgentModels", "TaskStop"]);
+    const [agent, , taskStop] = tools;
     expect(agent!.inputSchema).toMatchObject({ required: ["prompt", "backend", "root"] });
     const started = await agent!.run({ prompt: "Fix it.", backend: "fake", root: "home/Studio/project1", description: "Fix it" });
     expect(started.isError).toBe(false);
@@ -401,14 +401,14 @@ describe("the bot keeps control", () => {
       passed.push(taskId);
       return { text: `stopped background task ${taskId}`, isError: false };
     };
-    const [agent, taskStop] = agentToolDefs(w.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], stopRuntimeTask });
+    const [agent, , taskStop] = agentToolDefs(w.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], stopRuntimeTask });
     expect(taskStop!.description).toContain("background commands");
     expect(await taskStop!.run({ task_id: "bash_7" })).toEqual({ text: "stopped background task bash_7", isError: false });
     expect(await taskStop!.run({ id: "monitor_2" })).toEqual({ text: "stopped background task monitor_2", isError: false });
     // An agent of another bot is refused, never passed on; the bot's own agent stops as before.
     const started = await agent!.run({ prompt: "Fix it.", backend: "fake", root: "home/Studio/project1", description: "Fix it" });
     const id = /agent_[A-Za-z0-9_-]+/.exec(started.text)![0];
-    const [, otherStop] = agentToolDefs(w.manager, { bot: "beta", session: "s_beta", origin: "user" }, { stopRuntimeTask });
+    const [, , otherStop] = agentToolDefs(w.manager, { bot: "beta", session: "s_beta", origin: "user" }, { stopRuntimeTask });
     expect((await otherStop!.run({ id })).isError).toBe(true);
     expect(await taskStop!.run({ id })).toEqual({ text: `Stopped ${id}.`, isError: false });
     expect(passed).toEqual(["bash_7", "monitor_2"]);
@@ -481,6 +481,69 @@ describe("the stall watchdog", () => {
       return notification(w);
     }, "the notification");
     expect(n.stopReason).toBe("stalled");
+  });
+});
+
+describe("the bot's Agent tool and the agent's own models", () => {
+  /** What `agent.options` says of the fake agent: its own two models, not any other family's. */
+  const offered = async (backend: string) => ({
+    backend, known: true, source: "session" as const,
+    models: [
+      { id: "fake-model-a", name: "Fake A", efforts: ["low", "high"] },
+      { id: "fake-model-b", name: "Fake B", efforts: [] },
+    ],
+    default: { model: "fake-model-a" },
+  });
+  const bot = (w: World) => agentToolDefs(w.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], modelsOf: offered });
+  const call = { prompt: "Fix it.", backend: "fake", root: "home/Studio/project1", description: "Fix it" };
+
+  test("the model is the agent's own: its id, or its name or another case of it, and it reaches the agent as its id", async () => {
+    const w = make({ script: [[{ wait: true }]] });
+    const [agent] = bot(w);
+    expect(agent!.inputSchema).toMatchObject({ properties: { model: { type: "string" } } });
+    expect(JSON.stringify(agent!.inputSchema)).not.toContain("fable");
+    const r = await agent!.run({ ...call, model: "Fake B" });
+    expect(r.isError).toBe(false);
+    await waitFor(() => w.report("config").length > 0, "the model to be set");
+    expect(w.report("config")).toMatchObject([{ option: "model", value: "fake-model-b" }]);
+  });
+
+  test("a model the agent doesn't offer is refused naming the ones it does, and nothing is started", async () => {
+    const w = make({ script: [[{ wait: true }]] });
+    const [agent] = bot(w);
+    for (const wrong of ["terra", "fable", "opus"]) {
+      const r = await agent!.run({ ...call, model: wrong });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(`doesn't offer a model "${wrong}"`);
+      expect(r.text).toContain("fake-model-a (Fake A)");
+      expect(r.text).toContain("fake-model-b (Fake B)");
+    }
+    expect(w.manager.sessionHooks().agents.list()).toEqual([]);
+  });
+
+  test("with no model the agent's own default is used; an agent whose list isn't known takes the model as given", async () => {
+    const w = make({ script: [[{ wait: true }]] });
+    const [agent] = bot(w);
+    expect((await agent!.run(call)).isError).toBe(false);
+    expect(w.report("config")).toEqual([]);
+    const w2 = make({ script: [[{ wait: true }]] });
+    const [unknown] = agentToolDefs(w2.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], modelsOf: async (backend) => ({ backend, known: false, source: "unknown", models: [] }) });
+    expect((await unknown!.run({ ...call, model: "fake-model-b" })).isError).toBe(false);
+  });
+
+  test("AgentModels lists what an agent offers and starts nothing; an unknown list says so", async () => {
+    const w = make({ script: [[{ wait: true }]] });
+    const [agent, models] = bot(w);
+    expect(agent!.description).toContain("AgentModels");
+    const r = await models!.run({ backend: "fake" });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("fake-model-a (Fake A) [efforts: low, high]");
+    expect(r.text).toContain("fake-model-b (Fake B)");
+    expect(r.text).toContain("Its default is fake-model-a");
+    expect((await models!.run({ backend: "nope" })).isError).toBe(true);
+    expect(w.manager.sessionHooks().agents.list()).toEqual([]);
+    const [, none] = agentToolDefs(w.manager, { bot: "alpha", session: "s_alpha", origin: "user" }, { backends: () => ["fake"], modelsOf: async (backend) => ({ backend, known: false, source: "unknown", models: [] }) });
+    expect((await none!.run({ backend: "fake" })).text).toContain("aren't known until it runs");
   });
 });
 
