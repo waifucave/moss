@@ -96,6 +96,16 @@ pub enum ConnEvent {
     /// A card the computer sent whose hash doesn't match what it says, or that isn't a card: not shown, never signed.
     /// `computers_id` is the id it claimed, cleaned: the computer's words.
     TamperedCard { computers_id: Option<String> },
+    /// A bot changed (`bot_changed`), typed.
+    BotChanged { bot: crate::engine::Bot },
+    /// A bot's row changed (`bot_summary_changed`).
+    BotSummaryChanged { summary: crate::engine::BotSummary },
+    /// A bot was removed (`bot_removed`).
+    BotRemoved { id: String },
+    /// A session changed (`session_changed`).
+    SessionChanged { session: crate::engine::SessionRow },
+    /// An event of a session's log this connection follows (`event`), typed as a conversation shows it.
+    SessionEvent { item: crate::engine::SessionItem },
     /// A message from the engine larger than the phone takes was read and dropped (`bytes` long); the link stays.
     MessageDropped { bytes: u64 },
     /// Any other notification from the engine: `core.event` (params is the event) or a session's `event`.
@@ -119,6 +129,18 @@ impl ConnEvent {
             ConnEvent::CardRequested { card } => card.card_json.len(),
             ConnEvent::PendingCards { cards } => cards.iter().map(|c| c.card_json.len()).sum(),
             ConnEvent::TamperedCard { computers_id } => computers_id.as_ref().map_or(0, String::len),
+            ConnEvent::SessionEvent { item } => match &item.kind {
+                crate::engine::ItemKind::User { text, .. }
+                | crate::engine::ItemKind::Assistant { text }
+                | crate::engine::ItemKind::FromBot { text, .. }
+                | crate::engine::ItemKind::FromSession { text }
+                | crate::engine::ItemKind::FromPlugin { text }
+                | crate::engine::ItemKind::Agent { text }
+                | crate::engine::ItemKind::Routine { text, .. }
+                | crate::engine::ItemKind::Note { text, .. } => text.len(),
+                _ => 256,
+            },
+            ConnEvent::BotChanged { .. } | ConnEvent::BotSummaryChanged { .. } | ConnEvent::SessionChanged { .. } => 1024,
             _ => 0,
         }
     }
@@ -401,6 +423,20 @@ enum End {
 }
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
+
+impl crate::engine::Caller for Inner {
+    fn call_json(&self, method: &'static str, params: Value) -> impl std::future::Future<Output = Result<Value, CoreError>> + Send {
+        self.call(method, params)
+    }
+}
+
+/// A typed call on the core's runtime.
+macro_rules! typed {
+    ($self:ident, |$inner:ident| $body:expr) => {{
+        let $inner = $self.inner.clone();
+        crate::runtime::spawn(async move { $body.await }).await
+    }};
+}
 
 /// A connection's cards: those it issued that still wait (their state shared with every view of them), and the ids
 /// resolved lately, so a resolution heard before its card is listed still counts. Both capped, oldest dropped first: a
@@ -805,7 +841,24 @@ impl Inner {
 
     /// A card raised now arrives checked for display; every other notification as it came.
     fn notification(&self, method: &str, params: Value) {
+        if method == "event" {
+            if let Some(item) = crate::engine::session_item(&params) {
+                self.emit(ConnEvent::SessionEvent { item });
+                return;
+            }
+        }
         let kind = if method == "core.event" { params.get("type").and_then(Value::as_str) } else { None };
+        let typed = match kind {
+            Some("bot_changed") => params.get("bot").and_then(crate::engine::bot).map(|bot| ConnEvent::BotChanged { bot }),
+            Some("bot_summary_changed") => params.get("summary").and_then(crate::engine::summary).map(|summary| ConnEvent::BotSummaryChanged { summary }),
+            Some("bot_removed") => params.get("id").and_then(Value::as_str).filter(|i| cards::is_bot_id(i)).map(|id| ConnEvent::BotRemoved { id: id.to_string() }),
+            Some("session_changed") => params.get("session").and_then(crate::engine::session_row).map(|session| ConnEvent::SessionChanged { session }),
+            _ => None,
+        };
+        if let Some(e) = typed {
+            self.emit(e);
+            return;
+        }
         if kind == Some("card_requested") {
             let card = params.get("card").cloned().unwrap_or(Value::Null);
             match cards::check(&card) {
@@ -1093,6 +1146,80 @@ impl Connection {
     pub async fn stage_image(&self, session: String, media_type: String, data: Vec<u8>) -> Result<String, CoreError> {
         let inner = self.inner.clone();
         crate::runtime::spawn(async move { inner.stage_picture(&session, &media_type, &data).await }).await
+    }
+
+    // The engine's calls both apps make, typed (`engine.rs`). `call` stays for what isn't typed yet.
+
+    /// `bot.list`, each bot with its face (`bot.records`).
+    pub async fn bots(&self) -> Result<Vec<crate::engine::Bot>, CoreError> {
+        typed!(self, |i| crate::engine::bots(&*i))
+    }
+    pub async fn bot_summaries(&self) -> Result<Vec<crate::engine::BotSummary>, CoreError> {
+        typed!(self, |i| crate::engine::bot_summaries(&*i))
+    }
+    /// `bot.conversation`: a page of the bot's conversation, oldest first; `before` a `seq`, `limit` 1 to 500.
+    pub async fn conversation(&self, bot: String, before: Option<i64>, limit: u32) -> Result<crate::engine::MessagePage, CoreError> {
+        typed!(self, |i| crate::engine::conversation(&*i, &bot, before, limit))
+    }
+    /// `bot.markRead`, up to `at` (epoch ms).
+    pub async fn mark_read(&self, bot: String, at: i64) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::mark_read(&*i, &bot, at))
+    }
+    pub async fn sessions(&self) -> Result<Vec<crate::engine::SessionRow>, CoreError> {
+        typed!(self, |i| crate::engine::sessions(&*i))
+    }
+    /// `session.history`: a page of a session's log, oldest first.
+    pub async fn history(&self, session: String, before: Option<i64>, limit: u32) -> Result<crate::engine::MessagePage, CoreError> {
+        typed!(self, |i| crate::engine::history(&*i, &session, before, limit))
+    }
+    /// `session.interrupt`: Stop.
+    pub async fn stop(&self, session: String) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::stop(&*i, &session))
+    }
+    /// `session.setModel` (with its effort).
+    pub async fn set_model(&self, session: String, model: String, effort: Option<String>) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::set_model(&*i, &session, &model, effort))
+    }
+    /// `session.composerOffers`.
+    pub async fn composer_offers(&self, session: String) -> Result<crate::engine::ComposerOffers, CoreError> {
+        typed!(self, |i| crate::engine::composer(&*i, &session))
+    }
+    /// The question waiting in a session, from the newest 200 events of its log (see `engine::pending_question`).
+    pub async fn pending_question(&self, session: String) -> Result<Option<crate::engine::AskQuestion>, CoreError> {
+        typed!(self, |i| crate::engine::pending_question(&*i, &session))
+    }
+    /// `session.answer`: each answer keyed by its question's text, exactly as asked.
+    pub async fn answer_question(&self, session: String, call_id: String, answers: HashMap<String, String>) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::answer_question(&*i, &session, &call_id, answers))
+    }
+    pub async fn backends(&self) -> Result<Vec<crate::engine::AgentBackend>, CoreError> {
+        typed!(self, |i| crate::engine::backends(&*i))
+    }
+    pub async fn start_options(&self, backend: String, computer: Option<String>) -> Result<crate::engine::BackendOptions, CoreError> {
+        typed!(self, |i| crate::engine::start_options(&*i, &backend, computer))
+    }
+    pub async fn recent_start(&self) -> Result<crate::engine::RecentStart, CoreError> {
+        typed!(self, |i| crate::engine::recent_start(&*i))
+    }
+    /// `agent.start`: the new session's id.
+    pub async fn start_session(&self, request: crate::engine::StartRequest) -> Result<String, CoreError> {
+        typed!(self, |i| crate::engine::start_session(&*i, request))
+    }
+    /// `models.list` (a session's, or the user's).
+    pub async fn models(&self, session: Option<String>) -> Result<crate::engine::ModelsList, CoreError> {
+        typed!(self, |i| crate::engine::models_list(&*i, session))
+    }
+    /// `bot.create` from a phone: a name and a model only.
+    pub async fn create_bot(&self, name: String, model: Option<String>) -> Result<crate::engine::Bot, CoreError> {
+        typed!(self, |i| crate::engine::create_bot(&*i, &name, model))
+    }
+    /// `command.list`.
+    pub async fn commands(&self) -> Result<Vec<crate::engine::PluginCommand>, CoreError> {
+        typed!(self, |i| crate::engine::commands(&*i))
+    }
+    /// `command.run`.
+    pub async fn run_command(&self, name: String) -> Result<(), CoreError> {
+        typed!(self, |i| crate::engine::run_command(&*i, &name))
     }
 
     /// The link's state now (`next_event` tells each change).

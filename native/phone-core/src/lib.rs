@@ -17,6 +17,7 @@ pub mod bytes;
 pub mod cards;
 pub mod cbor;
 pub mod computers;
+pub mod engine;
 pub mod error;
 pub mod identity;
 pub mod json;
