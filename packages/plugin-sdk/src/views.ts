@@ -118,7 +118,6 @@ export type DeviceView = {
   runsCore: boolean;
   computer?: string;
   hasDisplay?: boolean;
-  /** For a phone: the app it paired as, `moss` or `code`. */
   app?: "moss" | "code";
   online: boolean;
   link?: {
