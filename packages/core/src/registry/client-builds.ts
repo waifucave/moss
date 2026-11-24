@@ -117,8 +117,7 @@ export function childRunner(o: { mossHome: string; userHome?: string; bun?: stri
       const maxRss = o.maxRssBytes ?? CLIENT_BUILD_LIMITS.maxRssBytes;
       const watch = setInterval(() => {
         if (child.pid === undefined) return;
-        const ps = Bun.spawnSync(["/bin/ps", "-o", "rss=", "-p", String(child.pid)], { stdout: "pipe", stderr: "ignore" });
-        const kb = Number(new TextDecoder().decode(ps.stdout).trim());
+        const kb = residentKb(child.pid);
         if (Number.isFinite(kb) && kb * 1024 > maxRss) done({ ok: false, message: `the build used more than ${Math.round(maxRss / 1024 / 1024)} MiB of memory and was stopped` });
       }, o.watchEveryMs ?? 500);
       const onAbort = () => done(stoppedEarly);
@@ -322,4 +321,20 @@ export class ClientBuilds {
       this.#next();
     }
   }
+}
+
+/** The resident memory of `pid` in KiB, or NaN when it can't be read (the build then runs on its time limit alone). Windows has no
+ *  `/bin/ps`: spawning it threw out of the interval and ended the daemon (measured on a runner), so `tasklist` answers there. */
+function residentKb(pid: number): number {
+  try {
+    if (process.platform === "win32") {
+      const root = process.env.SystemRoot ?? "C:\\Windows";
+      const r = Bun.spawnSync([`${root}\\System32\\tasklist.exe`, "/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { stdout: "pipe", stderr: "ignore", windowsHide: true });
+      // "bun.exe","1234","Console","1","45,678 K"
+      const m = /"([\d.,\s]+) K"\s*$/m.exec(new TextDecoder().decode(r.stdout));
+      return m === null ? Number.NaN : Number(m[1]!.replace(/[^\d]/g, ""));
+    }
+    const ps = Bun.spawnSync(["/bin/ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    return Number(new TextDecoder().decode(ps.stdout).trim());
+  } catch { return Number.NaN; }
 }
