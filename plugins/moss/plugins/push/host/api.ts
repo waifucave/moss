@@ -18,7 +18,7 @@ export interface HostApi {
   readonly devices?: {
     list(): Promise<{ id: string; runsCore: boolean; isThis: boolean }[]>;
     watch(listener: (device: unknown) => void): () => void;
-    revoked(): Promise<{ id: string; revokedAt: number }[]>;
+    revoked?(): Promise<{ id: string; revokedAt: number }[]>;
   };
   readonly net: { fetch(url: string, init?: RequestInit, opts?: { auth?: string | false }): Promise<Response> };
 }

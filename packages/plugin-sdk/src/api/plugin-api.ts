@@ -660,8 +660,9 @@ export interface DevicesApi {
   list(): Promise<DeviceView[]>;
   watch(listener: (device: DeviceView) => void): Unsubscribe;
   /** The devices this computer's registry holds as revoked, with when: a device gone from `list` was revoked only if it
-   *  is here (a list read before the registry is up, or that briefly misses one, says nothing). Ids and times only. */
-  revoked(): Promise<{ id: string; revokedAt: number }[]>;
+   *  is here (a list read before the registry is up, or that briefly misses one, says nothing). Ids and times only.
+   *  Optional in the type so a page's or a test's own stand-in for `devices` needn't carry it; the engine serves it. */
+  revoked?(): Promise<{ id: string; revokedAt: number }[]>;
 }
 
 /** `approvals`: which cards are pending and where, never their text, and only the cards of the plugin's own bot (the

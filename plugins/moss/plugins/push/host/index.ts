@@ -44,7 +44,8 @@ export async function start(api: HostApi): Promise<void> {
   const sweep = new RevocationSweep({
     // Without `devices.read` there is no list, and nothing is ever revoked from here.
     list: async () => (api.devices === undefined ? [] : api.devices.list()),
-    revoked: async () => (api.devices === undefined ? [] : api.devices.revoked()),
+    // No answer about revocations: nothing is confirmed, so nothing is revoked.
+    revoked: async () => (api.devices?.revoked === undefined ? [] : api.devices.revoked()),
     store: {
       get: () => synced.get(`devices:${api.plugin.computer}`),
       set: (value) => synced.set(`devices:${api.plugin.computer}`, value),

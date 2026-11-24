@@ -140,7 +140,7 @@ How to read it:
 - **bots.read**: `bots.get` (both), `bots.list` (both), `bots.watch` (both)
 - **computers.read**: `computers.get` (both), `computers.list` (both), `computers.watch` (both)
 - **computers.control**: `computers.holds` (both), `computers.mossWindows` (host), `computers.releaseHold` (host), `computers.setActionRunning` (host), `computers.setUserWorking` (host), `computers.takeHold` (host)
-- **devices.read**: `devices.list` (both), `devices.watch` (both)
+- **devices.read**: `devices.list` (both), `devices.revoked` (both), `devices.watch` (both)
 - **approvals**: `approvals.pending` (ui), `approvals.watch` (ui)
 - **files**: `files.glob` (both), `files.grep` (both), `files.list` (both), `files.move` (both), `files.onDrop` (ui), `files.path` (host), `files.pickFolder` (ui), `files.pickOpen` (ui), `files.pickSave` (ui), `files.readBytes` (both), `files.readText` (both), `files.remove` (both), `files.stat` (both), `files.url` (ui), `files.watch` (both), `files.write` (both)
 - **browser**: `browser.cdp` (both), `browser.close` (both), `browser.hide` (both), `browser.navigate` (both), `browser.onCdpEvent` (ui), `browser.open` (both), `browser.screenshot` (both), `browser.show` (both), `browser.tabs` (both), `browser.toolCaller` (host), `browser.watch` (ui)
