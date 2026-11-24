@@ -148,7 +148,9 @@ describe("conformance: every declarative model plugin, on its generic adapter", 
         }
       }
       expect(failures).toEqual([]);
-      expect(coreSignIn).toEqual(["uncloseai"]);
+      // Agent SDK 0.0.85: uncloseai, the one provider of that kind, is blocked in the catalog (its key-less endpoint closed),
+      // so it resolves to nothing above and never reaches the branch; no other provider signs in through the core alone.
+      expect(coreSignIn).toEqual([]);
     } finally {
       await fake.close();
     }
