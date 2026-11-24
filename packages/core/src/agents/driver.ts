@@ -18,8 +18,9 @@ import type { SessionDriver, TurnControl, TurnEnd, TurnInput } from "../contract
 import type { ToolApp, ToolDisplay, TurnOrigin } from "@waifucave/moss-protocol";
 
 export interface AgentDriverOptions {
-  /** Starts the agent (or reattaches to it); called once, by the first turn. */
-  start(): Promise<AgentSession>;
+  /** Starts the agent (or reattaches to it); called by the first turn, or before it by `warm` (`warm: true`: the session
+   *  was opened and nobody has typed yet, so a start that would ask the person anything fails instead of asking). */
+  start(o?: { warm?: boolean }): Promise<AgentSession>;
   /** The prompt a turn's input becomes. */
   promptOf(input: TurnInput): Promise<{ text: string; images?: { mimeType: string; data: string }[] }>;
   /** The agent started (each time it does): what it reported of itself, for the per-agent memory of its models. */
@@ -93,6 +94,8 @@ export class AgentDriver implements SessionDriver {
   #stalled = false;
   #ended = false;
   #pendingModel: { model: string; effort?: string } | undefined;
+  /** The `agent_started` record of the running process was made (by the first turn that ran on it). */
+  #announced = false;
   /** The calls seen, by id, for their end's display. */
   readonly #calls = new Map<string, { title: string; rawInput: unknown }>();
 
@@ -118,9 +121,19 @@ export class AgentDriver implements SessionDriver {
     return this.#origin !== undefined;
   }
 
-  async #ensure(): Promise<AgentSession> {
+  /** Starts the agent now, before the first message, for a session opened and not typed into yet: the first message then
+   *  finds it running. Never asks anything (the start fails where it would need a card) and never throws: a start that
+   *  fails here is simply made again, as it always was, by the first turn. */
+  async warm(): Promise<void> {
+    if (this.#stopping || this.#ended || this.#session || this.#starting) return;
+    await this.#ensure(true).then(() => undefined, () => undefined);
+  }
+
+  async #ensure(warm = false): Promise<AgentSession> {
     if (this.#session) return this.#session;
-    const starting: Promise<AgentSession> = this.#opts.start().then(async (s) => {
+    // A start already running (a turn, or `warm`) is joined, never made twice.
+    if (this.#starting) return this.#starting;
+    const starting: Promise<AgentSession> = this.#opts.start(warm ? { warm: true } : undefined).then(async (s) => {
       this.#session = s;
       try { this.#opts.started?.(s); } catch { /* a memory that can't be written never stops a session */ }
       if (this.#pendingModel) {
@@ -185,10 +198,13 @@ export class AgentDriver implements SessionDriver {
     try { this.#opts.turnStarted?.(input, ctl.origin); } catch { /* an observer never stops a turn */ }
     let session: AgentSession;
     try {
-      const fresh = !this.#session;
       // The agent that cannot be started is tried once more before the turn says so.
       session = await this.#ensure().catch((err: unknown) => (isContractError(err, "refused") ? Promise.reject(err) : this.#ensure()));
-      if (fresh) this.#record(ctl, { type: "agent_started", agentSessionId: session.agentSessionId });
+      // Said once per process, by the first turn on it (the process may have been started before that turn, by `warm`).
+      if (!this.#announced) {
+        this.#announced = true;
+        this.#record(ctl, { type: "agent_started", agentSessionId: session.agentSessionId });
+      }
     } catch (err) {
       this.#origin = undefined;
       this.#signal = undefined;
@@ -314,6 +330,7 @@ export class AgentDriver implements SessionDriver {
     const s = this.#session ?? (await this.#starting?.catch(() => undefined));
     this.#session = undefined;
     this.#starting = undefined;
+    this.#announced = false;
     this.#stalled = false;
     await s?.stop().catch(() => {});
     this.#opts.released?.();

@@ -54,6 +54,8 @@ export function fakeAdmissions(sandbox: "protected" | "none", modeFloor?: (level
 export interface WorldOptions {
   /** The manager's log lines. */
   log?: (line: string) => void;
+  /** The manager's `warmStart` (default on). */
+  warmStart?: boolean;
   /** Each session's turn as it starts (`AgentManagerOptions.turnStarted`). */
   turnStarted?: AgentManagerOptions["turnStarted"];
   /** The plugins' turn hooks, as the manager reads them (`AgentManagerOptions.hooks`). */
@@ -203,6 +205,7 @@ export class World {
       ...(o.pluginParts ? { pluginParts: o.pluginParts } : {}),
       ...(o.glossary ? { glossary: o.glossary } : {}),
       ...(o.log ? { log: o.log } : {}),
+      ...(o.warmStart === undefined ? {} : { warmStart: o.warmStart }),
       ...(o.turnStarted ? { turnStarted: o.turnStarted } : {}),
       ...(o.hooks ? { hooks: o.hooks } : {}),
       ...(o.childCommandsHeld === undefined ? {} : { childCommandsHeld: o.childCommandsHeld }),

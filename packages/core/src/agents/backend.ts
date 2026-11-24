@@ -111,6 +111,11 @@ export interface AcpStartSpec extends AgentStartSpec {
   /** The pause this session answers to, for a backend that holds its own tool calls (the in-process ones): the
    *  manager's switch, and for an agent run for another computer, that computer's forwarded switch too (remote.ts). */
   pause?: AgentPauseGate;
+  /** What the manager's admission just detected, when nothing waited on the person since: `start` uses it in place of
+   *  detecting again (a program probe and a signature check are run once a start, not twice). */
+  detected?: AgentDetection;
+  /** The start's step timer: each step of `start` that ends is named here (the manager logs the line). */
+  mark?: (step: string) => void;
 }
 
 /** One session's hooks into the daemon: its transcript (the wire and stderr), and `launched`, called with the agent's
@@ -374,7 +379,9 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
   }
 
   async start(spec: AcpStartSpec): Promise<AcpAgentSession> {
-    const d = await this.detect();
+    const mark = spec.mark ?? (() => {});
+    const d = spec.detected ?? await this.detect();
+    mark("backend.detect");
     if (!d.installed || !d.path) throw new ContractError("not_installed", d.reason ?? `${this.id} isn't installed on this computer`);
     if (!d.identityOk) throw new ContractError("refused", d.reason ?? `${d.path} isn't ${this.id}'s program`);
     // An adapter MOSS provides: the whole copy is checked against what MOSS placed, now, before it runs.
@@ -385,6 +392,7 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       const v = this.#opts.adapters!.verify(adapter!);
       if (!v.ok) throw new ContractError("refused", `${this.id} wasn't started: its adapter changed after MOSS placed it (${v.why}), so it won't be run`);
       digest = v.digest;
+      mark("backend.verify");
     }
     // The program MOSS admitted, not another one that took its place since (K-M2 review 5).
     if (spec.admitted) {
@@ -392,6 +400,7 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       if (d.path !== a.path || d.version !== a.version || (a.sha256 !== undefined && (digest ?? await programHash(d.path)) !== a.sha256)) {
         throw new ContractError("refused", `${this.id} wasn't started: its program changed after it was checked`);
       }
+      mark("backend.program-check");
     }
     if (!this.quirks.mcp.transports.includes("stdio")) throw new ContractError("refused", `${this.id} takes no stdio MCP server, so the bridge can't reach it`);
     const readOnly = spec.readOnly === true && this.quirks.marks.includes("unasked-actions");
@@ -408,6 +417,7 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       setup = sandbox.writer(spec.fence, { root: spec.root, dir, home: homedir(), env: this.#env(), ...(spec.level ? { level: spec.level } : {}) });
       for (const f of setup.files ?? []) writeFileSync(join(dir, f.name), f.content, { mode: 0o600 });
     }
+    mark("backend.sandbox-setup");
     // The plugins' skills, agents and hooks, where this backend reads its own.
     const parts = wire.parts;
     let placedMeta: Record<string, unknown> | undefined;
@@ -440,6 +450,7 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
       if (!uses.ok) throw new ContractError("not_installed", `${this.id} wasn't started: ${uses.reason}`);
       usesEnv = uses.env;
     }
+    mark("backend.place+uses");
     const proc = launchContained({
       command,
       args: [...prefix, ...cmd.acpArgs, ...(setup.args ?? [])],
@@ -450,7 +461,9 @@ export class AcpAgentBackend implements AgentBackend, AdapterBackend {
     if (!proc.contained) throw new ContractError("refused", `${this.id} wasn't started: it couldn't be put in its job object`);
     if (proc.pid) wire.launched?.(proc.pid, proc.contains);
     void proc.exited.then(() => wire.exited?.(proc.pid));
+    mark("backend.spawn");
     return AcpAgentSession.open({
+      ...(spec.mark ? { mark: spec.mark } : {}),
       quirks: this.quirks,
       clock: this.#opts.clock,
       process: proc,

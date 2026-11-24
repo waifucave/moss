@@ -113,6 +113,8 @@ export interface OpenOptions {
    *  own side can: the call's server and tool by its tool call id and the request's own title and kind, or undefined
    *  (moss-code, in the daemon, gives a plugin tool on its own bridge, from the runtime's real tool name). */
   mcpCallOf?: (toolCallId: string, asked: { title?: string; kind?: string }) => { server: string; tool: string } | undefined;
+  /** Names each step of the start that ends (`initialize`, `session/new`, ...), for the start's timing line. */
+  mark?: (step: string) => void;
 }
 
 /** A writer's mode floor at a level (absent: the strictest). */
@@ -333,6 +335,7 @@ export class AcpAgentSession implements AgentSession {
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: opts.clientInfo ? { ...CLIENT_INFO, ...opts.clientInfo } : CLIENT_INFO,
     }, timeoutMs);
+    opts.mark?.("acp.initialize");
     const caps = readCaps(init);
     this.#caps = caps;
     if (caps.protocolVersion !== undefined && caps.protocolVersion !== ACP_PROTOCOL_VERSION) {
@@ -364,6 +367,7 @@ export class AcpAgentSession implements AgentSession {
       if (!id) throw new ContractError("failed", "the agent answered session/new without a session id");
       this.#agentSessionId = id;
     }
+    opts.mark?.(opts.reattach ? "acp.session-resume" : "acp.session-new");
     this.#takeConfig(obj(result)?.["configOptions"]);
     const modes = obj(obj(result)?.["modes"]);
     if (modes) {
@@ -376,6 +380,7 @@ export class AcpAgentSession implements AgentSession {
     if (opts.readOnly) await this.setReadOnly(true);
     if (opts.model !== undefined) await this.setConfig("model", opts.model);
     if (opts.effort !== undefined && !this.#quirks.config.effortInModel) await this.setConfig("effort", opts.effort);
+    opts.mark?.("acp.settings");
     this.#state = "ready";
   }
 
