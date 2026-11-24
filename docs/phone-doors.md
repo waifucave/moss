@@ -68,7 +68,8 @@ refused unless it is a plain folder owned by this user and the real path of what
 does not hide a folder, and the folder is not hidden: the person should find it. There the mode bits mean nothing and there is no owner id to
 compare, so the folder takes the ACL its parent hands down when it is made (the profile's: the user, SYSTEM and administrators), set from
 the first byte it exists and not tightened by the engine, and a link or junction in its place fails the same real-path check. That is the
-state of the code, not something run on Windows from here.
+state of the code, not something run on Windows from here. A coding session's file is refused unless the folder lies inside the person's
+home folder (the folder tree must be able to name it), so on Windows that parent is always the profile folder, never a drive's root.
 
 The message names the file by its folder-tree path and the agent is told the real path (`promptOf`; every message's files now, the
 desktop's included). A file is written mode 0600 in a folder the engine makes, never overwriting and never through a link; what launches by
@@ -80,10 +81,12 @@ at every call):
 - An upload nobody finished is removed after 15 minutes; a finished file no message named, after 24 hours.
 - **A file a message named stays 14 days after that message** (`namedKeepMs`): the agent reads it in the turn that names it, a later turn
   may still say "the file I sent", and two weeks outlasts a long task and still gives the person's home back what a session no longer
-  needs. And **a session keeps at most 500 MB of named files** (`sessionKeepBytes`); over it, the oldest go first. The day's cap alone
+  needs. And **a session keeps at most 500 MiB of named files** (`sessionKeepBytes`); over it, the oldest go first. The day's cap alone
   (500 MiB) would let 14 days of it pile up. A named file in a bot's scratch is the bot's, and stays with it.
 - A coding session the computer's host no longer holds (the host's `forget`, which today only a bot's archive reaches, for the sessions that
-  bot owned) has its folder deleted by the next sweep, within 5 minutes. A session that has ended but is still held keeps its files under the
+  bot owned) has its folder deleted by the next sweep, within 5 minutes. (The reaper, the cleaner and a dispatch rollback delete sessions
+  of the older session store in `daemon.ts`, which is a different store from the host's: a session the phone's doors can stage a file for
+  is never one of those, so they need no call here.) A session that has ended but is still held keeps its files under the
   two bounds above, because its conversation can still be read and names them. There is no other way to remove a coding session in this
   engine today; if one is added, the same sweep covers it. What an archive does to a bot's files: they go into the archive with the bot and
   come back with it (scratch); nothing of it is in `~/.moss-received`.
@@ -118,14 +121,21 @@ a person holding a paired, unlocked phone can:
   in the code changes for it.
 
 What the person does about a lost phone: on any of their computers, open Settings, find the phone in the devices list and remove it
-(Settings' devices list calls `device.revoke`; Settings closes while the card waits). Removing asks for a card, answered on that computer. Once it is answered,
-that computer cuts the phone's links at once (the registry's change reaches the transport in the same process, `links/transport.ts`
-`#revoked`, which shuts the link with `CLOSE_REVOKED`; a later connection from its key is closed as `revoked`; and the phone doors read the
-registry at every call, so a call racing the removal is refused). Then the removal is told to the account service, the push and hooks
-services and the devices' group, each step kept and retried until the service confirms it (`devices/account-devices.ts`). So the speed
-is: this computer at once; another computer when the account's device list or the group reaches it, which is when it is next online. A computer that is off or cut off until then still lets the phone in. Removing does not undo anything: what the
-phone started, made, sent or relayed stays, and a guided rotation of the synced keys it held starts; keys it already holds cannot be taken
-back.
+(Settings' devices list calls `device.revoke`; Settings closes while the card waits). Removing raises the same "Revoke this device?" card
+as any removal, and **that card is shown on every paired device, the lost phone included, and the first answer wins** (spec item 91,
+`contracts/approval-broker.ts`). So whoever holds the unlocked phone can answer "no" before the owner says yes. The owner answers on the
+computer at once, and asks again if the card comes back denied; nothing in the engine stops a thief from denying it each time while they
+hold the phone and the app open on the card. (A call from the user's own terminal revokes with no card, `inTerminal` in `devices/rpc.ts`,
+but this repository has no command that makes one, so this page doesn't offer it as a remedy.)
+
+Once the card is answered yes, that computer cuts the phone's links at once (the registry's change reaches the transport in the same
+process, `links/transport.ts` `#revoked`, which shuts the link with `CLOSE_REVOKED`; a later connection from its key is closed as revoked;
+and the phone doors read the registry at every call, so a call racing the removal is refused). Then the removal is told to the account
+service, the push and hooks services and the devices' group, each step kept and retried until the service confirms it
+(`devices/account-devices.ts`). So the speed is: this computer at once, after the yes; another computer when the account's device list or
+the group reaches it, which is when it is next online, and until then that computer still lets the phone in. Removing does not undo
+anything: what the phone started, made, sent or relayed stays, and a guided rotation of the synced keys it held starts; keys it already
+holds cannot be taken back.
 
 What bounds a lost phone before then, in order:
 

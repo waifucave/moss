@@ -77,7 +77,7 @@ export const STAGE_LIMITS: StageLimits = {
   fileBytes: STAGE_FILE_MAX_BYTES, pictureBytes: STAGE_IMAGE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES, openPerDevice: STAGE_FILE_OPEN_MAX, pendingBytes: STAGE_FILE_PENDING_MAX_BYTES,
   dayBytes: STAGE_FILE_DAY_MAX_BYTES, dayFiles: STAGE_FILE_DAY_MAX_FILES, unsentFiles: STAGE_FILE_UNSENT_MAX, partialTtlMs: STAGE_FILE_PARTIAL_TTL_MS, keepMs: STAGE_FILE_KEEP_MS, perMessage: STAGE_FILES_PER_MESSAGE_MAX,
   // A coding agent reads a file in the turn that names it; a later turn may still say "the file I sent", so it stays two weeks, a span
-  // that outlasts a long task and still gives the person's home back what a session no longer needs. 500 MB a session bounds a session
+  // that outlasts a long task and still gives the person's home back what a session no longer needs. 500 MiB a session bounds a session
   // that sends a lot over those weeks (the day's cap alone would let 14 days of it pile up); the oldest go first, the newest stay.
   namedKeepMs: 14 * 24 * 60 * 60 * 1000, sessionKeepBytes: 500 * 1024 * 1024,
 };
@@ -367,16 +367,6 @@ export class FileStager {
     if (u.dest === undefined || (u.state === "sent" && u.kind !== "coding")) return;
     this.#discard(dirname(u.dest));
     if (u.kind === "coding") this.#tidy();
-  }
-
-  /** `session` is gone from this computer: its record of files and its folder in the received folder go. (The sweep calls it for a session
-   *  the host no longer holds.) A bot's files are in its scratch folder, which is the bot's own. */
-  forgetSession(session: string): void {
-    const l = this.#read();
-    for (const u of Object.values(l.uploads)) if (u.session === session) this.#drop(l, u);
-    this.#write(l);
-    if (session !== "" && session !== "." && session !== ".." && !/[\\/]/.test(session)) this.#discard(join(receivedRootOf(this.#o.home), session));
-    this.#tidy();
   }
 
   /** Removes a folder this module made (`phone-<id>`, or a session's) without ever deleting by a name an agent that writes the folder's
