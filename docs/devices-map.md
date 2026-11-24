@@ -26,6 +26,7 @@ computers. "Live check" means only a person with two machines can show it.
   the setup guide's relay page in both apps and the same choice in MOSS's Settings and the Settings plugin's Devices section. n0's
   public relays are the default; a person's own `https://` server; none. A relay plugin that is installed (`contributes.relays`, shown
   by its `Relay` label) is listed as "not offered": the links take no relay from a plugin, and `RelayView` has no plugin mode.
+  The engine never calls a `relays` entry's handler yet.
 - Between it and working: live check that a pair behind two NATs connects through n0's relays; `services/relay` (Cloudflare, not
   deployed) is what the not-yet Cloudflare relay plugin would use.
 
@@ -33,14 +34,19 @@ computers. "Live check" means only a person with two machines can show it.
 - `account-config.ts` reads `authUrl` and `anonKey` from `<home>/account.json` (or env in dev builds). The values are the owner's
   to supply; none is committed. `services/accounts` is the service behind it (not deployed).
 
-## The eight not-available plugins (the reason in each `moss.json` `availability`, and what lifts it)
-| Plugin | Reason | What lifts it |
+## The device plugins (lane DV, 2026-11-24): what runs, what is parked and why
+The forwarder and the webhook trigger run in this build; the six below are listed off as not available (the reason slug in
+each `moss.json` `availability`). Every bundled host half now reads only the plugin API's own members
+(`plugin-host/tests/bundled-host-members.test.ts`), except the web companion's.
+
+| Plugin | State | What still stands between it and working |
 |---|---|---|
-| forwarder, trigger-webhook | `webhook-keys` | the key store for webhook signing keys and `services/forwarder` deployed (account, domain, route) |
-| push | `push-origin` | `services/push` deployed and its public origin put in the build; push keys from the provider |
-| companion-ios, companion-web | `pairing-registry` | the phone and web apps pairing through `services/handshake` plus `services/web` deployed |
-| relay-cloudflare | `device-id` | a host API giving a plugin this computer's device id, and `services/relay` deployed |
-| provider-gcp, provider-hetzner | `cloud-computers` | the cloud computer host API and each provider's account and API key (the owner's) |
+| forwarder, trigger-webhook | on | `services/forwarder` deployed at hooks.waifucave.com (its tag keys, account-id key, ticket secret) and `services/accounts` (a signed-in account). Until then a webhook routine is made and the bot is told plainly why it has no URL. Proven end to end against the Worker on wrangler's local runtime: `routines/tests/forwarder-e2e.test.ts` |
+| push | parked (`push-origin`) | no phone or browser app registers a push target yet (`PUT /v1/targets/self`: `native/phone-core`, `apps/ios`, the web page); then `services/push` deployed with APNs and VAPID keys, and `services/accounts`. The host half and the revocation sweep are proven against the Worker in workerd: `services/push/test/plugin-host.test.ts` |
+| relay-cloudflare | parked (`device-id`, now stale: the id is `api.plugin.device` with `devices.read`) | the link sidecar takes only iroh relays (`RelayMode::Custom`) and `services/relay` speaks its own room protocol: either the Worker speaks iroh's relay protocol or `native/link` carries a link over a room. Not a deploy |
+| companion-web | parked (`pairing-registry`) | its host half needs a device registry `add`, a link adoption door and a pair store the plugin API doesn't have, and its pairing card would hold the four words in plugin text; the engine's own pairing for a browser is the shape it needs. The core calls no `companions` handler yet |
+| companion-ios | parked (`pairing-registry`) | the phone apps pair by scanning the engine's own QR and speak the `remote` role on the core's link (`native/phone-core`); the core calls no `companions` handler and the apps register no `moss://` scheme, so this plugin has nothing to do as it stands |
+| provider-gcp, provider-hetzner | parked (`cloud-computers`) | the cloud computers lane's |
 
 ## Owner's ordered list (what to deploy, supply or check by hand)
 1. Build the link sidecar (`cargo build --release` in `native/link`) on two Macs. Working: `moss-link` starts, two engines list each other after pairing by QR.

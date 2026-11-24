@@ -167,7 +167,7 @@ export const UPGRADE_STEPS = [
   "the bundled web tools and the old plugin's server list within 5 s, and the first turn offers them",
   "a setting the old run changed is still set",
   "an \"Always allow\" the old build saved still answers the same call (asking again is acceptable; an error is not)",
-  "a bundled plugin this build parks (the forwarder, on in the old run) is listed as not available, its switch kept on, with no card",
+  "a bundled plugin this build parks (the web companion, on in the old run) is listed as not available, its switch kept on, with no card",
   "the daemon trusts the state the old build signed (plugin registry, device key)",
 ] as const;
 
@@ -190,7 +190,7 @@ export const COPY_UPGRADE_STEPS = [
   "the bundled web tools and the old plugin's server list within 5 s, and the first turn offers them",
   "a setting the old run changed is still set",
   "an \"Always allow\" the old build saved still answers the same call (asking again is acceptable; an error is not)",
-  "a bundled plugin this build parks (the forwarder, on in the old run) is listed as not available, its switch kept on, with no card",
+  "a bundled plugin this build parks (the web companion, on in the old run) is listed as not available, its switch kept on, with no card",
   "the daemon trusts the state the old build signed (plugin registry, device key)",
   "the old install's home is byte for byte what it was",
 ] as const;

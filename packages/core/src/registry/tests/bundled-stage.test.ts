@@ -104,8 +104,8 @@ describe("the dev stage from the repository's plugins/", () => {
       const notYet = (p: { manifest?: unknown }) => (p.manifest as { availability?: { status?: string } } | undefined)?.availability?.status === "not-yet";
       expect(all.filter(notYet).map((p) => `${p.id}: ${p.state} (${p.reason ?? ""})`)).toEqual(
         [
-          "moss/companion-ios", "moss/companion-web", "moss/forwarder", "moss/provider-gcp",
-          "moss/provider-hetzner", "moss/push", "moss/relay-cloudflare", "moss/trigger-webhook",
+          "moss/companion-ios", "moss/companion-web", "moss/provider-gcp",
+          "moss/provider-hetzner", "moss/push", "moss/relay-cloudflare",
         ].map((id) => `${id}: off (${NOT_AVAILABLE_YET})`),
       );
       const parked = (e: { pluginId: string }) => all.some((p) => p.id === e.pluginId && notYet(p));
@@ -127,7 +127,7 @@ describe("the dev stage from the repository's plugins/", () => {
         expect([p.id, await ph.host.ensureStarted(p.id).then(() => "started", () => "not started")]).toEqual([p.id, "not started"]);
       }
       const hosted = all.filter((p) => p.manifest?.host !== undefined && (p.manifest.host.runtime ?? "bun") === "bun" && !notYet(p));
-      // (Nine of MOSS's hosts are parked in this build; the rest start.)
+      // (Six of MOSS's hosts are parked in this build; the rest start.)
       expect(hosted.length).toBeGreaterThan(5);
       const failed: string[] = [];
       for (const p of hosted) {
