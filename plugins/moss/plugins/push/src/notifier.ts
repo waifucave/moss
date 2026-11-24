@@ -85,6 +85,8 @@ export interface PushNotifierOptions {
    */
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   store?: CountStore;
+  /** Runs before each push goes out (the revocation sweep, src/revoked.ts); a failure there never stops the push. */
+  beforeSend?: () => Promise<void>;
   clock?: Clock;
   log?: (level: "info" | "warn" | "error", message: string) => void;
   debounceMs?: number;
@@ -203,6 +205,7 @@ export class PushNotifier {
     let retry = false;
     let accepted = false;
     try {
+      await this.options.beforeSend?.().catch(() => {});
       const response = await this.options.fetch(`${this.options.origin}/v1/notify`, {
         method: "POST",
         headers: { "content-type": "application/json" },

@@ -8,6 +8,14 @@
   "availability": { "status": "not-yet", "reason": "push-origin" },
   "host": { "entry": "host/index.ts", "runtime": "bun" },
   "capabilities": ["devices.read", "network:push.waifucave.com"],
+  "settings": {
+    "origin": {
+      "type": "string",
+      "title": { "en": "Push address" },
+      "description": { "en": "For development profiles only: a local push emulator." },
+      "scope": "device"
+    }
+  },
   "contributes": {
     "notifiers": [
       { "id": "waifucave-push", "name": { "en": "Phone and browser push (waifucave)" }, "handler": "notifier" }
