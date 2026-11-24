@@ -13,6 +13,8 @@ interface ProviderView {
   name: string;
   terms?: { url: string } | { text: string };
   auth: { index: number; method: "api-key" | "oauth-pkce" | "custom"; state: string; account?: string; help?: string }[];
+  /** The catalog providers it serves: added when the engine's setup counts one (a local server that answers). */
+  providers?: string[];
 }
 
 interface ManagedPlugin {
@@ -73,6 +75,8 @@ interface SetupView {
   providers: string[];
   default?: { model: string; source: "chosen" | "computed"; effort?: string };
   recommended?: Record<string, { model: string; effort?: string }>;
+  /** The local servers that answered, with how many models each lists (0: none pulled yet). */
+  local?: Record<string, number>;
   dismissed: boolean;
   /** The default model whose provider is signed out, in names a person knows (`welcome.setup`). */
   signedOutAs?: { model: string; provider: string };
@@ -120,6 +124,10 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
       signedOut.hidden = false;
     }, () => undefined);
     let all: ProviderView[] = [];
+    // The engine's setup state, read with the rows: it asks the local servers (on demand), so one that answers is added.
+    let setup: SetupView | undefined;
+    const isAdded = (p: ProviderView): boolean => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing") || (p.providers ?? []).some((id) => setup?.providers.includes(id) === true);
+    const localEmpty = (p: ProviderView): boolean => (p.providers ?? []).some((id) => setup?.local?.[id] === 0);
     // Each provider is a closed row that opens to its terms and its ways in when clicked (the one shown alone is open).
     const opened = new Set<string>();
     const show = () => {
@@ -133,7 +141,10 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
     const draw = async () => {
       let providers: ProviderView[];
       try {
-        providers = ((await call("welcome.providers")) as { providers: ProviderView[] }).providers;
+        [providers, setup] = await Promise.all([
+          call("welcome.providers").then((r) => (r as { providers: ProviderView[] }).providers),
+          (call("welcome.setup") as Promise<SetupView>).catch(() => undefined),
+        ]);
       } catch (err) {
         list.replaceChildren(el("p", {}, t("welcome.failed", { error: message(err) })));
         return;
@@ -142,7 +153,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
         list.replaceChildren(el("p", {}, t("welcome.none")));
         return;
       }
-      const ready = providers.filter((p) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing")).length;
+      const ready = providers.filter(isAdded).length;
       page.status.textContent = ready > 0 ? t("welcome.ready", { count: ready }) : t("welcome.need-provider");
       next.disabled = ready === 0;
       all = providers;
@@ -150,7 +161,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
       show();
     };
     const provider = (p: ProviderView, alone: boolean): HTMLElement => {
-      const isReady = p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing");
+      const isReady = isAdded(p);
       const open = alone || opened.has(p.id);
       const head = el("button", { type: "button", class: "moss-page__item-head", "aria-expanded": String(open), "data-moss-open": p.id }, el("span", {}, p.name), isReady ? el("span", { class: "moss-page__ok" }, t("welcome.signed-in")) : null);
       head.addEventListener("click", () => {
@@ -159,6 +170,7 @@ export async function showWelcome(host: HTMLElement, t: Translate, call: Call, d
         show();
       });
       const row = el("article", { class: `moss-page__item moss-page__item--row${open ? " is-open" : ""}`, "data-moss-provider": p.id }, head);
+      if (localEmpty(p)) row.append(el("p", { class: "moss-page__note", "data-moss-local-empty": p.id }, t("welcome.local-empty", { provider: p.name })));
       if (!open) return row;
       const box = el("div", { class: "moss-page__item-body" });
       row.append(box);

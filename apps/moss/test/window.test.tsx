@@ -489,6 +489,28 @@ describe("the setup guide (2026-11-20)", () => {
     skipped.unmount();
   });
 
+  test("a local server the engine counts (it answers) is added, with no key: Next on; one that doesn't answer is not; one with no model says so (2026-11-24)", async () => {
+    const OLLAMA = { pluginId: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], auth: [] };
+    // Only Ollama answers: the engine counts it, so the guide does.
+    const has = { ...NOT_SET, missing: [] as ("provider" | "model")[], ready: true, providers: ["ollama-local"], local: { "ollama-local": 2 }, default: { model: "ollama-local/qwen3:8b", source: "chosen" as const } };
+    const r = await withGuide(view({ setup: NOT_SET }), { setupProviders: async () => [OLLAMA], setup: async () => has });
+    expect((r.container.querySelector("[data-setup=next]") as HTMLButtonElement).disabled).toBe(false);
+    expect(r.container.querySelector("[data-setup-ready]")?.getAttribute("data-setup-ready")).toBe("1");
+    expect(r.container.querySelector("[data-setup-provider='moss/model-ollama-local'] .chip--on")).not.toBeNull();
+    expect(r.container.querySelector("[data-setup-local-empty]")).toBeNull();
+    r.unmount();
+    // A fresh install: nothing answers, nothing is counted, Next stays off.
+    const fresh = await withGuide(view({ setup: NOT_SET }), { setupProviders: async () => [OLLAMA], setup: async () => NOT_SET });
+    expect((fresh.container.querySelector("[data-setup=next]") as HTMLButtonElement).disabled).toBe(true);
+    expect(fresh.container.querySelector("[data-setup-ready]")?.getAttribute("data-setup-ready")).toBe("0");
+    fresh.unmount();
+    // Running with no model pulled: counted, and the guide says to pull one.
+    const empty = { ...NOT_SET, missing: ["model"] as ("provider" | "model")[], providers: ["ollama-local"], local: { "ollama-local": 0 } };
+    const e = await withGuide(view({ setup: NOT_SET }), { setupProviders: async () => [OLLAMA], setup: async () => empty });
+    expect(e.container.querySelector("[data-setup-local-empty]")?.textContent).toBe("Ollama (local) is running but has no model yet: pull one, then come back.");
+    e.unmount();
+  });
+
   test("a home that works, or a guide skipped before, doesn't show it", async () => {
     for (const setup of [{ ...NOT_SET, ready: true, missing: [] }, { ...NOT_SET, dismissed: true }]) {
       const r = await withGuide(view({ setup }), {});

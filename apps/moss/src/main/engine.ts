@@ -998,7 +998,7 @@ export class MossEngine {
     const ids = [...new Set((points.points.find((p) => p.name === "models")?.occupants ?? []).map((o) => o.pluginId))];
     const rows = await Promise.all(ids.map(async (id): Promise<ProviderRow | undefined> => {
       const [detail, auth] = await Promise.all([
-        this.client?.request<{ plugin: { name: string | { en: string }; manifest: { contributes?: { models?: { name?: string | { en: string }; terms?: unknown; auth?: { help?: unknown }[] }[] } } } }>("plugin.get", { id }, 10_000).catch(() => undefined),
+        this.client?.request<{ plugin: { name: string | { en: string }; manifest: { contributes?: { models?: { name?: string | { en: string }; provider?: unknown; terms?: unknown; auth?: { help?: unknown }[] }[] } } } }>("plugin.get", { id }, 10_000).catch(() => undefined),
         this.client?.request<{ auth: ProviderRow["auth"] }>("plugin.auth.list", { id }, 10_000).catch(() => undefined),
       ]);
       if (detail === undefined) return undefined;
@@ -1007,9 +1007,11 @@ export class MossEngine {
       const helps = entries.flatMap((e) => e.auth ?? []).map((a) => (typeof a.help === "string" ? a.help : undefined));
       const terms = typeof first?.terms === "string" ? (/^https:\/\//.test(first.terms) ? { link: true as const } : { text: first.terms.slice(0, 4000) }) : undefined;
       if (typeof first?.terms === "string" && /^https:\/\//.test(first.terms)) this.termsLinks.set(id, first.terms);
+      const providers = [...new Set(entries.map((e) => e.provider).filter((p): p is string => typeof p === "string"))];
       return {
         pluginId: id,
         name: textOf(first?.name ?? detail.plugin.name) || id,
+        ...(providers.length > 0 ? { providers } : {}),
         ...(terms !== undefined ? { terms } : {}),
         auth: (auth?.auth ?? []).map((a) => ({ index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}), ...(helps[a.index] !== undefined ? { help: helps[a.index]! } : {}) })),
       };

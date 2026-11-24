@@ -28,6 +28,8 @@ import { runtimeModelId } from "../model-tag";
 import { installedModelPlugins } from "../model-plugins";
 import type { ModelPlugins } from "../model-plugins/service";
 import { providerFor } from "../provider-selection";
+import { activeCatalog } from "../model-plugins/catalog-source";
+import { isLocalServerProvider } from "../model-plugins/local-servers";
 import { providerGrantKey } from "../../bots/provider-consent";
 import type { SessionGrants } from "../../sessions/grants";
 
@@ -58,7 +60,11 @@ export function botProviderFill(deps: BotProviderFillDeps): (model: string, opti
     // An endpoint of the user's own may serve models the catalog doesn't list (a local server's own names), as
     // `bot.setUserLayer` accepts them: the runtime takes an unlisted id there (only for a provider whose catalog isn't
     // authoritative).
-    options.provider = baseUrl === undefined ? selection : { ...selection, connection: { baseUrl, endpointOrigin: "user", local: true }, allowUnlisted: true };
+    // A local server's own model names likewise (2026-11-24: its live models are the ones listed, `local-servers.ts`).
+    const local = isLocalServerProvider(activeCatalog(), selection.providerId);
+    options.provider = baseUrl === undefined
+      ? (local ? { ...selection, allowUnlisted: true } : selection)
+      : { ...selection, connection: { baseUrl, endpointOrigin: "user", local: true }, allowUnlisted: true };
     // The catalog slots a subagent may resolve: the bot's own model's provider and the ones approved for this bot, each
     // permitted and credentialed now (review r1 (h)).
     const permitted = new Set(permittedProviders().map((p) => p.providerId));

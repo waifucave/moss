@@ -97,3 +97,34 @@ describe("the guide's provider step says when the default model's provider is si
     fine.remove();
   });
 });
+
+describe("the guide's provider step counts a local server the engine counts (it answers), with no key (2026-11-24)", () => {
+  const OLLAMA = { id: "moss/model-ollama-local", name: "Ollama (local)", providers: ["ollama-local"], auth: [] };
+  const draw = async (setup: Record<string, unknown>) => {
+    const host = document.createElement("div");
+    host.id = "moss-page";
+    document.body.append(host);
+    const call = async (name: string): Promise<unknown> => {
+      if (name === "welcome.providers") return { providers: [OLLAMA] };
+      if (name === "welcome.setup") return setup;
+      return {};
+    };
+    await showWelcome(host, ((key: string, vars?: Record<string, unknown>) => (vars === undefined ? key : `${key} ${JSON.stringify(vars)}`)) as never, call as never, () => {});
+    await new Promise((r) => setTimeout(r, 20));
+    return host;
+  };
+
+  test("only Ollama answers: Next on, one ready; nothing answers: Next off; running with no model: the line says to pull one", async () => {
+    const has = await draw({ ready: true, missing: [], providers: ["ollama-local"], local: { "ollama-local": 2 }, dismissed: false });
+    expect((has.querySelector("[data-moss-welcome=next]") as HTMLButtonElement).disabled).toBe(false);
+    expect(has.querySelector("[data-moss-local-empty]")).toBeNull();
+    has.remove();
+    const fresh = await draw({ ready: false, missing: ["provider"], providers: [], dismissed: false });
+    expect((fresh.querySelector("[data-moss-welcome=next]") as HTMLButtonElement).disabled).toBe(true);
+    fresh.remove();
+    const empty = await draw({ ready: false, missing: ["model"], providers: ["ollama-local"], local: { "ollama-local": 0 }, dismissed: false });
+    expect((empty.querySelector("[data-moss-welcome=next]") as HTMLButtonElement).disabled).toBe(false);
+    expect(empty.querySelector("[data-moss-local-empty]")?.textContent).toBe('welcome.local-empty {"provider":"Ollama (local)"}');
+    empty.remove();
+  });
+});

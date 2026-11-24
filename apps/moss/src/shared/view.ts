@@ -102,6 +102,8 @@ export interface SetupRow {
   signedOut?: string;
   /** Each added provider's recommended default (its family's model and effort), where it has one. */
   recommended?: Record<string, { model: string; effort?: string }>;
+  /** The local servers that answered, each one the person has, with how many models it lists (0: none pulled yet). */
+  local?: Record<string, number>;
   dismissed: boolean;
 }
 
@@ -110,6 +112,8 @@ export interface SetupRow {
 export interface ProviderRow {
   pluginId: string;
   name: string;
+  /** The catalog providers the plugin serves (its manifest's `models[].provider`): added when setup counts one of them. */
+  providers?: string[];
   terms?: { link: true } | { text: string };
   auth: { index: number; method: "api-key" | "oauth-pkce" | "custom" | "core"; state: string; account?: string; help?: string }[];
 }

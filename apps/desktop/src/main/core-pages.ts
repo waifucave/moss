@@ -25,6 +25,9 @@ export interface ProviderView {
   /** The provider's terms, shown before sign-in: a link, or a short text. */
   terms?: { url: string } | { text: string };
   auth: { index: number; method: PluginAuthView["method"]; state: PluginAuthView["state"]; account?: string; help?: string }[];
+  /** The catalog providers the plugin serves (its manifest's `models[].provider`): added when setup counts one of them
+   *  (2026-11-24: a local server that answers, which takes no key). */
+  providers?: string[];
 }
 
 interface ModelEntry {
@@ -48,9 +51,11 @@ export async function listProviders(client: PageClient, lang: string): Promise<P
     const first = entries[0];
     const helps = entries.flatMap((e) => e.auth ?? []).map((a) => (typeof a.help === "string" ? a.help : undefined));
     const terms = typeof first?.terms === "string" ? (/^https:\/\//.test(first.terms) ? { url: first.terms } : { text: first.terms }) : undefined;
+    const providers = [...new Set(entries.map((e) => (e as { provider?: unknown }).provider).filter((x): x is string => typeof x === "string"))];
     out.push({
       id,
       name: textIn(first?.name ?? detail.plugin.name, lang) || id,
+      ...(providers.length > 0 ? { providers } : {}),
       ...(terms !== undefined ? { terms } : {}),
       auth: auth.auth.map((a) => ({ index: a.index, method: a.method, state: a.state, ...(a.account !== undefined ? { account: a.account } : {}), ...(helps[a.index] !== undefined ? { help: helps[a.index]! } : {}) })),
     });

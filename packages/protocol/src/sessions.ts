@@ -341,6 +341,9 @@ export const SetupState = z.object({
   /** Each added provider's recommended default, its family's (a model and its effort), where it has one (the guide's
    *  pre-filled pick). */
   recommended: z.record(utf16(128, 1), z.object({ model: utf16(200, 1), effort: utf16(32, 1).optional() })).optional(),
+  /** The local servers that answered (2026-11-24: each is a provider the person has), with how many models each lists:
+   *  0 is a server running with no model yet (the guide says to pull one). */
+  local: z.record(utf16(128, 1), z.number().int().nonnegative().max(100_000)).optional(),
   /** The person skipped the guide: it doesn't open by itself again (it stays reachable from Settings). */
   dismissed: z.boolean(),
 });

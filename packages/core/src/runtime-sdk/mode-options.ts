@@ -31,6 +31,8 @@ import type { Mode as SessionMode } from "../agent/tools/registry";
 import { CONTROL_PLANE_FILENAMES } from "./control-plane";
 import { hostStorageReadPatterns, hostStorageWriteRoots, type HostStorageFenceOptions } from "./host-storage-fence";
 import { providerFor, testProviderNameFor } from "./provider-selection";
+import { isLocalServerProvider } from "./model-plugins/local-servers";
+import { activeCatalog } from "./model-plugins/catalog-source";
 import { runtimeModelId, splitTag, MOSS_TEST_PREFIX, type ModelTag } from "./model-tag";
 import { MOSS_ADVERTISED_TOOLS_0_0_4, MOSS_OWN_TOOL_NAMES } from "./tool-names";
 import type { CapabilityServerKey } from "../capabilities/names";
@@ -1568,7 +1570,12 @@ export function buildMossOptions(input: MossOptionsInput): Options {
       }
     }
   }
-  if (provider) options.provider = input.connection === undefined ? provider : { ...provider, connection: input.connection };
+  if (provider) {
+    // A local server's own model names reach its runtime (2026-11-24: its live models are the ones listed,
+    // `local-servers.ts`); the runtime takes an unlisted id only where the provider's catalog isn't authoritative.
+    const local = isLocalServerProvider(activeCatalog(), provider.providerId) ? { allowUnlisted: true } : {};
+    options.provider = input.connection === undefined ? { ...provider, ...local } : { ...provider, ...local, connection: input.connection };
+  }
   // P8b-36: the session's own servers, spread under their own names (see `capabilities` above).
   if (input.capabilities !== undefined) options.mcpServers = { ...input.capabilities };
   // `toolAliases` is deliberately absent (the R4 measurement: none needed in 8b — the capability

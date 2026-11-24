@@ -34,11 +34,22 @@ function keys(): ReadonlySet<string> {
   return catalogKeys;
 }
 
-/** Is `tag` a provider-qualified tag the linked catalog has no row for? */
+/** Whether a tag's provider is a local server (`local-none`): its models are the ones it lists, not the catalog's. */
+function onLocalServer(tag: string): boolean {
+  const provider = tag.slice(0, tag.indexOf("/"));
+  try {
+    return (loadCatalog().providers.find((p) => p.id === provider)?.authKinds ?? []).includes("local-none");
+  } catch {
+    return false;
+  }
+}
+
+/** Is `tag` a provider-qualified tag the linked catalog has no row for? A local server's model never is (2026-11-24:
+ *  its live models replace its catalog rows, `local-servers.ts`). */
 export function isRetiredCatalogTag(tag: string): boolean {
   if (tag.startsWith(TEST_NAMESPACE) || !tag.includes("/")) return false;
   try {
-    return !keys().has(tag);
+    return !keys().has(tag) && !onLocalServer(tag);
   } catch {
     return false; // no catalog to judge by: say nothing rather than guess
   }

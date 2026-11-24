@@ -71,7 +71,10 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(defaultEffortFor(catalog, google.model)).toBeUndefined();
     expect(recommendedFor(catalog, "google-openai", "gemini")?.effort).toBeUndefined();
     const row = catalog.models.find((m) => m.key === google.model)!;
-    // No effort: the adapter's mapping refuses to make one, so `thinkingConfig` gets no budget.
+    // No effort: the adapter's mapping refuses to make one, so `thinkingConfig` gets no budget. Checked 2026-11-24 that
+    // nothing fills one in: the runtime sends no effort for a session with none (agent SDK `engine.ts` `planEffort`, the
+    // row's `defaultEffort` applies only on a per-message-effort model), and MOSS maps an implicit effort only when one is
+    // wanted (`implicitEffortFor`).
     expect(mapGoogleEffort(undefined, row).ok).toBe(false);
     // What a person who picks an effort gets today: a budget (the adapter's only form). Restore medium when this changes.
     expect(mapGoogleEffort("medium", row)).toEqual({ ok: true, value: { thinkingBudget: 4096 } });

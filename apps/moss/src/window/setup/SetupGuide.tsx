@@ -44,6 +44,7 @@ const WORDS = {
   terms: (name: string) => `Read ${name}'s terms`,
   accept: (name: string) => `I accept ${name}'s terms`,
   needOne: "Add one provider to go on.",
+  localEmpty: (name: string) => `${name} is running but has no model yet: pull one, then come back.`,
   ready: (n: number) => (n === 1 ? "1 provider is added." : `${n} providers are added.`),
   modelTitle: "Your default model",
   modelIntro: "Your bots use this model unless you pick another for one of them in its settings.",
@@ -133,20 +134,31 @@ function Actions(props: { onBack?: () => void; onSkip?: () => void; next: { labe
   );
 }
 
-const added = (p: ProviderRow) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing");
+/** A provider is added when one of its ways in is signed in, or when the engine counts one of its providers as one the
+ *  person has (2026-11-24: a local server that answers, which takes no key). */
+const added = (p: ProviderRow, setup?: SetupRow) => p.auth.some((a) => a.state === "signed-in" || a.state === "refreshing")
+  || (p.providers ?? []).some((id) => setup?.providers.includes(id) === true);
+/** A local server that answers but lists no model yet. */
+const localEmpty = (p: ProviderRow, setup?: SetupRow) => (p.providers ?? []).some((id) => setup?.local?.[id] === 0);
 
 /** Step 1: the model providers the installed model plugins offer, each opened to its own way in. */
 function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onSkip: () => void }) {
   const [rows, setRows] = useState<ProviderRow[] | "waiting" | undefined>(undefined);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<string | undefined>(undefined);
-  const load = (): void => { void bridge().setupProviders().then((r) => setRows("waiting" in r ? "waiting" : r)); };
+  // The engine's setup state read with the rows: it asks the local servers (on demand), so one that answers is added.
+  const [setup, setSetup] = useState<SetupRow | undefined>(props.setup);
+  useEffect(() => setSetup(props.setup), [props.setup]);
+  const load = (): void => {
+    void bridge().setupProviders().then((r) => setRows("waiting" in r ? "waiting" : r));
+    void bridge().setup().then((s) => { if (!("waiting" in s)) setSetup(s); });
+  };
   useEffect(load, []);
   // A key or a sign-in finished elsewhere (the browser, MOSS Code): read the rows again.
   useEffect(load, [props.setup?.providers.join(",")]);
   // The order both apps' guides share (added, sign-ins, the big API-key providers, then by name); search over all.
   const shown = useMemo(() => (rows === undefined || rows === "waiting" ? [] : orderProviders(rows.map((r) => ({ ...r, id: r.pluginId })), query)), [rows, query]);
-  const count = rows === undefined || rows === "waiting" ? 0 : rows.filter(added).length;
+  const count = rows === undefined || rows === "waiting" ? 0 : rows.filter((r) => added(r, setup)).length;
   return (
     <>
       <h1 id="setup-title">{WORDS.welcome}</h1>
@@ -163,7 +175,7 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
           ) : null}
           <ul className="setup__providers">
             {shown.length === 0 ? <li className="muted">{WORDS.noMatch}</li> : shown.map((p) => (
-              <Provider key={p.pluginId} row={p} open={open === p.pluginId || shown.length === 1} onToggle={() => setOpen((o) => (o === p.pluginId ? undefined : p.pluginId))} onChanged={load} />
+              <Provider key={p.pluginId} row={p} setup={setup} open={open === p.pluginId || shown.length === 1} onToggle={() => setOpen((o) => (o === p.pluginId ? undefined : p.pluginId))} onChanged={load} />
             ))}
           </ul>
         </>
@@ -174,15 +186,16 @@ function Providers(props: { setup: SetupRow | undefined; onNext: () => void; onS
   );
 }
 
-function Provider(props: { row: ProviderRow; open: boolean; onToggle: () => void; onChanged: () => void }) {
+function Provider(props: { row: ProviderRow; setup?: SetupRow; open: boolean; onToggle: () => void; onChanged: () => void }) {
   const p = props.row;
-  const [accepted, setAccepted] = useState(p.terms === undefined || added(p));
+  const [accepted, setAccepted] = useState(p.terms === undefined || added(p, props.setup));
   return (
     <li className={`setup__provider${props.open ? " is-open" : ""}`} data-setup-provider={p.pluginId}>
       <button type="button" className="setup__provider-head" onClick={props.onToggle} aria-expanded={props.open}>
         <span>{p.name}</span>
-        {added(p) ? <span className="chip chip--on">{WORDS.added}</span> : null}
+        {added(p, props.setup) ? <span className="chip chip--on">{WORDS.added}</span> : null}
       </button>
+      {localEmpty(p, props.setup) ? <p className="muted small" data-setup-local-empty={p.pluginId}>{WORDS.localEmpty(p.name)}</p> : null}
       {props.open ? (
         <div className="setup__provider-body">
           {p.terms !== undefined ? (

@@ -15,6 +15,7 @@ import { effectiveDefault, hasProviderOf, settledDefault, setupMissing, type Def
 import { handler, type MethodHandler } from "./rpc/handler";
 import type { CredentialPresence } from "./runtime-sdk/host/selection/runtime-selection";
 import type { PluginAuth } from "./runtime-sdk/plugin-auth";
+import type { LocalServerAnswer } from "./runtime-sdk/model-plugins/local-servers";
 
 /** The daemon's read of the providers: the credential slots, then the plugins' sign-ins and keyless providers. It is
  *  complete only once the plugins' sign-ins can be read (the registry open, the model plugins started), that read
@@ -22,7 +23,10 @@ import type { PluginAuth } from "./runtime-sdk/plugin-auth";
 export async function readProviders(deps: {
   presence(): Promise<Pick<CredentialPresence, "byProvider" | "failedProbes">>;
   auth(): Pick<PluginAuth, "signedInProviders" | "keylessProviders" | "modelPluginsReady"> & Partial<Pick<PluginAuth, "unsignableProviders">> | undefined;
-}): Promise<ProvidersRead & { incomplete?: string }> {
+  /** The local servers that answered at their last ask (2026-11-24, `local-servers.ts`): each is a provider the person
+   *  has. Read, never asked here: `setup.state` asks them first. */
+  local?(): ReadonlyMap<string, LocalServerAnswer> | undefined;
+}): Promise<ProvidersRead & { incomplete?: string; local?: Record<string, number> }> {
   const presence = await deps.presence();
   const present = new Set(Object.keys(presence.byProvider));
   let incomplete: string | undefined;
@@ -41,13 +45,23 @@ export async function readProviders(deps: {
     keyless = auth.keylessProviders();
     unsignable = auth.unsignableProviders?.();
   }
-  return { present, complete: incomplete === undefined, ...(incomplete !== undefined ? { incomplete } : {}), ...(keyless !== undefined ? { keyless } : {}), ...(unsignable !== undefined ? { unsignable } : {}) };
+  // A local server that answers is a provider the person has, with the models it lists (none yet: it still counts, and
+  // the guide says to pull one).
+  const answering = deps.local?.();
+  const local: Record<string, number> = {};
+  for (const [p, a] of answering ?? []) {
+    present.add(p);
+    local[p] = a.models.length;
+  }
+  return { present, complete: incomplete === undefined, ...(incomplete !== undefined ? { incomplete } : {}), ...(keyless !== undefined ? { keyless } : {}), ...(unsignable !== undefined ? { unsignable } : {}), ...(answering !== undefined ? { local } : {}) };
 }
 
 export interface SetupDeps {
   /** The providers the person added now (a stored key or a plugin sign-in), by catalog provider id; whether the read
    *  is complete (`incomplete` says why not, an error's class at most), and the keyless providers. */
-  readPresent(): Promise<ProvidersRead & { incomplete?: string }>;
+  readPresent(): Promise<ProvidersRead & { incomplete?: string; local?: Record<string, number> }>;
+  /** Asks the local servers (`LocalServers.refresh`) before `setup.state` reads: on demand only. */
+  askLocal?(): Promise<void>;
   /** The model the settings name as the default, if any, and its effort. */
   storedModel(): string | undefined;
   storedEffort(): string | undefined;
@@ -70,7 +84,7 @@ export interface SetupDeps {
 }
 
 export class SetupService {
-  #read: ProvidersRead;
+  #read: ProvidersRead & { local?: Record<string, number> };
   #last: string | undefined;
   #lastIncomplete: string | undefined;
   /** The read running now, if any: one at a time. */
@@ -130,8 +144,15 @@ export class SetupService {
       ...(answer.model !== undefined && answer.source !== undefined ? { default: { model: answer.model, source: answer.source, ...(answer.effort !== undefined ? { effort: answer.effort } : {}) } } : {}),
       ...(answer.signedOut !== undefined ? { signedOut: answer.signedOut } : {}),
       ...(Object.keys(recommended).length > 0 ? { recommended } : {}),
+      ...(this.#read.local !== undefined && Object.keys(this.#read.local).length > 0 ? { local: Object.fromEntries(Object.entries(this.#read.local).filter(([p]) => this.#present.has(p))) } : {}),
       dismissed: this.deps.dismissed(),
     };
+  }
+
+  /** `setup.state`: the local servers asked (on demand, cached), then `refresh()`. */
+  async ask(): Promise<SetupState> {
+    await this.deps.askLocal?.().catch(() => undefined);
+    return this.refresh();
   }
 
   /** Reads the providers again, settles the default and says so if anything changed. One read at a time: a refresh
@@ -157,7 +178,7 @@ export class SetupService {
   async #readNow(covers: number): Promise<void> {
     try {
       const read = await this.deps.readPresent();
-      this.#read = { present: new Set(read.present), complete: read.complete, ...(read.keyless !== undefined ? { keyless: new Set(read.keyless) } : {}), ...(read.unsignable !== undefined ? { unsignable: new Set(read.unsignable) } : {}) };
+      this.#read = { present: new Set(read.present), complete: read.complete, ...(read.keyless !== undefined ? { keyless: new Set(read.keyless) } : {}), ...(read.unsignable !== undefined ? { unsignable: new Set(read.unsignable) } : {}), ...(read.local !== undefined ? { local: { ...read.local } } : {}) };
       const why = read.complete ? undefined : read.incomplete;
       if (why !== undefined && why !== this.#lastIncomplete) this.deps.log(`[setup] the providers' read isn't complete (${why}): the default model is left as it is`);
       this.#lastIncomplete = why;
@@ -226,7 +247,7 @@ export class SetupService {
 /** `setup.state`, `setup.dismiss` and `models.setDefault`. */
 export function setupMethods(service: SetupService): Record<string, MethodHandler> {
   return {
-    [SESSIONS_METHODS.setupState.name]: handler(SESSIONS_METHODS.setupState, () => service.refresh()),
+    [SESSIONS_METHODS.setupState.name]: handler(SESSIONS_METHODS.setupState, () => service.ask()),
     [SESSIONS_METHODS.setupDismiss.name]: handler(SESSIONS_METHODS.setupDismiss, (p) => service.dismiss(p.dismissed)),
     [SESSIONS_METHODS.modelsSetDefault.name]: handler(SESSIONS_METHODS.modelsSetDefault, async (p) => ({ setup: await service.setDefault(p.model) })),
   };

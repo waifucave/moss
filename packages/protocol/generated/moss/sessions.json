@@ -3404,6 +3404,19 @@
                   "additionalProperties": false
                 }
               },
+              "local": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                }
+              },
               "dismissed": {
                 "type": "boolean"
               }
@@ -3521,6 +3534,19 @@
                 "model"
               ],
               "additionalProperties": false
+            }
+          },
+          "local": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
             }
           },
           "dismissed": {
@@ -3642,6 +3668,19 @@
                 "model"
               ],
               "additionalProperties": false
+            }
+          },
+          "local": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
             }
           },
           "dismissed": {
@@ -4742,6 +4781,19 @@
                   "required": [
                     "model"
                   ]
+                }
+              },
+              "local": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
                 }
               },
               "dismissed": {

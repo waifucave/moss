@@ -28,6 +28,7 @@ import type { CardOpener } from "../devices/rpc";
 import { PLUGINS_METHODS, type PluginAuthView } from "@waifucave/moss-protocol";
 import { startXaiLogin, type CredentialStore } from "@waifucave/clover-provider-runtime";
 import { clearCredentialMaterial, readCredentialMaterial, writeCredentialMaterial } from "../auth/credential-material";
+import { localServers } from "./model-plugins/local-servers";
 import type { SecretStore as DaemonSecretStore } from "../auth/secret-store";
 import { ContractError } from "../contracts/common";
 import type { PluginHost } from "../contracts/plugin-host";
@@ -174,7 +175,9 @@ export interface PluginAuth {
    *  plugin's provider is its slot's, so it is never here. */
   signedInProviders(): Promise<Set<string>>;
   /** The bundled model plugins' providers that take no key at all (a local model server: no sign-in of its own and no
-   *  credential slot). Usable with nothing stored, so a default model on one is had; never an "added" provider. */
+   *  credential slot), less those the engine's prober asked and found silent (2026-11-24, `local-servers.ts`; its last
+   *  answer, never a new ask). Usable with nothing stored, so a default model on one is had; never an "added" provider
+   *  (an answering one is added, by `setup-state.ts`). */
   keylessProviders(): Set<string>;
   /** Bundled REMOTE providers nobody can add: no key entry, no credential slot, and not a local server (uncloseai, whose
    *  keyless beta closed). A default named on one is no default (`default-model.ts`). */
@@ -304,6 +307,9 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         // key, and key registration is closed") is not a provider the person has; it counts only once a key is set for it.
         const kinds = activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? [];
         if (!kinds.includes("local-none")) continue;
+        // 2026-11-24: not a server the engine's prober asked and found silent (within its cache time). One not asked yet
+        // stays had for a named model, as before: it is never counted as added until it answers (`setup-state.ts`).
+        if (localServers()?.silent().has(provider) === true) continue;
         out.add(provider);
       }
       return out;

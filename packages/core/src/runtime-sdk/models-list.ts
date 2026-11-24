@@ -12,6 +12,9 @@
 //   locale), else the catalog's.
 // * **With `session`,** only the models that session's runtime takes: an agent backend lists its own (lane K), a bot or
 //   a coding session on the embedded runtime the whole catalog. An unknown session is `not_found`.
+// * **A local server's models are the ones it lists now** (2026-11-24, `local-servers.ts`): with the engine's prober
+//   installed, a local-server provider that answers shows its live models in place of its catalog rows (signed in: it
+//   takes no key), and one that doesn't answer shows none. `models.list` asks the servers first, on demand.
 //
 // Owner: lane A. The method's spec is the protocol's (`SESSIONS_METHODS.modelsList`).
 import { z } from "zod";
@@ -23,6 +26,7 @@ import { activeCatalog } from "./model-plugins/catalog-source";
 import { modelPluginId } from "./model-plugins/bundled";
 import { installedModelPlugins } from "./model-plugins";
 import { effortVocabularyOf, imagesAcceptedBy, toolsRefusedFor } from "./provider-selection";
+import { isLocalServerProvider, localServers, type LocalServerAnswer } from "./model-plugins/local-servers";
 
 /** A model as a picker lists it, and the method: the protocol's own (`SESSIONS_METHODS.modelsList`). */
 export { ModelListing };
@@ -64,12 +68,26 @@ function effortsOf(row: WinterModelDescriptor): { efforts: string[]; defaultEffo
   return { efforts: vocabulary, ...(d !== undefined && vocabulary.includes(d) ? { defaultEffort: d } : {}) };
 }
 
-/** Every model a picker may offer, in catalog order. */
-export function catalogModelListings(catalog: WinterCatalog, signedIn: ReadonlySet<string>): ModelListing[] {
+/** The longest model id and name the protocol carries for a live local model. */
+const MAX_LOCAL_ID = 200;
+
+/** Every model a picker may offer, in catalog order. `local`: the local servers that answer (the installed prober's
+ *  last answer when left out; with no prober, a local server's catalog rows as before). */
+export function catalogModelListings(catalog: WinterCatalog, signedIn: ReadonlySet<string>, local: ReadonlyMap<string, LocalServerAnswer> | undefined = localServers()?.answers()): ModelListing[] {
   const out: ModelListing[] = [];
   for (const p of catalog.providers) {
     if (p.risk.class === "blocked" || p.scope !== "llm") continue;
     const facts = providerFacts(p.id, p.displayName);
+    if (local !== undefined && isLocalServerProvider(catalog, p.id)) {
+      // Its live models replace its catalog rows; a server that doesn't answer offers none.
+      for (const m of local.get(p.id)?.models ?? []) {
+        const id = `${p.id}/${m.id}`;
+        if (id.length > MAX_LOCAL_ID) continue;
+        const name = (m.name ?? m.id).slice(0, MAX_LOCAL_ID);
+        out.push({ id, name: name.length > 0 ? name : m.id.slice(0, MAX_LOCAL_ID), provider: p.id, providerName: facts.providerName, plugin: facts.plugin, efforts: [], images: false, signedIn: true });
+      }
+      continue;
+    }
     for (const row of catalog.models) {
       if (row.providerId !== p.id) continue;
       if (row.status === "blocked" || row.status === "deprecated") continue;
@@ -138,6 +156,8 @@ export async function listModels(deps: ModelsListDeps, params: { session?: strin
     if (takes.kind === "own") return withDefault(takes.models, takes.options);
   }
   const catalog = (deps.catalog ?? activeCatalog)();
+  // The local servers asked first (on demand, cached 30 s): their live models are the ones listed.
+  await localServers()?.refresh().catch(() => undefined);
   return withDefault(catalogModelListings(catalog, await deps.signedIn()));
 }
 

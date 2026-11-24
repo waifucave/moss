@@ -275,6 +275,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
+import { isLocalServerProvider, localRecommendation, LocalServers, setLocalServers, type LocalServerEndpoint } from "./runtime-sdk/model-plugins/local-servers";
 import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
@@ -3485,14 +3486,33 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     settings = liveSettingsView(next);
     advanceAuthorityRevision(mossHome);
   };
+  // A local server the person has is one that answers (2026-11-24, `local-servers.ts`): asked on demand only (setup
+  // state, the model list, the provider page), at the endpoint its plugin declares or the person set.
+  const localServerProbe = new LocalServers({
+    endpoints: () => {
+      const out: LocalServerEndpoint[] = [];
+      const catalog = activeCatalog();
+      for (const [provider, e] of installedModelPlugins()?.snapshot?.set.byProvider ?? []) {
+        if (!isLocalServerProvider(catalog, provider)) continue;
+        const personSet = providerBaseUrlFor(settings, provider);
+        const declared = (e.input.entry as { endpoint?: { baseUrl?: unknown } }).endpoint?.baseUrl;
+        const baseUrl = personSet ?? (typeof declared === "string" ? declared : undefined);
+        if (baseUrl !== undefined) out.push({ provider, baseUrl, personSet: personSet !== undefined });
+      }
+      return out;
+    },
+  });
+  setLocalServers(localServerProbe);
   const setup = new SetupService({
     seed: presentProviders,
     // Complete only once the plugins' sign-ins can be read (the registry open, the model plugins started), that read
     // worked, and no slot's probe failed: only a complete read may change the default on disk (setup-state.ts).
-    readPresent: () => readProviders({ presence: () => credentialPresenceFrom(secrets), auth: () => pluginAuth }),
+    readPresent: () => readProviders({ presence: () => credentialPresenceFrom(secrets), auth: () => pluginAuth, local: () => localServerProbe.answers() }),
+    askLocal: () => localServerProbe.refresh(),
     storedModel: () => settings?.provider?.model,
     storedEffort: () => settings?.provider?.reasoningEffort,
-    recommend: (provider) => recommended(activeCatalog(), provider),
+    // A local server's: the first model it lists (its listing says nothing of tool use).
+    recommend: (provider) => recommended(activeCatalog(), provider) ?? localRecommendation(provider, localServerProbe.answers()),
     effortFor: (model) => defaultEffortFor(activeCatalog(), model),
     // The model and the effort written together: a new default never keeps the old one's effort.
     writeModel: (model, effort) => writeSettings((s) => ({ ...s, provider: { model: model as ModelTag, ...(effort !== undefined ? { reasoningEffort: effort as NonNullable<Settings["provider"]>["reasoningEffort"] } : {}) } })),
