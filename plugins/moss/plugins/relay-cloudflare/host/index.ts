@@ -6,8 +6,11 @@ import { RelayClient } from "../src/client";
 import type { HostApi } from "./api";
 
 let client: RelayClient | null = null;
+/** This device's id (`api.plugin.device`), when the core told it. */
+let own: string | undefined;
 
 export function start(api: HostApi): void {
+  own = api.plugin.device;
   client = new RelayClient({
     origin: async () => (await api.settings.get<string>("origin")) ?? undefined,
     fetch: (url, init) => api.net.fetch(url, init, { auth: "relay-key" }),
@@ -17,6 +20,7 @@ export function start(api: HostApi): void {
 
 export function stop(): void {
   client = null;
+  own = undefined;
 }
 
 function live(): RelayClient {
@@ -31,9 +35,23 @@ export const relay = {
     await live().putMail(args);
     return {};
   },
-  takeMail: async (args?: { device?: string; max?: number }) => ({ mail: await live().takeMail(args ?? {}) }),
-  ackMail: async (args: { ids: string[] }) => {
-    await live().ackMail(args);
+  takeMail: async (args?: { device?: string; max?: number }, ctx?: CallerContext) =>
+    ({ mail: await live().takeMail({ ...(args?.max === undefined ? {} : { max: args.max }), ...mailboxOf(args?.device, ctx) }) }),
+  ackMail: async (args: { device?: string; ids: string[] }, ctx?: CallerContext) => {
+    await live().ackMail({ ids: args.ids, ...mailboxOf(args.device, ctx) });
     return {};
   },
 };
+
+/** Who called a handler, as the core says (never the caller's own word). */
+interface CallerContext {
+  caller?: { kind?: string };
+}
+
+/** Whose mailbox a take or an ack reads: the device the core names (the link layer passes the taking device's id), and for
+ *  any other caller this device's own, whatever it names, so no one who can reach this handler takes or deletes another
+ *  device's mail. */
+function mailboxOf(named: string | undefined, ctx: CallerContext | undefined): { device?: string } {
+  if (ctx?.caller?.kind === "core" && named !== undefined) return { device: named };
+  return own === undefined ? {} : { device: own };
+}
