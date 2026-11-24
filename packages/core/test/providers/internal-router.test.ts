@@ -784,16 +784,17 @@ describe("M-3: MOSS never guesses a model on a provider the user did not choose"
     }
   });
 
-  test("an own provider whose family has no light model there (the default's model on Groq): a chore doesn't run on the default model, the reviewer does", async () => {
+  test("an own provider whose family has no light model there (the default's model on Groq): another family's light model there, never the default model", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
     const router = await routerFor(secrets);
+    // 2026-11-24: Groq serves no Llama light model but does serve another family's (gpt-oss-20b), so the jobs run on that, never on the default model (was: the title refused).
     const call = router.resolve("titles.model", settingsWith("groq/llama-3.3-70b-versatile"));
-    expect(isInternalRefusal(call)).toBe(true);
-    // The reviewer is a safety gate (the controller's ruling, 2026-11-22): the default model itself, on its own provider.
+    if (isInternalRefusal(call)) throw new Error(`refused: ${call.reason}`);
+    expect(String(call.tag)).toBe("groq/openai/gpt-oss-20b");
     const reviewer = router.resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"));
     if (isInternalRefusal(reviewer)) throw new Error(`refused: ${reviewer.reason}`);
-    expect(String(reviewer.tag)).toBe("groq/llama-3.3-70b-versatile");
+    expect(String(reviewer.tag)).toBe("groq/openai/gpt-oss-20b"); // was the default model itself
     expect(reviewer.providerId).toBe("groq");
   });
 
@@ -1026,15 +1027,15 @@ describe("the command safety check never goes unreviewed while a provider is cre
     return { decision: out.hookSpecificOutput?.permissionDecision ?? "allow", ranOn };
   }
 
-  test("a groq default with a groq key (no light model of its family there): reviewed, on the default model itself, said once", async () => {
+  test("a groq default with a groq key (no light model of its family there): reviewed, on another family's light model there", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
     const lines: string[] = [];
     const router = await routerFor(secrets, { log: (m) => lines.push(m) });
     const settings = settingsWith("groq/llama-3.3-70b-versatile");
-    expect(await hookAnswer(settings, router)).toEqual({ decision: "allow", ranOn: "groq/llama-3.3-70b-versatile" }); // allowed AFTER a review that ran
-    await hookAnswer(settings, router);
-    expect(lines.filter((l) => l.includes("run on the default model itself"))).toHaveLength(1);
+    // 2026-11-24: Groq serves no Llama light model but does serve another family's (gpt-oss-20b), so the jobs run on that, never on the default model (was: reviewed on the default model itself, said once).
+    expect(await hookAnswer(settings, router)).toEqual({ decision: "allow", ranOn: "groq/openai/gpt-oss-20b" }); // allowed AFTER a review that ran
+    expect(lines.filter((l) => l.includes("run on the default model itself"))).toHaveLength(0);
   });
 
   test("a default whose provider holds no key while Codex is signed in: ASKS, and no review ran on Codex", async () => {
@@ -1074,6 +1075,6 @@ describe("the command safety check never goes unreviewed while a provider is cre
     await writeCredentialMaterial(keyed, "groq:default", { kind: "api-key", key: "sk-groq" });
     const call = (await routerFor(keyed)).resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"), { fallbackToDefault: true });
     if (isInternalRefusal(call)) throw new Error(call.reason);
-    expect(String(call.tag)).toBe("groq/llama-3.3-70b-versatile");
+    expect(String(call.tag)).toBe("groq/openai/gpt-oss-20b"); // 2026-11-24: another family's light model on Groq (was the default)
   });
 });

@@ -107,6 +107,8 @@ export interface ProvidersRead {
   present: ReadonlySet<string>;
   complete: boolean;
   keyless?: ReadonlySet<string>;
+  /** Bundled remote providers nobody can add (no key entry, no slot, not local): a default named on one is no default. */
+  unsignable?: ReadonlySet<string>;
 }
 
 export interface DefaultOptions {
@@ -114,6 +116,15 @@ export interface DefaultOptions {
   /** Whether the read is complete (default true). */
   complete?: boolean;
   keyless?: ReadonlySet<string>;
+  unsignable?: ReadonlySet<string>;
+}
+
+/** Whether a named model is on a provider nobody can add (2026-11-24: a remote keyless service whose beta closed): such a
+ *  default is no default, so the computed one (the one provider's recommended model) takes its place, exactly as for the
+ *  untouched legacy default, and the guide never asks to "sign in again" to a provider that has no sign-in. */
+export function isUnsignableNamed(stored: string | undefined, unsignable: ReadonlySet<string> | undefined): boolean {
+  const p = stored === undefined ? undefined : providerOfTag(stored);
+  return p !== undefined && unsignable !== undefined && unsignable.has(p);
 }
 
 /** Whether a named model is the untouched older default: the legacy tag with no Codex credential. */
@@ -138,7 +149,7 @@ function computed(present: ReadonlySet<string>, recommend: (provider: string) =>
  *  see: there is no default to answer with until it is back. */
 export function effectiveDefault(stored: string | undefined, present: ReadonlySet<string>, recommend: (provider: string) => Recommendation | undefined, o: DefaultOptions = {}): DefaultAnswer {
   const complete = o.complete ?? true;
-  if (stored !== undefined && !isUntouchedLegacy(stored, present)) {
+  if (stored !== undefined && !isUntouchedLegacy(stored, present) && !isUnsignableNamed(stored, o.unsignable)) {
     if (!complete || namedIsHad(stored, present, o.keyless)) return { model: stored, source: "chosen", ...(o.storedEffort !== undefined ? { effort: o.storedEffort } : {}) };
     return { signedOut: stored };
   }
@@ -154,10 +165,11 @@ export function settledDefault(stored: string | undefined, read: ProvidersRead, 
   if (!read.complete) return undefined;
   const p = stored === undefined ? undefined : providerOfTag(stored);
   const removedNamed = stored !== undefined && p !== undefined && removed.has(p) && !namedIsHad(stored, read.present, read.keyless);
-  if (stored !== undefined && !isUntouchedLegacy(stored, read.present) && !removedNamed) return undefined;
+  const unsignableNamed = isUnsignableNamed(stored, read.unsignable);
+  if (stored !== undefined && !isUntouchedLegacy(stored, read.present) && !removedNamed && !unsignableNamed) return undefined;
   const next = computed(read.present, recommend);
   if (next.model !== undefined) return next.model === stored ? undefined : { kind: "write", model: next.model, ...(next.effort !== undefined ? { effort: next.effort } : {}) };
-  return removedNamed ? { kind: "clear" } : undefined;
+  return removedNamed || unsignableNamed ? { kind: "clear" } : undefined;
 }
 
 /** What is missing before a first reply can come: a provider, then a default model; or the named default's provider

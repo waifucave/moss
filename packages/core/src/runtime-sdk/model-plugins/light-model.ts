@@ -38,17 +38,52 @@ export function familyOfModel(catalog: CatalogView, providerId: string, modelKey
   return undefined;
 }
 
+/** A row this provider serves for jobs: not blocked, not deprecated (a deprecated or blocked light row counts as not served). */
+const served = (m: { providerId: string; status: string }, providerId: string): boolean => m.providerId === providerId && m.status !== "blocked" && m.status !== "deprecated";
+
 /** The family's light model as this provider serves it (an aggregator's own row counts: it is that provider's offering): a row of that provider with the family's canonical id that isn't
- *  blocked or deprecated. Where the provider doesn't serve the light model but does serve the family's DEFAULT (2026-11-24, the
- *  controller's ask: Cerebras serves gpt-oss-120b and not 20b, https://inference-docs.cerebras.ai/models/overview; the Qwen Coding
- *  Plan serves qwen3.7-plus and no Flash, "Models not listed above are not supported", https://www.alibabacloud.com/help/en/model-studio/coding-plan),
- *  the jobs run on that default there rather than not at all; the light effort still goes with it. Absent where it serves neither. */
+ *  blocked or deprecated. Absent where the provider doesn't offer it (an OAuth sign-in's or an aggregator's catalog may not). */
 export function lightModelOn(catalog: CatalogView, providerId: string, familyId: string): LightChoice | undefined {
   const light = FAMILY_LIGHT_MODELS[familyId];
   if (light === undefined) return undefined;
-  const usable = (m: { providerId: string; status: string }) => m.providerId === providerId && m.status !== "blocked" && m.status !== "deprecated";
-  const row = catalog.models.find((m) => usable(m) && m.canonicalModelId === light.model)
-    ?? (FAMILY_DEFAULTS[familyId] !== undefined ? catalog.models.find((m) => usable(m) && m.canonicalModelId === FAMILY_DEFAULTS[familyId]!.model) : undefined);
+  const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === light.model);
   if (row === undefined) return undefined;
   return { tag: row.key, family: familyId, ...(light.effort !== undefined ? { effort: light.effort } : {}) };
+}
+
+/** Every family's light model this provider serves, in THE FIXED PREFERENCE ORDER: cheapest input price first (a row with no
+ *  price, a plan's, last), ties by family id. */
+export function lightModelsServedOn(catalog: CatalogView, providerId: string): LightChoice[] {
+  const out: { choice: LightChoice; price: number }[] = [];
+  for (const familyId of Object.keys(FAMILY_LIGHT_MODELS).sort()) {
+    const choice = lightModelOn(catalog, providerId, familyId);
+    if (choice === undefined) continue;
+    const row = catalog.models.find((m) => m.key === choice.tag) as { pricing?: { value?: { inputPerMTokUsd?: number } } } | undefined;
+    out.push({ choice, price: row?.pricing?.value?.inputPerMTokUsd ?? Number.POSITIVE_INFINITY });
+  }
+  out.sort((a, b) => a.price - b.price || (a.choice.family < b.choice.family ? -1 : a.choice.family > b.choice.family ? 1 : 0));
+  return out.map((o) => o.choice);
+}
+
+/**
+ * The model one of MOSS's own jobs runs on, on provider P for the default model's family F (the controller's rule,
+ * 2026-11-24, replacing a same-day fallback to F's default that reached 51 provider and family pairs):
+ *   1. F's light model on P, when P serves it;
+ *   2. else ANOTHER family's light model that P serves, by `lightModelsServedOn`'s fixed order (cheapest input first, ties
+ *      by family id): on an aggregator there is nearly always a Haiku, a Flash-Lite, a Luna or a small open model;
+ *   3. else, for the COMMAND SAFETY REVIEWER ONLY (a guard must work, and asking about every command is not acceptable), F's
+ *      default on P. Titles, the dreamer and the cleaner do not run there (2026-11-22: a cost-only job never falls to a
+ *      default model).
+ * A deprecated or blocked light row counts as not served. `family` in the answer is the family whose model it is.
+ */
+export function lightModelForJob(catalog: CatalogView, providerId: string, familyId: string, job: "light" | "reviewer"): LightChoice | undefined {
+  const own = lightModelOn(catalog, providerId, familyId);
+  if (own !== undefined) return own;
+  const other = lightModelsServedOn(catalog, providerId)[0];
+  if (other !== undefined) return other;
+  if (job !== "reviewer") return undefined;
+  const def = FAMILY_DEFAULTS[familyId];
+  if (def === undefined) return undefined;
+  const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === def.model);
+  return row === undefined ? undefined : { tag: row.key, family: familyId };
 }

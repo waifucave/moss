@@ -176,6 +176,9 @@ export interface PluginAuth {
   /** The bundled model plugins' providers that take no key at all (a local model server: no sign-in of its own and no
    *  credential slot). Usable with nothing stored, so a default model on one is had; never an "added" provider. */
   keylessProviders(): Set<string>;
+  /** Bundled REMOTE providers nobody can add: no key entry, no credential slot, and not a local server (uncloseai, whose
+   *  keyless beta closed). A default named on one is no default (`default-model.ts`). */
+  unsignableProviders(): Set<string>;
   /** Whether the model plugins have started, so `signedInProviders` and `keylessProviders` answer for all of them. */
   modelPluginsReady(): boolean;
   signIn(id: string, index: number, key?: string): Promise<{ state: PluginAuthView["state"]; authorizeUrl?: string }>;
@@ -301,6 +304,19 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
         // key, and key registration is closed") is not a provider the person has; it counts only once a key is set for it.
         const kinds = activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? [];
         if (!kinds.includes("local-none")) continue;
+        out.add(provider);
+      }
+      return out;
+    },
+
+    unsignableProviders() {
+      const out = new Set<string>();
+      for (const { provider, pluginId } of servedProviders()) {
+        const r = deps.registry.get(pluginId);
+        if (r === undefined || bundledModelProviderOf(r) === undefined) continue;
+        if (MOSS_CREDENTIAL_INVENTORY.some((s) => s.provider === provider)) continue;
+        if (authEntriesOf(r).some((n) => !n.computer && (n.provider === provider || n.provider === undefined))) continue;
+        if ((activeCatalog().providers.find((p) => p.id === provider)?.authKinds ?? []).includes("local-none")) continue;
         out.add(provider);
       }
       return out;

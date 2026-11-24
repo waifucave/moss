@@ -14,7 +14,7 @@ import { openaiChatFake } from "@waifucave/clover-provider-conformance/fakes";
 import { FileSecretStore } from "../../src/auth/secret-store";
 import { clearCredentialMaterial, writeCredentialMaterial } from "../../src/auth/credential-material";
 import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "../../src/runtime-sdk/model-plugins/family-defaults";
-import { familyOfModel, lightFamiliesOf, lightModelOn } from "../../src/runtime-sdk/model-plugins/light-model";
+import { familyOfModel, lightFamiliesOf, lightModelForJob, lightModelOn, lightModelsServedOn } from "../../src/runtime-sdk/model-plugins/light-model";
 import { effortVocabularyOf } from "../../src/runtime-sdk/provider-selection";
 import { internalWireEffortFor } from "../../src/providers/internal-provider";
 import { SessionStore } from "../../src/sessions/store";
@@ -128,13 +128,7 @@ describe("the order, for the light jobs", () => {
   test("a provider that doesn't serve the light model (an aggregator row without it, a retired one): no light model, and the job does not run on the default", () => {
     // `deepseek-anthropic` and friends vendor the family but a plan's catalog may carry no flash row.
     const noFlash = { families: catalog.families, models: catalog.models.filter((m) => !(m.providerId === "deepseek" && m.canonicalModelId === "deepseek-flash")) };
-    // 2026-11-24: a provider that serves the family default but not its light model runs the jobs on that default (was: none).
-    expect(lightModelOn(noFlash, "deepseek", "deepseek")?.tag).toBe("deepseek/deepseek-v4-pro");
-    const neither = { families: catalog.families, models: noFlash.models.filter((m) => !(m.providerId === "deepseek" && m.canonicalModelId === "deepseek-v4-pro")) };
-    expect(lightModelOn(neither, "deepseek", "deepseek")).toBeUndefined();
-    // The two real cases: Cerebras (gpt-oss-120b, no 20b) and the Qwen Coding Plan (qwen3.7-plus, no Flash).
-    expect(lightModelOn(catalog, "cerebras", "gpt-oss")?.tag).toBe("cerebras/gpt-oss-120b");
-    for (const p of ["qwen-coding", "qwen-coding-anthropic", "qwen-coding-cn", "qwen-coding-cn-anthropic"]) expect(lightModelOn(catalog, p, "qwen")?.tag).toBe(`${p}/qwen3.7-plus`);
+    expect(lightModelOn(noFlash, "deepseek", "deepseek")).toBeUndefined();
     expect(lightModelOn(catalog, "deepseek", "deepseek")?.tag).toBe("deepseek/deepseek-flash");
   });
 
@@ -145,6 +139,57 @@ describe("the order, for the light jobs", () => {
 
   test("no snapshot: unchanged (the default rule)", () => {
     expect(internalRoleLight(settingsWith("anthropic/claude-opus-5-5"), "titles.model")).toBeUndefined();
+  });
+});
+
+describe("where a provider doesn't serve its family's light model (2026-11-24: another family's light model, the reviewer alone may take the default)", () => {
+  const usable = (m: { status: string }) => m.status !== "blocked" && m.status !== "deprecated";
+  const defaults = new Set(Object.values(FAMILY_DEFAULTS).map((d) => d.model));
+  const lights = new Set(Object.values(FAMILY_LIGHT_MODELS).map((d) => d.model));
+  // Every provider and family pair the catalog has where the family's own light model is not served there.
+  const pairs: { provider: string; family: string }[] = [];
+  for (const familyId of Object.keys(FAMILY_LIGHT_MODELS)) {
+    const providers = new Set(catalog.models.filter((m) => m.modelFamily === familyId && usable(m)).map((m) => m.providerId));
+    for (const p of [...providers].sort()) if (lightModelOn(catalog, p, familyId) === undefined) pairs.push({ provider: p, family: familyId });
+  }
+
+  test("a cost-only job never resolves to a family default; the reviewer always resolves to something; the table", () => {
+    expect(pairs.length).toBeGreaterThan(0);
+    const table: string[] = [];
+    for (const { provider, family } of pairs) {
+      const light = lightModelForJob(catalog, provider, family, "light");
+      const reviewer = lightModelForJob(catalog, provider, family, "reviewer");
+      if (light !== undefined) {
+        const canon = catalog.models.find((m) => m.key === light.tag)!.canonicalModelId;
+        expect({ provider, family, light: light.tag, isLight: lights.has(canon) }).toEqual({ provider, family, light: light.tag, isLight: true });
+        expect(reviewer?.tag).toBe(light.tag);
+      }
+      // The person has a usable model of the family on this provider (that is what makes the pair), so the reviewer has one:
+      // the light model above, the family's default, or (the caller's last step) the default model itself.
+      const anyRow = catalog.models.some((m) => m.providerId === provider && m.modelFamily === family && usable(m));
+      expect(reviewer !== undefined || anyRow).toBe(true);
+      if (reviewer !== undefined && light === undefined) expect(defaults.has(catalog.models.find((m) => m.key === reviewer.tag)!.canonicalModelId)).toBe(true);
+      table.push(`${family} on ${provider}: titles/dreamer/cleaner ${light?.tag ?? "do not run"}; reviewer ${reviewer?.tag ?? "the default model itself"}`);
+    }
+    if (process.env.MOSS_PRINT_LIGHT_TABLE === "1") console.log(`${pairs.length} pairs\n${table.join("\n")}`);
+  });
+
+  test("the order is fixed: cheapest input first, ties by family id; a deprecated or blocked light row is not served", () => {
+    for (const p of ["openrouter", "deepinfra", "together"]) {
+      const served = lightModelsServedOn(catalog, p);
+      const price = (tag: string) => (catalog.models.find((m) => m.key === tag)?.pricing?.value.inputPerMTokUsd ?? Number.POSITIVE_INFINITY);
+      for (let i = 1; i < served.length; i++) expect(price(served[i - 1]!.tag) <= price(served[i]!.tag)).toBe(true);
+    }
+    const deprecated = { families: catalog.families, models: catalog.models.map((m) => (m.key === "deepseek/deepseek-flash" ? { ...m, status: "deprecated" as const } : m)) };
+    expect(lightModelOn(deprecated, "deepseek", "deepseek")).toBeUndefined();
+    // DeepSeek's own API serves no other family's light model: titles stop, the reviewer takes V4 Pro.
+    expect(lightModelForJob(deprecated, "deepseek", "deepseek", "light")).toBeUndefined();
+    expect(lightModelForJob(deprecated, "deepseek", "deepseek", "reviewer")?.tag).toBe("deepseek/deepseek-v4-pro");
+    // The two cases the earlier fallback was for: Cerebras and the Qwen Coding Plan carry no family's light model.
+    expect(lightModelForJob(catalog, "cerebras", "gpt-oss", "light")).toBeUndefined();
+    expect(lightModelForJob(catalog, "cerebras", "gpt-oss", "reviewer")?.tag).toBe("cerebras/gpt-oss-120b");
+    expect(lightModelForJob(catalog, "qwen-coding", "qwen", "light")).toBeUndefined();
+    expect(lightModelForJob(catalog, "qwen-coding", "qwen", "reviewer")?.tag).toBe("qwen-coding/qwen3.7-plus");
   });
 });
 
