@@ -341,7 +341,7 @@ pub enum ItemKind {
     /// A note (`note`).
     Note { label: Option<String>, text: String },
     /// Something went wrong in the turn (`agent_error`).
-    Error { text: String },
+    TurnError { text: String },
     /// A turn ended (`turn_completed`): `end_turn`, `aborted`, `error`.
     TurnEnded { reason: String },
     QuestionAsked { question: AskQuestion },
@@ -402,7 +402,7 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
         "agent_message" | "agent_finished" => ItemKind::Agent { text: msg("text").unwrap_or_default() },
         "routine_result" => ItemKind::Routine { name: text(v, "name", 200), text: msg("text").unwrap_or_default() },
         "note" => ItemKind::Note { label: text(v, "label", 200).filter(|l| !l.trim().is_empty()), text: msg("text").unwrap_or_default() },
-        "agent_error" => ItemKind::Error { text: text(v, "message", 2000).unwrap_or_default() },
+        "agent_error" => ItemKind::TurnError { text: text(v, "message", 2000).unwrap_or_default() },
         "turn_completed" => ItemKind::TurnEnded { reason: raw_str(v, "stopReason").map(other).unwrap_or_default() },
         "question_asked" => ItemKind::QuestionAsked { question: ask(v)? },
         "question_resolved" => ItemKind::QuestionResolved { call_id: raw_str(v, "callId").filter(|c| c.len() <= 128)?.to_string() },
