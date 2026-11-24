@@ -104,6 +104,13 @@ class CoreEngineClient(
 
     private suspend fun c(): Connection = connection() ?: throw IllegalStateException("not paired")
 
+    /**
+     * Every call into the core runs on the IO dispatcher. The core completes an async call by calling back on a thread of its
+     * own (attached through JNA); a caller whose dispatcher resumes undispatched (a test's, Compose's in tests) would run its
+     * own code on that thread and call into the core again from inside the callback, which the runtime aborts on.
+     */
+    private suspend fun <T> io(f: suspend () -> T): T = withContext(Dispatchers.IO) { f() }
+
     private val calls = EngineCalls({ method, params ->
         val text = try { c().call(method, params.toString()) } catch (e: CoreException.Rpc) { throw EngineRpcError(e.code, e.computersWords) }
         Decode.parse(text)
@@ -278,11 +285,11 @@ class CoreEngineClient(
 
     // Pairing
 
-    override suspend fun pairedComputer(): PairedComputer? {
-        val c = connection() ?: return null
+    override suspend fun pairedComputer(): PairedComputer? = io {
+        val c = connection() ?: return@io null
         val pc = c.computer()
         if (treeName == null) scope.launch { runCatching { treeName = calls.selfComputerName() } }
-        return PairedComputer(treeName ?: pc.name, phoneCore().identity().name, lastUp)
+        PairedComputer(treeName ?: pc.name, phoneCore().identity().name, lastUp)
     }
 
     private fun pairingError(e: Exception): PairingException = PairingException(
@@ -300,67 +307,67 @@ class CoreEngineClient(
         },
     )
 
-    override suspend fun beginPairing(code: String): PairingProposal {
+    override suspend fun beginPairing(code: String): PairingProposal = io {
         val qr = code.trim()
         if (!qr.startsWith("clover-pair:")) throw PairingException(PairingError.unreadableCode)
         val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) { throw e } catch (e: Exception) { throw pairingError(e) }
         val id = UUID.randomUUID().toString()
         synchronized(this) { pairings[id] = pairing }
-        return PairingProposal(id, visibleText(pairing.computerName(), true), pairing.words())
+        PairingProposal(id, visibleText(pairing.computerName(), true), pairing.words())
     }
 
-    override suspend fun confirmPairing(proposal: PairingProposal): PairedComputer {
+    override suspend fun confirmPairing(proposal: PairingProposal): PairedComputer = io {
         val pairing = synchronized(this) { pairings.remove(proposal.pairingId) } ?: throw PairingException(PairingError.expired)
         try { pairing.confirm() } catch (e: CancellationException) { throw e } catch (e: Exception) { throw pairingError(e) }
         // A new pairing replaces this app's connection to the one before, if any.
         lock.withLock { conn?.disconnect(); conn = null; reader?.cancel(); firstUp = CompletableDeferred() }
-        return pairedComputer() ?: throw PairingException(PairingError.unreachable)
+        pairedComputer() ?: throw PairingException(PairingError.unreachable)
     }
 
-    override suspend fun cancelPairing(proposal: PairingProposal) {
+    override suspend fun cancelPairing(proposal: PairingProposal): Unit = io {
         synchronized(this) { pairings.remove(proposal.pairingId) }?.reject()
     }
 
     // Bots
 
-    override suspend fun bots(): List<Bot> = c().bots().map { Typed.bot(it).also(::remember) }
-    override suspend fun botSummaries(): List<BotSummary> = c().botSummaries().map(Typed::summary)
+    override suspend fun bots(): List<Bot> = io { c().bots().map { Typed.bot(it).also(::remember) } }
+    override suspend fun botSummaries(): List<BotSummary> = io { c().botSummaries().map(Typed::summary) }
 
-    override suspend fun conversation(bot: String, before: Long?, limit: Int): MessagePage {
+    override suspend fun conversation(bot: String, before: Long?, limit: Int): MessagePage = io {
         val main = synchronized(this) { bots[bot]?.mainSession }
         main?.let { synchronized(this) { sessionKinds[it] = "bot" } }
         val p = c().conversation(bot, beforeSeq(main, before), limit.coerceIn(1, 500).toUInt())
         synchronized(this) { sessionKinds[p.session] = "bot" }
-        return page(p)
+        page(p)
     }
 
-    override suspend fun markRead(bot: String) = c().markRead(bot, System.currentTimeMillis())
+    override suspend fun markRead(bot: String): Unit = io { c().markRead(bot, System.currentTimeMillis()) }
 
     // Sessions
 
-    override suspend fun sessions(): List<SessionRow> = c().sessions().map { Typed.session(it).also(::remember) }
+    override suspend fun sessions(): List<SessionRow> = io { c().sessions().map { Typed.session(it).also(::remember) } }
     override suspend fun history(session: String, before: Long?, limit: Int): MessagePage =
-        page(c().history(session, beforeSeq(session, before), limit.coerceIn(1, 500).toUInt()))
+        io { page(c().history(session, beforeSeq(session, before), limit.coerceIn(1, 500).toUInt())) }
 
-    override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>) {
+    override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>): Unit = io {
         // Signed by the core with this phone's answer key. The same client id makes a resend the same message, so a retry
         // after a timeout (which doesn't mean the computer didn't get it) is never a second message.
         c().sendMessage(session, text, clientMessageId, images, files)
     }
 
-    override suspend fun stop(session: String) = c().stop(session)
+    override suspend fun stop(session: String): Unit = io { c().stop(session) }
 
     // Cards
 
-    override suspend fun cards(): List<Card> {
+    override suspend fun cards(): List<Card> = io {
         c()
         // The pending cards come with the connection (`PendingCards`): wait for it to be up once.
         withTimeoutOrNull(15_000) { firstUp.await() } ?: throw IllegalStateException("not connected")
         val views = synchronized(this) { issued.values.toList() }
-        return views.filter { it.pending() }.mapNotNull(::cardOf)
+        views.filter { it.pending() }.mapNotNull(::cardOf)
     }
 
-    override suspend fun answer(card: Card, option: CardOption) {
+    override suspend fun answer(card: Card, option: CardOption): Unit = io {
         val c = c()
         val view = synchronized(this) { issued[card.id] } ?: throw CardAnswerException(CardAnswerError.answeredElsewhere)
         // The card the screen drew must be exactly what this view draws: same hash, same content, the option one of its own.
@@ -371,7 +378,7 @@ class CoreEngineClient(
         if (outcome.accepted) {
             synchronized(this) { issued.remove(card.id) }
             events.tryEmit(EngineEvent.CardResolved(card.id))
-            return
+            return@io
         }
         val why = outcome.computersReason?.lowercase() ?: ""
         throw when {
@@ -386,26 +393,26 @@ class CoreEngineClient(
      * conversation raised it, to MOSS Code when a coding or agent session did (the core says whose it is). Each app shows its
      * own, and the other app's too when no phone of that app is paired with the computer (so a card is never shown nowhere).
      */
-    override suspend fun shows(card: Card, app: PhoneApp): Boolean {
+    override suspend fun shows(card: Card, app: PhoneApp): Boolean = io {
         val kind = card.session?.let { synchronized(this) { sessionKinds[it] } }
         val owner = when {
             kind == "bot" || kind == "side-thread" -> PhoneApp.moss
             kind == "coding" || kind == "agent" -> PhoneApp.code
             card.bot != null -> PhoneApp.moss
             else -> null
-        } ?: return true
-        if (owner == app) return true
-        val phones = synchronized(this) { devices } ?: runCatching { calls.devices() }.getOrNull()?.also { synchronized(this) { devices = it } } ?: return true
+        } ?: return@io true
+        if (owner == app) return@io true
+        val phones = synchronized(this) { devices } ?: runCatching { calls.devices() }.getOrNull()?.also { synchronized(this) { devices = it } } ?: return@io true
         val me = runCatching { phoneCore().identity().deviceId }.getOrNull()
-        return phones.none { it.phone && it.id != me && (it.app == owner || it.app == null) }
+        phones.none { it.phone && it.id != me && (it.app == owner || it.app == null) }
     }
 
     // Starting a session
 
-    override suspend fun backends(): List<AgentBackend> = c().backends().mapNotNull { Typed.backend(it, treeName) }
-    override suspend fun startOptions(backend: String): BackendOptions = Typed.options(c().startOptions(backend, treeName))
-    override suspend fun recentStart(): RecentStart = Typed.recent(c().recentStart())
-    override suspend fun startSession(request: StartRequest): String = try {
+    override suspend fun backends(): List<AgentBackend> = io { c().backends().mapNotNull { Typed.backend(it, treeName) } }
+    override suspend fun startOptions(backend: String): BackendOptions = io { Typed.options(c().startOptions(backend, treeName)) }
+    override suspend fun recentStart(): RecentStart = io { Typed.recent(c().recentStart()) }
+    override suspend fun startSession(request: StartRequest): String = io { try {
         c().startSession(CoreStart(request.backend, request.computer, request.root, request.model, request.effort, null))
             .also { synchronized(this) { sessionKinds[it] = "coding" } }
     } catch (e: CoreException.Rpc) {
@@ -415,11 +422,11 @@ class CoreEngineClient(
             "folder" in w || "fence" in w || "home" in w || "root" in w -> StartException(StartError.folderRefused)
             else -> e
         }
-    }
+    } }
 
     // The composer
 
-    override suspend fun composerOffers(session: String, kind: ConversationKind): ComposerOffers = try {
+    override suspend fun composerOffers(session: String, kind: ConversationKind): ComposerOffers = io { try {
         Typed.offers(c().composerOffers(session))
     } catch (e: CoreException.Rpc) {
         // -32601: not served; -32010: not on the remote role's list. An engine without lane PH's door gets what the doors on
@@ -433,45 +440,45 @@ class CoreEngineClient(
             ComposerOffers(pictures = true, commands = commands, models = choices, model = current,
                 efforts = choices.firstOrNull { it.id == current }?.efforts ?: emptyList())
         }
-    }
+    } }
 
-    override suspend fun setModel(session: String, model: String?, effort: String?) {
+    override suspend fun setModel(session: String, model: String?, effort: String?): Unit = io {
         val m = model ?: synchronized(this) { sessionModels[session] } ?: throw IllegalStateException("no model to keep")
         c().setModel(session, m, effort)
         synchronized(this) { sessionModels[session] = m }
     }
 
-    override suspend fun stageImage(session: String, data: ByteArray): String = c().stageImage(session, mediaType(data), data)
+    override suspend fun stageImage(session: String, data: ByteArray): String = io { c().stageImage(session, mediaType(data), data) }
 
-    override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile {
+    override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile = io {
         if (data.size > STAGE_FILE_MAX_BYTES) throw FileTooLarge(STAGE_FILE_MAX_BYTES)
         val f = c().stageFile(session, name, data)
-        return StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
+        StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
     }
 
-    override suspend fun newBotOptions(): NewBotOptions = Typed.newBot(c().models(null))
+    override suspend fun newBotOptions(): NewBotOptions = io { Typed.newBot(c().models(null)) }
 
-    override suspend fun createBot(name: String, model: String?): Bot = Typed.bot(c().createBot(name, model)).also(::remember)
+    override suspend fun createBot(name: String, model: String?): Bot = io { Typed.bot(c().createBot(name, model)).also(::remember) }
 
-    override suspend fun runCommand(session: String, command: String) = c().runCommand(command)
+    override suspend fun runCommand(session: String, command: String): Unit = io { c().runCommand(command) }
 
-    override suspend fun pendingQuestion(session: String): AskQuestion? = Typed.question(c().pendingQuestion(session))
+    override suspend fun pendingQuestion(session: String): AskQuestion? = io { Typed.question(c().pendingQuestion(session)) }
 
-    override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>) {
+    override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>): Unit = io {
         // The engine keys an answer by the question's text (the screens key it by its header when it has one).
         c().answerQuestion(session, question.callId, mapOf(question.text to (answers.values.firstOrNull() ?: "")))
     }
 
     // The link
 
-    override suspend fun connectionState(): ConnectionState = state
+    override suspend fun connectionState(): ConnectionState = io { state }
 
     /**
      * Forgets the computer on this phone: the link closes, and every item of the store goes, the phone's own device and
      * answer keys and the Keystore key included, so pairing again makes a new device. (The computer keeps its record of
      * this phone until the person revokes it there: a phone revoking itself would put a card on the computer.)
      */
-    override suspend fun unpair() {
+    override suspend fun unpair(): Unit = io {
         // An open pairing first: the core won't forget the last computer while one is open.
         val open = synchronized(this) { pairings.values.toList().also { pairings.clear() } }
         for (p in open) runCatching { p.reject() }
