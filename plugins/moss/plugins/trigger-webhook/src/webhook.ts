@@ -6,7 +6,10 @@
 // * **Untrusted:** a payload reaches the bot labelled as outside content, between two fences made fresh for each run
 //   (`=====<16 hex>=====`, review S3): a payload can't close one it can't know, and the label names it.
 
-import { UNSHOWN_CHAR } from "../../../../../packages/protocol/src/visible-text";
+/** The protocol's one rule for the characters that never show (`UNSHOWN_CHAR` in packages/protocol/src/visible-text.ts),
+ *  written out here because a bundled host half imports nothing outside its folder but the SDK's types; the trigger's
+ *  test fails if the two ever differ. */
+export const UNSHOWN_CHAR = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u17B4\u17B5\u2800\u034F\u{E0000}-\u{E007F}]/u;
 
 export const WEBHOOK_LATE_MS = 5 * 60_000;
 /** The largest payload a routine run quotes; the rest is cut, and the cut is said. */

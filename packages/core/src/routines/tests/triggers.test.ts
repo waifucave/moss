@@ -101,7 +101,7 @@ describe("the bundled triggers", () => {
     expect(keyHashes[0]).not.toContain("the-key");
     // Without the webhook trigger there is no active ingress, and the routine has no URL yet.
     const none = new WebhookIngress({ registry: alone.registry, host, engine: { deliverWebhook: async () => "accepted", webhookRoutines: () => [], webhook: async () => ({ url: "", key: "" }) }, clock: new FakeClock() });
-    await expect(none.register("r_abcdefgh", "the-key")).rejects.toThrow("no webhook ingress");
+    await expect(none.register("r_abcdefgh", "the-key")).rejects.toThrow("MOSS's webhook forwarder isn't on here");
   });
 
   test("a routine registers with one ingress, its named one or else the first, and only that ingress delivers for it (review S2)", async () => {

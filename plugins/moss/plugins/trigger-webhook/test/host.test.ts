@@ -1,7 +1,8 @@
 // moss/trigger-webhook's handler and functions: the late rule and the untrusted label.
 import { describe, expect, test } from "bun:test";
 import { webhook } from "../host/index";
-import { isLate, newFence, untrusted, visibleOutsideText, WEBHOOK_LATE_MS, WEBHOOK_TEXT_MAX_CHARS } from "../src/webhook";
+import { UNSHOWN_CHAR as PROTOCOL_UNSHOWN } from "../../../../../packages/protocol/src/visible-text";
+import { isLate, newFence, untrusted, UNSHOWN_CHAR, visibleOutsideText, WEBHOOK_LATE_MS, WEBHOOK_TEXT_MAX_CHARS } from "../src/webhook";
 
 describe("the webhook trigger", () => {
   test("check takes `webhook: true` only", () => {
@@ -39,5 +40,9 @@ describe("the webhook trigger", () => {
     for (const hidden of ["\u001b", "\u202E", "\u202C", "\u200B", "\r", "\u2028", "\u0000"]) expect(text.includes(hidden)).toBe(false);
     expect(text).toContain("(text/plain\\u{202E})");
     expect(text).toContain("ok\tdone\n");
+  });
+
+  test("its unseen-character rule is the protocol's, character for character", () => {
+    expect([UNSHOWN_CHAR.source, UNSHOWN_CHAR.flags]).toEqual([PROTOCOL_UNSHOWN.source, PROTOCOL_UNSHOWN.flags]);
   });
 });
