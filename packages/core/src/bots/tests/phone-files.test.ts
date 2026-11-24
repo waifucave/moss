@@ -58,12 +58,14 @@ describe("a file from a paired phone to a bot's conversation", () => {
     const dest = join(dir, "Notes 1.txt");
     expect(Buffer.compare(readFileSync(dest), Buffer.from(body))).toBe(0);
     // Readable by the owner only, and never executable, whatever it is.
-    expect(statSync(dest).mode & 0o777).toBe(0o600);
-    expect(statSync(dir).mode & 0o077).toBe(0);
+    if (posix) {
+      expect(statSync(dest).mode & 0o777).toBe(0o600);
+      expect(statSync(dir).mode & 0o077).toBe(0);
+    }
     // The same folder-tree form a dropped file is named in (`home/<Computer>/…`), under the bot's scratch folder.
     expect(r.path).toBe(`home/Studio/.moss/scratch/nova/attachments/phone-${r.upload}/Notes 1.txt`);
     // The spool is gone: nothing half-written is left where the bot can see it.
-    expect(readdirSync(join(s.home, "transcripts", "staged-files"))).toEqual([]);
+    expect(readdirSync(join(s.home, "transcripts", ".staged-files"))).toEqual([]);
     await s.call("session.send", { id: s.session, message: { text: "read [File #1]", clientMessageId: "m1", files: [{ n: 1, path: r.path }] } });
     expect(sentInput(s, s.session)).toMatchObject({ text: "read [File #1]", files: [{ n: 1, path: r.path }] });
     await s.b.shutdown();
@@ -154,7 +156,7 @@ describe("the limits", () => {
     expect(await fail(s.call("session.stageFile", { id, upload: first.upload, offset: 3, dataBase64: b64("abcdef") }))).toMatch(/longer than the file/);
     // The overrun dropped the upload.
     expect(await fail(s.call("session.stageFile", { id, upload: first.upload, offset: 3, dataBase64: b64("def") }))).toMatch(/no such upload/);
-    expect(readdirSync(join(s.home, "transcripts", "staged-files"))).toEqual([]);
+    expect(readdirSync(join(s.home, "transcripts", ".staged-files"))).toEqual([]);
     await s.b.shutdown();
   });
 
@@ -208,7 +210,7 @@ describe("the limits", () => {
     s.clock.advance(16 * 60 * 1000);
     // Any call sweeps.
     await s.call("session.stageFile", { id: s.session, name: "n.txt", size: 2, dataBase64: b64("ok") });
-    expect(readdirSync(join(s.home, "transcripts", "staged-files")).some((f) => f.startsWith(part.upload))).toBe(false);
+    expect(readdirSync(join(s.home, "transcripts", ".staged-files")).some((f) => f.startsWith(part.upload))).toBe(false);
     expect(existsSync(folder(whole))).toBe(true);
     s.clock.advance(24 * 60 * 60 * 1000);
     await s.call("session.stageFile", { id: s.session, name: "m.txt", size: 2, dataBase64: b64("ok") });
@@ -281,7 +283,9 @@ describe("names and kinds", () => {
   });
 });
 
-describe("a link planted in the bot's own folder leads nowhere", () => {
+// Links need no privilege on POSIX hosts only, and file modes mean nothing on Windows: those suites run where they mean something.
+const posix = process.platform !== "win32";
+describe.skipIf(!posix)("a link planted in the bot's own folder leads nowhere", () => {
   test("`attachments` as a link to a folder outside: refused, and nothing is written there", async () => {
     const s = await setup();
     const outside = join(s.userHome, "outside");
@@ -402,7 +406,7 @@ describe("the next send names only what this phone staged for this session", () 
     await s.b.shutdown();
   });
 
-  test("a file that is still arriving, one replaced by a link, one changed or gone is refused; one used in another message is refused, and the same message again is not", async () => {
+  test.skipIf(!posix)("a file that is still arriving, one replaced by a link, one changed or gone is refused; one used in another message is refused, and the same message again is not", async () => {
     const s = await setup();
     const open = await s.call("session.stageFile", { id: s.session, name: "p.txt", size: 10, dataBase64: b64("12345") });
     const whole = await s.send(s.session, "w.txt", text("whole"));

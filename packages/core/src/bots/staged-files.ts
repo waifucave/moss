@@ -215,8 +215,8 @@ export class FileStager {
   constructor(o: StagerOptions) {
     this.#o = o;
     this.#limits = { ...STAGE_LIMITS, ...o.limits };
-    this.#file = join(transcriptsDir(o.home), "staged-files.json");
-    this.#spool = join(transcriptsDir(o.home), "staged-files");
+    this.#file = join(transcriptsDir(o.home), ".staged-files.json");
+    this.#spool = join(transcriptsDir(o.home), ".staged-files");
     this.sweep();
   }
 
