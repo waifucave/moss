@@ -14,10 +14,19 @@
 // account's lease and its plan for as long as it lives (the spawner's own run), so `sandbox remove` ends it as it ends
 // any command, and the engine's exit ends it (the launcher's kill-on-close job). Its output is written as it comes to a
 // log the daemon owns (`<MOSS home>/logs/background/<session>/<id>.log`, capped; see `startBackground` for why it is
-// never in the command's own folder), the call answers at once with the task's id and that path, `TaskStop` with the id stops it (`stopWindowsBackground`), and its end comes back to the conversation as a
-// background task's notification (`wake`). At most `WIN_SHELL_BACKGROUND_PER_SESSION` run at once in one session (the
-// pool is shared by every session), each for at most `WIN_SHELL_BACKGROUND_MAX_MS`; a command outside the sandbox
-// never runs in the background (the approval check refuses that pair before any card, and so does this tool).
+// never in the command's own folder), the call answers at once with the task's id and that path, `TaskStop` with the
+// id stops it (`stopWindowsBackground`), and its end comes back to the conversation as a background task's notification
+// (`wake`), saying why it ended. A command outside the sandbox never runs in the background (the approval check refuses
+// that pair before any card, and so does this tool). The bounds (the WS7 reviewer's items 1 to 3):
+//  - the pool is four accounts shared by every session, and each background command holds one for its life: at most
+//    `WIN_SHELL_BACKGROUND_ENGINE` run in the whole engine (two accounts always stay for ordinary commands), and at
+//    most `WIN_SHELL_BACKGROUND_PER_SESSION` in one conversation;
+//  - it ends when the fenced set grows past what it was started under (the spawner's rule 8c, `onFenceGrew`, looked at
+//    every 30 s): a protected path that appears later is never open to it for longer than that, and the profile
+//    grant's refresh (rule 8b), which waits for every command to end, is never kept waiting by one;
+//  - the daemon ends a conversation's background commands when the bots are paused or this computer stops running
+//    them, when its bot is removed or archived, when the approval level drops below the one it started under, and
+//    when the conversation is deleted (`endWindowsBackground`); and each lives at most `WIN_SHELL_BACKGROUND_MAX_MS`.
 //
 // What these don't do that the runtime's Bash does on macOS and Linux (reported, not hidden): Monitor and the runtime's
 // TaskOutput over them (the bot reads the log with Read), and the working folder carried from one call to the next
@@ -26,9 +35,10 @@ import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { isAbsolute, join, relative, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
-import type { Caller } from "@waifucave/moss-protocol";
+import { LEVELS, type Caller, type Level, type SessionKind } from "@waifucave/moss-protocol";
 import type { CoreToolDef, CoreToolResult } from "../runtime-sdk/turn-loop/servers";
 import type { FencedSpawner } from "./spawn";
+import { SANDBOX_POOL_SIZE } from "./win-sandbox";
 
 /** How long a call runs when it doesn't say, and the longest it may ask for (Claude Code's limits). */
 export const WIN_SHELL_DEFAULT_TIMEOUT_MS = 120_000;
@@ -37,16 +47,28 @@ export const WIN_SHELL_MAX_TIMEOUT_MS = 600_000;
 /** Rule B's bounds: running background commands per session, how long one may run, and how much of its output the
  *  log keeps (past it, one line says the rest was dropped). */
 export const WIN_SHELL_BACKGROUND_PER_SESSION = 2;
+/** Running background commands in the whole engine: the pool less the two accounts kept for ordinary commands. */
+export const WIN_SHELL_BACKGROUND_ENGINE = SANDBOX_POOL_SIZE - 2;
 export const WIN_SHELL_BACKGROUND_MAX_MS = 24 * 3_600_000;
 export const WIN_SHELL_BACKGROUND_LOG_CAP = 64 * 1024 * 1024;
 
 /** A running background command (rule B). */
-interface BackgroundTask {
+interface BackgroundTask extends WindowsBackgroundView {
   readonly id: string;
-  readonly session: string;
   readonly log: string;
   readonly abort: AbortController;
   readonly ended: Promise<void>;
+  /** Why it is being ended, when MOSS ends it (said to the bot); unset for TaskStop's stop. */
+  why?: string;
+}
+/** What the daemon judges a running background command by (`endWindowsBackground`). */
+export interface WindowsBackgroundView {
+  readonly session: string;
+  readonly bot: string | undefined;
+  readonly kind: SessionKind;
+  /** The approval level it was started under, and the session's level now. */
+  readonly levelAtStart: Level | undefined;
+  readonly levelNow: () => Level | undefined;
 }
 /** Every running background command of this engine, by id. */
 const background = new Map<string, BackgroundTask>();
@@ -59,6 +81,50 @@ export async function stopWindowsBackground(session: string, id: string): Promis
   t.abort.abort();
   await t.ended;
   return { text: `Stopped ${id}. Its output is in ${t.log}.`, isError: false };
+}
+
+/** Ends every running background command `which` picks, saying `why` to its conversation, and waits for each end to
+ *  be recorded; the ids it ended. */
+export async function endWindowsBackground(which: (t: WindowsBackgroundView) => boolean, why: string): Promise<string[]> {
+  const picked = [...background.values()].filter((t) => { try { return which(t); } catch { return false; } });
+  for (const t of picked) { t.why ??= why; t.abort.abort(); }
+  await Promise.all(picked.map((t) => t.ended));
+  return picked.map((t) => t.id);
+}
+
+/** Whether the session's approval level is now below the one the command started under (a level gone counts as
+ *  below). Only a lowering counts: a raised level gives it nothing it didn't have. */
+export function windowsBackgroundLevelLowered(t: WindowsBackgroundView): boolean {
+  if (t.levelAtStart === undefined) return false;
+  const now = t.levelNow();
+  return now === undefined || LEVELS.indexOf(now) < LEVELS.indexOf(t.levelAtStart);
+}
+
+/** A conversation's background commands, ended with it (`why`: it ended, or was deleted). */
+export function endWindowsBackgroundOf(session: string, why: string): Promise<string[]> {
+  return endWindowsBackground((t) => t.session === session, why);
+}
+
+/** What ends background commands from outside a conversation (the WS7 reviewer's item 2), as the daemon wires it:
+ *  the bots' gate (the pause switch, and this computer no longer running the bots: what `mayAct` refuses, a command no
+ *  longer may do), the bots' events (a bot removed or archived), and the computers' levels (one lowered below what a
+ *  command started under). Returns the unsubscribe. */
+export function endWindowsBackgroundOn(o: {
+  readonly gate?: { watch(fn: () => void): () => void; mayAct(view: { kind: SessionKind }): boolean; readonly paused: boolean };
+  readonly bots?: { onEvent(fn: (e: { type: string; id?: unknown }) => void): () => void };
+  readonly levels?: { watch(fn: () => void): () => void };
+}): () => void {
+  const offs: (() => void)[] = [];
+  const gate = o.gate;
+  if (gate !== undefined) {
+    offs.push(gate.watch(() => void endWindowsBackground((t) => !gate.mayAct({ kind: t.kind }),
+      gate.paused ? "the user paused the bots" : "this computer stopped running the bots")));
+  }
+  offs.push(o.bots?.onEvent((e) => {
+    if (e.type === "bot_removed" && typeof e.id === "string") { const bot = e.id; void endWindowsBackground((t) => t.bot === bot, "its bot was removed or archived"); }
+  }) ?? (() => {}));
+  offs.push(o.levels?.watch(() => void endWindowsBackground(windowsBackgroundLevelLowered, "the approval level was lowered below the one it started under")) ?? (() => {}));
+  return () => { for (const off of offs) off(); };
 }
 
 /** The ids of a session's running background commands. */
@@ -98,6 +164,9 @@ export interface WindowsShellToolsOptions {
   /** Rule B: a background command's end, as the session's background-task notification (`BotSessionContext.wake`).
    *  Without it no command runs in the background (refused with the reason). */
   readonly wake?: (input: { task: string; status: "completed" | "failed" | "stopped"; text: string }) => Promise<unknown>;
+  /** The session's approval level now (the daemon's `levelOfSession`): a background command records it at its start,
+   *  and the daemon ends it when the level drops below that (`windowsBackgroundLevelLowered`). */
+  readonly level?: () => Level | undefined;
 }
 
 /** Rule E, a command outside the sandbox on Windows: still a sandbox principal (there is no fenced way to run as the
@@ -139,6 +208,9 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       const inBackground = i.run_in_background === true;
       if (inBackground && escape) return { text: `${name}: a command outside the sandbox runs in the foreground; run it without run_in_background`, isError: true };
       if (inBackground && o.wake === undefined) return { text: `${name}: this session can't be told when a background command ends; run it in the foreground`, isError: true };
+      if (inBackground && background.size >= WIN_SHELL_BACKGROUND_ENGINE) {
+        return { text: `${name}: ${WIN_SHELL_BACKGROUND_ENGINE} background commands are running on this computer already, and no more can start: each one takes one of the sandbox's ${SANDBOX_POOL_SIZE} accounts for as long as it runs, and the rest are kept for ordinary commands. Run this one in the foreground, stop one of yours with TaskStop, or wait for one to end`, isError: true };
+      }
       if (inBackground && windowsBackgroundOf(o.caller.sessionId).length >= WIN_SHELL_BACKGROUND_PER_SESSION) {
         return { text: `${name}: ${WIN_SHELL_BACKGROUND_PER_SESSION} background commands of this conversation are running already; stop one (TaskStop) or wait for one to end`, isError: true };
       }
@@ -201,13 +273,24 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
     const run = o.spawner.run({
       command, cwd, env: { TMPDIR: win32.normalize(cwd) }, timeoutMs: WIN_SHELL_BACKGROUND_MAX_MS,
       who: { caller: o.caller }, shell, sandbox, signal: abort.signal, onOutput: (t) => onOutput(t),
+      // Rule 8c: what the fence protects grew while it ran; it ends, and the bot is told to run it again.
+      onFenceGrew: () => {
+        const t = background.get(id);
+        if (t === undefined) return;
+        t.why ??= "something the sandbox protects appeared on this computer after it started, and a command keeps the protections it started with, so MOSS ended it; run it again and it runs under the sandbox as it is now";
+        t.abort.abort();
+      },
     }).catch((e: unknown) => ({ kind: "refused" as const, reason: e instanceof Error ? e.message : String(e) }));
     let settle!: () => void;
     const ended = new Promise<void>((res) => { settle = res; });
-    background.set(id, { id, session: o.caller.sessionId, log, abort, ended });
+    const task: BackgroundTask = {
+      id, session: o.caller.sessionId, bot: o.caller.bot, kind: o.caller.sessionKind, log, abort, ended,
+      levelAtStart: o.level?.(), levelNow: () => o.level?.(),
+    };
+    background.set(id, task);
     const finished = run.then(async (r) => {
       const status: "completed" | "failed" | "stopped" = abort.signal.aborted ? "stopped" : r.kind === "exited" && r.code === 0 ? "completed" : "failed";
-      const how = r.kind === "refused" ? `was refused: ${r.reason}` : abort.signal.aborted ? "was stopped" : r.kind === "timeout" ? `ran past ${WIN_SHELL_BACKGROUND_MAX_MS / 3_600_000} hours and was ended` : `exited with code ${r.code}`;
+      const how = r.kind === "refused" ? `was refused: ${r.reason}` : abort.signal.aborted ? (task.why === undefined ? "was stopped" : `was stopped: ${task.why}`) : r.kind === "timeout" ? `ran past ${WIN_SHELL_BACKGROUND_MAX_MS / 3_600_000} hours and was ended` : `exited with code ${r.code}`;
       put(`\n[moss: the command ${how}]\n`);
       try { closeSync(fd); } catch { /* closed */ }
       background.delete(id);

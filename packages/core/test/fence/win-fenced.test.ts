@@ -4,9 +4,9 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import type { Caller } from "@waifucave/moss-protocol";
+import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
-import { escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
+import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
   existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
@@ -570,17 +570,21 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     }) };
     return { runs, release, spawner };
   };
-  const make = (spawner: FencedSpawner, session: string, wakes: unknown[], allowWrite?: (moss: string, cwd: string) => string[]) => {
+  const make = (spawner: FencedSpawner, session: string, wakes: unknown[], allowWrite?: (moss: string, cwd: string) => string[],
+    more: { bot?: string; sessionKind?: string; level?: () => Level | undefined } = {}) => {
     const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
     const moss = mkdtempSync(join(tmpdir(), "ws7-moss-"));
-    const caller = { kind: "session", sessionId: session, sessionKind: "bot", bot: "luna" } as Extract<Caller, { kind: "session" }>;
+    const caller = { kind: "session", sessionId: session, sessionKind: more.sessionKind ?? "bot", bot: more.bot ?? "luna" } as Extract<Caller, { kind: "session" }>;
     const t = Object.fromEntries(windowsShellTools({
       spawner, caller, kind: "bot", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss,
       sandbox: () => (allowWrite === undefined ? {} : { filesystem: { allowWrite: allowWrite(moss, cwd) } }),
       wake: async (w) => { wakes.push(w); },
+      ...(more.level === undefined ? {} : { level: more.level }),
     }).map((x) => [x.name, x]));
     return { t, cwd, moss };
   };
+  const idOf = (text: string) => /win_bg_[0-9a-f]{8}/.exec(text)![0];
+  const told = async (wakes: { task: string }[], id: string) => { for (let i = 0; i < 200 && !wakes.some((w) => w.task === id); i++) await Bun.sleep(10); return wakes.find((w) => w.task === id) as { status: string; text: string } | undefined; };
   test("it answers at once with its id and log; output is logged as it comes; its end is told; the lease is the run's", async () => {
     const s = slow();
     const wakes: { task: string; status: string; text: string }[] = [];
@@ -611,7 +615,7 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     for (let i = 0; i < WIN_SHELL_BACKGROUND_PER_SESSION; i++) ids.push(/win_bg_[0-9a-f]{8}/.exec((await t.Bash!.run({ command: `c${i}`, run_in_background: true })).text)![0]);
     const third = await t.PowerShell!.run({ command: "c3", run_in_background: true });
     expect(third.isError).toBe(true);
-    expect(third.text).toContain("running already");
+    expect(third.text).toContain("running on this computer already");
     expect(await stopWindowsBackground("someone-else", ids[0]!)).toBeNull();
     const stopped = await stopWindowsBackground("bg-b", ids[0]!);
     expect(stopped).toMatchObject({ isError: false });
@@ -646,6 +650,74 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     expect(ok.isError).toBe(false);
     await stopWindowsBackground("bg-e", /win_bg_[0-9a-f]{8}/.exec(ok.text)![0]);
   }, 30_000);
+  test("the whole engine runs at most two (the pool's four accounts less two kept for ordinary commands), across sessions", async () => {
+    expect(WIN_SHELL_BACKGROUND_ENGINE).toBe(2);
+    const s = slow();
+    const a = make(s.spawner, "bg-f1", []), b = make(s.spawner, "bg-f2", []), c = make(s.spawner, "bg-f3", []);
+    const ids = [idOf((await a.t.Bash!.run({ command: "x", run_in_background: true })).text), idOf((await b.t.Bash!.run({ command: "x", run_in_background: true })).text)];
+    const third = await c.t.Bash!.run({ command: "x", run_in_background: true });
+    expect(third).toMatchObject({ isError: true, text: expect.stringContaining("running on this computer already") });
+    expect(third.text).toContain("kept for ordinary commands");
+    expect(s.runs).toHaveLength(2);
+    // A foreground command of the third session still runs.
+    const fg = c.t.Bash!.run({ command: "y" });
+    expect(s.runs).toHaveLength(3);
+    s.release[2]!();
+    expect((await fg).isError).toBe(false);
+    await stopWindowsBackground("bg-f1", ids[0]!);
+    await stopWindowsBackground("bg-f2", ids[1]!);
+  }, 30_000);
+  test("rule 8c: when the fenced set grows, it is ended and the bot is told to run it again", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const { t } = make(s.spawner, "bg-g", wakes);
+    const id = idOf((await t.Bash!.run({ command: "x", run_in_background: true })).text);
+    s.runs[0]!.onFenceGrew!();
+    const end = await told(wakes, id);
+    expect(end).toMatchObject({ status: "stopped" });
+    expect(end!.text).toContain("something the sandbox protects appeared");
+    expect(end!.text).toContain("run it again");
+    expect(windowsBackgroundOf("bg-g")).toEqual([]);
+  }, 30_000);
+  test("ended from outside, each told why: the pause, this computer no longer running the bots, a removed bot, a lowered level, a conversation ended", async () => {
+    let paused = false, runs = true;
+    const gateFns: (() => void)[] = [], botFns: ((e: { type: string; id?: unknown }) => void)[] = [], levelFns: (() => void)[] = [];
+    const off = endWindowsBackgroundOn({
+      gate: { watch: (fn) => { gateFns.push(fn); return () => {}; }, mayAct: (v) => v.kind === "coding" || (!paused && (v.kind !== "bot" || runs)), get paused() { return paused; } },
+      bots: { onEvent: (fn) => { botFns.push(fn); return () => {}; } },
+      levels: { watch: (fn) => { levelFns.push(fn); return () => {}; } },
+    });
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const start = async (session: string, more: Parameters<typeof make>[4] = {}) => idOf((await make(s.spawner, session, wakes, undefined, more).t.Bash!.run({ command: "x", run_in_background: true })).text);
+    const cases: [string, () => void, string, Parameters<typeof make>[4]?][] = [
+      ["bg-h1", () => { paused = true; gateFns.forEach((f) => f()); }, "the user paused the bots"],
+      ["bg-h2", () => { paused = false; runs = false; gateFns.forEach((f) => f()); }, "this computer stopped running the bots"],
+      ["bg-h3", () => { runs = true; botFns.forEach((f) => f({ type: "bot_removed", id: "nova" })); }, "its bot was removed or archived", { bot: "nova" }],
+      ["bg-h5", () => void endWindowsBackgroundOf("bg-h5", "its conversation was deleted"), "its conversation was deleted"],
+    ];
+    for (const [session, act, why, more] of cases) {
+      const id = await start(session, more);
+      // Another session's command, not picked by the event, keeps running.
+      const other = await start(`${session}-other`, { bot: "sol", sessionKind: "coding" });
+      act();
+      const end = await told(wakes, id);
+      expect([session, end?.status, end?.text.includes(why)]).toEqual([session, "stopped", true]);
+      expect(windowsBackgroundOf(`${session}-other`)).toEqual([other]);
+      await stopWindowsBackground(`${session}-other`, other);
+    }
+    // The level: lowered below the one it started under ends it; raised, or the same, doesn't.
+    let level: Level | undefined = "accept-edits";
+    const id = await start("bg-h4", { level: () => level });
+    level = "automatic"; levelFns.forEach((f) => f());
+    level = "accept-edits"; levelFns.forEach((f) => f());
+    await Bun.sleep(50);
+    expect(windowsBackgroundOf("bg-h4")).toEqual([id]);
+    level = "ask"; levelFns.forEach((f) => f());
+    const end = await told(wakes, id);
+    expect(end).toMatchObject({ status: "stopped", text: expect.stringContaining("the approval level was lowered") });
+    off();
+  }, 30_000);
 });
 
 describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
@@ -671,4 +743,25 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
     expect(again.length).toBe(first + 1);
     expect(again[again.length - 1]).toContain(candidate);
   });
+  // A launcher that sleeps, so the command is running while the fence changes: a shell script, which only a POSIX host
+  // launches (the windows-fence unit job skips it; the e2e runs the real srt-win).
+  test.skipIf(process.platform === "win32")("rule 8c: a long command is told once when a protected path appears while it runs; one with nothing new is not", async () => {
+    for (const appears of [true, false]) {
+      const m = machine();
+      const dir = mkdtempSync(join(tmpdir(), "ws7-8c-"));
+      const launcher = join(dir, "sleepy-srt.sh");
+      writeFileSync(launcher, "#!/bin/sh\nsleep 2\nexit 0\n");
+      chmodSync(launcher, 0o755);
+      const exec = m.deps.exec;
+      const deps: WinFencedDeps = { ...m.deps, launcher, fenceWatchMs: 50, exec: (argv, o) => exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o) };
+      const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+      const candidate = profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!;
+      let grew = 0;
+      const run = s.run({ ...runOf(m.home), timeoutMs: 10_000, onFenceGrew: () => { grew++; } });
+      if (appears) { await Bun.sleep(700); mkdirSync(candidate, { recursive: true }); }
+      const r = await run;
+      expect(r).not.toMatchObject({ kind: "refused" });
+      expect([appears, grew]).toEqual([appears, appears ? 1 : 0]);
+    }
+  }, 30_000);
 });

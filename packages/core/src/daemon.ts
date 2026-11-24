@@ -149,7 +149,7 @@ import { plainText } from "./bots/service";
 import { ClientBuilds } from "./registry/client-builds";
 import { botDriverFactory, botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "./runtime-sdk/turn-loop/driver";
 import { fencedSpawner } from "./fence/fenced-process";
-import { stopWindowsBackground, windowsShellTools } from "./fence/win-shell-tools";
+import { endWindowsBackgroundOf, endWindowsBackgroundOn, stopWindowsBackground, windowsShellTools } from "./fence/win-shell-tools";
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
@@ -2711,6 +2711,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     onStoredSessionDeleted(sessionId);
     // ComputerV2: the session's automation worker ends with it, and the helper releases its targets.
     computerUseRuntime.service.endSession(sessionId);
+    // Its Windows background commands (lane WS7) end with it.
+    void endWindowsBackgroundOf(sessionId, "its conversation was deleted");
   };
   /** Task 17: what the engine used to answer, over the driver table + the child roster. */
   const grantDeniedPrefixes = [mossHome];
@@ -4761,6 +4763,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             return floored;
           },
           userHome: fence.home, temp: fence.temp, mossHome,
+          // Rule B: the level a background command starts under, so lowering it ends the command (below, after the parts).
+          level: () => levelOfSession(ctx),
           // Rule B: a background command's end comes back to the conversation as a background task's notification.
           ...(ctx.wake === undefined ? {} : { wake: (input: { task: string; status: "completed" | "failed" | "stopped"; text: string }) => ctx.wake!(input) }),
         });
@@ -5185,6 +5189,17 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // The lease is read now: a `host.start: "main"` host half starts here when this computer is the main (no lease
       // here: it is its own).
       setPluginMain(daemonParts.main);
+      // Windows background commands (lane WS7, the WS7 reviewer's item 2; spec §9.2: the pause switch pauses everything,
+      // and a background command can't be held at a tool call as a turn is): MOSS ends a conversation's background
+      // commands, each told why, when the bots are paused or this computer stops running them, when the bot is removed or
+      // archived, when the approval level drops below the one a command started under, and when its conversation ends
+      // or is deleted (`onSessionDeleted`). Off Windows none ever runs.
+      // The listeners go with the gate, the bot service and the registry when the parts close.
+      if (process.platform === "win32") {
+        const side = daemonParts.bots;
+        const levels = daemonParts.node?.registry;
+        endWindowsBackgroundOn({ ...(side === undefined ? {} : { gate: side.gate, bots: side.bots }), ...(levels === undefined ? {} : { levels }) });
+      }
       // The activity feed reads the session host: its sessions' states, tools and cards, never their words. A session that
       // stops takes its live pictures with it.
       const sessionHost = daemonParts?.bots?.host;
@@ -5192,7 +5207,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         activityTracker = new ActivityTracker({
           host: sessionHost, feed: activityFeed, now: () => Date.now(),
           botName: (id) => { const name = daemonParts?.bots?.bots.get(id)?.name; return typeof name === "string" ? name : undefined; },
-          onSessionEnded: (id) => { browserDrives.sessionEnded(id); livePictures.sessionEnded(id); },
+          onSessionEnded: (id) => { browserDrives.sessionEnded(id); livePictures.sessionEnded(id); void endWindowsBackgroundOf(id, "its conversation ended"); },
         });
         activityTracker.start();
       }

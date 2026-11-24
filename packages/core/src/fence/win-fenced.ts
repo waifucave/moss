@@ -43,6 +43,7 @@
 //     same Windows user); a per-command read deny is dropped only when the grant IN FORCE, read back at that command
 //     (`profile status`), excludes the path; otherwise it is stamped (`perExecReadDenies`). 8b: when the fenced set
 //     gains a path that exists, the grant is made again with it before a command, between commands (`refreshExcludes`).
+//     8c: a long command (`onFenceGrew`) is watched while it runs, and ended by its caller when its fenced set grows.
 //  9. Nothing carries over (spec §9.1): after each command the reset task (SYSTEM, `sandbox reset`) deletes the
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
@@ -330,6 +331,8 @@ export interface WinFencedDeps {
   /** How long a command waits for a free, reset principal before it is refused, and how often it looks. */
   readonly leaseTimeoutMs?: number;
   readonly leasePollMs?: number;
+  /** Rule 8c: how often a long command's fenced set is looked at again (`FencedRun.onFenceGrew`). */
+  readonly fenceWatchMs?: number;
 }
 
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
@@ -679,7 +682,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   const refreshExcludes = async (): Promise<void> => {
     if (refreshing !== null) return refreshing;
     const had = grantedExcludes.get(grantKey);
-    if (had === undefined || heldGrants.inFlight > 0 || plansInFlight.size > 0 || commandsActive > 0) return;
+    // The command asking is counted already (`runOne`): none other may be.
+    if (had === undefined || heldGrants.inFlight > 0 || plansInFlight.size > 0 || commandsActive > 1) return;
     const now = profileExcludes();
     if (!now.some((p) => !had.some((e) => fold(e) === fold(p)))) return;
     refreshing = (async () => {
@@ -727,10 +731,11 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       if (r.signal?.aborted) return { kind: "refused", reason: "cancelled before it started" };
       const got = install();
       if ("why" in got) return refuse(got.why);
-      const readNote = await grantProfile();
-      if (readNote === null) await refreshExcludes();
+      // Counted before the exclusions' check (the WS7 reviewer's nit): another command's check then sees this one.
       commandsActive++;
       counted.add(r);
+      const readNote = await grantProfile();
+      if (readNote === null) await refreshExcludes();
       const shell: WinShell = r.shell ?? "bash";
       const exe = shell === "powershell" ? deps.shells.powershell : deps.shells.bash;
       if (exe === null) return refuse(shell === "powershell" ? "Windows PowerShell isn't in System32" : "Git for Windows' bash isn't installed (Program Files\\Git, or this user's Programs\\Git)");
@@ -817,7 +822,8 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           for (const x of roots) grantedRoots.set(fold(x), x);
           // Rule 4: what exists of the fenced set, stamped for this command; past a root's walk budget, the folders it
           // didn't read are denied whole (`existingDeniesOf`). And rule 3c's stray roots, by name.
-          const denyRead = await perExecReadDenies(uniq([...existingDeniesOf(plan.denyRead).paths, ...stray.filter((x) => existsSync(x))]));
+          const readWalk = existingDeniesOf(plan.denyRead);
+          const denyRead = await perExecReadDenies(uniq([...readWalk.paths, ...stray.filter((x) => existsSync(x))]));
           const writeWalk = existingDeniesOf(plan.denyWrite);
           // Only a write deny at or under a write root is stamped: nothing outside the roots is writable with the
           // write-restricted token (rule 3), and each stamp on a folder is a DACL write Windows carries down its whole
@@ -848,7 +854,25 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // its own lines go to the timing line, never into the command's output.
           const timing = process.env.MOSS_WIN_FENCE_TIMING === "1";
           const argv = timing ? built.argv.filter((a, i) => !(a === "--quiet" && i < built.argv.indexOf("--"))) : built.argv;
-          const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv });
+          // Rule 8c (lane WS7, the WS7 reviewer's items 1 and 3): a long command is planned and stamped once, at its start,
+          // so what the fence protects that appears later (a secret file made in a folder its grant opens, a new match
+          // of a pattern, a place the profile grant must now exclude) would stay open to it for its whole life, and the
+          // grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced set is
+          // looked at again every `fenceWatchMs`: the paths its read and write denies match now, and the profile
+          // grant's exclusions; once anything is there that wasn't at its start, its caller is told (once) and ends it.
+          // A foreground command has no watch: it lives at most its 10-minute limit, and the next one is planned anew.
+          const fenceWatch = r.onFenceGrew === undefined ? null : (() => {
+            const fencedNow = () => [...existingDeniesOf(plan.denyRead).paths, ...existingDeniesOf(plan.denyWrite).paths.filter((d) => roots.some((x) => winUnder(d, x))), ...profileExcludes()];
+            const had = new Set([...readWalk.paths, ...denyWrite, ...profileExcludes()].map(fold));
+            const t = setInterval(() => {
+              if (!fencedNow().some((p) => !had.has(fold(p)))) return;
+              clearInterval(t);
+              try { r.onFenceGrew!(); } catch { /* the caller's own */ }
+            }, deps.fenceWatchMs ?? 30_000);
+            return t;
+          })();
+          const ran = await runCommand({ ...r, env: minimalChildEnv() }, { shell: runShell, argv })
+            .finally(() => { if (fenceWatch !== null) clearInterval(fenceWatch); });
           mark("exec");
           if (ran.kind === "refused") return ran;
           let result = ran;
