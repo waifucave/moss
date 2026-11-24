@@ -9,9 +9,12 @@
 // so nothing shows in the Dock), with a throwaway profile folder it deletes afterwards. It drives the browser over the
 // DevTools protocol on a pipe-free local port, and it stops only the browser it started. It never runs in CI: the
 // browser is found on this computer (Playwright's cache, where a lane's gallery put one) or named with --browser.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+//
+// It draws into a hidden folder beside --out and puts it in --out's place only once every picture, sheet and
+// requests.json is written: a run that fails or is stopped leaves the last complete set where it was.
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildSite } from "../src/build";
 import { readConfig, withSwitches } from "../src/config";
 import { serveSite } from "../src/serve";
@@ -21,8 +24,17 @@ const arg = (name: string) => {
   return i === -1 ? undefined : process.argv[i + 1];
 };
 if (process.env.CI !== undefined) throw new Error("render: not in CI (it runs a browser)");
-const OUT = resolve(arg("--out") ?? "");
 if (arg("--out") === undefined) throw new Error("usage: bun scripts/render.ts --out <folder> [--browser <path>]");
+/** Where the finished set goes, and the hidden folder beside it that this run draws into until it is complete. */
+const TARGET = resolve(arg("--out")!);
+const OUT = join(dirname(TARGET), `.${basename(TARGET)}.rendering-${process.pid}`);
+let complete = false;
+// However the run ends short of a complete set (a failed start, an error), the unfinished folder goes.
+process.on("exit", () => {
+  if (complete) return;
+  rmSync(OUT, { recursive: true, force: true });
+  try { rmSync(scratch, { recursive: true, force: true }); } catch { /* not made yet */ }
+});
 
 function findBrowser(): string {
   const named = arg("--browser") ?? process.env.MOSS_SITE_BROWSER;
@@ -154,6 +166,7 @@ async function shoot(cdp: Cdp, s: Shot): Promise<void> {
 // ---------------------------------------------------------------- the run
 
 const scratch = mkdtempSync(join(process.env.MOSS_SITE_SCRATCH ?? tmpdir(), "moss-site-render-"));
+rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 const base = readConfig();
 const builds = {
@@ -164,6 +177,16 @@ const servers = Object.fromEntries(Object.entries(builds).map(([k, b]) => [k, se
 const profile = join(scratch, "profile");
 mkdirSync(profile);
 const { cdp, proc } = await startBrowser(profile);
+// Stopped from outside: end the browser and the servers, drop the unfinished set; the last complete one stays.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    proc.kill();
+    for (const s of Object.values(servers)) s.stop();
+    rmSync(OUT, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+    process.exit(130);
+  });
+}
 
 const WIDTHS = [1440, 820, 390] as const;
 const THEMES = ["light", "dark"] as const;
@@ -179,7 +202,7 @@ for (const theme of THEMES) for (const width of WIDTHS) {
   shots.push({ file: `landing-download-released-${width}-${theme}.png`, url: `${servers.released.url}/`, width, theme, element: "#download" });
   for (const p of builds.unreleased.pages.filter((p) => p !== "/")) shots.push({ file: `${name(p)}-${width}-${theme}.png`, url: `${servers.unreleased.url}${p}`, width, theme });
 }
-console.log(`render: ${shots.length} pictures into ${OUT}`);
+console.log(`render: ${shots.length} pictures, for ${TARGET}`);
 try {
   for (const s of shots) await shoot(cdp, s);
 
@@ -217,10 +240,22 @@ figure{margin:0}figcaption{margin-top:6px;opacity:.7}img{display:block;border:1p
   if (overflow.length > 0) console.log(`render: pages wider than the screen:\n  ${overflow.join("\n  ")}`);
   else console.log("render: no page is wider than its screen");
   console.log(`render: hosts any page asked for: ${[...hosts].sort().join(", ")}`);
+  complete = true;
 } finally {
   cdp.close();
   proc.kill();
   await proc.exited;
   for (const s of Object.values(servers)) s.stop();
   rmSync(scratch, { recursive: true, force: true });
+  if (complete) {
+    // The finished set takes the target's place; the earlier set goes only after that.
+    const old = join(dirname(TARGET), `.${basename(TARGET)}.old-${process.pid}`);
+    if (existsSync(TARGET)) renameSync(TARGET, old);
+    renameSync(OUT, TARGET);
+    rmSync(old, { recursive: true, force: true });
+    console.log(`render: the set is in ${TARGET}`);
+  } else {
+    rmSync(OUT, { recursive: true, force: true });
+    console.log(`render: not finished; ${TARGET} is as it was`);
+  }
 }
