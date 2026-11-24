@@ -68,7 +68,7 @@ function broker(grants: CredentialGrant[], refused: { label: string }[] = []) {
     let consumed = 0;
     let saslLeft = opts.lines ?? 1;
     const replies = async (): Promise<Message[]> => {
-      await Bun.sleep(20);
+      await Bun.sleep(2);
       const chunks = byConn.get(id) ?? [];
       for (const c of chunks.slice(consumed)) reader.push(c);
       consumed = chunks.length;
@@ -86,7 +86,7 @@ function broker(grants: CredentialGrant[], refused: { label: string }[] = []) {
     const call = async (dest: string, path: string, iface: string | undefined, member: string, signature = "", body: DValue[] = []): Promise<Message> => {
       const s = serial++;
       send(encodeMessage({ type: MessageType.Call, flags: 0, serial: s, dest, path, ...(iface ? { iface } : {}), member, signature, body }));
-      for (let k = 0; k < 50; k++) {
+      for (let k = 0; k < 500; k++) {
         const hit = (await replies()).find((m) => m.replySerial === s);
         if (hit) return hit;
       }
@@ -264,6 +264,33 @@ describe("the sandbox's bus", () => {
     expect((await fresh.hello()).type).toBe(MessageType.Return);
     b.end();
   });
+
+  test("a message that declares file descriptors drops its connection; another client still gets its answer", async () => {
+    const b = broker([GIT]);
+    const bad = b.client();
+    await bad.hello();
+    bad.send(encodeMessage({ type: MessageType.Call, flags: 0, serial: 50, dest: SECRETS, path: "/org/freedesktop/secrets", iface: SVC, member: "SearchItems", signature: "a{ss}", body: [attrs({})], unixFds: 1 }));
+    await Bun.sleep(50);
+    expect(bad.closed()).toBe(true);
+    expect(b.keyring.searches).toEqual([]);
+    const good = b.client();
+    await good.hello();
+    const r = await good.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: "github.com" })]);
+    expect((r.body[0] as string[]).length).toBe(1);
+    b.end();
+  });
+
+  test("a run's searches are bounded against the real keyring", async () => {
+    const b = broker([GIT]);
+    const c = b.client();
+    await c.hello();
+    let last: Message | null = null;
+    for (let k = 0; k < 900; k++) last = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({})]);
+    // Each search here costs 5 keyring reads (a search and four items): past the budget the broker answers an error.
+    expect(last!.type).toBe(MessageType.Error);
+    expect(b.keyring.searches.length).toBeLessThanOrEqual(BROKER_LIMITS.keyringCalls);
+    b.end();
+  }, 60_000);
 
   test("a call before Hello and a call with no destination are refused", async () => {
     const b = broker([GIT]);

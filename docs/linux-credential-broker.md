@@ -115,7 +115,11 @@ which can start host containers.
   closes that connection. The other connections and the engine carry on.
 - File descriptors: TCP can't carry them, `NEGOTIATE_UNIX_FD` is answered `ERROR`, and a message that declares
   `UNIX_FDS` is dropped with its connection.
-- A flood: each connection handles one message at a time, and its input past the bound closes it.
+- A flood: each connection handles one message at a time, and its input past the bound closes it. A run causes at
+  most 4096 calls to the real keyring, so searches can't keep the user's keyring busy.
+- A relay that can't start: the run gets the broker only when the engine's executable and the relay's file are real
+  files outside the MOSS home's view. A compiled engine (`/$bunfs`) has no relay file yet, so it serves no broker. The
+  run then behaves as before.
 - A race at start: the relay listens before it starts the command, and the engine's end exists before bwrap starts.
 - The end: the relay exits with the command, the sandbox's pid namespace takes everything else with it, and the
   engine closes its ends of the pipes and its own connection to the real bus when the run returns.

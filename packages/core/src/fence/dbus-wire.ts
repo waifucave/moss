@@ -254,6 +254,7 @@ export function encodeMessage(m: Message): Buffer {
   add(1, "o", m.path); add(2, "s", m.iface); add(3, "s", m.member); add(4, "s", m.error);
   add(5, "u", m.replySerial); add(6, "s", m.dest); add(7, "s", m.sender);
   if (m.signature !== "") add(8, "g", m.signature);
+  add(9, "u", m.unixFds);
   const w = new Writer();
   w.u8(0x6c); w.u8(m.type); w.u8(m.flags); w.u8(1); w.u32(body.length); w.u32(m.serial);
   w.value("a(yv)", fields);

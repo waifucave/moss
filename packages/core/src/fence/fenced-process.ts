@@ -8,7 +8,7 @@
 //            the door says so and refuses
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, realpathSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -289,7 +289,8 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
           // The credential broker (docs/linux-credential-broker.md): only when the run carries grants and the engine
           // has a session bus. The sandbox's mounts and filters are the same either way; the command then starts
           // under the bus relay, which reaches the engine through two pipes (the child's fds 4 and 5).
-          const broker = (r.credentials?.grants.length ?? 0) > 0 ? openBroker(r.credentials!) : null;
+          const relay = join(import.meta.dir, "linux-bus-relay.ts");
+          const broker = (r.credentials?.grants.length ?? 0) > 0 && relayReachable(relay, o.fence.mossHome) ? openBroker(r.credentials!) : null;
           const inner = ["/bin/sh", "-c", r.command];
           if (broker !== null) shimEnv.MOSS_SANDBOX_EXTRA_FDS = "4,5";
           let result: FencedRunResult;
@@ -297,7 +298,7 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
             result = await runCommand({ ...r, env: shimEnv }, {
               shell: "sh",
               argv: [process.execPath, join(import.meta.dir, "linux-sandbox-shim.ts"), bwrap, ...plan.args,
-                ...(broker === null ? inner : [process.execPath, join(import.meta.dir, "linux-bus-relay.ts"), "4", "5", ...inner])],
+                ...(broker === null ? inner : [process.execPath, relay, "4", "5", ...inner])],
               extraFds: broker === null ? [fd] : [fd, broker.childIn, broker.childOut],
             });
           } finally {
@@ -328,6 +329,21 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
 }
 
 const BWRAP = "/usr/bin/bwrap";
+
+/** Whether the bus relay can start inside the sandbox: the engine's executable and the relay's file are real files
+ *  outside the MOSS home (whose view hides everything else), never inside a compiled binary's own file system. When
+ *  not, the run gets no broker and behaves as before. */
+function relayReachable(relay: string, mossHome: string): boolean {
+  const inHome = (p: string) => p === mossHome || p.startsWith(`${mossHome}/`);
+  for (const p of [process.execPath, relay]) {
+    if (p.startsWith("/$bunfs")) return false;
+    try {
+      const real = realpathSync(p);
+      if (inHome(p) || inHome(real) || !lstatSync(real).isFile()) return false;
+    } catch { return false; }
+  }
+  return true;
+}
 
 /** The credential broker's pipes and its server for one run (Linux), or null when there is no session bus to read the
  *  keyring from (then the run reaches no bus, as before). `childIn`/`childOut` are the relay's ends, passed to the

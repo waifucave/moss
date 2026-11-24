@@ -143,9 +143,9 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     const refused: { label: string }[] = [];
     const gh = await run(cmd("github.com"), GRANTS, (i) => refused.push(i));
     expect(outOf(gh)).toContain(`password=${GIT_TOKEN}`);
-    const gl = await run(cmd("gitlab.com"), GRANTS, (i) => refused.push(i));
+    const gl = await run(`${cmd("gitlab.com")}; ${cmd("github.com")}`, GRANTS, (i) => refused.push(i));
     expect(outOf(gl)).not.toContain(GITLAB_TOKEN);
-    expect(outOf(gl)).not.toContain("password=");
+    expect(outOf(gl).match(/password=/g)).toHaveLength(1); // github.com's, from the same run: the broker answered
     expect(refused.map((r) => r.label).join(" ")).toContain("gitlab.com");
     // And git itself, through `git credential fill`.
     const fill = await run(`printf 'protocol=https\\nhost=github.com\\nusername=octo\\n\\n' | git -c credential.helper='${gitHelper}' credential fill`, GRANTS);
@@ -169,9 +169,11 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     expect((await sh(bunLookup, outsideEnv())).out).toBe(MOSS_KEY);
     const greedy: CredentialGrant[] = [...GRANTS, { label: "everything MOSS", attributes: { service: "com.waifucave.moss.core.key", account: "file" } },
       { label: "the device key", attributes: Object.fromEntries(Object.entries(mossBunAttrs).filter(([k]) => k !== "xdg:schema")) }];
+    // Each command ends with a granted lookup, so the run proves the broker answered it.
     for (const cmd of [lookup, bunLookup, "secret-tool search --all service com.waifucave.moss.core.key"]) {
-      const r = await run(cmd, greedy);
+      const r = await run(`${cmd}; echo; secret-tool lookup service gh:github.com username octo`, greedy);
       expect(outOf(r)).not.toContain(MOSS_KEY);
+      expect(outOf(r)).toContain(GH_TOKEN_VALUE);
     }
   }, 120_000);
 
@@ -213,6 +215,20 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     const s = await run("secret-tool lookup service gh:github.com username octo", null);
     expect(code(s)).not.toBe(0);
     expect(outOf(s)).not.toContain(GH_TOKEN_VALUE);
+  }, 120_000);
+
+  test("with grants but no session bus in the engine, a run behaves as before: no bus address, no broker", async () => {
+    const saved = process.env.DBUS_SESSION_BUS_ADDRESS;
+    delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    try {
+      const r = await run("echo addr=$DBUS_SESSION_BUS_ADDRESS; secret-tool lookup service gh:github.com username octo", GRANTS);
+      expect(outOf(r)).toContain("addr=\n");
+      expect(outOf(r)).not.toContain(GH_TOKEN_VALUE);
+      expect(outOf(r)).not.toContain(REFUSAL);
+      expect(code(r)).not.toBe(0);
+    } finally {
+      process.env.DBUS_SESSION_BUS_ADDRESS = saved;
+    }
   }, 120_000);
 
   test("garbage and a flood on the sandbox's bus port end only that connection; the command still gets its login", async () => {

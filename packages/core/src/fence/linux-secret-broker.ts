@@ -74,7 +74,7 @@ export function grantMatches(grant: CredentialGrant, attributes: Record<string, 
 }
 
 // ---- bounds ----
-export const BROKER_LIMITS = { connections: 16, buffered: 4 * 1024 * 1024, attributes: 32, attributeLength: 1024, items: 256, searchResults: 256, saslLine: 1024, saslLines: 16, refusalsPerCall: 4 } as const;
+export const BROKER_LIMITS = { keyringCalls: 4096, connections: 16, buffered: 4 * 1024 * 1024, attributes: 32, attributeLength: 1024, items: 256, searchResults: 256, saslLine: 1024, saslLines: 16, refusalsPerCall: 4 } as const;
 
 const DBUS = "org.freedesktop.DBus";
 const SECRETS = "org.freedesktop.secrets";
@@ -434,6 +434,19 @@ export interface SandboxBusOptions {
   readonly mossNames?: readonly string[];
 }
 
+/** The keyring behind a run's broker, with a bound on how many real-keyring calls the whole run may cause: a flood of
+ *  searches can't keep the user's keyring busy past it. */
+function budgeted(b: SecretBackend): SecretBackend {
+  let left: number = BROKER_LIMITS.keyringCalls;
+  const spend = () => { if (left-- <= 0) throw new Error("the run's keyring budget is spent"); };
+  return {
+    search: async (a) => { spend(); return b.search(a); },
+    item: async (r) => { spend(); return b.item(r); },
+    secret: async (r) => { spend(); return b.secret(r); },
+    close: () => b.close(),
+  };
+}
+
 /** Serves one run's sandbox bus until its input ends or `close()`; `done` settles then. */
 export function serveSandboxBus(o: SandboxBusOptions): { done: Promise<void>; close(): void } {
   const names = o.mossNames ?? mossItemNames();
@@ -442,7 +455,7 @@ export function serveSandboxBus(o: SandboxBusOptions): { done: Promise<void>; cl
   let ended = false;
   const ctx: BrokerContext = {
     guid: randomBytes(16).toString("hex"),
-    backend: () => (backend ??= o.backend()),
+    backend: () => (backend ??= budgeted(o.backend())),
     verdict: (item) => (isMossItem(item, names) ? "moss" : o.policy.grants.some((g) => grantMatches(g, item.attributes)) ? "allow" : "refuse"),
     refused: (item) => { try { o.policy.refused?.({ label: item.label, attributes: { ...item.attributes } }); } catch { /* the card is best effort */ } },
   };
