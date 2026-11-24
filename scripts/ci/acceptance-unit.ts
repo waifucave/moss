@@ -17,6 +17,8 @@ import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync,
 import { join, resolve } from "node:path";
 import { MEASURED_ON_MAC_ONLY, MEASURED_ROWS } from "../acceptance/measured";
 import { NOT_ON_LINUX, NOT_ON_LINUX_ROWS } from "../acceptance/not-on-linux";
+/** The engine's own words when it refuses MOSS's coding agent on Windows (packages/core/src/agents/sandbox/in-process.ts `notAvailableHere`). */
+const NOT_ON_WINDOWS_NOTICE = "isn't available on Windows yet";
 import { expandUnitIds, units, type UnitId } from "../acceptance/shards";
 
 export interface Verdict {
@@ -29,6 +31,8 @@ export interface Verdict {
   macOnly: { n: number; name: string; reason: string }[];
   /** The rows that say "NOT ON LINUX" (not-on-linux.ts): macOS behaviour by design, with the reason; present only when there are some. */
   notOnLinux?: { n: number; name: string; reason: string }[];
+  /** The rows that did not pass on Windows because MOSS's coding agent has no sandbox there (the product's own notice, `NOT_ON_WINDOWS_NOTICE`), with the detail they gave; present only when there are some. */
+  notOnWindows?: { n: number; name: string; reason: string }[];
   /** The rows that were not PASS. */
   failed: { n: number; name: string; detail: string }[];
 }
@@ -54,6 +58,7 @@ export function judge(input: { exit: number; table: string; progress: string; lo
   const macOnly: Verdict["macOnly"] = [];
   const notLinux: NonNullable<Verdict["notOnLinux"]> = [];
   const failed: Verdict["failed"] = [];
+  const notWin: NonNullable<Verdict["notOnWindows"]> = [];
   for (const r of rows) {
     if (r.status === "PASS" && r.detail.startsWith(MEASURED_ON_MAC_ONLY)) {
       // Only the rows measured.ts names may leave their bar to the Mac; the marker on any other row is a problem.
@@ -63,6 +68,10 @@ export function judge(input: { exit: number; table: string; progress: string; lo
       // Only the rows not-on-linux.ts names may say so; the marker on any other row is a problem.
       if (NOT_ON_LINUX_ROWS.some((m) => r.name.startsWith(m.prefix))) notLinux.push({ n: r.n, name: r.name, reason: r.detail.slice(NOT_ON_LINUX.length).replace(/^: /, "") });
       else problems.push(`row ${r.n} "${r.name}" says it is not run on Linux, and is not one of the rows allowed to (scripts/acceptance/not-on-linux.ts)`);
+    } else if (r.status !== "PASS" && r.detail.includes(NOT_ON_WINDOWS_NOTICE)) {
+      // The row's own failure carries the engine's refusal to run MOSS's coding agent on Windows (agents/sandbox/in-process.ts): the row proves
+      // a behaviour of an agent turn, which Windows has no sandbox for yet. Listed, never counted as a pass, and no problem (the product says it).
+      notWin.push({ n: r.n, name: r.name, reason: r.detail.slice(0, 300) });
     } else if (r.status !== "PASS") {
       problems.push(`row ${r.n} "${r.name}" is ${r.status}: ${r.detail.slice(0, 300)}`);
       failed.push({ n: r.n, name: r.name, detail: r.detail.slice(0, 300) });
@@ -79,7 +88,11 @@ export function judge(input: { exit: number; table: string; progress: string; lo
     const line = shown(f.text);
     if (line !== undefined) problems.push(`a window was shown while headless (${f.file}): ${line.slice(0, 200)}`);
   }
-  return { ok: problems.length === 0, problems, rows: rows.length, passed: rows.filter((r) => r.status === "PASS").length - macOnly.length - notLinux.length, macOnly, ...(notLinux.length > 0 ? { notOnLinux: notLinux } : {}), failed };
+  // run.ts exits 1 for a row it could not pass: with every such row listed as not on Windows, that exit is already said.
+  const exitProblem = `run.ts exited ${input.exit}`;
+  const unexplainedRows = problems.filter((p) => p !== exitProblem).length > 0 || failed.length > 0;
+  if (notWin.length > 0 && !unexplainedRows) problems.splice(problems.indexOf(exitProblem) >= 0 ? problems.indexOf(exitProblem) : problems.length, 1);
+  return { ok: problems.length === 0, problems, rows: rows.length, passed: rows.filter((r) => r.status === "PASS").length - macOnly.length - notLinux.length, macOnly, ...(notLinux.length > 0 ? { notOnLinux: notLinux } : {}), ...(notWin.length > 0 ? { notOnWindows: notWin } : {}), failed };
 }
 
 /** The text of every `*.log` file under `dir` (kept logs: the daemons', the app's), at most 20 MiB each. */
@@ -100,10 +113,11 @@ function keptLogs(dir: string): { file: string; text: string }[] {
 function report(unit: string, v: Verdict, table: string, label = ""): string {
   const tail = table.split("\n").filter((l) => /^\d+\/\d+ passed|^slowest:/.test(l)).join("\n");
   return [
-    `### acceptance: ${unit}${label} — ${v.ok ? "PASS" : "FAIL"} (${v.passed}/${v.rows} rows${v.macOnly.length > 0 ? `, ${v.macOnly.length} left to the Mac` : ""}${(v.notOnLinux ?? []).length > 0 ? `, ${v.notOnLinux!.length} not on Linux` : ""})`,
+    `### acceptance: ${unit}${label} — ${v.ok ? "PASS" : "FAIL"} (${v.passed}/${v.rows} rows${v.macOnly.length > 0 ? `, ${v.macOnly.length} left to the Mac` : ""}${(v.notOnLinux ?? []).length > 0 ? `, ${v.notOnLinux!.length} not on Linux` : ""}${(v.notOnWindows ?? []).length > 0 ? `, ${v.notOnWindows!.length} not on Windows` : ""})`,
     ...(v.problems.length > 0 ? ["", ...v.problems.map((p) => `- ${p}`)] : []),
     ...(v.macOnly.length > 0 ? ["", ...v.macOnly.map((m) => `- measured on the Mac only: row ${m.n} "${m.name.slice(0, 100)}": ${m.reason}`)] : []),
     ...((v.notOnLinux ?? []).length > 0 ? ["", ...v.notOnLinux!.map((m) => `- not on Linux: row ${m.n} "${m.name.slice(0, 100)}": ${m.reason}`)] : []),
+    ...((v.notOnWindows ?? []).length > 0 ? ["", ...v.notOnWindows!.map((m) => `- not on Windows: row ${m.n} "${m.name.slice(0, 100)}": ${m.reason.slice(0, 200)}`)] : []),
     ...(tail !== "" ? ["", "```", tail, "```"] : []),
     "",
   ].join("\n");
