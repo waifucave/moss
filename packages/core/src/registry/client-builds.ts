@@ -340,7 +340,10 @@ function residentKb(pid: number): number {
         K32GetProcessMemoryInfo: { args: ["u64", "ptr", "u32"], returns: "i32" },
       });
       if (lib === null) return Number.NaN;
-      const h = BigInt(lib.OpenProcess!(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, pid) as number | bigint);
+      // Some Windows versions want PROCESS_VM_READ beside the limited query right for K32GetProcessMemoryInfo: both where the process allows
+      // them, the limited right alone where it doesn't.
+      let h = BigInt(lib.OpenProcess!(0x1010 /* PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ */, 0, pid) as number | bigint);
+      if (h === 0n) h = BigInt(lib.OpenProcess!(0x1000, 0, pid) as number | bigint);
       if (h === 0n) return Number.NaN;
       try {
         const counters = Buffer.alloc(72); // PROCESS_MEMORY_COUNTERS on 64-bit Windows: WorkingSetSize at 16

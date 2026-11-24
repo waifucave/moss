@@ -7,7 +7,7 @@
 // it. The process's own pipe (NDJSON JSON-RPC over the stdio it was started with) is `streamPeer`.
 import { writeSync } from "node:fs";
 import { ContractError } from "../contracts/common";
-import { pipeServerIdentity } from "../platform/win-pipe";
+import { currentUserSid, pipeServerIdentity } from "../platform/win-pipe";
 
 export type RpcHandler = (params: any) => unknown;
 
@@ -273,7 +273,10 @@ export async function connectSocketLink(path: string, maxLine?: number): Promise
   // squatter can't hold the name; this is the check that is still the host's own). Not told, or not the parent: no link.
   if (process.platform === "win32") {
     const server = pipeServerIdentity(path);
-    if (server === null || server.pid !== process.ppid) { socket.end(); throw new Error("the plugin host's link is not served by the daemon that started it"); }
+    // The parent by pid AND the same user: a parent that died before this connected, its pid since reused by someone else's process,
+    // is a different account's server, never this one's.
+    const me = currentUserSid();
+    if (server === null || server.pid !== process.ppid || me === null || server.userSid.toUpperCase() !== me.toUpperCase()) { socket.end(); throw new Error("the plugin host's link is not served by the daemon that started it"); }
   }
   link.attach(socket);
   return link;

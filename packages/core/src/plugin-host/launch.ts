@@ -120,7 +120,15 @@ export function spawnHostProcess(o: HostProcessLaunch & { graceMs?: number }): {
     peers.lockedDown();
     env = { ...(env ?? {}), MOSS_HOST_LINK: name } as typeof env;
   }
-  const child = Bun.spawn([...o.cmd], { env, stdio: group ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"], windowsHide: true, ...(o.cwd !== undefined ? { cwd: o.cwd } : {}), ...(group ? { detached: true } : {}) });
+  // The listen was made before the start: a start that throws must not leave the pipe behind.
+  const child = (() => {
+    try {
+      return Bun.spawn([...o.cmd], { env, stdio: group ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"], windowsHide: true, ...(o.cwd !== undefined ? { cwd: o.cwd } : {}), ...(group ? { detached: true } : {}) });;
+    } catch (err) {
+      pipe?.stop(true);
+      throw err;
+    }
+  })();
   hostPid = child.pid;
   noteSpawned(child.pid, child.exited); // C-M1: a plugin host process is never the user to the caller check
   // The daemon's end: a line past LINK_LINE_MAX from the process ends the link (its plugins crash), never buffered on.
