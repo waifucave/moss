@@ -11,7 +11,7 @@ export function start(api: HostApi): void {
   client = new RelayClient({
     origin: async () => (await api.settings.get<string>("origin")) ?? undefined,
     fetch: (url, init) => api.net.fetch(url, init, { auth: "relay-key" }),
-    device: api.device.id,
+    ...(api.plugin.device === undefined ? {} : { device: api.plugin.device }),
   });
 }
 
@@ -31,7 +31,7 @@ export const relay = {
     await live().putMail(args);
     return {};
   },
-  takeMail: async (args?: { max?: number }) => ({ mail: await live().takeMail(args ?? {}) }),
+  takeMail: async (args?: { device?: string; max?: number }) => ({ mail: await live().takeMail(args ?? {}) }),
   ackMail: async (args: { ids: string[] }) => {
     await live().ackMail(args);
     return {};
