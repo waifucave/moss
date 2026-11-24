@@ -35,7 +35,8 @@ fn text_of(v: Option<&Value>, max: usize) -> Option<String> {
         Value::Object(m) => m.get("en").and_then(Value::as_str).or_else(|| m.values().find_map(Value::as_str))?,
         _ => return None,
     };
-    Some(sealed_escape(s, false).chars().take(max).collect())
+    // Cut before escaping, so an escape is never cut in half.
+    Some(sealed_escape(&s.chars().take(max).collect::<String>(), false))
 }
 
 fn text(v: &Value, k: &str, max: usize) -> Option<String> {
@@ -68,7 +69,7 @@ fn strings(v: &Value, k: &str, max_units: usize) -> Vec<String> {
 
 /// An enum value we don't know, kept for the app to show plainly.
 fn other(s: &str) -> String {
-    sealed_escape(s, false).chars().take(64).collect()
+    sealed_escape(&s.chars().take(64).collect::<String>(), false)
 }
 
 fn answer_of(r: &Value, what: &str) -> Result<(), CoreError> {
@@ -405,7 +406,7 @@ pub fn session_item(v: &Value) -> Option<SessionItem> {
         "agent_error" => ItemKind::TurnError { text: text(v, "message", 2000).unwrap_or_default() },
         "turn_completed" => ItemKind::TurnEnded { reason: raw_str(v, "stopReason").map(other).unwrap_or_default() },
         "question_asked" => ItemKind::QuestionAsked { question: ask(v)? },
-        "question_resolved" => ItemKind::QuestionResolved { call_id: raw_str(v, "callId").filter(|c| c.len() <= 128)?.to_string() },
+        "question_resolved" => ItemKind::QuestionResolved { call_id: raw_str(v, "callId").filter(|c| !c.is_empty() && c.len() <= 128 && !c.chars().any(unshown))?.to_string() },
         x => ItemKind::Other { kind: other(x) },
     };
     Some(SessionItem { id: format!("{session}#{seq}"), session, seq, at: int(v, "ts").unwrap_or(0), late: boolean(v, "late").unwrap_or(false), kind })

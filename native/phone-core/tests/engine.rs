@@ -354,6 +354,15 @@ async fn unpaired_the_phone_pairs_the_same_computer_again_as_a_new_device() {
     let old = core.identity();
     engine.ok(json!({ "cmd": "waitDevice", "device": old.device_id })).await;
     let old_seeds: Vec<Vec<u8>> = ["device-key", "answer-key"].iter().map(|k| storage.0.lock().unwrap()[*k].clone()).collect();
+    // While a pairing shows its words, the last computer can't be forgotten (the pairing would complete under keys
+    // replaced by it); once that pairing is rejected, it can.
+    let begun = engine.ok(json!({ "cmd": "begin" })).await;
+    let open = core.clone().begin_pairing(begun["qr"].as_str().unwrap().into(), PhoneApp::Moss).await.expect("a second pairing shows its words");
+    assert!(matches!(core.forget_computer(first.id.clone()), Err(CoreError::Refused { .. })), "refused while a pairing is open");
+    assert_eq!(core.paired_computers().unwrap().len(), 1, "nothing was forgotten");
+    assert_eq!(core.identity().device_id, old.device_id);
+    open.reject().await;
+    drop(open);
     // Unpaired on the phone: nothing of that pairing stays, its identity included.
     core.forget_computer(first.id.clone()).unwrap();
     assert!(storage.0.lock().unwrap().iter().all(|(_, v)| !old_seeds.contains(v)), "an old seed is still in the store");

@@ -208,6 +208,7 @@ fn card(id: &str, title: &str) -> Value {
 fn honest(method: &str, _p: &Value) -> Reply {
     match method {
         "card.list" => Reply::Result(json!({ "cards": [] })),
+        "session.composerOffers" => Reply::Result(offers(524_288)),
         _ => Reply::Result(json!({ "ok": true })),
     }
 }
@@ -601,6 +602,9 @@ async fn a_file_is_staged_in_chunks_under_the_links_frame_limit() {
     let (g2, s2) = (got.clone(), sizes.clone());
     let f = Fake::link(Behaviour {
         rpc: Arc::new(move |m, p| {
+            if m == "session.composerOffers" {
+                return honest(m, p);
+            }
             if m != "session.stageFile" {
                 return honest(m, p);
             }
@@ -713,6 +717,9 @@ fn stager(answer: impl Fn(&Value, usize) -> Value + Send + Sync + 'static) -> Be
     let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Behaviour {
         rpc: Arc::new(move |m, p| {
+            if m == "session.composerOffers" {
+                return honest(m, p);
+            }
             if m != "session.stageFile" {
                 return honest(m, p);
             }
@@ -850,4 +857,73 @@ async fn forgetting_the_last_computer_leaves_nothing_of_the_old_identity() {
     // A new core over the same store is the new identity, and the endpoint binds again with it.
     assert_eq!(PhoneCore::new(storage.clone(), config()).unwrap().identity().device_id, after.device_id);
     core.clone().start().await.unwrap();
+}
+
+fn offers(chunk: u64) -> Value {
+    json!({ "kind": "bot", "pictures": true, "pictureChunks": { "maxBytes": 6_094_848, "chunkBytes": chunk },
+        "files": { "maxBytes": 52_428_800, "perMessage": 10, "chunkBytes": chunk }, "commands": [], "models": [], "efforts": [] })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uploads_take_the_chunk_size_the_composer_offers_within_the_links_bounds() {
+    let sizes: Arc<Mutex<Vec<usize>>> = Arc::default();
+    for (offer, ok) in [(Some(100_000u64), true), (Some(5 << 20), false), (Some(10), false), (None, false)] {
+        sizes.lock().unwrap().clear();
+        let s2 = sizes.clone();
+        let got: Arc<Mutex<usize>> = Arc::default();
+        let f = Fake::link(Behaviour {
+            rpc: Arc::new(move |m, p| match m {
+                "session.composerOffers" => Reply::Result(match offer {
+                    Some(c) => offers(c),
+                    None => json!({ "kind": "bot", "pictures": false, "commands": [], "models": [], "efforts": [] }),
+                }),
+                "session.stageFile" => {
+                    let n = bytes::from_b64(p["dataBase64"].as_str().unwrap()).unwrap().len();
+                    s2.lock().unwrap().push(n);
+                    let mut g = got.lock().unwrap();
+                    *g += n;
+                    Reply::Result(json!({ "upload": "up1", "received": *g, "done": *g == 250_000, "name": "a.txt", "path": "bots/alpha/files/a.txt" }))
+                }
+                _ => honest(m, p),
+            }),
+            after_hello: vec![],
+            lane_after_hello: None,
+        })
+        .await;
+        let (core, _) = phone_for(&[&f]).await;
+        let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+        until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+        let r = c.stage_file("s_alpha".into(), "a.txt".into(), vec![3; 250_000]).await;
+        assert_eq!(r.is_ok(), ok, "{offer:?}: {r:?}");
+        if ok {
+            assert_eq!(*sizes.lock().unwrap(), [100_000, 100_000, 50_000], "the offered chunk size is used");
+        } else {
+            assert!(sizes.lock().unwrap().is_empty(), "{offer:?}: nothing is sent");
+        }
+        c.disconnect();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_event_queue_holds_its_byte_cap_for_large_questions() {
+    // 600 questions of about 80 KB each (48 MB) while the app reads none: the queue keeps to its 32 MiB.
+    let long = "q".repeat(9_000);
+    let option = json!({ "label": "x".repeat(200), "description": "d".repeat(9_000) });
+    let events: Vec<Vec<u8>> = (0..600)
+        .map(|i| {
+            let questions: Vec<Value> = (0..4).map(|k| json!({ "question": format!("{long}{k}"), "options": [option, option, option, option], "multiSelect": false })).collect();
+            serde_json::to_vec(&json!({ "jsonrpc": "2.0", "method": "event", "params": { "type": "question_asked", "seq": i, "sessionId": "s_alpha", "ts": 1, "callId": format!("c{i}"), "questions": questions } })).unwrap()
+        })
+        .collect();
+    let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: events, lane_after_hello: None }).await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    // A call answered after them all: every event has been read by then (one stream, in order).
+    let end = Instant::now() + Duration::from_secs(30);
+    while c.call("bot.list".into(), "{}".into()).await.is_err() {
+        assert!(Instant::now() < end);
+    }
+    assert!(c.queued_event_bytes() <= 32 << 20, "the queue holds {} bytes", c.queued_event_bytes());
+    assert!(matches!(c.next_event().await, Some(ConnEvent::Lagged { .. })), "the oldest were dropped and the app is told");
+    c.disconnect();
 }
