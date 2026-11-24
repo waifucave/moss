@@ -59,7 +59,8 @@ export async function startDaemonPairSide(input: DaemonPairSideInput): Promise<D
   // `whoami` by its System32 path (as the secrets files do): the one on PATH may be Git Bash's coreutils, which takes no `/user`, and
   // then the run folder and the app token are not locked to the user (a Windows user who starts the engine from Git Bash or MSYS).
   const userSid = input.os === "win32" ? await windowsUserSid(system32(run)) : undefined;
-  const files = { os: input.os, run, ...(userSid ? { userSid } : {}) };
+  // The run folder's ACL (icacls) and the app token's go through System32's tools too, not whatever PATH names first.
+  const files = { os: input.os, run: input.os === "win32" ? system32(run) : run, ...(userSid ? { userSid } : {}) };
   await lockRunDir(input.runDir, files);
   const appToken = await mintAppToken(input.runDir, files);
   // A test-marked build never starts the app (it would open a window): the daemon runs alone, whoever connects.

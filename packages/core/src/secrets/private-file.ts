@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ContractError } from "../contracts/common";
+import { ffiLib, ffiPtr } from "../platform/ffi";
 import { bunRunner, windowsUserSid, type Runner } from "../platform/login/live";
 
 /** The durable steps of a write, in the order they happen. */
@@ -36,11 +37,27 @@ export interface PrivateFileDeps {
 /** Windows' own tools by full path: a bare `whoami` or `icacls` on PATH may be Git's (Git Bash's coreutils `whoami` takes no
  *  `/user`), and a program a user's PATH names first is not to be trusted with an ACL. */
 export function system32(run: Runner): Runner {
-  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const dir = systemDirectory();
   return (argv) => {
     const [first, ...rest] = argv;
-    return run(first === "whoami" || first === "icacls" ? [`${root}\\System32\\${first}.exe`, ...rest] : argv);
+    return run(first === "whoami" || first === "icacls" ? [`${dir}\\${first}.exe`, ...rest] : argv);
   };
+}
+
+let sysDir: string | undefined;
+/** Windows' System32 folder as the OS gives it (`GetSystemDirectoryW`), not as an environment variable says: a process that starts this one
+ *  sets its environment. The variable is the fallback only when the call can't be made. */
+export function systemDirectory(): string {
+  if (sysDir !== undefined) return sysDir;
+  try {
+    const lib = ffiLib("private-file-k32", "kernel32.dll", { GetSystemDirectoryW: { args: ["ptr", "u32"], returns: "u32" } });
+    if (lib !== null) {
+      const buf = Buffer.alloc(2 * 520);
+      const n = lib.GetSystemDirectoryW!(ffiPtr(buf), 520) as number;
+      if (n > 0 && n < 520) return (sysDir = buf.subarray(0, n * 2).toString("utf16le"));
+    }
+  } catch { /* the variable below */ }
+  return (sysDir = `${process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows"}\\System32`);
 }
 
 let sidMemo: Promise<string | undefined> | undefined;
