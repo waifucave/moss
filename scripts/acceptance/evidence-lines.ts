@@ -27,7 +27,8 @@ export const EVIDENCE_LINES: readonly EvidenceLine[] = [
   { for: "the window moved by its title area", re: /^window: moved by its title area/, example: "window: moved by its title area, from (10, 20) to (130, 80)" },
   { for: "a window shown during a headless run (must not happen)", re: /^window: shown while headless/, example: "window: shown while headless (main: MOSS Code)" },
   { for: "the test seam's own window lines", re: /^window: the test seam /, example: "window: the test seam closes the main window" },
-  { for: "a surface asking to be placed", re: /^surface: /, example: "surface: a request visible=true (headless)" },
+  { for: "a surface asking to be placed", re: /^surface: a request/, example: "surface: a request visible=true (headless)" },
+  { for: "a surface put away, summoned or shown again", re: /^surface: \S+ /, example: "surface: moss/pill put away from the tray" },
   { for: "an answer to a sealed card, accepted or refused", re: /^sealed: answer (?:accepted|refused)/, example: "sealed: answer accepted for card_abc123" },
   { for: "a sealed press's fresh visibility report", re: /^sealed: press on \S+ .*: fresh report /, example: "sealed: press on card_abc123 approve in window 1: fresh report uncovered after 120 ms" },
   { for: "a plugin's command key ran, held, repeated, or the commands' keys bound", re: /^keys: /, example: "keys: acc.ping ran from its key" },
@@ -46,7 +47,8 @@ export const EVIDENCE_LINES: readonly EvidenceLine[] = [
   { for: "a press a frame made on its own", re: /^press: a call from frame /, example: "press: a call from frame 3 found no press of its own (x; the latest press: null)" },
   { for: "the OS window list read for a press", re: /^overlap: the OS window list /, example: "overlap: the OS window list read for a press (2 above, 0 of this program's own)" },
   { for: "a plugin's file grants", re: /^files: \S+: /, example: "files: acc-files: the core keeps no grants yet; the page's token works for the media URL only" },
-  { for: "the app waiting for a daemon, and an update switching", re: /^(?:pair|release|updater): /, example: "pair: unavailable (the engine isn't running)" },
+  { for: "a drop's grants", re: /^files: \S+: a drop gave /, example: "files: acceptance-media: a drop gave 1 grant(s)" },
+  { for: "the app waiting for a daemon", re: /^pair: (?:unavailable|starting-daemon|reconnecting)/, example: "pair: unavailable (the engine isn't running)" },
 ];
 
 /** What `fileLine` writes for a line it has no rule for. */

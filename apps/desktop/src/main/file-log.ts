@@ -74,6 +74,9 @@ export const KEEP: RegExp[] = [
   // A layer's own connection to the core (the acceptance run reads these two as evidence: scripts/acceptance/evidence-lines.ts).
   kp(String.raw`layers: ${REF}'s layer (?:connected to the core|connection closed \(it no longer shows UI\))`),
   kp(String.raw`files: ${REF}: the core keeps no grants yet; the page's token works for the media URL only`),
+  // A surface put away, summoned or shown again, and how (the tray, or the four-finger tap).
+  kp(String.raw`surface: ${REF} (?:put away|summoned(?: over the main window)?|shown|back to its usual place(?: \(not shown: the main window is in front\))?) (?:from the tray|by the four-finger tap)`),
+  kp(String.raw`files: ${REF}: (?:a drop gave ${N} grant\(s\)(?:, some refused)?|files\.pick(?:Open|Folder|Save) refused \(no key press or click of the user's just before\))`),
   kp(String.raw`layers: ${REF} \(${REF}\): refused a load of an address it replaced \(its frame has the newer one\)`),
   kp(String.raw`layers: ${REF} \(${REF}\) reported a height of -?${N}`),
   kp(String.raw`layers: ${REF} \(${REF}\) already holds ${N} parts, the most it may: a [a-z-]{1,24} instance of it gets no part placed and shows its fallback`),
