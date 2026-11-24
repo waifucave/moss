@@ -1559,7 +1559,25 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
         first ??= d;
       }
       return first;
-    }, 300).catch((err: unknown) => fail(`${why(err)}: ${firstLine(appLog, new RegExp(`fallback card for ${card.id}`)) ?? "the app logged nothing about its fallback"}${tried.length ? `; pressed before: ${tried.join(" | ")}` : ""} [apps/desktop/src/main/index.ts showFallbackCard]`));
+    }, 300).catch(async (err: unknown) => {
+      // Where the card's pages were when none could be pressed (a card in the conversation is never pressed here; a page the island folded away is gone):
+      // which of its documents exist, whether each holds the plain Approve, and whether the conversation holds it.
+      const seen = await (async () => {
+        const docs = (await cdp.documents()).filter((d) => decodeURIComponent(d.url).startsWith(cardUrl));
+        const conv = new Set<string>();
+        for (const d of await cdp.documents()) {
+          const v = await cdp.evaluate(d.session, `JSON.stringify([...document.querySelectorAll('.cl-conv-approval iframe')].map((f) => f.src))`).catch(() => "[]");
+          for (const u of JSON.parse(String(v)) as string[]) conv.add(decodeURIComponent(u));
+        }
+        const rows: string[] = [];
+        for (const d of docs) {
+          const has = await cdp.evaluate(d.session, `!!document.querySelector(${JSON.stringify(PLAIN_APPROVE)})`).catch(() => "unreadable");
+          rows.push(`${decodeURIComponent(d.url).slice(cardUrl.length).split("?")[0]} plainApprove=${has} inConversation=${conv.has(decodeURIComponent(d.url))}`);
+        }
+        return rows.length > 0 ? rows.join("; ") : "no document of the card";
+      })().catch((e: unknown) => `(unreadable: ${String(e).slice(0, 80)})`);
+      return fail(`${why(err)}: ${firstLine(appLog, new RegExp(`fallback card for ${card.id}`)) ?? "the app logged nothing about its fallback"}; the card's documents: ${seen}${tried.length ? `; pressed before: ${tried.join(" | ")}` : ""} [apps/desktop/src/main/index.ts showFallbackCard]`);
+    });
     const isOwn = found.url.startsWith(`${cardUrl}own`);
     // The page found can be drawn again before it is read (its session is then gone: "Session with given id not found", canvas row 128,
     // run 45384059255): the card's page is looked for again, as for a press that brought no answer.
