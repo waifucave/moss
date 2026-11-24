@@ -85,6 +85,8 @@ import { Cdp } from "./cdp";
 import { diagnosing, runnerState, stallReportsDone, startRunnerLog, watchAppStall, watchPingLines } from "./stall-watch";
 // lane HS
 import { parseIpcLine } from "../../apps/desktop/src/main/ui/ipc-stats";
+import { fileLine } from "../../apps/desktop/src/main/file-log";
+import { unkeptEvidence } from "./evidence-lines";
 import { BROWSER_HOST_STEP, HOST_GAVE_UP_STEP, HOST_IDLE_CPU_PERCENT, HOST_IDLE_MESSAGES_PER_S, HOST_IDLE_STEP, HOST_STEP, SURFACE_COPY_HOST_STEP, backgroundPart, hostCommandViaLauncher, hostLockPid, islandTarget, onscreenWindows, startHostLauncher, processAlive, readyCount } from "./host-step";
 import { BACKGROUND_IDS, writeBackground } from "./manifest-fields-step";
 import { checkPageReport } from "./layer-page-step";
@@ -6951,6 +6953,17 @@ try {
     else if (started && oldHalf && !lines.some((l) => /audio: muted/.test(l))) console.error("acceptance: audio: the old build doesn't say; every app start had --mute-audio on its command line");
     else if (started && !lines.some((l) => /audio: muted/.test(l))) { console.error("acceptance: FAIL: the app didn't say it started muted (no \"audio: muted\" line in app.log)"); code = code === 0 ? 1 : code; }
     else console.error(`acceptance: audio: ${lines.filter((l) => /audio: muted/.test(l)).length} app start(s) muted, none played unmuted`);
+  }
+  // The app's raw log through the filter a real build writes with: a line the steps rely on as evidence that would fall to "text not kept"
+  // there fails the run, so a reworded line cannot go missing from real builds' logs while the steps keep passing (evidence-lines.ts).
+  {
+    const text = ["app.log.1", "app.log"].flatMap((f) => readLog(join(home, "logs", f)).split("\n")).filter((l) => !(/^\d{4}-\d\d-\d\dT/.test(l) && l.slice(0, 24) < runStartedAt)).join("\n");
+    const unkept = unkeptEvidence(text, fileLine);
+    if (unkept.length > 0) {
+      const kinds = [...new Set(unkept.map((u) => u.for))];
+      console.error(`acceptance: FAIL: ${unkept.length} line(s) the steps read as evidence would be written as "text not kept" by a real build (${kinds.join("; ")}), e.g. ${unkept[0]!.line} [apps/desktop/src/main/file-log.ts, scripts/acceptance/evidence-lines.ts]`);
+      code = code === 0 ? 1 : code;
+    } else console.error("acceptance: the lines the steps read as evidence are all lines a real build writes to its log: yes");
   }
   {
     const problem = leftoverProblem(await cleanup());

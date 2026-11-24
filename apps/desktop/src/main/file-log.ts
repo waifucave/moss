@@ -69,6 +69,9 @@ export const KEEP: RegExp[] = [
   kp(String.raw`layers: (?:${N} plugin\(s\) with UI|stopping a hung layer's process \(${N}\)|${N} frame\(s\) lost their process: (?:${REF}(?:, ${REF})*)?|command ${REF} to window ${N}: ${N} document\(s\) told, ${N} not bound yet|refused a document load \(an address no mount holds\))`),
   kp(String.raw`layers: cancelled (?:a request for another layer's own data from|${REF}'s icon for) (?:a frame main doesn't know|the ${REF} layer's frame)`),
   kp(String.raw`layers: props for ${REF} were too large and were dropped`),
+  // A layer's own connection to the core (the acceptance run reads these two as evidence: scripts/acceptance/evidence-lines.ts).
+  kp(String.raw`layers: ${REF}'s layer (?:connected to the core|connection closed \(it no longer shows UI\))`),
+  kp(String.raw`files: ${REF}: the core keeps no grants yet; the page's token works for the media URL only`),
   kp(String.raw`layers: ${REF} \(${REF}\): refused a load of an address it replaced \(its frame has the newer one\)`),
   kp(String.raw`layers: ${REF} \(${REF}\) reported a height of -?${N}`),
   kp(String.raw`layers: ${REF} \(${REF}\) already holds ${N} parts, the most it may: a [a-z-]{1,24} instance of it gets no part placed and shows its fallback`),
@@ -88,6 +91,7 @@ export const KEEP: RegExp[] = [
   kp(String.raw`open: [a-z-]{1,24}(?: [\w-]{1,40})? for ${REF}`),
   kp(String.raw`quit \(${W}\): (?:MOSS Code only \(the engine and the host keep working\)|[a-z-]{1,24})`),
   kp(String.raw`browser: (?:the engine (?:starts|stops) a tab's stream [\w-]{1,40} \([\w.,-]{1,60}\)|the test seam pressed the panel at ${SN},${SN} \(${N} view\(s\)\)|a tab's stream [\w-]{1,40} started \([\w.-]{1,40}\))`),
+  kp(String.raw`browser: (?:view [\w-]{1,40} has (?:a|no) place in the window(?: now)?|the panel drew the host's tab \(${N}x${N}\))`),
   kp(String.raw`web: ${REF}'s page(?: isn't one the app shows \(a URL or a page in its folder, and a partition\)| failed to load \([A-Z_0-9]{1,50}, -?\d{1,6}\)(?:; asking once more)?|'s process went \([a-z-]{1,30}\))`),
   kp(String.raw`mcp-apps: (?:a page asked to open a link with no press just before; it didn't|a page tried to navigate away; it stays|a page's process went \([a-z-]{1,30}\))`),
   // the sealed-click smoke (a test-marked build only)
@@ -185,6 +189,9 @@ export const REDUCE: [RegExp, string][] = [
   [/^layers: refused a request to the network from .*/, "layers: refused a request to the network (no layer declares a host yet)"],
   [/^layers: ([\w:.-]{1,60}) failed: .*/, "layers: $1 failed"],
   [/^layers: a call from frame .*/, "layers: a call from a frame bound to no mount"],
+  // A page's call through the tree: the part (one id token), the method and the outcome; a reason or a result is the page's or the plugin's.
+  [/^tree: ([\w.:/#@+-]{1,100}): ([\w.]{1,60}) (refused|went through|ran)\b.*/, "tree: $1: $2 $3"],
+  [/^browser: view ([\w-]{1,40}) shows the host's tab .*/, "browser: view $1 shows the host's tab"],
   [/^layers: a message to \S+ was lost\b.*/, "layers: a message to a mount was lost"],
   [/^layers: \S+ \(\S+\): refused a document load \(.*; a fresh address went less than a second ago\)$/, "layers: a document load was refused (a fresh address went less than a second ago)"],
   [/^layers: \S+(?: \(\S+\))? loads again\b.*/, "layers: a mount loads again"],

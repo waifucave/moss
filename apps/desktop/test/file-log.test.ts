@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { placeLine } from "../src/main/card-place";
 import { KEEP, REDUCE, fileLine } from "../src/main/file-log";
 import { ipcLine } from "../src/main/ui/ipc-stats";
+import { EVIDENCE_LINES, unkeptEvidence } from "../../../scripts/acceptance/evidence-lines";
 
 const SECRET = "SECRETWORDS";
 const CARD = "card_juniper_book";
@@ -79,6 +80,12 @@ const KEPT: string[] = [
   "window 4 went unresponsive; not answering: moss/shell, moss/sidebar",
   "window 4: every document answers; it has 20 s to come back",
   "audio: muted (a headless run or a test build)",
+  "layers: moss/island's layer connected to the core",
+  "layers: acc-extra's layer connection closed (it no longer shows UI)",
+  "files: acc-files: the core keeps no grants yet; the page's token works for the media URL only",
+  "browser: view browser has a place in the window",
+  "browser: view browser has no place in the window now",
+  "browser: the panel drew the host's tab (800x600)",
   "audio: all plugin sound muted from the tray",
   "smoke: the restart is left out",
   "smoke click: sent to a surface window (visible=true)",
@@ -237,6 +244,10 @@ const REDUCED: [string, string][] = [
   [`overlap: no window list (${SECRET}); the in-page check stands alone`, "overlap: no window list; the in-page check stands alone"],
   [`overlap: the OS window list couldn't be read for a press (${SECRET}); the in-page check stands alone`, "overlap: the OS window list couldn't be read for a press; the in-page check stands alone"],
   [`prefs: not saved (${SECRET})`, "prefs: not saved"],
+  [`tree: acc-copy: session.resend refused (${SECRET})`, "tree: acc-copy: session.resend refused"],
+  [`tree: acc-copy: session.resend went through`, "tree: acc-copy: session.resend went through"],
+  [`tree: acc-copy: conversation.messageAction ran acc-copy's ${SECRET}`, "tree: acc-copy: conversation.messageAction ran"],
+  [`browser: view browser shows the host's tab ${SECRET}`, "browser: view browser shows the host's tab"],
   [`answer key: not replaced: ${SECRET}`, "answer key: not replaced"],
   [`answer key: not registered (${SECRET})`, "answer key: not registered"],
   [`answer key: the replacement's answer was lost (${SECRET}); its key stays staged`, "answer key: the replacement's answer was lost; its key stays staged"],
@@ -368,5 +379,45 @@ describe("what MOSS Code writes to its log file", () => {
     expect(src).toContain('const rawFileLines = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";');
     expect(src).not.toMatch(/appLog\.write\(line\)/);
     expect(src).toContain("process.stdout.write(`[moss-app] ${line}\\n`);");
+  });
+
+  // The acceptance run reads this log as evidence in a build that writes the raw line, and a real build writes only what `fileLine` lets
+  // through: a line a step relies on that fell to "text not kept" would pass the run and be missing from every real log.
+  describe("the lines the acceptance run reads as evidence are lines the real build writes", () => {
+    test("every evidence entry's example matches its pattern and is kept or reduced to its fixed part, never \"text not kept\"", () => {
+      for (const e of EVIDENCE_LINES) expect([e.example, e.re.test(e.example), /\(text not kept in the file\)$/.test(fileLine(e.example))]).toEqual([e.example, true, false]);
+    });
+
+    test("a run's log with an evidence line nobody classed fails (a reworded line, with the file's time before it), a classed one and an ordinary unclassed one do not", () => {
+      const at = "2026-11-24T10:00:00.000Z ";
+      expect(unkeptEvidence(`${at}audio: muted (a headless run or a test build)\n${at}window: moved by its title area, from (1, 2) to (3, 4)\n${at}host: an unrelated new line`, fileLine)).toEqual([]);
+      const found = unkeptEvidence(`${at}audio: a reworded line nobody classed\n${at}layers: a plugin's new sentence`, fileLine);
+      expect(found.map((f) => f.line)).toEqual(["audio: a reworded line nobody classed"]);
+      expect(found[0]!.for).toBe("sound muted, or not");
+    });
+
+    // The literal strings the steps look for in the app's log (`includes("layers: ...")`): each is a line of the list. A step that starts
+    // relying on a line adds it to scripts/acceptance/evidence-lines.ts and classes it in file-log.ts. What is not a line of its own (an id, a
+    // fragment, a line of the MOSS app, which has its own file filter) is not here; the one line no code writes any more is named.
+    test("every log line a step looks for by its literal text is in the evidence list", () => {
+      const dir = join(import.meta.dir, "..", "..", "..", "scripts", "acceptance");
+      const NOT_A_LINE_OF_THIS_APP = new Set(["the window's strip for x"]);
+      const uncovered: string[] = [];
+      let needles = 0;
+      for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && n !== "evidence-lines.ts" && !n.endsWith(".test.ts"))) {
+        for (const l of readFileSync(join(dir, f), "utf8").split("\n")) {
+          if (!/appLog|app\.log/.test(l)) continue;
+          for (const m of l.matchAll(/\.includes\((["`])((?:(?!\1).)*)\1\)/g)) {
+            const needle = m[2]!.replace(/\$\{[^}]*\}/g, "x");
+            if (!/^[a-z][a-z -]{0,24}: /.test(needle) || needle.includes("MOSS's")) continue;
+            needles++;
+            const covered = EVIDENCE_LINES.some((e) => [needle, `${needle}x`, `${needle} x`].some((n) => e.re.test(n)) || e.example.includes(needle));
+            if (!covered && !NOT_A_LINE_OF_THIS_APP.has(needle)) uncovered.push(`${f}: ${needle}`);
+          }
+        }
+      }
+      expect(uncovered).toEqual([]);
+      expect(needles).toBeGreaterThan(8);
+    });
   });
 });
