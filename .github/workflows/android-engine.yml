@@ -57,6 +57,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
         with:
           gradle-version: "8.13"
+      # Robolectric's Android jar for :shared's tests, kept between runs (Maven Central answers 429 to cold fetches).
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-android-all-15-${{ hashFiles('apps/android/gradle/libs.versions.toml') }}
       - name: Build the core for Android (arm64-v8a, armeabi-v7a, x86_64)
         run: |
           cargo install cargo-ndk --version 3.5.4 --locked
@@ -113,7 +118,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           working-directory: apps/android
-          script: gradle --no-daemon --stacktrace :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
+          script: gradle --no-daemon --stacktrace --continue :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
       # :shared's JVM tests and pictures, without the native library (Robolectric fetches its Android jar from Maven Central
       # on a cold cache: last, so a failed download can't hold the emulator proof).
       - name: The screens' JVM tests

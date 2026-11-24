@@ -62,7 +62,7 @@ class MossEndToEndTest {
     private val TAG = "MossE2E"
 
     @Test
-    fun pairsTalksAnswersSurvivesARestartAndUnpairs() = runBlocking {
+    fun pairsTalksAnswersSurvivesARestartAndUnpairs(): Unit = runBlocking {
         withTimeout(900_000) {
             val ctx = InstrumentationRegistry.getInstrumentation().targetContext
             val client = Engines.client(ctx, PhoneApp.moss, RelayChoice.Disabled)

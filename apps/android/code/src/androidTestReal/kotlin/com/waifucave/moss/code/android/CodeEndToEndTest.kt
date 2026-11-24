@@ -62,7 +62,7 @@ class CodeEndToEndTest {
     private val TAG = "CodeE2E"
 
     @Test
-    fun pairsListsSessionsTalksAnswersSurvivesARestartAndUnpairs() = runBlocking {
+    fun pairsListsSessionsTalksAnswersSurvivesARestartAndUnpairs(): Unit = runBlocking {
         withTimeout(900_000) {
             val ctx = InstrumentationRegistry.getInstrumentation().targetContext
             val client = Engines.client(ctx, PhoneApp.code, RelayChoice.Disabled)
