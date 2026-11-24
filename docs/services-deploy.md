@@ -19,14 +19,16 @@ scripts/pinned-bun scripts/services/post-deploy.ts --env-file ~/moss-services.en
 ```
 
 The Cloudflare token and account id go in the same env file (the two `CLOUDFLARE_` lines at its top), never on a command line: a value typed
-inline lands in the shell's history. The script refuses an env file that group or others can read (`chmod 600` it), and a dry run never passes
-the Cloudflare lines to wrangler.
+inline lands in the shell's history. The script refuses an env file that group or others can read (`chmod 600` it), one owned by someone else, and one in a folder
+that group or others can write to; keep it in your home folder (mode 700) and check `ls -le ~/moss-services.env` shows no ACL lines (a mode-bit
+check cannot see them). A dry run never passes the Cloudflare lines to wrangler.
 
 - **Secrets are put once.** A real deploy first reads each Worker's secret NAMES from Cloudflare (read-only), then deploys the code and only the
   secrets that Worker lacks in one wrangler call (`--secrets-file`, read from standard input), so a Worker is never live without them and a re-run
   never re-puts a secret already there, whatever the env file holds now. `--rotate MOSS_TAG_KEYS,...` replaces the named ones.
   `MOSS_ACCOUNT_ID_KEY` names each account's object: a new value orphans every account's held webhooks for good, so replacing it needs
   `--rotate MOSS_ACCOUNT_ID_KEY --rotate-account-id-key` and prints a warning.
+- **Each deploy is checked.** After a Worker's deploy the script reads its secret names again and stops if one it was to put is not there.
 - **A failure stops everything at once** and says what was already deployed; run the same command again after fixing it.
 - `--only accounts,push` deploys part; `--skip-secrets` redeploys code only; `--strict` makes the dry run fail while a required name is unset.
 - **Wrangler's debug log** is pointed at a mode-700 folder this script removes at the end, so nothing of a real run stays under your home. Whether that log
@@ -88,7 +90,7 @@ The dry run proves: every name the Workers read is covered by the template and t
 (routes, variables, bindings, migrations); each Worker bundles and wrangler accepts its configuration (`wrangler deploy --dry-run`, no login, no network);
 the web page builds; the order is consistent. It runs in CI (non-gating, `.github/workflows/services-dry-run.yml`).
 
-Only a real deploy can show: that the API token has the right scopes; that the zone is on the account and the custom domains and the `/auth/*` route attach; that the service binding
+Only a real deploy can show: that the API token has the right scopes; that the zone is on the account, that Cloudflare issues a certificate for the third-level host `app.moss.<domain>` (to confirm on the first live run; a host one level up, such as `app.<domain>`, is the fallback), and the custom domains and the `/auth/*` route attach; that the service binding
 resolves; that the Supabase project accepts the anon key; that Apple accepts the APNs key, team and topics; the first real pairing and push. `post-deploy.ts --smoke` checks what can be checked
 without an account (accounts' public keys, which must carry no private part; the web page's config pointing at the deployed handshake; push serving its VAPID key; the others answering an unknown path with their own JSON refusal rather than Cloudflare's error page).
 

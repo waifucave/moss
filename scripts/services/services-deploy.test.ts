@@ -4,8 +4,8 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { main, type Io, type RunResult } from "./deploy";
+import { dirname, join } from "node:path";
+import { envFileProblem, main, type Io, type RunResult } from "./deploy";
 import { defaultWebPrefix, generateSecret, nameStates, orderServices, parseEnvFile, parseJsonc, renderConfig, resolveSettings, settingsProblems, workerName, REPO_ROOT } from "./lib";
 import { BUILT_IN_ADDRESSES, ENV_NAMES, SERVICES } from "./manifest";
 import { main as postDeploy, settingsReport, smoke } from "./post-deploy";
@@ -184,10 +184,15 @@ describe("the dry run", () => {
 });
 
 /** A fake wrangler for a real deploy: `secret list` answers from `remote` (Worker name to the secret names it has; absent = no such Worker), everything else succeeds. */
-function liveHandler(remote: Record<string, string[]>, fail?: (cmd: readonly string[]) => RunResult | undefined) {
-  return (cmd: readonly string[]): RunResult => {
+function liveHandler(remote: Record<string, string[]>, fail?: (cmd: readonly string[]) => RunResult | undefined, record = true) {
+  return (cmd: readonly string[], input?: string): RunResult => {
     const failure = fail?.(cmd);
     if (failure) return failure;
+    // A deploy that carries secrets leaves them on the Worker (what wrangler does).
+    if (record && cmd.includes("--secrets-file") && input) {
+      const name = (JSON.parse(readFileSync(cmd[cmd.indexOf("--config") + 1]!, "utf8")) as { name: string }).name;
+      remote[name] = [...new Set([...(remote[name] ?? []), ...Object.keys(JSON.parse(input) as Record<string, string>)])];
+    }
     if (cmd.includes("secret") && cmd.includes("list")) {
       const name = (JSON.parse(readFileSync(cmd[cmd.indexOf("--config") + 1]!, "utf8")) as { name: string }).name;
       if (!(name in remote)) return { status: 1, stdout: "", stderr: "This Worker does not exist on your account. [code: 10007]" };
@@ -237,7 +242,8 @@ describe("a real deploy", () => {
     const f = fakeIo(REPO_ROOT, liveHandler({}), [CONFIRM]);
     expect(await main(["--deploy", "--no-build", "--only", "accounts,handshake"], fixtureEnv(LIVE), f.io)).toBe(0);
     const kinds = f.runs.map((r) => (r.cmd.includes("list") ? "list" : "deploy"));
-    expect(kinds).toEqual(["list", "list", "deploy", "deploy"]);
+    // The names are read first, and again after each deploy that put secrets.
+    expect(kinds).toEqual(["list", "list", "deploy", "list", "deploy", "list"]);
     const [first, second] = deploys(f.runs) as unknown as typeof f.runs;
     expect(first!.cmd).toContain("--secrets-file");
     expect(first!.cmd[first!.cmd.indexOf("--secrets-file") + 1]).toBe("/dev/stdin");
@@ -299,6 +305,25 @@ describe("a real deploy", () => {
     expect(f.err.join("\n")).toContain("can't read accounts's secret list");
   });
 
+  test("only wrangler's own missing-Worker code reads as 'no such Worker': any other failure, even one saying 'not found', stops before any deploy", async () => {
+    for (const stderr of ["Binding ACCOUNT_SERVICE not found", "The route does not exist", "config file not found", "This Worker does not exist (no code)"]) {
+      const f = fakeIo(REPO_ROOT, liveHandler({}, (cmd) => (cmd.includes("list") ? { status: 1, stdout: "", stderr } : undefined)), [CONFIRM]);
+      expect(await main(["--deploy", "--no-build", "--only", "forwarder"], fixtureEnv({ ...LIVE, MOSS_ACCOUNT_ID_KEY: "would-overwrite" }), f.io)).toBe(1);
+      expect(deploys(f.runs)).toHaveLength(0);
+      expect(f.runs.some((r) => r.input !== undefined)).toBe(false);
+    }
+  });
+
+  test("after each deploy the Worker's secret names are read again, and a secret that is missing stops the run", async () => {
+    const f = fakeIo(REPO_ROOT, liveHandler({}, undefined, false), [CONFIRM]);
+    expect(await main(["--deploy", "--no-build", "--only", "accounts,handshake"], fixtureEnv(LIVE), f.io)).toBe(1);
+    const text = f.err.join("\n");
+    expect(text).toContain("STOPPED at accounts");
+    expect(text).toContain("SIGNING_JWKS is not on the Worker afterwards");
+    expect(deploys(f.runs)).toHaveLength(1);
+    expect(f.out.join("\n")).not.toContain("done.");
+  });
+
   test("a failed deploy stops at once: the later Workers are not deployed, and it never says done", async () => {
     const f = fakeIo(REPO_ROOT, liveHandler({}, (cmd) => (cmd.includes("--secrets-file") && cmd.some((c) => c.includes("handshake")) ? { status: 1, stdout: "", stderr: "boom" } : undefined)), [CONFIRM]);
     expect(await main(["--deploy", "--no-build"], fixtureEnv(LIVE), f.io)).toBe(1);
@@ -319,7 +344,7 @@ describe("a real deploy", () => {
 
   test("wrangler's log goes to a mode-700 folder that is removed afterwards", async () => {
     const seen: { path: string; mode: number }[] = [];
-    const f = fakeIo(REPO_ROOT, (cmd) => liveHandler({})(cmd), [CONFIRM]);
+    const f = fakeIo(REPO_ROOT, liveHandler({}), [CONFIRM]);
     const wrap = f.io.run;
     f.io.run = (cmd, opts) => {
       const p = opts.env.WRANGLER_LOG_PATH!;
@@ -362,6 +387,18 @@ describe("the env file and the arguments", () => {
     expect(await postDeploy(["--env-file", write(0o644)], {}, io)).toBe(2);
     expect(out.join("\n")).toContain("chmod 600");
     expect(await postDeploy(["--env-file", write(0o600)], {}, io)).toBe(0);
+  });
+
+  test("an env file not owned by the person running it, or in a folder others can write to, is refused", () => {
+    const p = write(0o600);
+    expect(envFileProblem(p)).toBeNull();
+    expect(envFileProblem(p, (process.getuid?.() ?? 0) + 1)).toContain("not owned");
+    chmodSync(dirname(p), 0o777);
+    expect(envFileProblem(p)).toContain("can be written by group or others");
+    chmodSync(dirname(p), 0o770);
+    expect(envFileProblem(p)).toContain("can be written by group or others");
+    chmodSync(dirname(p), 0o755);
+    expect(envFileProblem(p)).toBeNull();
   });
 
   test("a flag that needs a value and gets none is an error", async () => {

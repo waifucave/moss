@@ -17,7 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import {
   buildPlan, generateSecret, loadEnvFile, nameStates, orderServices, renderConfig, resolveSettings, settingsProblems,
@@ -142,7 +142,7 @@ function wranglerFor(root: string, spec: ServiceSpec): string | null {
 }
 
 /** Why an env file is not read, or null. It holds keys, so a file that group or others can read is refused. */
-export function envFileProblem(path: string): string | null {
+export function envFileProblem(path: string, uid: number | undefined = process.getuid?.()): string | null {
   let st;
   try {
     st = statSync(path);
@@ -150,7 +150,15 @@ export function envFileProblem(path: string): string | null {
     return `the env file ${path} can't be read`;
   }
   if (!st.isFile()) return `${path} is not a file`;
-  if (process.platform !== "win32" && (st.mode & 0o077) !== 0) return `the env file ${path} can be read by group or others (mode ${(st.mode & 0o777).toString(8)}); run: chmod 600 ${path}`;
+  if (process.platform === "win32") return null;
+  if ((st.mode & 0o077) !== 0) return `the env file ${path} can be read by group or others (mode ${(st.mode & 0o777).toString(8)}); run: chmod 600 ${path}`;
+  if (uid !== undefined && st.uid !== uid) return `the env file ${path} is not owned by the person running this`;
+  try {
+    const parent = statSync(dirname(path));
+    if ((parent.mode & 0o022) !== 0) return `the folder holding ${path} can be written by group or others (mode ${(parent.mode & 0o777).toString(8)}), so the file could be swapped; keep it in a folder only you can write to`;
+  } catch {
+    return `the folder holding ${path} can't be read`;
+  }
   return null;
 }
 
@@ -160,7 +168,8 @@ const ACCOUNT_ID_KEY = "MOSS_ACCOUNT_ID_KEY";
 function remoteSecrets(run: Runner, wrangler: string, configPath: string, cwd: string, env: Record<string, string>): Set<string> | null {
   const r = run([wrangler, "secret", "list", "--format", "json", "--config", configPath], { cwd, env });
   if (r.status !== 0) {
-    if (/10007|does not exist|not found/i.test(r.stderr + r.stdout)) return null;
+    // Only wrangler's own code for a missing Worker means "none there yet". Any other failure, whatever words it uses, throws: a wrong "none" would make every secret look missing and put the env file's values over the deployed ones.
+    if (/\[code:\s*10007\]/.test(r.stderr + r.stdout)) return null;
     throw new Error(tail(r.stderr || r.stdout));
   }
   try {
@@ -384,6 +393,17 @@ async function realDeploy(args: Args, merged: Env, ordered: ServiceSpec[], setti
       const cmd = [wrangler, "deploy", "--config", configs.get(spec.id)!, ...(Object.keys(put).length > 0 ? ["--secrets-file", "/dev/stdin"] : [])];
       const d = io.run(cmd, { cwd, env, ...(Object.keys(put).length > 0 ? { input: JSON.stringify(put) } : {}) });
       if (d.status !== 0) return stop(`wrangler's deploy failed\n${indent(tail(d.stderr || d.stdout))}`);
+      // The secrets this deploy was to put must now be on the Worker: the secrets file is wrangler's to read, so check rather than trust.
+      if (Object.keys(put).length > 0) {
+        let after: Set<string> | null = null;
+        try {
+          after = remoteSecrets(io.run, wrangler, configs.get(spec.id)!, cwd, env);
+        } catch (e) {
+          return stop(`deployed, but its secret list can't be read to check the secrets (${(e as Error).message})`);
+        }
+        const absent = Object.keys(put).filter((n) => !after?.has(n));
+        if (absent.length > 0) return stop(`deployed, but ${absent.join(", ")} ${absent.length === 1 ? "is" : "are"} not on the Worker afterwards; the Worker is live without ${absent.length === 1 ? "it" : "them"}. Run the same command again`);
+      }
       done.push(spec.id);
       io.out(`deployed ${spec.id}${Object.keys(put).length > 0 ? ` (secrets put: ${Object.keys(put).join(", ")})` : ""}`);
     }
