@@ -199,6 +199,21 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     // Calls on the remote role's list work; one off it is refused by the engine.
     let bots: Value = serde_json::from_str(&conn.call("bot.list".into(), "{}".into()).await.expect("bot.list")).unwrap();
     assert!(bots.is_object());
+    // The typed calls against the real engine: each answers, and reads what the raw call holds.
+    let typed_bots = conn.bots().await.expect("bots()");
+    assert_eq!(typed_bots.len(), bots["bots"].as_array().unwrap().len(), "every bot the engine lists is read");
+    conn.bot_summaries().await.expect("bot_summaries()");
+    let raw_sessions: Value = serde_json::from_str(&conn.call("session.list".into(), "{}".into()).await.unwrap()).unwrap();
+    assert_eq!(conn.sessions().await.expect("sessions()").len(), raw_sessions["sessions"].as_array().unwrap().len());
+    conn.backends().await.expect("backends()");
+    conn.recent_start().await.expect("recent_start()");
+    conn.models(None).await.expect("models()");
+    conn.commands().await.expect("commands()");
+    if let Some(b) = typed_bots.first() {
+        conn.conversation(b.id.clone(), None, 20).await.expect("conversation()");
+        conn.history(b.main_session.clone(), None, 20).await.expect("history()");
+        assert!(conn.pending_question(b.main_session.clone()).await.expect("pending_question()").is_none());
+    }
     match conn.call("plugin.install".into(), "{}".into()).await {
         Err(CoreError::Rpc { .. }) => {}
         other => panic!("a call off the remote list should be refused: {other:?}"),

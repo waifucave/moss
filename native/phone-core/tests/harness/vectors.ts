@@ -18,6 +18,26 @@ const { nameProblem, safeDeviceName } = await import(join(core, "devices/names")
 const protocol = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 const VISIBLE_CASES: string[] = await Bun.file(join(import.meta.dir, "visible-cases.json")).json();
 
+// Results of the typed calls (src/engine.rs), each passed through its method's own result schema first, so the sample is
+// one the protocol accepts; a method this tree doesn't have yet gives null.
+const resultOf = (method: string, sample: unknown): unknown => {
+  const spec = protocol.MOSS_METHODS.get(method);
+  return spec ? spec.result.parse(sample) : null;
+};
+const TYPED = {
+  "bot.list": resultOf("bot.list", { bots: [{ id: "alpha", name: { en: "Alpha" }, model: "fireworks/kimi-k3", effort: "medium", userLayer: ["model"], state: "thinking", computer: "Studio", mainSession: "s_alpha" }] }),
+  "bot.records": resultOf("bot.records", { bots: [{ id: "alpha", name: "Alpha", face: { shape: "drop", color: "coral", eyes: "calm", temper: "bright" }, madeBy: { kind: "user" }, createdAt: 1781270000000, mainSession: "s_alpha", instructionsBytes: 10 }] }),
+  "bot.create": resultOf("bot.create", { bot: { id: "beta", name: "Beta", model: "fireworks/kimi-k3", madeBy: { kind: "user" }, createdAt: 1781270000000, mainSession: "s_beta", instructionsBytes: 0 } }),
+  "bot.summaries": resultOf("bot.summaries", { summaries: [{ id: "alpha", last: { text: "Hi", from: "user", at: 1781270000000 }, unread: false }] }),
+  "session.list": resultOf("session.list", { sessions: [{ id: "s_code_1", kind: "coding", computer: "Studio", title: "Fix login", status: "idle", startedAt: 1, updatedAt: 2, backend: "claude-code", model: "m1", effort: "high", root: "home/Studio/app", branch: "main", changes: 3, needsYou: { cards: 1, questions: 0 }, waiting: { tasks: 0, children: 1 }, archived: false }] }),
+  "agent.backends": resultOf("agent.backends", { backends: [{ id: "claude-code", name: "Claude Code", pluginId: "claude-code", protocol: "acp", placement: "local", userStartable: true, computers: [{ computer: "Studio", installed: true, version: "2.1", marks: ["unsandboxed"] }] }] }),
+  "agent.options": resultOf("agent.options", { backend: "claude-code", known: true, source: "catalog", models: [{ id: "m1", name: "M1", efforts: ["low", "high"], defaultEffort: "high" }], efforts: ["low", "high"], default: { model: "m1", effort: "high" } }),
+  "agent.recent": resultOf("agent.recent", { backend: "claude-code", model: "m1", effort: "high", computer: "Studio", roots: [{ root: "home/Studio/a", at: 1 }, { root: "home/Studio/b", at: 2 }], byBackend: [{ backend: "codex", model: "m2" }] }),
+  "models.list": resultOf("models.list", { models: [{ id: "m1", name: "M1", provider: "fireworks", providerName: "Fireworks", plugin: "fireworks", efforts: ["low"], images: true, signedIn: true }], default: "m1" }),
+  "command.list": resultOf("command.list", { commands: [{ name: "deploy", pluginId: "shipit", description: "Ship it" }] }),
+  "session.composerOffers": resultOf("session.composerOffers", { kind: "coding", pictures: true, files: { maxBytes: 52428800, perMessage: 10, chunkBytes: 524288 }, commands: [{ name: "deploy", description: "Ship it" }], models: [{ id: "m1", name: "M1", efforts: ["low"] }], model: "m1", efforts: ["low"], effort: "low" }),
+};
+
 // The device-name rule's edge cases (devices/names.ts): every class it refuses, the joiners' places, the lengths.
 const NAMES = [
   "Studio", "Kim's phone", "a", "x".repeat(63), "x".repeat(64), "😀".repeat(31) + "x", "😀".repeat(32), "", " ", "   ",
@@ -101,6 +121,7 @@ console.log(JSON.stringify({
   userMessageInput: userMessageSigningInput({ session: "s_alpha", clientMessageId: "m-1", hash: "ab", sentAt: 1781270000123 }),
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
   names: NAMES.map((n) => ({ name: n, ok: nameProblem(n) === null })),
+  typed: TYPED,
   visible: typeof protocol.sealedEscape === "function"
     ? VISIBLE_CASES.map((t) => ({ text: t, plain: protocol.sealedEscape(t), name: protocol.sealedEscape(t, true), nameOk: nameProblem(t) === null }))
     : null,

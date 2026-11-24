@@ -111,6 +111,36 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(cards::user_message_hash("Hi \"there\"\n😀", &["bots/a/staged/1.png".into()], &["home/notes.md".into(), "bots/a/x.txt".into()]), s("userMessageHash"));
     assert_eq!(cards::user_message_signing_input("s_alpha", "m-1", "ab", 1781270000123), s("userMessageInput"));
 
+    // The typed calls' decoders over results the protocol's own schemas accept (`typed`).
+    let t = &v["typed"];
+    use moss_phone_core::engine;
+    let bots: Vec<_> = t["bot.list"]["bots"].as_array().unwrap().iter().filter_map(engine::bot).collect();
+    assert_eq!(bots.len(), 1);
+    assert_eq!((bots[0].name.as_str(), bots[0].state.clone()), ("Alpha", Some(engine::BotState::Thinking)));
+    let rec = engine::bot(&t["bot.records"]["bots"][0]).unwrap();
+    assert_eq!(rec.face.unwrap().shape.as_deref(), Some("drop"));
+    let made = engine::bot(&t["bot.create"]["bot"]).unwrap();
+    assert_eq!((made.id.as_str(), made.main_session.as_str(), made.state.clone()), ("beta", "s_beta", None));
+    let sum = engine::summary(&t["bot.summaries"]["summaries"][0]).unwrap();
+    assert_eq!(sum.last.unwrap().from, engine::MessageFrom::User);
+    let row = engine::session_row(&t["session.list"]["sessions"][0]).unwrap();
+    assert_eq!((row.kind.clone(), row.title.as_deref(), row.changes, row.needs_you.clone().unwrap().cards), (engine::SessionKind::Coding, Some("Fix login"), Some(3), 1));
+    let be = engine::backend(&t["agent.backends"]["backends"][0]).unwrap();
+    assert_eq!((be.id.as_str(), be.user_startable, be.computers[0].marks.clone()), ("claude-code", true, vec!["unsandboxed".to_string()]));
+    let opts = engine::backend_options(&t["agent.options"], "claude-code");
+    assert_eq!((opts.models[0].default_effort.as_deref(), opts.default_model.as_deref()), (Some("high"), Some("m1")));
+    let rec = engine::recent(&t["agent.recent"]);
+    assert_eq!(rec.roots.iter().map(|r| r.root.as_str()).collect::<Vec<_>>(), ["home/Studio/b", "home/Studio/a"]);
+    assert_eq!(rec.by_backend[0].backend, "codex");
+    let ml = engine::models(&t["models.list"]);
+    assert_eq!((ml.models[0].signed_in, ml.default_model.as_deref()), (true, Some("m1")));
+    if t["session.composerOffers"].is_object() {
+        let c = engine::composer_offers(&t["session.composerOffers"]).unwrap();
+        assert_eq!(c.files.unwrap().chunk_bytes, 524288);
+    } else {
+        eprintln!("this tree has no session.composerOffers yet: checked in tests/typed.rs only");
+    }
+
     // The visible-text rule, from the engine's own function when this tree has it (protocol `visible-text.ts`).
     match v["visible"].as_array() {
         Some(cases) => {
