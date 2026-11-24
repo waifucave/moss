@@ -21,6 +21,7 @@ import { MemoryNetwork } from "../../links/memory-wire";
 import { PairingService } from "../../links/pairing";
 import { peerCall } from "../../links/peer-call";
 import { answerKeyStatement, FileDeviceRegistry } from "../registry";
+import { cleanName } from "../../links/pairing";
 import { brokerCardOpener, devicesEvents, devicesMethods, type CardOpener, type MethodError } from "../rpc";
 
 const clock = new SystemClock();
@@ -180,6 +181,16 @@ describe("pairing's edges", () => {
     expect(b.registry.get(a.key.id)).toBeUndefined();
   });
 
+  test("cleanName: real names pass (an apostrophe, a curly one, accents, Thai, CJK, an emoji); the look-alikes and the invisible do not", () => {
+    for (const ok of ["Sam's phone", "Sam\u2019s iPhone", "Zo\u00E9 \u00E0 la maison", "\u0E42\u0E17\u0E23\u0E28\u0E31\u0E1E\u0E17\u0E4C\u0E02\u0E2D\u0E07\u0E09\u0E31\u0E19", "\u7530\u4E2D\u3055\u3093\u306E\u30D1\u30BD\u30B3\u30F3", "Pixel \u{1F4F1}", "e\u0301\u0302\u0303\u0304", "x".repeat(63)]) {
+      expect([ok, cleanName(ok)]).toEqual([ok, true]);
+    }
+    for (const bad of ["", " ", "x".repeat(64), "a\nb", "a\tb", "a\u0085b", "a\u2028b", "a\u200Eb", "a\u202Eb", "a\u2066b", "a\u200Db", "a\uFEFFb", "a\u3164", "\u115F", "\uFFA0",
+      "a\u201Db", "a\u201Cb", "a\u201Eb", "a\u00ABb", "a\"b", "a\uFF02b", "a\u{E0020}b", "a\uD800b", "e\u0301\u0302\u0303\u0304\u0305"]) {
+      expect([bad, cleanName(bad)]).toEqual([bad, false]);
+    }
+  });
+
   describe("what the other device calls itself is checked where the pairing reads it, and a pairing that sends anything else is refused", () => {
     const hostile: [string, string, string | undefined][] = [
       ["a name over 63 characters", "x".repeat(64), undefined],
@@ -188,6 +199,17 @@ describe("pairing's edges", () => {
       ["a name with a bidi override", "Pixel ‮trusted", undefined],
       ["a name with a bidi isolate", "Pixel⁦", undefined],
       ["a name that is only blanks", "   ", undefined],
+      ["a name that ends the card's quotation and speaks in the engine's voice (the reviewer's)", "Pixel\u201D and says it is a phone. Words: a b c d", undefined],
+      ["a name with a straight double quote", "Pixel\" and more", undefined],
+      ["a name with a zero-width space", "Pi\u200Bxel", undefined],
+      ["a name with a soft hyphen", "Pi\u00ADxel", undefined],
+      ["a name with a tag character", "Pixel\u{E0041}", undefined],
+      ["a name with an interlinear annotation mark", "Pixel\uFFF9", undefined],
+      ["a name with a Mongolian vowel separator", "Pixel\u180E", undefined],
+      ["a name that is only Hangul fillers", "\u3164\u3164\u115F", undefined],
+      ["a name that is only combining marks on a space", " \u0301\u0302", undefined],
+      ["a name with a stack of combining marks", `Pixel${"\u0301".repeat(5)}`, undefined],
+      ["a name that starts with a combining mark", "\u0301Pixel", undefined],
       ["a kind that isn't one of the enum", "Pixel", "toaster"],
     ];
     for (const [what, name, kind] of hostile) {

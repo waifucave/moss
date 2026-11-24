@@ -65,9 +65,13 @@ computers. "Live check" means only a person with two machines can show it.
   The engine cannot tell a plugin's frame from the person's own press (main's connection calls as the user): the door is the gate.
 - The four words go only to a `cli` connection whose caller is the user (`isUsersTerminal` in `core-events.ts`): a CLI that a bot's or an
   agent's session runs is role `cli` too, but calls as that session, and hears the step without them.
-- What the other device calls itself is checked where the pairing reads it (`cleanName` in `links/pairing.ts`: 1 to 63 UTF-16 units, no
-  control character, line break or bidi control; its kind and os from the enums); a pairing that sends otherwise is refused. The add card says
-  "It calls itself “<name>” and says it is a <kind>" with a fixed title, and a card that cannot be built fails the pairing at once.
+- What the other device calls itself is checked in `#readSide`, the one place the pairing reads a peer's record (`cleanName` in
+  `links/pairing.ts`): 1 to 63 UTF-16 units, at least one visible character, no control character or line break, no format character
+  (`Cf`: bidi controls, zero-width, soft hyphen, tag block, U+FFF9–FFFB, U+180E), no blank-drawing filler (Hangul, Khmer, braille blank), no
+  double-quote-like character (so a name can't end the card's quotation), no mark without a base and at most 4 marks after one; its
+  kind and os come from the enums, and a phone's `app` is PH's check beside them. A pairing that sends otherwise is refused. The add card
+  says "It calls itself “<name>” and says it is a <kind>" under a fixed title, and a card that cannot be built fails the pairing at once.
+  (A name with a ZWJ emoji sequence is refused with the other format characters.)
 - A wrong guess at the words, from any app connection, ends the pairing and withdraws its card (one guess per pairing, so no oracle).
 - The code, its QR and its expiry reach the page that began the pairing: showing a code is what the page is for.
 - Scope, as it is: a holder hears `pairing_changed` (the step, the name) for ANY pairing on this computer while it lasts, not only one

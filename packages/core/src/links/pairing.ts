@@ -163,12 +163,27 @@ export interface PairingServiceOptions {
   onMerged?(old: GroupRecord, via: string): void;
 }
 
-/** Control characters, line and paragraph separators, and the bidi controls (marks, embeddings, overrides, isolates). */
-const UNSAFE_IN_NAME = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/;
+/** What a name a device gave itself may not hold: control characters, every format character (`Cf`: the bidi controls, zero-width
+ *  characters, soft hyphens, the tag block U+E0000–E007F, U+FFF9–FFFB, U+180E), line and paragraph separators, lone surrogates, the
+ *  fillers that draw as blanks (Hangul U+115F, U+1160, U+3164, U+FFA0, Khmer U+17B4–17B5, braille blank U+2800), and every
+ *  double-quote-like character (straight, curly, low, angle, double prime, full-width, CJK), which could end the quotation the add card
+ *  draws the name in. An apostrophe is allowed: it is in real names ("Sam's phone"). */
+const UNSAFE_IN_NAME = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\u180E\u115F\u1160\u3164\uFFA0\u17B4\u17B5\u2800\u0022\u00AB\u00BB\u201C-\u201F\u2033\u2036\uFF02\u301D-\u301F]/u;
+/** Most combining marks after one base character (a script's own need is a few; more is a stack that draws over its neighbours). */
+const MARKS_MAX = 4;
 
-/** Whether a name a device gave itself is one to show: 1 to 63 UTF-16 units, something besides blanks, and none of `UNSAFE_IN_NAME`. */
+/** Whether a name a device gave itself is one to show: 1 to 63 UTF-16 units, at least one visible character, none of `UNSAFE_IN_NAME`,
+ *  no mark with no base character before it, and no more than `MARKS_MAX` marks after one. */
 export function cleanName(name: string): boolean {
-  return name.length >= 1 && name.length <= 63 && name.trim().length > 0 && !UNSAFE_IN_NAME.test(name);
+  if (name.length < 1 || name.length > 63 || UNSAFE_IN_NAME.test(name)) return false;
+  if (name.replace(/[\p{White_Space}\p{M}]/gu, "").length === 0) return false;
+  let marks = 0;
+  for (const ch of name) {
+    if (/^\p{M}$/u.test(ch)) {
+      if (++marks > MARKS_MAX) return false;
+    } else marks = 0;
+  }
+  return !/^\p{M}/u.test(name);
 }
 
 export class PairingService {

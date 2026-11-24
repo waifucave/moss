@@ -174,7 +174,7 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   ...Object.fromEntries(PLUGINS_ACTS.map((m) => [m, press(PLUGINS_MANAGE)])),
   // Needs a card (spec §5.5: sensitive changes are a sealed card from every layer).
   "computer.setLevel": { disposition: "card" },
-  // The devices page: showing or entering a pairing code, cancelling, removing a device and are the user's own
+  // The devices page: showing or entering a pairing code, cancelling and removing a device are the user's own
   // press in the page's frame (`devices.manage`). Adding a device is the engine's sealed card, raised by the engine itself the moment a
   // pairing reaches its four words (it draws them; a page never has them), and removing one is the card `device.revoke` raises: nothing
   // here applies either. `device.pair.confirm` is not this door's at all (`NEVER`): there is nothing for a page to confirm. The window
