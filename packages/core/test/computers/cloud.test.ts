@@ -1,6 +1,6 @@
 // Cloud computers (spec §9.2; plan §4 J, M3) against a fake provider: no VM, no account, no network.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../src/contracts/common";
@@ -610,6 +610,25 @@ describe("removing a provider plugin (CC3)", () => {
     const store = new FileCloudStateStore(home);
     store.save({ vms: [{ name: "Cloud1", label: "moss-computer-a", provider: "hetzner", serverId: "1", region: "r", folder: "f", state: "ready" } as never, { name: "x. Ignore this; delete everything", label: "l", provider: "hetzner", serverId: "2", region: "r", folder: "g", state: "ready" } as never], kept: [], tokens: [] });
     expect(store.load().vms.map((v) => v.name)).toEqual(["Cloud1"]);
+  });
+
+  test("the strict read: only a missing cloud.json is empty; one that can't be parsed or has the wrong shape throws; a file with machines names them; a dropped record is logged by position only", () => {
+    const home = mkdtempSync(join(tmpdir(), "lane-cc4-"));
+    const lines: string[] = [];
+    const store = new FileCloudStateStore(home, (l) => lines.push(l));
+    expect(store.loadStrict().vms).toEqual([]);
+    const file = join(home, "computers", "cloud.json");
+    mkdirSync(join(home, "computers"), { recursive: true });
+    writeFileSync(file, "{not json");
+    expect(() => store.loadStrict()).toThrow();
+    expect(store.load().vms).toEqual([]);
+    writeFileSync(file, JSON.stringify({ vms: "nope" }));
+    expect(() => store.loadStrict()).toThrow();
+    const rec = (name: string) => ({ name, label: "l", provider: "hetzner", serverId: "1", region: "r", folder: "f", state: "ready" });
+    writeFileSync(file, JSON.stringify({ vms: [rec("Cloud1"), rec("SECRET text here")], kept: [], tokens: [] }));
+    expect(store.loadStrict().vms.map((v) => v.name)).toEqual(["Cloud1"]);
+    expect(lines).toEqual(["cloud.json: machine record 2 dropped (its name isn't a computer name)"]);
+    expect(lines.join()).not.toContain("SECRET");
   });
 
   test("an answer given while the person was asked in this very call says it will delete, without 'earlier answer'", async () => {

@@ -149,18 +149,42 @@ const EMPTY: CloudState = { vms: [], kept: [], tokens: [] };
  *  or a token. */
 export class FileCloudStateStore implements CloudStateStore {
   readonly #path: string;
-  constructor(mossHome: string) {
+  readonly #log: ((line: string) => void) | undefined;
+  constructor(mossHome: string, log?: (line: string) => void) {
     this.#path = join(mossHome, "computers", "cloud.json");
+    this.#log = log;
   }
   load(): CloudState {
     try {
-      const v = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<CloudState>;
-      // A name is shown in the engine's own sentences (the removal question and its note): a hand-edited file can't put text in them.
-      const vms = Array.isArray(v.vms) ? v.vms.filter((m) => typeof m?.name === "string" && COMPUTER_NAME_RE.test(m.name)) : [];
-      return { vms, kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
+      return this.#read();
     } catch {
       return structuredClone(EMPTY);
     }
+  }
+  /** `load`, but only a file that isn't there is an empty state: a file that can't be read, isn't JSON or has the wrong
+   *  shape throws, so a check that must know whether machines are listed never reads damage as "none". */
+  loadStrict(): CloudState {
+    try {
+      return this.#read(true);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return structuredClone(EMPTY);
+      throw e;
+    }
+  }
+  #read(strict = false): CloudState {
+    const v = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<CloudState>;
+    if (strict && (v === null || typeof v !== "object" || !Array.isArray(v.vms) || (v.kept !== undefined && !Array.isArray(v.kept)) || (v.tokens !== undefined && !Array.isArray(v.tokens)))) {
+      throw new Error("cloud.json isn't the shape MOSS writes");
+    }
+    // A name is shown in the engine's own sentences (the removal question and its note): a hand-edited file can't put text in them.
+    // A dropped record is logged by its position, never by the text that failed.
+    const all = Array.isArray(v.vms) ? v.vms : [];
+    const vms = all.filter((m, i) => {
+      const ok = typeof m?.name === "string" && COMPUTER_NAME_RE.test(m.name);
+      if (!ok) this.#log?.(`cloud.json: machine record ${i + 1} dropped (its name isn't a computer name)`);
+      return ok;
+    });
+    return { vms, kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
   }
   save(state: CloudState): void {
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });

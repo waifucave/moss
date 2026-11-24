@@ -83,18 +83,42 @@ export function providerEntryIds(registry: PluginRegistry, pluginId: string): st
     .map((c) => c.entryId!);
 }
 
+/** What this computer knows without the cloud parts: the other computers that run the core (`undefined`: the device
+ *  registry can't be read), and its own record's machines for these providers (throws when that record can't be read). */
+export interface LoneComputerCheck {
+  otherComputers(): string[] | undefined;
+  machinesOf(providerIds: string[]): string[];
+}
+
 /** What stops a plugin that provides cloud computers from being removed or switched off while this computer's cloud
  *  computers aren't running: its machines could not be asked about, and would be left billing unasked. `undefined` for a
  *  plugin that provides none. Used until the computer node is up, and for good on a computer whose node never started. */
 export function cloudNotRunningRefusal(
-  registry: PluginRegistry, pluginId: string, action: "remove" | "switch-off" = "remove", machinesOf: (providerIds: string[]) => string[] = () => [],
+  registry: PluginRegistry, pluginId: string, action: "remove" | "switch-off" = "remove", here: LoneComputerCheck = { otherComputers: () => [], machinesOf: () => [] },
 ): ContractError | undefined {
   const ids = providerEntryIds(registry, pluginId);
   if (ids.length === 0) return undefined;
-  // This computer's own record lists no machine of these providers: nothing can be left billing, so nothing to ask.
-  const machines = machinesOf(ids);
-  if (machines.length === 0) return undefined;
   const verb = action === "remove" ? "remove it" : "switch it off";
+  // Only a lone computer may let a provider go unasked. In a group the machines are the MAIN's (§9.2; a computer that isn't
+  // the main keeps no record of them, and a removal syncs as a delete), and which computer is main isn't known before the
+  // lease is: so every group member, the main included, is sent to the main by name. (A main with no machines is refused
+  // too, on purpose: telling it from a member needs the parts that aren't up; once they are, it goes at once.)
+  const others = here.otherComputers();
+  if (others === undefined) {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's list of other computers can't be read yet, so what to do with their machines can't be asked: wait a minute or restart MOSS and ${verb} again`);
+  }
+  if (others.length > 0) {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's cloud computers aren't running, and it is not the only computer: ${verb} on the main computer (${others.join(", ")}${others.length > 1 ? ": whichever is main" : ""}), where you are asked what to do with their machines`);
+  }
+  // This computer's own record: a file that can't be read is not "no machines".
+  let machines: string[];
+  try {
+    machines = here.machinesOf(ids);
+  } catch {
+    return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's record of them (cloud.json) can't be read, so it can't be known whether any machine would be left billing: fix or remove that file, or wait a minute or restart MOSS and ${verb} again`);
+  }
+  // It lists none: nothing can be left billing, so nothing to ask.
+  if (machines.length === 0) return undefined;
   return new ContractError("refused", `${pluginId} provides cloud computers (${machines.join(", ")}), and this computer's cloud computers aren't running (still starting, or they did not start: see the daemon log), so what to do with the machines can't be asked: wait a minute or restart MOSS and ${verb} again, or ${verb} on the main computer if another computer is the main`);
 }
 
@@ -103,10 +127,10 @@ export function cloudNotRunningRefusal(
  *  never started, where a plugin that provides cloud computers is refused. */
 export function askBeforeProviderGoes(
   point: CloudPoint | undefined, registry: PluginRegistry | undefined, pluginId: string, action: "remove" | "switch-off",
-  machinesOf?: (providerIds: string[]) => string[],
+  here?: LoneComputerCheck,
 ): Promise<{ commit: () => Promise<void>; note: string } | undefined> {
   if (point) return point.guardRemoval(pluginId, action);
-  const refusal = registry ? cloudNotRunningRefusal(registry, pluginId, action, machinesOf) : undefined;
+  const refusal = registry ? cloudNotRunningRefusal(registry, pluginId, action, here) : undefined;
   return refusal ? Promise.reject(refusal) : Promise.resolve(undefined);
 }
 

@@ -153,18 +153,32 @@ describe("what can reach a provider's handler", () => {
   test("before the computers run, or on a computer whose node never started, removing or switching off a provider plugin is refused with a plain reason; a plugin that provides nothing goes", async () => {
     const { rig } = await boot("hetzner");
     for (const action of ["remove", "switch-off"] as const) {
+      const lone = (machines: () => string[], others: string[] | undefined = []) => ({ otherComputers: () => others, machinesOf: machines });
       // Machines listed in this computer's record: refused, saying which and what the person can do.
-      const e = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, () => ["Cloud1"]).catch((x) => x);
+      const e = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, lone(() => ["Cloud1"])).catch((x) => x);
       expect(isContractError(e, "refused")).toBe(true);
       expect((e as Error).message).toContain("aren't running");
       expect((e as Error).message).toContain("Cloud1");
       expect((e as Error).message).toContain("on the main computer");
       expect((e as Error).message).toContain(rig.pluginId);
       // Its record lists none: nothing can be left billing, so it goes (it could otherwise never be removed when the parts never start).
-      expect(await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, () => [])).toBeUndefined();
+      expect(await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, lone(() => []))).toBeUndefined();
       expect(await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action)).toBeUndefined();
+      // A record that can't be read is not "no machines".
+      const bad = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, lone(() => { throw new Error("not json"); })).catch((x) => x);
+      expect(isContractError(bad, "refused")).toBe(true);
+      expect((bad as Error).message).toContain("can't be read");
+      // A group member (a computer that isn't the only one, the main included): refused with no record at all, pointing to the main by name.
+      for (const machines of [() => [], () => { throw new Error("missing"); }]) {
+        const g = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, lone(machines, ["Studio"])).catch((x) => x);
+        expect(isContractError(g, "refused")).toBe(true);
+        expect((g as Error).message).toContain("main computer (Studio)");
+      }
+      // The list of other computers can't be read: refused, never "alone".
+      const unk = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, { otherComputers: () => undefined, machinesOf: () => [] }).catch((x) => x);
+      expect(isContractError(unk, "refused")).toBe(true);
     }
-    expect(await askBeforeProviderGoes(undefined, rig.registry, "someone/else", "remove")).toBeUndefined();
+    expect(await askBeforeProviderGoes(undefined, rig.registry, "someone/else", "remove", { otherComputers: () => ["Studio"], machinesOf: () => ["Cloud1"] })).toBeUndefined();
     // No registry at all (nothing to look in): nothing to refuse.
     expect(await askBeforeProviderGoes(undefined, undefined, rig.pluginId, "remove")).toBeUndefined();
   });

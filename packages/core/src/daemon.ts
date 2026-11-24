@@ -4141,8 +4141,15 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   const askCloudComputers = async (id: string, action: "remove" | "switch-off"): Promise<{ commit: () => Promise<void>; note: string } | undefined> => {
     if (beforeCloudPluginRemoved) return beforeCloudPluginRemoved(id, action);
     // Its own record of machines (`cloud.json`), read now: the parts that keep it aren't up.
-    const machinesOf = (ids: string[]) => new FileCloudStateStore(mossHome).load().vms.filter((v) => ids.includes(v.provider)).map((v) => v.name);
-    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action, machinesOf);
+    const machinesOf = (ids: string[]) => new FileCloudStateStore(mossHome, (l) => console.error(l)).loadStrict().vms.filter((v) => ids.includes(v.provider)).map((v) => v.name);
+    // The other computers that run the core, from the device registry (readable without the parts); no links at all is a lone computer.
+    const otherComputers = (): string[] | undefined => {
+      if (opts.links === false) return [];
+      if (ownDevices === undefined) return undefined;
+      const self = ownDevices.self().id;
+      return ownDevices.list().filter((d) => d.runsCore && d.id !== self).map((d) => d.computer ?? d.name);
+    };
+    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action, { otherComputers, machinesOf });
   };
   // The main computer, for a host half whose `host.start` is `main`: not known until the links and the parts are up
   // (the lease), so such a host half waits; with no links, this computer is its own main.
