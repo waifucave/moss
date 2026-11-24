@@ -1,0 +1,121 @@
+From: MOSS Windows lane <moss@example.com>
+Date: Tue, 24 Nov 2026 00:00:00 +0000
+Subject: [PATCH] The delete-child deny on a denied target's parent, on the parent alone
+
+---
+
+Upstream: anthropics/sandbox-runtime, tag v0.0.81 (c40cf14), after 0001-0003.
+Reason: every deny srt-win stamps also puts a FILE_DELETE_CHILD deny on the
+target's parent, inheritable (OI|CI). Writing an inheritable entry makes the
+system walk everything below the object to bring its inherited entries up to
+date, so a target at the top of a profile walks the whole profile, at stamp
+and again at restore: measured on windows-latest, one deny on a new folder at
+the top of a 50,829-entry profile took 21-27 s, one a level down 0.2-0.4 s,
+with or without the profile read grant. The delete-child check that protects
+the target is made on its parent object alone, so the parent's entry need not
+be handed down; on the parent alone it changes nothing objects below inherit,
+and srt-win's own writer (`commit_dacl`, `same_inheritable`) writes the
+parent's list on the object without the walk.
+
+What the inherited entry also did: it kept FILE_DELETE_CHILD denied on the
+target and everything below it. A read deny (FILE_ALL) denies that right
+itself; a write deny's mask holds DELETE but not FILE_DELETE_CHILD, and a
+delete is granted by the parent's FILE_DELETE_CHILD whatever the child's own
+DELETE says. So a write deny now carries its own inheritable delete-child deny
+on the target: written with the target's deny, it walks only the target's own
+tree, which that deny walks already.
+
+Files: src/acl.rs.
+
+What changes, and nothing else, per session (`SbAceSet::aces`) and persistent
+(`persistent_aces`): the parent's FILE_DELETE_CHILD deny is written without
+OI|CI; a write-denied target gains `(D;OICI;FILE_DELETE_CHILD)`. Two unit tests
+of the persistent shape follow.
+
+diff --git a/src/acl.rs b/src/acl.rs
+--- a/src/acl.rs
++++ b/src/acl.rs
+@@ -9,7 +9,7 @@
+ //!   sandbox user (which has no inherent rights on real-user-owned
+ //!   files) can reach the working tree;
+ //! - `stamp` ⇒ `(D;OICI;mask;;;<sb-SID>)` on the target plus
+-//!   `(D;OICI;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent;
++//!   `(D;;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent, object only (MOSS patch 0004);
+ //! - install-time ambient write-denies (`ambient.rs`) reuse the
+ //!   `stamp` deny shape, recorded in `ambient_denies` with no holder
+ //!   so they persist across sessions until `uninstall`.
+@@ -973,7 +973,7 @@
+ pub enum SbAce {
+     Grant(GrantMask),
+     Deny(DenyMask),
+-    /// `(D;OICI;FILE_DELETE_CHILD;;;<sb>)` — applied to the parent
++    /// `(D;;FILE_DELETE_CHILD;;;<sb>)` (object only, MOSS patch 0004) — applied to the parent
+     /// of every denied target so the sandbox user cannot `del`/`ren`
+     /// it via parent-FDC even when the parent carries an inherited
+     /// `BUILTIN\Users:(F)` (which the sandbox user, a Users member,
+@@ -1088,12 +1088,24 @@
+         let mut v = Vec::with_capacity(3);
+         if let Some(m) = self.deny {
+             v.push(NewAce::Deny(sid, m.bits(), OICI));
++        }
++        // MOSS patch 0004: a write deny's own delete-child deny, on the target and all below
++        // it. The write mask holds DELETE but not FILE_DELETE_CHILD, and a delete is granted
++        // by the parent's FILE_DELETE_CHILD whatever the child's own DELETE says; what below
++        // the target kept that right denied was the parent's entry, inherited. It is the
++        // target's own now (the read deny, FILE_ALL, holds it already).
++        if self.deny == Some(DenyMask::WriteDeny) {
++            v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), OICI));
+         }
+         if self.deny_delete {
+             v.push(NewAce::Deny(sid, Mask::DELETE.bits(), NO_INHERIT));
+         }
++        // MOSS patch 0004: the parent's delete-child deny on the parent ALONE (`NO_INHERIT`):
++        // what protects the target is that check on its parent object. Inheritable, the entry
++        // went to every object below the parent and writing it walked that whole tree (a target
++        // at a profile's top: the profile, ~50,000 entries, 21-27 s at stamp and at restore).
+         if self.deny_fdc {
+-            v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), OICI));
++            v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), NO_INHERIT));
+         }
+         let allow = self
+             .grant
+@@ -1493,13 +1505,18 @@
+     let mut v = Vec::with_capacity(7);
+     if let Some(m) = w.deny {
+         v.push(AceView::explicit(true, g, m.bits(), OICI));
++    }
++    // MOSS patch 0004: as the per-session set ([`SbAceSet::aces`]): a write deny's own
++    // delete-child deny, inheritable; the parent's, on the parent alone.
++    let fdc = Mask::FILE_DELETE_CHILD.bits();
++    if w.deny == Some(DenyMask::WriteDeny) {
++        v.push(AceView::explicit(true, g, fdc, OICI));
+     }
+     if w.deny_delete {
+         v.push(AceView::explicit(true, g, Mask::DELETE.bits(), NO_INHERIT));
+     }
+     if w.deny_fdc {
+-        let fdc = Mask::FILE_DELETE_CHILD.bits();
+-        v.push(AceView::explicit(true, g, fdc, OICI));
++        v.push(AceView::explicit(true, g, fdc, NO_INHERIT));
+     }
+     if let Some(cap) = w.capability_sid {
+         let modify = Mask::MODIFY_NO_FDC.bits();
+@@ -1820,8 +1837,9 @@
+             sddl,
+             [
+                 format!("(D;OICI;{:#x};;;{GROUP})", DenyMask::WriteDeny.bits()),
+-                format!("(D;;0x10000;;;{GROUP})"),
+                 format!("(D;OICI;0x40;;;{GROUP})"),
++                format!("(D;;0x10000;;;{GROUP})"),
++                format!("(D;;0x40;;;{GROUP})"),
+             ]
+         );
+         let both = persistent_aces(&PersistentWant {
+@@ -2069,6 +2087,7 @@
+             list(Some(ProfileAce::Granted), Some(DenyMask::WriteDeny), None),
+             [
+                 format!("(D;OICI;{:#x};;;{GROUP})", DenyMask::WriteDeny.bits()),
++                format!("(D;OICI;0x40;;;{GROUP})"),
+                 format!("(A;OICI;0x1200a9;;;{GROUP})"),
+             ]
+         );

@@ -57,7 +57,7 @@ jobs:
         timeout-minutes: 40
         run: scripts/ci/windows-fence/setup.ps1
 
-      - name: Where a fenced command's time goes (the launcher's logon, the shells, the reset, the read grant)
+      - name: Where a fenced command's time goes (the launcher's logon, the shells, the reset, the read grant; the delete-child guard)
         timeout-minutes: 20
         run: scripts/ci/windows-fence/timing.ps1
 
@@ -118,10 +118,13 @@ jobs:
           bun build --compile --target=bun-windows-arm64 hello.ts --outfile hello-arm64.exe
           if (Test-Path hello-arm64.exe) { & ./hello-arm64.exe } else { Write-Output "no bun-windows-arm64 binary was made" }
       - name: Build srt-win natively for arm64 from the pinned source and compare its digest with the arm64 pin
-        # The first arm64 build with patches 0002 and 0003: its digest is recorded here to be pinned (then this goes).
-        continue-on-error: true
         run: scripts/ci/windows-fence/build-launcher.ps1
-      - *install
+      # The workspace's install runs workerd's postinstall (wrangler's), which has no Windows arm64 binary and fails;
+      # the fence's tests need none of the install scripts.
+      - name: Install dependencies (no install scripts)
+        run: bun install --frozen-lockfile --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Core · the Windows fence's unit tests (arm64)
         working-directory: packages/core
         run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts

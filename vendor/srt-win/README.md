@@ -23,6 +23,11 @@ The Bash fence on Windows runs bots' commands as a dedicated per-user sandbox pr
   168.63.129.16, 100.100.100.200, 192.0.0.192, fd00:ec2::254, and the IPv4 ones
   IPv4-mapped), for the account that runs a command the person approved to leave
   the sandbox.
+  `0004-delete-child-deny-on-the-parent-alone.patch` writes the FILE_DELETE_CHILD deny
+  srt-win puts on a denied target's parent without inheritance, so stamping it no longer
+  walks the whole tree below the parent (a target at a profile's top cost ~25 s a command);
+  a write-denied target carries its own inheritable FILE_DELETE_CHILD deny instead, which
+  the parent's inherited one gave it before (the write mask lacks that right).
 - `vendor/srt-win/srt-win.exe` is the static-CRT build lane M's CI makes and
   signs (with the patches applied); the Authenticode digest check in
   `packages/core/src/fence/windows-launcher.ts` (`SRT_WIN_PINS`) fails closed
