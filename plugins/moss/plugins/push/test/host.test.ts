@@ -20,7 +20,7 @@ function memoryStore() {
   return { get: async () => value, set: async (v: { known: string[]; pending: string[] }) => void (value = v), peek: () => value };
 }
 
-function sweepWith(lists: (readonly DeviceEntry[] | Error)[], answers: (boolean | Error)[] = []) {
+function sweepWith(lists: (readonly DeviceEntry[] | Error)[], answers: (boolean | Error)[] = [], held: string[] = [PHONE, BROWSER]) {
   const store = memoryStore();
   const revoked: string[] = [];
   const sweep = new RevocationSweep({
@@ -30,6 +30,7 @@ function sweepWith(lists: (readonly DeviceEntry[] | Error)[], answers: (boolean 
       return next;
     },
     store,
+    revoked: async () => held.map((id) => ({ id, revokedAt: 1 })),
     revoke: async (id) => {
       revoked.push(id);
       const a = answers.shift() ?? true;
@@ -62,6 +63,18 @@ describe("the revocation sweep", () => {
     expect(revoked).toEqual([]);
   });
 
+  test("a phone missing from one list but not held as revoked is never revoked; it is once the registry holds it as revoked", async () => {
+    const held: string[] = [];
+    const { sweep, revoked } = sweepWith([[SELF, phone(PHONE)], [SELF], [SELF], [SELF]], [], held);
+    await sweep.sweep();
+    await sweep.sweep();
+    await sweep.sweep();
+    expect(revoked).toEqual([]);
+    held.push(PHONE);
+    await sweep.sweep();
+    expect(revoked).toEqual([PHONE]);
+  });
+
   test("a phone this computer never saw is never revoked from here", async () => {
     const { sweep, revoked } = sweepWith([[SELF], [SELF]]);
     await sweep.sweep();
@@ -86,7 +99,7 @@ describe("the revocation sweep", () => {
     const store = memoryStore();
     await store.set({ known: ["../../v1/notify", 7 as unknown as string, PHONE], pending: ["a/b"] });
     const revoked: string[] = [];
-    const sweep = new RevocationSweep({ list: async () => [SELF], store, revoke: async (id) => (revoked.push(id), true) });
+    const sweep = new RevocationSweep({ list: async () => [SELF], revoked: async () => [{ id: PHONE, revokedAt: 1 }], store, revoke: async (id) => (revoked.push(id), true) });
     await sweep.sweep();
     expect(revoked).toEqual([PHONE]);
     const many = Array.from({ length: 100 }, (_, i) => phone(`p${String(i).padStart(15, "0")}`));
@@ -118,7 +131,7 @@ describe("the notifier sweeps before each push", () => {
 describe("the host half", () => {
   afterEach(() => stop());
 
-  function fakeApi(devices: () => readonly DeviceEntry[], settings: Record<string, unknown> = {}) {
+  function fakeApi(devices: () => readonly DeviceEntry[], settings: Record<string, unknown> = {}, revokedIds: () => string[] = () => [PHONE]) {
     const requests: { url: string; method: string; auth: unknown }[] = [];
     const synced = new Map<string, unknown>();
     const watchers: (() => void)[] = [];
@@ -126,7 +139,7 @@ describe("the host half", () => {
       plugin: { id: "moss/push", namespace: "moss", version: "0.0.0", computer: "desk" },
       settings: { get: async (k: string) => settings[k] },
       storage: { synced: { get: async (k: string) => synced.get(k), set: async (k: string, v: unknown) => void synced.set(k, v) } },
-      devices: { list: async () => devices(), watch: (fn: () => void) => (watchers.push(fn), () => {}) },
+      devices: { list: async () => devices(), revoked: async () => revokedIds().map((id) => ({ id, revokedAt: 1 })), watch: (fn: () => void) => (watchers.push(fn), () => {}) },
       net: {
         fetch: async (url: string, init?: RequestInit, opts?: { auth?: string }) => {
           requests.push({ url, method: init?.method ?? "GET", auth: opts?.auth });

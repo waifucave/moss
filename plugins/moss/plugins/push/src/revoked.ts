@@ -3,12 +3,14 @@
 // The core's `phones` for an update already leaves revoked phones out, but a push that names no phone (a plugin's notice,
 // the badge going back to zero, an update whose only phone was revoked) wakes every target the push service holds, and the
 // service keeps a revoked phone's target until it is told. So before each push this computer compares the user's devices
-// now with the ones it saw before: a phone or a browser that is gone from the list was revoked (the registry lists only
-// unrevoked devices), and the service is told with `DELETE /v1/devices/<id>`, which drops its target and refuses it again.
+// now with the ones it saw before, and tells the service (`DELETE /v1/devices/<id>`, which drops the device's target and
+// refuses it for a day) of each phone or browser that is gone from the list AND that this computer's registry holds as
+// revoked (`devices.revoked`, with its `revokedAt`). A device merely missing from one list is never revoked from here.
 //
-// * Only a list that names this computer (`isThis`) is trusted: a list read before the registry is up never revokes.
+// * Only a list that names this computer (`isThis`) is read at all: one read before the registry is up says nothing.
 // * Only devices this computer saw itself, phones and browsers (no computer has a push target): another computer's
 //   phones are never revoked from here. What it saw is kept per computer in the plugin's synced store.
+// * A device gone from the list but not held as revoked stays remembered and is looked at again next time.
 // * A revocation the service didn't take (no account yet, the service away) is kept and tried again before the next push.
 // * At most `MAX_KNOWN` devices are remembered: an account has a few phones and browsers, never hundreds.
 
@@ -26,6 +28,8 @@ export interface SweepStore {
 export interface RevocationSweepOptions {
   /** The user's unrevoked devices, as `devices.list` gives them. */
   list(): Promise<readonly DeviceEntry[]>;
+  /** The devices this computer's registry holds as revoked (`devices.revoked`). */
+  revoked(): Promise<readonly { id: string; revokedAt: number }[]>;
   store: SweepStore;
   /** Tells the push service; true once it took the revocation. */
   revoke(id: string): Promise<boolean>;
@@ -82,10 +86,20 @@ export class RevocationSweep {
     const trusted = devices.some((d) => d.isThis);
     if (trusted) {
       const now = new Set(devices.filter((d) => !d.runsCore && !d.isThis && DEVICE_ID_RE.test(d.id)).map((d) => d.id));
-      for (const id of this.known) if (!now.has(id)) this.pending.add(id);
-      // A device listed again (paired anew under the same id can't happen: a revoked id stays refused) is not revoked.
+      const gone = [...this.known].filter((id) => !now.has(id));
+      let revoked = new Set<string>();
+      if (gone.length > 0) {
+        try {
+          revoked = new Set((await this.options.revoked()).filter((r) => typeof r.revokedAt === "number").map((r) => r.id));
+        } catch {
+          // No answer: nothing is confirmed, so nothing is revoked this time; they stay remembered.
+        }
+      }
+      for (const id of gone) if (revoked.has(id)) this.pending.add(id);
+      // A device listed again is not revoked; one gone but not held as revoked is remembered and looked at again.
       for (const id of now) this.pending.delete(id);
-      this.known = new Set([...now].slice(0, MAX_KNOWN));
+      const stillWatched = gone.filter((id) => !revoked.has(id));
+      this.known = new Set([...now, ...stillWatched].slice(0, MAX_KNOWN));
     }
     for (const id of [...this.pending]) {
       let taken = false;

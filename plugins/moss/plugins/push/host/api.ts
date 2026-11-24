@@ -7,7 +7,8 @@
 //   (the plugin's `network:` host); plugin code never sees it. With no account signed in it rejects with `no_account`
 //   before anything goes out.
 // * `storage.synced`: the unseen count, and the phones and browsers this computer saw (src/revoked.ts).
-// * `devices.list` / `devices.watch` (`devices.read`): which phones and browsers are still paired.
+// * `devices.list` / `devices.watch` / `devices.revoked` (`devices.read`): which phones and browsers are still paired,
+//   and which the registry holds as revoked.
 // * `settings.get("origin")`: a development profile's local push emulator.
 
 export interface HostApi {
@@ -17,6 +18,7 @@ export interface HostApi {
   readonly devices?: {
     list(): Promise<{ id: string; runsCore: boolean; isThis: boolean }[]>;
     watch(listener: (device: unknown) => void): () => void;
+    revoked(): Promise<{ id: string; revokedAt: number }[]>;
   };
   readonly net: { fetch(url: string, init?: RequestInit, opts?: { auth?: string | false }): Promise<Response> };
 }

@@ -109,7 +109,7 @@ export const API_CALLS = {
   "computers.holds": both("computers.control"), "computers.takeHold": { capability: "computers.control", where: "host" },
   "computers.releaseHold": { capability: "computers.control", where: "host" }, "computers.setUserWorking": { capability: "computers.control", where: "host" },
   "computers.setActionRunning": { capability: "computers.control", where: "host" }, "computers.mossWindows": { capability: "computers.control", where: "host" },
-  "devices.list": both("devices.read"), "devices.watch": both("devices.read"),
+  "devices.list": both("devices.read"), "devices.watch": both("devices.read"), "devices.revoked": both("devices.read"),
   /** Components only, with `approvals`: which cards wait for this plugin's own bot (the bundled `moss` tree: all), ids and
    *  places, never a card's text. A host half has no cards: they are the user's, and a sealed frame is a component's. */
   "approvals.pending": { capability: "approvals", where: "ui" }, "approvals.watch": { capability: "approvals", where: "ui" },

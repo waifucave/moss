@@ -3154,6 +3154,10 @@
       "capability": "devices.read",
       "where": "both"
     },
+    "devices.revoked": {
+      "capability": "devices.read",
+      "where": "both"
+    },
     "approvals.pending": {
       "capability": "approvals",
       "where": "ui"

@@ -78,7 +78,11 @@ describe("the push plugin's host half, against the Worker", () => {
       plugin: { id: "moss/push", namespace: "moss", version: "0.0.0", computer: "main" },
       settings: { get: async (key: string) => (key === "origin" ? ORIGIN : undefined) },
       storage: { synced: { get: async (k: string) => synced.get(k), set: async (k: string, v: unknown) => void synced.set(k, v) } },
-      devices: { list: async () => listOf(registry), watch: (fn: () => void) => (watchers.push(fn), () => {}) },
+      devices: {
+        list: async () => listOf(registry),
+        revoked: async () => registry.flatMap((d) => (d.revokedAt === undefined ? [] : [{ id: d.id, revokedAt: d.revokedAt }])),
+        watch: (fn: () => void) => (watchers.push(fn), () => {}),
+      },
       // The core's keyed fetch: the computer's account token, added by the core, never seen by the plugin.
       net: {
         fetch: (url: string, init: RequestInit = {}, opts?: { auth?: string }) => {

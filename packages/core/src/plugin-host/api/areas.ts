@@ -418,6 +418,7 @@ export function areasParts(s: AreaServices): { handlers: ApiHandlers; forget(plu
       const self = l.registry.self().id;
       return l.registry.list().map((d) => deviceView(d, self, l.transport.links().find((k) => k.peer === d.id), d.id === main));
     },
+    "devices.revoked": () => links().registry.all().flatMap((d) => (d.revokedAt === undefined ? [] : [{ id: d.id, revokedAt: d.revokedAt }])),
     "devices.watch": (ctx, args) => {
       const listener = listenerArg<DeviceView>(args, 0);
       const l = links();
