@@ -34,6 +34,7 @@ import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ffiLib, ffiPtr } from "../platform/ffi";
 import type { Unsubscribe } from "../contracts/common";
 import type { PluginRecord, PluginRegistry } from "../contracts/plugin-registry";
 import { plainNote } from "../plugin-host/card-yes";
@@ -115,10 +116,14 @@ export function childRunner(o: { mossHome: string; userHome?: string; bun?: stri
       const timeoutMs = o.timeoutMs ?? CLIENT_BUILD_LIMITS.timeoutMs;
       const timer = setTimeout(() => done({ ok: false, message: `the build took longer than ${Math.round(timeoutMs / 1000)} s and was stopped` }), timeoutMs);
       const maxRss = o.maxRssBytes ?? CLIENT_BUILD_LIMITS.maxRssBytes;
+      let unreadable = 0;
       const watch = setInterval(() => {
         if (child.pid === undefined) return;
         const kb = residentKb(child.pid);
-        if (Number.isFinite(kb) && kb * 1024 > maxRss) done({ ok: false, message: `the build used more than ${Math.round(maxRss / 1024 / 1024)} MiB of memory and was stopped` });
+        // A figure that can't be read is not "no limit": a build whose memory can't be seen for three looks in a row is stopped.
+        if (!Number.isFinite(kb)) { if (child.exitCode === null && ++unreadable >= 3) done({ ok: false, message: "the build's memory use couldn't be read, so its memory limit couldn't be held, and it was stopped" }); return; }
+        unreadable = 0;
+        if (kb * 1024 > maxRss) done({ ok: false, message: `the build used more than ${Math.round(maxRss / 1024 / 1024)} MiB of memory and was stopped` });
       }, o.watchEveryMs ?? 500);
       const onAbort = () => done(stoppedEarly);
       signal.addEventListener("abort", onAbort);
@@ -323,16 +328,26 @@ export class ClientBuilds {
   }
 }
 
-/** The resident memory of `pid` in KiB, or NaN when it can't be read (the build then runs on its time limit alone). Windows has no
- *  `/bin/ps`: spawning it threw out of the interval and ended the daemon (measured on a runner), so `tasklist` answers there. */
+/** The resident memory of `pid` in KiB, or NaN when it can't be read. Windows has no `/bin/ps` (spawning it threw out of the interval and
+ *  ended the daemon, measured on a runner), and a `tasklist` spawn would block the daemon's loop twice a second and print in the OEM code
+ *  page: the working set comes from the OS itself (`K32GetProcessMemoryInfo`), with no child and no text to parse. */
 function residentKb(pid: number): number {
   try {
     if (process.platform === "win32") {
-      const root = process.env.SystemRoot ?? "C:\\Windows";
-      const r = Bun.spawnSync([`${root}\\System32\\tasklist.exe`, "/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { stdout: "pipe", stderr: "ignore", windowsHide: true });
-      // "bun.exe","1234","Console","1","45,678 K"
-      const m = /"([\d.,\s]+) K"\s*$/m.exec(new TextDecoder().decode(r.stdout));
-      return m === null ? Number.NaN : Number(m[1]!.replace(/[^\d]/g, ""));
+      const lib = ffiLib("client-builds-k32", "kernel32.dll", {
+        OpenProcess: { args: ["u32", "i32", "u32"], returns: "u64" },
+        CloseHandle: { args: ["u64"], returns: "i32" },
+        K32GetProcessMemoryInfo: { args: ["u64", "ptr", "u32"], returns: "i32" },
+      });
+      if (lib === null) return Number.NaN;
+      const h = BigInt(lib.OpenProcess!(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, pid) as number | bigint);
+      if (h === 0n) return Number.NaN;
+      try {
+        const counters = Buffer.alloc(72); // PROCESS_MEMORY_COUNTERS on 64-bit Windows: WorkingSetSize at 16
+        counters.writeUInt32LE(72, 0);
+        if ((lib.K32GetProcessMemoryInfo!(h, ffiPtr(counters), 72) as number) === 0) return Number.NaN;
+        return Number(counters.readBigUInt64LE(16) / 1024n);
+      } finally { lib.CloseHandle!(h); }
     }
     const ps = Bun.spawnSync(["/bin/ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
     return Number(new TextDecoder().decode(ps.stdout).trim());
