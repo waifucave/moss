@@ -103,6 +103,8 @@ pub struct CardView {
     pub(crate) hash: String,
     pub(crate) card_json: String,
     pub(crate) options: Vec<String>,
+    pub(crate) bot: Option<String>,
+    pub(crate) session: Option<String>,
     pub(crate) state: CardState,
     /// The connection that issued it.
     pub(crate) issuer: u64,
@@ -125,6 +127,15 @@ impl CardView {
     pub fn options(&self) -> Vec<String> {
         self.options.clone()
     }
+    /// The bot whose conversation raised it, when one did (`bot`, checked as a bot id): the app draws the card there
+    /// and in the gathered "Needs you" list.
+    pub fn bot(&self) -> Option<String> {
+        self.bot.clone()
+    }
+    /// The session that raised it, when one did (`session`, checked as a session id): drawn there and in "Needs you".
+    pub fn session(&self) -> Option<String> {
+        self.session.clone()
+    }
     /// Still waiting for an answer, as far as the core has heard.
     pub fn pending(&self) -> bool {
         self.state.lock().unwrap().is_none()
@@ -141,6 +152,8 @@ pub struct Checked {
     pub hash: String,
     pub card_json: String,
     pub options: Vec<String>,
+    pub bot: Option<String>,
+    pub session: Option<String>,
 }
 
 pub fn is_card_id(s: &str) -> bool {
@@ -161,6 +174,19 @@ fn is_plugin_part(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
         && !s.ends_with('-')
         && !s.contains("--")
+}
+
+/// `BotId` (`AnyPluginId`): a plugin id, `a` or `a/b`.
+pub fn is_bot_id(s: &str) -> bool {
+    let mut parts = s.split('/');
+    let first = parts.next().unwrap_or("");
+    let second = parts.next();
+    parts.next().is_none() && is_plugin_part(first) && second.map_or(true, is_plugin_part)
+}
+
+/// `SessionId`: 1 to 128 of `A-Za-z0-9._:-`.
+pub fn is_session_id(s: &str) -> bool {
+    (1..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
 /// `OkCheckboxId`: a plugin id (`a` or `a/b`), or a plugin's app parts (`<id>#app`).
@@ -186,7 +212,17 @@ pub fn check(card: &Value) -> Result<Checked, CoreError> {
         .map(|o| o.get("id").and_then(Value::as_str).filter(|i| is_option_id(i)).map(str::to_string))
         .collect::<Option<_>>()
         .ok_or_else(|| tampered("an option's id isn't one"))?;
-    Ok(Checked { id: id.to_string(), hash, card_json: card.to_string(), options })
+    // Its owner, inside the hash: a bot id (`BotId`) and a session id (`SessionId`), or the card is refused whole.
+    let owner = |k: &str, ok: fn(&str) -> bool| -> Result<Option<String>, CoreError> {
+        match card.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(v)) if ok(v) => Ok(Some(v.clone())),
+            Some(_) => Err(tampered(&format!("the card's {k} isn't one"))),
+        }
+    };
+    let bot = owner("bot", is_bot_id)?;
+    let session = owner("session", is_session_id)?;
+    Ok(Checked { id: id.to_string(), hash, card_json: card.to_string(), options, bot, session })
 }
 
 /// A card's hash as the engine computes it: SHA-256 hex over `cardHashInput` (the card without `hash`).

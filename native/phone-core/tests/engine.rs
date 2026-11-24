@@ -326,3 +326,32 @@ async fn refusals_at_pairing() {
     assert!(matches!(core.clone().begin_pairing(bad, PhoneApp::Moss).await, Err(CoreError::Refused { .. })));
     engine.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpaired_the_phone_pairs_the_same_computer_again_as_a_new_device() {
+    if !enabled() {
+        return;
+    }
+    let mut engine = Engine::start().await;
+    let storage = Arc::new(MemStorage::default());
+    let core = phone(storage.clone());
+    let first = pair(&mut engine, &core, None, true).await.0.expect("the first pairing");
+    let old = core.identity();
+    engine.ok(json!({ "cmd": "waitDevice", "device": old.device_id })).await;
+    let old_seeds: Vec<Vec<u8>> = ["device-key", "answer-key"].iter().map(|k| storage.0.lock().unwrap()[*k].clone()).collect();
+    // Unpaired on the phone: nothing of that pairing stays, its identity included.
+    core.forget_computer(first.id.clone()).unwrap();
+    assert!(storage.0.lock().unwrap().iter().all(|(_, v)| !old_seeds.contains(v)), "an old seed is still in the store");
+    // Pairing the same computer again succeeds, as a new device.
+    let again = pair(&mut engine, &core, None, true).await.0.expect("the pairing after an unpair");
+    assert_eq!(again.id, first.id);
+    let new = core.identity();
+    assert_ne!(new.device_id, old.device_id);
+    engine.ok(json!({ "cmd": "waitDevice", "device": new.device_id })).await;
+    // And the new pairing works: it connects and calls.
+    let conn = core.clone().connect(again.id.clone(), ConnectOptions { client_name: "re-paired".into(), areas: vec![], call_timeout_ms: 30_000 }).await.unwrap();
+    until_event(&conn, "up", |e| matches!(e, ConnEvent::Up)).await;
+    conn.call("bot.list".into(), "{}".into()).await.expect("bot.list after re-pairing");
+    conn.disconnect();
+    engine.stop().await;
+}

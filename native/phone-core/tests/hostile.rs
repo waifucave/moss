@@ -787,3 +787,67 @@ async fn cancels_within(f: &Fake, t: Duration) -> usize {
     tokio::time::sleep(Duration::from_millis(200)).await;
     count()
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_says_whose_it_is_and_a_malformed_owner_refuses_it() {
+    let owned = |id: &str, bot: Value, session: Value| {
+        let mut c = card(id, "owned");
+        c["bot"] = bot;
+        c["session"] = session;
+        c.as_object_mut().unwrap().remove("hash");
+        c["hash"] = json!(cards::card_hash(&c).unwrap());
+        c
+    };
+    let list = vec![
+        owned("card_aaaaaaaa", json!("alpha"), json!("s_alpha:1")),
+        owned("card_bbbbbbbb", json!("pack/luna"), Value::Null),
+        owned("card_cccccccc", json!("../x"), Value::Null),
+        owned("card_dddddddd", Value::Null, json!("s alpha\u{202E}")),
+    ];
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| if m == "card.list" { Reply::Result(json!({ "cards": list.clone() })) } else { honest(m, p) }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    let mut tampered = vec![];
+    let shown = loop {
+        match until(&c, "the cards", |e| matches!(e, ConnEvent::PendingCards { .. } | ConnEvent::TamperedCard { .. })).await {
+            ConnEvent::TamperedCard { computers_id } => tampered.push(computers_id.unwrap()),
+            ConnEvent::PendingCards { cards } => break cards,
+            _ => unreachable!(),
+        }
+    };
+    assert_eq!(tampered, ["card_cccccccc", "card_dddddddd"]);
+    assert_eq!(shown.len(), 2);
+    assert_eq!((shown[0].bot(), shown[0].session()), (Some("alpha".into()), Some("s_alpha:1".into())));
+    assert_eq!((shown[1].bot(), shown[1].session()), (Some("pack/luna".into()), None));
+    c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forgetting_the_last_computer_leaves_nothing_of_the_old_identity() {
+    let a = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
+    let b = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
+    let (core, storage) = phone_for(&[&a, &b]).await;
+    let before = core.identity();
+    core.clone().start().await.unwrap();
+    let old: Vec<Vec<u8>> = ["device-key", "answer-key"].iter().map(|k| storage.items.lock().unwrap()[*k].clone()).collect();
+    // Another computer is still paired: the identity it knows stays.
+    core.forget_computer(a.id.clone()).unwrap();
+    assert_eq!(core.identity().device_id, before.device_id);
+    // The last one: a new identity, its keys saved over the old items, the old seeds nowhere in the store.
+    core.forget_computer(b.id.clone()).unwrap();
+    let after = core.identity();
+    assert_ne!(after.device_id, before.device_id);
+    assert_ne!(after.answer_key, before.answer_key);
+    assert!(core.paired_computers().unwrap().is_empty());
+    for (name, v) in storage.items.lock().unwrap().iter() {
+        assert!(!old.contains(v), "{name} still holds an old seed");
+    }
+    // A new core over the same store is the new identity, and the endpoint binds again with it.
+    assert_eq!(PhoneCore::new(storage.clone(), config()).unwrap().identity().device_id, after.device_id);
+    core.clone().start().await.unwrap();
+}

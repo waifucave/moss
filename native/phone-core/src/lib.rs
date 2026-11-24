@@ -38,7 +38,6 @@ pub use cards::CardView;
 pub use link::{AnswerOutcome, ConnEvent, ConnectOptions, Connection, LinkState, StagedFile};
 pub use net::RelayChoice;
 pub use pairing::Pairing;
-use tokio::sync::OnceCell;
 
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct CoreConfig {
@@ -54,27 +53,41 @@ pub struct CoreConfig {
 #[derive(uniffi::Object)]
 pub struct PhoneCore {
     storage: Arc<dyn SecretStorage>,
-    identity: Arc<identity::Identity>,
+    /// This phone's identity: replaced when the last computer is forgotten.
+    identity: std::sync::RwLock<Arc<identity::Identity>>,
     config: CoreConfig,
-    endpoint: OnceCell<iroh::Endpoint>,
+    /// Bound on first use with the device key of the identity it names; rebound (the old one closed) once the
+    /// identity is replaced.
+    endpoint: tokio::sync::Mutex<Option<(String, iroh::Endpoint)>>,
 }
 
 impl std::fmt::Debug for PhoneCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PhoneCore({})", self.identity.id)
+        write!(f, "PhoneCore({})", self.ident().id)
     }
 }
 
 impl PhoneCore {
-    /// The endpoint, bound on first use (inside the core's runtime).
+    fn ident(&self) -> Arc<identity::Identity> {
+        self.identity.read().unwrap().clone()
+    }
+
+    /// The endpoint, bound on first use (inside the core's runtime) with the identity's device key.
     async fn endpoint(&self) -> Result<iroh::Endpoint, CoreError> {
-        self.endpoint
-            .get_or_try_init(|| async {
-                let seed = self.identity.device.seed();
-                net::bind(&seed, &self.config.relay, self.config.bind_addr.as_deref()).await
-            })
-            .await
-            .cloned()
+        let mut ep = self.endpoint.lock().await;
+        let me = self.ident();
+        match ep.take() {
+            Some((id, e)) if id == me.id => {
+                *ep = Some((id, e.clone()));
+                return Ok(e);
+            }
+            Some((_, old)) => old.close().await,
+            None => {}
+        }
+        let seed = me.device.seed();
+        let e = net::bind(&seed, &self.config.relay, self.config.bind_addr.as_deref()).await?;
+        *ep = Some((me.id.clone(), e.clone()));
+        Ok(e)
     }
 }
 
@@ -84,11 +97,11 @@ impl PhoneCore {
     #[uniffi::constructor]
     pub fn new(storage: Arc<dyn SecretStorage>, config: CoreConfig) -> Result<Arc<Self>, CoreError> {
         let identity = identity::Identity::load_or_create(&storage, config.device_name.clone(), config.holder, config.os)?;
-        Ok(Arc::new(PhoneCore { storage, identity: Arc::new(identity), config, endpoint: OnceCell::new() }))
+        Ok(Arc::new(PhoneCore { storage, identity: std::sync::RwLock::new(Arc::new(identity)), config, endpoint: tokio::sync::Mutex::new(None) }))
     }
 
     pub fn identity(&self) -> PhoneIdentity {
-        self.identity.public()
+        self.ident().public()
     }
 
     /// Binds the endpoint now (otherwise the first pairing or connection does), and says where it is bound.
@@ -101,9 +114,18 @@ impl PhoneCore {
     }
 
     /// Forgets a computer here with every item its pairing kept (the computer keeps its own record until it revokes
-    /// this phone).
+    /// this phone). When it was the last computer paired, the phone's identity goes too: new device and answer keys
+    /// are saved over the old items and the endpoint is rebound with them, so a next pairing, even with the same
+    /// computer, is a new device to it. While other computers stay paired the identity they know stays.
     pub fn forget_computer(&self, id: String) -> Result<(), CoreError> {
-        computers::forget(&self.storage, &id).map(|_| ())
+        computers::forget(&self.storage, &id)?;
+        if !computers::list(&self.storage)?.is_empty() {
+            return Ok(());
+        }
+        let fresh = identity::Identity::renew(&self.storage, self.config.device_name.clone(), self.config.holder, self.config.os)?;
+        // The endpoint bound with the old key is closed and rebound at its next use (`endpoint`).
+        *self.identity.write().unwrap() = Arc::new(fresh);
+        Ok(())
     }
 
     /// Starts pairing with the computer whose QR was scanned, for one of the two phone apps. Returns once both sides
@@ -111,7 +133,7 @@ impl PhoneCore {
     pub async fn begin_pairing(self: Arc<Self>, qr: String, app: PhoneApp) -> Result<Arc<Pairing>, CoreError> {
         runtime::spawn(async move {
             let ep = self.endpoint().await?;
-            pairing::begin(&ep, self.identity.clone(), self.storage.clone(), &qr, app).await.map(Arc::new)
+            pairing::begin(&ep, self.ident(), self.storage.clone(), &qr, app).await.map(Arc::new)
         })
         .await
     }
@@ -121,7 +143,7 @@ impl PhoneCore {
         runtime::spawn(async move {
             let c = computers::list(&self.storage)?.into_iter().find(|c| c.id == computer_id).ok_or_else(|| CoreError::invalid("not a paired computer"))?;
             let ep = self.endpoint().await?;
-            link::start(ep, self.identity.clone(), c, options)
+            link::start(ep, self.ident(), c, options)
         })
         .await
     }
@@ -129,7 +151,8 @@ impl PhoneCore {
     /// Closes the endpoint (every connection on it ends).
     pub async fn shutdown(self: Arc<Self>) {
         runtime::spawn(async move {
-            if let Some(ep) = self.endpoint.get() {
+            let ep = self.endpoint.lock().await.take();
+            if let Some((_, ep)) = ep {
                 ep.close().await;
             }
         })

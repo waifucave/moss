@@ -497,7 +497,7 @@ impl Inner {
             }
             t.state_for(&c.id)
         };
-        Arc::new(CardView { id: c.id, hash: c.hash, card_json: c.card_json, options: c.options, state, issuer: self.serial })
+        Arc::new(CardView { id: c.id, hash: c.hash, card_json: c.card_json, options: c.options, bot: c.bot, session: c.session, state, issuer: self.serial })
     }
 
     fn tampered(&self, card: &Value) {
