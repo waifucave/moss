@@ -155,6 +155,7 @@ class EngineFlowTests: XCTestCase {
         XCTAssertEqual(newPhones.count, 1, "the second pairing is a new device")
         _ = try await harness.run("revoke", ["device": newPhones.first ?? ""])
         try await eventually("the revoked phone keeps nothing", seconds: 60) { (try? items.count()) == 0 }
-        XCTAssertNotEqual(await client.connectionState(), .connected)
+        let afterRevoke = await client.connectionState()
+        XCTAssertNotEqual(afterRevoke, .connected)
     }
 }
