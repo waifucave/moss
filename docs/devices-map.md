@@ -48,6 +48,26 @@ each `moss.json` `availability`). Every bundled host half now reads only the plu
 | companion-ios | parked (`pairing-registry`) | the phone apps pair by scanning the engine's own QR and speak the `remote` role on the core's link (`native/phone-core`); the core calls no `companions` handler and the apps register no `moss://` scheme, so this plugin has nothing to do as it stands |
 | provider-gcp, provider-hetzner | parked (`cloud-computers`) | the cloud computers lane's |
 
+## For the deploy lane: revocation reaching push and the forwarder
+- **Today.** A device revoked on a computer that runs MOSS is cut off at once on that computer's links. Push learns of it only
+  through the moss/push plugin's sweep on the main computer (a phone or browser that leaves the device list and that the
+  registry holds as revoked: `DELETE /v1/devices/<id>`). The forwarder learns of nothing: it trusts the account token.
+  A device revoked by a path that skips every computer (the account page, or a computer that is off) reaches neither service.
+- **What a revoked device can still do meanwhile:** use the account tokens it already holds, each at most 5 minutes old
+  (`ACCOUNT_TOKEN_MAX_MS`), against push.waifucave.com and hooks.waifucave.com (register a push target, register or list
+  webhook routines, take held webhooks sealed to its own forwarder key). After its last token expires, nothing: the account
+  service mints no more for a revoked device.
+- **The binding to write** (the deploy lane owns `services/*/wrangler.jsonc`): give `services/accounts` service bindings to
+  `services/push` and `services/forwarder`, and have its device revocation call each one's revoke (push: `DELETE
+  /v1/devices/<id>`; the forwarder: drop the device's key and its routines' delivery to it) at the moment it revokes.
+
+## Known gaps in the plugin API's device doors
+- `api.plugin.device` (this device's id, for `devices.read` holders) is read when a host half starts: a grant of
+  `devices.read` withdrawn later takes effect at the host's next start.
+- A development profile's local emulators can't take the account token yet: the daemon passes no `waifucaveTarget`
+  (`runtime-sdk/model-plugins/start.ts` takes one), and an emulator's loopback origin would also need to be on the
+  plugin's `network:` list.
+
 ## Owner's ordered list (what to deploy, supply or check by hand)
 1. Build the link sidecar (`cargo build --release` in `native/link`) on two Macs. Working: `moss-link` starts, two engines list each other after pairing by QR.
 2. Pair two real computers by QR from Settings (either app): the card appears on each by itself, the same four words show on both cards, both lists show both. Remove one: its card asks first.
