@@ -509,7 +509,9 @@ describe("the roots seed gates every command (the WS5 reviewer's should-fix 2)",
     return { launcher, argv: () => (existsSync(file) ? readFileSync(file, "utf8").split("\n") : null) };
   };
   const coding = (cwd: string): FencedRun => ({ command: "echo hi", cwd, env: {}, timeoutMs: 10_000, who: { caller: { kind: "session", sessionId: "c1", sessionKind: "coding" } as Caller } });
-  test("a root from srt-win's list under the plan's denied folder is stamped as a by-name read deny", async () => {
+  // The recording launcher is a shell script, which only a POSIX host launches: the lane's macOS and Linux suites run
+  // this; the windows-fence unit job skips it (the e2e launches the real srt-win there).
+  test.skipIf(process.platform === "win32")("a root from srt-win's list under the plan's denied folder is stamped as a by-name read deny", async () => {
     const m = machine();
     const moss = join(m.home, ".moss");
     mkdirSync(join(moss, "elsewhere", "root1"), { recursive: true });
