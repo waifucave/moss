@@ -961,8 +961,10 @@ const BUNDLED_MCP_WAIT_MS = 5_000;
 // turn's request (did it offer them?), on the product's own clock; its listing time is reported. A boot with no turn
 // proves nothing for the owner: it fails only past twice the wait (a regression, not a hot machine). The watch goes on
 // to BUNDLED_MCP_CEILING_MS so a late listing is timed, not lost.
-const BUNDLED_MCP_NO_TURN_MS = 2 * BUNDLED_MCP_WAIT_MS;
-const BUNDLED_MCP_CEILING_MS = 20_000;
+// Both bounds are the harness's, not the product's (the product's own 5 s is judged by the turn's request): a daemon starting on a
+// loaded runner lists later, so they scale with the run's time scale like every other wait here (45444575911: listed, after 20 s).
+const BUNDLED_MCP_NO_TURN_MS = scaled(2 * BUNDLED_MCP_WAIT_MS);
+const BUNDLED_MCP_CEILING_MS = scaled(20_000);
 const BUNDLED_LISTED = /\[plugins\] plugin MCP moss\/web\/web: (listed \d+ tool\(s\): [^\n]*|not served: [^\n]*)/;
 // Any plugin's host server whose listing failed, or whose worker went under it, fails the step. And a served server
 // that runs a worker must list in time too: the web one isn't started while it isn't served, so the plugin step 4
