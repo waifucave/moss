@@ -9,6 +9,7 @@
 //     writers lose an update. The lock is a file made with `wx` holding the holder's pid and the time; one whose pid is
 //     gone, or that is far older than any write takes, is taken over.
 // No value passes through here but the bytes the caller hands `writePrivateFile`; nothing is logged.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -93,7 +94,7 @@ export function flushFolder(dir: string, platform: NodeJS.Platform = process.pla
 export async function renameDurably(from: string, to: string, deps: PrivateFileDeps = {}): Promise<void> {
   const platform = deps.platform ?? process.platform;
   for (let i = 0; ; i++) {
-    try { renameSync(from, to); break; }
+    try { assertLocksHeld(); renameSync(from, to); break; }
     catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
   }
   deps.step?.("renamed");
@@ -203,7 +204,19 @@ function lockMtime(lockPath: string, now: number): number {
   try { return statSync(lockPath).mtimeMs; } catch { return now; }
 }
 
-async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): Promise<() => Promise<void>> {
+/** The locks the work under way holds (outermost first), so a write inside it can check before each rename that every
+ *  one is still its own (lane SE review: a holder paused past `LOCK_STALE_MS`, a lid closed during a keyring prompt or a
+ *  suspended VM, is taken over; when it resumes, its read-change-write must not land over the new holder's). */
+const heldLocks = new AsyncLocalStorage<readonly { path: string; stillMine: () => boolean }[]>();
+
+/** Throws `locked` when the work under way lost any lock it holds: the write is dropped, never put over a newer one. */
+export function assertLocksHeld(): void {
+  for (const l of heldLocks.getStore() ?? []) {
+    if (!l.stillMine()) throw new ContractError("locked", `this process lost the lock ${basename(l.path)} while it was paused: its write was dropped, so a newer one is never overwritten`);
+  }
+}
+
+async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): Promise<{ release: () => Promise<void>; stillMine: () => boolean }> {
   mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
   const started = Date.now();
   for (;;) {
@@ -212,15 +225,25 @@ async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): 
       const nonce = randomBytes(6).toString("hex");
       let mine = `${process.pid}\n${Date.now()}\n${nonce}\n`;
       try { writeFileSync(fd, mine); } finally { closeSync(fd); }
-      const stillMine = () => { try { return readFileSync(lockPath, "utf8") === mine; } catch { return false; } };
+      // Whether the lock still holds this holder's text. A sharing error Windows gives for a moment (a waiter reading the
+      // lock to judge it) is read again, never taken for "lost"; a lock that is gone or another's is lost.
+      const stillMine = () => {
+        for (let i = 0; ; i++) {
+          try { return readFileSync(lockPath, "utf8") === mine; }
+          catch (e) { if (!transient(e) || i >= RENAME_RETRIES) return false; Bun.sleepSync(5); }
+        }
+      };
       // Renewed while held, and only while it is still this holder's (one taken over is never written over).
       const renew = setInterval(() => {
         if (!stillMine()) return;
         const next = `${process.pid}\n${Date.now()}\n${nonce}\n`;
-        try { writeFileSync(lockPath, next); mine = next; } catch { /* the next tick tries again */ }
+        // Written whole under another name and renamed over the lock, never in place (a half-written lock is no one's).
+        const tmp = `${lockPath}.${nonce}.renew`;
+        try { writeFileSync(tmp, next, { mode: 0o600 }); if (!stillMine()) { rmSync(tmp, { force: true }); return; } renameSync(tmp, lockPath); mine = next; }
+        catch { rmSync(tmp, { force: true }); /* the next tick tries again */ }
       }, renewMs);
       renew.unref?.();
-      return async () => {
+      return { stillMine, release: async () => {
         clearInterval(renew);
         // Only a lock whose text is still this holder's is removed: one taken over is the new holder's.
         // Windows may hold the file for a moment (a waiter reading it to judge it): retried, never left behind.
@@ -228,7 +251,7 @@ async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): 
           if (!stillMine()) return;
           try { rmSync(lockPath, { force: true }); return; } catch (err) { if (!transient(err)) throw err; await sleep(25); }
         }
-      };
+      } };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" && !(code === "EPERM" || code === "EACCES")) throw e;
@@ -244,8 +267,9 @@ async function takeFileLock(lockPath: string, waitMs: number, renewMs: number): 
 export async function withSecretsLock<T>(lockPath: string, fn: () => Promise<T>, waitMs: number = LOCK_WAIT_MS, renewMs: number = LOCK_RENEW_MS): Promise<T> {
   const before = inProcess.get(lockPath) ?? Promise.resolve();
   const run = before.then(async () => {
-    const release = await takeFileLock(lockPath, waitMs, renewMs);
-    try { return await fn(); } finally { await release(); }
+    const lock = await takeFileLock(lockPath, waitMs, renewMs);
+    try { return await heldLocks.run([...(heldLocks.getStore() ?? []), { path: lockPath, stillMine: lock.stillMine }], fn); }
+    finally { await lock.release(); }
   });
   const tail = run.catch(() => undefined);
   inProcess.set(lockPath, tail);

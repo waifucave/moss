@@ -167,24 +167,24 @@ export class EncryptedFileValues implements BatchValues {
     throw damage ?? new ContractError("locked", "the secrets file (secrets.enc) is missing and its previous copy can't be read");
   }
 
-  /** Writes `all`: the file it replaces is first kept whole as the previous copy (durably), then the new file is written
-   *  (flushed, renamed, the rename flushed: `writePrivateFile`), then the note that a file was made. A crash anywhere
-   *  leaves the old whole file, the new whole file, or the previous copy beside whichever is there.
+  /** Writes `all`. Its second whole copy (`credentials/secrets.enc.bak`) is made the NEW file first, then the file itself
+   *  is replaced (each flushed, renamed, the rename flushed: `writePrivateFile`), then once the note that a file was made.
    *
-   *  A write that REMOVES an item (lane SE, review blocker 1) keeps no copy that still holds it: the previous copy is
-   *  made the NEW file first, then the file itself is replaced. A crash between the two leaves the old file (the removal
-   *  never returned, so it never happened) beside a copy that already lacks the item; after it, neither holds it. So a
-   *  removed item is never read again from any copy, whatever is damaged later, and a later write never folds it back. */
-  async #write(all: Record<string, string>, from: { all: Record<string, string>; blob: Buffer | null; recovered: boolean }): Promise<void> {
+   *  So no copy ever holds what a write replaced (lane SE review: a removed item, and a REPLACED value such as a rotated
+   *  webhook key or a refreshed token, never reads again from the copy when the file is later damaged or restored; and
+   *  an item just added is not lost to damage of the file, which would make a device key be minted again). Every write,
+   *  not only removals and rotations: an addition kept out of the copy is exactly the device key lost.
+   *  A crash between the two leaves the OLD file (the write never returned, so it never happened) beside a copy that is
+   *  already the new one; damage of the file then reads that copy, a value its writer was told failed, never an older
+   *  one. A crash before the copy's rename leaves both as they were. */
+  async #write(all: Record<string, string>, _from: { all: Record<string, string>; blob: Buffer | null; recovered: boolean }): Promise<void> {
     const iv = randomBytes(12);
     const head = Buffer.from([2, SOURCE_CODES[this.source]]);
     const c = createCipheriv("aes-256-gcm", await this.key(), iv);
     c.setAAD(head);
     const body = Buffer.concat([c.update(JSON.stringify(all), "utf8"), c.final()]);
     const next = Buffer.concat([head, iv, c.getAuthTag(), body]);
-    const removes = Object.keys(from.all).some((k) => !(k in all));
-    if (removes) await writePrivateFile(backupPath(this.path), next, this.#disk);
-    else if (from.blob !== null && !from.recovered) await writePrivateFile(backupPath(this.path), from.blob, this.#disk);
+    await writePrivateFile(backupPath(this.path), next, this.#disk);
     await writePrivateFile(this.path, next, this.#disk);
     if (!present(madePath(this.path))) await writePrivateFile(madePath(this.path), "a secrets file was made here\n", this.#disk);
   }
