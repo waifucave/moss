@@ -73,7 +73,7 @@ export function ipcLine(w: IpcWindow, cpu: readonly ProcessCpu[]): string {
   const inN = total(w.in);
   const outN = total(w.out);
   const procs = cpu.map((p) => `${p.type} ${p.percent.toFixed(1)}%`).join(" ");
-  return `ipc: ${w.seconds} s in ${rate(inN)}/s (${top(w.in)}) out ${rate(outN)}/s (${top(w.out)}) cpu ${procs}`;
+  return `ipc: ${w.seconds} s in ${rate(inN)}/s (${top(w.in)}) out ${rate(outN)}/s (${top(w.out)}) cpu${procs === "" ? "" : ` ${procs}`}`;
 }
 
 /** Counts every message and says each window's line (`every` ms) while the app runs; the stop function ends it. */
