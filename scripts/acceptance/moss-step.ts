@@ -1423,7 +1423,7 @@ async function questionRow(s: UnitState): Promise<string> {
   }, 500);
   // 5. After the Stop, a new message that makes the bot Write: the Write's approval card is raised and drawn in her conversation, the person's press approves it, the file is written.
   const wrote = join(s.x.userHome, ".acceptance", `moss-after-stop-${randomBytes(3).toString("hex")}.txt`);
-  const afterStop = await turnInMoss(s, "MOSS", a.mainSession, callText("Write", { file_path: wrote, content: "after the stop\n" }), "ACCEPTANCE-DONE", 150_000)
+  const afterStop = await turnInMoss(s, "MOSS", a.mainSession, callText("Write", { file_path: wrote, content: "after the stop\n" }), basename(wrote), 150_000)
     .catch(async (err) => s.x.fail(`${s.x.why(err)}: after the stopped question, a new message that Writes got no approval card or no reply [the engine's log for her session holds: ${(await events()).slice(-6).map((e) => String(e.type)).join(", ")}]`));
   if (afterStop.cards.length === 0) s.x.fail("the Write after the stop raised no approval card");
   if (!existsSync(wrote) || readFileSync(wrote, "utf8") !== "after the stop\n") s.x.fail(`the file the Write after the stop was to make isn't written (${wrote})`);
