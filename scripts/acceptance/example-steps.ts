@@ -257,7 +257,7 @@ export async function callTurn(ctx: ExampleCtx, session: string, tool: string, i
   const mine = ctx.requests().slice(seen);
   const called = mine.map((r) => r.toolUse).filter((x): x is string => x !== undefined).find((x) => toolNamed(x, tool));
   const result = mine.map((r) => r.toolResult).filter((x): x is { text: string; isError: boolean } => x !== undefined).at(-1);
-  const said = () => `events: ${[...new Set(t.events.map((e) => String(e.type)))].join(", ") || "none"}; errors: ${t.events.filter((e) => /error/.test(String(e.type)) || e.stopReason === "error").map((e) => String(e.message ?? e.error ?? e.text ?? JSON.stringify(e)).slice(0, 200)).join(" | ") || "none"}; ${mine.length} request(s) reached the model`;
+  const said = () => `events: ${[...new Set(t.events.map((e) => String(e.type)))].join(", ") || "none"}; notices: ${t.events.filter((e) => e.type === "hook_notice").map((e) => JSON.stringify(e).slice(0, 400)).join(" | ") || "none"}; errors: ${t.events.filter((e) => /error/.test(String(e.type)) || e.stopReason === "error").map((e) => String(e.message ?? e.error ?? e.text ?? JSON.stringify(e)).slice(0, 200)).join(" | ") || "none"}; ${mine.length} request(s) reached the model (answered ${mine.map((r) => `${r.answered}${r.refused !== undefined ? ` ${String(r.refused).slice(0, 120)}` : ""}, ${r.tools.length} tools`).join("; ") || "none"})`;
   if (called === undefined) fail(`no ${tool} was called (offered: ${(mine.find((r) => r.tools.length > 0)?.tools ?? []).filter((x) => toolNamed(x, tool)).join(", ") || "not it"}; ${said()})`);
   if (result === undefined) fail(`${called} gave no result (cards: ${t.cards.join("; ") || "none"})`);
   return { called: called!, result: result!, cards: t.cards, changes: t.changes, events: t.events };

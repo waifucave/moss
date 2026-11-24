@@ -80,6 +80,7 @@ import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-fi
 import { USAGE_INERT_ENV } from "../../packages/core/src/usage/wiring";
 import { NOT_AVAILABLE_YET } from "../../packages/protocol/src/plugins";
 import { MossClient, RpcError, hello } from "./client";
+import { coreEndpoint, killTree } from "./win";
 import { BRIDGE_ECHO, CHILD_REPORT, netCommand, newestDirective as newestDirectiveOf, REVIEW_MARK, startFakeAnthropic, type FakeProvider } from "./fake-anthropic";
 import { Cdp } from "./cdp";
 import { diagnosing, runnerState, stallReportsDone, startRunnerLog, watchAppStall, watchPingLines } from "./stall-watch";
@@ -288,8 +289,8 @@ if (stageOnly && (coldOnly || upgrade || keepState !== undefined || coldHome !==
 if ((shards > 1 || shardUnits !== undefined) && (workshopOnly || stageOnly || tabFlashOnly || onlyUi !== undefined || codeAdapterOnly || thirdPartyOnly || oauthOnly || browserOnly || routineOnly || coldOnly || upgrade || keepState !== undefined || coldHome !== undefined)) { console.error("acceptance: --shards and --units run the full table; they take no --only-*, --cold-start, --cold-home, --keep-state or --upgrade-from"); process.exit(2); }
 if (shards > 1 && shardUnits !== undefined) { console.error("acceptance: --units is a shard's own run; it takes no --shards"); process.exit(2); }
 if (keepState !== undefined && (coldOnly || coldHome !== undefined)) { console.error("acceptance: --keep-state keeps a full run's state; it takes no --cold-start or --cold-home"); process.exit(2); }
-if (process.platform !== "darwin" && process.platform !== "linux") {
-  console.error("acceptance: this run is macOS and Linux only for now (Windows has no harness yet)");
+if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
+  console.error(`acceptance: this run is macOS, Linux and Windows only (not ${process.platform})`);
   process.exit(2);
 }
 if (appBundle !== undefined && !existsSync(join(appBundle, "Contents", "Info.plist"))) {
@@ -450,6 +451,14 @@ function listKeychains(): string {
   return (r.stdout ?? "").trim();
 }
 
+/** The environment a child needs on Windows: the system folders (never the runner's own user folders: those are the run's user home). */
+function windowsEnv(): Record<string, string> {
+  const keep = ["SystemRoot", "SYSTEMROOT", "windir", "SystemDrive", "ComSpec", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "COMPUTERNAME", "USERNAME"];
+  const out: Record<string, string> = {};
+  for (const k of keep) if (process.env[k] !== undefined) out[k] = process.env[k]!;
+  return { ...out, USERPROFILE: userHome, HOMEDRIVE: userHome.slice(0, 2), HOMEPATH: userHome.slice(2), APPDATA: join(userHome, "AppData", "Roaming"), LOCALAPPDATA: join(userHome, "AppData", "Local"), TEMP: join(root, "tmp"), TMP: join(root, "tmp") };
+}
+
 function baseEnv(): Record<string, string> {
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -473,6 +482,9 @@ function baseEnv(): Record<string, string> {
     ...(process.platform === "linux" ? Object.fromEntries(["SHELL", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "MOSS_PRIVATE_SECRET_SERVICE", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]!])) : {}),
     // A CI runner: the daemon says when its own loop ran late (daemon.ts), beside the stall watch on each app (stall-watch.ts).
     ...(diagnosing() ? { MOSS_ACCEPT_DIAGNOSE: "1" } : {}),
+    // Windows: the system's own variables the children cannot start without, and the user's folders inside the run's user home
+    // (the env is a whitelist, so each is named): the engine finds the user's home by USERPROFILE, not HOME.
+    ...(process.platform === "win32" ? windowsEnv() : {}),
     // The test app's answer key, kept beside the keychain file (a test-marked or unpackaged headless app only): every
     // app of the run, and an upgrade's, registers the same key.
     MOSS_TEST_ANSWER_KEY: answerKeyFile,
@@ -487,7 +499,7 @@ mkdirSync(join(root, "tmp"), { recursive: true, mode: 0o700 });
 function startChild(name: string, cmd: string, args: string[], env: Record<string, string>, cwd = REPO): { proc: ChildProcess; log: string } {
   const log = join(logs, `${name}.log`);
   const fd = openSync(log, "a");
-  const proc = spawn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", fd, fd] });
+  const proc = spawn(cmd, args, { cwd, env, detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   children.push({ name, proc });
   // On a CI runner: an app (one with a DevTools port) that stops answering for 2 s is looked at while it is stuck (stall-watch.ts).
@@ -505,6 +517,8 @@ async function endChild(proc: ChildProcess, graceMs = 10_000): Promise<boolean> 
   if (proc.pid === undefined || !alive(proc)) return true;
   let alone = true;
   const exited = new Promise<void>((r) => proc.once("exit", () => r()));
+  // Windows has no process groups and no SIGTERM that a process can answer: the child and what it started are ended as a tree.
+  if (process.platform === "win32") { killTree(proc.pid); await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]); return false; }
   try { process.kill(-proc.pid, "SIGTERM"); } catch { /* gone */ }
   const t = setTimeout(() => { alone = false; try { process.kill(-proc.pid!, "SIGKILL"); } catch { /* gone */ } }, graceMs);
   await Promise.race([exited, new Promise((r) => setTimeout(r, graceMs + 2_000))]);
@@ -741,6 +755,8 @@ async function cleanup(): Promise<ReapResult | undefined> {
     }
     // The plugins' own logs (a stdio server's stderr: why it crashed), from the same temp home.
     try { cpSync(join(home, "logs", "plugins"), join(keepLogs, "plugins"), { recursive: true }); } catch { /* none, or best effort */ }
+    // Windows runs: the whole of the home's logs, beside the kept ones (not in them: the verdict reads those), to see a turn's own error.
+    if (process.platform === "win32") { try { cpSync(join(home, "logs"), join(keepLogs, "..", "home-logs"), { recursive: true }); } catch { /* best effort */ } }
   }
   // A kept keychain file stays for the upgrade run (its state dir's owner deletes it); a run's own goes.
   if (keychainMade && (stateDir === undefined || copyUpgrade)) spawnSync("security", ["delete-keychain", keychain], { stdio: "ignore" });
@@ -831,7 +847,8 @@ const SOFTWARE_GL = process.platform === "linux" ? ["--use-angle=swiftshader", "
 function sourceApp(): { exe: string; args: string[] } {
   if (!noBuild) {
     console.error(`acceptance: building apps/desktop from this checkout (always, for the source target)${existsSync(join(DESKTOP, "out", "main", "index.js")) ? "; the earlier build in apps/desktop/out is replaced" : ""}`);
-    const heavy = join(REPO, "scripts", "heavy");
+    // (scripts/heavy is a bash script that queues heavy jobs on one Mac; Windows has no such script to run, and a runner has the machine to itself.)
+    const heavy = process.platform === "win32" ? "" : join(REPO, "scripts", "heavy");
     // The source acceptance's own build (--acceptance: what only this run uses is compiled in); an older tree's build
     // script (the upgrade's first half) doesn't take the flag, and guards those paths at run time instead.
     const own = readFileSync(join(DESKTOP, "scripts", "build.ts"), "utf8").includes('"--acceptance"') ? ["--acceptance"] : [];
@@ -936,11 +953,12 @@ async function startDaemonProc(extraEnv: Record<string, string> = {}, supervised
     started = startChild(`daemon-${daemonRun}`, binary ?? packagedCore(), supervised ? ["supervise"] : ["daemon", "run"], { ...packagedEnv, ...(outsideWorld === undefined ? {} : { MOSS_TEST_OUTSIDE_WORLD: outsideWorld.spec }) });
   }
   lastDaemonLog = started.log;
-  const socket = join(home, "run", "core.sock");
+  const socket = coreEndpoint(home);
   const tokenFile = join(home, "run", "app.token");
   await until("the daemon's socket and app token", 120_000, async () => {
     if (!alive(started.proc)) fail(`the daemon exited (${started.proc.exitCode ?? started.proc.signalCode}): ${lastLines(started.log)}`);
-    if (!existsSync(socket) || !existsSync(tokenFile)) return undefined;
+    // A Windows endpoint is a named pipe, which is no file: the connect below is its only look.
+    if ((process.platform !== "win32" && !existsSync(socket)) || !existsSync(tokenFile)) return undefined;
     try { (await MossClient.connect(socket, 1_000)).close(); return true; } catch { return undefined; }
   }, 500);
   lastDaemon = started;
@@ -1350,7 +1368,7 @@ function panelOpener(app: MossClient): ((pluginId: string) => Promise<PanelLink>
   // The app's role mints the token from source; a packaged run's `cli` connection does on a test-marked core (moss-caller.ts).
   return async (pluginId) => {
     const minted = await app.request<{ token: string }>("layer.token", { pluginId });
-    const d = await hello(join(home, "run", "core.sock"), "layer", minted.token, "moss-acceptance-layer", MOSS_PROTOCOL_VERSION, { pluginId });
+    const d = await hello(coreEndpoint(home), "layer", minted.token, "moss-acceptance-layer", MOSS_PROTOCOL_VERSION, { pluginId });
     clients.push(d.client);
     const events: { type: string }[] = [];
     d.client.onNotification((method, params) => { if (method === "core.event") events.push(params as { type: string }); });
@@ -1367,7 +1385,13 @@ function panelOpener(app: MossClient): ((pluginId: string) => Promise<PanelLink>
 async function appDriver(): Promise<{ client: MossClient; result: Record<string, unknown> }> {
   const role = target === "source" ? "app" : "cli";
   const token = role === "app" ? readFileSync(join(home, "run", "app.token"), "utf8").trim() : harnessToken();
-  const d = await hello(join(home, "run", "core.sock"), role, token, "moss-acceptance", MOSS_PROTOCOL_VERSION);
+  // Windows: the core finds a pipe client's pid by looking for the new server end among its own handles, and refuses (-32012)
+  // when two connections arrive together and it can't tell them apart (the app's own, the harness's); a second try is the answer.
+  let d: Awaited<ReturnType<typeof hello>> | undefined;
+  for (let attempt = 0; d === undefined; attempt++) {
+    try { d = await hello(coreEndpoint(home), role, token, "moss-acceptance", MOSS_PROTOCOL_VERSION); }
+    catch (err) { if (process.platform !== "win32" || attempt >= 5 || !String(err).includes("-32012")) throw err; await sleep(500); }
+  }
   clients.push(d.client);
   d.client.onNotification((method, params) => {
     const p = params as { type?: string; card?: Card } | null;
@@ -2312,7 +2336,7 @@ async function main(): Promise<void> {
     else if (mine.length === 0) fail(`the turn never reached the fake provider (the session runs ${KEYED_MODEL}): stop ${stopOf(events)}${errorsOf(events).length ? `: ${errorsOf(events)[0]}` : ""}; the turn's events: ${events.map((e) => `${e.type}${typeof e.text === "string" ? ` "${e.text.slice(0, 200)}"` : typeof e.message === "string" ? ` "${e.message.slice(0, 200)}"` : ""}`).join(", ").slice(0, 900)}`);
     else if (!mine.some((r) => r.keyMatched)) fail(`the fake got the turn without the dummy key (key present: ${mine.some((r) => r.keyPresent)}${keyAdded ? "" : "; step 2 added none"}): ${errorsOf(events)[0] ?? `stop ${stopOf(events)}`}`);
     else if (mine.some((r) => r.answered === "torn")) fail(`the turn's request reached the fake but its body never arrived whole (${mine.filter((r) => r.answered === "torn").map((r) => r.torn).join("; ")}): stop ${stopOf(events)}${errorsOf(events).length ? `: ${errorsOf(events)[0]}` : ""}`);
-    else fail(`the fake answered, but the reply isn't in the session (stop ${stopOf(events)}${errorsOf(events).length ? `: ${errorsOf(events)[0]}` : ""})`);
+    else fail(`the fake answered, but the reply isn't in the session (stop ${stopOf(events)}${errorsOf(events).length ? `: ${errorsOf(events)[0]}` : ""}; notices: ${events.filter((e) => e.type === "hook_notice").map((e) => JSON.stringify(e).slice(0, 400)).join(" | ") || "none"})`);
   } catch (err) {
     record(3, statusOf(err), why(err));
   }
@@ -2420,7 +2444,7 @@ async function main(): Promise<void> {
       const said: string[] = [];
       const run = async (words: string[], expect?: string) => {
         const r = await coreCli(["plugin", ...words], `plugin-cli-${words[0]}${words[1] !== undefined && !words[1].startsWith("/") ? `-${words[1]}` : ""}`);
-        if (r.code !== 0) fail(`moss plugin ${words.join(" ")} exited ${r.code}: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+        if (r.code !== 0) fail(`moss plugin ${words.join(" ")} exited ${r.code}: ${(r.stderr || r.stdout).split("\n").filter((l) => !l.startsWith("[keychain]")).join("\n").trim().slice(0, 400)}`);
         if (expect !== undefined && !r.stdout.includes(expect)) fail(`moss plugin ${words.join(" ")} didn't say "${expect}": ${r.stdout.trim().slice(0, 300)}`);
         said.push(words.map((w) => (w.startsWith("/") ? w.slice(w.lastIndexOf("/") + 1) : w)).join(" "));
         return r;
@@ -3620,7 +3644,8 @@ function mossApp(): { exe: string; args: string[] } {
   }
   if (!noBuild && !mossBuilt) {
     console.error("acceptance: building apps/moss from this checkout (a test build)");
-    const heavy = join(REPO, "scripts", "heavy");
+    // (scripts/heavy is a bash script that queues heavy jobs on one Mac; Windows has no such script to run, and a runner has the machine to itself.)
+    const heavy = process.platform === "win32" ? "" : join(REPO, "scripts", "heavy");
     const r = spawnSync(existsSync(heavy) ? heavy : process.execPath, existsSync(heavy) ? [process.execPath, "run", "scripts/build.ts", "--test-build"] : ["run", "scripts/build.ts", "--test-build"], { cwd: MOSS_APP, encoding: "utf8", timeout: 600_000 });
     writeFileSync(join(logs, "moss-build.log"), `${r.stdout ?? ""}${r.stderr ?? ""}`);
     if (r.status !== 0) throw new Error("building apps/moss failed (logs/moss-build.log)");
@@ -3642,7 +3667,7 @@ async function helloApp(name: string, extra: Record<string, unknown>): Promise<{
   // A packaged engine judges an app hello's release (the source daemon's is unjudged): the run speaks for the pair, so it
   // names the release of the build it was given (MOSS's and MOSS Code's are one, checked at the start).
   const release = target === "packaged" && mossBundle !== undefined ? /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/.exec(readFileSync(join(mossBundle, "Contents", "Info.plist"), "utf8"))?.[1] : undefined;
-  const d = await hello(join(home, "run", "core.sock"), "app", readFileSync(join(home, "run", "app.token"), "utf8").trim(), name, MOSS_PROTOCOL_VERSION, { ...(release === undefined ? {} : { release }), ...extra });
+  const d = await hello(coreEndpoint(home), "app", readFileSync(join(home, "run", "app.token"), "utf8").trim(), name, MOSS_PROTOCOL_VERSION, { ...(release === undefined ? {} : { release }), ...extra });
   clients.push(d.client);
   return d;
 }
@@ -3657,7 +3682,7 @@ const harnessIsApp = () => target === "packaged" && packagedCoreSays("MOSS_TEST_
  *  program, and the run drives as the CLI, as the packaged chain does (`appDriver`). */
 const mossDriver = async () => {
   if (target === "source" || harnessIsApp()) return await helloApp("moss-acceptance", { surface: "moss" });
-  const d = await hello(join(home, "run", "core.sock"), "cli", harnessToken(), "moss-acceptance", MOSS_PROTOCOL_VERSION);
+  const d = await hello(coreEndpoint(home), "cli", harnessToken(), "moss-acceptance", MOSS_PROTOCOL_VERSION);
   clients.push(d.client);
   return d;
 };
@@ -6904,7 +6929,7 @@ async function restartStep(daemon: { proc: ChildProcess; log: string }, appProc:
     await endChild(appProc);
     stoppingDaemon = true;
     await endChild(daemon.proc, 20_000);
-    if (existsSync(join(home, "run", "core.sock"))) say("the stopped daemon left its socket file");
+    if (existsSync(coreEndpoint(home))) say("the stopped daemon left its socket file");
     // A home this run's own daemon made is never the old layout (Migration C would refuse or migrate it): named here.
     const markers = oldLayoutMarkers(home);
     if (markers.length > 0) say(`the home the first daemon made reads as the old layout: ${markers.join("; ")}`);

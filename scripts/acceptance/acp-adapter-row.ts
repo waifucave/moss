@@ -165,7 +165,7 @@ async function run(ctx: ExampleCtx): Promise<string> {
   if (!existsSync(entry)) fail(`the adapter isn't kept where MOSS keeps it (${entry})`);
   const records = readFileSync(ran, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { execArgv: string[]; entry: string });
   const r = records.at(-1);
-  if (r === undefined || realpathSync(r.entry) !== realpathSync(entry)) fail(`the adapter ran from ${r?.entry ?? "nowhere"}, not MOSS's copy ${entry}`);
+  if (r === undefined || realpathSync.native(r.entry) !== realpathSync.native(entry)) fail(`the adapter ran from ${r?.entry ?? "nowhere"}, not MOSS's copy ${entry}`);
   for (const flag of ["--no-install", "--no-env-file"]) if (!r!.execArgv.includes(flag)) fail(`MOSS started the adapter without ${flag} (${r!.execArgv.join(" ")})`);
   if (!r!.execArgv.some((f) => f.startsWith("--config="))) fail(`MOSS started the adapter without its own config (${r!.execArgv.join(" ")})`);
   const listing = readdirSync(join(kept, ADAPTER_PACKAGE)).sort().join(",");

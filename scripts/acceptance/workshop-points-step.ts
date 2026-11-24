@@ -8,6 +8,8 @@
 //    validated, installed (found, its OK card waiting: the window can't open Settings while a card waits). Pressed, the
 //    first plugin's section shows the second plugin's entry, drawn by the first plugin's own layer.
 // Both are removed afterwards (the second first), whatever happened.
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { escape, fail, leave, until, type ExampleCtx } from "./example-steps";
 import { cardsOf, ok, pluginOf, stepOf } from "./workshop-step";
 import { drawnInSettings, reloadsSettled } from "./window-open";
@@ -74,7 +76,14 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
       if (!made.called!.endsWith("__PluginNew")) fail(`the scaffold call was ${made.called}, not the builder's PluginNew`);
       if (!made.result.text.startsWith(`Made a ${template.template} plugin, ${id}:`)) fail(`PluginNew answered "${made.result.text.slice(0, 160)}"`);
     }
-    for (const [path, content] of Object.entries(files)) await ok(ctx, session, "Write", { file_path: `${scratch(id)}/${path}`, content });
+    for (const [path, content] of Object.entries(files)) {
+      const wrote = await ok(ctx, session, "Write", { file_path: `${scratch(id)}/${path}`, content });
+      // Where the file went when it is not where it was named (what the Write tool said, and what the scratch holds).
+      if (!existsSync(join(home, "scratch", "alpha", id, path))) {
+        const listing = (d: string, depth = 0): string[] => depth > 3 ? [] : (() => { try { return readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? [`${e.name}/`, ...listing(join(d, e.name), depth + 1).map((x) => `  ${x}`)] : [e.name]); } catch { return []; } })();
+        fail(`Write of ${scratch(id)}/${path} said "${wrote.result.text.slice(0, 200)}", but ${join(home, "scratch", "alpha", id, path)} isn't there; the scratch holds: ${listing(join(home, "scratch")).join(" ").slice(0, 400)}`);
+      }
+    }
     const checked = await ok(ctx, session, "PluginValidate", { folder: id });
     if (!/\bvalid\b/.test(checked.result.text) || /invalid/.test(checked.result.text)) fail(`PluginValidate of ${id} said "${checked.result.text.slice(0, 300)}"`);
     const inst = await ok(ctx, session, "PluginInstall", { folder: id });

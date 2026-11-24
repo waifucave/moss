@@ -41,7 +41,11 @@ interface Backend { id: string; name: string; pluginId: string; protocol: string
  *  version check (the program is `<bun> <fake> <config> --version`). Pure, so a test can check the result. */
 export function fixtureWith(files: Record<string, string>, paths: { bun: string; fake: string; config: string }): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [name, body] of Object.entries(files)) out[name] = body.replaceAll("__BUN__", paths.bun).replaceAll("__FAKE__", paths.fake).replaceAll("__CONFIG__", paths.config);
+  // A path goes into a JSON file inside a string: a Windows path's backslashes are escaped there (`C:\x` is no JSON escape), and read back whole.
+  for (const [name, body] of Object.entries(files)) {
+    const put = (path: string): string => (name.endsWith(".json") ? JSON.stringify(path).slice(1, -1) : path);
+    out[name] = body.replaceAll("__BUN__", put(paths.bun)).replaceAll("__FAKE__", put(paths.fake)).replaceAll("__CONFIG__", put(paths.config));
+  }
   return out;
 }
 
