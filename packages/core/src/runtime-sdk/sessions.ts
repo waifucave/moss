@@ -65,7 +65,8 @@ export interface MossSessionFunctions {
  * within-home hint, not a home.
  *
  * CLAUDE.md's standing rule still binds the CALLERS of `deleteSession`: a MOSS session is never
- * deleted except by the empty-session reaper and the once-per-lifetime cleaner. This module only
+ * deleted except by the empty-session reaper, the once-per-lifetime cleaner and the person's own
+ * `session.delete` (deletion/session-rpc.ts, behind the person-only gate). This module only
  * guarantees that when one IS deleted, the store it is deleted from is the right product's, in the
  * right home.
  */

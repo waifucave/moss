@@ -49,7 +49,7 @@ import type { BotGate } from "./gate";
 import { memoryBlock } from "./prompt";
 import { botSegment, mainSessionIdFor, mintSessionId } from "../sessions/ids";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { seedMemory } from "./memory";
 import { sweepOwnTempFiles } from "../fence/own-files";
@@ -156,6 +156,8 @@ export type BotServiceEvent =
   | { type: "bot_changed"; ts: number; bot: BotView }
   | { type: "bot_removed"; ts: number; id: string }
   | { type: "session_changed"; ts: number; session: SessionView }
+  /** The person deleted a session (`session.delete`). */
+  | { type: "session_removed"; ts: number; id: string }
   | { type: "bots_paused"; ts: number; paused: boolean }
   // Bots as engine data (lane BT; protocol bots.ts), with records as the source.
   | { type: "bot_record_changed"; ts: number; bot: BotRecordView }
@@ -396,9 +398,25 @@ export class BotService {
     return this.#must(id).mainSession;
   }
 
+  /** The person deleted this bot's conversation (`session.delete`, the deletion lane): its read mark goes, and the
+   *  conversation opens again, empty, with the bot's greeting. The bot, its memory and its files stay. */
+  async conversationDeleted(id: string): Promise<void> {
+    const live = this.#bots.get(id);
+    if (live === undefined) return;
+    live.offSummary?.();
+    this.#bots.delete(id);
+    rmSync(readMarkFile(this.#o.home, id), { force: true });
+    await this.#add(id, live.plugin);
+  }
+
   paths(id: string): BotPaths {
     this.#must(id);
     return botPaths(this.#o.home, id);
+  }
+
+  /** Tells every reader a session the person deleted is gone (`session_removed`). */
+  sessionRemoved(id: string): void {
+    this.#events.emit({ type: "session_removed", ts: this.#o.clock.now(), id });
   }
 
   onEvent(fn: (event: BotServiceEvent) => void): Unsubscribe {

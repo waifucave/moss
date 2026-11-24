@@ -55,7 +55,7 @@
 //   again.
 // * **Every session's caller names its bot** (`callerOf`): a side thread and a background agent carry their bot,
 //   from their own meta or their parent's.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   clampSentAt, pluginIdToSegment, SessionView as SessionViewSchema, TRANSIENT_EVENT_TYPES,
@@ -1036,6 +1036,38 @@ export class DurableSessionHost implements SessionHost {
     this.#sessions.delete(id);
     this.graph.forget(id);
     this.depths.ended(id);
+  }
+
+  /**
+   * The person deletes a session (the deletion lane, item 3; called only through `session.delete`, whose gate is the
+   * person's): the session and every session it started (its side threads and agents, deepest first) stop, let go of
+   * their drivers and are forgotten, and each one's log is deleted before its meta, so a start never restores it (a log
+   * with no meta would be picked up again by `open`). Returns each one deleted, with its bot and kind, for the caller
+   * to remove what is kept beside the transcript (`deletion/session-files.ts`).
+   */
+  async remove(id: string): Promise<{ id: string; bot?: string; kind: SessionKind }[]> {
+    if (!this.#sessions.has(id)) throw new ContractError("not_found", `no session ${id}`);
+    const order: Hosted[] = [];
+    const walk = (sid: string): void => {
+      for (const child of [...this.#sessions.values()]) if (child.meta.parent === sid && !order.includes(child)) walk(child.meta.id);
+      const s = this.#sessions.get(sid);
+      if (s && !order.includes(s)) order.push(s);
+    };
+    walk(id);
+    const out: { id: string; bot?: string; kind: SessionKind }[] = [];
+    for (const s of order) {
+      const sid = s.meta.id;
+      await this.stop(sid, "deleted");
+      await this.release(sid);
+      if (s.driver !== undefined) await this.#bounded(s, s.driver, (d) => d.stop(), "stop");
+      delete s.driver;
+      this.#approvals?.cancelSession(sid);
+      this.forget(sid);
+      rmSync(sessionLogPath(this.#home, s.meta.bot, sid), { force: true });
+      rmSync(sessionMetaPath(this.#home, s.meta.bot, sid), { force: true });
+      out.push({ id: sid, ...(s.meta.bot === undefined ? {} : { bot: s.meta.bot }), kind: s.meta.kind });
+    }
+    return out;
   }
 
   /** Lane BT's restore: picks up the sessions whose files came back into `transcripts/` (a bot brought back from the

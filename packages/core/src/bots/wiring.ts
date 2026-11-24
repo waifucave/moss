@@ -48,6 +48,22 @@ import { recordToolDefs } from "./records-tools";
 import { botSource, type BotSource } from "./source";
 import { DEFAULT_BOT_ID } from "./default-bot";
 import { registerBotOwnership } from "../runtime-sdk/turn-loop/only-backends";
+import { brokerCardOpener, type CardOpener } from "../devices/rpc";
+import { sessionDeletionMethods } from "../deletion/session-rpc";
+import { finishSessionDeletions } from "../deletion/session-files";
+import { mossSessions } from "../runtime-sdk/sessions";
+
+/** The engine's cards for the person's deletions; without a broker that raises cards, an app's ask is refused (the
+ *  person's own terminal still works). */
+function deletionCards(approvals: { request?: ApprovalBroker["request"]; watch?: ApprovalBroker["watch"] } | undefined): CardOpener {
+  if (approvals?.request !== undefined && approvals.watch !== undefined) return brokerCardOpener({ request: approvals.request.bind(approvals), watch: approvals.watch.bind(approvals) });
+  return async () => ({ allowed: Promise.resolve(false) });
+}
+
+/** What a deleted session's files need beyond the home: its runtime transcript, by the backend id. */
+function deletionFiles(home: string) {
+  return { deleteRuntimeTranscript: (backendId: string) => mossSessions(home).deleteSession(backendId) };
+}
 
 /** Lane K's side of the bot side's hooks (`AgentManager.sessionHooks()`). */
 export interface AgentHooks {
@@ -392,9 +408,13 @@ export function createBotSide(o: BotSideOptions): BotSide {
       ...(routines === undefined ? {} : routineMethods({ routines })),
       // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
       ...botRecordMethods({ bots, host, capHome: { home: o.home, now: () => o.clock.now() }, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
+      // The deletion lane: the person deletes a session or a bot's conversation (`session.delete`).
+      ...sessionDeletionMethods({ home: o.home, host, bots, openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) }),
       };
     },
     start: async () => {
+      // A session deletion a stop cut short is finished before anything opens (the deletion lane).
+      await finishSessionDeletions({ home: o.home, ...deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) });
       await bots.start();
       await routines?.start();
       if (o.routines?.ingress?.poll !== false) ingress?.start();

@@ -4570,6 +4570,72 @@
         ],
         "additionalProperties": false
       }
+    },
+    "session.delete": {
+      "doc": "Deletes a session or a bot's conversation on this computer, with the sessions it started: its transcript, staged and received files, outputs, agent transcripts, runtime state and logs. `session_removed` follows for each.",
+      "owner": "D",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "userOnly": true,
+      "change": "sensitive",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "confirm": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "applied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": false
+              },
+              "card": {
+                "type": "string",
+                "pattern": "^card_[A-Za-z0-9_-]{6,64}$"
+              }
+            },
+            "required": [
+              "applied",
+              "card"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
     }
   },
   "events": {
@@ -5218,6 +5284,45 @@
           "type",
           "ts",
           "session"
+        ]
+      }
+    },
+    "session_removed": {
+      "doc": "The person deleted a session (`session.delete`): it is gone from this computer; a list drops it.",
+      "owner": "D",
+      "scope": "core",
+      "roles": [
+        "app",
+        "cli",
+        "remote",
+        "web",
+        "layer"
+      ],
+      "capability": "conversation.*",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "session_removed"
+          },
+          "ts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          }
+        },
+        "required": [
+          "type",
+          "ts",
+          "id"
         ]
       }
     },

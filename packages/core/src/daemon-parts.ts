@@ -561,7 +561,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
           if (e.type === "bot_changed" || e.type === "bot_removed" || e.type === "bots_paused") send(e);
           // A session's view as it changes (§9.5: who started it, what it waits on, its subagents, its title), heard by
           // each reader of its kind (`sendCoreEvent`'s gate).
-          else if (e.type === "session_changed") send(e);
+          else if (e.type === "session_changed" || e.type === "session_removed") send(e);
           // Lane BT: bots as engine data (protocol bots.ts), with records as the source.
           else if (e.type === "bot_record_changed" || e.type === "bot_record_removed" || e.type === "bot_summary_changed" || e.type === "bots_moved") send(e);
         }));

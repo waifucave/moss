@@ -148,6 +148,7 @@
       "session.compact",
       "session.connectors",
       "session.context",
+      "session.delete",
       "session.detach",
       "session.diff",
       "session.get",
@@ -227,6 +228,7 @@
       "session_changed",
       "session_link",
       "session_message",
+      "session_removed",
       "setup_changed",
       "tab_changed",
       "tab_closed",
@@ -370,6 +372,7 @@
       "session_changed",
       "session_link",
       "session_message",
+      "session_removed",
       "tab_changed",
       "tab_closed",
       "terminal_output",
@@ -482,6 +485,7 @@
       "session.compact",
       "session.connectors",
       "session.context",
+      "session.delete",
       "session.detach",
       "session.diff",
       "session.get",
@@ -541,6 +545,7 @@
       "session_changed",
       "session_link",
       "session_message",
+      "session_removed",
       "setup_changed",
       "tool_settings_changed",
       "update_available",
@@ -670,7 +675,8 @@
       "routines_changed",
       "session_changed",
       "session_link",
-      "session_message"
+      "session_message",
+      "session_removed"
     ],
     "daemonSends": []
   },
@@ -711,7 +717,8 @@
       "routines_changed",
       "session_changed",
       "session_link",
-      "session_message"
+      "session_message",
+      "session_removed"
     ],
     "daemonSends": []
   },

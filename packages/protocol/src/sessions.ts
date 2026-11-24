@@ -700,6 +700,16 @@ export const SESSIONS_METHODS = {
     }),
     doc: "A previous-app session's transcript, read-only; it never becomes a bot's history.",
   }),
+  sessionDelete: defineMethod({
+    /** The person only (the deletion lane, item 3; the standing rule: sessions are deleted only by the person): from an
+     *  app the engine raises its sealed card naming what goes, and deletes on its yes alone; in their own terminal
+     *  `confirm: true` is the CLI's typed confirmation. Never a bot, an agent, a plugin, a routine, a phone, the web
+     *  page or another computer. A bot's conversation deleted starts again empty; the bot stays. */
+    name: "session.delete", owner: "D", roles: ["app", "cli"], userOnly: true, change: "sensitive",
+    params: z.object({ id: SessionId, confirm: z.literal(true).optional() }),
+    result: ChangeResult,
+    doc: "Deletes a session or a bot's conversation on this computer, with the sessions it started: its transcript, staged and received files, outputs, agent transcripts, runtime state and logs. `session_removed` follows for each.",
+  }),
 } as const;
 
 // -------------------------------------------------------------------------------------------------
@@ -710,6 +720,7 @@ export const BotChangedEvent = coreEvent("bot_changed", { bot: BotView });
 export const BotRemovedEvent = coreEvent("bot_removed", { id: BotId });
 export const BotsPausedEvent = coreEvent("bots_paused", { paused: z.boolean() });
 export const SessionChangedEvent = coreEvent("session_changed", { session: SessionView });
+export const SessionRemovedEvent = coreEvent("session_removed", { id: SessionId });
 export const RoutinesChangedEvent = coreEvent("routines_changed", { bot: BotId.optional() });
 
 /** The envelope of MOSS's session events: the inherited one (`seq`, `sessionId`, `ts`, `late`), plus the lease epoch
@@ -812,6 +823,11 @@ export const SESSIONS_EVENTS = {
       session: { id: "s_agent_1", kind: "agent", bot: "alpha", parent: "s_alpha", computer: "Desktop1", status: "prompting", startedAt: 1781269990000, updatedAt: 1781270000000, backend: "claude-code", root: "home/Desktop1/project1" },
     },
     doc: "A session started, changed state or ended.",
+  }),
+  sessionRemoved: defineEvent({
+    type: "session_removed", owner: "D", roles: READERS, capability: "conversation.*", schema: SessionRemovedEvent,
+    fixture: { type: "session_removed", ts: 1781270000000, id: "s_code_1" },
+    doc: "The person deleted a session (`session.delete`): it is gone from this computer; a list drops it.",
   }),
   sessionLink: defineEvent({
     type: "session_link", owner: "CG", roles: READERS, capability: "conversation.*", transient: true, schema: SessionLinkEvent,
