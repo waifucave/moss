@@ -284,4 +284,65 @@ class ViewModelTest {
         assertEquals("Interrupted", m.messages.last().text)
         job.cancel()
     }
+
+    @Test fun fileIsStagedSentAndCleared() = runTest {
+        val c = fake()
+        val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots[0]), c)
+        m.load(); m.loadComposer()
+        assertEquals(true, m.offers?.files)
+        m.stageFile("Quarterly report.pdf", 1_240_000) { ByteArray(1_240_000) }
+        assertEquals(listOf("Quarterly report.pdf"), m.stagedFiles.map { it.name })
+        assertEquals("1.2 MB", byteCount(m.stagedFiles[0].size))
+        m.draft = "Here it is"
+        assertTrue(m.send())
+        assertTrue(m.stagedFiles.isEmpty())
+        assertEquals(listOf("staged/s_alpha/Quarterly report.pdf"), c.stagedFiles)
+    }
+
+    @Test fun fileOverTheLimitIsRefusedBeforeItIsRead() = runTest {
+        val c = fake()
+        val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots[0]), c)
+        m.loadComposer()
+        var read = false
+        m.stageFile("Site backup.zip", 52_000_000) { read = true; null }
+        assertFalse(read)
+        assertTrue(m.stagedFiles.isEmpty()); assertTrue(c.stagedFiles.isEmpty())
+        assertEquals("That file is too big. The limit is 10 MB.", m.errorText)
+        // The engine refuses too when the size it was told was wrong.
+        m.stageFile("tiny.bin", 10) { ByteArray(10_000_001) }
+        assertEquals("That file is too big. The limit is 10 MB.", m.errorText)
+    }
+
+    @Test fun newBotPreselectsTheDefaultModelAndOpensTheBot() = runTest {
+        val c = fake()
+        val m = NewBotModel(c)
+        m.load()
+        assertEquals("kimi-k3", m.model)
+        assertFalse(m.canCreate)
+        m.name = "  Hazel "
+        val bot = m.create()!!
+        assertEquals("Hazel", bot.name); assertEquals("kimi-k3", bot.model)
+        assertTrue(c.bots().any { it.id == bot.id })
+        assertEquals("Hello, I am Hazel. What would you like to do?", c.conversation(bot.id, null, 10).messages.single().text)
+    }
+
+    @Test fun newBotRefusalLeavesTheSheet() = runTest {
+        val c = fake()
+        val m = NewBotModel(c)
+        m.load()
+        m.name = "Hazel"
+        c.failNext = FakeEngineClient.Failure("down")
+        assertNull(m.create())
+        assertNotNull(m.errorText); assertEquals("Hazel", m.name)
+    }
+
+    @Test fun anAnswerCarriesTheCardTheScreenDrew() = runTest {
+        // The client is handed the card object itself (its hash and fields), never only its id.
+        val c = fake()
+        val m = CardsModel(c, PhoneApp.moss) { SampleData.now }
+        m.load()
+        val drawn = m.cards.first()
+        m.answer(drawn, drawn.options.first())
+        assertEquals(drawn.id to drawn.options.first().id, c.answered.single())
+    }
 }

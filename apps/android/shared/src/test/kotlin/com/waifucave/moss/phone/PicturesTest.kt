@@ -52,13 +52,17 @@ val PICTURES = listOf(
     moss("12-send-failed", AppLaunch(Screen.conversation, scenario = Scenario.sendFails)),
     moss("13-settings", AppLaunch(Screen.settings)),
     moss("14-unpair-confirm", AppLaunch(Screen.settings, confirmUnpair = true)),
-    moss("15-new-bot", AppLaunch(Screen.newBot)),
+    moss("15-new-bot", AppLaunch(Screen.newBot, scenario = Scenario.quiet, newBotName = "Hazel")),
     moss("16-pair-scan", AppLaunch(Screen.pairScan)),
     moss("17-pair-words", AppLaunch(Screen.pairWords)),
     moss("18-unreachable", AppLaunch(scenario = Scenario.unreachable)),
     moss("19-loading", AppLaunch(scenario = Scenario.loading)),
     moss("20-empty", AppLaunch(scenario = Scenario.empty)),
     moss("21-largest-text", AppLaunch(), fontScale = 2f),
+    moss("22-new-bot-empty", AppLaunch(Screen.newBot, scenario = Scenario.quiet)),
+    moss("23-file-chip", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(file = true))),
+    moss("24-files-row", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(picker = true))),
+    moss("25-file-too-big", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(bigFile = true))),
     code("01-sessions", AppLaunch(scenario = Scenario.quiet)),
     code("02-sessions-waiting", AppLaunch()),
     code("03-session", AppLaunch(Screen.session)),
@@ -77,6 +81,7 @@ val PICTURES = listOf(
     code("15-loading", AppLaunch(scenario = Scenario.loading)),
     code("16-empty", AppLaunch(scenario = Scenario.empty)),
     code("17-largest-text", AppLaunch(), fontScale = 2f),
+    code("18-file-chip", AppLaunch(Screen.session, scenario = Scenario.quiet, composer = ComposerPreset(file = true))),
 )
 
 /**

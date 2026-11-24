@@ -41,11 +41,14 @@ interface EngineClient {
     suspend fun history(session: String, before: Long?, limit: Int): MessagePage
 
     /** `session.send` with a `UserMessageInput` (the client id makes a resend one message). */
-    suspend fun send(session: String, text: String, clientMessageId: String, images: List<String> = emptyList())
+    suspend fun send(session: String, text: String, clientMessageId: String, images: List<String> = emptyList(), files: List<String> = emptyList())
     /** `session.interrupt`: Stop. */
     suspend fun stop(session: String)
 
-    /** `card.list`, and `card.answer` with a signed answer over the card's hash; throws [CardAnswerException]. */
+    /**
+     * `card.list`, and `card.answer` with a signed answer over the card's hash; throws [CardAnswerException]. `answer` takes the
+     * card object the screen drew, never an id: the core signs only over the card the person saw.
+     */
     suspend fun cards(): List<Card>
     suspend fun answer(card: Card, option: CardOption)
     /** The engine's answer to which cards this app shows: a setting of the client's answer, never a split the screens hard-code. */
@@ -63,6 +66,11 @@ interface EngineClient {
     suspend fun setModel(session: String, model: String?, effort: String?)
     /** `session.stageImage`: the staged picture's path, for `send(images)`. */
     suspend fun stageImage(session: String, data: ByteArray): String
+    /** A file for the next message, up to the engine's limit (throws [com.waifucave.moss.phone.model.FileTooLarge] over it). */
+    suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile
+    /** Making a bot from the phone: the models on offer, and the new bot (its conversation opens next). */
+    suspend fun newBotOptions(): NewBotOptions
+    suspend fun createBot(name: String, model: String?): Bot
     /** `command.run`. */
     suspend fun runCommand(session: String, command: String)
     /** The question waiting in a conversation, if any, and `session.answer`. */

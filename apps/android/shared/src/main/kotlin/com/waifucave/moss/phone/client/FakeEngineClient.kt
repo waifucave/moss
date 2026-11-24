@@ -41,6 +41,10 @@ class FakeEngineClient(
 
     class Failure(message: String) : Exception(message)
 
+    companion object {
+        const val FILE_LIMIT: Long = 10_000_000
+    }
+
     private var paired: PairedComputer?
     private var botList = SampleData.bots.toMutableList()
     private var summaryList = SampleData.summaries.toMutableList()
@@ -152,7 +156,7 @@ class FakeEngineClient(
 
     // Sending
 
-    override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>) {
+    override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>) {
         maybeFail()
         if (scenario == Scenario.sendFails) throw Failure("send failed")
         // A resend with the same client id is not a second message.
@@ -180,7 +184,7 @@ class FakeEngineClient(
         maybeFail()
         return when (kind) {
             ConversationKind.bot -> ComposerOffers(pictures = true, commands = listOf(PluginCommand("summary.daily", "Daily summary")),
-                efforts = listOf("low", "medium", "high"), effort = efforts[session] ?: "medium")
+                efforts = listOf("low", "medium", "high"), effort = efforts[session] ?: "medium", files = true, fileLimit = FILE_LIMIT)
             ConversationKind.codingSession -> {
                 val row = sessionList.firstOrNull { it.id == session }
                 val options = SampleData.options(row?.backend ?: "claude-code")
@@ -188,7 +192,7 @@ class FakeEngineClient(
                 val current = models[session] ?: row?.model ?: choices.firstOrNull()?.id
                 val levels = choices.firstOrNull { it.id == current }?.efforts ?: choices.firstOrNull()?.efforts ?: emptyList()
                 ComposerOffers(pictures = true, commands = listOf(PluginCommand("tests.run", "Run the tests"), PluginCommand("review.diff", "Review the diff")),
-                    efforts = levels, effort = efforts[session] ?: levels.firstOrNull(), models = choices, model = current)
+                    efforts = levels, effort = efforts[session] ?: levels.firstOrNull(), models = choices, model = current, files = true, fileLimit = FILE_LIMIT)
             }
         }
     }
@@ -201,6 +205,33 @@ class FakeEngineClient(
         maybeFail()
         val path = "staged/$session/image-${staged.size + 1}.png"
         staged.add(path); return path
+    }
+    val stagedFiles = mutableListOf<String>()
+    override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile {
+        maybeFail()
+        if (data.size > FILE_LIMIT) throw FileTooLarge(FILE_LIMIT)
+        val path = "staged/$session/$name"
+        stagedFiles.add(path)
+        return StagedFile(path, name, data.size.toLong())
+    }
+    val botsCreated = mutableListOf<Pair<String, String?>>()
+    override suspend fun newBotOptions(): NewBotOptions {
+        maybeFail()
+        val models = SampleData.options("moss-code").models.map { ModelChoice(it.id, it.name, it.efforts) }
+        return NewBotOptions(models, models.firstOrNull()?.id)
+    }
+    override suspend fun createBot(name: String, model: String?): Bot {
+        maybeFail()
+        val id = "bot_" + name.lowercase().filter { it.isLetterOrDigit() }.take(12) + botsCreated.size
+        val bot = Bot(id, name, model = model, state = BotState.idle, computer = SampleData.computerName, mainSession = "s_$id")
+        botsCreated.add(name to model)
+        botList.add(bot)
+        val hello = ChatMessage("$id-1", MessageRole.bot, "Hello, I am $name. What would you like to do?", clock())
+        conversations[bot.mainSession] = mutableListOf(hello)
+        val summary = BotSummary(id, BotSummary.Last(hello.text, BotSummary.From.bot, hello.at), unread = false)
+        summaryList.add(summary)
+        emit(EngineEvent.BotChanged(bot)); emit(EngineEvent.BotSummaryChanged(summary))
+        return bot
     }
     override suspend fun runCommand(session: String, command: String) { maybeFail(); commandsRun.add(command) }
     override suspend fun pendingQuestion(session: String): AskQuestion? {

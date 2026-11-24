@@ -182,3 +182,39 @@ class SettingsModel(private val client: EngineClient, val version: String) {
         confirmingUnpair = false
     }
 }
+
+/** The new-bot sheet: a name, and a model with the computer's default preselected. */
+class NewBotModel(private val client: EngineClient) {
+    var name by mutableStateOf("")
+    var model by mutableStateOf<String?>(null)
+    var options by mutableStateOf<NewBotOptions?>(null)
+        private set
+    var loading by mutableStateOf(true)
+        private set
+    var errorText by mutableStateOf<String?>(null)
+        private set
+    var creating by mutableStateOf(false)
+        private set
+
+    val canCreate: Boolean get() = name.isNotBlank() && !creating
+
+    suspend fun load() {
+        loading = true
+        try {
+            val o = client.newBotOptions()
+            options = o
+            if (model == null) model = o.defaultModel ?: o.models.firstOrNull()?.id
+            errorText = null
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = UNREACHABLE_TEXT }
+        loading = false
+    }
+
+    /** Makes the bot; returns it so its conversation can open. A refusal leaves the sheet as it was. */
+    suspend fun create(): Bot? {
+        if (!canCreate) return null
+        creating = true
+        return try { client.createBot(name.trim(), model).also { errorText = null } }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = "The bot wasn't made. Check that your computer is on and try again."; null }
+        finally { creating = false }
+    }
+}

@@ -40,6 +40,8 @@ class ConversationModel(
         private set
     var staged by mutableStateOf<List<StagedImage>>(emptyList())
         private set
+    var stagedFiles by mutableStateOf<List<StagedFile>>(emptyList())
+        private set
     var isInterrupting by mutableStateOf(false)
         private set
 
@@ -110,9 +112,9 @@ class ConversationModel(
         if (text.isEmpty()) return false
         val id = failedSend?.takeIf { it.first == text }?.second ?: makeID()
         return try {
-            client.send(sessionID, text, id, staged.map { it.path })
+            client.send(sessionID, text, id, staged.map { it.path }, stagedFiles.map { it.path })
             draft = ""
-            staged = emptyList()
+            staged = emptyList(); stagedFiles = emptyList()
             errorText = null
             failedSend = null
             true
@@ -149,6 +151,16 @@ class ConversationModel(
         try { staged = staged + StagedImage(client.stageImage(sessionID, data), thumbnail) }
         catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = "That picture couldn't be added." }
     }
+    /** A picked file: refused with a plain line when it is over the limit, before any of it is read or sent. */
+    suspend fun stageFile(name: String, size: Long, data: () -> ByteArray?) {
+        val limit = offers?.fileLimit
+        if (limit != null && size > limit) { errorText = "That file is too big. The limit is ${byteCount(limit)}."; return }
+        val d = data() ?: run { errorText = "That file couldn't be read."; return }
+        try { stagedFiles = stagedFiles + client.stageFile(sessionID, name, d); errorText = null }
+        catch (e: FileTooLarge) { errorText = "That file is too big. The limit is ${byteCount(e.limit)}." }
+        catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = "That file couldn't be added." }
+    }
+    fun unstageFile(file: StagedFile) { stagedFiles = stagedFiles.filter { it != file } }
     fun unstage(image: StagedImage) { staged = staged.filter { it != image } }
     suspend fun answerQuestion(answers: Map<String, String>): Boolean {
         val q = question ?: return false

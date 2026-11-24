@@ -39,7 +39,11 @@ import com.waifucave.moss.phone.vm.ConversationModel
 import kotlinx.coroutines.launch
 
 /** For pictures: what the composer starts with (real runs pass none). */
-data class ComposerPreset(val draft: String? = null, val focus: Boolean = false, val picker: Boolean = false)
+data class ComposerPreset(
+    val draft: String? = null, val focus: Boolean = false, val picker: Boolean = false,
+    /** Stage a sample file at the start; [bigFile] one over the limit, for the refusal. */
+    val file: Boolean = false, val bigFile: Boolean = false,
+)
 
 private sealed class Item {
     data class Divider(val key: String, val text: String) : Item()
@@ -62,6 +66,11 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
     val density = LocalDensity.current
     LaunchedEffect(model) { model.run() }
     LaunchedEffect(preset.draft) { preset.draft?.let { model.draft = it } }
+    LaunchedEffect(model.offers != null) {
+        if (model.offers == null) return@LaunchedEffect
+        if (preset.file && model.stagedFiles.isEmpty()) model.stageFile("Quarterly report.pdf", 1_240_000) { ByteArray(1_240_000) }
+        if (preset.bigFile) model.stageFile("Site backup.zip", 52_000_000) { null }
+    }
 
     val waitingCards = cards.cards.filter { card ->
         when (val s = model.source) {

@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Memory
@@ -80,6 +82,7 @@ object ComposerRules {
     fun rows(offers: ComposerOffers, camera: Boolean): List<String> = buildList {
         if (offers.pictures && camera) add("Camera")
         if (offers.pictures) add("Photos")
+        if (offers.files) add("Files")
         if (offers.commands.isNotEmpty()) add("Plugins")
         if (offers.efforts.isNotEmpty()) add("Effort")
         if (offers.models.isNotEmpty()) add("Model")
@@ -150,7 +153,7 @@ fun Composer(model: ConversationModel, preset: ComposerPreset, pickerOpen: Boole
     }
 
     Column(Modifier.fillMaxWidth()) {
-        if (model.staged.isNotEmpty()) StagedStrip(model)
+        if (model.staged.isNotEmpty() || model.stagedFiles.isNotEmpty()) StagedStrip(model)
         val shape = RoundedCornerShape(if (expanded) 28.dp else 24.dp)
         Column(
             Modifier.padding(start = if (expanded) 12.dp else 28.dp, end = if (expanded) 12.dp else 28.dp, bottom = if (expanded) 12.dp else 8.dp)
@@ -195,7 +198,8 @@ private fun InverseCircle(size: Dp, label: String?, enabled: Boolean = true, onC
 @Composable
 private fun StagedStrip(model: ConversationModel) {
     val c = MossTheme.colors
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 40.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 40.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         for (image in model.staged) {
             Box {
                 val bmp = remember(image.path) { BitmapFactory.decodeByteArray(image.thumbnail, 0, image.thumbnail.size) }
@@ -207,6 +211,30 @@ private fun StagedStrip(model: ConversationModel) {
                 ) { Icon(Icons.Filled.Cancel, null, tint = c.inverse) }
             }
         }
+        for (file in model.stagedFiles) FileChip(file) { model.unstageFile(file) }
+    }
+}
+
+/** A file staged for the next message: its name and size, and an x that takes it off. */
+@Composable
+private fun FileChip(file: com.waifucave.moss.phone.model.StagedFile, onRemove: () -> Unit) {
+    val c = MossTheme.colors
+    Row(
+        Modifier.background(c.softButton, RoundedCornerShape(18.dp)).border(0.5.dp, c.stroke, RoundedCornerShape(18.dp)).padding(start = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Description, null, tint = c.secondary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.widthIn(max = 200.dp).semantics(mergeDescendants = true) {}) {
+            Text(file.name, style = MossType.line, fontWeight = FontWeight.SemiBold, color = c.text, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(com.waifucave.moss.phone.model.byteCount(file.size), style = MossType.caption, color = c.secondary)
+        }
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onRemove)
+                .semantics { contentDescription = "Remove ${file.name}" },
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Cancel, null, tint = c.inverse, modifier = Modifier.size(22.dp)) }
     }
 }
 
@@ -236,6 +264,19 @@ fun ComposerPicker(model: ConversationModel, onClose: () -> Unit, modifier: Modi
         if (uri != null) context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }?.let(::stage)
     }
     val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bmp -> if (bmp != null) stage(bmp) }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val resolver = context.contentResolver
+        var name = uri.lastPathSegment ?: "File"; var size = -1L
+        resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { cur ->
+            if (cur.moveToFirst()) {
+                cur.getString(0)?.let { name = it }
+                if (!cur.isNull(1)) size = cur.getLong(1)
+            }
+        }
+        // The size is checked before anything is read: a file over the limit is never loaded.
+        scope.launch { model.stageFile(name, size) { resolver.openInputStream(uri)?.use { it.readBytes() } } }
+    }
 
     Column(
         modifier.widthIn(max = 300.dp).fillMaxWidth()
@@ -251,6 +292,7 @@ fun ComposerPicker(model: ConversationModel, onClose: () -> Unit, modifier: Modi
                 if (offers.pictures) PickerRow("Photos", Icons.Outlined.Image) {
                     onClose(); photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 }
+                if (offers.files) PickerRow("Files", Icons.Outlined.AttachFile) { onClose(); pickFile.launch(arrayOf("*/*")) }
                 if (offers.commands.isNotEmpty()) PickerRow("Plugins", Icons.Outlined.Extension, chevron = true) { page = Page.plugins }
                 if (offers.efforts.isNotEmpty()) PickerRow("Effort", Icons.Outlined.Speed, value = offers.effort?.replaceFirstChar { it.uppercase() }, chevron = true) { page = Page.effort }
                 if (offers.models.isNotEmpty()) PickerRow("Model", Icons.Outlined.Memory, value = offers.models.firstOrNull { it.id == offers.model }?.name, chevron = true) { page = Page.model }

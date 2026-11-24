@@ -32,6 +32,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.waifucave.moss.phone.model.PairedComputer
 import com.waifucave.moss.phone.model.PairingProposal
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import com.waifucave.moss.phone.model.Bot
+import com.waifucave.moss.phone.vm.NewBotModel
 import com.waifucave.moss.phone.vm.NewSessionModel
 import com.waifucave.moss.phone.vm.PairingModel
 import com.waifucave.moss.phone.vm.SettingsModel
@@ -317,15 +324,58 @@ private fun ChoiceRow(title: String, selected: Boolean, onClick: () -> Unit, lea
     }
 }
 
-/** What the plus does in MOSS: a bot is made on the computer for now, and the sheet says so. */
+/** What the plus does in MOSS: make a bot. A name, and a model with the computer's default preselected. */
 @Composable
-fun NewBotSheet(computer: String?, onDone: () -> Unit) {
+fun NewBotSheet(model: NewBotModel, computer: String?, onCreated: (Bot) -> Unit, onCancel: () -> Unit) {
     val c = MossTheme.colors
-    ModalBottomSheet(onDismissRequest = onDone, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.card) {
-        Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            EmptyState(Icons.Outlined.SentimentSatisfied, "A new bot", "Making a bot needs ${computer ?: "your computer"} for now. Make it there and it shows here.")
-            Spacer(Modifier.height(20.dp))
-            PrimaryButton("Done", onDone)
+    val scope = rememberCoroutineScope()
+    val focus = remember { FocusRequester() }
+    var menu by remember { mutableStateOf(false) }
+    LaunchedEffect(model) { model.load(); runCatching { focus.requestFocus() } }
+    ModalBottomSheet(onDismissRequest = onCancel, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.card) {
+        Column(Modifier.fillMaxWidth().imePadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
+            Text("New bot", style = MossType.title.copy(fontSize = 20.sp, lineHeight = 26.sp), color = c.text, modifier = Modifier.semantics { heading() })
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                model.name, { model.name = it }, label = { Text("Name") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.text, unfocusedBorderColor = c.stroke, cursorColor = c.text, focusedLabelColor = c.text),
+            )
+            Text("The bot is made on ${computer ?: "your computer"} and its conversation opens here.", style = MossType.footnote, color = c.secondary,
+                modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+            Spacer(Modifier.height(16.dp))
+            val o = model.options
+            if (model.loading) Loading()
+            else if (o != null && o.models.isNotEmpty()) {
+                ExposedDropdownMenuBox(menu, { menu = it }) {
+                    OutlinedTextField(
+                        o.models.firstOrNull { it.id == model.model }?.name ?: "", {}, readOnly = true, label = { Text("Model") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(menu) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.text, unfocusedBorderColor = c.stroke, focusedLabelColor = c.text),
+                    )
+                    ExposedDropdownMenu(menu, { menu = false }) {
+                        o.models.forEach { m -> DropdownMenuItem({ Text(m.name) }, onClick = { model.model = m.id; menu = false }) }
+                    }
+                }
+            }
+            model.errorText?.let { e ->
+                Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.ErrorOutline, null, tint = c.secondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(e, style = MossType.footnote, color = c.secondary)
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f).height(52.dp)) { Text("Cancel", color = c.text) }
+                Button(
+                    onClick = { scope.launch { model.create()?.let(onCreated) } }, enabled = model.canCreate, modifier = Modifier.weight(1f).height(52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = c.inverse, contentColor = c.onInverse,
+                        disabledContainerColor = c.text.copy(alpha = 0.12f), disabledContentColor = c.secondary),
+                ) { Text("Create", fontWeight = FontWeight.SemiBold) }
+            }
         }
     }
 }

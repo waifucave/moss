@@ -220,8 +220,11 @@ data class ComposerOffers(
     /** `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row. */
     val models: List<ModelChoice> = emptyList(),
     val model: String? = null,
+    /** A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row. */
+    val files: Boolean = false,
+    val fileLimit: Long? = null,
 ) {
-    val isEmpty: Boolean get() = !pictures && commands.isEmpty() && efforts.isEmpty() && models.isEmpty()
+    val isEmpty: Boolean get() = !pictures && !files && commands.isEmpty() && efforts.isEmpty() && models.isEmpty()
 }
 
 enum class ConversationKind { bot, codingSession }
@@ -243,4 +246,25 @@ data class AskQuestion(
 ) {
     data class Option(val label: String, val detail: String? = null)
     val id: String get() = callId
+}
+
+/** A file staged for the next message: what the engine wrote, and how it reads in the chip. */
+data class StagedFile(val path: String, val name: String, val size: Long) {
+    val id: String get() = path
+}
+
+/** The engine refused a file over its limit (bytes). */
+class FileTooLarge(val limit: Long) : Exception("file over $limit bytes")
+
+/** What a new bot is made from: the models the computer offers, and its default. */
+data class NewBotOptions(val models: List<ModelChoice>, val defaultModel: String? = null)
+
+/** "1.2 MB", "10 MB", "840 KB": a size as the chip and the refusal say it (decimal units, as the iPhone's formatter). */
+fun byteCount(bytes: Long): String {
+    if (bytes < 1000) return "$bytes bytes"
+    val units = listOf("KB", "MB", "GB")
+    var v = bytes / 1000.0; var u = 0
+    while (v >= 1000 && u < units.size - 1) { v /= 1000; u++ }
+    val n = if (v < 10) String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0") else Math.round(v).toString()
+    return "$n ${units[u]}"
 }

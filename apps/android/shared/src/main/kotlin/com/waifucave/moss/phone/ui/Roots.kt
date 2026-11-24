@@ -37,6 +37,8 @@ data class AppLaunch(
     val composer: ComposerPreset = ComposerPreset(),
     /** Pictures: faces hold still and nothing shimmers. */
     val still: Boolean = false,
+    /** Pictures: the new-bot sheet opens with this name typed. */
+    val newBotName: String? = null,
 ) {
     enum class Screen { home, conversation, cards, pairScan, pairWords, session, settings, newSession, newBot, search }
 
@@ -53,7 +55,8 @@ data class AppLaunch(
                 scenario = b.getString("scenario")?.let { s -> FakeEngineClient.Scenario.entries.firstOrNull { it.name == s } } ?: FakeEngineClient.Scenario.idle,
                 startNew = b.getBoolean("startNew"), confirmUnpair = b.getBoolean("confirmUnpair"), scrollTop = b.getBoolean("scrollTop"),
                 openID = b.getString("open"),
-                composer = ComposerPreset(b.getString("draft"), b.getBoolean("focus"), b.getBoolean("picker")),
+                composer = ComposerPreset(b.getString("draft"), b.getBoolean("focus"), b.getBoolean("picker"), b.getBoolean("file"), b.getBoolean("bigFile")),
+                newBotName = b.getString("newBotName"),
             )
         }
     }
@@ -120,6 +123,8 @@ fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme
     val cards = remember { CardsModel(client, PhoneApp.moss) { SampleData.now } }
     val pairing = remember { PairingModel(client) }
     val settings = remember { SettingsModel(client, appVersion(context)).also { it.confirmingUnpair = launch.confirmUnpair } }
+    val newBot = remember { NewBotModel(client).also { it.name = launch.newBotName ?: "" } }
+    val scope = rememberCoroutineScope()
     var paired by remember { mutableStateOf(launch.effectiveScenario != FakeEngineClient.Scenario.unpaired) }
     var showNewBot by remember { mutableStateOf(launch.screen == AppLaunch.Screen.newBot) }
     val stack = remember {
@@ -158,7 +163,11 @@ fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme
                         }, onBack = { stack.removeAt(stack.lastIndex) })
                     }
                 }
-                if (showNewBot) NewBotSheet(SampleData.computerName) { showNewBot = false }
+                if (showNewBot) NewBotSheet(newBot, SampleData.computerName, onCreated = { bot ->
+                    showNewBot = false
+                    newBot.name = ""
+                    scope.launch { bots.load(); stack.add(MossDest.Conversation(bot)) }
+                }, onCancel = { showNewBot = false })
             }
         }
     }
