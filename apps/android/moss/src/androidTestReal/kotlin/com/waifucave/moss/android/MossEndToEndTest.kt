@@ -2,7 +2,7 @@ package com.waifucave.moss.android
 
 import android.util.Log
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.hasContentDescription
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -112,9 +112,9 @@ class MossEndToEndTest {
             assertTrue("approved: $decision", decision.getBoolean("allowed"))
             Log.i(TAG, "the card was answered: $decision")
 
-            // The app's own screen on the same client shows the bot.
+            // The app's own screen on the same client shows the bot (a list row speaks as one description).
             val scenario = ActivityScenario.launch(MainActivity::class.java)
-            compose.waitUntil(60_000) { compose.onAllNodesWithText("Echo").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Echo.", substring = true)).fetchSemanticsNodes().isNotEmpty() }
             scenario.close()
             Log.i(TAG, "the app's screen shows the bot")
 

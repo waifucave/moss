@@ -2,7 +2,7 @@ package com.waifucave.moss.code.android
 
 import android.util.Log
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.hasContentDescription
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -109,7 +109,7 @@ class CodeEndToEndTest {
             Log.i(TAG, "the card was answered")
 
             val scenario = ActivityScenario.launch(MainActivity::class.java)
-            compose.waitUntil(60_000) { compose.onAllNodesWithText("Phone test session").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Phone test session.", substring = true)).fetchSemanticsNodes().isNotEmpty() }
             scenario.close()
             Log.i(TAG, "the app's screen shows the session")
 
