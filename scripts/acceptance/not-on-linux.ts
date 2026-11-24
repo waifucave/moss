@@ -17,6 +17,9 @@ export const NOT_ON_LINUX_ROWS: readonly { prefix: string; reason: string }[] = 
 
 /** Whether this run is on Linux. */
 export const onLinux = (): boolean => process.platform === "linux";
+/** Whether this run is on an OS with no plugin fence or window glass: Linux, and Windows (plugin code runs as the user there too, spec §5.2 item 58). The marker
+ *  and the judge are the same as Linux's and say "not on Linux"; each reason names the macOS-only thing the row proves. */
+export const onUnfencedOs = (): boolean => process.platform === "linux" || process.platform === "win32";
 
 /** A row's detail on Linux for what is macOS-only: the marker, the reason, and what was still checked here. */
 export const notOnLinux = (reason: string, checkedHere = ""): string => `${NOT_ON_LINUX}: ${reason}${checkedHere === "" ? "" : `; checked here: ${checkedHere}`}`;

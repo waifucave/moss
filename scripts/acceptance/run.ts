@@ -74,7 +74,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { MOSS_PROTOCOL_VERSION } from "../../packages/protocol/src/index";
-import { notOnLinux, onLinux } from "./not-on-linux";
+import { notOnLinux, onLinux, onUnfencedOs } from "./not-on-linux";
 import { TEST_KEYCHAIN_PASSWORD } from "../../packages/core/src/auth/login-keychain";
 import { HARNESS_TOKEN_FILE } from "../../packages/core/src/platform/pair/run-files";
 import { USAGE_INERT_ENV } from "../../packages/core/src/usage/wiring";
@@ -2813,7 +2813,7 @@ async function main(): Promise<void> {
       }
 
       if (wrong.length > 0) fail(`${wrong.join(" | ")} (passed: ${done.map((d) => d.split(" ")[0]).join(", ") || "none"})`);
-      manifestOutcome = { status: "PASS", detail: onLinux() ? notOnLinux("P5 (a program or folder of the user's named on the card as outside the plugin's sandbox, refused to a plugin that doesn't name it) is the plugin sandbox's, which only macOS has: on Linux plugin code runs as the user (spec §5.2, item 58)", done.join("; ")) : done.join("; ") };
+      manifestOutcome = { status: "PASS", detail: onUnfencedOs() ? notOnLinux("P5 (a program or folder of the user's named on the card as outside the plugin's sandbox, refused to a plugin that doesn't name it) is the plugin sandbox's, which only macOS has: on Linux plugin code runs as the user (spec §5.2, item 58)", done.join("; ")) : done.join("; ") };
     } catch (err) {
       manifestOutcome = { status: statusOf(err), detail: why(err) };
     } finally {
@@ -2935,7 +2935,7 @@ async function main(): Promise<void> {
       });
       const seen = Object.fromEntries(probe.text.trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
       if (seen.event !== "turn.start") fail(`the hook ran, but on ${JSON.stringify(seen.event)}, not turn.start (${probe.text.trim()})`);
-      if (onLinux()) {
+      if (onUnfencedOs()) {
         // Plugin code on Linux runs as the user (spec §5.2, item 58): no fence refuses its writes or its sockets, so the refusals this row proves are macOS's.
         hookOutcome = { status: "PASS", detail: notOnLinux("the plugin's fence (a write outside its folders and into its tree refused, no direct socket, the proxy's refusal) is macOS's: on Linux plugin code runs as the user (spec §5.2, item 58)", `acceptance-echo's probe hook fired on turn.start (its note in ${probe.file.slice(home.length + 1)}) and, unfenced, left its tree alone`) };
       } else {
@@ -3218,7 +3218,7 @@ async function main(): Promise<void> {
       if (result!.isError || !result!.text.includes("acceptance-stdio-pong")) fail(`${called} answered with an error: ${result!.text.slice(0, 300)}`);
       const said = Object.fromEntries(result!.text.slice(result!.text.indexOf("acceptance-stdio-pong")).split(/\s+/).slice(1).map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
       if (said.data !== "written") fail(`the stdio server couldn't write its own data folder (the fence refuses everything?): ${result!.text.slice(0, 300)}`);
-      if (onLinux()) {
+      if (onUnfencedOs()) {
         // Plugin code on Linux runs as the user (spec §5.2, item 58): no fence refuses its writes or its sockets, so the refusals this row proves are macOS's.
         stdioOutcome = { status: "PASS", detail: notOnLinux("the plugin's fence (a write outside its folders and into its tree refused, no direct socket, the proxy's refusal) is macOS's: on Linux plugin code runs as the user (spec §5.2, item 58)", `the bot was offered and called ${called} (acceptance-echo's stdio server, run here) and it wrote its data folder`) };
       } else {
@@ -3242,7 +3242,7 @@ async function main(): Promise<void> {
   // owner's ruling: a server the user added reaches any host, said on its card) reaches the site straight.
   if (session === undefined || !turnsWork) netOutcome = { status: "BLOCKED", detail: "no bot turn reaches the fake provider (step 3)" };
   else if (pluginId === undefined || !pluginOk) netOutcome = { status: "BLOCKED", detail: "the first plugin isn't installed and approved (step 4): no stdio server to borrow with" };
-  else if (onLinux()) netOutcome = { status: "PASS", detail: notOnLinux("a plugin's own network proxy (its granted host through the proxy and nothing else, no direct socket, no borrowed proxy) is the macOS fence's: on Linux plugin code runs as the user and reaches the network directly (spec §5.2, item 58)") };
+  else if (onUnfencedOs()) netOutcome = { status: "PASS", detail: notOnLinux("a plugin's own network proxy (its granted host through the proxy and nothing else, no direct socket, no borrowed proxy) is the macOS fence's: on Linux plugin code runs as the user and reaches the network directly (spec §5.2, item 58)") };
   else {
     try {
       netSite = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => (new URL(req.url).pathname === "/net-page" ? new Response(NET_BODY) : new Response("not here", { status: 404 })) });
