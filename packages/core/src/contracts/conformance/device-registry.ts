@@ -123,6 +123,23 @@ export function runDeviceRegistryConformance(make: DeviceRegistryFactory, opts: 
       expect(await verifyKeySignature("p256", fromBase64(answers.publicKey), data, await answers.sign(data))).toBe(false);
     });
 
+    test("a phone keeps the app it paired as (moss or code); a device that is not a phone, or an app that is not one of the two, is refused", async () => {
+      const { registry } = await make({ clock: new FakeClock() });
+      for (const app of ["moss", "code"] as const) {
+        const phone = await makeFakeDevice();
+        await registry.add({ id: phone.id, name: `Phone ${app}`, kind: "phone", runsCore: false, os: "ios", publicKey: phone.publicKey, app }, { via: "code", card: "card_pair04" });
+        expect(registry.get(phone.id)?.app).toBe(app);
+      }
+      const none = await makeFakeDevice();
+      await registry.add({ id: none.id, name: "Phone none", kind: "phone", runsCore: false, os: "ios", publicKey: none.publicKey }, { via: "code", card: "card_pair05" });
+      expect(registry.get(none.id)?.app).toBeUndefined();
+      for (const [kind, app] of [["phone", "host"], ["phone", "other"], ["desktop", "moss"], ["browser", "code"]] as const) {
+        const d = await makeFakeDevice();
+        const err = await registry.add({ id: d.id, name: "Other", kind, runsCore: false, publicKey: d.publicKey, app: app as never }, { via: "terminal" }).catch((e: unknown) => e);
+        expect([kind, app, isContractError(err, "invalid"), registry.get(d.id)]).toEqual([kind, app, true, undefined]);
+      }
+    });
+
     test("rename", async () => {
       const { registry, device } = await make({ clock: new FakeClock() });
       await registry.rename(device.id, "Studio 2");

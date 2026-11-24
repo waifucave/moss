@@ -16,9 +16,9 @@
 // can't (Linux, and Windows without a TPM), the owner accepted the risk: "any desktop may answer; a
 // compromised plugin on a Windows or Linux computer could approve actions on other computers". A server, a cloud
 // computer and a browser never sign: their only key is the core's, or they may answer no card (`mayAnswerCards`).
-import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs, PhoneApp } from "@waifucave/moss-protocol";
+import { PhoneApp, type AnswerKeyAlg, type AnswerKeyHolder, type DeviceKind, type DeviceOs } from "@waifucave/moss-protocol";
 import { isStrictEd25519Point, isStrictEd25519Signature } from "../identity/ed25519-strict";
-import type { Unsubscribe } from "./common";
+import { ContractError, type Unsubscribe } from "./common";
 
 export interface DeviceRecord {
   id: string;
@@ -100,6 +100,13 @@ export function answerKeyOf(d: Pick<DeviceRecord, "kind" | "publicKey" | "answer
   if (d.revokedAt !== undefined) return undefined;
   if (d.kind === "phone" || d.kind === "desktop") return d.answerKey?.publicKey;
   return undefined;
+}
+
+/** A device's `app` is one of the two phone apps, and only a phone has one: the check every registry's `add` makes (`invalid`
+ *  otherwise), so a fake and the real registry agree. */
+export function assertPhoneApp(kind: DeviceKind, app: unknown): asserts app is PhoneApp {
+  if (kind !== "phone") throw new ContractError("invalid", "only a phone has an app");
+  if (!PhoneApp.safeParse(app).success) throw new ContractError("invalid", `unknown phone app ${String(app)}`);
 }
 
 /** The phone app a device is, as the registry recorded it at pairing: `moss` or `code` for a phone that paired as one,

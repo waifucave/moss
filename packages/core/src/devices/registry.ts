@@ -15,12 +15,12 @@
 //   devices, which H-M2's lease uses);
 // * the guided rotation a revocation starts: the synced keys the revoked device held, to be rotated (§8.1).
 import { join } from "node:path";
-import type { DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
-import { AnswerKeyHolder, COMPUTER_NAME_RE, PhoneApp } from "@waifucave/moss-protocol";
+import type { DeviceKind, DeviceOs, PhoneApp } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import {
-  answerKeyOf, deviceIdFor, holderFitsAlg, type DeviceChange, type DeviceRecord, type DeviceRegistry, type PairingProof,
+  answerKeyOf, assertPhoneApp, deviceIdFor, holderFitsAlg, type DeviceChange, type DeviceRecord, type DeviceRegistry, type PairingProof,
 } from "../contracts/device-registry";
 import type { SecretMeta } from "../contracts/secret-store";
 import { fromBase64, fromBase64Url, toBase64, utf8 } from "../identity/bytes";
@@ -227,7 +227,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
       }, opts);
     }
     if (!NAME_RE.test(opts.self.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
-    if (opts.self.app !== undefined) checkApp(kind, opts.self.app);
+    if (opts.self.app !== undefined) assertPhoneApp(kind, opts.self.app);
     const self: DeviceRecord = {
       id: opts.key.id, name: opts.self.name, kind, runsCore, publicKey: opts.key.publicKeyBase64,
       addedAt: opts.clock.now(), addedBy: "self",
@@ -269,7 +269,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
     if (!NAME_RE.test(device.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
     if (!KINDS.includes(device.kind)) throw new ContractError("invalid", `unknown device kind ${String(device.kind)}`);
     // A phone's app is taken as the pairing gave it, here and nowhere else; an account's device list carries none.
-    if (device.app !== undefined) checkApp(device.kind, device.app);
+    if (device.app !== undefined) assertPhoneApp(device.kind, device.app);
     // A record's answer key as its pairing or the account gave it: its holder and algorithm must be known ones; a key
     // that doesn't fit its algorithm (a P-256 point labelled Ed25519) is kept, and simply never verifies an answer
     // (B's DeviceRegistry conformance, `answer-alg`).
@@ -655,12 +655,6 @@ export function computerNameProblem(name: string): string | null {
  *  `Studio-2`); empty when nothing usable is left. */
 export function computerNameFor(name: string): string {
   return name.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
-}
-
-/** A device's `app` is one of the two phone apps, and only a phone has one. */
-function checkApp(kind: DeviceKind, app: unknown): void {
-  if (kind !== "phone") throw new ContractError("invalid", "only a phone has an app");
-  if (!PhoneApp.safeParse(app).success) throw new ContractError("invalid", `unknown phone app ${String(app)}`);
 }
 
 function stripUndefined<T extends object>(o: T): T {

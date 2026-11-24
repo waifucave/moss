@@ -4,7 +4,7 @@ import type { DeviceKind, Os } from "@waifucave/moss-protocol";
 import type { Clock } from "../clock";
 import { ContractError, Listeners, type Unsubscribe } from "../common";
 import {
-  answerKeyAlgOf, answerKeyOf, deviceIdFor, holderFitsAlg, verifyKeySignature,
+  answerKeyAlgOf, answerKeyOf, assertPhoneApp, deviceIdFor, holderFitsAlg, verifyKeySignature,
   type DeviceChange, type DeviceRecord, type DeviceRegistry, type PairingProof,
 } from "../device-registry";
 
@@ -89,6 +89,7 @@ export class FakeDeviceRegistry implements DeviceRegistry {
     if (proof.via === "self") throw new ContractError("invalid", "only this device is added as itself");
     if ((await deviceIdFor(unb64(device.publicKey))) !== device.id) throw new ContractError("invalid", "the id doesn't match the key");
     if (device.answerKey !== undefined && !holderFitsAlg(device.answerKey.held, device.answerKey.alg)) throw new ContractError("invalid", `${device.answerKey.held} holds only P-256 keys`);
+    if (device.app !== undefined) assertPhoneApp(device.kind, device.app);
     const record: DeviceRecord = { ...device, addedAt: this.#clock.now(), addedBy: proof.via };
     this.#devices.set(device.id, record);
     this.#listeners.emit({ type: "added", device: { ...record } });

@@ -11,6 +11,11 @@
 //   host → joiner  ["welcome", {device, pairKey, groupKey, group, fresh, t, account, answerKeyProof?, nonce, proof}] or ["refused", {reason}]
 //   `device.answerKey` ({publicKey, held, alg?}) is the device's answer key (a phone's own, item 91), and `answerKeyProof` that
 //   key's signature over `answerKeyStatement` (base64); both are in the transcript, the record canonically.
+//   A phone's `device.app` (`moss` or `code`, `PhoneApp`) is the phone app it is (two apps, each paired on its own). It is part of the
+//   record the transcript holds, as the record's tenth item and only when present (`canonicalRecord`, so a record with none
+//   encodes as it always did), which the pair secret's proof and the four words both cover: an app changed on the way, or added
+//   to or taken from a hello that was signed without it, fails the proof. A value that isn't one of the two, or any app on a
+//   device that is not a phone, refuses the pairing. It is taken here and nowhere else, and never changes after.
 //   joiner → host  ["reveal", {nonce}], the nonce `commit` committed to; both show the words only after it
 //   both, when their user confirms the words (and their card is approved): ["confirm", {pairSig, admit?}]
 // Each device adds the other once both confirms have crossed. The words and the pair secret cover both nonces

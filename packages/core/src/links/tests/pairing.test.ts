@@ -365,6 +365,18 @@ describe("pairing", () => {
       }
     });
 
+    test("through the handshake's pair registration too: a phone with an app and an account-less group pairs, and keeps its app", async () => {
+      const hs = startFakeHandshake();
+      cleanup.push(() => hs.stop());
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio", { hs });
+      const phone = await device(net, "Phone", { hs, kind: "phone", os: "android", app: "code" });
+      await pairBoth(host, phone);
+      expect(host.registry.get(phone.key.id)).toMatchObject({ kind: "phone", os: "android", app: "code" });
+      expect(host.registry.pairs()).toHaveLength(1);
+      expect(phone.registry.pairs()).toHaveLength(1);
+    });
+
     test("a revoked phone can't come back as the other app: it pairs again only with a new key", async () => {
       const net = new MemoryNetwork();
       const host = await device(net, "Studio");
