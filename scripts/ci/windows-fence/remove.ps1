@@ -46,7 +46,8 @@ $rp.WaitForExit()
 if ($null -eq $accountGone -and -not (Get-LocalUser -Name $first -ErrorAction SilentlyContinue)) { $accountGone = $rsw.Elapsed.TotalSeconds }
 $removeSaid = @(Get-Content $rOut, $rErr | Where-Object { $_ -ne "" })
 $removeSaid | Write-Output
-Write-Output ("remove round 1: exit {0} in {1:N1} s; marker gone at {2} s, {3} gone at {4} s" -f $rp.ExitCode, $rsw.Elapsed.TotalSeconds, $markerGone, $first, $accountGone)
+$round1 = $rsw.Elapsed.TotalSeconds
+Write-Output ("remove round 1: exit {0} in {1:N1} s; marker gone at {2} s, {3} gone at {4} s" -f $rp.ExitCode, $round1, $markerGone, $first, $accountGone)
 if ($rp.ExitCode -ne 0) {
   Write-Output "pool account processes now: $((PoolProcs | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')"
   Write-Output "the held command's caller: $(if ($hold.HasExited) { "exited $($hold.ExitCode)" } else { 'still running' }); result file: $(Test-Path -LiteralPath $holdOut)"
@@ -76,8 +77,15 @@ if ($bg.isError) { throw "the background command was not started: $($bg.answer)"
 if (@("failed", "stopped") -notcontains $bg.status) { throw "the background command's end was told as $($bg.status), not failed or stopped" }
 if ("$($bg.log)" -notmatch "started" -or "$($bg.log)" -match "finished") { throw "the background command's log does not show it started and was cut short" }
 if ($bgAfter -gt ($accountGone + 30)) { throw "the background command ended only $bgAfter s after remove started, past its account's removal ($accountGone s)" }
+$r2 = [Diagnostics.Stopwatch]::StartNew()
 $code = Invoke-Limited "remove (round 2)" $Core @("sandbox", "remove") 900
+$r2.Stop()
+Write-Output ("remove round 2: exit {0} in {1:N1} s" -f $code, $r2.Elapsed.TotalSeconds)
 if ($code -ne 0) { throw "remove round 2 exited $code" }
+# Lane WS8 (run 45450396166: round 1 took 744 s and round 2 was still running after 7 minutes): a person uninstalling
+# never waits that long. Round 1 here ends two held commands and races a running reset; round 2 finds nothing.
+if ($round1 -gt 300) { throw ("remove round 1 took {0:N0} s (over 300 s)" -f $round1) }
+if ($r2.Elapsed.TotalSeconds -gt 90) { throw ("remove round 2 took {0:N0} s (over 90 s)" -f $r2.Elapsed.TotalSeconds) }
 if (-not $hold.HasExited) { & taskkill.exe /T /F /PID $hold.Id | Out-Null }
 Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".moss-hold") -Recurse -Force -ErrorAction SilentlyContinue
 # A rebuild still running after remove must not bring anything back: look again after it would have finished.

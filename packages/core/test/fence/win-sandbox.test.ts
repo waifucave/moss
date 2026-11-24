@@ -60,7 +60,10 @@ import {
   poolPrincipalName,
   poolSublayerGuid,
   sandboxPool,
-  endAccountProcessesArgs,
+  endAccountProcesses,
+  accountPids,
+  TASKLIST_ARGS,
+  endResetTask,
   endAccountUntilGone,
   netUserState,
   userStatusArgs,
@@ -928,17 +931,43 @@ describe("the pool's state (lane WS2: profiles remade ahead)", () => {
 });
 
 describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
-  const decode = (argv: readonly string[]) => Buffer.from(argv[argv.length - 1]!, "base64").toString("utf16le");
-  test("ending an account's processes names exactly that pool account, never a pattern", () => {
-    for (const p of ["moss-sb-3d34c3-1", "moss-sb-3d34c3-e", "moss-sb-abcdef-12"]) {
-      const script = decode(endAccountProcessesArgs(p));
-      expect(script).toContain(`$who = [Environment]::MachineName + "\\${p}"`);
-      expect(script).not.toContain("$env:");
-      expect(script).toContain("$_.UserName -eq $who");
-      expect(script).toContain("Stop-Process -Id $p.Id -Force");
-      expect(script).toContain("exit 4");
-    }
-    for (const bad of ["moss-sb-*", "moss-sb-3d34c3-1*", "Administrator", "moss-sb-3d34c3-1' ; x", "moss-sb-3D34C3-1"]) expect(() => endAccountProcessesArgs(bad)).toThrow();
+  // `tasklist /V /FO CSV /NH`: image, PID, session, session#, memory, status, user, CPU time, window title.
+  const row = (user: string, pid: number, title = "N/A") => `"bash.exe","${pid}","Services","0","1,024 K","Unknown","${user}","0:00:00","${title}"`;
+  test("an account's processes are picked from one native list by its exact name, never a pattern (lane WS8)", () => {
+    const out = [
+      row("RUNNERVM\\moss-sb-3d34c3-1", 10), row("runnervm\\MOSS-SB-3D34C3-1", 11), row("RUNNERVM\\moss-sb-3d34c3-12", 12),
+      row("RUNNERVM\\xmoss-sb-3d34c3-1", 13), row("NT AUTHORITY\\SYSTEM", 14), row("RUNNERVM\\moss-sb-3d34c3-1", 15, 'a ""quoted"", title'),
+      row("moss-sb-3d34c3-1", 16), "INFO: No tasks are running which match the specified criteria.", "",
+    ].join("\r\n");
+    expect(accountPids(out, "moss-sb-3d34c3-1")).toEqual([10, 11, 15, 16]);
+    expect(TASKLIST_ARGS).toEqual(["tasklist", "/V", "/FO", "CSV", "/NH"]);
+  });
+  test("ending them: the list, taskkill by PID, the list again; 4 while one is left, 1 when the list can't be read; a bad name throws", async () => {
+    const seen: (readonly string[])[] = [];
+    const lists = [[row("PC\\moss-sb-3d34c3-1", 7), row("PC\\moss-sb-3d34c3-2", 8), row("PC\\moss-sb-3d34c3-1", 9)], []];
+    const run = async (argv: readonly string[]) => { seen.push(argv); return argv[0] === "tasklist" ? { code: 0, out: lists.shift()!.join("\r\n") } : { code: 0, out: "" }; };
+    expect(await endAccountProcesses(run, "moss-sb-3d34c3-1")).toEqual({ code: 0, out: "ended 2, left 0" });
+    expect(seen).toEqual([TASKLIST_ARGS, ["taskkill", "/F", "/PID", "7", "/PID", "9"], TASKLIST_ARGS]);
+    const stays = async (argv: readonly string[]) => (argv[0] === "tasklist" ? { code: 0, out: row("PC\\moss-sb-3d34c3-1", 7) } : { code: 0, out: "" });
+    expect((await endAccountProcesses(stays, "moss-sb-3d34c3-1")).code).toBe(4);
+    expect((await endAccountProcesses(async () => ({ code: 1, out: "Access denied" }), "moss-sb-3d34c3-1")).code).toBe(1);
+    const none: (readonly string[])[] = [];
+    expect(await endAccountProcesses(async (argv) => { none.push(argv); return { code: 0, out: "INFO: none" }; }, "moss-sb-3d34c3-1")).toEqual({ code: 0, out: "ended 0, left 0" });
+    expect(none).toEqual([TASKLIST_ARGS]); // nothing to kill: one look
+    for (const bad of ["moss-sb-*", "moss-sb-3d34c3-1*", "Administrator", "moss-sb-3d34c3-1' ; x", "moss-sb-3D34C3-1"]) await expect(endAccountProcesses(run, bad)).rejects.toThrow();
+  });
+  test("the reset task: ended, then deleted, then looked for again; gone or never there is 0, still there is 1 (lane WS8)", async () => {
+    const sid = "S-1-5-21-1-2-3-1001";
+    const name = `MOSS Sandbox Reset ${sid}`;
+    const calls: (readonly string[])[] = [];
+    let there = true;
+    const run = async (argv: readonly string[]) => { calls.push(argv); if (argv[1] === "/Delete") there = false; return { code: argv[1] === "/Query" && !there ? 1 : 0, out: "" }; };
+    expect((await endResetTask(run, sid)).code).toBe(0);
+    expect(calls).toEqual([["schtasks", "/Query", "/TN", name], ["schtasks", "/End", "/TN", name], ["schtasks", "/Delete", "/TN", name, "/F"], ["schtasks", "/Query", "/TN", name]]);
+    const absent: (readonly string[])[] = [];
+    expect((await endResetTask(async (a) => { absent.push(a); return { code: 1, out: "" }; }, sid)).code).toBe(0);
+    expect(absent).toHaveLength(1);
+    expect((await endResetTask(async () => ({ code: 0, out: "" }), sid)).code).toBe(1);
   });
   test("net user: gone only for 'user name could not be found' (2221); other failures are unknown", () => {
     expect(netUserState(0, "User name moss-sb-1")).toBe("present");
@@ -949,17 +978,28 @@ describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
 });
 
 describe("an account whose process can't be ended is not removed (the WS5 reviewer's should-fix 1)", () => {
-  const runs = (codes: number[]) => { const seen: number[] = []; return { seen, run: async () => { const c = codes[seen.length] ?? codes[codes.length - 1]!; seen.push(c); return { code: c, out: `ended 1, left ${c === 4 ? 1 : 0}` }; } }; };
+  const row = (pid: number) => `"bash.exe","${pid}","Services","0","1 K","Unknown","PC\\moss-sb-abcdef-1","0:00:00","N/A"`;
+  /** Each try is a look, a kill and a look; `left[i]` says whether the account still has a process at try i's second look. */
+  const machine = (left: boolean[], listFails = false) => {
+    let tries = 0, looks = 0;
+    return { tries: () => tries, run: async (argv: readonly string[]) => {
+      if (argv[0] !== "tasklist") return { code: 0, out: "" };
+      if (listFails) return { code: 1, out: "" };
+      const second = looks++ % 2 === 1;
+      if (!second) { tries++; return { code: 0, out: row(7) }; }
+      return { code: 0, out: left[tries - 1] ? row(7) : "" };
+    } };
+  };
   const sleep = async () => {};
-  test("exit 4 (a process still lives after the kill) is tried again, and still alive after three tries is false", async () => {
-    const a = runs([4, 4, 4]);
+  test("one still alive after the kill is tried again, and still alive after three tries is false", async () => {
+    const a = machine([true, true, true]);
     expect(await endAccountUntilGone(a.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
-    expect(a.seen).toEqual([4, 4, 4]);
-    const b = runs([4, 0]);
+    expect(a.tries()).toBe(3);
+    const b = machine([true, false]);
     expect(await endAccountUntilGone(b.run, "moss-sb-abcdef-1", { sleep })).toBe(true);
-    expect(b.seen).toEqual([4, 0]);
-    const c = runs([1, 1, 1]); // PowerShell itself failed: never read as ended
-    expect(await endAccountUntilGone(c.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
-    expect(await endAccountUntilGone(runs([0]).run, "moss-sb-abcdef-1", { sleep })).toBe(true);
+    expect(b.tries()).toBe(2);
+    // The list itself unreadable: never read as ended.
+    expect(await endAccountUntilGone(machine([], true).run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(await endAccountUntilGone(machine([false]).run, "moss-sb-abcdef-1", { sleep })).toBe(true);
   });
 });

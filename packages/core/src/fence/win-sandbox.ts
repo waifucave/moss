@@ -171,36 +171,77 @@ export function statusArgs(launcher: string, sublayer: string): readonly string[
   return [launcher, "status", "--sublayer-guid", sublayer];
 }
 
-/** `sandbox remove`'s first step for an account (the WS4 reviewer's item 1): every process running as that pool
- *  account ended, elevated, by exact `<computer>\<name>`, so no command of it keeps a token past the removal of its
- *  network filter. The name is checked first (a pool name, never a pattern). Exit 0 whether or not one ran; prints
- *  how many were ended. */
-export function endAccountProcessesArgs(principal: string): readonly string[] {
-  if (!/^moss-sb-[0-9a-f]{6}-(?:[1-9][0-9]?|e)$/.test(principal)) throw new Error(`not a pool account: ${principal}`);
-  return psEncodedArgs([
-    // The machine's name from .NET, never `$env:COMPUTERNAME`: moss-core runs its children with a minimal
-    // environment, where that variable isn't set.
-    `$who = [Environment]::MachineName + "\\${principal}"`,
-    `$ps = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,
-    `foreach ($p in $ps) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }`,
-    `$left = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,
-    `"ended $($ps.Count), left $($left.Count)"`,
-    `if ($left.Count -gt 0) { exit 4 }; exit 0`,
-  ].join("; "));
+/** A pool account's name, checked before it is used to pick processes (a pool name, never a pattern). */
+const POOL_ACCOUNT_RE = /^moss-sb-[0-9a-f]{6}-(?:[1-9][0-9]?|e)$/;
+
+/** Every process of the computer with its user, as one native call (`sandbox remove`, lane WS8): `tasklist /V` in CSV
+ *  with no header, read by `accountPids`. It replaced a PowerShell `Get-Process -IncludeUserName` per account and per
+ *  try (run 45450396166: PowerShell children of remove and status slowed past minutes and one never returned). */
+export const TASKLIST_ARGS: readonly string[] = ["tasklist", "/V", "/FO", "CSV", "/NH"];
+
+/** One CSV row of `tasklist`'s output, its quoted fields (a window title may hold commas). */
+function csvFields(line: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== '"') return out;
+    let v = "";
+    i++;
+    while (i < line.length) {
+      if (line[i] === '"' && line[i + 1] === '"') { v += '"'; i += 2; continue; }
+      if (line[i] === '"') { i++; break; }
+      v += line[i++];
+    }
+    out.push(v);
+    if (line[i] === ",") i++;
+  }
+  return out;
 }
 
-/** `sandbox remove`'s check that an account's processes are all ended (the WS5 reviewer's should-fix 1): the ending
- *  script run up to `tries` times, `pauseMs` apart, until it exits 0; it exits 4 while a process of the account still
- *  runs after its `Stop-Process` (one outside the launcher's kill-on-close job, or one started between its scan and its
- *  kill), and any other failure counts as not ended too. False: a process still lives, and the account must not be
- *  removed. Each try's output goes to `say`. */
+/** The PIDs `tasklist` (`TASKLIST_ARGS`) lists for exactly this account: its user column is `<computer>\<name>` (or the
+ *  bare name), compared whole and case-blind, so no other account's process is ever picked. A line that isn't a row
+ *  (the "no tasks" note, in any language) is skipped. */
+export function accountPids(tasklistOut: string, principal: string): number[] {
+  const want = principal.toLowerCase();
+  const pids: number[] = [];
+  for (const line of tasklistOut.split(/\r?\n/)) {
+    const f = csvFields(line.trim());
+    if (f.length < 7) continue;
+    const user = f[6]!.toLowerCase();
+    const pid = Number(f[1]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (user === want || user.endsWith(`\\${want}`)) pids.push(pid);
+  }
+  return pids;
+}
+
+/** `sandbox remove`'s first step for an account (the WS4 reviewer's item 1): every process running as that pool
+ *  account ended, elevated, so no command of it keeps a token past the removal of its network filter. Native calls
+ *  only (lane WS8): `tasklist` to find them (`accountPids`), `taskkill /F` by PID, `tasklist` again. Exit 0 when none
+ *  is left, 4 when one still runs after the kill (one outside the launcher's kill-on-close job, or one started between
+ *  the look and the kill), 1 when the list couldn't be read; the text says how many were ended. */
+export async function endAccountProcesses(run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string): Promise<{ code: number; out: string }> {
+  if (!POOL_ACCOUNT_RE.test(principal)) throw new Error(`not a pool account: ${principal}`);
+  const before = await run(TASKLIST_ARGS);
+  if (before.code !== 0) return { code: 1, out: `the process list couldn't be read (tasklist exit ${before.code}): ${before.out.trim().slice(0, 200)}` };
+  const pids = accountPids(before.out, principal);
+  if (pids.length > 0) await run(["taskkill", "/F", ...pids.flatMap((p) => ["/PID", String(p)])]);
+  const after = pids.length === 0 ? before : await run(TASKLIST_ARGS);
+  if (after.code !== 0) return { code: 1, out: `the process list couldn't be read again (tasklist exit ${after.code})` };
+  const left = accountPids(after.out, principal);
+  return { code: left.length > 0 ? 4 : 0, out: `ended ${pids.length}, left ${left.length}` };
+}
+
+/** `sandbox remove`'s check that an account's processes are all ended (the WS5 reviewer's should-fix 1):
+ *  `endAccountProcesses` up to `tries` times, `pauseMs` apart, until it says none is left; any failure counts as not
+ *  ended. False: a process still lives, and the account must not be removed. Each try's line goes to `say`. */
 export async function endAccountUntilGone(
   run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string,
   o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<void>; say?: (line: string) => void } = {},
 ): Promise<boolean> {
   const tries = o.tries ?? 3;
   for (let i = 0; i < tries; i++) {
-    const ended = await run(endAccountProcessesArgs(principal));
+    const ended = await endAccountProcesses(run, principal);
     o.say?.(`${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
     if (ended.code === 0) return true;
     if (i + 1 < tries) await (o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))))(o.pauseMs ?? 1_000);
@@ -908,9 +949,16 @@ export function registerResetTaskArgs(o: { exe: string; ownerSid: string }): rea
   return psEncodedArgs(script);
 }
 
-/** Unregister the reset task (`sandbox remove`); exits 0 when it isn't there. */
-export function unregisterResetTaskArgs(ownerSid: string): readonly string[] {
-  return psEncodedArgs(`$t = Get-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -ErrorAction SilentlyContinue; if ($t) { Unregister-ScheduledTask -TaskName '${resetTaskName(ownerSid)}' -Confirm:$false -ErrorAction Stop }; exit 0`);
+/** The reset task ended and unregistered (`sandbox remove`), with native `schtasks` (lane WS8): a run already going is
+ *  ended first (`/End`), so remove never waits out a remake under an account's lock (up to 3 minutes each before); then
+ *  the task is deleted, and looked for once more. Code 0 when it is gone (or never was), 1 when it is still there. */
+export async function endResetTask(run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, ownerSid: string): Promise<{ code: number; out: string }> {
+  const name = resetTaskName(ownerSid);
+  if ((await run(["schtasks", "/Query", "/TN", name])).code !== 0) return { code: 0, out: "" };
+  const ended = await run(["schtasks", "/End", "/TN", name]);
+  const deleted = await run(["schtasks", "/Delete", "/TN", name, "/F"]);
+  if ((await run(["schtasks", "/Query", "/TN", name])).code !== 0) return { code: 0, out: "" };
+  return { code: 1, out: `${ended.out.trim()}\n${deleted.out.trim()}`.trim() };
 }
 
 /** Start the reset task (the daemon, unelevated, as its owner). */

@@ -1685,8 +1685,9 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     minimalChildEnv,
     deleteProfileArgs,
     registerResetTaskArgs,
-    unregisterResetTaskArgs,
-    endAccountProcessesArgs,
+    endResetTask,
+    TASKLIST_ARGS,
+    accountPids,
     endAccountUntilGone,
     netUserState,
     SRT_SESSIONS_RUNNING_EXIT,
@@ -1713,24 +1714,43 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
   const targetSid = installerTargetSid();
   const arch = srtWinArch();
   const childEnv = minimalChildEnv();
-  const run = async (argv: readonly string[]): Promise<{ code: number; out: string }> => {
+  /** Lane WS8: the most a child of `remove` or `status` may take, the code it then answers, and the most `remove` takes
+   *  before it stops between accounts (each step is idempotent: running it again goes on from there). */
+  const SANDBOX_STEP_TIMEOUT_MS = 120_000;
+  const SANDBOX_CHILD_TIMED_OUT = 124;
+  const SANDBOX_REMOVE_DEADLINE_MS = 10 * 60_000;
+  // `timeoutMs` (lane WS8; `remove` and `status`, run 45450396166: one PowerShell child of `status` never returned and
+  // `remove`'s second round still ran after 7 minutes): past it the child and everything it started are ended
+  // (`taskkill /T /F`), and the call answers `SANDBOX_CHILD_TIMED_OUT` saying so, so neither ever waits for ever.
+  const run = async (argv: readonly string[], timeoutMs?: number): Promise<{ code: number; out: string }> => {
     try {
       const proc = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true, env: childEnv });
+      let timedOut = false;
+      const timer = timeoutMs === undefined ? null : setTimeout(() => {
+        timedOut = true;
+        try { Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(proc.pid)], { stdout: "ignore", stderr: "ignore", windowsHide: true, env: childEnv }); } catch { /* gone */ }
+        try { proc.kill(); } catch { /* gone */ }
+      }, timeoutMs);
       const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-      return { code: await proc.exited, out: out + err };
+      const code = await proc.exited;
+      if (timer !== null) clearTimeout(timer);
+      if (timedOut) return { code: SANDBOX_CHILD_TIMED_OUT, out: `${out}${err}\n(${(argv[0] ?? "").split(/[\\/]/).pop()} didn't finish in ${timeoutMs! / 1000} s and was ended)` };
+      return { code, out: out + err };
     } catch (e) {
       return { code: 1, out: (e as Error).message };
     }
   };
+  /** A child of `remove` or `status`, ended past `SANDBOX_STEP_TIMEOUT_MS`. */
+  const runT = (argv: readonly string[]) => run(argv, SANDBOX_STEP_TIMEOUT_MS);
   // A known folder without environment variables (should-fix).
   const knownFolder = async (kind: "System" | "CommonStartup" | "CommonApplicationData"): Promise<string | null> => {
-    const r = await run([...knownFolderArgs(kind)]);
+    const r = await runT([...knownFolderArgs(kind)]);
     const v = r.out.trim();
     return r.code === 0 && v !== "" ? v : null;
   };
   // A pool member's live SID, from `srt-win user status --user`.
   const memberSid = async (launcherPath: string, principal: string): Promise<{ exists: boolean; sid: string | null }> => {
-    const r = await run([...userStatusArgs(launcherPath, principal)]);
+    const r = await runT([...userStatusArgs(launcherPath, principal)]);
     if (r.code !== 0) return { exists: false, sid: null };
     try {
       const u = (JSON.parse(r.out) as { user?: { exists?: unknown; user?: { exists?: unknown; sid?: unknown }; sid?: unknown } }).user;
@@ -1744,7 +1764,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
   };
   // A principal's profile root by SID, or null when it cannot be resolved.
   const memberProfile = async (principalSid: string): Promise<string | null> => {
-    const reg = await run([...profileQueryArgs(principalSid)]);
+    const reg = await runT([...profileQueryArgs(principalSid)]);
     if (reg.code !== 0) return null;
     return parseProfileImagePath(reg.out);
   };
@@ -1908,7 +1928,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       return;
     }
     case "remove": {
-      const elevated = (await run([...NET_SESSION_PROBE])).code === 0;
+      const elevated = (await runT([...NET_SESSION_PROBE])).code === 0;
       if (!elevated) {
         console.error("sandbox remove needs elevation; run it as administrator");
         process.exitCode = SANDBOX_EXIT.NOT_ELEVATED;
@@ -1929,7 +1949,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // Refuse only if something is actually installed: probe every pool member.
         let anyPresent = false;
         for (const slot of pool) {
-          if ((await run(["net", "user", slot.principal])).code === 0) { anyPresent = true; break; }
+          if ((await runT(["net", "user", slot.principal])).code === 0) { anyPresent = true; break; }
         }
         if (!anyPresent) {
           console.log("Bash's fence is removed");
@@ -1958,7 +1978,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           process.exitCode = 1;
           return;
         }
-        const ownerReg = await run([...profileQueryArgs(ownerSid)]);
+        const ownerReg = await runT([...profileQueryArgs(ownerSid)]);
         const realUserProfile = ownerReg.code === 0 ? parseProfileImagePath(ownerReg.out) : null;
         const commonStartup = await knownFolder("CommonStartup");
         let failed = false;
@@ -1968,9 +1988,12 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // starts; a run already going is waited for member by member under the lock the reset takes (`<p>.lock`),
         // and the reset remakes no account that is gone (`sandbox reset`); what a late rebuild still left is swept
         // after the loop.
-        const task = await run([...unregisterResetTaskArgs(ownerSid)]);
+        // Ended first, then unregistered (lane WS8): a remake already running is stopped, not waited out under the
+        // accounts' locks below.
+        const removeStarted = Date.now();
+        const task = await endResetTask(runT, ownerSid);
         if (task.code !== 0) {
-          console.error(`sandbox remove: the reset task couldn't be unregistered (exit ${task.code})${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
+          console.error(`sandbox remove: the reset task couldn't be ended and unregistered${task.out.trim() ? `\n${task.out.trim().slice(0, 2000)}` : ""}`);
           process.exitCode = 1;
           return;
         }
@@ -1997,7 +2020,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
          *  between its scan and its kill), so it is run again, up to three times a second apart; any other failure
          *  counts as not ended too. False: a process of the account still lives, and the account is not removed. */
         const endAccount = (principal: string): Promise<boolean> =>
-          endAccountUntilGone(run, principal, { sleep: (ms) => Bun.sleep(ms), say: (l) => console.error(`sandbox remove: ${l}`) });
+          endAccountUntilGone(runT, principal, { sleep: (ms) => Bun.sleep(ms), say: (l) => console.error(`sandbox remove: ${l}`) });
         /** Under the account's lock nothing starts as it (the daemon and the reset both take that lock first, and the marker
          *  is gone), so the processes ended and checked HERE, right before the uninstall, stay ended: a process that still
          *  lives refuses the member as a lock held for 3 minutes does. */
@@ -2017,27 +2040,35 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // srt-win refuses to uninstall ANY member while a sandbox session of this machine is live (exit 22, "Nothing was
         // changed": a daemon's command holds grants), so every pool account's commands are ended before the first
         // member is removed, not only that member's (`endAll`).
+        // One look at the process list for every account, one kill (lane WS8: native `tasklist` and `taskkill`, where a
+        // PowerShell per account per try had made this the slow part).
         const endAll = async () => {
-          for (const slot of pool) {
-            const ended = await run([...endAccountProcessesArgs(slot.principal)]);
-            console.error(`sandbox remove: ${slot.principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
-          }
+          const list = await runT(TASKLIST_ARGS);
+          if (list.code !== 0) { console.error(`sandbox remove: the process list couldn't be read (exit ${list.code}); each account is checked on its own below`); return; }
+          const pids = pool.flatMap((slot) => accountPids(list.out, slot.principal));
+          if (pids.length > 0) await runT(["taskkill", "/F", ...pids.flatMap((p) => ["/PID", String(p)])]);
+          for (const slot of pool) console.error(`sandbox remove: ${slot.principal}: ended ${accountPids(list.out, slot.principal).length}`);
         };
         await endAll();
         const sids: string[] = [];
         for (const slot of pool) {
           const { principal, sublayer } = slot;
+          // A bound on the whole (lane WS8): past it remove stops where it is and says so, rather than keep a person
+          // waiting; what is left is removed by running it again (each step below is idempotent).
+          if (Date.now() - removeStarted > SANDBOX_REMOVE_DEADLINE_MS) { fail(`it has taken more than ${SANDBOX_REMOVE_DEADLINE_MS / 60_000} minutes and stopped before ${principal}; run it again (or restart Windows first)`); break; }
+          const memberStarted = Date.now();
           const { exists: principalExists, sid: liveSid } = await memberSid(launcher, principal);
           const principalSid = liveSid ?? marker?.members.find((m) => m.principal === principal)?.principalSid ?? null;
           if (principalExists) {
-            const desc = await run([...getDescriptionArgs(principal)]);
+            const desc = await runT([...getDescriptionArgs(principal)]);
             if (!(desc.code === 0 && descriptionMatches(desc.out, ownerSid))) {
               fail(`${principal} belongs to another user`); break;
             }
           }
           if (principalSid !== null) sids.push(principalSid);
           // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
-          const held = await memberLock(principal);
+          // An account that is gone runs nothing and is remade by no reset: nothing to end or wait for.
+          const held = principalExists ? await memberLock(principal) : "free";
           if (held === "held") { fail(`${principal} is still in use (a command of MOSS's or the profile reset after 3 minutes, or a process of the account that couldn't be ended); stop MOSS (or restart Windows) and run remove again`); break; }
           const guard = held === "free" ? null : held;
           try {
@@ -2050,12 +2081,12 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // The wait stays inside this member's lock: let go, a reset still running from before the task was
           // unregistered could take the account and start a process as it, which would have to be ended again; the
           // marker is gone, so no daemon can lease it either way. Before each try this account is checked once more.
-          let { code, out } = await run([...removeArgs(launcher, sublayer, principal)]);
+          let { code, out } = await runT([...removeArgs(launcher, sublayer, principal)]);
           for (let i = 0; code === SRT_SESSIONS_RUNNING_EXIT && i < 12; i++) {
             await endAll();
             await Bun.sleep(5_000);
             if (!(await endAccount(principal))) break;
-            ({ code, out } = await run([...removeArgs(launcher, sublayer, principal)]));
+            ({ code, out } = await runT([...removeArgs(launcher, sublayer, principal)]));
           }
           if (code !== 0) {
             fail(`${principal}: remove failed (exit ${code})${out.trim() ? `\n${out.trim().slice(0, 2000)}` : ""}`); break;
@@ -2064,38 +2095,40 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // A temporary profile is shared and keyless: never delete it or its (absent) key.
           if (profileRoot !== null && principalSid !== null && !isTemporaryProfile(profileRoot)) {
             // The profile as Windows deletes one (hive, ProfileList key and folder; its junctions never followed).
-            const gone = await run([...deleteProfileArgs(principalSid)]);
+            const gone = await runT([...deleteProfileArgs(principalSid)]);
             if (gone.code !== 0) {
-              await run(["reg", "unload", `HKU\\${principalSid}`]);
-              await run(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${principalSid}`, "/f"]);
-              await run([...removeDirArgs(profileRoot)]);
+              await runT(["reg", "unload", `HKU\\${principalSid}`]);
+              await runT(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${principalSid}`, "/f"]);
+              await runT([...removeDirArgs(profileRoot)]);
             }
             if (realUserProfile !== null && commonStartup !== null) {
               const startups = startupFolders({ profileRoot, realUserProfile, commonStartup });
-              for (const path of startups) await run([...icaclsRemoveDenyArgs(path, principalSid)]);
+              for (const path of startups) await runT([...icaclsRemoveDenyArgs(path, principalSid)]);
             }
           }
           } finally { guard?.release(); }
+          console.error(`sandbox remove: ${principal}: removed in ${((Date.now() - memberStarted) / 1000).toFixed(1)} s`);
         }
         if (failed) return;
         // The sweep: a profile a rebuild made for a member after its account went (its ProfileList entry and folder,
         // never a temporary profile) is deleted, so remove leaves nothing of a sandbox account behind.
         for (const sid of sids) {
           const root = await memberProfile(sid);
-          const listed = (await run(["reg", "query", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`])).code === 0;
+          const listed = (await runT(["reg", "query", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`])).code === 0;
           if (root === null && !listed) continue;
           if (root !== null && isTemporaryProfile(root)) continue;
-          const gone = await run([...deleteProfileArgs(sid)]);
+          const gone = await runT([...deleteProfileArgs(sid)]);
           if (gone.code !== 0) {
-            await run(["reg", "unload", `HKU\\${sid}`]);
-            await run(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`, "/f"]);
-            if (root !== null) await run([...removeDirArgs(root)]);
+            await runT(["reg", "unload", `HKU\\${sid}`]);
+            await runT(["reg", "delete", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`, "/f"]);
+            if (root !== null) await runT([...removeDirArgs(root)]);
           }
           console.error(`sandbox remove: swept a profile left for ${sid} by a late rebuild`);
         }
         await unlink(markerFile).catch(() => {});
         // The pool's state goes with it (its folder is administrators', made by setup).
         await (await import("node:fs/promises")).rm(poolStateDir(programData, ownerSid), { recursive: true, force: true }).catch(() => {});
+        console.error(`sandbox remove: done in ${((Date.now() - removeStarted) / 1000).toFixed(1)} s`);
         console.log("Bash's fence is removed");
         return;
       }
@@ -2201,6 +2234,8 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       await keepLog(); return;
     }
     case "status": {
+      // Each child of status at most 30 s (lane WS8): a look, never a wait.
+      const runS = (argv: readonly string[]) => run(argv, 30_000);
       // status works from either location; the launcher is the protected copy's when we run from there,
       // else the copy the installer recorded for this user (missing copy reads as missing launcher).
       const protectedPath = fromProtected ? process.execPath : await protectedCopyPath();
@@ -2223,7 +2258,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
       const members: { principal: string; ready: boolean; reason: string | null }[] = [];
       let firstUser: unknown = null;
       for (const slot of pool) {
-        const ust = await run([...userStatusArgs(launcher, slot.principal)]);
+        const ust = await runS([...userStatusArgs(launcher, slot.principal)]);
         if (ust.code !== 0) {
           members.push({ principal: slot.principal, ready: false, reason: `user status failed (exit ${ust.code})` });
           continue;
@@ -2233,7 +2268,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         try {
           user = JSON.parse(ust.out);
         } catch { /* not ready below */ }
-        const st = await run([...statusArgs(launcher, slot.sublayer)]);
+        const st = await runS([...statusArgs(launcher, slot.sublayer)]);
         if (st.code === 0) {
           try {
             wfp = (JSON.parse(st.out) as { wfp?: unknown }).wfp ?? null;
@@ -2245,7 +2280,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
         // The owner-SID check (Addendum 9): the principal's description must name this user.
         let owned: boolean | null = null;
         if (base.user?.exists === true) {
-          const desc = await run([...getDescriptionArgs(slot.principal)]);
+          const desc = await runS([...getDescriptionArgs(slot.principal)]);
           owned = desc.code === 0 && descriptionMatches(desc.out, ownerSid);
         }
         // The profile check (brief item 7): resolved by SID; a temporary one fails closed. None is ready (the reset

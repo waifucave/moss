@@ -46,7 +46,7 @@ export {
   installMarkerPath, formatInstallMarker, parseInstallMarker as parseSandboxInstallMarker, markerAllowsSetup, markerAllowsRemove,
   poolLockPath, createWindowsLockStore, readLeasesDirSecurity, leasesDirAccessProblem,
   sandboxLeasesDir, acquirePoolLease,
-  minimalChildEnv, userStatusArgs, deleteProfileArgs, PROFILE_IN_USE_EXIT, remakeProfileArgs, endAccountProcessesArgs, endAccountUntilGone, netUserState, SRT_SESSIONS_RUNNING_EXIT, escapeMember, installedPool, poolStateDir, poolStateFiles, isFreshGeneration, poolDirAclArgs, poolFileAclArgs, resetTaskName, registerResetTaskArgs, unregisterResetTaskArgs, runResetTaskArgs,
+  minimalChildEnv, userStatusArgs, deleteProfileArgs, PROFILE_IN_USE_EXIT, remakeProfileArgs, endAccountProcesses, accountPids, TASKLIST_ARGS, endAccountUntilGone, netUserState, SRT_SESSIONS_RUNNING_EXIT, escapeMember, installedPool, poolStateDir, poolStateFiles, isFreshGeneration, poolDirAclArgs, poolFileAclArgs, resetTaskName, registerResetTaskArgs, endResetTask, runResetTaskArgs,
   poolPrincipalName, poolSublayerGuid, sandboxPool, SANDBOX_POOL_SIZE,
   type SrtUserStatus, type SrtWfpStatus, type SandboxStatus, type SandboxStep, type WinCallerRules, type SrtWinArch,
   type PoolLockGuard, type LeaseStore, type LeasesDirSecurity,
