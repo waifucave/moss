@@ -188,6 +188,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     let ConnEvent::PendingCards { cards_json } = pending else { unreachable!() };
     assert!(cards_json.contains(&waiting), "the waiting card is in the pending list");
     until_event(&conn, "up", |e| matches!(e, ConnEvent::Up)).await;
+    assert_eq!(conn.state(), moss_phone_core::LinkState::Up);
 
     // Calls on the remote role's list work; one off it is refused by the engine.
     let bots: Value = serde_json::from_str(&conn.call("bot.list".into(), "{}".into()).await.expect("bot.list")).unwrap();
@@ -243,6 +244,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     // Revoked on the computer: the link is cut and the phone stops dialling.
     engine.ok(json!({ "cmd": "revoke", "device": me.device_id })).await;
     until_event(&conn, "revoked", |e| matches!(e, ConnEvent::Revoked)).await;
+    assert_eq!(conn.state(), moss_phone_core::LinkState::Revoked);
     assert!(matches!(conn.call("bot.list".into(), "{}".into()).await, Err(_)));
     conn.disconnect();
     core.shutdown().await;

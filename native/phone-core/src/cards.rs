@@ -115,10 +115,14 @@ pub fn card_answer_signing_input(id: &str, hash: &str, option: &str, at: i64, ch
     format!("clover/card-answer/2\n{id}\n{hash}\n{option}\n{at}\n{}", c.join(","))
 }
 
-/// What a user message's hash covers (`userMessageHashInput`): its text and attachments, canonical. A phone's
-/// message here carries text only.
-pub fn user_message_hash(text: &str) -> String {
-    let input = canonical_json(&serde_json::json!({ "text": text, "images": [], "files": [] }));
+/// A message's attachments as `UserMessageInput` numbers them: `{n, path}`, from 1, in the order given.
+pub fn numbered(paths: &[String]) -> Value {
+    Value::Array(paths.iter().enumerate().map(|(i, p)| serde_json::json!({ "n": i + 1, "path": p })).collect())
+}
+
+/// What a user message's hash covers (`userMessageHashInput`): its text and its attachments, canonical.
+pub fn user_message_hash(text: &str, images: &[String], files: &[String]) -> String {
+    let input = canonical_json(&serde_json::json!({ "text": text, "images": numbered(images), "files": numbered(files) }));
     bytes::hex(&sha256(input.as_bytes()))
 }
 

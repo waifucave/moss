@@ -108,7 +108,7 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(cards::card_answer_signing_input("card_x", "ab", "approve", 1781270000000, &children), s("signingInput"));
 
     // A user message: its hash and what the phone signs for it.
-    assert_eq!(cards::user_message_hash("Hi \"there\"\n😀"), s("userMessageHash"));
+    assert_eq!(cards::user_message_hash("Hi \"there\"\n😀", &["bots/a/staged/1.png".into()], &["home/notes.md".into(), "bots/a/x.txt".into()]), s("userMessageHash"));
     assert_eq!(cards::user_message_signing_input("s_alpha", "m-1", "ab", 1781270000123), s("userMessageInput"));
 
     // Strict points: the same verdict on each.

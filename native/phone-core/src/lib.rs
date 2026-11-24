@@ -7,7 +7,7 @@
 //!   `SecretStorage` (the Keychain, the Keystore); the core keeps no file of its own.
 //! * `begin_pairing(qr, app)` → `Pairing`: `words()` to show, then `confirm()` (→ the `PairedComputer`) or `reject()`.
 //! * `connect(computer_id, options)` → `Connection`: `call(method, params_json)`, `next_event()`, `fetch_card`,
-//!   `answer_card`, `answer_card_json`, `network_changed`, `disconnect`. It re-dials by itself until closed or revoked.
+//!   `answer_card`, `answer_card_json`, `send_message` (signed), `state`, `network_changed`, `disconnect`. It re-dials by itself until closed or revoked.
 //! * `card_hash(card_json)`: a card's hash as the engine computes it.
 
 uniffi::setup_scaffolding!();
@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub use computers::{PairedComputer, PhoneApp};
 pub use error::{CoreError, StorageError};
 pub use identity::{AnswerKeyHolder, PhoneIdentity, PhoneOs, SecretStorage};
-pub use link::{AnswerOutcome, CardView, ConnEvent, ConnectOptions, Connection};
+pub use link::{AnswerOutcome, CardView, ConnEvent, ConnectOptions, Connection, LinkState};
 pub use net::RelayChoice;
 pub use pairing::Pairing;
 use tokio::sync::OnceCell;

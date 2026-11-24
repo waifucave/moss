@@ -100,6 +100,20 @@ pub struct AnswerOutcome {
     pub reason: Option<String>,
 }
 
+/// The link's state now, for a screen that asks rather than listens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum LinkState {
+    Connecting,
+    Up,
+    /// Lost; the core is dialling again with backoff.
+    Down,
+    /// The computer doesn't know this phone (yet).
+    Unpaired,
+    /// The computer revoked this phone: pair again.
+    Revoked,
+    Closed,
+}
+
 struct Events {
     q: StdMutex<(VecDeque<ConnEvent>, u32, bool)>,
     notify: Notify,
@@ -213,6 +227,30 @@ struct Inner {
     closed: AtomicBool,
     wake: Notify,
     last_seq: AtomicU64,
+    state: StdMutex<LinkState>,
+}
+
+impl Inner {
+    /// An event for the UI, and the state it implies.
+    fn emit(&self, e: ConnEvent) {
+        let s = match &e {
+            ConnEvent::Connecting { .. } => Some(LinkState::Connecting),
+            ConnEvent::Up => Some(LinkState::Up),
+            ConnEvent::Down { .. } => Some(LinkState::Down),
+            ConnEvent::Unpaired => Some(LinkState::Unpaired),
+            ConnEvent::Revoked => Some(LinkState::Revoked),
+            ConnEvent::Closed => Some(LinkState::Closed),
+            _ => None,
+        };
+        if let Some(s) = s {
+            let mut g = self.state.lock().unwrap();
+            // Revoked and Closed are final.
+            if !matches!(*g, LinkState::Revoked | LinkState::Closed) || s == LinkState::Closed {
+                *g = s;
+            }
+        }
+        self.events.push(e);
+    }
 }
 
 /// A paired computer's link and client connection, kept up by the core until `close`.
@@ -248,6 +286,7 @@ pub fn start(ep: iroh::Endpoint, identity: Arc<Identity>, computer: PairedComput
         closed: AtomicBool::new(false),
         wake: Notify::new(),
         last_seq: AtomicU64::new(0),
+        state: StdMutex::new(LinkState::Connecting),
     });
     let me = inner.clone();
     crate::runtime::handle().spawn(async move { me.run().await });
@@ -261,18 +300,18 @@ impl Inner {
             if self.closed.load(Ordering::Acquire) {
                 break;
             }
-            self.events.push(ConnEvent::Connecting { attempt });
+            self.emit(ConnEvent::Connecting { attempt });
             let began = Instant::now();
             let end = self.clone().session_once().await;
             let _ = self.session.send_replace(None);
             match end {
                 End::Revoked => {
-                    self.events.push(ConnEvent::Revoked);
+                    self.emit(ConnEvent::Revoked);
                     break;
                 }
                 End::Shutdown => break,
-                End::Unpaired => self.events.push(ConnEvent::Unpaired),
-                End::Lost(why) => self.events.push(ConnEvent::Down { reason: why }),
+                End::Unpaired => self.emit(ConnEvent::Unpaired),
+                End::Lost(why) => self.emit(ConnEvent::Down { reason: why }),
             }
             // A link that was up a while starts its backoff again.
             if began.elapsed() > IDLE {
@@ -285,7 +324,7 @@ impl Inner {
                 _ = self.wake.notified() => { attempt = 0; }
             }
         }
-        self.events.push(ConnEvent::Closed);
+        self.emit(ConnEvent::Closed);
     }
 
     fn end_of(&self, conn: &QuicConn, fallback: String) -> End {
@@ -385,14 +424,14 @@ impl Inner {
         }
         if self.options.areas.iter().any(|a| a == "approvals") {
             let cards = s.request("card.list", json!({}), timeout).await?;
-            self.events.push(ConnEvent::PendingCards { cards_json: cards.get("cards").cloned().unwrap_or(json!([])).to_string() });
+            self.emit(ConnEvent::PendingCards { cards_json: cards.get("cards").cloned().unwrap_or(json!([])).to_string() });
         }
         Ok(s)
     }
 
     async fn serve(self: Arc<Self>, s: Arc<Session>) -> End {
         let _ = self.session.send_replace(Some(s.clone()));
-        self.events.push(ConnEvent::Up);
+        self.emit(ConnEvent::Up);
         let why = s.conn.closed().await;
         s.fail_all("the link dropped");
         let (code, reason) = net::close_of(&why);
@@ -467,7 +506,7 @@ impl Inner {
                     };
                     let _ = tx.send(r);
                 }
-                (Some(m), None) => self.events.push(ConnEvent::Notification {
+                (Some(m), None) => self.emit(ConnEvent::Notification {
                     method: m.into(),
                     params_json: msg.get("params").cloned().unwrap_or(Value::Null).to_string(),
                 }),
@@ -540,13 +579,16 @@ impl Inner {
 
     /// The person's message to a session: stamped with this phone's clock and signed with its answer key, as the
     /// desktop app signs (`AnswerKey.signUserMessage`), so a computer that relays it can show the turn is the user's.
-    async fn send_message(&self, session: &str, text: &str, client_message_id: &str) -> Result<u64, CoreError> {
+    async fn send_message(&self, session: &str, text: &str, client_message_id: &str, images: &[String], files: &[String]) -> Result<u64, CoreError> {
         let sent_at = now_ms() as i64;
-        let hash = cards::user_message_hash(text);
+        let hash = cards::user_message_hash(text, images, files);
         let input = cards::user_message_signing_input(session, client_message_id, &hash, sent_at);
         let signature = bytes::b64(&self.identity.answer.sign(input.as_bytes()));
         let r = self
-            .call("session.send", json!({ "id": session, "message": { "text": text, "clientMessageId": client_message_id, "sentAt": sent_at, "signature": signature } }))
+            .call("session.send", json!({ "id": session, "message": {
+                "text": text, "clientMessageId": client_message_id, "sentAt": sent_at, "signature": signature,
+                "images": cards::numbered(images), "files": cards::numbered(files),
+            } }))
             .await?;
         r.get("seq").and_then(Value::as_u64).ok_or_else(|| CoreError::protocol("session.send answered no seq"))
     }
@@ -635,10 +677,17 @@ impl Connection {
     }
 
     /// Sends the person's message to a session (a bot's conversation or a coding session), signed by this phone.
-    /// `client_message_id` makes a resend the same message. Returns the message's place in the session.
-    pub async fn send_message(&self, session: String, text: String, client_message_id: String) -> Result<u64, CoreError> {
+    /// `images` are paths `session.stageImage` gave; `files` are folder-tree paths (`home/...`, `bots/...`); both are
+    /// numbered from 1 in the order given and covered by the signature. `client_message_id` makes a resend the same
+    /// message. Returns the message's place in the session.
+    pub async fn send_message(&self, session: String, text: String, client_message_id: String, images: Vec<String>, files: Vec<String>) -> Result<u64, CoreError> {
         let inner = self.inner.clone();
-        crate::runtime::spawn(async move { inner.send_message(&session, &text, &client_message_id).await }).await
+        crate::runtime::spawn(async move { inner.send_message(&session, &text, &client_message_id, &images, &files).await }).await
+    }
+
+    /// The link's state now (`next_event` tells each change).
+    pub fn state(&self) -> LinkState {
+        *self.inner.state.lock().unwrap()
     }
 
     /// The OS reported a network change or a wake: re-dial now instead of waiting out the backoff.

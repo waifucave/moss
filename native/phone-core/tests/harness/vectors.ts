@@ -82,7 +82,7 @@ console.log(JSON.stringify({
   card: JSON.stringify(card),
   canonical: canonicalJson(card),
   cardHash: createHash("sha256").update(cardHashInput(card)).digest("hex"),
-  userMessageHash: createHash("sha256").update(userMessageHashInput({ text: "Hi \"there\"\n😀" })).digest("hex"),
+  userMessageHash: createHash("sha256").update(userMessageHashInput({ text: "Hi \"there\"\n😀", images: [{ n: 1, path: "bots/a/staged/1.png" }], files: [{ n: 1, path: "home/notes.md" }, { n: 2, path: "bots/a/x.txt" }] })).digest("hex"),
   userMessageInput: userMessageSigningInput({ session: "s_alpha", clientMessageId: "m-1", hash: "ab", sentAt: 1781270000123 }),
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
   points: Object.fromEntries(Object.entries(points).map(([k, v]) => [k, { hex: v, strict: isStrictEd25519Point(Uint8Array.from(Buffer.from(v, "hex"))) }])),

@@ -14,6 +14,7 @@ The phone apps' shared core (spec §8, §5.5, §10; lane PC): one Rust library t
   - The client protocol runs on its own stream, `clover/rpc/1` (`links/remote-clients.ts`), as role `remote`.
   - The phone re-dials with the engine's backoff, and at once on `network_changed`. It stops only when the computer revokes it.
   - On each connect it runs `protocol.hello`, then `events.subscribe`, then `card.list`.
+- **Messages:** `send_message(session, text, client_message_id, images, files)` signs the person's message with the answer key over `userMessageSigningInput`, as the desktop app does. The hash covers the attachments.
 - **Cards** (`protocol/src/approvals.ts`):
   - It fetches a card and rebuilds its hash: SHA-256 over canonical JSON, with keys sorted in UTF-16 order and numbers and escapes written as JS writes them.
   - It refuses a card whose hash differs from its content.
