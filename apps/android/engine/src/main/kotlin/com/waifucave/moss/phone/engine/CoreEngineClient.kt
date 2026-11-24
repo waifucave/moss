@@ -458,7 +458,10 @@ class CoreEngineClient(
 
     override suspend fun newBotOptions(): NewBotOptions = io { Typed.newBot(c().models(null)) }
 
-    override suspend fun createBot(name: String, model: String?): Bot = io { Typed.bot(c().createBot(name, model)).also(::remember) }
+    override suspend fun createBot(name: String, model: String?): Bot = io {
+        // A refusal (the day's limit, a name or model the engine won't take) in the engine's own words, cleaned by the core.
+        try { Typed.bot(c().createBot(name, model)).also(::remember) } catch (e: CoreException.Rpc) { throw EngineRefusal(e.computersWords) }
+    }
 
     override suspend fun runCommand(session: String, command: String): Unit = io { c().runCommand(command) }
 

@@ -118,7 +118,7 @@ object Typed {
         commands = o.commands.map { PluginCommand(it.name, it.description) },
         efforts = o.efforts, effort = o.effort,
         models = o.models.map { ModelChoice(it.id, it.name, it.efforts) }, model = o.model,
-        files = o.files != null, fileLimit = o.files?.maxBytes,
+        files = o.files != null, fileLimit = o.files?.maxBytes, fileCount = o.files?.perMessage?.toInt(),
     )
 
     /** The signed-in models a session (or a new bot) may use. */
