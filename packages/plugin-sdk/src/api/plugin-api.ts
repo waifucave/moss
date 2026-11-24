@@ -129,10 +129,16 @@ export interface NotifierUpdate {
   unseen: number;
   bot?: string;
   session?: string;
+  /** The kind of session this update is about, for the core's own updates: `bot` for a bot's conversation, `coding` for a
+   *  coding session, `agent` for a background agent. A coding session's or an agent's update names no bot (its `unseen` is
+   *  the session's own count), and the desktop notifier shows none of them: the app's own marks do. */
+  sessionKind?: "bot" | "side-thread" | "agent" | "coding";
   /** The paired phones, by device id, this update is meant for: the core's choice from which phone app each is (the bot's
-   *  phones for a bot's update, MOSS Code's for a coding or agent session's, and every phone when none is of that app).
-   *  Absent: every phone (a plugin's notice). A notifier that wakes phones asks its service to prefer these, never to wake
-   *  only these: the service may know phones this computer doesn't. Device ids only, no content. */
+   *  phones for a bot's update, MOSS Code's for a coding or agent session's; a phone that recorded no app counts for either,
+   *  and every phone is named when none is of that app). Absent: every phone (a plugin's notice), and always absent for a
+   *  notifier that doesn't hold `devices.read`: the ids are the user's devices. A notifier that wakes phones asks its
+   *  service to prefer these, never to wake only these: the service may know phones this computer doesn't. Device ids
+   *  only, no content. */
   phones?: string[];
   /** When it happened, on the shared clock. */
   at: number;

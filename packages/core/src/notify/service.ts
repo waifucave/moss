@@ -65,6 +65,9 @@ export interface NotifyServiceOptions {
    *  revoked ones included: `phonesToWake` leaves them out). Without it an update names no phones, and a notifier that
    *  wakes phones wakes them all. */
   phones?: () => readonly PairedPhone[];
+  /** What a plugin may use now (the registry's grants in force: `pluginCapabilities`). A notifier is handed
+   *  `NotifierUpdate.phones` only when this holds `devices.read` for it; without this option none is. */
+  grants?: (pluginId: string) => readonly string[] | undefined;
   desktop?: DesktopPort;
   log?: (line: string) => void;
 }
@@ -140,6 +143,18 @@ export function mergePhones(newer: NotifierUpdate, older: NotifierUpdate): Notif
     return everyone;
   }
   return { ...newer, phones: [...new Set([...older.phones, ...newer.phones])] };
+}
+
+/** The capability that lets a notifier see which phones an update is for: the ids are the user's devices, which `devices.read`
+ *  is the grant for everywhere else. */
+export const PHONES_CAPABILITY = "devices.read";
+
+/** `update` as the notifier `pluginId` may see it: without the phone ids unless it holds `devices.read`. A general gate, no
+ *  plugin's id in it; an update that names no phones is the same object. */
+export function forNotifier(update: NotifierUpdate, grants: readonly string[] | undefined): NotifierUpdate {
+  if (update.phones === undefined || grants?.includes(PHONES_CAPABILITY) === true) return update;
+  const { phones: _phones, ...withoutPhones } = update;
+  return withoutPhones;
 }
 
 /** One line, no control or direction marks, cut to `max` with an ellipsis. */
@@ -229,25 +244,27 @@ export class NotifyService {
   /** The core's own update for the notifiers (never a plugin's: the sender is MOSS's, and no mute or rate holds it back).
    *  `unseen` counts this bot's updates since `answered(bot)`. */
   core(u: { kind: Exclude<NotifierUpdate["kind"], "notification">; bot?: string; session?: string; sessionKind?: SessionKind; failed?: boolean }): void {
-    const bot = u.bot ?? "";
-    const unseen = (this.#unseen.get(bot) ?? 0) + 1;
-    this.#unseen.set(bot, unseen);
+    // The count is a bot's, or (a coding session, an agent) the session's own.
+    const key = u.bot ?? u.session ?? "";
+    const unseen = (this.#unseen.get(key) ?? 0) + 1;
+    this.#unseen.set(key, unseen);
     // Which phones this is for (push-routing.ts, the one place the rule is written): a bot's update to the phones paired as
     // MOSS, a coding or agent session's to those paired as MOSS Code, and to every phone when none is of that app.
     const phones = this.#o.phones === undefined ? undefined : phonesToWake({ ...(u.sessionKind === undefined ? {} : { sessionKind: u.sessionKind }), ...(u.bot === undefined ? {} : { bot: u.bot }) }, this.#o.phones());
     this.#dispatch({
       seq: ++this.#seq, kind: u.kind, unseen, at: this.#o.clock.now(),
       ...(u.bot === undefined ? {} : { bot: u.bot }), ...(u.session === undefined ? {} : { session: u.session }),
+      ...(u.sessionKind === undefined ? {} : { sessionKind: u.sessionKind }),
       ...(phones === undefined ? {} : { phones }),
       ...(u.failed === undefined ? {} : { failed: u.failed }),
       sender: { pluginId: "moss", name: "MOSS", bundled: true },
     });
   }
 
-  /** The user answered in `bot`'s conversation (a message, a card, a question): its count starts again, and every notifier
-   *  is told to take its banners away (`clear`). */
-  answered(bot: string): void {
-    if (!this.#unseen.delete(bot)) return;
+  /** The user answered in a conversation (a message, a card, a question): `key` is the bot's id, or a coding session's or an
+   *  agent's own id. Its count starts again, and every notifier is told to take its banners away (`clear`). */
+  answered(key: string): void {
+    if (!this.#unseen.delete(key)) return;
     for (const e of this.#o.registry.entries("notifiers")) {
       if (e.state !== "active") continue;
       const handler = (e.value as { handler?: unknown } | null)?.handler;
@@ -282,7 +299,8 @@ export class NotifyService {
         try {
           const host = this.#o.host();
           if (host === undefined) throw new Error("the plugin host isn't up");
-          await host.invoke({ pluginId, handler, method: "notify", args: update, caller: { kind: "plugin", pluginId } });
+          // Checked here, when the call is made: a grant taken away while an update waited is not used.
+          await host.invoke({ pluginId, handler, method: "notify", args: forNotifier(update, this.#o.grants?.(pluginId)), caller: { kind: "plugin", pluginId } });
         } catch (err) {
           // A notifier that fails is worth a line, never the notification's words.
           this.#o.log?.(`[notify] ${pluginId}'s notifier didn't take update ${update.seq}: ${err instanceof Error ? err.name : "error"}`);

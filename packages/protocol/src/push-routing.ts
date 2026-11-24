@@ -5,8 +5,8 @@
 // both use it:
 //
 //   * `appForPush`      which app an update belongs to: a bot's, or a coding or agent session's.
-//   * `phonesToWake`    the engine's half: from the paired phones, the ones that app's phones are (and, with none of them,
-//                       every paired phone rather than none). The ids go to the notifier in `NotifierUpdate.phones`.
+//   * `phonesToWake`    the engine's half: from the paired phones, the ones of that app and the ones that recorded
+//                       none (and, with none of them, every paired phone rather than none). The ids go to the notifier in `NotifierUpdate.phones`.
 //   * `preferThenAll`   the one fallback both halves use: the items that match, or all of them when none does. The push
 //                       service uses it on the phones it holds targets for, since it may know phones this computer doesn't.
 //
@@ -59,13 +59,14 @@ export interface PairedPhone {
 /**
  * The paired phones an update's push goes to, by device id; undefined when it goes to every phone.
  *   - an update with no app (a plugin's notice): undefined;
- *   - otherwise the unrevoked phones whose app is the update's;
- *   - with none of those, the person's other phones rather than none (a phone with no recorded app is one of them);
+ *   - otherwise the unrevoked phones whose app is the update's, and the ones that recorded no app (an old client, a phone
+ *     the account added: it keeps getting what it got before, so it counts as matching either app);
+ *   - with none of those, the person's other phones rather than none;
  *   - with no phone at all, an empty list (the service still wakes phones it knows from the account, `preferThenAll`).
  */
 export function phonesToWake(origin: PushOrigin, phones: readonly PairedPhone[]): string[] | undefined {
   const app = appForPush(origin);
   if (app === undefined) return undefined;
   const live = phones.filter((p) => p.revokedAt === undefined);
-  return preferThenAll(live, (p) => p.app === app).map((p) => p.id);
+  return preferThenAll(live, (p) => p.app === undefined || p.app === app).map((p) => p.id);
 }

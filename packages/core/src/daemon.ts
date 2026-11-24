@@ -3835,6 +3835,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     handOver: async () => { await daemonLinks?.handOver(); },
     // The link sidecar (lane H): the one local process whose hello may be `remote`, `web` or `peer`.
     linkPid: () => daemonLinks?.links?.sidecarPid(),
+    // A phone's connection is labelled `ios` or `android` from the OS its pairing recorded.
+    deviceOs: (device) => ownDevices?.get(device)?.os,
     ...(pairSide ? { pair: pairSide.pair, appToken: pairSide.appToken } : {}),
     endpoint: dirs.socketPath,
     ...(opts.appPeer !== undefined ? { appPeer: opts.appPeer } : {}),
@@ -4258,6 +4260,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       home: mossHome, computer: hostComputer, clock: { now: () => Date.now() }, registry: opened.registry, host: () => pluginHost?.host,
       // Which phone app each paired phone is, for where the core's own updates are pushed (protocol `phonesToWake`).
       phones: () => (ownDevices?.all() ?? []).filter((d) => d.kind === "phone").map((d) => ({ id: d.id, ...(d.app === undefined ? {} : { app: d.app }), ...(d.revokedAt === undefined ? {} : { revokedAt: d.revokedAt }) })),
+      // A notifier sees which phones an update is for only with `devices.read` (the same grants the plugin API checks).
+      grants: (pluginId) => grantsInForce(opened.registry.get(pluginId)),
       approvals: { pending: () => daemonParts?.broker?.pending() ?? [], watch: (fn) => pluginsBroker.watch(fn) },
       desktop: desktopPort, log: (line) => console.error(line),
     });
