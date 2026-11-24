@@ -149,6 +149,8 @@ type Pending = StdMutex<HashMap<u64, oneshot::Sender<Result<Value, CoreError>>>>
 struct Session {
     conn: QuicConn,
     control: Mutex<SendStream>,
+    /// The control lane's receive half, held so QUIC doesn't stop it (the computer answers on its own lanes).
+    _control_recv: RecvStream,
     rpc: Mutex<SendStream>,
     pending: Pending,
     next_id: AtomicU64,
@@ -317,13 +319,14 @@ impl Inner {
 
     /// The link's hello, the client stream and its hello, the subscription and the pending cards.
     async fn hello(self: Arc<Self>, conn: &QuicConn) -> Result<Arc<Session>, CoreError> {
-        let (control, _control_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no lane: {e}")))?;
+        let (control, control_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no lane: {e}")))?;
         let _ = control.set_priority(3);
         let (rpc, rpc_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no client stream: {e}")))?;
         let _ = rpc.set_priority(3);
         let s = Arc::new(Session {
             conn: conn.clone(),
             control: Mutex::new(control),
+            _control_recv: control_recv,
             rpc: Mutex::new(rpc),
             pending: StdMutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),

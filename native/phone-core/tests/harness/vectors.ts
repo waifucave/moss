@@ -11,7 +11,7 @@ const { isStrictEd25519Point } = await import(join(core, "identity/ed25519-stric
 const { deviceIdFor } = await import(join(core, "contracts/device-registry"));
 const { pairStatement, admitStatement } = await import(join(core, "links/handshake"));
 const { answerKeyStatement } = await import(join(core, "devices/registry"));
-const { canonicalJson, cardHashInput, cardAnswerSigningInput } = await import("@waifucave/moss-protocol");
+const { canonicalJson, cardHashInput, cardAnswerSigningInput } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 const { createHash } = await import("node:crypto");
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");

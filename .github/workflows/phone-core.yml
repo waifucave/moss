@@ -138,3 +138,65 @@ jobs:
           echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true
           echo "--- logcat"; cat "$RUNNER_TEMP/logcat.txt" || true
           find native/phone-core/android/build -path '*androidTest-results*' -name '*.xml' -exec cat {} \; 2>/dev/null | head -400 || true
+
+  # Proof C: the core as an XCFramework (the iPhone, its simulator, macOS) with its Swift package, and a Swift test in
+  # the iPhone simulator that pairs with an engine running on this runner through the binding.
+  ios:
+    name: phone core · iphone · simulator
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            native/link -> target
+            native/phone-core -> target
+      - name: Build the XCFramework and the Swift bindings
+        run: |
+          cd native/phone-core
+          for t in aarch64-apple-ios aarch64-apple-ios-sim; do cargo build --release --locked --lib --target $t; done
+          cargo build --release --locked --lib
+          cargo run --release --locked --features bindgen --bin uniffi-bindgen -- generate --library target/release/libmoss_phone_core.dylib --language swift --out-dir "$RUNNER_TEMP/swift"
+          mkdir -p "$RUNNER_TEMP/headers"
+          cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.h" "$RUNNER_TEMP/headers/"
+          cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.modulemap" "$RUNNER_TEMP/headers/module.modulemap"
+          cp "$RUNNER_TEMP/swift/MossPhoneCore.swift" apple/Sources/MossPhoneCore/
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -library target/aarch64-apple-ios-sim/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -library target/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
+            -output apple/MossPhoneCoreFFI.xcframework
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the engine
+        env:
+          MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
+        run: |
+          nohup bun native/phone-core/tests/harness/engine.ts --auto --qr-port 8787 > "$RUNNER_TEMP/engine.log" 2>&1 &
+          for i in $(seq 1 120); do grep -q "QR ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/engine.log"
+      - name: The Swift test in the iPhone simulator
+        env:
+          TEST_RUNNER_MOSS_PC_ENGINE: "1"
+        run: |
+          cd native/phone-core/apple
+          sim=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          xcodebuild test -scheme MossPhoneCore -destination "id=$sim" -skipPackagePluginValidation
+      - name: Logs
+        if: always()
+        run: |
+          echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true

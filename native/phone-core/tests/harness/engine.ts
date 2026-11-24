@@ -25,7 +25,7 @@ const { Drivers } = await import(join(core, "src/bots/tests/fixtures"));
 const { FakePluginRegistry } = await import(join(core, "src/contracts/fakes/plugin-registry"));
 const { catalogPointDecl } = await import(join(repo, "packages/plugin-sdk/src/catalogs/index"));
 const { decode, encode } = await import(join(core, "src/links/codec"));
-const { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS } = await import("@waifucave/moss-protocol");
+const { MOSS_PROTOCOL_VERSION, ConnWriter, encodeLine, LineDecoder, METHODS } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
