@@ -1688,6 +1688,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     unregisterResetTaskArgs,
     endAccountProcessesArgs,
     netUserState,
+    SRT_SESSIONS_RUNNING_EXIT,
     PROFILE_IN_USE_EXIT,
     remakeProfileArgs,
     poolStateDir,
@@ -2001,6 +2002,16 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           }
           return "held";
         };
+        // srt-win refuses to uninstall ANY member while a sandbox session of this machine is live (exit 22, "Nothing was
+        // changed": a daemon's command holds grants), so every pool account's commands are ended before the first
+        // member is removed, not only that member's (`endAll`).
+        const endAll = async () => {
+          for (const slot of pool) {
+            const ended = await run([...endAccountProcessesArgs(slot.principal)]);
+            console.error(`sandbox remove: ${slot.principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
+          }
+        };
+        await endAll();
         const sids: string[] = [];
         for (const slot of pool) {
           const { principal, sublayer } = slot;
@@ -2021,7 +2032,15 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // The profile for the reset below, resolved before the uninstall.
           const profileRoot = principalSid !== null ? await memberProfile(principalSid) : null;
           // Full remove (principal + filters) for this member.
-          const { code, out } = await run([...removeArgs(launcher, sublayer, principal)]);
+          // A session still ending (its daemon revokes its grants only when its broker has returned) makes srt-win
+          // refuse with exit 22 and change nothing: every account's commands are ended again and the uninstall tried
+          // again, for up to a minute.
+          let { code, out } = await run([...removeArgs(launcher, sublayer, principal)]);
+          for (let i = 0; code === SRT_SESSIONS_RUNNING_EXIT && i < 12; i++) {
+            await endAll();
+            await Bun.sleep(5_000);
+            ({ code, out } = await run([...removeArgs(launcher, sublayer, principal)]));
+          }
           if (code !== 0) {
             fail(`${principal}: remove failed (exit ${code})${out.trim() ? `\n${out.trim().slice(0, 2000)}` : ""}`); break;
           }

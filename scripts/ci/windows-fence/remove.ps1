@@ -14,6 +14,7 @@ while ((PoolProcs).Count -eq 0 -and $sw.Elapsed.TotalSeconds -lt 300) { Start-Sl
 $running = PoolProcs
 Write-Output "a pool account's command is running: $($running.Count) process(es) after $([int]$sw.Elapsed.TotalSeconds) s ($(($running | ForEach-Object { $_.UserName } | Sort-Object -Unique) -join ', '))"
 if ($running.Count -eq 0) { throw "the held command never started" }
+$heldAccount = ("$($running[0].UserName)" -split '\\')[-1]
 # The race remove must win (lane WS4): every account marked used and the reset task started (SYSTEM remakes each
 # profile, ~20 s apiece), then remove at once, while the rebuild runs.
 $poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
@@ -50,9 +51,9 @@ if ($rp.ExitCode -ne 0) {
 }
 if ($null -eq $markerGone -or $null -eq $accountGone -or $markerGone -gt $accountGone) { throw "the marker was not gone before the first account (marker $markerGone s, account $accountGone s)" }
 # Remove ended the held command's processes itself (its own line names how many), before it deleted the account.
-$endedLine = $removeSaid | Where-Object { $_ -match "sandbox remove: $([regex]::Escape($first)): ended (\d+)" } | Select-Object -First 1
-$endedCount = if ($null -ne $endedLine -and "$endedLine" -match "ended (\d+)") { [int]$Matches[1] } else { 0 }
-if ($endedCount -lt 1) { throw "remove did not say it ended the held account's processes: $endedLine" }
+$endedCount = 0
+foreach ($l in $removeSaid) { if ("$l" -match "sandbox remove: $([regex]::Escape($heldAccount)): ended (\d+)") { $endedCount += [int]$Matches[1] } }
+if ($endedCount -lt 1) { throw "remove did not say it ended the held account's ($heldAccount) processes" }
 $after = PoolProcs
 if ($after.Count -gt 0) { throw "a pool account's process outlived remove: $(($after | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')" }
 $hsw = [Diagnostics.Stopwatch]::StartNew()

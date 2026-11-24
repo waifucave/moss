@@ -189,6 +189,10 @@ export function endAccountProcessesArgs(principal: string): readonly string[] {
   ].join("; "));
 }
 
+/** `srt-win uninstall`'s exit while a sandbox session or command of this machine is live (its holders listed on stdout):
+ *  nothing was changed. */
+export const SRT_SESSIONS_RUNNING_EXIT = 22;
+
 /** What `net user <name>` says of an account: `gone` only for Windows' "user name could not be found" (NERR_UserNotFound,
  *  2221), `present` on exit 0, and `unknown` for any other failure (the reset then leaves the account for its next pass
  *  instead of calling it gone: the WS4 reviewer's nit). */
