@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
-import { escapedSandbox, windowsShellTools } from "../../src/fence/win-shell-tools";
+import { escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
   existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
@@ -552,5 +552,78 @@ describe("the roots seed gates every command (the WS5 reviewer's should-fix 2)",
       expect(m.writes).toEqual([]);
       expect(rec.argv()).toBeNull();
     }
+  });
+});
+
+describe("a background command on Windows (rule B, lane WS7)", () => {
+  /** A spawner whose commands stream two lines, then run until stopped or released. */
+  const slow = () => {
+    const runs: FencedRun[] = [];
+    const release: (() => void)[] = [];
+    const spawner: FencedSpawner = { available: true, run: (r) => new Promise((res) => {
+      runs.push(r);
+      r.onOutput?.("line one\n", "stdout");
+      r.onOutput?.("line two\n", "stderr");
+      const done = (code: number) => res({ kind: "exited", code, stdout: "line one\n", stderr: "line two\n", shell: "git-bash" });
+      r.signal?.addEventListener("abort", () => done(1), { once: true });
+      release.push(() => done(0));
+    }) };
+    return { runs, release, spawner };
+  };
+  const make = (spawner: FencedSpawner, session: string, wakes: unknown[]) => {
+    const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
+    const caller = { kind: "session", sessionId: session, sessionKind: "bot", bot: "luna" } as Extract<Caller, { kind: "session" }>;
+    const t = Object.fromEntries(windowsShellTools({
+      spawner, caller, kind: "bot", cwd: () => cwd, sandbox: () => ({}), userHome: "C:\\h", temp: "C:\\t", mossHome: "C:\\h\\.moss",
+      wake: async (w) => { wakes.push(w); },
+    }).map((x) => [x.name, x]));
+    return { t, cwd };
+  };
+  test("it answers at once with its id and log; output is logged as it comes; its end is told; the lease is the run's", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string; text: string }[] = [];
+    const { t } = make(s.spawner, "bg-a", wakes);
+    const r = await t.Bash!.run({ command: "long", run_in_background: true });
+    expect(r.isError).toBe(false);
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    expect(windowsBackgroundOf("bg-a")).toEqual([id]);
+    expect(readFileSync(log, "utf8")).toBe("line one\nline two\n");
+    expect(s.runs[0]!.timeoutMs).toBe(24 * 3_600_000);
+    expect(wakes).toHaveLength(0);
+    s.release[0]!();
+    for (let i = 0; i < 50 && wakes.length === 0; i++) await Bun.sleep(10);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ task: id, status: "completed" });
+    expect(wakes[0]!.text).toContain("exited with code 0");
+    expect(readFileSync(log, "utf8")).toContain("[moss: the command exited with code 0]");
+    expect(windowsBackgroundOf("bg-a")).toEqual([]);
+  }, 30_000);
+  test("TaskStop's stop ends it (its session's only) and it is told as stopped; at most two run per session", async () => {
+    const s = slow();
+    const wakes: { task: string; status: string }[] = [];
+    const { t } = make(s.spawner, "bg-b", wakes);
+    const ids: string[] = [];
+    for (let i = 0; i < WIN_SHELL_BACKGROUND_PER_SESSION; i++) ids.push(/win_bg_[0-9a-f]{8}/.exec((await t.Bash!.run({ command: `c${i}`, run_in_background: true })).text)![0]);
+    const third = await t.PowerShell!.run({ command: "c3", run_in_background: true });
+    expect(third.isError).toBe(true);
+    expect(third.text).toContain("running already");
+    expect(await stopWindowsBackground("someone-else", ids[0]!)).toBeNull();
+    const stopped = await stopWindowsBackground("bg-b", ids[0]!);
+    expect(stopped).toMatchObject({ isError: false });
+    expect(s.runs[0]!.signal!.aborted).toBe(true);
+    for (let i = 0; i < 50 && wakes.length === 0; i++) await Bun.sleep(10);
+    expect(wakes[0]).toMatchObject({ task: ids[0], status: "stopped" });
+    expect(windowsBackgroundOf("bg-b")).toEqual([ids[1]]);
+    await stopWindowsBackground("bg-b", ids[1]!);
+  }, 30_000);
+  test("a refusal that comes at once is the call's answer; never with the escape flag; never without a way to tell its end", async () => {
+    const refusing: FencedSpawner = { available: true, run: async () => ({ kind: "refused", reason: "Bash isn't set up" }) };
+    const wakes: unknown[] = [];
+    const { t } = make(refusing, "bg-c", wakes);
+    const r = await t.Bash!.run({ command: "x", run_in_background: true });
+    expect(r).toMatchObject({ isError: true, text: expect.stringContaining("Bash isn't set up") });
+    const esc = await t.Bash!.run({ command: "x", run_in_background: true, dangerouslyDisableSandbox: true });
+    expect(esc).toMatchObject({ isError: true, text: expect.stringContaining("runs in the foreground") });
   });
 });

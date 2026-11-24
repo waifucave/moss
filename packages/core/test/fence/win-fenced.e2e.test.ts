@@ -16,7 +16,7 @@ import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
-import { windowsShellTools } from "../../src/fence/win-shell-tools";
+import { stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
@@ -39,6 +39,8 @@ const CALLER: Extract<Caller, { kind: "session" }> = { kind: "session", sessionI
 let fence: MossFence;
 let tools: Record<string, CoreToolDef>;
 let sideTools: Record<string, CoreToolDef>;
+let bgTools: Record<string, CoreToolDef>;
+const wakes: { task: string; status: string; text: string }[] = [];
 const sandboxFor = () => {
   const settings = botSandboxSettings(fence.forCaller(CALLER).policy(), {
     mossHome: moss, userHome: home, level: undefined, windows: true, ownFolders: [scratch, botRoot], pathFolders: [],
@@ -82,6 +84,10 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     }).map((t) => [t.name, t]));
     tools = mk("bot");
     sideTools = mk("side-thread");
+    bgTools = Object.fromEntries(windowsShellTools({
+      spawner, caller: CALLER, kind: "bot", cwd: () => scratch, sandbox: sandboxFor, userHome: home, temp: fence.temp, mossHome: moss,
+      wake: async (w) => { wakes.push(w); },
+    }).map((t) => [t.name, t]));
   });
   afterAll(() => { for (const d of [moss, join(home, "ws-e2e-plain"), join(home, "ws-escape-dir")]) rmSync(d, { recursive: true, force: true }); });
 
@@ -435,6 +441,41 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const survivors = list.split(/\r?\n/).filter((l) => l.trim() !== "" && !l.includes("Get-CimInstance"));
     console.log(`[e2e] outlive probe, after the command ended: ${survivors.length === 0 ? "nothing outlived it" : survivors.join(" | ")}`);
     for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
+  }, 900_000);
+
+  test("a background command (rule B): answers at once, logs as it goes, tells its end; TaskStop ends it and its account's processes", async () => {
+    const poolProcs = () => Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+      "@(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\\moss-sb-*' }).Count"], { stdout: "pipe" }).stdout.toString().trim();
+    wakes.length = 0;
+    const started = Date.now();
+    const r = await call(bgTools.Bash!, { command: "for i in 1 2 3; do echo tick-$i; sleep 2; done; echo all-done", run_in_background: true });
+    const answered = Date.now() - started;
+    expect(r.isError).toBe(false);
+    const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
+    const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    let midway = "";
+    for (let i = 0; i < 600 && !midway.includes("tick-1"); i++) { await Bun.sleep(100); try { midway = readFileSync(log, "utf8"); } catch { /* not yet */ } }
+    const sawEnd = () => wakes.some((w) => w.task === id);
+    console.log(`[e2e] background: answered in ${answered} ms; log while running: ${JSON.stringify(midway.slice(0, 60))}; ended already: ${sawEnd()}`);
+    expect(midway).toContain("tick-1");
+    for (let i = 0; i < 1200 && !sawEnd(); i++) await Bun.sleep(100);
+    const end = wakes.find((w) => w.task === id);
+    expect(end).toMatchObject({ status: "completed" });
+    expect(readFileSync(log, "utf8")).toContain("all-done");
+    // A long one: its account runs it (the lease is held) until TaskStop's stop ends it, with what it started.
+    const long = await call(bgTools.Bash!, { command: "sleep 600 & sleep 600; echo never", run_in_background: true });
+    const lid = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];
+    let running = "0";
+    for (let i = 0; i < 300 && running === "0"; i++) { await Bun.sleep(500); running = poolProcs(); }
+    const stopped = await stopWindowsBackground(CALLER.sessionId, lid);
+    await Bun.sleep(3_000);
+    const after = poolProcs();
+    console.log(`[e2e] background stop: pool processes while it ran ${running}, after the stop ${after}; told: ${JSON.stringify(wakes.find((w) => w.task === lid)?.status)}`);
+    expect(Number(running)).toBeGreaterThan(0);
+    expect(stopped?.isError).toBe(false);
+    expect(wakes.find((w) => w.task === lid)).toMatchObject({ status: "stopped" });
+    expect(after).toBe("0");
+    expect(readFileSync(/written to (\S+\.log)/.exec(long.text)![1]!, "utf8")).not.toContain("never");
   }, 900_000);
 
   test("a stop reaches the command: it ends at once, with what it started, never waiting for its time limit", async () => {

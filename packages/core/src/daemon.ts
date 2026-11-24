@@ -149,7 +149,7 @@ import { plainText } from "./bots/service";
 import { ClientBuilds } from "./registry/client-builds";
 import { botDriverFactory, botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "./runtime-sdk/turn-loop/driver";
 import { fencedSpawner } from "./fence/fenced-process";
-import { windowsShellTools } from "./fence/win-shell-tools";
+import { stopWindowsBackground, windowsShellTools } from "./fence/win-shell-tools";
 import { botCoreTools } from "./runtime-sdk/turn-loop/wiring";
 import { defaultTreeRoot } from "./tree/root";
 import { hostOs } from "./tree/names";
@@ -4761,6 +4761,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
             return floored;
           },
           userHome: fence.home, temp: fence.temp, mossHome,
+          // Rule B: a background command's end comes back to the conversation as a background task's notification.
+          ...(ctx.wake === undefined ? {} : { wake: (input: { task: string; status: "completed" | "failed" | "stopped"; text: string }) => ctx.wake!(input) }),
         });
         botShellRoots = (conversation, bot, level) => {
           const session = conversation ?? "";
@@ -4853,6 +4855,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         const baseTools = botCoreTools({
           side: { tools: (id) => side()?.tools(id) ?? [] },
           agents: { manager: () => agents()?.manager, backends: agentBackendIds, levelOf: (ctx) => ctx.level, definition: definitionOf },
+          // Lane WS7: on Windows the core's background commands stop by their id through TaskStop.
+          ...(process.platform === "win32" ? { stopTask: (ctx: BotSessionContext, id: string) => stopWindowsBackground(ctx.sessionId, id) } : {}),
         });
         // Whether the conversation's shell can already write `folder`: inside its drawn write roots now (at accept edits
         // the home's ordinary top-level folders), by real paths only. On any doubt, no (the card is asked).
