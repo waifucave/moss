@@ -7,7 +7,8 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudComputers, FileCloudStateStore, type CloudAnswer, type CloudAuthority, type CloudCard } from "../../src/computers/cloud";
-import { CloudPoint, pluginProviders, providerIds } from "../../src/computers/cloud-point";
+import { isContractError } from "../../src/contracts/common";
+import { askBeforeProviderGoes, CloudPoint, pluginProviders, providerIds } from "../../src/computers/cloud-point";
 import { authEntriesOf } from "../../src/runtime-sdk/plugin-auth";
 import { authEntriesOf as keyedEntriesOf } from "../../src/runtime-sdk/model-plugins/plugin-api";
 import { declaredPointFor } from "../../src/plugin-host/api/points";
@@ -141,10 +142,36 @@ describe("what can reach a provider's handler", () => {
     await main.sync();
     cards.length = 0;
     expect(await notMain.guardRemoval("someone/else")).toBeUndefined();
-    const commit = await main.guardRemoval(rig.pluginId);
+    const guard = await main.guardRemoval(rig.pluginId);
     expect(cards.map((c) => c.kind)).toEqual(["cloud-provider-removal"]);
     expect(rig.cloud.billed()).toBe(1);
-    await commit!();
+    expect(guard!.note).toContain("will be deleted when you confirm this");
+    await guard!.commit();
+    expect(rig.cloud.billed()).toBe(0);
+  });
+
+  test("before the computers run, or on a computer whose node never started, removing or switching off a provider plugin is refused with a plain reason; a plugin that provides nothing goes", async () => {
+    const { rig } = await boot("hetzner");
+    for (const action of ["remove", "switch-off"] as const) {
+      const e = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action).catch((x) => x);
+      expect(isContractError(e, "refused")).toBe(true);
+      expect((e as Error).message).toContain("cloud computers aren't running");
+      expect((e as Error).message).toContain(rig.pluginId);
+    }
+    expect(await askBeforeProviderGoes(undefined, rig.registry, "someone/else", "remove")).toBeUndefined();
+    // No registry at all (nothing to look in): nothing to refuse.
+    expect(await askBeforeProviderGoes(undefined, undefined, rig.pluginId, "remove")).toBeUndefined();
+  });
+
+  test("switching a provider plugin off asks the same question (a card that says so), and its answer is carried out before it goes", async () => {
+    const { rig, cards, cloud } = await boot("hetzner");
+    const main = new CloudPoint({ registry: rig.registry, cloud, active: () => true });
+    await main.sync();
+    cards.length = 0;
+    const guard = await askBeforeProviderGoes(main, rig.registry, rig.pluginId, "switch-off");
+    expect(cards).toEqual([expect.objectContaining({ kind: "cloud-provider-removal", action: "switch-off" })]);
+    expect(rig.cloud.billed()).toBe(1);
+    await guard!.commit();
     expect(rig.cloud.billed()).toBe(0);
   });
 

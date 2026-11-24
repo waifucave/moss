@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../src/contracts/common";
 import {
-  CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens,
+  CloudComputers, cloudLabelOf, FileCloudStateStore, PairingTokens, REMOVAL_ANSWER_MAX_AGE_MS,
   type CloudAnswer, type CloudAuthority, type CloudCard, type CloudFolder, type CloudInstance, type CloudProviderHandler,
 } from "../../src/computers/cloud";
 import { cloudInit, readCloudJoinFiles, removeCloudJoinFiles } from "../../src/computers/image";
@@ -502,14 +502,14 @@ describe("what the person is told and asked about a provider that goes (CC2)", (
 
 describe("removing a provider plugin (CC3)", () => {
   /** Two providers of one plugin, each with its own machine; `gone` leaves one provider's handler out. */
-  async function two(o: { answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>; removalWaitMs?: number; goneProvider?: { v: boolean } } = {}) {
+  async function two(o: { answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>; removalWaitMs?: number; goneProvider?: { v: boolean }; now?: () => number } = {}) {
     const a = new FakeProvider();
     const b = new FakeProvider();
     const cards: CloudCard[] = [];
     const home = mkdtempSync(join(tmpdir(), "lane-cc3-"));
     const gone = o.goneProvider ?? { v: false };
     const cloud = new CloudComputers({
-      clock: { now: () => 1_000_000 }, store: new FileCloudStateStore(home), providerIds: () => ["hetzner", "second"],
+      clock: { now: o.now ?? (() => 1_000_000) }, store: new FileCloudStateStore(home), providerIds: () => ["hetzner", "second"],
       provider: (id) => (id === "hetzner" ? a : id === "second" && !gone.v ? b : undefined), authority: new FakeAuthority(),
       confirm: async (c) => { cards.push(c); return (o.answers ?? (() => true))(c); }, userData,
       ...(o.removalWaitMs !== undefined ? { removalWaitMs: o.removalWaitMs } : {}),
@@ -561,6 +561,36 @@ describe("removing a provider plugin (CC3)", () => {
     expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(1);
     expect(await r!.commit()).toBe("deleted");
     expect(a.vms.size).toBe(0);
+  });
+
+  test("a late answer is kept only for a few minutes: a removal tried much later is asked again, and one tried soon after uses it and says so", async () => {
+    let answer!: (v: CloudAnswer) => void;
+    const t = { now: 1_000_000 };
+    const { a, cloud, cards } = await two({ removalWaitMs: 20, now: () => t.now, answers: (c) => (c.kind === "cloud-provider-removal" ? new Promise<CloudAnswer>((r) => { answer = r; }) : true) });
+    await cloud.askRetire(["hetzner"]).catch(() => undefined);
+    answer(true);
+    await Bun.sleep(5);
+    // Soon after: the answer is used, said so, and the card isn't raised again.
+    t.now += REMOVAL_ANSWER_MAX_AGE_MS - 1_000;
+    const soon = await cloud.askRetire(["hetzner"]);
+    expect(soon!.note).toContain("Your earlier answer is being used");
+    expect(soon!.note).toContain("Cloud1 will be deleted");
+    expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(1);
+    // Hours later (the first try's answer was never used): asked again, with a card of its own.
+    await cloud.askRetire(["hetzner"]).catch(() => undefined);
+    answer(true);
+    await Bun.sleep(5);
+    t.now += 3 * 3_600_000;
+    const e = await cloud.askRetire(["hetzner"]).catch((x) => x);
+    expect(isContractError(e, "refused")).toBe(true);
+    expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(3);
+    expect(a.vms.size).toBe(1);
+  });
+
+  test("an answer given while the person was asked in this very call says it will delete, without 'earlier answer'", async () => {
+    const { cloud } = await two();
+    const r = await cloud.askRetire(["hetzner"]);
+    expect(r!.note).toBe("Cloud1 will be deleted when you confirm this, as you answered.");
   });
 
   test("an image name too long to show whole is refused before any card; one that fits is shown whole", async () => {

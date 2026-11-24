@@ -127,7 +127,10 @@ export function pluginRegistryMethods(o: {
    *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it, and
    *  throws to stop the removal. It may return what to do once the removal is confirmed (run just before the plugin's keys
    *  and folder go, and a failure of it stops the removal). Absent: nothing is asked. */
-  beforeRemove?: (pluginId: string) => Promise<(() => Promise<void>) | undefined>;
+  beforeRemove?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
+  /** The same for switching a plugin off (`plugin.setEnabled` with `enabled: false`, the whole plugin): asked first; what
+   *  the answer means is done at once, before it is switched off, and a failure of it stops the switch. */
+  beforeDisable?: (pluginId: string) => Promise<{ commit: () => Promise<void>; note?: string } | undefined>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
   indexes?: IndexClient;
@@ -237,6 +240,8 @@ export function pluginRegistryMethods(o: {
       requireUser(ctx, "switch a plugin on or off");
       if (bots !== undefined) notServed("choosing the bots a plugin dresses", "a plugin's `when.bot` override isn't kept yet");
       must(id);
+      // Switching a plugin off with machines it runs (a cloud computer provider) asks first, and does what the answer says.
+      if (enabled === false && part === undefined) await (await o.beforeDisable?.(id))?.commit();
       // `part: "app"`: only its parts beside its bot (§5.5), the bot kept.
       return part === undefined ? registry.setEnabled(id, enabled) : registry.setEnabled(id, enabled, { part });
     }),
@@ -294,7 +299,8 @@ export function pluginRegistryMethods(o: {
       // to that question, then the removal's own card.
       // The question's answer is DONE only once the removal itself is confirmed (`commit`, below): a removal the person
       // declines changes nothing the question was about.
-      const commit = await o.beforeRemove?.(id);
+      const guard = await o.beforeRemove?.(id);
+      const commit = guard?.commit;
       const remove = async (): Promise<string | undefined> => {
         // The tree as it is when the user says yes (a card may wait).
         const now = registry.get(id);
@@ -327,6 +333,8 @@ export function pluginRegistryMethods(o: {
           detail: { type: "list", items: [
             deleteData === true ? "Its saved keys, settings and data on this computer are deleted, for good." : "Its saved keys and settings on this computer are deleted. Its data is set aside.",
             folders.okText(id, o.os ?? "macos").source,
+            // What the question before this card decided, said here too: the machines go (or stay) when this is confirmed.
+            ...(guard?.note !== undefined ? [guard.note] : []),
           ] },
         },
       });
