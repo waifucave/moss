@@ -7,7 +7,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -91,7 +93,7 @@ class PicturesTest(private val picture: Picture, private val dark: Boolean) {
         fun pictures(): List<Array<Any>> = PICTURES.flatMap { listOf(arrayOf<Any>(it, false), arrayOf<Any>(it, true)) }
     }
 
-    @get:Rule val compose = createComposeRule()
+    @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Before fun fixedClockFace() {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
@@ -100,7 +102,13 @@ class PicturesTest(private val picture: Picture, private val dark: Boolean) {
 
     @OptIn(ExperimentalRoborazziApi::class)
     @Test fun picture() {
-        compose.setContent { Themed(dark, picture.fontScale) { if (picture.code) MossCodeApp(picture.launch, dark) else MossApp(picture.launch, dark) } }
+        // The test activity has a title bar; a phone app has none.
+        compose.runOnUiThread { compose.activity.actionBar?.hide() }
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides compose.activity) {
+                Themed(dark, picture.fontScale) { if (picture.code) MossCodeApp(picture.launch, dark) else MossApp(picture.launch, dark) }
+            }
+        }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()

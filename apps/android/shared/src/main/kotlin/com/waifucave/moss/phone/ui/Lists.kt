@@ -153,9 +153,12 @@ private fun BotListRow(row: BotRow, now: Long, waiting: Boolean, pinned: Boolean
                     if (row.lastAt > 0) Text(TimeText.stamp(row.lastAt, now), style = MossType.line, color = c.secondary)
                 }
                 Spacer(Modifier.height(2.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                if (large) {
+                    if (waiting) NeedsYouTag()
+                    Text(line, style = MossType.line, color = c.secondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                } else Row(verticalAlignment = Alignment.CenterVertically) {
                     if (waiting) { NeedsYouTag(); Spacer(Modifier.width(6.dp)) }
-                    Text(line, style = MossType.line, color = c.secondary, maxLines = if (large) 3 else 1, overflow = TextOverflow.Ellipsis)
+                    Text(line, style = MossType.line, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -236,10 +239,14 @@ private fun SessionListRow(s: SessionRow, now: Long, waiting: Boolean, onOpen: (
                 Text(TimeText.stamp(s.updatedAt, now), style = MossType.line, color = c.secondary)
             }
             Spacer(Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            if (large) {
+                if (needs) NeedsYouTag()
+                else if (s.badge != SessionBadge.none) Text(s.badge.text, style = MossType.line, fontWeight = FontWeight.Medium, color = c.text)
+                Text(detail, style = MossType.line, color = c.secondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            } else Row(verticalAlignment = Alignment.CenterVertically) {
                 if (needs) { NeedsYouTag(); Spacer(Modifier.width(6.dp)) }
                 else if (s.badge != SessionBadge.none) { Text(s.badge.text, style = MossType.line, fontWeight = FontWeight.Medium, color = c.text); Spacer(Modifier.width(6.dp)) }
-                Text(detail, style = MossType.line, color = c.secondary, maxLines = if (large) 3 else 1, overflow = TextOverflow.Ellipsis)
+                Text(detail, style = MossType.line, color = c.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
