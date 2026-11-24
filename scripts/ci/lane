@@ -1,7 +1,7 @@
 #!/bin/bash
 # lane: run CI on GitHub for the branch you are on, so many lanes can be checked at once without queuing on one Mac.
 #
-#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux]
+#   scripts/ci/lane start [--all] [--parked] [--only acceptance|acceptance-linux|acceptance-windows]
 #                                               push this branch, start CI on it, print the run's number and address.
 #                                               The run is SCOPED: the jobs your branch's changes since its merge-base with
 #                                               origin/lane-int/moss need (every area you touched with its full checks, the acceptance
@@ -91,7 +91,7 @@ case "$cmd" in
       case "$1" in
         --all) scope=all; shift ;;
         --parked) parked=true; shift ;;
-        --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ]; } || die "--only takes acceptance or acceptance-linux"; shift 2 ;;
+        --only) only="${2:-}"; { [ "$only" = acceptance ] || [ "$only" = acceptance-linux ] || [ "$only" = acceptance-windows ]; } || die "--only takes acceptance, acceptance-linux or acceptance-windows"; shift 2 ;;
         *) die "unknown option $1 (scripts/ci/lane with no arguments prints the usage)" ;;
       esac
     done

@@ -16,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone. acceptance-linux: only the Linux acceptance (lane LX), which no other choice but `all` and `acceptance` runs"
+        description: "all: every job. acceptance: only the acceptance run (and the names and layout checks), to run it again alone. acceptance-linux: only the Linux acceptance (lane LX), which no other choice but `all` and `acceptance` runs. acceptance-windows: only the Windows acceptance (lane WA), likewise"
         type: choice
-        options: [all, acceptance, acceptance-linux]
+        options: [all, acceptance, acceptance-linux, acceptance-windows]
         default: all
       # scripts/ci/lane start sets these two: a lane's run is as big as its change. `scoped` runs the jobs the files changed since `base`
       # need (scripts/ci-changes.ts: the same areas a pull request gets, with every one's FULL checks and the acceptance units it
@@ -152,7 +152,7 @@ jobs:
             # A push to an integration branch is the tip: every area.
             push) bun scripts/ci-changes.ts --all --why "a push to an integration branch runs everything" ;;
             # A manual run of the acceptance alone: no change, so no area but the acceptance run (every unit of it).
-            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ]; then
+            *) if [ "$ONLY" = acceptance ] || [ "$ONLY" = acceptance-linux ] || [ "$ONLY" = acceptance-windows ]; then
                  bun scripts/ci-changes.ts --only-acceptance --why "a manual run of only: $ONLY"
                elif [ "$SCOPE" = scoped ] && [ -n "$BASE" ]; then
                  # The lane's own changes since its merge-base with the integration branch; a base this runner cannot fetch runs everything.
@@ -1353,7 +1353,7 @@ jobs:
   acceptance:
     name: acceptance · ${{ matrix.unit }}
     needs: changes
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.acceptance == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.only != 'acceptance-linux' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.acceptance == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
@@ -1480,6 +1480,59 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # The acceptance run on Windows (lane WA): the same harness and the same units as `acceptance` above, from source, on windows-latest.
+  # NOT a part of the lane gate or the gate, never on a pull request, a merge group or a push: a manual run only (as
+  # `acceptance-linux`). The engine's secrets are a throwaway Credential Manager service (test-isolation.ts), its endpoint a named
+  # pipe. The units that need no window come first; a window unit needs the runner's interactive desktop session (the runner's job
+  # runs in one) or an offscreen app. A row says "not on Windows: <reason>" (scripts/acceptance/not-on-windows.ts) or the unit is red.
+  acceptance-windows:
+    name: acceptance-windows · ${{ matrix.unit }}
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.acceptance == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.changes.outputs.acceptance_units) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      MOSS_PINNED_BUN: "0"
+      MOSS_ACCEPT_TICK_MIN: "10"
+      MOSS_ACCEPT_TIME_SCALE: "3"
+      MOSS_ACCEPT_MEASURE: "mac-only"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Acceptance on Windows · ${{ matrix.unit }}
+        run: bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-windows-${{ matrix.unit }}"
+
+      # What the plugin host's own tests say on this runner, beside the unit (the host exited at once in the unit's first runs).
+      - name: The plugin host's own process tests
+        if: ${{ !cancelled() && matrix.unit == 'chain' }}
+        continue-on-error: true
+        working-directory: packages/core
+        run: bun test src/plugin-host/tests/process.test.ts 2>&1 | tail -60
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: acceptance-windows-${{ matrix.unit }}
+          path: ${{ runner.temp }}/acceptance-windows-${{ matrix.unit }}
+          retention-days: 7
+          if-no-files-found: warn
+
   # The lane gate: what a lane's run has to pass. The same check as `gate`, over every job but the Windows ones (a lane's
   # known Windows break must not hide a green macOS and Linux), plus the acceptance run. It runs on a push to an
   # integration branch and on a manual run; `gate` (below) keeps needing every job, Windows included, for pull requests
@@ -1552,7 +1605,7 @@ jobs:
     needs: changes
     # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
     # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.cowork == 'true'
     runs-on: macos-latest
     permissions:
       contents: read
@@ -1578,7 +1631,7 @@ jobs:
     needs: changes
     # Cowork is paused (spec §12): this runs on demand only (workflow_dispatch), not in an acceptance-only run, and only when Cowork's own sources changed
     # (apple/Cowork, packages/core/src/cowork: scripts/ci-changes.ts PARKED) or the run asked for the parked areas (`parked: true`). Not for CI's own edits, not for `all`. Skipped, the job reports success.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && needs.changes.outputs.cowork == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.only != 'acceptance' && github.event.inputs.only != 'acceptance-linux' && github.event.inputs.only != 'acceptance-windows' && needs.changes.outputs.cowork == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
