@@ -16,13 +16,15 @@
 //     received, and what no message names is removed.
 //   - name a file it did not send. `session.send` takes a phone's `files` only if each is one this device staged for this session.
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join, relative, isAbsolute, sep } from "node:path";
 import {
   ERR, FILE_REFERENCE_INVALID, STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_KEEP_MS, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX,
-  STAGE_FILE_PARTIAL_TTL_MS, STAGE_FILE_PENDING_MAX_BYTES, STAGE_FILES_PER_MESSAGE_MAX,
+  STAGE_FILE_PARTIAL_TTL_MS, STAGE_FILE_PENDING_MAX_BYTES, STAGE_FILES_PER_MESSAGE_MAX, STAGE_IMAGE_MAX_BYTES,
 } from "@waifucave/moss-protocol";
 import type { SessionView } from "@waifucave/moss-protocol";
+import { IMAGE_SNIFF_BYTES, sniffImageMediaType } from "../agent/stage-image";
+import type { Clock, TimerHandle } from "../contracts/clock";
 import { ContractError } from "../contracts/common";
 import { MethodError } from "../rpc/handler";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
@@ -35,6 +37,8 @@ export const RECEIVED_FOLDER = ".moss-received";
 
 export interface StageLimits {
   fileBytes: number;
+  /** One picture, the desktop's own cap (`STAGE_IMAGE_MAX_BYTES`). */
+  pictureBytes: number;
   chunkBytes: number;
   openPerDevice: number;
   pendingBytes: number;
@@ -47,7 +51,7 @@ export interface StageLimits {
 }
 
 export const STAGE_LIMITS: StageLimits = {
-  fileBytes: STAGE_FILE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES, openPerDevice: STAGE_FILE_OPEN_MAX, pendingBytes: STAGE_FILE_PENDING_MAX_BYTES,
+  fileBytes: STAGE_FILE_MAX_BYTES, pictureBytes: STAGE_IMAGE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES, openPerDevice: STAGE_FILE_OPEN_MAX, pendingBytes: STAGE_FILE_PENDING_MAX_BYTES,
   dayBytes: STAGE_FILE_DAY_MAX_BYTES, dayFiles: STAGE_FILE_DAY_MAX_FILES, unsentFiles: STAGE_FILE_UNSENT_MAX, partialTtlMs: STAGE_FILE_PARTIAL_TTL_MS, keepMs: STAGE_FILE_KEEP_MS, perMessage: STAGE_FILES_PER_MESSAGE_MAX,
 };
 
@@ -126,6 +130,9 @@ interface Upload {
   state: "open" | "ready" | "sent";
   startedAt: number;
   touchedAt: number;
+  /** For a picture (`session.stagePicture`): the media type it said it was. It is checked by its first bytes at once and by the whole at the
+   *  end, then handed to the picture stager, and leaves this ledger (the device's `StagedImages` holds it from there). */
+  picture?: string;
   /** What it was staged for: a bot's conversation (the file goes in the bot's scratch) or a coding session (the file goes in
    *  `RECEIVED_FOLDER` in the user's home). Either way it is named by a folder-tree path. */
   kind?: "bot" | "coding";
@@ -174,7 +181,16 @@ export interface StagerOptions {
   computer: string;
   now: () => number;
   limits?: Partial<StageLimits>;
+  /** Stages a whole picture the way the desktop's `session.stageImage` does (every check it makes, the session's own image folder) and
+   *  gives back the path `session.send`'s `images` names it by. Without it a phone's pictures are refused. */
+  stagePicture?: (session: string, mediaType: string, dataBase64: string) => string;
+  /** The clock the sweep's timer runs on. Without one nothing is swept between calls (the sweep still runs at each call). */
+  clock?: Clock;
 }
+
+/** How often the sweep runs while the ledger holds anything: well inside the idle time (15 minutes), so a half-sent upload is gone
+ *  within a few minutes after it, and a finished file no message named within a few minutes after a day. */
+export const STAGE_SWEEP_EVERY_MS = 5 * 60 * 1000;
 
 export interface StageResult {
   upload: string;
@@ -209,6 +225,7 @@ function decodeChunk(b64: string, max: number): Buffer {
 
 export type StageParams =
   | { name: string; size: number; dataBase64: string }
+  | { mediaType: string; size: number; dataBase64: string }
   | { upload: string; offset: number; dataBase64: string }
   | { upload: string; cancel: true };
 
@@ -218,12 +235,36 @@ export class FileStager {
   readonly #file: string;
   readonly #spool: string;
 
+  #timer: TimerHandle | undefined;
+  #closed = false;
+
   constructor(o: StagerOptions) {
     this.#o = o;
     this.#limits = { ...STAGE_LIMITS, ...o.limits };
     this.#file = join(transcriptsDir(o.home), ".staged-files.json");
     this.#spool = join(transcriptsDir(o.home), ".staged-files");
-    this.sweep();
+    this.#arm(this.sweep());
+  }
+
+  /** Ends the sweep's timer, and arms no other: the engine's close calls it, so nothing of this is left to run (or to keep a process
+   *  alive) after the daemon has gone. Calls still answered after it sweep as they always did, once, and arm nothing. */
+  close(): void {
+    this.#closed = true;
+    if (this.#timer !== undefined) this.#o.clock?.clearTimeout(this.#timer);
+    this.#timer = undefined;
+  }
+
+  /** Sets the next sweep when there is anything to sweep, and none otherwise: an engine nobody has sent a file to has no timer at all. */
+  #arm(held: number): void {
+    const clock = this.#o.clock;
+    if (clock === undefined || this.#closed || this.#timer !== undefined || held === 0) return;
+    this.#timer = clock.setTimeout(() => {
+      this.#timer = undefined;
+      if (this.#closed) return;
+      let left = 0;
+      try { left = this.sweep(); } catch { /* the next call or the next run tries again */ left = 1; }
+      this.#arm(left);
+    }, STAGE_SWEEP_EVERY_MS);
   }
 
   get limits(): StageLimits {
@@ -250,8 +291,9 @@ export class FileStager {
     return join(this.#spool, `${id}.part`);
   }
 
-  /** Removes what a message will never name: an upload idle too long, a finished file no message named in `keepMs`, and the record of a sent one after the same time. */
-  sweep(): void {
+  /** Removes what a message will never name: an upload idle too long, a finished file no message named in `keepMs`, and the record of a sent one after the same time.
+   *  Gives back how many uploads the ledger still holds. */
+  sweep(): number {
     const l = this.#read();
     const now = this.#o.now();
     let changed = false;
@@ -267,6 +309,7 @@ export class FileStager {
       if (d.day !== this.#day()) { delete l.days[device]; changed = true; }
     }
     if (changed) this.#write(l);
+    return Object.keys(l.uploads).length;
   }
 
   /** Takes an upload out of the ledger and removes what it holds: its spool file, or the file it placed (and its folder). A sent file is the message's. */
@@ -285,10 +328,18 @@ export class FileStager {
 
   // -- one call -----------------------------------------------------------------------------------------------------------
 
-  stage(who: { device: string; client: string }, target: StageTarget, p: StageParams): StageResult {
+  /** One call of a file's upload (`mode` "file", `session.stageFile`) or a picture's (`mode` "picture", `session.stagePicture`): the same
+   *  ledger, spool and quotas, and an upload belongs to the door that began it. */
+  stage(who: { device: string; client: string }, target: StageTarget, p: StageParams, mode: "file" | "picture" = "file"): StageResult {
     this.sweep();
-    if ("cancel" in p) return this.#cancel(who, target, p.upload);
-    return "name" in p ? this.#begin(who, target, p) : this.#next(who, target, p);
+    try {
+      if ("cancel" in p) return this.#cancel(who, target, p.upload, mode);
+      if ("mediaType" in p) return this.#beginPicture(who, target, p);
+      return "name" in p ? this.#begin(who, target, p) : this.#next(who, target, p, mode);
+    } finally {
+      // Whatever is held now is swept on a timer too, not only at the next call.
+      this.#arm(Object.keys(this.#read().uploads).length);
+    }
   }
 
   /** Where a file for this target goes. A bot's is in its scratch folder, a place its own file tools open. A coding session's agent
@@ -346,10 +397,49 @@ export class FileStager {
     return this.#progress(l, u);
   }
 
-  #next(who: { device: string; client: string }, target: StageTarget, p: { upload: string; offset: number; dataBase64: string }): StageResult {
+  /** A picture's first chunk: its type is told by its first bytes before the rest is sent (so a file that isn't one is refused at once, not
+   *  after 5 MB), under the desktop's own size cap and the same quotas as a file. The whole is checked again when the last chunk lands. */
+  #beginPicture(who: { device: string; client: string }, target: StageTarget, p: { mediaType: string; size: number; dataBase64: string }): StageResult {
+    const lim = this.#limits;
+    if (this.#o.stagePicture === undefined) throw refused("this computer takes no pictures from a phone");
+    if (!Number.isInteger(p.size) || p.size < 1) throw invalid("a picture has at least one byte");
+    if (p.size > lim.pictureBytes) throw refused(`A picture can be at most ${(lim.pictureBytes / MB).toFixed(1)} MB; this one is ${(p.size / MB).toFixed(1)} MB.`);
+    const bytes = decodeChunk(p.dataBase64, lim.chunkBytes);
+    if (bytes.length > p.size) throw invalid("the first chunk is longer than the picture");
+    if (bytes.length < IMAGE_SNIFF_BYTES && bytes.length < p.size) throw invalid("the first chunk is too short to tell what the picture is");
+    const sniffed = sniffImageMediaType(bytes.subarray(0, IMAGE_SNIFF_BYTES));
+    if (sniffed === undefined) throw new ContractError("invalid", "Only PNG, JPEG, GIF, WebP, HEIC, TIFF and BMP images are supported");
+    if (sniffed !== p.mediaType) throw invalid(`the picture data is ${sniffed}, not the declared ${p.mediaType}`);
+    const l = this.#read();
+    const mine = Object.values(l.uploads).filter((u) => u.device === who.device && u.state !== "sent");
+    if (mine.filter((u) => u.state === "open").length >= lim.openPerDevice) throw refused(`Only ${lim.openPerDevice} files can be on their way at once; wait for one to finish or cancel it.`);
+    const held = mine.reduce((n, u) => n + u.size, 0);
+    if (held + p.size > lim.pendingBytes) throw refused(`This phone has ${mb(held)} of files waiting to be sent; at most ${mb(lim.pendingBytes)} can wait. Send them, or cancel one.`);
+    const today = l.days[who.device]?.day === this.#day() ? l.days[who.device]! : { day: this.#day(), bytes: 0, files: 0 };
+    if (today.bytes + p.size > lim.dayBytes) throw refused(`This phone has sent ${mb(today.bytes)} today; at most ${mb(lim.dayBytes)} a day. Try again tomorrow.`);
+    if (today.files >= lim.dayFiles) throw refused(`This phone has sent ${today.files} files today; at most ${lim.dayFiles} a day. Try again tomorrow.`);
+    const id = randomBytes(16).toString("hex");
+    mkdirSync(this.#spool, { recursive: true, mode: 0o700 });
+    const fd = openSync(this.#spoolPath(id), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      writeAll(fd, bytes);
+    } catch (err) {
+      closeSync(fd);
+      try { unlinkSync(this.#spoolPath(id)); } catch { /* best effort */ }
+      throw err;
+    }
+    closeSync(fd);
+    const now = this.#o.now();
+    const u: Upload = { id, device: who.device, client: who.client, session: target.session, name: "picture", size: p.size, received: bytes.length, state: "open", startedAt: now, touchedAt: now, picture: p.mediaType, root: "", base: "" };
+    l.uploads[id] = u;
+    l.days[who.device] = { day: this.#day(), bytes: today.bytes + bytes.length, files: today.files + 1 };
+    return this.#progress(l, u, this.#finishPictureIfWhole(l, u));
+  }
+
+  #next(who: { device: string; client: string }, target: StageTarget, p: { upload: string; offset: number; dataBase64: string }, mode: "file" | "picture"): StageResult {
     const lim = this.#limits;
     const l = this.#read();
-    const u = this.#own(l, who, target, p.upload);
+    const u = this.#own(l, who, target, p.upload, mode);
     if (u.state !== "open") throw refused("That upload is already complete.");
     if (p.offset !== u.received) throw invalid(`The next chunk starts at byte ${u.received}, not ${p.offset}.`);
     const bytes = decodeChunk(p.dataBase64, lim.chunkBytes);
@@ -375,8 +465,28 @@ export class FileStager {
     u.received += bytes.length;
     u.touchedAt = this.#o.now();
     l.days[who.device] = { day: this.#day(), bytes: day + bytes.length, files: today.files };
+    if (u.picture !== undefined) return this.#progress(l, u, this.#finishPictureIfWhole(l, u));
     this.#finishIfWhole(l, u);
     return this.#progress(l, u);
+  }
+
+  /** Once every byte of a picture is here it is handed, whole, to the picture stager (every check the desktop's door makes, run again
+   *  on the assembled bytes), which gives back the path `images` names it by; the upload then leaves this ledger. A picture that fails
+   *  any check is dropped, and says why. */
+  #finishPictureIfWhole(l: Ledger, u: Upload): string | undefined {
+    if (u.received !== u.size) return undefined;
+    try {
+      const whole = readFileSync(this.#spoolPath(u.id));
+      if (whole.length !== u.size) throw invalid("The picture is shorter or longer than it said.");
+      const path = this.#o.stagePicture!(u.session, u.picture!, whole.toString("base64"));
+      delete l.uploads[u.id];
+      try { unlinkSync(this.#spoolPath(u.id)); } catch { /* the sweep takes it */ }
+      return path;
+    } catch (err) {
+      this.#drop(l, u);
+      this.#write(l);
+      throw err instanceof ContractError || err instanceof MethodError ? err : refused("The picture couldn't be staged.");
+    }
   }
 
   /** Once every byte is here the file is placed in its folder; a placing that fails drops the upload (and says why). */
@@ -391,9 +501,9 @@ export class FileStager {
     }
   }
 
-  #cancel(who: { device: string; client: string }, target: StageTarget, id: string): StageResult {
+  #cancel(who: { device: string; client: string }, target: StageTarget, id: string, mode: "file" | "picture"): StageResult {
     const l = this.#read();
-    const u = this.#own(l, who, target, id);
+    const u = this.#own(l, who, target, id, mode);
     if (u.state === "sent") throw refused("A message already names that file.");
     this.#drop(l, u);
     this.#write(l);
@@ -401,14 +511,16 @@ export class FileStager {
   }
 
   /** The upload this device staged for this session (never another device's, another session's, or one that is gone). */
-  #own(l: Ledger, who: { device: string; client: string }, target: StageTarget, id: string): Upload {
+  #own(l: Ledger, who: { device: string; client: string }, target: StageTarget, id: string, mode: "file" | "picture"): Upload {
     const u = l.uploads[id];
-    if (u === undefined || u.device !== who.device || u.client !== who.client || u.session !== target.session) throw new ContractError("not_found", "no such upload for this phone and conversation");
+    if (u === undefined || u.device !== who.device || u.client !== who.client || u.session !== target.session || (u.picture !== undefined) !== (mode === "picture")) throw new ContractError("not_found", "no such upload for this phone and conversation");
     return u;
   }
 
-  #progress(l: Ledger, u: Upload): StageResult {
+  /** The reply to a call. `picture` is the path a finished picture was staged at (and that picture's upload is no longer in the ledger). */
+  #progress(l: Ledger, u: Upload, picture?: string): StageResult {
     this.#write(l);
+    if (picture !== undefined) return { upload: u.id, received: u.received, done: true, path: picture };
     const done = u.state !== "open";
     return { upload: u.id, received: u.received, done, ...(done && u.dest !== undefined && u.tree !== undefined ? { name: u.name, path: u.tree } : {}) };
   }

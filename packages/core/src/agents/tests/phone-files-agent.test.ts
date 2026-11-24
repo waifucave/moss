@@ -7,6 +7,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { FileStager, RECEIVED_FOLDER, stageTargetOf } from "../../bots/staged-files";
+import { MossFence } from "../../fence/fence";
 import { waitFor, World, type WorldOptions } from "./world";
 
 setDefaultTimeout(60_000);
@@ -78,6 +79,25 @@ describe("a phone's file to a coding session", () => {
     const read = await waitFor(() => s.w.report("file-read")[0], "the agent's read");
     expect(read).toMatchObject({ outcome: "refused" });
     expect(s.w.approvals.cards()).toEqual([]);
+  });
+
+  test("the real fence leaves the folder readable: the MOSS home is denied whole, and `.moss-received` (whose name begins with the home's own) is not inside that deny, not a fenced path, and a read of it is allowed", () => {
+    const w = (world = new World({ script: [] }));
+    const temp = join(w.root, "real-fence-temp");
+    mkdirSync(temp, { recursive: true });
+    const fence = new MossFence({ home: w.userHome, mossHome: w.mossHome, temp });
+    const file = join(w.userHome, RECEIVED_FOLDER, "s_x", "phone-1", "a.txt");
+    const policy = fence.policy();
+    // The deny is on the home as a folder (a path-segment match: the sandboxes render it as a `subpath`, never a prefix).
+    expect(policy.denyRead).toContain(w.mossHome);
+    expect(policy.denyRead.some((d) => file === d || file.startsWith(d + sep))).toBe(false);
+    // A path that begins with the home's name but is a sibling folder is no part of it.
+    expect(`${w.mossHome}-received`.startsWith(w.mossHome)).toBe(true);
+    expect(join(w.userHome, RECEIVED_FOLDER).startsWith(w.mossHome)).toBe(true);
+    expect(fence.touches([file])).toBeNull();
+    expect(fence.check({ op: "read", path: file })).toEqual({ allowed: true });
+    // For contrast, the place the first version used is refused as the MOSS home.
+    expect(fence.check({ op: "read", path: join(w.mossHome, "outputs", "s_x", "received", "a.txt") })).toMatchObject({ allowed: false });
   });
 
   test("a link planted where the file goes leads nowhere: the received folder, or the session's folder in it, as a link is refused and nothing is written outside", async () => {

@@ -2,7 +2,7 @@
 // engine already has (the stage doors, the plugins' commands, the model list). The phone shows a row only when this says the door
 // behind it is open, so no row is a promise the engine will refuse. Changes nothing. Owner: lane PH.
 import {
-  SESSIONS_METHODS, STAGE_FILE_CHUNK_BYTES, STAGE_FILE_MAX_BYTES, STAGE_FILES_PER_MESSAGE_MAX, type ModelListing, type SessionView, type Text,
+  SESSIONS_METHODS, STAGE_FILE_CHUNK_BYTES, STAGE_FILE_MAX_BYTES, STAGE_FILES_PER_MESSAGE_MAX, STAGE_IMAGE_MAX_BYTES, type ModelListing, type SessionView, type Text,
 } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { handler, requireUser, type MethodHandler } from "../rpc/handler";
@@ -47,6 +47,7 @@ export function composerOffersMethods(deps: ComposerOffersDeps): Record<string, 
       return {
         kind: bot ? "bot" as const : "coding" as const,
         pictures,
+        ...(mayStage && pictures ? { pictureChunks: { maxBytes: STAGE_IMAGE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES } } : {}),
         ...(mayStage ? { files: { maxBytes: STAGE_FILE_MAX_BYTES, perMessage: STAGE_FILES_PER_MESSAGE_MAX, chunkBytes: STAGE_FILE_CHUNK_BYTES } } : {}),
         commands: deps.commands().slice(0, MAX_COMMANDS).map((c) => ({ name: c.name, description: c.description })),
         // A bot's model and effort are its user layer, which a phone doesn't set: no row (`session.setModel` refuses a bot's conversation).

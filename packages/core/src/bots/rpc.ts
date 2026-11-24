@@ -19,7 +19,7 @@ import {
 } from "@waifucave/moss-protocol";
 import type { DeviceRegistry } from "../contracts/device-registry";
 import { verifyUserMessage } from "../contracts/session-host";
-import { StageImageRefusal, stageSessionImage, validateImageRefs } from "../agent/stage-image";
+import { StageImageRefusal, stageSessionImage, validateImageRefs, type StageImageMediaType } from "../agent/stage-image";
 import type { Clock } from "../contracts/clock";
 import { ContractError, isContractError, RPC_ERROR_OF, type Unsubscribe } from "../contracts/common";
 import type { DurableSessionHost } from "../sessions/durable-host";
@@ -63,6 +63,8 @@ export interface SessionsMethodsDeps {
   phoneMay?: PhoneMay;
   /** The user's home folder, which the tree's `home/<Computer>/` is: where a coding session's folder is on disk, and what a staged file's tree path is counted from. */
   userHome?: string;
+  /** Where the file door's sweep timer registers its stop, so the bot side's close ends it. */
+  onClose?: (stop: () => void) => void;
   /** TEST SEAM: the file door's limits, smaller than the real ones so a test can reach them. */
   stageLimits?: Partial<StageLimits>;
 }
@@ -84,7 +86,14 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
   /** What each client off this computer staged, per session: the only images it may name (kept across restarts). */
   const staged = new StagedImages(deps.home, () => deps.clock.now());
   /** The files a phone sends (`session.stageFile`), when the user's home is known: without it a phone's files are refused. */
-  const files = deps.userHome === undefined ? undefined : new FileStager({ home: deps.home, userHome: deps.userHome, computer: deps.computer, now: () => deps.clock.now(), ...(deps.stageLimits === undefined ? {} : { limits: deps.stageLimits }) });
+  const files = deps.userHome === undefined ? undefined : new FileStager({
+    home: deps.home, userHome: deps.userHome, computer: deps.computer, now: () => deps.clock.now(), ...(deps.stageLimits === undefined ? {} : { limits: deps.stageLimits }),
+    // A phone's picture, whole at last: every check and place the desktop's `session.stageImage` has, over the assembled bytes.
+    stagePicture: (session, mediaType, dataBase64) => stagePictureFor(session, mediaType as StageImageMediaType, dataBase64),
+    // The sweep of unsent and half-sent files also runs on a timer; the engine's close ends it.
+    clock: deps.clock,
+  });
+  if (files !== undefined) deps.onClose?.(() => files.close());
   /** A client off this computer is known by its device; one that doesn't say which device it is attaches nothing. */
   const remoteKey = (id: string, caller: UserCaller): string => {
     if (caller.device === undefined) throw new MethodError(ERR.INVALID_PARAMS, "a client off this computer says which device it is to attach images", { code: IMAGE_REFERENCE_INVALID });
@@ -149,6 +158,17 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     for (const p of staged.forSession(id)) out.add(p);
     return out;
   };
+  /** Stages one whole picture for a session as the desktop's `session.stageImage` does: every input check, the session's own image folder,
+   *  and for a bot's conversation (which lives for months) the stale copies let go of first, never one a recent message names. */
+  const stagePictureFor = (id: string, mediaType: StageImageMediaType, dataBase64: string): string => {
+    const longLived = host.get(id)?.kind === "bot";
+    try {
+      return stageSessionImage({ sessionId: id, mediaType, dataBase64 }, longLived ? { keep: () => namedStaged(id) } : {});
+    } catch (err) {
+      if (err instanceof StageImageRefusal) throw new MethodError(err.internal ? ERR.INTERNAL : ERR.INVALID_PARAMS, err.message, { code: err.code });
+      throw new MethodError(ERR.INTERNAL, "the image couldn't be staged", { code: "image_stage_failed" });
+    }
+  };
 
   /** What a file may be staged for: a bot's main conversation that runs here, or a coding session on this computer, not ended. */
   const stageTarget = (id: string): StageTarget => {
@@ -182,18 +202,26 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       } else if (v.computer !== deps.computer) {
         throw new ContractError("refused", `${id} runs on ${v.computer}; stage the image there`);
       }
-      // A bot's conversation lives for months, as the inherited dispatch session did: staging lets go of its stale copies first,
-      // never one a recent message (or a device's pending stage) still names.
-      const longLived = v.kind === "bot";
-      let path: string;
-      try {
-        path = stageSessionImage({ sessionId: id, mediaType, dataBase64 }, longLived ? { keep: () => namedStaged(id) } : {});
-      } catch (err) {
-        if (err instanceof StageImageRefusal) throw new MethodError(err.internal ? ERR.INTERNAL : ERR.INVALID_PARAMS, err.message, { code: err.code });
-        throw new MethodError(ERR.INTERNAL, "the image couldn't be staged", { code: "image_stage_failed" });
-      }
+      const path = stagePictureFor(id, mediaType, dataBase64);
       if (!isLocal(caller)) staged.add(remoteKey(id, caller), path);
       return { path };
+    }),
+
+    // A paired phone's picture, in chunks (`session.stagePicture`): a phone's link ends a stream at 1 MiB a frame, which an ordinary photo
+    // exceeds, so it comes the way a file does and is staged whole at the end, by the same door's checks. The phone then names the path
+    // in `session.send`'s `images`, as it does for a picture staged by `session.stageImage`.
+    [M.sessionStagePicture.name]: handler(M.sessionStagePicture, async (p, ctx) => {
+      const caller = requireUser(ctx, "send a picture");
+      refuseWhileUpdating(deps.updateGate);
+      if (!isPhoneCaller(caller)) throw new ContractError("refused", "a picture is sent from the app through session.stageImage");
+      requirePairedPhone(caller, deps.phoneMay, "send a picture");
+      if (files === undefined) throw new ContractError("refused", "this computer takes no pictures from a phone");
+      remoteKey(p.id, caller);
+      const target = stageTarget(p.id);
+      const r = files.stage({ device: caller.device!, client: caller.client }, target,
+        "mediaType" in p ? { mediaType: p.mediaType, size: p.size, dataBase64: p.dataBase64 } : "cancel" in p ? { upload: p.upload, cancel: true } : { upload: p.upload, offset: p.offset, dataBase64: p.dataBase64 }, "picture");
+      if (r.done && r.path !== undefined) staged.add(remoteKey(p.id, caller), r.path);
+      return r;
     }),
 
     [M.botList.name]: handler(M.botList, async (): Promise<{ bots: BotView[] }> => ({ bots: bots.list() })),

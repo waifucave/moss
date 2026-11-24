@@ -61,7 +61,7 @@ describe("bot.create from a phone", () => {
     await expect(s.create({ name: "Bot 6" }, s.phone.caller())).rejects.toThrow(/made 5 bots in the last 24 hours.*try again in \d+ (min|h)/);
     expect(s.bots()).toHaveLength(5);
     // Another phone has its own count; the desktop has none.
-    expect(other.caller("android").device).not.toBe(s.phone.caller().device);
+    expect((other.caller("android") as { device: string }).device).not.toBe((s.phone.caller() as { device: string }).device);
     await s.create({ name: "Other phone" }, other.caller("android"));
     for (let i = 0; i < 7; i++) await s.create({ name: `Desk ${i}` }, DESKTOP);
     // The oldest make leaves the window after 24 hours: one more is let through, not two.
@@ -82,7 +82,7 @@ describe("bot.create from a phone", () => {
     const create = (params: unknown) => all["bot.create"]!(params, { caller: s.phone.caller() } as never) as Promise<unknown>;
     await create({ name: "Bot 5" });
     await expect(create({ name: "Bot 6" })).rejects.toThrow(/made 5 bots/);
-    expect(JSON.parse(readFileSync(`${s.home}/transcripts/.phone-bot-creates.json`, "utf8")).devices[s.phone.caller().device!]).toHaveLength(5);
+    expect(JSON.parse(readFileSync(`${s.home}/transcripts/.phone-bot-creates.json`, "utf8")).devices[(s.phone.caller() as { device: string }).device]).toHaveLength(5);
     await again.shutdown();
   });
 

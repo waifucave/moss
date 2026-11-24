@@ -205,6 +205,8 @@ export function triggerOwnersFrom(registry: Pick<PluginRegistry, "entries">): (t
 
 export function createBotSide(o: BotSideOptions): BotSide {
   const main = o.main ?? soleComputer(o.computer);
+  /** What the sessions' methods ask to be stopped when the bot side closes (the file door's sweep timer). */
+  const closers: (() => void)[] = [];
   const gate = new BotGate({ home: o.home, main, ...(o.warn === undefined ? {} : { warn: o.warn }) });
   const relay = o.relay;
   const updates = o.updateGate;
@@ -370,6 +372,7 @@ export function createBotSide(o: BotSideOptions): BotSide {
         ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }),
         ...(deps.stageLimits === undefined ? {} : { stageLimits: deps.stageLimits }),
         userHome: o.userHome ?? homedir(),
+        onClose: (stop) => void closers.push(stop),
       });
       return {
       ...sessions,
@@ -395,6 +398,8 @@ export function createBotSide(o: BotSideOptions): BotSide {
       if (o.routines?.ingress?.poll !== false) ingress?.start();
     },
     close: async () => {
+      // The file door's sweep timers end first: nothing of them is left to run once the daemon is closing.
+      for (const stop of closers.splice(0)) stop();
       offOwnership?.();
       offBusy?.();
       offQuestions?.();

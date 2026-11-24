@@ -161,7 +161,7 @@ describe("remote clients over links, on the MOSS server", () => {
     const s = createMossServer({
       tokens, processes: new SessionProcesses(), serverVersion: "test", deviceId: "d".repeat(32),
       deviceOs: (d) => (d === "a".repeat(32) ? "android" : "ios"),
-      handlers: laneMethodHandlers({ "agent.start": record("agent.start"), "agent.backends": record("agent.backends"), "agent.options": record("agent.options"), "agent.recent": record("agent.recent"), "bot.create": record("bot.create"), "session.stageFile": record("session.stageFile"), "session.composerOffers": record("session.composerOffers"), "agent.definitions": record("agent.definitions"), "plugin.install": record("plugin.install"), ...Object.fromEntries(PHONE_STILL_REFUSED_BOT.map((m) => [m, record(m)])) }),
+      handlers: laneMethodHandlers({ "agent.start": record("agent.start"), "agent.backends": record("agent.backends"), "agent.options": record("agent.options"), "agent.recent": record("agent.recent"), "bot.create": record("bot.create"), "session.stageFile": record("session.stageFile"), "session.stagePicture": record("session.stagePicture"), "session.composerOffers": record("session.composerOffers"), "agent.definitions": record("agent.definitions"), "plugin.install": record("plugin.install"), ...Object.fromEntries(PHONE_STILL_REFUSED_BOT.map((m) => [m, record(m)])) }),
     });
     stops.push(() => s.dispose());
     const open = async (device: string, id: number) => {
@@ -183,17 +183,24 @@ describe("remote clients over links, on the MOSS server", () => {
     await expect(s.handle(ios, "session.stageFile", { id: "s_x", name: "a.txt", size: 2, dataBase64: "aGk=" })).resolves.toEqual({ session: "s_x" });
     await expect(s.handle(ios, "session.stageFile", { id: "s_x", upload: "u1", offset: 2, dataBase64: "aGk=" })).resolves.toEqual({ session: "s_x" });
     await expect(s.handle(ios, "session.stageFile", { id: "s_x", upload: "u1", cancel: true })).resolves.toEqual({ session: "s_x" });
+    // A picture, in chunks, is the same (a phone's link cannot carry the desktop's single request for a photo).
+    await expect(s.handle(ios, "session.stagePicture", { id: "s_x", mediaType: "image/jpeg", size: 4 * 1024 * 1024, dataBase64: "aGk=" })).resolves.toEqual({ session: "s_x" });
+    await expect(s.handle(ios, "session.stagePicture", { id: "s_x", upload: "u1", offset: 2, dataBase64: "aGk=" })).resolves.toEqual({ session: "s_x" });
+    await expect(s.handle(ios, "session.stagePicture", { id: "s_x", upload: "u1", cancel: true })).resolves.toEqual({ session: "s_x" });
     await expect(s.handle(ios, "session.composerOffers", { id: "s_x" })).resolves.toEqual({ session: "s_x" });
-    expect(calls.slice(-4).map((c) => c.caller)).toEqual(Array(4).fill({ kind: "user", client: "ios", device: "i".repeat(32) }));
+    expect(calls.slice(-7).map((c) => c.caller)).toEqual(Array(7).fill({ kind: "user", client: "ios", device: "i".repeat(32) }));
     // A chunk past the frame, a stray field and an upload with neither a size nor an offset are refused before a handler runs.
     for (const params of [{ id: "s_x", name: "a.txt", size: 2, dataBase64: "A".repeat(STAGE_FILE_CHUNK_B64_MAX_LENGTH + 4) }, { id: "s_x", name: "a.txt", size: 2, dataBase64: "aGk=", path: "/etc/x" }, { id: "s_x", upload: "u1", dataBase64: "aGk=" }]) {
       await expect(s.handle(ios, "session.stageFile", params)).rejects.toMatchObject({ code: ERR.INVALID_PARAMS });
+    }
+    for (const params of [{ id: "s_x", mediaType: "image/jpeg", size: 2, dataBase64: "A".repeat(STAGE_FILE_CHUNK_B64_MAX_LENGTH + 4) }, { id: "s_x", mediaType: "image/jpeg", size: 2, dataBase64: "aGk=", path: "/etc/x" }, { id: "s_x", mediaType: "text/html", size: 2, dataBase64: "aGk=" }, { id: "s_x", mediaType: "image/jpeg", size: 400 * 1024 * 1024, dataBase64: "aGk=" }, { id: "s_x", dataBase64: "aGk=" }]) {
+      await expect(s.handle(ios, "session.stagePicture", params)).rejects.toMatchObject({ code: ERR.INVALID_PARAMS });
     }
     // What a phone could not do before it still cannot: the role's list does not name these.
     for (const method of ["agent.definitions", "plugin.install", ...PHONE_STILL_REFUSED_BOT]) {
       await expect(s.handle(ios, method, {})).rejects.toMatchObject({ code: MOSS_ERR.ROLE_REFUSED });
     }
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(13);
   });
 
   test("each minted token is spent by its hello, and the server closes a link connection itself", async () => {

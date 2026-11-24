@@ -13,7 +13,7 @@ import {
   Timestamp, TreePath,
 } from "./common";
 import { canonicalJson } from "./approvals";
-import { STAGE_IMAGE_B64_MAX_LENGTH, STAGE_IMAGE_MEDIA_TYPES } from "./methods";
+import { STAGE_IMAGE_B64_MAX_LENGTH, STAGE_IMAGE_MAX_BYTES, STAGE_IMAGE_MEDIA_TYPES } from "./methods";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
 import { SessionLinkEvent, SessionLinksParams, SessionLinksResult, SessionStarter, SessionSubagent, SessionWaiting, SUBAGENTS_MAX } from "./session-graph";
 
@@ -516,6 +516,26 @@ export const SESSIONS_METHODS = {
     }),
     doc: "A paired phone sends a file to a bot's conversation or a coding session on the computer it is linked to, in chunks of at most `STAGE_FILE_CHUNK_BYTES`, then names it in the next `session.send` (`files`, with `[File #n]` in the text). The file is one the desktop's drop would take (at most `STAGE_FILE_MAX_BYTES`, `STAGE_FILES_PER_MESSAGE_MAX` to a message), and is written inside that bot's scratch folder or that session's own outputs folder under a safe name, readable by the owner only and never executable; nothing launchable by being opened is taken. A device may have `STAGE_FILE_OPEN_MAX` uploads open, `STAGE_FILE_UNSENT_MAX` files and `STAGE_FILE_PENDING_MAX_BYTES` staged and unsent, and send `STAGE_FILE_DAY_MAX_BYTES` and `STAGE_FILE_DAY_MAX_FILES` files a day; an upload idle for `STAGE_FILE_PARTIAL_TTL_MS` and a finished file unsent after `STAGE_FILE_KEEP_MS` are removed. Only a phone paired with an answer key, only to a session this computer runs; a phone may name in `session.send` only files it staged for that session.",
   }),
+  sessionStagePicture: defineMethod({
+    name: "session.stagePicture", owner: "D", roles: ["remote"], userOnly: true,
+    params: z.union([
+      /** The first chunk: the picture's type and how big it will be (at most the desktop's own cap, `STAGE_IMAGE_MAX_BYTES`). The first bytes must be the type said. */
+      z.strictObject({ id: SessionId, mediaType: z.enum(STAGE_IMAGE_MEDIA_TYPES), size: z.number().int().min(1).max(STAGE_IMAGE_MAX_BYTES), dataBase64: StageFileChunk }),
+      /** Each later chunk, from where the last one ended. */
+      z.strictObject({ id: SessionId, upload: utf16(64, 1), offset: z.number().int().min(0).max(STAGE_IMAGE_MAX_BYTES), dataBase64: StageFileChunk }),
+      /** Drops a picture still on its way. */
+      z.strictObject({ id: SessionId, upload: utf16(64, 1), cancel: z.literal(true) }),
+    ]),
+    result: z.object({
+      upload: utf16(64, 1),
+      /** Bytes held so far; the next chunk's `offset`. */
+      received: z.number().int().nonnegative(),
+      done: z.boolean(),
+      /** Once `done`: what `session.send`'s `images` names the picture by, as `session.stageImage` gives it back. */
+      path: utf16(4096, 1).optional(),
+    }),
+    doc: "A paired phone sends a picture to a bot's conversation or a coding session on the computer it is linked to, in chunks of at most `STAGE_FILE_CHUNK_BYTES` (a phone's link drops a frame over 1 MiB, which a photo exceeds, so `session.stageImage`'s single request can't carry one from a phone), and names it in the next `session.send` (`images`, with `[Image #n]` in the text). The desktop's `session.stageImage` is unchanged. A picture is at most `STAGE_IMAGE_MAX_BYTES`, its first bytes must be the type it says, and once whole it is staged by the same checks and into the same folder as `session.stageImage`'s; it counts in the same per-device limits as a file (`STAGE_FILE_OPEN_MAX` open, `STAGE_FILE_DAY_MAX_BYTES` and `STAGE_FILE_DAY_MAX_FILES` a day, `STAGE_FILE_PARTIAL_TTL_MS` idle). Only a phone paired with an answer key, only to a session this computer runs.",
+  }),
   sessionComposerOffers: defineMethod({
     name: "session.composerOffers", owner: "D", roles: ["remote"], userOnly: true,
     params: z.object({ id: SessionId }),
@@ -523,6 +543,8 @@ export const SESSIONS_METHODS = {
       kind: z.enum(["bot", "coding"]),
       /** `session.stageImage` is open for it, and its model (when known) takes pictures. */
       pictures: z.boolean(),
+      /** `session.stagePicture` is open for it, with the limits to honour (a picture's cap and the chunk size); absent when it isn't (as `files`). */
+      pictureChunks: z.object({ maxBytes: z.number().int().positive(), chunkBytes: z.number().int().positive() }).optional(),
       /** `session.stageFile` is open for it, with the limits to honour; absent when it isn't (the phone isn't paired with an answer key, or the session isn't here). */
       files: z.object({ maxBytes: z.number().int().positive(), perMessage: z.number().int().positive(), chunkBytes: z.number().int().positive() }).optional(),
       /** What the plugins on offer the phone to run (`command.run`): its name and what it does, not its arguments. */

@@ -637,6 +637,7 @@
       "session.setModel",
       "session.stageFile",
       "session.stageImage",
+      "session.stagePicture",
       "session.stop",
       "usage.summary"
     ],

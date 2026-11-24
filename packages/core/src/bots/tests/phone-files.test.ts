@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { closeSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX, STAGE_FILE_PENDING_MAX_BYTES, type Caller } from "@waifucave/moss-protocol";
+import { STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX, STAGE_FILE_PENDING_MAX_BYTES, STAGE_IMAGE_MAX_BYTES, type Caller } from "@waifucave/moss-protocol";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import { pairedPhone, type TestPhone } from "../../agents/tests/phone";
@@ -291,6 +291,52 @@ describe("names and kinds", () => {
   });
 });
 
+describe("the sweep runs on a timer, not only at the next call", () => {
+  test("a half-sent upload and a finished file no message named are removed with no call at all, and the timer rests once nothing is held", async () => {
+    const s = await setup();
+    expect(s.clock.pending()).toBe(0);
+    const half = await s.call("session.stageFile", { id: s.session, name: "half.bin", size: 1_000_000, dataBase64: b64(new Uint8Array(1000).fill(65)) });
+    const whole = await s.send(s.session, "whole.txt", text("kept a day"));
+    const spoolPart = join(s.home, "transcripts", ".staged-files", `${half.upload}.part`);
+    const placed = join(s.scratch, "attachments", `phone-${whole.upload}`, "whole.txt");
+    expect(existsSync(spoolPart) && existsSync(placed)).toBe(true);
+    // One timer, however many files: it is set when something is held.
+    expect(s.clock.pending()).toBe(1);
+    // Past the idle time (15 minutes) and a sweep: the half-sent upload is gone, with no call made.
+    s.clock.advance(21 * 60_000);
+    expect(existsSync(spoolPart)).toBe(false);
+    expect(existsSync(placed)).toBe(true);
+    expect(s.clock.pending()).toBe(1);
+    // Past a day: the finished file and its folder are gone too, and with nothing held there is no timer.
+    s.clock.advance(24 * 3600_000);
+    expect(existsSync(placed)).toBe(false);
+    expect(existsSync(join(s.scratch, "attachments", `phone-${whole.upload}`))).toBe(false);
+    expect(s.clock.pending()).toBe(0);
+    await s.b.shutdown();
+  });
+
+  test("a file the next message named is kept, not swept", async () => {
+    const s = await setup();
+    const r = await s.send(s.session, "named.txt", text("sent"));
+    await s.call("session.send", { id: s.session, message: { text: "[File #1]", clientMessageId: "m1", files: [{ n: 1, path: r.path }] } });
+    s.clock.advance(3 * 24 * 3600_000);
+    expect(existsSync(join(s.scratch, "attachments", `phone-${r.upload}`, "named.txt"))).toBe(true);
+    await s.b.shutdown();
+  });
+
+  test("the engine's close ends the timer: none is left, and none is set by a call that comes after it", async () => {
+    const s = await setup();
+    await s.call("session.stageFile", { id: s.session, name: "half.bin", size: 1_000_000, dataBase64: b64(new Uint8Array(1000).fill(65)) });
+    expect(s.clock.pending()).toBe(1);
+    await s.b.shutdown();
+    expect(s.clock.pending()).toBe(0);
+    // A call that still reaches the door after the close sweeps as it does at any call, and sets no timer.
+    await s.call("session.stageFile", { id: s.session, name: "late.bin", size: 1_000_000, dataBase64: b64(new Uint8Array(1000).fill(65)) }).catch(() => undefined);
+    expect(s.clock.pending()).toBe(0);
+    s.clock.advance(48 * 3600_000);
+  });
+});
+
 // Links need no privilege on POSIX hosts only, and file modes mean nothing on Windows: those suites run where they mean something.
 const posix = process.platform !== "win32";
 describe.skipIf(!posix)("a link planted in the bot's own folder leads nowhere", () => {
@@ -472,6 +518,7 @@ describe("session.composerOffers", () => {
     const s = await withOffers();
     expect(await s.offers(s.session)).toEqual({
       kind: "bot", pictures: true,
+      pictureChunks: { maxBytes: STAGE_IMAGE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES },
       files: { maxBytes: STAGE_FILE_MAX_BYTES, perMessage: 10, chunkBytes: STAGE_FILE_CHUNK_BYTES },
       commands: [{ name: "summary.daily", description: "Daily summary" }], models: [], efforts: [],
     });
@@ -484,18 +531,24 @@ describe("session.composerOffers", () => {
     expect(r).toMatchObject({ kind: "coding", pictures: true, model: "acme/large", efforts: ["low", "high"], effort: "low" });
     expect((r.models as { id: string }[]).map((m) => m.id)).toEqual(["acme/large", "acme/text"]);
     s.b.host.update("s_code", { model: "acme/text" });
-    expect(await s.offers("s_code")).toMatchObject({ pictures: false, model: "acme/text", efforts: [] });
+    // A model that takes no pictures: no picture row, and no chunks to send one in.
+    const text = await s.offers("s_code");
+    expect(text).toMatchObject({ pictures: false, model: "acme/text", efforts: [] });
+    expect(text.pictureChunks).toBeUndefined();
     await s.b.shutdown();
   });
 
   test("the files row is there only for a phone the gate lets in now; a revoked or keyless phone reads it without", async () => {
     const keyless = await withOffers({ answerKey: false });
     expect((await keyless.offers(keyless.session)).files).toBeUndefined();
+    expect((await keyless.offers(keyless.session)).pictureChunks).toBeUndefined();
     await keyless.b.shutdown();
     const s = await withOffers();
     expect((await s.offers(s.session)).files).toBeDefined();
+    expect((await s.offers(s.session)).pictureChunks).toBeDefined();
     await s.phone.revoke();
     expect((await s.offers(s.session)).files).toBeUndefined();
+    expect((await s.offers(s.session)).pictureChunks).toBeUndefined();
     await s.b.shutdown();
   });
 

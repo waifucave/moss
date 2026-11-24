@@ -2603,6 +2603,149 @@
         "additionalProperties": false
       }
     },
+    "session.stagePicture": {
+      "doc": "A paired phone sends a picture to a bot's conversation or a coding session on the computer it is linked to, in chunks of at most `STAGE_FILE_CHUNK_BYTES` (a phone's link drops a frame over 1 MiB, which a photo exceeds, so `session.stageImage`'s single request can't carry one from a phone), and names it in the next `session.send` (`images`, with `[Image #n]` in the text). The desktop's `session.stageImage` is unchanged. A picture is at most `STAGE_IMAGE_MAX_BYTES`, its first bytes must be the type it says, and once whole it is staged by the same checks and into the same folder as `session.stageImage`'s; it counts in the same per-device limits as a file (`STAGE_FILE_OPEN_MAX` open, `STAGE_FILE_DAY_MAX_BYTES` and `STAGE_FILE_DAY_MAX_FILES` a day, `STAGE_FILE_PARTIAL_TTL_MS` idle). Only a phone paired with an answer key, only to a session this computer runs.",
+      "owner": "D",
+      "direction": "to-daemon",
+      "roles": [
+        "remote"
+      ],
+      "userOnly": true,
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]+$"
+              },
+              "mediaType": {
+                "type": "string",
+                "enum": [
+                  "image/png",
+                  "image/jpeg",
+                  "image/gif",
+                  "image/webp",
+                  "image/heic",
+                  "image/tiff",
+                  "image/bmp"
+                ]
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6094848
+              },
+              "dataBase64": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 699052
+              }
+            },
+            "required": [
+              "id",
+              "mediaType",
+              "size",
+              "dataBase64"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]+$"
+              },
+              "upload": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6094848
+              },
+              "dataBase64": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 699052
+              }
+            },
+            "required": [
+              "id",
+              "upload",
+              "offset",
+              "dataBase64"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]+$"
+              },
+              "upload": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "cancel": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "upload",
+              "cancel"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "upload": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "received": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "upload",
+          "received",
+          "done"
+        ],
+        "additionalProperties": false
+      }
+    },
     "session.composerOffers": {
       "doc": "What the composer of one conversation offers the phone, in one read: for a bot's conversation or a coding session, whether it takes pictures and files (and the files' limits), the plugins' commands, and for a coding session the models and effort levels it may be switched to. Changes nothing. A bot has no model or effort row: its model is its user layer, which a phone does not set.",
       "owner": "D",
@@ -2639,6 +2782,26 @@
           },
           "pictures": {
             "type": "boolean"
+          },
+          "pictureChunks": {
+            "type": "object",
+            "properties": {
+              "maxBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunkBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "maxBytes",
+              "chunkBytes"
+            ],
+            "additionalProperties": false
           },
           "files": {
             "type": "object",
