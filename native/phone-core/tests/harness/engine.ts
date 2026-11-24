@@ -151,7 +151,7 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
       return ok("device.list", {});
     case "waitDevice":
       try {
-        await until("the phone in the device list", async () => (await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.id), 15_000);
+        await until("the phone in the device list", async () => (await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.device), 15_000);
       } catch (err) {
         // What the engine's pairing said (its steps and error), the words left out.
         const steps = heard.map((m) => (m.params ?? m) as Record<string, unknown>).map((p) => (p.event ?? p) as Record<string, unknown>)
@@ -174,9 +174,9 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
     case "decision":
       return decisions.get(cmd.cardId as string);
     case "revoke": {
-      const r = await ok<{ applied: boolean; card?: string }>("device.revoke", { id: cmd.id });
+      const r = await ok<{ applied: boolean; card?: string }>("device.revoke", { id: cmd.device });
       if (!r.applied && r.card) await answerHere(r.card, "approve");
-      await until("the device gone", async () => !(await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.id));
+      await until("the device gone", async () => !(await ok<{ devices: { id: string }[] }>("device.list", {})).devices.some((d) => d.id === cmd.device));
       return true;
     }
     default:

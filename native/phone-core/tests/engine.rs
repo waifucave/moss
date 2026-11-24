@@ -166,7 +166,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     assert_eq!(computer.app, PhoneApp::Moss);
     // The engine lists the phone, with the same id the phone derives from its own key.
     let me = core.identity();
-    engine.ok(json!({ "cmd": "waitDevice", "id": me.device_id })).await;
+    engine.ok(json!({ "cmd": "waitDevice", "device": me.device_id })).await;
     let devices = engine.ok(json!({ "cmd": "devices" })).await;
     let listed = devices["devices"].as_array().unwrap().iter().find(|d| d["id"] == json!(me.device_id)).expect("the phone is listed").clone();
     assert_eq!(listed["kind"], "phone");
@@ -239,7 +239,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     assert_eq!(engine.ok(json!({ "cmd": "decision", "cardId": waiting })).await["allowed"], false);
 
     // Revoked on the computer: the link is cut and the phone stops dialling.
-    engine.ok(json!({ "cmd": "revoke", "id": me.device_id })).await;
+    engine.ok(json!({ "cmd": "revoke", "device": me.device_id })).await;
     until_event(&conn, "revoked", |e| matches!(e, ConnEvent::Revoked)).await;
     assert!(matches!(conn.call("bot.list".into(), "{}".into()).await, Err(_)));
     conn.disconnect();

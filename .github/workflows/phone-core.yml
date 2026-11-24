@@ -111,7 +111,7 @@ jobs:
         env:
           MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
         run: |
-          nohup bun --preload packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --advertise 10.0.2.2 --qr-port 8787 > "$RUNNER_TEMP/engine.log" 2>&1 &
+          nohup bun --preload ./packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --advertise 10.0.2.2 --qr-port 8787 > "$RUNNER_TEMP/engine.log" 2>&1 &
           for i in $(seq 1 120); do grep -q "QR ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
           cat "$RUNNER_TEMP/engine.log"
       - name: Enable KVM
@@ -182,7 +182,7 @@ jobs:
         env:
           MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
         run: |
-          nohup bun --preload packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --qr-port 8787 > "$RUNNER_TEMP/engine.log" 2>&1 &
+          nohup bun --preload ./packages/core/test/preload.ts native/phone-core/tests/harness/engine.ts --auto --qr-port 8787 > "$RUNNER_TEMP/engine.log" 2>&1 &
           for i in $(seq 1 120); do grep -q "QR ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
           cat "$RUNNER_TEMP/engine.log"
       - name: The Swift test in the iPhone simulator
