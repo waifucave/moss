@@ -1,172 +1,205 @@
-// A pending card whose place goes away (card-replace.ts), over the real sealed store and a fake clock for the net's deadline.
+// A pending card whose place goes away (card-replace.ts), over the real sealed store and the real FallbackNet: the only thing
+// stood in for is the window's maker (index.ts `showFallbackCard`), which like the real one does nothing without an entry for
+// the card and nothing for a card already open.
 import { describe, expect, test } from "bun:test";
-import { windowShowsCard, pressWindowIsOpen } from "../src/main/card-place";
+import { pressWindowIsOpen, placeFromEngine, windowShowsCard } from "../src/main/card-place";
 import { CardReplacer, MAX_REPLACEMENTS } from "../src/main/card-replace";
+import { FallbackNet } from "../src/main/fallback-net";
 import { SealedFrames, type SealedCard } from "../src/main/sealed";
+import { fallbackOnVisibility } from "../src/main/shortcuts";
 
 const card = (id: string): SealedCard => ({ id, kind: "tool", computer: "Studio", origin: "user", issuedAt: 0, expiresAt: null, hash: "a".repeat(64), fields: {}, options: [{ id: "a", kind: "approve", label: "A" }, { id: "d", kind: "deny", label: "D" }] });
 const ISLAND = new Set([10, 11, 12]);
+type Win = { closed: boolean };
+const MAIN = 1;
 
 function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; window: string } = { kind: "island" }) {
   const sealed = new SealedFrames();
-  let now = 0;
-  const deadlines = new Map<string, number>();
-  const fallbackWindow = new Set<string>();
-  const places = new Map<string, number>();
-  const placedAt = new Set<string>();
+  const opened: Win[] = [];
+  const net = new FallbackNet<Win>({
+    delayMs: 1_000_000,
+    show: (id) => { const e = net.get(id); if (e === undefined || (e.win !== undefined && !e.win.closed)) return; e.win = { closed: false }; opened.push(e.win); },
+    closeWindow: (w) => { w.closed = true; },
+    isAlive: (w) => !w.closed,
+  });
+  const cardPlaces = new Map<string, string>();
+  const placeCalls = new Map<string, number>();
   const log: string[] = [];
-  const shown: string[] = [];
   const buttonsShown = (id: string) => sealed.buttonsVisible(id, (w) => windowShowsCard(placed, w !== undefined && ISLAND.has(w)));
   const r = new CardReplacer({
     cardsIn: (w, closed, doc) => sealed.windowGone(w, closed, doc),
     isPending: (id) => sealed.isPending(id),
     arrived: () => true,
-    placedOnce: (id) => placedAt.has(id),
-    place: (id) => { places.set(id, (places.get(id) ?? 0) + 1); },
+    placedOnce: (id) => cardPlaces.has(id),
+    // index.ts: `placeCardNow`: a place that did not change does nothing (an open card of the app's own stays open).
+    place: (id) => {
+      placeCalls.set(id, (placeCalls.get(id) ?? 0) + 1);
+      const now = placeFromEngine(placed, { front: false, drawnInWindow: false });
+      if (cardPlaces.get(id) === now) return;
+      cardPlaces.set(id, now);
+      net.disarm(id);
+      net.arm(id);
+    },
     restack: () => undefined,
     engineplace: () => placed,
     front: () => false,
     drawnInWindow: () => false,
     buttonsShown,
     fallbackHere: () => true,
-    fallbackRunning: (id) => deadlines.has(id),
-    fallbackWindowOpen: (id) => fallbackWindow.has(id),
-    // The real armFallback restarts the deadline: a re-placement that calls it while one runs moves it.
-    armFallback: (id) => { deadlines.set(id, now + 2_000); },
-    showFallbackNow: (id) => { shown.push(id); fallbackWindow.add(id); deadlines.delete(id); },
+    fallbackRunning: (id) => net.has(id),
+    fallbackWindowOpen: (id) => net.isOpen(id),
+    armFallback: (id) => net.armIfNone(id),
+    showFallbackNow: (id) => net.showNow(id),
     log: (l) => log.push(l),
   });
-  const frames = (id: string, win: number, visible = true) => {
-    sealed.fromCore(card(id));
-    placedAt.add(id);
-    const f = { parent: { processId: 100, routingId: win } };
-    for (const e of ["button:a", "button:d"]) sealed.markVisible(sealed.mint(id, e, f, win)!.token, visible);
+  const tokens: string[] = [];
+  const frames = (id: string, win: number, visible = true, doc = win) => {
+    if (sealed.get(id) === undefined) { sealed.fromCore(card(id)); cardPlaces.set(id, "island"); net.arm(id); }
+    const f = { parent: { processId: 100, routingId: doc } };
+    for (const e of ["button:a", "button:d"]) { const t = sealed.mint(id, e, f, win)!.token; tokens.push(t); sealed.markVisible(t, visible); if (visible && buttonsShown(id)) net.disarm(id); }
   };
-  return { sealed, r, deadlines, places, log, shown, fallbackWindow, frames, buttonsShown, tick: (ms: number) => { now += ms; }, now: () => now };
+  /** The page's own visibility word, with the app's handler (`sealedVisible`). */
+  const report = (token: string, visible: boolean) => {
+    sealed.markVisible(token, visible);
+    const id = sealed.cardOf(token);
+    if (id === undefined) return;
+    const step = fallbackOnVisibility({ visible, bothVisible: buttonsShown(id), fallbackOpen: net.isOpen(id), answering: false });
+    if (step === "disarm") net.disarm(id);
+    else if (step === "arm") net.arm(id);
+  };
+  return { sealed, r, net, opened, placeCalls, log, frames, report, tokens, buttonsShown };
 }
+const openWindows = (w: ReturnType<typeof world>) => w.opened.filter((x) => !x.closed).length;
 
 describe("a place going away", () => {
   for (const [name, win] of [["the bundled island", 10], ["a copy of the island", 11], ["the pill", 12]] as const) {
-    test(`${name} closing: the card is placed again once and the net's timer runs`, () => {
+    test(`${name} closing: the card's frames go, it is placed again, and the net's timer runs`, () => {
       const w = world();
       w.frames("c1", win);
+      expect(w.net.has("c1")).toBe(false);
       w.r.lost(win, true);
-      expect(w.places.get("c1")).toBe(1);
-      expect(w.deadlines.get("c1")).toBe(2_000);
-      expect(w.log.filter((l) => l.includes("placed again"))).toHaveLength(1);
+      expect(w.r.countOf("c1")).toBe(1);
+      expect(w.net.has("c1")).toBe(true);
+      expect(w.net.isOpen("c1")).toBe(false);
     });
   }
 
-  test("another surface still shows the buttons: placed again, but no timer", () => {
+  test("another surface still shows the buttons: placed again, no timer", () => {
     const w = world();
     w.frames("c1", 10);
     w.frames("c1", 11);
     w.r.lost(10, true);
-    expect(w.places.get("c1")).toBe(1);
-    expect(w.deadlines.has("c1")).toBe(false);
+    expect(w.r.countOf("c1")).toBe(1);
+    expect(w.net.has("c1")).toBe(false);
   });
 
-  test("a running deadline is never moved by a re-placement", () => {
+  test("a running deadline is never moved by a re-placement (the timer object stays the same)", () => {
     const w = world();
     w.frames("c1", 10, false);
-    w.deadlines.set("c1", 2_000);
-    w.tick(1_500);
-    w.r.lost(10, false);
-    w.r.lost(10, false);
-    expect(w.deadlines.get("c1")).toBe(2_000);
+    const before = w.net.get("c1")!.timer;
+    for (let i = 0; i < MAX_REPLACEMENTS; i++) w.r.lost(10, false, "p:100:10");
+    expect(w.net.get("c1")!.timer).toBe(before);
   });
 
-  test("a document reloading every second can't hold the net back: the deadline stands through every re-placement, and past the cap the net draws the card", () => {
+  test(`the ${MAX_REPLACEMENTS + 1}th loss ends with exactly one net window open, and it stays open through 20 more reloads and closes`, () => {
     const w = world();
     w.frames("c1", 10, false);
-    w.deadlines.set("c1", 2_000);
-    for (let i = 0; i < MAX_REPLACEMENTS; i++) { w.tick(150); w.r.lost(10, false); expect(w.deadlines.get("c1")).toBe(2_000); }
-    w.tick(150);
-    w.r.lost(10, false);
-    expect(w.shown).toEqual(["c1"]);
+    for (let i = 0; i < MAX_REPLACEMENTS + 1; i++) { w.frames("c1", 10, false); w.r.lost(10, false, "p:100:10"); }
+    expect(w.net.isOpen("c1")).toBe(true);
+    expect(openWindows(w)).toBe(1);
+    const win = w.net.get("c1")!.win!;
+    for (let i = 0; i < 20; i++) { w.frames("c1", 10, false); if (i % 2 === 0) w.r.lost(10, false, "p:100:10"); else w.r.lost(10, true); expect(openWindows(w)).toBe(1); }
+    expect(w.net.get("c1")!.win).toBe(win);
+    expect(win.closed).toBe(false);
+    expect(w.placeCalls.get("c1") ?? 0).toBeLessThanOrEqual(MAX_REPLACEMENTS);
   });
 
-  test("a reload or close in an unrelated window leaves the other cards alone", () => {
+  test("past the cap, buttons that show again and go again bring the net back", () => {
     const w = world();
-    w.frames("a", 10);
-    w.frames("b", 11);
-    w.r.lost(10, false);
-    w.r.lost(12, true);
-    expect(w.places.get("a")).toBe(1);
-    expect(w.places.get("b")).toBeUndefined();
-    expect(w.log).toHaveLength(1);
+    w.frames("c1", 10, false);
+    for (let i = 0; i < MAX_REPLACEMENTS + 1; i++) { w.frames("c1", 10, false); w.r.lost(10, false, "p:100:10"); }
+    for (const t of w.tokens) w.report(t, true);
+    expect(w.net.has("c1")).toBe(false);
+    w.r.lost(10, true);
+    expect(w.net.isOpen("c1")).toBe(true);
+  });
+
+  test("an open net window survives a re-placement whose place did not change", () => {
+    const w = world();
+    w.frames("c1", 10, false);
+    w.net.showNow("c1");
+    const win = w.net.get("c1")!.win!;
+    w.r.lost(10, false, "p:100:10");
+    w.r.lost(10, true);
+    expect(win.closed).toBe(false);
+    expect(w.net.isOpen("c1")).toBe(true);
+    expect(openWindows(w)).toBe(1);
+  });
+
+  test("a third-party frame reloading in the main window changes no card's count", () => {
+    const w = world({ kind: "strip", program: "code", window: "main" });
+    w.frames("a", MAIN, true, 5);
+    w.frames("b", MAIN, true, 6);
+    for (let i = 0; i < 20; i++) w.r.lost(MAIN, false, "p:100:99");
+    expect(w.r.countOf("a")).toBe(0);
+    expect(w.r.countOf("b")).toBe(0);
+    expect(w.buttonsShown("a")).toBe(true);
+    w.r.lost(MAIN, false, "p:100:5");
+    expect(w.r.countOf("a")).toBe(1);
+    expect(w.r.countOf("b")).toBe(0);
   });
 
   test("a card still in its conversation's beat (not placed yet) is left to the beat", () => {
     const w = world();
-    w.frames("c1", 10);
-    w.r.lost(10, false);
-    const w2 = world();
-    w2.sealed.fromCore(card("c2"));
-    w2.sealed.mint("c2", "button:a", { parent: { processId: 1, routingId: 10 } }, 10);
-    w2.r.lost(10, false);
-    expect(w2.places.get("c2")).toBeUndefined();
+    w.sealed.fromCore(card("c2"));
+    w.sealed.mint("c2", "button:a", { parent: { processId: 100, routingId: 10 } }, 10);
+    w.r.lost(10, true);
+    expect(w.r.countOf("c2")).toBe(0);
   });
 
-  test("two closes in a row: each is placed once, the second names only the second window's card", () => {
+  test("two closes in a row: each is placed again once", () => {
     const w = world();
     w.frames("c1", 10);
     w.frames("c1", 11);
     w.r.lost(10, true);
     w.r.lost(11, true);
-    expect(w.places.get("c1")).toBe(2);
-    expect(w.deadlines.get("c1")).toBe(2_000);
+    expect(w.r.countOf("c1")).toBe(2);
+    expect(w.net.has("c1")).toBe(true);
   });
 
-  test(`at most ${MAX_REPLACEMENTS} re-placements: the next goes straight to the net, once, and nothing moves the card after`, () => {
-    expect(MAX_REPLACEMENTS).toBeLessThanOrEqual(8);
-    const w = world();
-    w.frames("c1", 10, false);
-    for (let i = 0; i < MAX_REPLACEMENTS + 5; i++) { w.frames("c1", 10, false); w.r.lost(10, false); }
-    expect(w.places.get("c1")).toBe(MAX_REPLACEMENTS);
-    expect(w.shown).toEqual(["c1"]);
-    w.r.forget("c1");
-    expect(w.r.countOf("c1")).toBe(0);
-  });
-
-  test("the cap never opens the net over buttons that show", () => {
-    const w = world();
-    w.frames("c1", 10, true);
-    for (let i = 0; i < MAX_REPLACEMENTS + 3; i++) w.r.lost(10, false);
-    expect(w.shown).toEqual([]);
-  });
-
-  test("a reload clears the marks of the document that loaded again (its page never said it left): the net then runs", () => {
+  test("a reload clears the marks of the document that loaded again only: the net then runs", () => {
     const w = world();
     w.frames("c1", 10);
-    expect(w.buttonsShown("c1")).toBe(true);
     w.r.lost(10, false, "p:100:10");
     expect(w.buttonsShown("c1")).toBe(false);
-    expect(w.deadlines.get("c1")).toBe(2_000);
+    expect(w.net.has("c1")).toBe(true);
   });
 
-  test("never two places at once over a generated sequence of closes, reloads and visibility reports", () => {
-    let seed = 12345;
+  test("generated sequences: after every step the card is shown somewhere or its net runs or is open, and never two places", () => {
+    let seed = 987654;
     const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
-    for (let run = 0; run < 40; run++) {
+    for (let run = 0; run < 60; run++) {
       const w = world();
-      w.sealed.fromCore(card("c"));
-      const open = new Set<number>();
-      const mintIn = (win: number) => { w.frames("c", win, false); open.add(win); };
-      mintIn(10);
-      for (let step = 0; step < 40; step++) {
+      w.frames("c", 10, false);
+      const wins = new Set([10]);
+      for (let step = 0; step < 60; step++) {
         const win = [10, 11, 12][rnd(3)]!;
-        const op = rnd(5);
-        if (op === 0) { w.r.lost(win, true); open.delete(win); }
-        else if (op === 1) w.r.lost(win, false, `p:100:${win}`);
-        else if (op === 2) mintIn(win);
-        else if (op === 3) {
-          // The page reports both buttons visible; the app drops the net, as `sealedVisible` does.
-          for (const t of (w.sealed as unknown as { channels: Map<string, { windowId?: number }> }).channels.keys()) if ((w.sealed as unknown as { channels: Map<string, { windowId?: number }> }).channels.get(t)!.windowId === win) w.sealed.markVisible(t, true);
-          if (w.buttonsShown("c")) { w.deadlines.delete("c"); w.fallbackWindow.delete("c"); }
-        } else w.tick(300);
-        expect(w.fallbackWindow.has("c") && w.buttonsShown("c")).toBe(false);
-        expect(w.places.get("c") ?? 0).toBeLessThanOrEqual(MAX_REPLACEMENTS);
+        switch (rnd(7)) {
+          case 0: w.frames("c", win, false); wins.add(win); break; // a surface opens (again)
+          case 1: w.r.lost(win, true); wins.delete(win); break;
+          case 2: w.r.lost(win, false, `p:100:${win}`); break; // its own document reloads
+          case 3: w.r.lost(win, false, `p:100:${50 + rnd(5)}`); break; // some other document's reload
+          case 4: case 5: { if (w.tokens.length > 0) w.report(w.tokens[rnd(w.tokens.length)]!, rnd(2) === 0); break; } // live or gone frames report
+          default: { const e = w.net.get("c"); if (e !== undefined && e.win === undefined) w.net.showNow("c"); } // a timer fires
+        }
+        const shown = w.buttonsShown("c");
+        // The independent oracle: from the store's own channels, not from the ops.
+        const live = [...(w.sealed as unknown as { channels: Map<string, { cardId: string; windowId?: number; element: string }> }).channels.entries()]
+          .filter(([t, c]) => c.cardId === "c" && c.element.startsWith("button:") && w.sealed.isTokenVisible(t) && c.windowId !== undefined && ISLAND.has(c.windowId));
+        expect(shown).toBe(new Set(live.map(([, c]) => c.element)).size === 2);
+        expect(shown || w.net.has("c")).toBe(true);
+        expect(shown && w.net.isOpen("c")).toBe(false);
+        expect(openWindows(w)).toBeLessThanOrEqual(1);
       }
     }
   });

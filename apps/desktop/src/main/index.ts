@@ -88,6 +88,7 @@ import { PluginKeys, keysMayRun, type HoldStep } from "./plugin-keys";
 import { WebViews, isWebViewContents, webSpec } from "./ui/web-views";
 import type { Os } from "./ui/spots";
 import { CardReplacer } from "./card-replace";
+import { FallbackNet } from "./fallback-net";
 import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, windowShowsCard, pressWindowIsOpen, type CardPlace, type PressSource } from "./card-place";
 import { afterTap, afterTray, appIsRegular, mainWindowFront, surfaceShown, type MainWindowState, type PutAway } from "./front-rules";
 import { linuxSession, mainWindowPlan, surfaceDrawsOffscreen, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
@@ -1059,9 +1060,10 @@ let signedDevice: string | undefined;
 const sealedSeen = new Map<string, boolean>();
 /** The sealed frames whose page has said "visible" at least once (watchSealedDraw redraws only a page that never has). */
 const sealedEverSeen = new Set<string>();
-const fallbacks = new Map<string, { timer: ReturnType<typeof setTimeout>; win?: Electron.BrowserWindow; token?: string; strip?: boolean }>();
 /** 2 s; times the acceptance run's scale on a test or source build (`test-scale.ts`), never on a released app. */
 const FALLBACK_DELAY_MS = 2_000 * testTimeScale(process.env, app.isPackaged && typeof __MOSS_TEST_BUILD__ !== "string" && typeof __MOSS_ACCEPTANCE_BUILD__ !== "string");
+/** Each pending card's own-card timer or window (fallback-net.ts); the window is made by `showFallbackCard`. */
+const fallbacks = new FallbackNet<Electron.BrowserWindow>({ delayMs: FALLBACK_DELAY_MS, show: (id, strip) => showFallbackCard(id, strip), closeWindow: (w) => w.close(), isAlive: (w) => !w.isDestroyed(), changed: () => restack() });
 /** The fallback card's window: a card's own width, a height that fits what it says up to a sane most (it scrolls inside
  *  beyond that, its buttons staying in view). */
 const FALLBACK_WIDTH = 440;
@@ -1259,7 +1261,8 @@ const replacer = new CardReplacer({
   isPending: (id) => sealed.isPending(id),
   arrived: (id) => cardArrived.has(id),
   placedOnce: (id) => cardPlaces.has(id),
-  place: (id) => { cardPlaces.delete(id); placeCardNow(id); },
+  // The place is decided again by the same rule; one that did not change leaves an open card of the app's own as it is.
+  place: (id) => placeCardNow(id),
   restack: () => restack(),
   engineplace: (id) => enginePlaces.get(id),
   front: () => mainWindowFront(mainState()),
@@ -1267,9 +1270,9 @@ const replacer = new CardReplacer({
   buttonsShown: (id) => buttonsInPlace(id),
   fallbackHere: (id) => fallbackHere(id),
   fallbackRunning: (id) => fallbacks.has(id),
-  fallbackWindowOpen: (id) => fallbacks.get(id)?.win !== undefined,
-  armFallback: (id) => { void armFallback(id); },
-  showFallbackNow: (id) => { disarmFallback(id); void showFallbackCard(id); },
+  fallbackWindowOpen: (id) => fallbacks.isOpen(id),
+  armFallback: (id) => { fallbacks.armIfNone(id); },
+  showFallbackNow: (id) => fallbacks.showNow(id),
   log,
 });
 const CONVERSATION_ASK_GRACE_MS = 400;
@@ -1335,22 +1338,14 @@ function cardWaitingAtConnect(c: unknown): void {
 }
 
 async function armFallback(cardId: string): Promise<void> {
-  disarmFallback(cardId);
   // lane HS (B1): one card in one place: only the program the router's placement names arms its own card (and one held
   // off is armed when a later placement brings it here).
-  if (!fallbackHere(cardId)) { heldOffFallbacks.add(cardId); return; }
-  const timer = setTimeout(() => void showFallbackCard(cardId), FALLBACK_DELAY_MS);
-  timer.unref?.();
-  fallbacks.set(cardId, { timer });
+  if (!fallbackHere(cardId)) { fallbacks.disarm(cardId); heldOffFallbacks.add(cardId); return; }
+  fallbacks.arm(cardId);
 }
 
 function disarmFallback(cardId: string): void {
-  const own = fallbacks.get(cardId);
-  if (own === undefined) return;
-  clearTimeout(own.timer);
-  if (own.win !== undefined && !own.win.isDestroyed()) own.win.close();
-  fallbacks.delete(cardId);
-  restack();
+  fallbacks.disarm(cardId);
 }
 
 // lane HS: start. R12's host half (host-stacking.ts).

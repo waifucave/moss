@@ -59,9 +59,10 @@ export class CardReplacer {
     this.#counts.set(cardId, n);
     if (this.#counts.size > 256) this.#counts.delete(this.#counts.keys().next().value!);
     if (n > MAX_REPLACEMENTS) {
-      // Enough: the net draws it and nothing moves it again.
-      if (n === MAX_REPLACEMENTS + 1 && d.fallbackHere(cardId) && !d.fallbackWindowOpen(cardId) && !d.buttonsShown(cardId)) {
-        d.log(`card: ${cardId} its place went away too often: the app's own card draws it`);
+      // Enough: the app's own card draws it and nothing moves the card again. Asked on every later loss (an open one is kept), so
+      // a card whose buttons showed again and went again is never left with nowhere.
+      if (d.fallbackHere(cardId) && !d.fallbackWindowOpen(cardId) && !d.buttonsShown(cardId)) {
+        if (n === MAX_REPLACEMENTS + 1) d.log(`card: ${cardId} its place went away too often: the app's own card draws it`);
         d.showFallbackNow(cardId);
       }
       return;

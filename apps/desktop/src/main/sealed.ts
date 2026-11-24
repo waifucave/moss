@@ -321,9 +321,10 @@ export class SealedFrames {
     const held = new Set<string>();
     for (const [t, ch] of [...this.channels]) {
       if (ch.windowId !== windowId || !this.isPending(ch.cardId)) continue;
-      held.add(ch.cardId);
-      if (closed) { this.visible.delete(t); this.channels.delete(t); }
-      else if (documentKey !== undefined && ch.bound === documentKey) this.visible.delete(t);
+      if (closed) { held.add(ch.cardId); this.visible.delete(t); this.channels.delete(t); }
+      // A reload names only the cards whose frames hang under the document that loaded again: another document's reload in the
+      // same window (a third party's frame) changes nothing of theirs.
+      else if (documentKey !== undefined && ch.bound === documentKey) { held.add(ch.cardId); this.visible.delete(t); }
     }
     return [...held];
   }
