@@ -1,7 +1,7 @@
 // moss/trigger-webhook's handler and functions: the late rule and the untrusted label.
 import { describe, expect, test } from "bun:test";
 import { webhook } from "../host/index";
-import { isLate, newFence, untrusted, WEBHOOK_LATE_MS, WEBHOOK_TEXT_MAX_CHARS } from "../src/webhook";
+import { isLate, newFence, untrusted, visibleOutsideText, WEBHOOK_LATE_MS, WEBHOOK_TEXT_MAX_CHARS } from "../src/webhook";
 
 describe("the webhook trigger", () => {
   test("check takes `webhook: true` only", () => {
@@ -30,5 +30,14 @@ describe("the webhook trigger", () => {
     const long = untrusted("GitHub", "a".repeat(WEBHOOK_TEXT_MAX_CHARS + 10));
     expect(long).toContain("10 more characters, was cut");
     expect(long).toContain("from GitHub");
+  });
+
+  test("what doesn't show is made visible before fencing: ANSI escapes, bidi overrides, zero-width and lone surrogates; lines and tabs stay", () => {
+    const body = "ok\tdone\n\u001b[31mred\u001b[0m \u202Eevil\u202C a\u200Bb \uD800 x\ry\u2028z\u0000";
+    expect(visibleOutsideText(body)).toBe("ok\tdone\n\\u{1B}[31mred\\u{1B}[0m \\u{202E}evil\\u{202C} a\\u{200B}b \\u{D800} x\\u{D}y\\u{2028}z\\u{0}");
+    const text = untrusted("a webhook", body, "text/plain\u202E");
+    for (const hidden of ["\u001b", "\u202E", "\u202C", "\u200B", "\r", "\u2028", "\u0000"]) expect(text.includes(hidden)).toBe(false);
+    expect(text).toContain("(text/plain\\u{202E})");
+    expect(text).toContain("ok\tdone\n");
   });
 });
