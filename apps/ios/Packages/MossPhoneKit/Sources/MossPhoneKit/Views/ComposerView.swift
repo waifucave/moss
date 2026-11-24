@@ -166,7 +166,7 @@ struct ComposerView: View {
             case .rows:
                 if offers.pictures, cameraAvailable { action("Camera", "camera") { close(); showCamera = true } }
                 if offers.pictures { action("Photos", "photo") { close(); showPhotos = true } }
-                if offers.files { action("Files", "paperclip") { close(); showFiles = true } }
+                if offers.files { action("Files", "paperclip", value: offers.fileKeptDays.map { "Kept \($0) days" }) { close(); showFiles = true } }
                 if !offers.commands.isEmpty { action("Plugins", "puzzlepiece", chevron: true) { go(.plugins) } }
                 if !offers.efforts.isEmpty { action("Effort", "gauge", value: offers.effort, selected: true, chevron: true) { go(.effort) } }
                 if !offers.models.isEmpty { action("Model", "cpu", value: offers.models.first { $0.id == offers.model }?.name, chevron: true) { go(.model) } }

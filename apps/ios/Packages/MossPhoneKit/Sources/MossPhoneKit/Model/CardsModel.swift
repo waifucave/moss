@@ -61,7 +61,10 @@ public final class CardsModel {
             guard let self else { return }
             let stream = await client.events()
             await self.load()
-            for await event in stream { await self.apply(event) }
+            for await event in stream {
+                await self.apply(event)
+                if case .connection(.connected) = event { await self.load() }
+            }
         }
     }
     public func stopListening() { listener?.cancel(); listener = nil }
