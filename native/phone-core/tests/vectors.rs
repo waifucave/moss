@@ -152,6 +152,7 @@ fn the_phone_core_builds_the_engines_bytes() {
 
     // The visible-text rule, from the engine's own function when this tree has it (protocol `visible-text.ts`).
     match v["visible"].as_array() {
+        None => panic!("the engine's tree has visible-text.ts: its vectors must be there"),
         Some(cases) => {
             for c in cases {
                 let t = c["text"].as_str().unwrap();
@@ -160,23 +161,12 @@ fn the_phone_core_builds_the_engines_bytes() {
                 assert_eq!(moss_phone_core::names::clean_name(t), c["nameOk"].as_bool().unwrap(), "name verdict on {t:?}");
             }
         }
-        None => eprintln!("the engine's tree has no visible-text.ts yet: checked against tests/visible_vectors.json only"),
     }
 
     // The device-name rule (devices/names.ts): the same verdict on every edge case, and the same cleaned name.
-    // The phone's rule refuses a joiner beside ASCII (the protocol's `joinerInName`); an engine tree from before it still
-    // takes one. Until that tree has the rule, those names are the known difference, checked as such.
-    let engine_has_joiner_rule = v["joinerInName"].as_bool().unwrap_or(false);
-    let ascii_joiner = |n: &str| {
-        let c: Vec<char> = n.chars().collect();
-        (0..c.len()).any(|i| moss_phone_core::visible::is_joiner(c[i]) && moss_phone_core::visible::joiner_between_visible(&c, i) && !moss_phone_core::visible::joiner_in_name(&c, i))
-    };
+    // The engine's tree has the protocol's `joinerInName`: a joiner beside ASCII is refused by both, the same verdict.
+    assert_eq!(v["joinerInName"].as_bool(), Some(true), "the engine's tree has visible-text.ts's joinerInName");
     for n in v["names"].as_array().unwrap() {
-        let name = n["name"].as_str().unwrap();
-        if !engine_has_joiner_rule && ascii_joiner(name) {
-            assert!(n["ok"].as_bool().unwrap() && !moss_phone_core::names::clean_name(name), "the known difference on {name:?}");
-            continue;
-        }
         let name = n["name"].as_str().unwrap();
         assert_eq!(moss_phone_core::names::clean_name(name), n["ok"].as_bool().unwrap(), "name {name:?}");
     }
@@ -191,7 +181,8 @@ fn the_phone_core_builds_the_engines_bytes() {
 }
 
 /// The visible-text rule against vectors the protocol's own `visible-text.ts` produced (`tests/visible_vectors.json`,
-/// from `lane/bk-2-cards` at d3b2cb20f over `tests/harness/visible-cases.json`): runs without the engine.
+/// from the integration tree's own function at 778e29c80 over `tests/harness/visible-cases.json`): runs without the
+/// engine; `the_phone_core_builds_the_engines_bytes` checks the same cases live against the tree.
 #[test]
 fn the_visible_text_rule_matches_the_protocols() {
     let v: Value = serde_json::from_str(include_str!("visible_vectors.json")).unwrap();
