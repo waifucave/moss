@@ -397,9 +397,8 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     const res = await c.request(METHODS.settingsModelRoles, {});
     for (const role of ["titles.model", "reviewer.model", "pins.dream", "pins.cleaner"]) {
       const info = res.result.roles[role];
-      // 2026-11-22: all four sat on Claude's light model (the reviewer was on the user's own, claude-sonnet-5).
-      // 2026-11-24: the reviewer never runs on a weak model, and Haiku 5.5 is weak: it sits on the family default, Opus 5.5.
-      expect(info.model).toBe(role === "reviewer.model" ? "anthropic/claude-opus-5-5" : "anthropic/claude-haiku-5-5");
+      // 2026-11-22: all four sit on Claude's light model (the reviewer was on the user's own, claude-sonnet-5).
+      expect(info.model).toBe("anthropic/claude-haiku-5-5");
       expect(info.problem).toBeNull();
     }
     c.close();
@@ -495,11 +494,9 @@ describe("settings.modelRoles / settings.setModelRole", () => {
     await c.hello(harnessToken, "cli");
     const first = (await c.request(METHODS.settingsModelRoles, {})).result.roles;
     expect(first["titles.model"].model).toBeNull();
-    // 2026-11-24: the reviewer never runs on a weak model. Llama 3.3 70B is weak and the family has no non-weak model here,
-    // so the reviewer has none: the problem names it, and a command it would review asks the person (not the structural
-    // `no-internal-credential` allow: this home has a credentialed provider). Was: it ran on the default model itself.
-    expect(first["reviewer.model"].model).toBeNull();
-    expect(first["reviewer.model"].problem?.reason).toBe("no-default-model");
+    // The reviewer, a safety gate, runs on the default model itself (claim restored: it never goes unreviewed while its own provider is credentialed).
+    expect(first["reviewer.model"].model).toBe("groq/llama-3.3-70b-versatile");
+    expect(first["reviewer.model"].problem).toBeNull();
     // Move the session default to a Claude row: groq is still the only credential, but it is not the default's
     // provider, so no job runs on it (was: a light job took groq's gpt-oss-20b).
     const moved = await c.request(METHODS.settingsSetModelRole, { role: "provider.model", model: "anthropic/claude-opus-5" });

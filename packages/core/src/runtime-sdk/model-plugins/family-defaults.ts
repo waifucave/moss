@@ -25,12 +25,6 @@
 // the vendors' rows take no effort at all (Mistral Large 3, MiniMax M3, Command A, MiMo V2.6 Pro, Nova Pro, Nemotron 3
 // Super, ERNIE 5.1) the default names none. Qwen 3.7 Plus, Hy4 Preview and Muse Spark keep medium: some of their vendors'
 // rows take it, the rest take no effort.
-/** A weak model (the catalog's hand-set class; a row that states none is weak, the agent SDK's own reading of
- *  `WinterModelDescriptor.strength`). Never a family default, and never the model that reviews commands. */
-export function isWeak(row: { strength?: string } | undefined): boolean {
-  return row?.strength !== "strong" && row?.strength !== "medium";
-}
-
 export interface FamilyDefault {
   /** The catalog's canonical model id (`row.canonicalModelId`). */
   model: string;
@@ -70,11 +64,19 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
 //     its light model; the effort is what makes the job light there;
 //   * a family with no default (its vendors serve only weak models: Gemma, Llama) still names a light model, so a person who picks one of
 //     its models has its jobs run on it.
-// A light model may be weak: it is a deliberate choice for small jobs (titles, tidying), never a default.
-// The 2026-11-24 audit (lane CT) moved: GLM 4.7 Flash -> GLM-5.3 Flash (served by all four GLM vendors; 4.7 Flash is
-// missing on zhipu-anthropic); Qwen 3.6 27B -> Qwen 3.8 Flash (served by 7 of the 11 Qwen vendors, 3.6 27B by 5; the four
-// Coding Plan providers carry neither); MiniMax M3 -> MiniMax M3.1 Flash (MiniMax's small tier, on all six vendors);
-// Nemotron 3 Super -> Nemotron 3.5 Lightning 30B-A3B (NVIDIA's small tier).
+// A light model may be weak (the `strength` mark is about how a model edits files, not about judging a command): it is a
+// deliberate choice, never a default.
+// THE LIGHT MODEL IS ALSO THE COMMAND SAFETY REVIEWER (and the plugin Review), so it is "the smallest model that can still
+// judge a shell command sensibly", not the vendor's tiniest. The reviewer (`agent/reviewer.ts`) sends a short instruction
+// and the command and asks for a plain JSON reply ({"verdict","reason"}): no structured-output mode, no forced tool, no
+// effort; any context of 128K or more fits it many times over.
+// The 2026-11-24 audit (lane CT) moved, each a current tier that judges a command as well as the one it replaces:
+// GLM 4.7 Flash -> GLM-5.3 Flash (newer generation, served by all four GLM vendors; 4.7 Flash is missing on
+// zhipu-anthropic); Qwen 3.6 27B -> Qwen 3.8 Flash (Qwen's current Flash, 1M context; on 7 of the 11 Qwen vendors, 3.6
+// 27B on 5; the four Coding Plan providers carry neither); MiniMax M3 -> MiniMax M3.1 Flash (MiniMax's current small
+// tier, 1M context, on all six vendors); Llama 4 Scout -> Llama 3.3 70B (served by both Llama vendors; Scout is not on
+// Together). Kept: Nemotron 3 Super, not Nemotron 3.5 Lightning 30B-A3B (3B active parameters does not clearly qualify
+// to judge a command).
 // The effort is the one a job that has none of its own asks for (titles; the dreamer and the cleaner keep theirs) when the
 // person set none for it; a row that doesn't list it drops it.
 // A family not listed (`o-series`, `other`) has no light model.
@@ -90,7 +92,6 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   nova: { model: "amazon.nova-micro", effort: "low" },
   "gpt-oss": { model: "gpt-oss-20b", effort: "low" },
   minimax: { model: "minimax-m3.1-flash", effort: "low" },
-  nemotron: { model: "nemotron-3.5-lightning-30b-a3b", effort: "low" },
   // One tier, or tiers that differ in speed or purpose rather than size: the default is the light model.
   grok: { model: "grok-4.6", effort: "low" },
   kimi: { model: "kimi-k3.1-pro", effort: "low" },
@@ -98,6 +99,7 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   ernie: { model: "ernie-5.1", effort: "low" },
   hunyuan: { model: "hy4-preview", effort: "low" },
   muse: { model: "muse-spark-1.3", effort: "low" },
+  nemotron: { model: "nemotron-3-super-120b-a12b", effort: "low" },
   // Its vendors serve only weak models, so no default; the light model is the family's own (a person who picks one gets its jobs on it).
   gemma: { model: "gemma-4-31b-it", effort: "low" },
   llama: { model: "llama-3.3-70b-instruct-turbo", effort: "low" },

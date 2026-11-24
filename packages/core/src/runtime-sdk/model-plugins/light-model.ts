@@ -2,7 +2,7 @@
 // Nothing here reads a key, a setting or the credential store; `settings.ts` decides WHICH provider, this answers WHAT the
 // provider offers.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
-import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS, isWeak } from "./family-defaults";
+import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "./family-defaults";
 
 type CatalogView = Pick<WinterCatalog, "families" | "models">;
 
@@ -46,23 +46,4 @@ export function lightModelOn(catalog: CatalogView, providerId: string, familyId:
   const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === light.model && m.status !== "blocked" && m.status !== "deprecated");
   if (row === undefined) return undefined;
   return { tag: row.key, family: familyId, ...(light.effort !== undefined ? { effort: light.effort } : {}) };
-}
-
-/**
- * The model that reviews commands (the bash safety reviewer and the plugin Review) on this provider for a family: THE
- * REVIEWER NEVER RUNS ON A WEAK MODEL (the controller's ruling, 2026-11-24: a weak model there can pass a dangerous
- * command or block safe ones). Titles and memory tidying may use a weak light model; the reviewer takes the family's
- * light model only when it is not weak, else the family's declared default as this provider serves it when that is not
- * weak. `undefined` when the family has neither here: the caller then falls to the person's own default model only if
- * that is not weak, and otherwise has no reviewer, which asks the person on a card (never allows; `agent/reviewer.ts`).
- */
-export function reviewerModelOn(catalog: CatalogView, providerId: string, familyId: string): LightChoice | undefined {
-  const light = lightModelOn(catalog, providerId, familyId);
-  if (light !== undefined && !isWeak(catalog.models.find((m) => m.key === light.tag && m.providerId === providerId))) return light;
-  const def = FAMILY_DEFAULTS[familyId];
-  if (def === undefined) return undefined;
-  const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === def.model && m.status !== "blocked" && m.status !== "deprecated" && !isWeak(m));
-  if (row === undefined) return undefined;
-  const effort = FAMILY_LIGHT_MODELS[familyId]?.effort;
-  return { tag: row.key, family: familyId, ...(effort !== undefined ? { effort } : {}) };
 }

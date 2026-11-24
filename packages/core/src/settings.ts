@@ -5,8 +5,7 @@ import { advanceAuthorityRevision } from "./authority-revision";
 import { legacyImportOn } from "./migration/legacy-imports";
 import { z } from "zod";
 import { activeCatalog, activeCatalogGeneration } from "./runtime-sdk/model-plugins/catalog-source";
-import { familyOfModel, lightModelOn, reviewerModelOn, type LightChoice } from "./runtime-sdk/model-plugins/light-model";
-import { isWeak } from "./runtime-sdk/model-plugins/family-defaults";
+import { familyOfModel, lightModelOn, type LightChoice } from "./runtime-sdk/model-plugins/light-model";
 import { ensureGlobalGitignore, MOSS_PERSONAL_IGNORES } from "./global-gitignore";
 import { consoleProfileCredentialFile } from "./runtime-sdk/anthropic-paths";
 import { canonicalModelTag, facingNameToTag, isModelTag, splitTag, UNSTATED_TAG, MOSS_TEST_PREFIX, type ModelTag } from "./runtime-sdk/model-tag";
@@ -2442,23 +2441,16 @@ export function internalRoleLight(
   const model = settings?.provider?.model;
   if (own === undefined || model === undefined || !internalEligibleProviderIds().has(own) || !snapshot.credentialed.has(own)) return undefined;
   const family = familyOfModel(catalog, own, model);
-  // The reviewer never runs on a weak model (2026-11-24): its pick is the family's light model only when that is not weak,
-  // else the family's default here (`reviewerModelOn`). Titles, the dreamer and the cleaner take the light model as it is.
-  const choice = family === undefined ? undefined : role === "reviewer.model" ? reviewerModelOn(catalog, own, family) : lightModelOn(catalog, own, family);
+  const choice = family === undefined ? undefined : lightModelOn(catalog, own, family);
   return choice === undefined ? undefined : { choice };
 }
 
 /** The default model's own tag when its provider is eligible and holds a credential: what the reviewer runs on when its family has
- *  no non-weak light model or default there (`internalRoleEffectiveTag`). `undefined` with no default, when its provider can't be
- *  used, or when the default model is weak (or unclassed, which is weak): the reviewer never runs on a weak model, and with no
- *  model it asks the person (2026-11-24). */
+ *  no light model there (`internalRoleEffectiveTag`). `undefined` with no default, or when its provider can't be used. */
 export function internalRoleOwnDefault(settings: Settings | null | undefined, snapshot: InternalProviderSnapshot): ModelTag | undefined {
   const own = ownProviderFor(settings);
   const model = settings?.provider?.model;
   if (own === undefined || model === undefined || !internalEligibleProviderIds().has(own) || !snapshot.credentialed.has(own)) return undefined;
-  // A tag the catalog doesn't hold goes on to its own refusal (`model-not-in-catalog`), which asks too.
-  const row = activeCatalog().models.find((m) => m.key === model && m.providerId === own);
-  if (row !== undefined && isWeak(row)) return undefined;
   return model as ModelTag;
 }
 
@@ -2471,8 +2463,7 @@ export function describeInternalJobModels(settings: Settings | null | undefined,
     let why: string;
     if (explicitInternalRolePin(settings, role) !== undefined) why = "set in settings";
     else if (tag === null) why = role === "reviewer.model" ? "no review can run: the chosen model's provider can't be used for it; pin a model in Settings › Roles" : "not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles";
-    else if (internalRoleLight(settings, role, snapshot) === undefined) why = role === "reviewer.model" ? "the default model itself: its family has no light model or default on its provider that is not weak" : "the default model itself: its family has no light model on its provider";
-    else if (role === "reviewer.model") why = `the ${internalRoleLight(settings, role, snapshot)?.choice.family ?? "own"} family's model that reviews commands (never a weak one)`;
+    else if (internalRoleLight(settings, role, snapshot) === undefined) why = "the default model itself: its family has no light model on its provider";
     else why = `the light model of the default's ${internalRoleLight(settings, role, snapshot)?.choice.family ?? "own"} family`;
     parts.push(`${label[role]} on ${tag ?? "nothing"} (${why})`);
   }

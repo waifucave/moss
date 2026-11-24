@@ -14,8 +14,7 @@ import { openaiChatFake } from "@waifucave/clover-provider-conformance/fakes";
 import { FileSecretStore } from "../../src/auth/secret-store";
 import { clearCredentialMaterial, writeCredentialMaterial } from "../../src/auth/credential-material";
 import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "../../src/runtime-sdk/model-plugins/family-defaults";
-import { familyOfModel, lightFamiliesOf, lightModelOn, reviewerModelOn } from "../../src/runtime-sdk/model-plugins/light-model";
-import { isWeak } from "../../src/runtime-sdk/model-plugins/family-defaults";
+import { familyOfModel, lightFamiliesOf, lightModelOn } from "../../src/runtime-sdk/model-plugins/light-model";
 import { effortVocabularyOf } from "../../src/runtime-sdk/provider-selection";
 import { internalWireEffortFor } from "../../src/providers/internal-provider";
 import { SessionStore } from "../../src/sessions/store";
@@ -24,7 +23,7 @@ import { SessionTitler } from "../../src/agent/titles";
 import { BashReviewer } from "../../src/agent/reviewer";
 import { createInternalProviderView } from "../../src/providers/internal-view";
 import { createInternalRouter, isInternalRefusal, modelNotOffered, type InternalRouter } from "../../src/providers/internal-router";
-import { describeInternalJobModels, internalRoleEffectiveTag, internalRoleLight, internalRoleNoTagReason, Settings, setModelRole } from "../../src/settings";
+import { describeInternalJobModels, internalRoleEffectiveTag, internalRoleLight, Settings, setModelRole } from "../../src/settings";
 
 const catalog = loadCatalog();
 const snap = (...ids: string[]) => ({ credentialed: new Set(ids) });
@@ -72,7 +71,7 @@ describe("the table", () => {
   });
 
   test("a family with one model has its default as its light model", () => {
-    for (const id of ["command", "ernie", "hunyuan", "muse", "grok", "kimi"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
+    for (const id of ["command", "ernie", "hunyuan", "muse", "nemotron", "grok", "kimi"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
   });
 
   test("the family of a model: by the row's own family, so a model that is no slot still has one", () => {
@@ -85,9 +84,9 @@ describe("the table", () => {
 });
 
 describe("the order, for the light jobs", () => {
-  test("Anthropic only: every light job is on Haiku 5.5; the reviewer is on Opus 5.5, the family default, because Haiku 5.5 is weak (2026-11-24; was Haiku since 2026-11-22)", () => {
+  test("Anthropic only: every job is on Haiku 5.5, the reviewer too (2026-11-22; was: the reviewer stayed on the default)", () => {
     const s = settingsWith("anthropic/claude-opus-5-5");
-    for (const role of LIGHT_ROLES) expect(String(internalRoleEffectiveTag(s, role, snap("anthropic")))).toBe(role === "reviewer.model" ? "anthropic/claude-opus-5-5" : "anthropic/claude-haiku-5-5");
+    for (const role of LIGHT_ROLES) expect(String(internalRoleEffectiveTag(s, role, snap("anthropic")))).toBe("anthropic/claude-haiku-5-5");
   });
 
   test("OpenAI only (a key): luna; the Codex sign-in: luna on codex-oauth", () => {
@@ -143,46 +142,6 @@ describe("the order, for the light jobs", () => {
   });
 });
 
-describe("the command safety reviewer never runs on a weak model (2026-11-24)", () => {
-  const weakTag = (tag: string) => isWeak(catalog.models.find((m) => m.key === tag));
-
-  test("for every family and every vendor that serves it, the reviewer's pick is never weak; the light jobs keep the light model", () => {
-    const rows: string[] = [];
-    for (const f of catalog.families ?? []) {
-      if (FAMILY_LIGHT_MODELS[f.id] === undefined) continue;
-      for (const p of f.vendorProviders ?? []) {
-        const r = reviewerModelOn(catalog, p, f.id);
-        if (r !== undefined) expect({ tag: r.tag, weak: weakTag(r.tag) }).toEqual({ tag: r.tag, weak: false });
-        const light = lightModelOn(catalog, p, f.id);
-        if (light !== undefined && !weakTag(light.tag)) expect(r?.tag).toBe(light.tag);
-        rows.push(`${f.id} on ${p}: reviews with ${r?.tag ?? "nothing (asks the person)"}; light ${light?.tag ?? "none"}`);
-      }
-    }
-    if (process.env.MOSS_PRINT_LIGHT_TABLE === "1") console.log(rows.join("\n"));
-  });
-
-  test("a weak light model: titles use it, the reviewer takes the family's default (MiniMax, Claude); a non-weak light model is shared (GPT)", () => {
-    expect(lightModelOn(catalog, "minimax", "minimax")?.tag).toBe("minimax/MiniMax-M3.1-Flash");
-    expect(reviewerModelOn(catalog, "minimax", "minimax")?.tag).toBe("minimax/MiniMax-M3");
-    expect(reviewerModelOn(catalog, "anthropic", "claude")?.tag).toBe("anthropic/claude-opus-5-5");
-    expect(reviewerModelOn(catalog, "openai", "gpt")?.tag).toBe(lightModelOn(catalog, "openai", "gpt")?.tag);
-    const s = settingsWith("minimax/MiniMax-M3");
-    expect(String(internalRoleEffectiveTag(s, "titles.model", snap("minimax")))).toBe("minimax/MiniMax-M3.1-Flash");
-    expect(String(internalRoleEffectiveTag(s, "reviewer.model", snap("minimax")))).toBe("minimax/MiniMax-M3");
-  });
-
-  test("a family with no non-weak model (Llama on DeepInfra): no reviewer model, and the refusal is not the structural one, so the command asks", () => {
-    expect(reviewerModelOn(catalog, "deepinfra", "llama")).toBeUndefined();
-    const s = settingsWith("deepinfra/meta-llama/Llama-3.3-70B-Instruct-Turbo");
-    expect(internalRoleEffectiveTag(s, "reviewer.model", snap("deepinfra"))).toBeNull();
-    // `ReviewerNoRunnableModel.structural` is only `no-internal-credential`; this home HAS a credentialed provider.
-    const why = internalRoleNoTagReason(s, "reviewer.model", snap("deepinfra"));
-    expect(why === undefined || why.reason !== "no-credential").toBe(true);
-    // Titles still run on the family's light model there.
-    expect(String(internalRoleEffectiveTag(s, "titles.model", snap("deepinfra")))).toBe("deepinfra/meta-llama/Llama-3.3-70B-Instruct-Turbo");
-  });
-});
-
 describe("the router: the effort, the fallback and what stays", () => {
   const secretsStore = () => new FileSecretStore(mkdtempSync(join(tmpdir(), "moss-light-model-secrets-")));
   async function routerFor(secrets: FileSecretStore, testBackendUrl?: (id: string) => string | undefined): Promise<{ router: InternalRouter; view: ReturnType<typeof createInternalProviderView> }> {
@@ -205,7 +164,7 @@ describe("the router: the effort, the fallback and what stays", () => {
     expect(get("titles.model").model).toBe("claude-haiku-5-5");
     expect(get("pins.dream").effort).toBe("medium");
     expect(get("pins.cleaner").effort).toBe("low");
-    expect(get("reviewer.model").model).toBe("claude-opus-5-5"); // 2026-11-24: never a weak model (was claude-haiku-5-5 from 2026-11-22)
+    expect(get("reviewer.model").model).toBe("claude-haiku-5-5"); // 2026-11-22: was claude-opus-5-5
     expect(get("reviewer.model").effort).toBeUndefined();
   });
 
@@ -280,7 +239,7 @@ describe("the router: the effort, the fallback and what stays", () => {
 });
 
 describe("an Anthropic-only home, end to end over the anthropic-messages fake", () => {
-  test("the title's request names Haiku 5.5 at low effort; the bash reviewer's names Opus 5.5, never a weak model (2026-11-24; was Haiku 5.5)", async () => {
+  test("the title's request names Haiku 5.5 at low effort; the bash reviewer's names Haiku 5.5 too (2026-11-22; was the default)", async () => {
     const { startFake, anthropicFake } = await import("@waifucave/clover-provider-conformance/fakes");
     const fake = await startFake({
       routes: [{
@@ -319,7 +278,7 @@ describe("an Anthropic-only home, end to end over the anthropic-messages fake", 
       expect(fake.requests.length).toBe(2);
       expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-haiku-5-5");
       expect((anthropicFake.anthropicBody(fake.requests[0]!).output_config as { effort?: string } | undefined)?.effort).toBe("low");
-      expect(anthropicFake.anthropicModelOf(fake.requests[1]!)).toBe("claude-opus-5-5");
+      expect(anthropicFake.anthropicModelOf(fake.requests[1]!)).toBe("claude-haiku-5-5");
     } finally {
       await fake.close();
     }
@@ -331,8 +290,7 @@ describe("the start-up line", () => {
     const line = describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap("anthropic"));
     expect(line).toContain("titles on anthropic/claude-haiku-5-5 (the light model of the default's claude family)");
     // 2026-11-22: was "... on anthropic/claude-opus-5-5 (a check that guards you keeps the stronger model)".
-    // 2026-11-24: the reviewer never runs on a weak model (Haiku 5.5 is weak): it is on the family default.
-    expect(line).toContain("the bash safety reviewer and the plugin Review on anthropic/claude-opus-5-5 (the claude family's model that reviews commands (never a weak one))");
+    expect(line).toContain("the bash safety reviewer and the plugin Review on anthropic/claude-haiku-5-5 (the light model of the default's claude family)");
     const pinned = describeInternalJobModels(setModelRole(settingsWith("anthropic/claude-opus-5-5"), "titles.model", "anthropic/claude-sonnet-5-5"), snap("anthropic"));
     expect(pinned).toContain("titles on anthropic/claude-sonnet-5-5 (set in settings)");
     expect(describeInternalJobModels(settingsWith("anthropic/claude-opus-5-5"), snap())).toContain("titles on nothing (not running: no light model of the chosen model's family can be had on its provider; pin a model in Settings › Roles)");
