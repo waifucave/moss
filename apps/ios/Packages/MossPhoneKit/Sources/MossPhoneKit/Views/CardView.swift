@@ -37,7 +37,7 @@ public struct CardView: View {
             }
         }
         .padding(14)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color(uiColor: .secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .contain)
     }
 
@@ -56,7 +56,7 @@ public struct CardView: View {
                 .font(.system(.footnote, design: .monospaced))
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .list(let items):
             labelled(name) {
                 VStack(alignment: .leading, spacing: 2) {

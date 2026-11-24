@@ -16,6 +16,7 @@ public struct BotsScreen: View {
                         ForEach(model.pinned) { row in
                             NavigationLink(value: row.bot) { PinnedFace(row: row) }
                                 .buttonStyle(.plain)
+                                .navigationLinkIndicatorVisibility(.hidden)
                                 .contextMenu { Button("Unpin", systemImage: "pin.slash") { model.togglePin(row.id) } }
                         }
                     }
