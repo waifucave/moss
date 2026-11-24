@@ -133,6 +133,20 @@ describe("erase: what goes and what stays", () => {
     expect(eraseSignalPath(w.home)).toBe(`${w.home}-erased`);
   });
 
+  test("a brand-new home's first start: no signal, so nothing is said and no result is left; the start writes the marker", () => {
+    const user = mkdtempSync(join(tmpdir(), "moss-fresh-"));
+    const home = join(user, ".moss");
+    expect(takeEraseSignalAtStart(home)).toBeUndefined();
+    bootstrapMossDir(home);
+    ensureHomeMarker(home);
+    expect(existsSync(homeMarkerPath(home))).toBe(true);
+    expect(existsSync(eraseResultPath(home))).toBe(false);
+    // A second start changes nothing.
+    expect(takeEraseSignalAtStart(home)).toBeUndefined();
+    ensureHomeMarker(home);
+    expect(existsSync(eraseResultPath(home))).toBe(false);
+  });
+
   test("the engine's start reads the signal: with the home's marker there (a healthy home) it is removed and nothing is said", () => {
     const w = world();
     mkdirSync(join(w.home, "run"), { recursive: true });
