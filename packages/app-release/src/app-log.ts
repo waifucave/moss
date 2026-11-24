@@ -90,15 +90,51 @@ export class AppLog {
 }
 
 /** A limit on how many lines one thing may write: a looping frame or caller, keyed by its own name, writes at most `max` in `windowMs`,
- *  and the first line after the quiet says how many were left out. Keeps at most `keys` names. */
+ *  and the first line after the quiet says how many were left out. Keeps at most `keys` names.
+ *
+ *  A key's own limit does not bound what many keys write together: a plugin that makes a frame after frame is a new key each time. So a
+ *  line may also name its `group` (the window its frame is in): all the keys of one group together write at most `groupMax` lines in
+ *  `groupWindowMs` (30 in a minute), whatever their names, and the lines left out are counted into the first line said after the quiet.
+ *  At most `groups` groups are kept. */
 export class LineLimiter {
   private readonly seen = new Map<string, { start: number; count: number; left: number }>();
+  private readonly byGroup = new Map<string, { start: number; count: number; left: number }>();
 
-  constructor(private readonly max = 5, private readonly windowMs = 10_000, private readonly keys = 256, private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly max = 5,
+    private readonly windowMs = 10_000,
+    private readonly keys = 256,
+    private readonly now: () => number = Date.now,
+    private readonly groupMax = 30,
+    private readonly groupWindowMs = 60_000,
+    private readonly groups = 64,
+  ) {}
 
-  /** `ok`: write this line; `left`: how many of this key's lines were left out since the last one written. */
-  check(key: string): { ok: boolean; left: number } {
+  /** `ok`: write this line; `left`: how many of this key's (and this group's) lines were left out since the last one written. */
+  check(key: string, group?: string): { ok: boolean; left: number } {
     const t = this.now();
+    let g: { start: number; count: number; left: number } | undefined;
+    if (group !== undefined) {
+      g = this.byGroup.get(group);
+      if (g === undefined || t - g.start >= this.groupWindowMs) {
+        // A new minute: what the last one left out and never said stays counted until a line is written.
+        g = { start: t, count: 0, left: g?.left ?? 0 };
+        this.byGroup.delete(group);
+        this.byGroup.set(group, g);
+        if (this.byGroup.size > this.groups) this.byGroup.delete(this.byGroup.keys().next().value as string);
+      }
+      if (g.count >= this.groupMax) { g.left++; return { ok: false, left: 0 }; }
+    }
+    const r = this.#keyed(key, t);
+    if (!r.ok) return r;
+    if (g === undefined) return r;
+    g.count++;
+    const left = r.left + g.left;
+    g.left = 0;
+    return { ok: true, left };
+  }
+
+  #keyed(key: string, t: number): { ok: boolean; left: number } {
     let e = this.seen.get(key);
     if (e === undefined || t - e.start >= this.windowMs) {
       const left = e?.left ?? 0;

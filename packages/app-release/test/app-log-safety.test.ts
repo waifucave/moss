@@ -172,6 +172,36 @@ describe("the line limiter", () => {
     expect(l.check("frame:1")).toEqual({ ok: true, left: 0 });
   });
 
+  test("one window's frames together write at most 30 lines a minute, however many keys they are; the lines left out are said on the first line after", () => {
+    let t = 1_000;
+    const l = new LineLimiter(5, 10_000, 256, () => t);
+    // A plugin that makes a new frame for every line: each key is new, so no key's own limit ever applies.
+    const written = Array.from({ length: 100 }, (_, i) => l.check(`press:${i}`, "w1")).filter((r) => r.ok).length;
+    expect(written).toBe(30);
+    // Another window has its own count, and an ungrouped caller is limited by its key alone.
+    expect(l.check("press:x", "w2")).toEqual({ ok: true, left: 0 });
+    for (let i = 0; i < 10; i++) expect(l.check("press:u").ok).toBe(i < 5);
+    // Within the minute nothing more from w1; at the next minute's first line the 70 left out are counted.
+    t += 59_000;
+    expect(l.check("press:late", "w1")).toEqual({ ok: false, left: 0 });
+    t += 1_000;
+    expect(l.check("press:again", "w1")).toEqual({ ok: true, left: 70 + 1 });
+    expect(l.check("press:again2", "w1")).toEqual({ ok: true, left: 0 });
+  });
+
+  test("a line the key's own limit refuses in a new minute does not lose the group's count, and the groups kept are bounded", () => {
+    let t = 0;
+    const l = new LineLimiter(1, 120_000, 256, () => t, 2, 60_000, 3);
+    expect(l.check("a", "g").ok).toBe(true);
+    expect(l.check("b", "g").ok).toBe(true);
+    expect(l.check("c", "g").ok).toBe(false); // the group's cap of 2: one left out
+    t += 60_000;
+    expect(l.check("a", "g")).toEqual({ ok: false, left: 0 }); // the key's own limit (one per two minutes); the count of 1 stays
+    expect(l.check("d", "g")).toEqual({ ok: true, left: 1 });
+    for (let i = 0; i < 100; i++) l.check(`k${i}`, `g${i}`);
+    expect(l.check("e", "g")).toEqual({ ok: true, left: 0 }); // long forgotten: a fresh group
+  });
+
   test("it keeps a bounded number of keys", () => {
     const l = new LineLimiter(1, 10_000, 4, () => 1);
     for (let i = 0; i < 100; i++) l.check(`k${i}`);

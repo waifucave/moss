@@ -519,7 +519,7 @@ async function ready(): Promise<void> {
     takeGesture: (windowId, frameId, arrived) => {
       const ok = sends.takeIn(windowId, frameId, arrived);
       // A frame looping on refused calls can't rotate the log away: five lines per frame in ten seconds, then the count.
-      const said = ok ? undefined : refusalLines.check(`press:${frameId}`);
+      const said = ok ? undefined : refusalLines.check(`press:${frameId}`, String(windowId));
       if (said?.ok === true) log(`press: a call from frame ${frameId} found no press of its own (${sends.whyNot(windowId, frameId, arrived)}; the latest press: ${JSON.stringify(sends.pressFrames(windowId) ?? null)})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
       return ok;
     },
@@ -766,7 +766,7 @@ async function ready(): Promise<void> {
       // Everything that can be refused is refused first, so a refused call spends nobody's gesture. Each refusal says why in
       // the app's log (the reason only, never the words) and reaches the person as the error the sender shows.
       const refuse = (reason: string, say = reason): never => {
-        const said = refusalLines.check(`send:${frameId}`);
+        const said = refusalLines.check(`send:${frameId}`, String(windowId));
         if (said.ok) log(`send: refused (${reason})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
         throw new LayerError(say);
       };
@@ -3039,7 +3039,8 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
 const sends = new SendGate(Date.now, new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) }));
-/** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log). */
+/** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log), and 30 a minute
+ *  for all of one window's frames together (a plugin that makes frame after frame is a new frame each time). */
 const refusalLines = new LineLimiter();
 // A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse
 // press landed, bound to the frame the report came from (never a payload). First report wins; one with no recent press is dropped.
