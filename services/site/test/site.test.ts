@@ -11,6 +11,7 @@ import { allInstallerNames, releaseUrl } from "../src/downloads";
 import { renderDoc } from "../src/markdown";
 import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
 import { runCodeCommand } from "../../../packages/cli/src/code-cli";
+import { runPluginCommand } from "../../../packages/cli/src/moss-plugin-cli";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -159,8 +160,12 @@ describe("the docs' sources", () => {
 
 describe("the commands the docs print", () => {
   const plugin = readFileSync(docFile("first-plugin"), "utf8");
-  const commands = [...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
-    [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`(moss [^`]+)`|^(moss .+)$/gm)].map((m) => (m[1] ?? m[2])!.trim()));
+  const commands = [
+    ...[...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
+      [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`(moss [^`]+)`|^(moss .+)$/gm)].map((m) => (m[1] ?? m[2])!.trim())),
+    // The landing page's own: in <code>, or a line of its developers' block.
+    ...[...readFileSync(join(SITE_DIR, "src", "landing.ts"), "utf8").matchAll(/<code>(moss [^<]+)<\/code>|^(moss plugin .+?)(?:<\/code><\/pre>)?$/gm)].map((m) => (m[1] ?? m[2])!.trim()),
+  ];
 
   test("the plugin page's manifest and code are what `moss plugin new tool hello-tool` writes, word for word", () => {
     const made = templateFiles("tool", { id: "hello-tool", name: "Hello tool" });
@@ -186,6 +191,19 @@ describe("the commands the docs print", () => {
       expect([line, code, errors]).toEqual([line, 0, []]);
       expect(calls.map((c) => c.method)).toEqual(["agent.start"]);
     }
+  });
+
+  test("every printed switch command names a plugin, and the CLI takes it as printed", async () => {
+    const switches = commands.filter((c) => /^moss plugin (enable|disable)\b/.test(c));
+    expect(switches.length).toBeGreaterThan(0);
+    for (const line of switches) {
+      const [, , verb, ...args] = line.split(/\s+/);
+      const calls: string[] = [];
+      const r = await runPluginCommand(verb!, args, async (method) => { calls.push(method); return { applied: true }; }, { cwd: SITE_DIR, confirm: async () => false });
+      expect([line, r.code, calls]).toEqual([line, 0, ["plugin.setEnabled"]]);
+    }
+    // No printed plugin command is a bare verb missing what it acts on.
+    for (const c of commands) expect([c, /^moss plugin (enable|disable|install|remove|dev|info|logs)\s*$/.test(c)]).toEqual([c, false]);
   });
 
   test("no page tells anyone to make a bot plugin, a format bots no longer use", () => {
