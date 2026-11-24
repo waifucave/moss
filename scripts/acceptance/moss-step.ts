@@ -47,7 +47,7 @@ export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
 
 /** The unit's rows, in the order it runs them. */
-export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_QUESTION_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
+export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP, MOSS_QUESTION_STEP];
 
 /** The unit's daemon: the bots as engine data (lane MC1 makes it the default; until then the unit sets it). */
 export const MOSS_ENV: Readonly<Record<string, string>> = { MOSS_BOT_SOURCE: "records" };
@@ -143,7 +143,6 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_MESSAGE_STEP, () => messageRow(s));
     // Before any row that fails a session: the engine's feed keeps a bot "stuck" while any of its sessions has failed.
     await row(MOSS_STATUS_STEP, () => statusRow(s));
-    await row(MOSS_QUESTION_STEP, () => questionRow(s));
     await row(MOSS_CARD_STEP, () => cardRow(s));
     await row(MOSS_AWAY_STEP, () => awayRow(s));
     await row(MOSS_PANEL_STEP, () => panelRow(s));
@@ -163,6 +162,8 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_GLASS_STEP, () => glassRow(s));
     // Last: it registers MOSS Code's key, so the home is no longer one where only MOSS has run.
     await row(MOSS_BOTH_KEYS_STEP, () => bothKeysRow(s));
+    // Last: it stops a turn and opens the window's page again, which no row after it should have to meet.
+    await row(MOSS_QUESTION_STEP, () => questionRow(s));
   } catch (err) {
     const why = `MOSS couldn't be started and driven: ${x.why(err)}`;
     for (const name of MOSS_STEPS) if (!done.has(name)) x.record(name, x.statusOf(err), why);
@@ -1417,6 +1418,10 @@ async function questionRow(s: UnitState): Promise<string> {
   const view = await s.c.request<{ session: { needsYou?: { questions: number } } }>("session.get", { id: a.mainSession });
   if ((view.session.needsYou?.questions ?? 0) !== 0) s.x.fail(`the engine still counts ${view.session.needsYou?.questions} question(s) as waiting after the stop`);
   await s.w.waitFor("no Stop and no pending question in the window", `!document.querySelector('[data-composer] [data-stop]') && !document.querySelector(${JSON.stringify(pendingSel)}) ? 'quiet' : null`, 60_000);
+  await s.x.until("the engine idle after the stop (no turn running, no question waiting)", 60_000, async () => {
+    const v = await s.c.request<{ session: { state?: string; needsYou?: { questions: number } } }>("session.get", { id: a.mainSession }).catch(() => undefined);
+    return v !== undefined && (v.session.needsYou?.questions ?? 0) === 0 && /^(idle|done|ready)$/i.test(String(v.session.state ?? "idle")) ? true : undefined;
+  }, 500);
   return `the bot's question (header Model, three options with their descriptions, a box of the person's own) was drawn in her conversation, with "Needs you" in the list and the header and Stop on the composer; it was still there after the page was opened again; a press on "Use opus" and on Send answer was answered by the person (the log's resolution by user), the model's next request carried "Use opus", the card read answered and "Needs you" went ("${said.slice(0, 40)}"); a second question stopped from the composer was withdrawn (resolved by aborted) with nothing waiting`;
 }
 
