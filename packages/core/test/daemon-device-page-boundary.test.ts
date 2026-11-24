@@ -232,9 +232,12 @@ test("a page calling everything it can reach, with a key press on every call, ad
   // The positive control: a fresh pairing begun by the page pairs through the person's press on each card, and on nothing else.
   const second = (await page("device.pair.begin", {})) as { pairingId: string; qr: string };
   await ok(b.app, "device.pair.join", { code: second.qr });
-  await until("the new cards", () => addCards(a).length === 2 && addCards(b).length === 2);
-  const secondCardA = addCards(a).find((c) => c.id !== card.id)!;
-  const secondCardB = addCards(b).find((c) => c.id !== addCards(b)[0]!.id) ?? addCards(b)[1]!;
+  // The first pairing ended (a wrong guess and the page's cancel above): its card is withdrawn on both sides, not left to be pressed. Only
+  // the new pairing's card is up on each.
+  await until("the new cards, and the first pairing's gone", () => addCards(a).length === 1 && addCards(b).length === 1);
+  const secondCardA = addCards(a)[0]!;
+  const secondCardB = addCards(b)[0]!;
+  expect(secondCardA.id).not.toBe(card.id);
   await press(a, secondCardA.id);
   await Bun.sleep(100);
   expect((await ok<Devices>(a.app, "device.list", {})).devices).toHaveLength(1);
