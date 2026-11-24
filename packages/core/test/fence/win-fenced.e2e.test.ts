@@ -52,7 +52,10 @@ const sandboxFor = () => {
 const call = async (t: CoreToolDef, input: Record<string, unknown>, o: { refusal?: boolean; signal?: AbortSignal } = {}) => {
   const started = Date.now();
   const r = await t.run(input, o.signal === undefined ? undefined : { signal: o.signal });
-  console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${r.isError ? "error" : "ok"} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
+  // A background start says "started", never "ok": it answers before its launch is known (the standard-user job's
+  // fail-closed check counts every "-> ok" as a command that ran).
+  const how = r.isError ? "error" : input.run_in_background === true ? "started" : "ok";
+  console.log(`[e2e] ${t.name} ${JSON.stringify(input.command).slice(0, 120)} -> ${how} in ${Date.now() - started} ms: ${r.text.slice(0, 300).replace(/\s+/g, " ")}`);
   if (o.refusal !== true) expect(r.text).not.toContain("was refused:");
   return r;
 };
@@ -481,18 +484,23 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(whole).not.toContain("INJECTED");
     expect(whole).not.toContain("PLANTED");
     expect(existsSync(planted)).toBe(false);
-    // A long one: its account runs it (the lease is held) until TaskStop's stop ends it, with what it started.
-    const long = await call(bgTools.Bash!, { command: "sleep 600 & sleep 600; echo never", run_in_background: true });
+    // A long one: its account runs it (the lease is held) until TaskStop's stop ends it, with what it started: a child
+    // that would write `late-bg.txt` 10 s on never does. (The pool's processes are counted too, but only an
+    // administrator sees their owners: the standard user's run reads 0 there, so the marker is the proof.)
+    const began = join(scratch, "began-bg.txt"), late = join(scratch, "late-bg.txt");
+    for (const f of [began, late]) rmSync(f, { force: true });
+    const long = await call(bgTools.Bash!, { command: "echo began > began-bg.txt; (sleep 10; echo late > late-bg.txt) & sleep 600; echo never", run_in_background: true });
     const lid = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];
-    let running = "0";
-    for (let i = 0; i < 300 && running === "0"; i++) { await Bun.sleep(500); running = poolProcs(); }
+    for (let i = 0; i < 240 && !existsSync(began); i++) await Bun.sleep(500);
+    const running = poolProcs();
     const stopped = await stopWindowsBackground(CALLER.sessionId, lid);
-    await Bun.sleep(3_000);
+    await Bun.sleep(15_000);
     const after = poolProcs();
-    console.log(`[e2e] background stop: pool processes while it ran ${running}, after the stop ${after}; told: ${JSON.stringify(wakes.find((w) => w.task === lid)?.status)}`);
-    expect(Number(running)).toBeGreaterThan(0);
+    console.log(`[e2e] background stop: it began: ${existsSync(began)}; the child's late write after the stop: ${existsSync(late)}; pool processes seen while it ran ${running}, after the stop ${after}; told: ${JSON.stringify(wakes.find((w) => w.task === lid)?.status)}`);
+    expect(existsSync(began)).toBe(true);
     expect(stopped?.isError).toBe(false);
     expect(wakes.find((w) => w.task === lid)).toMatchObject({ status: "stopped" });
+    expect(existsSync(late)).toBe(false);
     expect(after).toBe("0");
     expect(readFileSync(/written to (\S+\.log)/.exec(long.text)![1]!, "utf8")).not.toContain("never");
   }, 900_000);
