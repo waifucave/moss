@@ -9,19 +9,23 @@ import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
 import { pairedPhone, type TestPhone } from "../../agents/tests/phone";
 import { botPaths } from "../paths";
-import { cleanFileName, createExclusive, RECEIVED_FOLDER, refusedKind, type StageLimits } from "../staged-files";
+import { cleanFileName, createExclusive, FileStager, receivedRootOf, refusedKind, type StageLimits } from "../staged-files";
 import { outdirPath } from "../../sessions/outdir";
 import { boot, removeTemps, tempDir } from "./fixtures";
+
+/** The received folder of a home called `.moss`: its sibling (`receivedRootOf`), which is what a normal install has. */
+const RECEIVED_FOLDER = ".moss-received";
 
 afterEach(removeTemps);
 
 const DESKTOP: Caller = { kind: "user", client: "app" };
 const b64 = (s: string | Uint8Array) => Buffer.from(s).toString("base64");
 
-async function setup(o: { limits?: Partial<StageLimits>; answerKey?: boolean } = {}) {
+async function setup(o: { limits?: Partial<StageLimits>; answerKey?: boolean; apart?: boolean } = {}) {
   const clock = new FakeClock();
   const userHome = tempDir();
-  const home = join(userHome, ".moss");
+  // `apart`: MOSS's home is not a folder of the user's home (a throwaway home somewhere else).
+  const home = o.apart === true ? join(tempDir(), "home") : join(userHome, ".moss");
   mkdirSync(home, { recursive: true });
   const phone = await pairedPhone(clock, o.answerKey === undefined ? {} : { answerKey: o.answerKey });
   const b = await boot({ home, userHome, clock, plugins: [], botSource: "records", computer: "Studio" });
@@ -568,6 +572,140 @@ describe("session.composerOffers", () => {
     const methods = s.b.side.methods({ localDevice: "x", phoneMay: s.phone.mayStart, composer: { models: async () => ({ models: many }), commands: () => Array.from({ length: 500 }, (_, i) => ({ name: `p.cmd${i}`, description: "d".repeat(500) as never })) } });
     const r = await methods["session.composerOffers"]!({ id: "s_code" }, { caller: s.phone.caller() } as never);
     expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThan(1024 * 1024 - 64 * 1024);
+    await s.b.shutdown();
+  });
+});
+
+describe("the folder a phone's files for coding sessions are kept in, and what removes them", () => {
+  const DAY = 24 * 3600_000;
+  /** A coding session's file, sent and named by a message. */
+  const named = async (s: S, name: string, body: string, id: string) => {
+    const r = await s.send("s_code", name, text(body));
+    await s.call("session.send", { id: "s_code", message: { text: `see [File #1]`, clientMessageId: id, files: [{ n: 1, path: r.path }] } });
+    return r;
+  };
+  const received = (s: S) => receivedRootOf(s.home);
+  const fileOf = (s: S, r: Record<string, any>, name: string) => join(received(s), "s_code", `phone-${r.upload}`, name);
+
+  test("it is a sibling of MOSS's home: ~/.moss gives ~/.moss-received, ~/.moss-dev gives ~/.moss-dev-received, a throwaway home its own sibling", () => {
+    expect(receivedRootOf("/Users/a/.moss")).toBe("/Users/a/.moss-received");
+    expect(receivedRootOf("/Users/a/.moss-dev/")).toBe("/Users/a/.moss-dev-received");
+    expect(receivedRootOf("/tmp/x/home")).toBe("/tmp/x/home-received");
+  });
+
+  test("a throwaway home whose parent isn't the user's home never writes the user's home: coding files are refused, and nothing is made beside either", async () => {
+    const s = await setup({ apart: true });
+    const msg = await fail(s.send("s_code", "a.md", text("x")));
+    expect(msg).toMatch(/isn't a folder of your home folder/);
+    expect(existsSync(received(s))).toBe(false);
+    expect(readdirSync(s.userHome)).toEqual([]);
+    await s.b.shutdown();
+  });
+
+  test("under a test run nothing is written to a received folder outside the run's temp root (the preload's fence), even beside a home that looks real", async () => {
+    expect(process.env.MOSS_TEST_WRITE_ROOT).toBeDefined();
+    const stager = new FileStager({ home: "/moss-no-such-root/.moss", userHome: "/moss-no-such-root", computer: "Studio", now: () => 0 });
+    expect(() => stager.stage({ device: "d", client: "ios" }, { kind: "coding", session: "s_code" }, { name: "a.md", size: 1, dataBase64: b64("x") })).toThrow(/outside its own temp folder/);
+    expect(existsSync("/moss-no-such-root")).toBe(false);
+    stager.close();
+  });
+
+  test("a file a message named is kept two weeks, then it, its folder and the session's folder go; one sent later stays", async () => {
+    const s = await setup();
+    const r = await named(s, "spec.md", "# spec", "m1");
+    expect(existsSync(fileOf(s, r, "spec.md"))).toBe(true);
+    s.clock.advance(13 * DAY);
+    const later = await named(s, "later.md", "# later", "m2");
+    expect(existsSync(fileOf(s, r, "spec.md"))).toBe(true);
+    s.clock.advance(2 * DAY);
+    expect(existsSync(fileOf(s, r, "spec.md"))).toBe(false);
+    expect(existsSync(join(received(s), "s_code", `phone-${r.upload}`))).toBe(false);
+    expect(readFileSync(fileOf(s, later, "later.md"), "utf8")).toBe("# later");
+    s.clock.advance(14 * DAY);
+    // The last one went: the session's folder and the received folder with it, so nothing is left in the person's home.
+    expect(existsSync(received(s))).toBe(false);
+    await s.b.shutdown();
+  });
+
+  test("a session that sends a lot keeps the newest of what messages named up to a size, the oldest go first", async () => {
+    const s = await setup({ limits: { sessionKeepBytes: 10 } });
+    const a = await named(s, "a.txt", "aaaaaa", "m1");
+    s.clock.advance(60_000);
+    const b = await named(s, "b.txt", "bbbbbb", "m2");
+    s.clock.advance(60_000);
+    const c = await named(s, "c.txt", "cccccc", "m3");
+    s.clock.advance(6 * 60_000);
+    expect(existsSync(fileOf(s, a, "a.txt"))).toBe(false);
+    expect(existsSync(fileOf(s, b, "b.txt"))).toBe(false);
+    expect(readFileSync(fileOf(s, c, "c.txt"), "utf8")).toBe("cccccc");
+    await s.b.shutdown();
+  });
+
+  test("a session the host no longer holds has its folder and records deleted by the next sweep; one it still holds keeps them", async () => {
+    const s = await setup();
+    s.b.host.open({ id: "s_other", kind: "coding", computer: "Studio", backend: "claude-code" }, new FakeSessionDriver({ canFold: false }));
+    const kept = await s.send("s_other", "keep.md", text("keep"));
+    const r = await named(s, "spec.md", "# spec", "m1");
+    await s.b.host.release("s_code");
+    s.b.host.forget("s_code");
+    s.clock.advance(6 * 60_000);
+    expect(existsSync(join(received(s), "s_code"))).toBe(false);
+    expect(readFileSync(join(received(s), "s_other", `phone-${kept.upload}`, "keep.md"), "utf8")).toBe("keep");
+    expect(existsSync(fileOf(s, r, "spec.md"))).toBe(false);
+    await s.b.shutdown();
+  });
+
+  test("empty session folders (and the received folder, once empty) are removed by the sweep", async () => {
+    const s = await setup();
+    const held = await s.send("s_code", "held.md", text("held"));
+    mkdirSync(join(received(s), "s_old", "phone-aaa"), { recursive: true });
+    mkdirSync(join(received(s), "s_older"));
+    s.clock.advance(6 * 60_000);
+    expect(existsSync(join(received(s), "s_old"))).toBe(false);
+    expect(existsSync(join(received(s), "s_older"))).toBe(false);
+    expect(existsSync(fileOf(s, held, "held.md"))).toBe(true);
+    await s.call("session.stageFile", { id: "s_code", upload: held.upload, cancel: true });
+    expect(existsSync(received(s))).toBe(false);
+    await s.b.shutdown();
+  });
+
+  test("a phone-<id> folder swapped for a link to a folder the agent can't write is moved away as a link: the cleanup deletes nothing it leads to (coding)", async () => {
+    const s = await setup();
+    const r = await s.send("s_code", "spec.md", text("# spec"));
+    const outside = join(s.userHome, "denied");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "spec.md"), "precious");
+    writeFileSync(join(outside, "other.txt"), "also precious");
+    const folder = join(received(s), "s_code", `phone-${r.upload}`);
+    rmSync(folder, { recursive: true });
+    symlinkSync(outside, folder);
+    s.clock.advance(25 * 3600_000);
+    expect(readFileSync(join(outside, "spec.md"), "utf8")).toBe("precious");
+    expect(readFileSync(join(outside, "other.txt"), "utf8")).toBe("also precious");
+    expect(existsSync(folder)).toBe(false);
+    await s.b.shutdown();
+  });
+
+  test("the same swap in the bot's scratch folder, and for the folder of a file a message named, deletes nothing it leads to", async () => {
+    const s = await setup();
+    const outside = join(s.userHome, "denied2");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "a.txt"), "precious");
+    const r = await s.send(s.session, "a.txt", text("hello"));
+    const folder = join(s.scratch, "attachments", `phone-${r.upload}`);
+    rmSync(folder, { recursive: true });
+    symlinkSync(outside, folder);
+    await s.call("session.stageFile", { id: s.session, upload: r.upload, cancel: true });
+    expect(readFileSync(join(outside, "a.txt"), "utf8")).toBe("precious");
+    expect(existsSync(folder)).toBe(false);
+    // A named coding file, swapped before its two weeks are up.
+    const n = await named(s, "a.txt", "named", "m1");
+    const nf = join(received(s), "s_code", `phone-${n.upload}`);
+    rmSync(nf, { recursive: true });
+    symlinkSync(outside, nf);
+    s.clock.advance(15 * DAY);
+    expect(readFileSync(join(outside, "a.txt"), "utf8")).toBe("precious");
+    expect(existsSync(nf)).toBe(false);
     await s.b.shutdown();
   });
 });

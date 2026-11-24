@@ -6,9 +6,12 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { FileStager, RECEIVED_FOLDER, stageTargetOf } from "../../bots/staged-files";
+import { FileStager, stageTargetOf } from "../../bots/staged-files";
 import { MossFence } from "../../fence/fence";
 import { waitFor, World, type WorldOptions } from "./world";
+
+/** The received folder of a home called `.moss`: its sibling (`receivedRootOf`), which is what a normal install has. */
+const RECEIVED_FOLDER = ".moss-received";
 
 setDefaultTimeout(60_000);
 

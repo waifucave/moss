@@ -92,6 +92,8 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     stagePicture: (session, mediaType, dataBase64) => stagePictureFor(session, mediaType as StageImageMediaType, dataBase64),
     // The sweep of unsent and half-sent files also runs on a timer; the engine's close ends it.
     clock: deps.clock,
+    // A coding session this computer's host no longer holds (removed, or let go with its bot) has its received files deleted by the sweep.
+    known: (session) => host.get(session) !== undefined,
   });
   if (files !== undefined) deps.onClose?.(() => files.close());
   /** A client off this computer is known by its device; one that doesn't say which device it is attaches nothing. */

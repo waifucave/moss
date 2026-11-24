@@ -371,6 +371,8 @@ export function createBotSide(o: BotSideOptions): BotSide {
         capabilitiesOf: (pluginId: string) => grantsInForce(o.registry.get(pluginId)),
         ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }),
         ...(deps.stageLimits === undefined ? {} : { stageLimits: deps.stageLimits }),
+        // Only what the folder tree calls `home/<Computer>/` (to name a file). Nothing is written there: the folder a phone's files for a
+        // coding session go in is beside MOSS's own home (`receivedRootOf`), so a throwaway home never writes the person's real one.
         userHome: o.userHome ?? homedir(),
         onClose: (stop) => void closers.push(stop),
       });

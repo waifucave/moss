@@ -1,7 +1,7 @@
 // The files a paired phone sends (`session.stageFile`, the owner's decision of 2026-11-24, PH3). A file arrives in chunks over the
 // phone's link, is held aside in the core's own folder until it is whole, then is placed in the folder its bot or coding session
-// works in (a bot's `scratch/<bot>/attachments/`, where a file dropped on the desktop is copied; a coding session's `.moss-received/<session>/`
-// in the user's home, which is outside MOSS's home, where no agent may read, and not in the project), and the phone's next `session.send`
+// works in (a bot's `scratch/<bot>/attachments/`, where a file dropped on the desktop is copied; a coding session's `<home>-received/<session>/`,
+// a folder beside MOSS's home (`~/.moss-received/<session>/`), outside it, where no agent may read, and not in the project), and the phone's next `session.send`
 // names it (`files`, by its folder-tree path; the agent is told the real one). Owner: lane PH.
 //
 // What a phone cannot do through it, by construction:
@@ -16,8 +16,8 @@
 //     received, and what no message names is removed.
 //   - name a file it did not send. `session.send` takes a phone's `files` only if each is one this device staged for this session.
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { dirname, join, relative, isAbsolute, sep } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import {
   ERR, FILE_REFERENCE_INVALID, STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_KEEP_MS, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX,
   STAGE_FILE_PARTIAL_TTL_MS, STAGE_FILE_PENDING_MAX_BYTES, STAGE_FILES_PER_MESSAGE_MAX, STAGE_IMAGE_MAX_BYTES,
@@ -32,8 +32,27 @@ import { transcriptsDir } from "../sessions/ids";
 import { botPaths, homeTreePath } from "./paths";
 import type { BotService } from "./service";
 
-/** The folder in the user's home where the files a phone sends to coding sessions are kept, one folder per session. */
-export const RECEIVED_FOLDER = ".moss-received";
+/** What is added to MOSS's home folder's name to name the folder the files a phone sends to coding sessions are kept in. */
+export const RECEIVED_SUFFIX = "-received";
+
+/** The folder the files a phone sends to coding sessions are kept in, one folder per session: a SIBLING of MOSS's home, named after it
+ *  (`~/.moss` gives `~/.moss-received`, `~/.moss-dev` gives `~/.moss-dev-received`, a throwaway home `/tmp/x/home` gives `/tmp/x/home-received`),
+ *  so a dev, preview or test daemon on its own home only ever writes beside that home and never in the person's real one. */
+export function receivedRootOf(home: string): string {
+  const h = resolve(home);
+  return join(dirname(h), `${basename(h)}${RECEIVED_SUFFIX}`);
+}
+
+/** Test seam (`packages/core/test/preload.ts`): when set, the received folder must be inside it, or nothing is written. The preload sets it
+ *  to the run's own temp root, so no test can reach the folder beside the person's real MOSS home. Never set in a real run. */
+export const TEST_WRITE_ROOT_ENV = "MOSS_TEST_WRITE_ROOT";
+
+function outsideTestRoot(root: string): boolean {
+  const fence = process.env[TEST_WRITE_ROOT_ENV];
+  if (fence === undefined || fence === "") return false;
+  const real = (p: string): string => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+  return !within(real(fence), join(real(dirname(root)), basename(root)));
+}
 
 export interface StageLimits {
   fileBytes: number;
@@ -48,11 +67,19 @@ export interface StageLimits {
   partialTtlMs: number;
   keepMs: number;
   perMessage: number;
+  /** How long a coding session's file stays after the message that named it, then it is deleted. */
+  namedKeepMs: number;
+  /** How many bytes of named files one coding session keeps; over it, the oldest go first. */
+  sessionKeepBytes: number;
 }
 
 export const STAGE_LIMITS: StageLimits = {
   fileBytes: STAGE_FILE_MAX_BYTES, pictureBytes: STAGE_IMAGE_MAX_BYTES, chunkBytes: STAGE_FILE_CHUNK_BYTES, openPerDevice: STAGE_FILE_OPEN_MAX, pendingBytes: STAGE_FILE_PENDING_MAX_BYTES,
   dayBytes: STAGE_FILE_DAY_MAX_BYTES, dayFiles: STAGE_FILE_DAY_MAX_FILES, unsentFiles: STAGE_FILE_UNSENT_MAX, partialTtlMs: STAGE_FILE_PARTIAL_TTL_MS, keepMs: STAGE_FILE_KEEP_MS, perMessage: STAGE_FILES_PER_MESSAGE_MAX,
+  // A coding agent reads a file in the turn that names it; a later turn may still say "the file I sent", so it stays two weeks, a span
+  // that outlasts a long task and still gives the person's home back what a session no longer needs. 500 MB a session bounds a session
+  // that sends a lot over those weeks (the day's cap alone would let 14 days of it pile up); the oldest go first, the newest stay.
+  namedKeepMs: 14 * 24 * 60 * 60 * 1000, sessionKeepBytes: 500 * 1024 * 1024,
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -134,9 +161,9 @@ interface Upload {
    *  end, then handed to the picture stager, and leaves this ledger (the device's `StagedImages` holds it from there). */
   picture?: string;
   /** What it was staged for: a bot's conversation (the file goes in the bot's scratch) or a coding session (the file goes in
-   *  `RECEIVED_FOLDER` in the user's home). Either way it is named by a folder-tree path. */
+   *  the received folder, beside MOSS's home). Either way it is named by a folder-tree path. */
   kind?: "bot" | "coding";
-  /** The folder the file's folder is made in (a bot's scratch, the coding sessions' `RECEIVED_FOLDER`), and the folder in it that holds the file. */
+  /** The folder the file's folder is made in (a bot's scratch, the coding sessions' received folder), and the folder in it that holds the file. */
   root: string;
   base: string;
   /** Once `ready`: the file, and what names it in the folder tree. */
@@ -186,6 +213,9 @@ export interface StagerOptions {
   stagePicture?: (session: string, mediaType: string, dataBase64: string) => string;
   /** The clock the sweep's timer runs on. Without one nothing is swept between calls (the sweep still runs at each call). */
   clock?: Clock;
+  /** Whether this computer's host still holds a session. A coding session it no longer holds (removed, or let go with its bot) has its
+   *  folder in the received folder deleted by the next sweep. Without it no session is ever taken for gone. */
+  known?: (session: string) => boolean;
 }
 
 /** How often the sweep runs while the ledger holds anything: well inside the idle time (15 minutes), so a half-sent upload is gone
@@ -291,39 +321,94 @@ export class FileStager {
     return join(this.#spool, `${id}.part`);
   }
 
-  /** Removes what a message will never name: an upload idle too long, a finished file no message named in `keepMs`, and the record of a sent one after the same time.
-   *  Gives back how many uploads the ledger still holds. */
+  /** Removes what a message will never name or no one will need: an upload idle too long, a finished file no message named in `keepMs`,
+   *  a coding session's named file after `namedKeepMs` (and the oldest of a session over `sessionKeepBytes`), whatever a coding session
+   *  this computer no longer holds had received, and every folder left empty; the record of a sent bot file goes after `keepMs` (the file
+   *  is the bot's, in its own scratch folder). Gives back how many uploads the ledger still holds. */
   sweep(): number {
     const l = this.#read();
     const now = this.#o.now();
     let changed = false;
     for (const u of Object.values(l.uploads)) {
       const age = now - u.touchedAt;
-      if (u.state === "open" && age > this.#limits.partialTtlMs) this.#drop(l, u);
+      const gone = u.kind === "coding" && this.#o.known?.(u.session) === false;
+      if (gone) this.#drop(l, u);
+      else if (u.state === "open" && age > this.#limits.partialTtlMs) this.#drop(l, u);
       else if (u.state === "ready" && age > this.#limits.keepMs) this.#drop(l, u);
-      else if (u.state === "sent" && age > this.#limits.keepMs) delete l.uploads[u.id];
+      else if (u.state === "sent" && u.kind === "coding" && age > this.#limits.namedKeepMs) this.#drop(l, u);
+      else if (u.state === "sent" && u.kind !== "coding" && age > this.#limits.keepMs) delete l.uploads[u.id];
       else continue;
       changed = true;
+    }
+    // A session that sends a lot keeps the newest of what a message named, up to a size.
+    const named = new Map<string, Upload[]>();
+    for (const u of Object.values(l.uploads)) if (u.state === "sent" && u.kind === "coding") named.set(u.session, [...(named.get(u.session) ?? []), u]);
+    for (const list of named.values()) {
+      let total = list.reduce((n, u) => n + u.size, 0);
+      for (const u of list.sort((a, b) => a.touchedAt - b.touchedAt)) {
+        if (total <= this.#limits.sessionKeepBytes) break;
+        total -= u.size;
+        this.#drop(l, u);
+        changed = true;
+      }
     }
     for (const [device, d] of Object.entries(l.days)) {
       if (d.day !== this.#day()) { delete l.days[device]; changed = true; }
     }
     if (changed) this.#write(l);
+    this.#tidy();
     return Object.keys(l.uploads).length;
   }
 
-  /** Takes an upload out of the ledger and removes what it holds: its spool file, or the file it placed (and its folder). A sent file is the message's. */
+  /** Takes an upload out of the ledger and removes what it holds: its spool file, or the file it placed (and its folder). A sent bot file is the bot's. */
   #drop(l: Ledger, u: Upload): void {
     delete l.uploads[u.id];
-    if (u.state === "sent") return;
     try { unlinkSync(this.#spoolPath(u.id)); } catch { /* not there */ }
-    if (u.dest === undefined) return;
+    if (u.dest === undefined || (u.state === "sent" && u.kind !== "coding")) return;
+    this.#discard(dirname(u.dest));
+    if (u.kind === "coding") this.#tidy();
+  }
+
+  /** `session` is gone from this computer: its record of files and its folder in the received folder go. (The sweep calls it for a session
+   *  the host no longer holds.) A bot's files are in its scratch folder, which is the bot's own. */
+  forgetSession(session: string): void {
+    const l = this.#read();
+    for (const u of Object.values(l.uploads)) if (u.session === session) this.#drop(l, u);
+    this.#write(l);
+    if (session !== "" && session !== "." && session !== ".." && !/[\\/]/.test(session)) this.#discard(join(receivedRootOf(this.#o.home), session));
+    this.#tidy();
+  }
+
+  /** Removes a folder this module made (`phone-<id>`, or a session's) without ever deleting by a name an agent that writes the folder's
+   *  parent can aim elsewhere: the folder is first RENAMED into the engine's own spool (a rename moves the entry itself, so a link planted in
+   *  its place is moved as a link and never followed), and what sits there is deleted, a link by unlinking it. If the rename can't be done
+   *  (the folder is gone, or the spool is on another volume) nothing is deleted by name. */
+  #discard(folder: string): void {
+    const away = join(this.#spool, `drop-${randomBytes(8).toString("hex")}`);
     try {
-      // Only a regular file at the place this module made, inside the folder it made it in; never what a link now leads to.
-      const folder = dirname(u.dest);
-      if (lstatSync(u.dest).isFile() && realpathSync(folder) === folder && within(realpathSync(u.root), folder)) unlinkSync(u.dest);
-      rmdirSync(folder);
-    } catch { /* gone, or no longer ours to touch */ }
+      mkdirSync(this.#spool, { recursive: true, mode: 0o700 });
+      renameSync(folder, away);
+    } catch { return; }
+    try { rmSync(away, { recursive: true, force: true }); } catch { /* the next sweep takes it */ }
+  }
+
+  /** Removes the empty session folders in the received folder (the received folder itself too, once nothing is in it), the leftovers of
+   *  earlier discards in the spool, and what a half-done discard left. `rmdir` takes an empty folder only, and never through a link. */
+  #tidy(): void {
+    try {
+      for (const name of readdirSync(this.#spool)) if (name.startsWith("drop-")) rmSync(join(this.#spool, name), { recursive: true, force: true });
+    } catch { /* no spool yet */ }
+    const root = receivedRootOf(this.#o.home);
+    try {
+      if (!lstatSync(root).isDirectory()) return;
+      for (const session of readdirSync(root)) {
+        const dir = join(root, session);
+        if (!lstatSync(dir).isDirectory()) continue;
+        for (const sub of readdirSync(dir)) if (sub.startsWith("phone-")) try { rmdirSync(join(dir, sub)); } catch { /* not empty */ }
+        try { rmdirSync(dir); } catch { /* not empty */ }
+      }
+      rmdirSync(root);
+    } catch { /* not there, or not empty */ }
   }
 
   // -- one call -----------------------------------------------------------------------------------------------------------
@@ -345,11 +430,11 @@ export class FileStager {
   /** Where a file for this target goes. A bot's is in its scratch folder, a place its own file tools open. A coding session's agent
    *  can open nothing inside MOSS's home (its sandbox denies the whole home, with no way back in for the session's own `outputs`, and
    *  the manager refuses any request into it), and the project is not a place to put what a phone sends, so its file goes in a
-   *  folder of its own in the user's home beside MOSS's, `RECEIVED_FOLDER/<session>/`, which the sandbox lets it read and the
+   *  folder of its own beside MOSS's home, `receivedRootOf(home)/<session>/` (`~/.moss-received/<session>/`), which the sandbox lets it read and the
    *  folder tree names (the agent is told the real path: `promptOf`). */
   #folders(t: StageTarget): { root: string; base: string } {
     if (t.kind === "coding") {
-      const root = join(this.#o.userHome, RECEIVED_FOLDER);
+      const root = receivedRootOf(this.#o.home);
       return { root, base: join(root, t.session) };
     }
     const root = botPaths(this.#o.home, t.bot!).scratch;
@@ -376,8 +461,11 @@ export class FileStager {
     if (day + p.size > lim.dayBytes) throw refused(`This phone has sent ${mb(day)} today; at most ${mb(lim.dayBytes)} a day. Try again tomorrow.`);
     if (today.files >= lim.dayFiles) throw refused(`This phone has sent ${today.files} files today; at most ${lim.dayFiles} a day. Try again tomorrow.`);
     const { root, base } = this.#folders(target);
+    if (target.kind === "coding" && outsideTestRoot(root)) throw refused("A test may not write the received folder outside its own temp folder; nothing was written.");
     // The folder this file will be named in must be one the folder tree can name (the same refusal the desktop's drop gives).
-    if (this.#treeOf(join(base, "phone-0", name)) === undefined) throw refused("This conversation's folder isn't inside your home folder, so the folder tree can't name a file in it.");
+    if (this.#treeOf(join(base, "phone-0", name)) === undefined) throw refused(target.kind === "coding"
+      ? "MOSS's home isn't a folder of your home folder here, so the folder for files a phone sends to a coding session (beside it) can't be named in the folder tree."
+      : "This conversation's folder isn't inside your home folder, so the folder tree can't name a file in it.");
     const id = randomBytes(16).toString("hex");
     mkdirSync(this.#spool, { recursive: true, mode: 0o700 });
     const fd = openSync(this.#spoolPath(id), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -545,14 +633,17 @@ export class FileStager {
     const home = realpathSync.native(this.#o.home);
     let root: string;
     if (coding) {
-      // `RECEIVED_FOLDER` in the user's home: one real folder of ours, not a link a sandboxed agent (which may write the home) put there
-      // to lead the file elsewhere, and not inside MOSS's home, where no agent can read it.
-      const userHome = realpathSync.native(this.#o.userHome);
+      // The received folder, beside MOSS's home: one real folder of ours, not a link a sandboxed agent (which may write the home's folder) put
+      // there to lead the file elsewhere, and not inside or around MOSS's home (inside, no agent could read it).
+      if (outsideTestRoot(u.root)) throw refused("A test may not write the received folder outside its own temp folder; nothing was written.");
+      const parent = realpathSync.native(dirname(this.#o.home));
       try { mkdirSync(u.root, { mode: 0o700 }); } catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
       const st = lstatSync(u.root);
+      // On Windows there is no owner id to compare: the folder takes the ACL its parent hands down when it is made, and a junction or
+      // link in its place fails the real-path comparison below, as everywhere.
       if (!st.isDirectory() || st.isSymbolicLink() || (typeof process.getuid === "function" && st.uid !== process.getuid())) throw refused("The folder for files a phone sends isn't a plain folder of yours; nothing was written.");
       root = realpathSync.native(u.root);
-      if (root !== join(userHome, lastPart(u.root)) || within(home, root) || within(root, home)) throw refused("The folder for files a phone sends isn't where it should be; nothing was written.");
+      if (root !== join(parent, lastPart(u.root)) || within(home, root) || within(root, home)) throw refused("The folder for files a phone sends isn't where it should be; nothing was written.");
     } else {
       mkdirSync(u.root, { recursive: true, mode: 0o700 });
       root = realpathSync.native(u.root);
@@ -564,13 +655,11 @@ export class FileStager {
     if (base !== join(root, lastPart(u.base)) || !lstatSync(u.base).isDirectory()) throw refused("This conversation's file folder isn't a plain folder; nothing was written.");
     const folder = join(base, `phone-${u.id}`);
     mkdirSync(folder, { mode: 0o700 });
-    let created: string | undefined;
     try {
       if (!lstatSync(folder).isDirectory() || realpathSync.native(folder) !== folder) throw refused("The file's folder changed while it was placed; nothing was written.");
       const made = createExclusive(folder, u.name);
       if (made === undefined) throw refused("The file couldn't be given a free name.");
       const { fd, path } = made;
-      created = path;
       try {
         // The descriptor must be the file at `path`, and `path` must be where it was made, before a byte goes in.
         const opened = fstatSync(fd);
@@ -603,8 +692,8 @@ export class FileStager {
       u.name = path.slice(folder.length + 1);
       try { unlinkSync(this.#spoolPath(u.id)); } catch { /* the sweep takes it */ }
     } catch (err) {
-      if (created !== undefined) try { unlinkSync(created); } catch { /* best effort */ }
-      try { rmSync(folder, { recursive: true, force: true }); } catch { /* best effort */ }
+      // Never `unlink(created)` by name: the folder is moved into the engine's own spool and removed there.
+      this.#discard(folder);
       throw err;
     }
   }
