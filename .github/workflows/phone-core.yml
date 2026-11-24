@@ -166,6 +166,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/headers"
           cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.h" "$RUNNER_TEMP/headers/"
           cp "$RUNNER_TEMP/swift/MossPhoneCoreFFI.modulemap" "$RUNNER_TEMP/headers/module.modulemap"
+          mkdir -p apple/Sources/MossPhoneCore
           cp "$RUNNER_TEMP/swift/MossPhoneCore.swift" apple/Sources/MossPhoneCore/
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libmoss_phone_core.a -headers "$RUNNER_TEMP/headers" \
