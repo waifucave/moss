@@ -31,11 +31,11 @@ describe("ci-changes", () => {
   test("a change to MOSS's own plugins: their tests, the app that loads them, the gallery and the typecheck", () => {
     // (and the acceptance run, which loads the bundled plugins: any plugin file but a test file starts every unit)
     // (and the core's and the scripts' suites, which walk plugins/ and read the bundled manifests, the theme and the marks)
-    expect(on(["plugins/moss/plugins/shell/src/a.tsx", "plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck", "core", "scripts", "acceptance"]);
-    expect(on(["plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck", "core", "scripts"]);
-    expect(on(["plugins/moss/plugins/shell/package.json"])).toEqual(["workspaces", "app", "gallery", "typecheck", "lockfiles", "core", "scripts", "acceptance"]);
+    expect(on(["plugins/moss/plugins/shell/src/a.tsx", "plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck", "corelinux", "scripts", "acceptance"]);
+    expect(on(["plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck", "corelinux", "scripts"]);
+    expect(on(["plugins/moss/plugins/shell/package.json"])).toEqual(["workspaces", "app", "gallery", "typecheck", "lockfiles", "corelinux", "scripts", "acceptance"]);
     // Another top-level plugin (a bot's) is not loaded by the app's own build.
-    expect(on(["plugins/alpha/tab/theme.json"])).toEqual(["workspaces", "gallery", "typecheck", "core", "scripts", "acceptance"]);
+    expect(on(["plugins/alpha/tab/theme.json"])).toEqual(["workspaces", "gallery", "typecheck", "corelinux", "scripts", "acceptance"]);
   });
 
   test("the packages: packaging/ and the app's builder config build and open the Linux packages; an app change does too", () => {
@@ -64,8 +64,8 @@ describe("ci-changes", () => {
   });
 
   test("the merge queue's sweep (its own workflow): the scripts' tests, which run its step against stand-ins", () => {
-    // (and the core's: one of its tests reads every workflow's triggers)
-    expect(on([".github/workflows/queue-sweep.yml"])).toEqual(["core", "scripts"]);
+    // (and the core's Linux shards: one of its tests reads every workflow's triggers; no macOS leg reads it)
+    expect(on([".github/workflows/queue-sweep.yml"])).toEqual(["corelinux", "scripts"]);
   });
 
   test("a service's change: its tests and the typecheck", () => {
@@ -110,7 +110,8 @@ describe("ci-changes", () => {
     expect(on(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"])).not.toContain("scriptsmac");
     expect(macJobs(["scripts/embed-runtimes.sh"])).toEqual(["macos"]);
     expect(on(["scripts/embed-runtimes.sh"])).toEqual(expect.arrayContaining(["scripts", "scriptsmac"]));
-    expect(macJobs(["plugins/moss/plugins/shell/src/a.tsx"])).toEqual(["machine", "macos"]);
+    // (the core's Linux shards read the plugins, no macOS leg of the core does: the machine job only)
+    expect(macJobs(["plugins/moss/plugins/shell/src/a.tsx"])).toEqual(["machine"]);
     expect(macJobs(["docs/moss-plan.md"])).toEqual([]);
     // A pull request takes no hosted macOS runner, whatever it changes.
     for (const change of ["packages/core/src/daemon.ts", ".github/workflows/ci.yml", "apple/ComputerUse/WinterBrowserHost/Sources/Host.swift", "scripts/embed-runtimes.sh", "plugins/moss/plugins/shell/src/a.tsx"]) {
@@ -179,11 +180,12 @@ describe("ci-changes", () => {
   });
 
   test("a model plugin alone runs the core's suite (lane A's catalog and generator check), and other plugins don't", () => {
-    expect(on(["plugins/moss/plugins/model-openai/moss.json"])).toContain("core");
-    expect(on(["plugins/moss/plugins/model-anthropic/src/catalog.ts"])).toContain("core");
+    // (on its Linux shards: the catalog and generator check runs there only)
+    expect(on(["plugins/moss/plugins/model-openai/moss.json"])).toContain("corelinux");
+    expect(on(["plugins/moss/plugins/model-anthropic/src/catalog.ts"])).toContain("corelinux");
     // (any plugin runs it: the core's scans walk plugins/ and read the bundled manifests)
-    expect(on(["plugins/moss/plugins/shell/src/a.tsx"])).toContain("core");
-    expect(on(["apps/moss/src/main/index.ts"])).not.toContain("core");
+    expect(on(["plugins/moss/plugins/shell/src/a.tsx"])).toContain("corelinux");
+    expect(on(["apps/moss/src/main/index.ts"])).not.toContain("corelinux");
   });
 
   test("the tree job (Linux and Windows) runs for the tree's and the computers' code and tests, and their conformance suites", () => {
@@ -218,10 +220,10 @@ describe("ci-changes", () => {
   });
 
   test("the services' shared source and the sign-in stub run the core's suite (its account tests import them)", () => {
-    expect(on(["services/shared/account-token.ts"])).toContain("core");
-    expect(on(["packages/test-harness/src/signin-stub.ts"])).toContain("core");
+    expect(on(["services/shared/account-token.ts"])).toContain("corelinux");
+    expect(on(["packages/test-harness/src/signin-stub.ts"])).toContain("corelinux");
     // (any package's source: the core's anti-wiring scan walks packages/)
-    expect(on(["packages/test-harness/src/workers.ts"])).toContain("core");
+    expect(on(["packages/test-harness/src/workers.ts"])).toContain("corelinux");
     expect(on(["services/push/src/index.ts"])).not.toContain("core");
   });
 
@@ -410,34 +412,34 @@ describe("the path-to-area map", () => {
     { name: "a document", files: ["docs/moss-spec.md", "README.md", "follow_up.md", "LICENSE"], areas: [], units: [] },
     // The iPhone apps and the phone core have their own workflows: no desktop job, no macOS runner, only the scripts' Linux tests.
     { name: "the iPhone apps", files: ["apps/ios/project.yml", "apps/ios/Apps/MOSS/Assets.xcassets/AccentColor.colorset/Contents.json", "apps/ios/Packages/MossPhoneKit/Package.swift", "apps/ios/Scripts/make-icons.swift"], areas: ["scripts"], units: [] },
-    { name: "the iOS workflow", files: [".github/workflows/ios.yml"], areas: ["core","scripts"], units: [] },
+    { name: "the iOS workflow", files: [".github/workflows/ios.yml"], areas: ["corelinux","scripts"], units: [] },
     { name: "the phone core (lane PC, when it lands)", files: ["native/phone-core/src/lib.rs", "native/phone-core/Cargo.toml"], areas: ["scripts"], units: [] },
     { name: "the native helpers", files: ["native/sandbox/windows-probe.cs", "native/input/macos/Package.swift", "native/link-sidecar/src/main.rs"], areas: ["scripts"], units: [] },
     { name: "the link sidecar", files: ["native/link/src/main.rs"], areas: ["packages", "link"], units: [] },
     // The harness and its steps: a test file starts none, a step file its own unit, anything shared every unit.
-    { name: "a test of the acceptance harness", files: ["scripts/acceptance/sealed-press.test.ts"], areas: ["typecheck", "core", "scripts"], units: [] },
-    { name: "one unit's step file", files: ["scripts/acceptance/canvas-step.ts"], areas: ["typecheck", "core", "scripts", "acceptance"], units: ["canvas"] },
-    { name: "the acceptance driver", files: ["scripts/acceptance/run.ts"], areas: ["typecheck", "core", "scripts", "acceptance"], units: "all" },
-    { name: "the window's steps", files: ["scripts/acceptance/ui-steps.ts"], areas: ["typecheck", "core", "scripts", "acceptance"], units: "all" },
-    { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["typecheck", "core", "scripts", "acceptance"], units: "all" },
-    { name: "the unit runner", files: ["scripts/ci/acceptance-unit.ts"], areas: ["typecheck", "core", "scripts", "acceptance"], units: "all" },
+    { name: "a test of the acceptance harness", files: ["scripts/acceptance/sealed-press.test.ts"], areas: ["typecheck", "corelinux", "scripts"], units: [] },
+    { name: "one unit's step file", files: ["scripts/acceptance/canvas-step.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: ["canvas"] },
+    { name: "the acceptance driver", files: ["scripts/acceptance/run.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "the window's steps", files: ["scripts/acceptance/ui-steps.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "the unit runner", files: ["scripts/ci/acceptance-unit.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     // CI's own scripts take no macOS leg of the scripts' darwin tests: none reads them.
-    { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
-    { name: "the Windows fence's CI scripts", files: ["scripts/ci/windows-fence/hold-account.ts", "scripts/ci/windows-fence/remove.ps1"], areas: ["workspaces", "daemon", "app", "typecheck", "core", "cli", "scripts"], units: [] },
-    { name: "a script the macOS tests read", files: ["scripts/embed-runtimes.sh"], areas: ["typecheck", "core", "scripts", "scriptsmac"], units: [] },
+    { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "corelinux", "windows", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
+    { name: "the Windows fence's CI scripts", files: ["scripts/ci/windows-fence/hold-account.ts", "scripts/ci/windows-fence/remove.ps1"], areas: ["typecheck", "corelinux", "windows", "scripts"], units: [] },
+    { name: "a script the macOS tests read", files: ["scripts/embed-runtimes.sh"], areas: ["typecheck", "corelinux", "scripts", "scriptsmac"], units: [] },
     // The shared packages start everything that builds on them.
     { name: "the protocol", files: ["packages/protocol/src/agents.ts", "packages/protocol/generated/moss/agents.json"], areas: ["workspaces", "daemon", "packages", "gallery", "typecheck", "core", "cli", "scripts", "codegen", "verify", "link", "acceptance"], units: "all" },
     { name: "the plugin SDK", files: ["packages/plugin-sdk/src/views.ts", "packages/plugin-sdk/generated/catalog.json"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "core", "cli", "scripts", "verify", "acceptance"], units: "all" },
     { name: "the engine's source", files: ["packages/core/src/agents/driver.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "scriptsmac", "verify", "adapters", "acceptance"], units: "all" },
     { name: "the engine's tests only", files: ["packages/core/test/fence/win-fenced.test.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify"], units: [] },
     { name: "a service", files: ["services/push/src/index.ts", "services/push/wrangler.jsonc"], areas: ["workspaces", "typecheck", "scripts"], units: [] },
-    { name: "an app of the desktop's", files: ["apps/moss/src/main/press.ts", "apps/desktop/src/main/ui/brokers.ts"], areas: ["workspaces", "app", "packages", "typecheck", "core", "scripts", "acceptance"], units: "all" },
+    { name: "an app of the desktop's", files: ["apps/moss/src/main/press.ts", "apps/desktop/src/main/ui/brokers.ts"], areas: ["workspaces", "app", "packages", "typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     { name: "an app's tests only", files: ["apps/moss/test/press-sequences.test.ts"], areas: ["workspaces", "app", "typecheck", "scripts"], units: [] },
-    { name: "the SDK's examples directory", files: ["examples/sample-echo/src/index.ts"], areas: ["workspaces", "typecheck", "core"], units: [] },
+    { name: "the SDK's examples directory", files: ["examples/sample-echo/src/index.ts"], areas: ["workspaces", "typecheck", "corelinux"], units: [] },
     { name: "the Cowork launcher", files: ["apple/Cowork/WinterCoworkLauncher/Package.swift"], areas: ["core", "scripts", "scriptsmac", "cowork"], units: [] },
     { name: "the old Chrome extension's native host", files: ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"], areas: ["core", "scripts", "swift"], units: [] },
     { name: "the rest of apple/ (the Computer Use core)", files: ["apple/ComputerUse/WinterCUCore/Package.swift"], areas: ["core","scripts"], units: [] },
-    { name: "the Android apps", files: ["apps/android/moss/build.gradle.kts", ".github/workflows/android.yml"], areas: ["core", "scripts"], units: [] },
+    { name: "the Android apps", files: ["apps/android/moss/build.gradle.kts", ".github/workflows/android.yml"], areas: ["corelinux", "scripts"], units: [] },
     { name: "the brand assets and the release notes", files: ["assets/brand/lockup-on-dark.svg", "releases/notes/0.113.0.md"], areas: ["scripts"], units: [] },
   ];
 
@@ -525,25 +527,25 @@ describe("regression list: the lanes of this week", () => {
   type Lane = { lane: string; what: string; files: string[]; areas: CiArea[]; units: string[] | "all"; macos: boolean };
   const LANES: Lane[] = [
     { lane: "press under load", what: "PL: the main-process press gates, the stall watch, the app log", files: ["apps/desktop/src/main/index.ts","apps/desktop/test/send-gate-load.test.ts","apps/moss/src/main/index.ts","apps/moss/test/moss-app-log.test.ts","packages/app-release/src/app-log.ts","packages/app-release/src/stall-watch.ts","packages/app-release/test/app-log-safety.test.ts","packages/app-release/test/stall-watch.test.ts","apps/desktop/test/send-gate-sequences.test.ts","apps/moss/test/file-log.test.ts","apps/moss/test/press-load.test.ts","apps/moss/test/press-sequences.test.ts","apps/moss/src/window/conversation/Conversation.tsx","apps/moss/test/window.test.tsx"],
-      areas: ["workspaces","app","packages","typecheck","core","scripts","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","app","packages","typecheck","corelinux","scripts","acceptance"], units: "all", macos: true },
     { lane: "iOS apps", what: "IA: the two iPhone apps and their workflow", files: ["apps/ios/Packages/MossPhoneKit/Sources/MossPhoneKit/Views/PairingScreen.swift",".github/workflows/ios.yml","apps/ios/.gitignore","apps/ios/Apps/MOSS/Assets.xcassets/AccentColor.colorset/Contents.json","apps/ios/Apps/MOSSCode/Assets.xcassets/AccentColor.colorset/Contents.json","apps/ios/Scripts/make-icons.swift","apps/ios/project.yml"],
-      areas: ["core","scripts"], units: [], macos: true },
+      areas: ["corelinux","scripts"], units: [], macos: false },
     { lane: "devices and pairing settings", what: "DV: pairing by QR, device names, the relay choice", files: ["apps/moss/src/main/engine.ts","apps/moss/src/shared/view.ts","apps/moss/src/window/settings/SettingsPage.tsx","apps/moss/test/ma2-pages.test.tsx","docs/devices-map.md","packages/protocol/src/devices.ts","plugins/moss/plugins/settings/client/SettingsModal.tsx","packages/core/src/devices/names.ts","packages/core/src/ipc/device-links.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/device-links.test.ts","apps/desktop/src/main/ui/tree-calls.ts","apps/desktop/test/runtime.test.ts","apps/desktop/test/tree-calls.test.ts"],
-      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","corelinux","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
     { lane: "Windows fence WS5/WS6", what: "WS: sandbox remove on Windows", files: ["packages/cli/src/main.ts","packages/core/src/fence/win-fenced.ts","packages/core/src/index.ts","packages/core/test/fence/win-fenced.e2e.test.ts","scripts/ci/windows-fence/remove.ps1","scripts/ci/windows-fence/hold-account.ts"],
-      areas: ["workspaces","daemon","app","packages","typecheck","core","cli","scripts","scriptsmac","verify","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","packages","typecheck","core","corelinux","windows","cli","scripts","scriptsmac","verify","acceptance"], units: "all", macos: true },
     { lane: "push service", what: "the push service's topics per phone app", files: ["services/push/wrangler.jsonc","services/push/src/apns.ts","services/push/src/env.ts","services/push/src/fcm.ts","services/push/src/index.ts","services/push/src/push-do.ts","services/push/test/fake-log.ts","services/push/test/node/fakes.ts","services/push/test/notifier-integration.test.ts","services/push/test/push.test.ts","services/push/test/routing.test.ts","services/push/vitest.config.ts"],
       areas: ["workspaces","typecheck","scripts"], units: [], macos: true },
     { lane: "phone push routing", what: "the notifier, the registry and the engine's pairing record", files: ["plugins/moss/plugins/push/src/notifier.ts","packages/core/src/daemon.ts","packages/core/src/notify/core-updates.ts","packages/plugin-sdk/src/api/plugin-api.ts","packages/protocol/src/push-routing.ts","packages/protocol/test/push-routing.test.ts","plugins/moss/plugins/notifications/src/notifier.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/devices/registry.ts","packages/core/src/identity/sas.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/link-clients.test.ts","packages/plugin-sdk/src/views.ts","packages/protocol/generated/moss/core.json"],
-      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","corelinux","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
     { lane: "phone start", what: "a paired phone starts a coding session", files: ["packages/core/src/agents/tests/adapter-card.test.ts","packages/protocol/test/session-graph.test.ts","packages/core/test/ipc/link-clients.test.ts","packages/protocol/generated/moss/agents.json","packages/protocol/src/agents.ts","packages/protocol/test/remote-start.test.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/daemon.ts","packages/core/src/devices/tests/registry.test.ts"],
       areas: ["workspaces","daemon","packages","gallery","typecheck","core","cli","scripts","scriptsmac","codegen","verify","link","adapters","acceptance"], units: "all", macos: true },
     { lane: "agents early start", what: "the idle timer of an early-started agent", files: ["packages/core/src/agents/driver.ts"],
       areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","scriptsmac","verify","adapters","acceptance"], units: "all", macos: true },
     { lane: "CI lane wait", what: "scripts/ci/lane polls once a minute", files: ["scripts/ci/lane"],
-      areas: ["workspaces","daemon","app","packages","gallery","typecheck","lockfiles","extension","core","cli","scripts","scriptsmac","codegen","verify","tree","link","linuxrepo","adapters","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","lockfiles","extension","core","corelinux","windows","cli","scripts","scriptsmac","codegen","verify","tree","link","linuxrepo","adapters","acceptance"], units: "all", macos: true },
     { lane: "composer model read", what: "the composer's model read and acceptance row 11", files: ["plugins/moss/plugins/composer/client/entry.tsx","scripts/acceptance/ui-steps.ts"],
-      areas: ["workspaces","app","gallery","typecheck","core","scripts","acceptance"], units: "all", macos: true },
+      areas: ["workspaces","app","gallery","typecheck","corelinux","scripts","acceptance"], units: "all", macos: true },
     { lane: "core test only", what: "one engine test file", files: ["packages/core/test/fence/win-fenced.test.ts"],
       areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","verify"], units: [], macos: true },
     { lane: "plugin-sdk views", what: "the SDK's generated views.ts", files: ["packages/plugin-sdk/src/views.ts"],
@@ -564,14 +566,14 @@ describe("the scope a run states", () => {
 
   test("a scoped run says SCOPED RUN, how many areas ran and were skipped, and the acceptance units; a full one says FULL RUN", () => {
     const s = all(["apps/ios/project.yml"]);
-    expect(s.scope).toBe("SCOPED RUN: 1 of 22 areas ran, 21 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
+    expect(s.scope).toBe("SCOPED RUN: 1 of 24 areas ran, 23 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
     expect(s.ran).toEqual(["scripts"]);
     expect(s.skipped).toContain("acceptance");
     expect(all(undefined).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units");
     // ... and it says the parked areas stayed out, and how to run them.
     expect(all(undefined).scope).toContain("parked, not run (none of their own sources changed): swift cowork; lane start --parked runs them");
     // CI's own definition runs every area but the installers and the parked ones: still a scoped run, which says so.
-    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 19 of 22 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
+    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 21 of 24 areas ran, 3 skipped as untouched; 25 of 25 acceptance units");
     expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
     // A change to a parked area's own sources runs it, and the full run then has nothing left out but the installers' kind of skips.
     expect(all(["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"]).ran).toContain("swift");

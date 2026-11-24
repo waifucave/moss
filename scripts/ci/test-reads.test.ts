@@ -64,7 +64,10 @@ describe("the map starts the job that runs each test when a file the test reads 
     const on = (p: string): string[] => Object.entries(areasFor([p])).filter(([, v]) => v).map(([k]) => k);
     for (const p of ["plugins/moss/plugins/base-theme/theme.json", "plugins/moss/plugins/sidebar/client/icons.tsx", "plugins/moss/plugins/conversation/client/icons.tsx", "plugins/moss/plugins/plugin-index/client/icons.tsx", "plugins/moss/plugins/shell/moss.json"]) expect(on(p), p).toContain("scripts");
     for (const a of ["workspaces", "daemon", "app"]) expect(on("docs/live-gates/browser.md")).toContain(a);
-    expect(on("docs/claude/usage.md")).toContain("core");
+    // the guides a core test pins start the core's Linux shards (those tests run on Linux only), by exact file: the others are inert
+    for (const g of ["usage", "release", "settings-and-migrations"]) expect(on(`docs/claude/${g}.md`), g).toEqual(["corelinux"]);
+    expect(on("docs/claude/testing.md")).toEqual([]);
+    expect(on("docs/claude/tool-surface.md")).toEqual([]);
     for (const p of ["apple/ComputerUse/VERSION", "apple/Cowork/WinterCoworkHVFWorker/pins.json", "apple/Cowork/WinterCoworkLauncher/Sources/LauncherCore/Identity/CodeIdentity.swift", "packages/core/src/cowork/host-env/environment.ts"]) expect(on(p), p).toContain("scriptsmac");
     // documents no test reads, and the repository's own housekeeping, start nothing
     for (const p of ["docs/moss-plan.md", "docs/research/x.md", "README.md", "LICENSE", ".gitignore"]) expect(on(p), p).toEqual([]);
@@ -82,8 +85,14 @@ describe("the tests the scan leaves out", () => {
   test("a test file has an owner, or is one no job runs (the spikes', the Swift packages')", () => {
     expect(ownersOf("scripts/brand-icons.test.ts")).toEqual(["scripts"]);
     expect(ownersOf("scripts/embed-runtimes.darwin.test.ts")).toEqual(["scriptsmac"]);
-    expect(ownersOf("packages/core/test/x.test.ts")).toEqual(["core"]);
-    expect(ownersOf("apps/desktop/test/browser-live-gate.test.ts")).toEqual(["workspaces", "daemon", "app"]);
+    // a core test file runs on the Linux shards, and on the macOS legs too only when it is darwin-only or marked with the darwin-only helper
+    expect(ownersOf("packages/core/test/x.test.ts", "test('a', () => {})")).toEqual(["core", "corelinux"]);
+    expect(ownersOf("packages/core/test/x.darwin.test.ts", "")).toEqual(["core"]);
+    expect(ownersOf("packages/core/test/y.test.ts", 'import { darwinTest } from "./helpers/darwin-only";')).toEqual(["core"]);
+    expect(ownersOf("packages/core/src/links/tests/z.test.ts", "")).toEqual(["core", "corelinux", "link"]);
+    // the apps', plugins', services', examples' and packages' own tests run only where the workspaces' job runs them
+    expect(ownersOf("apps/desktop/test/browser-live-gate.test.ts")).toEqual(["workspaces"]);
+    for (const f of ["plugins/moss/plugins/shell/test/a.test.ts", "services/push/test/a.test.ts", "examples/x/a.test.ts", "packages/test-harness/test/a.test.ts"]) expect(ownersOf(f), f).toEqual(["workspaces"]);
     expect(ownersOf("spikes/s1-transport/x.test.ts")).toBeNull();
     expect(ownersOf("packages/core/test/rename/moss-residue.test.ts")).toBeNull();
     // every tracked test file is one of these three: owned, always on, or no job's

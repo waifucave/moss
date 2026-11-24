@@ -37,17 +37,32 @@ export function tracked(root = ROOT): Tracked {
   return { files, dirs, top };
 }
 
-/** The job areas that run a test file (any one of them runs it), or null for a file no CI job runs (the spikes', the apps' fixtures). */
-export function ownersOf(testFile: string): string[] | null {
+/** Whether a core test file runs on the macOS legs: `*.darwin.test.ts`, or a file marked with the darwin-only helper (scripts/platform-tests.ts:
+ *  `macosFiles`). Every other core test file runs on the Linux shards and nowhere else. */
+export function runsOnMacos(testFile: string, src?: string): boolean {
+  if (testFile.endsWith(".darwin.test.ts")) return true;
+  let text = src;
+  if (text === undefined) {
+    try { text = readFileSync(join(ROOT, testFile), "utf8"); } catch { return false; }
+  }
+  return /from\s+["'][^"']*helpers\/darwin-only["']/.test(text);
+}
+
+/** The job areas that run a test file (any one of them runs it), or null for a file no CI job runs (the spikes', the apps' fixtures). A core test
+ *  is `corelinux` too unless it runs on macOS: a change to what only Linux reads starts the Linux shards and no macOS leg. */
+export function ownersOf(testFile: string, src?: string): string[] | null {
   if (testFile.startsWith("spikes/") || testFile.startsWith("apple/") || PATHS_AS_DATA.includes(testFile)) return null;
   if (ALWAYS_ON.some((r) => r.test(testFile))) return null;
   if (testFile.startsWith("scripts/")) return [/\.darwin\.test\./.test(testFile) ? "scriptsmac" : "scripts"];
   // (the core's link tests also run in the `link` job, which builds the sidecar they drive)
-  if (testFile.startsWith("packages/core/src/links/")) return ["core", "link"];
-  if (testFile.startsWith("packages/core/")) return ["core"];
+  if (testFile.startsWith("packages/core/")) {
+    const linux = runsOnMacos(testFile, src) ? [] : ["corelinux"];
+    return testFile.startsWith("packages/core/src/links/") ? ["core", ...linux, "link"] : ["core", ...linux];
+  }
   if (testFile.startsWith("packages/cli/")) return ["cli"];
   if (testFile.startsWith("extensions/")) return ["extension"];
-  if (/^(apps|plugins|services|examples|packages)\//.test(testFile)) return ["workspaces", "daemon", "app"];
+  // (the apps', plugins', services', examples' and packages' own tests run in the workspaces' job, where `WORKSPACES` is set: ci.yml's `machine`)
+  if (/^(apps|plugins|services|examples|packages)\//.test(testFile)) return ["workspaces"];
   return null;
 }
 
@@ -95,9 +110,10 @@ export function allReads(root = ROOT): Array<{ test: string; owners: string[]; r
   const out: Array<{ test: string; owners: string[]; read: string }> = [];
   for (const f of t.files) {
     if (!/\.(test|proof)\.tsx?$/.test(f)) continue;
-    const owners = ownersOf(f);
+    const src = readFileSync(join(root, f), "utf8");
+    const owners = ownersOf(f, src);
     if (owners === null) continue;
-    for (const read of readsOf(readFileSync(join(root, f), "utf8"), t)) if (read !== f) out.push({ test: f, owners, read });
+    for (const read of readsOf(src, t)) if (read !== f) out.push({ test: f, owners, read });
   }
   return out;
 }

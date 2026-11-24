@@ -115,6 +115,8 @@ jobs:
       adapters: ${{ steps.areas.outputs.adapters }}
       acceptance: ${{ steps.areas.outputs.acceptance }}
       cowork: ${{ steps.areas.outputs.cowork }}
+      windows: ${{ steps.areas.outputs.windows }}
+      corelinux: ${{ steps.areas.outputs.corelinux }}
       # The acceptance units this run starts (a JSON list: the matrix of `acceptance` and `acceptance-linux`) and what the run says
       # about its own size (printed by `lane gate`, so a green gate is never mistaken for a full run).
       acceptance_units: ${{ steps.areas.outputs.acceptance_units }}
@@ -190,7 +192,7 @@ jobs:
         run: bun test test/rename/
 
       - name: The rename's rules, the layout, the workspaces and the CI areas
-        run: bun test scripts/rename/ scripts/layout.test.ts scripts/workspaces.test.ts scripts/ci-changes.test.ts
+        run: bun test scripts/rename/ scripts/layout.test.ts scripts/workspaces.test.ts scripts/ci-changes.test.ts scripts/ci/test-reads.test.ts scripts/ci/queue-map.test.ts
 
       # The headless shell's pin (lane L's, plugins/moss/plugins/browser/headless-shell.pins.json) follows the app's
       # Electron: the same Chromium milestone (spec §12.1). It warns while the file doesn't exist yet.
@@ -393,7 +395,8 @@ jobs:
   machine-windows:
     name: ${{ matrix.target }} (workspaces, daemon, app)
     needs: changes
-    if: *machine-if
+    # The machine job's condition, or the Windows jobs' own files (the `windows` area): a Windows-only edit starts the Windows runners and no macOS one.
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.workspaces == 'true' || needs.changes.outputs.daemon == 'true' || needs.changes.outputs.app == 'true' || needs.changes.outputs.windows == 'true')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     strategy:
@@ -805,7 +808,7 @@ jobs:
   windows-fence:
     name: windows fence
     needs: changes
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true')
+    if: github.event_name != 'pull_request' && (needs.changes.outputs.core == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.windows == 'true')
     uses: ./.github/workflows/windows-fence.yml
 
   # The link sidecar (native/link, lane H's moss-link, iroh) on Windows and Linux, x64 and arm64: it is built, and
@@ -1225,7 +1228,8 @@ jobs:
   core-linux:
     name: core · linux ${{ matrix.shard }}/3
     needs: changes
-    if: needs.changes.outputs.core == 'true'
+    # `core`: the core's sources and what its macOS tests read (the macOS legs run too); `corelinux`: what only these Linux shards read.
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.corelinux == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:

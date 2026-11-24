@@ -69,21 +69,33 @@ describe("planFor: the checks and macOS runners a run starts", () => {
   test("a CI script or the acceptance harness's test takes none of the scripts' own macOS legs, but the core's (its scans walk scripts/); one unit's step file starts that unit", () => {
     expect(areasFor(["scripts/ci/weston.sh"]).scriptsmac).toBe(false);
     expect(areasFor(["scripts/acceptance/sealed-press.test.ts"]).scriptsmac).toBe(false);
-    // the three macOS legs the core's suite runs on (its daemon-spawn pin reads every script)
-    expect(planForFiles(["scripts/ci/weston.sh"]).macos).toBe(3);
-    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(3);
+    // the core's Linux shards walk scripts/ (its daemon-spawn pin reads every script); no macOS leg of the core does
+    expect(planForFiles(["scripts/ci/weston.sh"]).macos).toBe(0);
+    expect(planForFiles(["scripts/acceptance/sealed-press.test.ts"]).macos).toBe(0);
     const p = planForFiles(["scripts/acceptance/canvas-step.ts"]);
     expect(p.jobs.find((j) => j.id === "acceptance")!.checks).toBe(1);
-    expect(p.macos).toBe(4);
+    expect(p.macos).toBe(1);
     expect(p.units).toEqual(["canvas"]);
     // The Linux acceptance takes the same one unit.
     expect(p.jobs.find((j) => j.id === "acceptance-linux")!.checks).toBe(1);
   });
 
-  test("the iPhone workflow's own edit takes the core's suite (one of its tests reads every workflow's triggers): 3 macOS legs", () => {
+  test("the iPhone workflow's own edit takes the core's Linux shards (one of its tests reads every workflow's triggers) and no macOS leg", () => {
     const p = planForFiles([".github/workflows/ios.yml"]);
-    expect(p.areas).toEqual(["core", "scripts"]);
-    expect(p.macos).toBe(3);
+    expect(p.areas).toEqual(["corelinux", "scripts"]);
+    expect(p.macos).toBe(0);
+    expect(p.jobs.map((j) => j.id)).toContain("core-linux");
+  });
+
+  test("a Windows-only edit starts the Windows jobs and no macOS runner: the fence workflow and its scripts, not the machine, the sealed core or the macOS legs", () => {
+    for (const f of [".github/workflows/windows-fence.yml", "scripts/ci/windows-fence/build-launcher.ps1"]) {
+      const p = planForFiles([f]);
+      expect(p.macos, f).toBe(0);
+      expect(p.areas, f).toContain("windows");
+      const ids = p.jobs.map((j) => j.id);
+      expect(ids, f).toEqual(expect.arrayContaining(["windows-fence", "machine-windows"]));
+      for (const id of ["machine", "sealed-core", "macos"]) expect(ids, f).not.toContain(id);
+    }
   });
 
   test("a change to the Cowork launcher takes its Swift job and the patch queue's; nothing else does", () => {

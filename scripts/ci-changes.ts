@@ -24,7 +24,7 @@ import { ON_GITHUB } from "./ci/acceptance-units";
 export type CiArea =
   | "workspaces" | "daemon" | "app" | "packages" | "installers" | "gallery" | "typecheck" | "lockfiles"
   | "extension" | "core" | "cli" | "scripts" | "scriptsmac" | "codegen" | "swift" | "verify" | "tree" | "link" | "linuxrepo" | "adapters"
-  | "acceptance" | "cowork";
+  | "acceptance" | "cowork" | "windows" | "corelinux";
 
 /** A path pattern: `dir/` is a prefix, a `*` matches within one segment, `**` across segments, else an exact path. A `!` in front
  *  takes the paths it matches back out of the patterns before it in the same list (an area's list only). */
@@ -36,24 +36,37 @@ export const CI_GLOBAL: readonly Pattern[] = [
   "pnpm-workspace.yaml", "tsconfig.base.json", "bunfig.toml", ".npmrc", ".gitattributes",
   // the scoping itself: what ci-changes.ts imports (the acceptance units' list and the step-to-unit map) and the lane tool that starts and
   // previews a scoped run. A change to how a run is sized is checked by the largest run.
-  "scripts/ci/acceptance-units.ts", "scripts/ci/acceptance-scope.ts", "scripts/ci/queue-map.ts", "scripts/ci/test-reads.ts", "scripts/ci/plan.ts", "scripts/ci/lane",
+  "scripts/ci/acceptance-units.ts", "scripts/ci/acceptance-scope.ts", "scripts/ci/queue-map.ts", "scripts/ci/test-reads.ts", "scripts/ci/test-reads.test.ts", "scripts/ci/queue-map.test.ts", "scripts/ci/plan.ts", "scripts/ci/lane",
 ];
 
-/** The Windows jobs' own definition: the called workflow and its PowerShell. It starts `windows-fence` (core, cli) and `machine-windows` (workspaces, daemon, app). */
+/** The Windows jobs' own definition: the called workflow and its PowerShell. It is the `windows` area alone: it starts `windows-fence` and
+ *  `machine-windows` (Windows runners) and no macOS job. (The merge queue's frozen map, scripts/ci/queue-map.ts, still sends it to the old areas.) */
 const WINDOWS_CI: readonly Pattern[] = [".github/workflows/windows-fence.yml", "scripts/ci/windows-fence/"];
 
 /** Paths no job reads: documents and the repository's own housekeeping. A change to only these runs no area (the names-and-layout
  *  checks and the gate run always). Everything else must be in an area, or it runs every area. */
-// docs/ is inert but for what a test reads: the live gates' page (the app's test asserts it equals its generator's output), the guides the core's
-// tests pin (usage, release, settings), the Cowork specs and notes its tests read. A `!` takes those back out.
-export const CI_INERT: readonly Pattern[] = ["docs/", "*.md", "LICENSE", ".gitignore", "!docs/live-gates/", "!docs/claude/", "!docs/RELEASE-NOTES-cowork-schema.md", "!docs/cowork-*.md"];
+// docs/ is inert but for what a test reads: the live gates' page (the app's test asserts it equals its generator's output), the three guides the
+// core's tests pin (usage, release, settings) and the Cowork specs and notes its tests read, by exact file. A `!` takes those back out.
+export const CI_INERT: readonly Pattern[] = ["docs/", "*.md", "LICENSE", ".gitignore", "!docs/live-gates/",
+  "!docs/claude/release.md", "!docs/claude/settings-and-migrations.md", "!docs/claude/usage.md", "!docs/RELEASE-NOTES-cowork-schema.md",
+  "!docs/cowork-execution-contracts.md", "!docs/cowork-host-protocol.md", "!docs/cowork-implementation.md", "!docs/cowork-native-worker.md", "!docs/cowork-spec.md"];
 
 /** What the tests READ outside their own folder (scripts/ci/test-reads.ts finds them; scripts/ci/test-reads.test.ts holds this to it): each
  *  list is added to the area whose job runs those tests, so a change to a file a test reads starts the test. */
-const READ_BY_CORE: readonly Pattern[] = [
-  // the plugins, the scripts and the examples are walked by the core's own scans (the plugin reach, the daemon-spawn pin over scripts/, the SDK examples)
-  "plugins/", "scripts/", "examples/", "packages/", "assets/brand/moss-code/", "apple/", "docs/claude/", "docs/RELEASE-NOTES-cowork-schema.md", "docs/cowork-*.md",
-  "apps/desktop/package.json", "apps/desktop/src/main/browser/network.ts", "apps/desktop/src/main/ui/", "packaging/macos/entitlements.mac.plist", "VERSION", "VERSIONS.json", ".github/workflows/",
+const READ_BY_CORE_MAC: readonly Pattern[] = [
+  // what the core's macOS tests read (the `*.darwin.test.ts` files and the ones marked with the darwin-only helper; the macOS legs run no other file):
+  // the launcher's code identity, the app's file grants, the entitlements; and, on purpose, all of apple/ and the Cowork specs and notes (Cowork is
+  // paused: nothing reaches a macOS leg by accident, a Cowork read keeps the leg it had)
+  "apple/", "apps/desktop/src/main/ui/file-grants.ts", "packaging/macos/entitlements.mac.plist",
+  "docs/RELEASE-NOTES-cowork-schema.md", "docs/cowork-execution-contracts.md", "docs/cowork-host-protocol.md", "docs/cowork-implementation.md", "docs/cowork-native-worker.md", "docs/cowork-spec.md",
+];
+const READ_BY_CORE_LINUX: readonly Pattern[] = [
+  // what only the core's Linux shards read (every core test file that is not darwin-only runs there and nowhere else): a change here starts
+  // `core · linux` and no macOS leg. The plugins, the scripts and the examples are walked by the core's own scans (the plugin reach, the
+  // daemon-spawn pin over scripts/, the SDK examples); the guides are three exact files (docs/claude/ has 18, tests pin these)
+  "plugins/", "scripts/", "examples/", "packages/", "!packages/core/", "!packages/protocol/", "!packages/plugin-sdk/", "!packages/update-feed/", "assets/brand/moss-code/", "services/shared/",
+  "docs/claude/release.md", "docs/claude/settings-and-migrations.md", "docs/claude/usage.md",
+  "apps/desktop/package.json", "apps/desktop/src/main/browser/network.ts", "apps/desktop/src/main/ui/", "VERSION", "VERSIONS.json", ".github/workflows/",
 ];
 const READ_BY_SCRIPTS: readonly Pattern[] = [
   // brand-icons.test.ts reads the theme and the sidebar's, the conversation's and the plugin index's marks; packaging.test.ts checks every bundled plugin's moss.json;
@@ -76,10 +89,10 @@ const CORE: readonly Pattern[] = ["packages/core/", "packages/protocol/", "packa
 export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // every workspace package's own tests, on all four machines
   // (the iPhone apps and the phone core are no workspace packages: they have their own workflows, so they take no machine here)
-  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh", ...READ_BY_MACHINE, ...WINDOWS_CI],
-  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements", ...READ_BY_MACHINE, ...WINDOWS_CI],
+  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh", ...READ_BY_MACHINE],
+  daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements", ...READ_BY_MACHINE],
   // the app, and what it loads: MOSS's own plugins and the plugin SDK's UI API (E-M1)
-  app: ["apps/desktop/", "apps/moss/", "plugins/moss/", "packages/plugin-sdk/", "packages/app-release/", ...READ_BY_MACHINE, ...WINDOWS_CI],
+  app: ["apps/desktop/", "apps/moss/", "plugins/moss/", "packages/plugin-sdk/", "packages/app-release/", ...READ_BY_MACHINE],
   // the Linux packages: the app, its builder config, packaging/, the scripts that build them, and the daemon and the
   // link sidecar they carry (the job installs the deb and runs its `moss`)
   // (MOSS's packages are built beside MOSS Code's: its builder config, its host layout script and its icons)
@@ -95,8 +108,13 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   extension: ["extensions/", ...READ_BY_EXTENSION],
   // lane A's model plugins: the core's catalog and generator check reads them; the core's account tests import the
   // services' shared account-token check and the harness's sign-in stub
-  core: [...CORE, "plugins/moss/plugins/model-*/**/*", "services/shared/", "packages/test-harness/src/signin-stub.ts", ...READ_BY_CORE, ...WINDOWS_CI],
-  cli: [...CORE, "packages/cli/", ...WINDOWS_CI],
+  core: [...CORE, ...READ_BY_CORE_MAC],
+  // the Linux-only part of the core's reads: `core · linux` alone, no macOS leg (lane A's model plugins and the harness's sign-in stub
+  // are read by the core's account and catalog tests, which run on Linux only)
+  corelinux: ["plugins/moss/plugins/model-*/**/*", ...READ_BY_CORE_LINUX],
+  // the Windows jobs' own files: `windows-fence` and `machine-windows`, on Windows runners; nothing on macOS
+  windows: [...WINDOWS_CI],
+  cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
   // repo-wide source scans (the native channel's anti-wiring test reads every package's src/ and scripts/), so any
   // package's source runs it: a CLI-only change that imports from the core once got past the core's skipped shards
