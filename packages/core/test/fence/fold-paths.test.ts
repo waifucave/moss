@@ -5,7 +5,12 @@
 import { describe, expect, test } from "bun:test";
 import { pathKey, pathWithin } from "../../src/fence/fold";
 import { rootCovered } from "../../src/fence/sandbox-settings";
-import { homeReach, opaqueWindowsPath, reachesInside } from "../../src/agents/memory";
+import { homeReach, opaqueWindowsPath, reachesInside, uncPath, windowsPathRefused } from "../../src/agents/memory";
+import { runLaterByName } from "../../src/fence/sandbox-settings";
+import { diskSpelling } from "../../src/fence/canonical";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const ROOT = "C:\\Users\\u\\.moss";
 
@@ -128,5 +133,63 @@ describe("device paths no comparison can place, and the deny decisions that refu
     expect(reachesInside("C:/Users/u/x/../.ssh/id", "C:\\Users\\u\\.ssh", "windows")).toBe(true);
     expect(reachesInside("/home/u/.SSH/id", "/home/u/.ssh", "linux")).toBe(true); // folded on Linux too: only denies more
     expect(reachesInside("/Users/u/.sshx/id", "/Users/u/.ssh", "macos")).toBe(false);
+  });
+});
+
+describe("a share in the file tools' deny decisions on Windows: refused unless inside a granted share root (lane WS8)", () => {
+  const granted = ["C:\\Users\\u\\proj", "\\\\nas\\share\\proj"];
+  test("every loopback and own-name spelling of this computer is refused (no list of its names is kept)", () => {
+    for (const p of [
+      "\\\\localhost\\C$\\Users\\u\\.ssh\\id_ed25519", "\\\\127.0.0.1\\C$\\Users\\u\\.moss\\run\\token", "\\\\[::1]\\C$\\x",
+      "//LOCALHOST/c$/Users/u/.ssh/id", "\\/localhost\\C$/Users\\u", "\\\\MYPC\\Users\\u\\.ssh", "\\\\?\\UNC\\localhost\\C$\\Users\\u",
+      "\\\\.\\UNC\\127.0.0.1\\C$\\x", "//?/unc/localhost/c$/x", "\\\\nas\\share\\other\\x", "\\\\nas\\share\\proj-2\\x",
+    ]) {
+      expect([p, uncPath(p, "windows") || opaqueWindowsPath(p, "windows"), windowsPathRefused(p, granted, "windows")]).toEqual([p, true, true]);
+    }
+  });
+  test("inside a granted share root: allowed, in any separators and case", () => {
+    for (const p of ["\\\\nas\\share\\proj\\x.txt", "//NAS/Share/proj/sub/y", "\\\\?\\UNC\\nas\\share\\proj\\z", "\\\\nas/share\\PROJ", "\\\\nas\\share\\proj\\a\\..\\b"]) {
+      expect([p, windowsPathRefused(p, granted, "windows")]).toEqual([p, false]);
+    }
+  });
+  test("a drive path is not a share, and nothing is refused this way off Windows", () => {
+    expect(windowsPathRefused("C:\\Users\\u\\x", granted, "windows")).toBe(false);
+    expect(windowsPathRefused("\\\\?\\C:\\Users\\u\\x", granted, "windows")).toBe(false);
+    expect(windowsPathRefused("//localhost/x", [], "macos")).toBe(false);
+  });
+  test("`homeReach`, the coding agent's and bots' deny decision: a share outside its granted roots reaches every deny", () => {
+    expect(homeReach("C:\\Users\\u\\.ssh", "\\\\localhost\\C$\\Users\\u\\.ssh\\id", "C:\\Users\\u\\proj", "windows")).toBe("inside");
+    // A share that fails at once (no such share here), so no lookup waits on the network.
+    expect(homeReach("C:\\Users\\u\\.ssh", "\\\\localhost\\ws8-no-such-share\\proj\\x", "\\\\localhost\\ws8-no-such-share\\proj", "windows")).toBeUndefined();
+  });
+});
+
+describe("run-later places by name, in the disk's own spelling too (lane WS8: a Windows acceptance run's refusal)", () => {
+  const long = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\h";
+  const short = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\h";
+  const spell = (p: string) => p.replace(/^C:\\Users\\RUNNER~1/i, "C:\\Users\\runneradmin").replace(/MCPJSO~1\.JSO$/i, ".mcp.json");
+  const homes = { userHome: "C:\\Users\\runneradmin", mossHome: `${long}\\.moss`, os: "windows" as const };
+  test("an installed plugin's file named through the home's short name is inside the home, not a project's `.moss`", () => {
+    const file = `${short}\\.moss\\plugins\\ws-greeter\\host\\index.ts`;
+    expect(runLaterByName(file, { ...homes, spell: (p) => p })).toBe(true); // the refusal the run met: compared as written only
+    expect(runLaterByName(file, { ...homes, spell })).toBe(false);
+    expect(runLaterByName(file, { ...homes, mossHome: `${short}\\.moss`, spell })).toBe(false); // the home given short
+  });
+  test("a project's `.moss` is still held, and a short name of a held file is that file", () => {
+    expect(runLaterByName("C:\\Users\\runneradmin\\proj\\.moss\\x", { ...homes, spell })).toBe(true);
+    expect(runLaterByName("C:\\Users\\RUNNER~1\\proj\\.moss\\x", { ...homes, spell })).toBe(true);
+    expect(runLaterByName("C:\\Users\\runneradmin\\proj\\MCPJSO~1.JSO", { ...homes, spell })).toBe(true);
+  });
+  // The runner's TEMP is spelled with the account's 8.3 name (`C:\Users\RUNNER~1\…`): the real one, on Windows.
+  test.skipIf(process.platform !== "win32")("on Windows, a real short-named folder: `diskSpelling` gives it long, and an installed plugin's file there isn't held", () => {
+    const d = mkdtempSync(join(tmpdir(), "ws8-short-"));
+    try {
+      const longD = realpathSync.native(d).replace(/^\\\\\?\\/, "");
+      mkdirSync(join(d, ".moss", "plugins", "p"), { recursive: true });
+      console.log(`[unit] 8.3: tmp ${d} long ${longD} (short name on the way: ${d.toLowerCase() !== longD.toLowerCase()})`);
+      expect(diskSpelling(d).toLowerCase()).toBe(longD.toLowerCase());
+      expect(runLaterByName(join(d, ".moss", "plugins", "p", "x.ts"), { userHome: "C:\\Users\\nobody", mossHome: join(longD, ".moss"), os: "windows" })).toBe(false);
+      expect(runLaterByName(join(longD, "proj", ".moss", "x"), { userHome: "C:\\Users\\nobody", mossHome: join(longD, ".moss"), os: "windows" })).toBe(true);
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });

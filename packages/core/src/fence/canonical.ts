@@ -102,3 +102,26 @@ export function linksOnTheWay(input: string, platform: NodeJS.Platform = process
   }
   return out;
 }
+
+/** A path in the disk's own spelling WITHOUT following any link (lane WS8, a Windows acceptance run's refusal): on
+ *  Windows an 8.3 short name on the way (`C:\Users\RUNNER~1\…`, the runner's TEMP spelling) comes back long, as
+ *  `realpathSync.native` gives it, for the longest prefix that exists and holds no link or junction; the rest stays as
+ *  written. A link on the way stops it there, so a `.moss` that is a link into the MOSS home is still a `.moss`. Elsewhere,
+ *  and on anything that can't be read, the path as given. */
+export function diskSpelling(input: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return input;
+  const root = win32.parse(input).root;
+  if (root === "" || /^[\\/]{2}/.test(root)) return input; // relative, a share or a device path: as given
+  const parts = input.slice(root.length).split(/[\\/]+/).filter((c) => c !== "");
+  let at = root, n = 0;
+  for (; n < parts.length; n++) {
+    const next = win32.join(at, parts[n]!);
+    let st: ReturnType<typeof lstatSync> | undefined;
+    try { st = lstatSync(next); } catch { st = undefined; }
+    if (st === undefined || st.isSymbolicLink()) break;
+    at = next;
+  }
+  let real = at;
+  try { real = realpathSync.native(at).replace(/^\\\\\?\\(?=[A-Za-z]:)/, ""); } catch { return input; }
+  return n === parts.length ? real : win32.join(real, ...parts.slice(n));
+}

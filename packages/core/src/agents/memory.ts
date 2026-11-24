@@ -51,14 +51,15 @@ export function withSecretsDenied(policy: SandboxPolicy, userHome: string | unde
  *  appended. On Windows (lane WS8, the reviewer's 8.3 finding) as the fence resolves it (`canonicalPath`: links and
  *  junctions followed in order, then the disk's own spelling, so an 8.3 short name such as `C:\Users\LONGNA~1` comes
  *  back long): the JS `realpathSync` follows links but keeps a short name as written, and a short name of a denied
- *  folder then matched no deny. Past `canonicalPath`'s link limit, the OS's own resolution (`realpathSync.native`). */
+ *  folder then matched no deny. Past `canonicalPath`'s link limit (a loop, or a chain built to tire the walk) the path is
+ *  `TOO_MANY_LINKS`, a device path every deny decision refuses (`windowsPathRefused`), never judged half-walked. */
 export function realPathOf(path: string, cwd: string): string {
   let p = isAbsolute(path) ? path : resolve(cwd, path);
   const win = process.platform === "win32";
   if (win) {
-    try { return withoutDosDevicePrefix(canonicalPath(p)); } catch { /* past the link limit: the OS's resolution below */ }
+    try { return withoutDosDevicePrefix(canonicalPath(p)); } catch { return TOO_MANY_LINKS; }
   }
-  const real = win ? (q: string) => withoutDosDevicePrefix(realpathSync.native(q)) : (q: string) => realpathSync(q);
+  const real = (q: string) => realpathSync(q);
   const rest: string[] = [];
   for (;;) {
     try {
@@ -74,13 +75,15 @@ export function realPathOf(path: string, cwd: string): string {
 
 /** How a path, as written or as it really is, reaches the MOSS home: inside it, holding it (a search from there would
  *  walk into it), or not at all. */
-export function homeReach(home: string, path: string, cwd: string, os?: Os): "inside" | "holds" | undefined {
+export function homeReach(home: string, path: string, cwd: string, os?: Os, granted: readonly string[] = [cwd]): "inside" | "holds" | undefined {
   // The home as it really is too (a short name or a link to it given as the home).
   const realHome = realPathOf(home, cwd);
-  // A path the fence can't place lexically (a volume GUID path, `\\?\GLOBALROOT\…`, a device) reaches it: refused.
-  if (opaqueWindowsPath(path, os)) return "inside";
+  if (windowsPathRefused(path.trim(), granted, os)) return "inside"; // as written, before any resolving
   let holds = false;
   for (const p of new Set([isAbsolute(path) ? path : resolve(cwd, path), realPathOf(path, cwd)])) {
+    // A path no comparison can place (a device path, a share: `windowsPathRefused`), as written or as it resolves (a
+    // link to a share): it reaches every deny. Refused.
+    if (windowsPathRefused(p, granted, os)) return "inside";
     for (const h of new Set([home, realHome])) {
       if (reachesInside(p, h, os)) return "inside";
       if (reachesInside(h, p, os)) holds = true;
@@ -92,6 +95,31 @@ export function homeReach(home: string, path: string, cwd: string, os?: Os): "in
 /** `\\?\C:\x` as `C:\x`, `\\?\UNC\s\x` as `\\s\x`: what `realpathSync.native` may give back on Windows. */
 function withoutDosDevicePrefix(p: string): string {
   return p.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:)/, "");
+}
+
+/** What `realPathOf` gives for a path past the link limit on Windows: a device path, which every deny decision refuses. */
+export const TOO_MANY_LINKS = "\\\\?\\GLOBALROOT\\moss-too-many-links";
+
+/** Whether `path` names a network share on Windows, in any spelling: `\\server\share\…`, `//server/share`, mixed
+ *  separators, `\\?\UNC\…`, `\\.\UNC\…`. */
+export function uncPath(path: string, os?: Os): boolean {
+  if ((os ?? (process.platform === "win32" ? "windows" : "macos")) !== "windows") return false;
+  const t = path.trim();
+  if (!/^[\\/]{2}/.test(t)) return false;
+  const dev = /^[\\/]{2}[?.][\\/](.*)$/.exec(t);
+  return dev === null ? true : /^UNC[\\/]/i.test(dev[1]!);
+}
+
+/** Whether a file tool's deny decision on Windows refuses `path` outright (lane WS8, the reviewer's findings): a device
+ *  path no comparison can place (`opaqueWindowsPath`), and a share (`uncPath`) unless it lies inside a root the caller
+ *  was granted that is itself a share, by the one comparison (`pathWithin`). A share can be this very computer
+ *  (`\\localhost\C$\…`, `\\127.0.0.1\…`, `\\<its name>\<a share of the user's home>`), which Windows opens as
+ *  `\\?\UNC\…`, never `C:\…`, so no deny on `C:\Users\…` would match it; this computer's names are never listed,
+ *  every share is refused. False everywhere but Windows. */
+export function windowsPathRefused(path: string, granted: readonly string[], os?: Os): boolean {
+  if (opaqueWindowsPath(path, os)) return true;
+  if (!uncPath(path, os)) return false;
+  return !granted.some((g) => uncPath(g, os) && pathWithin(path, g, "windows"));
 }
 
 /** Whether `path` is in the Win32 device namespace in a form other than a drive (`\\?\C:\`) or a share

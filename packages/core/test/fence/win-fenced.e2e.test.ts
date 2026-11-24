@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
-import { botSandboxSettings } from "../../src/fence/sandbox-settings";
+import { botSandboxSettings, runLaterByName } from "../../src/fence/sandbox-settings";
 import { botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
 import { fileToolFenceRefusal } from "../../src/runtime-sdk/turn-loop/file-fence";
 import { fileToolRefusal } from "../../src/agents/moss-code/backend";
@@ -456,18 +456,42 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:WS8_P).ShortPath"], { env: { ...process.env, WS8_P: p } });
       return r.stdout.toString().trim();
     };
-    // One the volume made, or one set now (`fsutil file setshortname`; with the volume's 8.3 names off, they are let on first).
+    // One the volume made, or one set now (`fsutil file setshortname`; with the volume's 8.3 names off, they are let on
+    // first, and the volume's setting is put back after). `fsutil` only on CI's own runner, and only as an administrator.
+    const elevated = Bun.spawnSync(["net", "session"]).exitCode === 0;
+    const mayChange = process.env.CI !== undefined && elevated;
+    const drive = home.slice(0, 2);
+    const volumeState = /state is:?\s*(\d)/i.exec(Bun.spawnSync(["fsutil", "8dot3name", "query", drive]).stdout.toString())?.[1];
+    let volumeChanged = false;
     const shortened = (p: string, name: string): string | undefined => {
       const has = () => { const s = shortOf(p); return s !== "" && s.toLowerCase() !== p.toLowerCase() ? s : undefined; };
       let s = has();
-      if (s === undefined) { Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has(); }
-      if (s === undefined) { Bun.spawnSync(["fsutil", "8dot3name", "set", p.slice(0, 2), "0"]); Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has(); }
+      if (s === undefined && mayChange) { Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has(); }
+      if (s === undefined && mayChange && volumeState !== undefined && volumeState !== "0") {
+        Bun.spawnSync(["fsutil", "8dot3name", "set", drive, "0"]); volumeChanged = true;
+        Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has();
+      }
       return s;
     };
-    const ssh = join(home, ".ssh"), shortSsh = shortened(ssh, "SSHE2E~1"), shortMoss = shortened(moss, "MOSSE2~1");
-    console.log(`[e2e] 8.3: ${ssh} -> ${shortSsh ?? "(no short name could be made)"}; ${moss} -> ${shortMoss ?? "(no short name could be made)"}`);
+    const ssh = join(home, ".ssh");
+    let shortSsh: string | undefined, shortMoss: string | undefined;
+    try { shortSsh = shortened(ssh, "SSHE2E~1"); shortMoss = shortened(moss, "MOSSE2~1"); }
+    finally { if (volumeChanged) Bun.spawnSync(["fsutil", "8dot3name", "set", drive, volumeState!]); }
+    console.log(`[e2e] 8.3: ${ssh} -> ${shortSsh ?? "(no short name could be made)"}; ${moss} -> ${shortMoss ?? "(no short name could be made)"}; elevated ${elevated}; the volume's 8.3 state ${volumeState ?? "unread"}${volumeChanged ? ", changed and put back" : ""}`);
+    if ((shortSsh === undefined || shortMoss === undefined) && !elevated) {
+      // The standard user's job: no fsutil there, and no short name the volume made. The elevated job is the proof.
+      console.log("[e2e] 8.3: SKIPPED here: no short name exists and this user can't make one (the administrator's job proves it)");
+      return;
+    }
     expect(shortSsh).toBeDefined();
     expect(shortMoss).toBeDefined();
+    // The Windows acceptance run's refusal (lane WS8): a bot's edit of an installed plugin's file named through the home's
+    // short name is not a project's `.moss`; a project's `.moss` still is.
+    const pluginFile = join(shortMoss!, "plugins", "ws-greeter", "host", "index.ts");
+    const homes = { userHome: home, mossHome: moss, os: "windows" as const };
+    console.log(`[e2e] 8.3 run-later: ${pluginFile} held ${runLaterByName(pluginFile, homes)}; a project's .moss held ${runLaterByName(join(home, "ws8-short-project", ".moss", "x"), homes)}`);
+    expect(runLaterByName(pluginFile, homes)).toBe(false);
+    expect(runLaterByName(join(home, "ws8-short-project", ".moss", "x"), homes)).toBe(true);
     const project = join(home, "ws8-short-project");
     rmSync(project, { recursive: true, force: true });
     mkdirSync(project, { recursive: true });
@@ -496,6 +520,22 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     for (const link of ["keys", "mosslink"]) { try { rmdirSync(join(project, link)); } catch { /* already gone */ } } // a junction, never its target
     rmSync(project, { recursive: true, force: true });
   }, 300_000);
+
+  test("a share back to this computer (lane WS8, the reviewer's finding): whether Windows opens it for this user, and both file tools refuse it", () => {
+    let opened = false;
+    try { opened = readFileSync("\\\\localhost\\C$\\Windows\\win.ini").length >= 0; } catch { opened = false; }
+    const elevated = Bun.spawnSync(["net", "session"]).exitCode === 0;
+    console.log(`[e2e] UNC loopback: \\\\localhost\\C$\\Windows\\win.ini opened for this user (elevated ${elevated}): ${opened}`);
+    const bot = botFileFence(fence, moss, "windows", home)({ caller: CALLER } as never);
+    const agentFence = { denyRead: [moss, ...secretReadPlaces("windows", home).map((p) => p.path)], denyWrite: [moss] };
+    const user = home.slice(3); // `Users\<name>`
+    for (const path of [`\\\\localhost\\C$\\${user}\\.ssh\\id_e2e`, `\\\\127.0.0.1\\C$\\${user}\\.moss-e2e\\run\\token`, `//LOCALHOST/c$/${user.replace(/\\/g, "/")}/.ssh/id_e2e`, `\\\\?\\UNC\\localhost\\C$\\Windows\\win.ini`]) {
+      const agentWhy = fileToolRefusal({ tool_name: "Read", tool_input: { file_path: path } }, agentFence, scratch);
+      const botWhy = fileToolFenceRefusal("Read", { file_path: path }, bot, scratch);
+      console.log(`[e2e] UNC Read ${path}: agent refused ${agentWhy !== undefined}; bot refused ${botWhy !== undefined}`);
+      expect([path, agentWhy !== undefined, botWhy !== undefined]).toEqual([path, true, true]);
+    }
+  });
 
   test("MOSS's coding agent on Windows (lane WS8): its command runs in its root, never reads the MOSS home or a secret, never leaves the sandbox, and runs beside a bot's", async () => {
     const project = join(home, "ws8-agent-project");

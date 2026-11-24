@@ -6,7 +6,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, type FenceOp, type FenceVerdict } from "../../contracts/fence";
-import { homeReach, opaqueWindowsPath, realPathOf } from "../../agents/memory";
+import { homeReach, realPathOf, uncPath, windowsPathRefused } from "../../agents/memory";
 import { SECRET_FILE_SEGMENTS } from "../../secrets/secret-files";
 import { CONFIG_COPY_FILES } from "./home-deny";
 import { RESUME_STAGING_PREFIX } from "../host/vendor-paths";
@@ -74,6 +74,18 @@ export interface FileFence {
   os?: Os;
   /** The user's home: its secret places (`SECRET_READ_PLACES`) are never read, and a search from above skips them. */
   userHome?: string;
+  /** The roots the session was granted: on Windows a share (`\\server\share`) is reached only inside one of these. */
+  roots?: () => readonly string[];
+}
+
+/** Whether the bots' file fence refuses `path` on Windows before anything else (`windowsPathRefused`): a device path, or a
+ *  share outside every granted share root, as written or as it resolves. Its granted roots: the session's folder and
+ *  its policy's roots. */
+function windowsRefused(path: string, fence: FileFence, cwd: string, real?: string): boolean {
+  const os = fence.os ?? hostOs();
+  if (os !== "windows") return false;
+  const granted = [cwd, ...(fence.roots?.() ?? [])];
+  return windowsPathRefused(path, granted, os) || windowsPathRefused(real ?? realPathOf(path, cwd), granted, os);
 }
 
 /** The secret-place options for this fence, or undefined without a user's home. */
@@ -112,7 +124,11 @@ export function fileToolFenceRefusal(name: string, input: unknown, fence: FileFe
   for (const raw of paths) {
     // A path in the device namespace that no comparison can place (a volume GUID path and the like): refused, never
     // judged as outside every deny (lane WS8).
-    if (opaqueWindowsPath(raw.trim(), fence.os ?? hostOs())) return `${name} was not run: ${raw} is a device path; use the drive-letter form of the path.`;
+    if (windowsRefused(raw.trim(), fence, cwd)) {
+      return uncPath(raw.trim(), fence.os ?? hostOs())
+        ? `${name} was not run: ${raw} is a network path (a share, perhaps this computer's own), outside what this session was given; use the drive-letter form of the path.`
+        : `${name} was not run: ${raw} is a device path; use the drive-letter form of the path.`;
+    }
     const path = opened(raw, cwd);
     const verdict = fence.check({ op: tool.op, path });
     if (verdict.allowed && tool.op === "read" && botReadDenied(fence.home, path, cwd)) return `${name} was not run: ${raw} holds secrets or keys, which bots never read.`;
@@ -133,7 +149,9 @@ function opened(raw: string, cwd: string): string {
  *  it is in none of the user's secret places. A relative hit is the search's folder's. */
 function hitShown(hit: string, fence: FileFence, root: string, cwd: string, places: ReturnType<typeof placesOf> | undefined): boolean {
   const path = isAbsolute(hit) ? resolve(hit) : resolve(root, hit);
-  for (const p of new Set([path, realPathOf(path, root)])) {
+  const real = realPathOf(path, root);
+  if (windowsRefused(path, fence, cwd, real)) return false;
+  for (const p of new Set([path, real])) {
     if (!fence.check({ op: "read", path: p }).allowed) return false;
   }
   if (botReadDenied(fence.home, path, root)) return false;

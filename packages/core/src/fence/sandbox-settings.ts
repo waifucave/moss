@@ -32,6 +32,7 @@ import { gitRunLaterPlaces, pathClass } from "../approvals/ordinary-paths";
 import { PROJECT_DENIES, PROJECT_WHOLE_DENIES } from "../registry/plugin-fence";
 import { pathKey, pathWithin } from "./fold";
 import { gitTemplateDir } from "./layout";
+import { diskSpelling } from "./canonical";
 
 export interface SandboxSettingsOptions {
   /** A folder's entry names, or [] when it isn't a folder (tests pass a fake). */
@@ -297,20 +298,27 @@ export function ordinaryTopFolders(userHome: string, o: {
  *  in its real one (a home reached through a link: macOS's /var → /private/var, a linked volume), so a bot's write to
  *  its scratch named either way isn't read as a project's `.moss`; the path itself is only ever taken as given (a
  *  `.moss` that is a link into the home is still held). */
-export function runLaterByName(path: string, o: { userHome: string; mossHome: string; os: Os }): boolean {
+export function runLaterByName(path: string, o: { userHome: string; mossHome: string; os: Os; spell?: (path: string) => string }): boolean {
   const p = o.os === "windows" ? win32 : posix;
-  if (isInsideOrSame(path, o.mossHome, o.os)) return false;
+  // Lane WS8: on Windows the path is judged in its own spelling AND in the disk's long one (`diskSpelling`: 8.3 short
+  // names expanded, no link followed), and so is the home: a bot's write to an installed plugin's file named through the
+  // runner's `C:\Users\RUNNER~1\…` is inside the home given long, and `MCPJSO~1.JSO` is a held `.mcp.json`.
+  const spell = o.spell ?? ((x: string) => (o.os === "windows" ? diskSpelling(x) : x));
+  const forms = [...new Set([path, spell(path)])];
   const realHome = (() => { try { return realpathSync.native(o.mossHome); } catch { return undefined; } })();
-  if (realHome !== undefined && isInsideOrSame(path, realHome, o.os)) return false;
-  const segs = path.split(/[\\/]+/).filter((s) => s.length > 0);
-  const runAt = (name: string) => {
+  const homes = [...new Set([o.mossHome, spell(o.mossHome), ...(realHome === undefined ? [] : [realHome])])];
+  if (forms.some((f) => homes.some((h) => isInsideOrSame(f, h, o.os)))) return false;
+  const runAt = (segs: readonly string[]) => (name: string) => {
     const want = name.split("/").filter((s) => s.length > 0);
     for (let i = 0; i + want.length <= segs.length; i++) if (want.every((w, j) => segmentMatches(segs[i + j]!, w, o.os))) return true;
     return false;
   };
-  if ([...heldNames(), ".moss"].some(runAt)) return true;
+  for (const f of forms) {
+    const segs = f.split(/[\\/]+/).filter((s) => s.length > 0); // a backslash too, on every OS: only holds more
+    if ([...heldNames(), ".moss"].some(runAt(segs))) return true;
+  }
   const fixed = [...FIXED_PATH_FOLDERS, ...FIXED_HOME_PATH_FOLDERS.map((f) => p.join(o.userHome, ...f.split("/")))];
-  return fixed.some((f) => isInsideOrSame(path, f, o.os));
+  return forms.some((f) => fixed.some((x) => isInsideOrSame(f, x, o.os)));
 }
 
 /** What the sandboxed shell never writes under any root (the adversarial review's blocker on 408d1c844 and the

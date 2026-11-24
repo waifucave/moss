@@ -178,7 +178,10 @@ export function withBotKeyReads(sandbox: SandboxSettingsConfig, fence: Pick<File
 export function botFileFence(fence: Pick<Fence, "forCaller">, home: string, os?: Os, userHome?: string): (ctx: BotSessionContext) => FileFence {
   return (ctx) => {
     const own = fence.forCaller(ctx.caller);
-    return { check: (op) => own.check(op), home, ...(os === undefined ? {} : { os }), ...(userHome === undefined ? {} : { userHome }) };
+    // The roots the session was granted (its policy's writes, a person's grants among them): on Windows a share is read
+    // only inside one of these (`windowsPathRefused`, lane WS8).
+    const roots = () => { try { return own.policy().allowWrite; } catch { return []; } };
+    return { check: (op) => own.check(op), home, roots, ...(os === undefined ? {} : { os }), ...(userHome === undefined ? {} : { userHome }) };
   };
 }
 
