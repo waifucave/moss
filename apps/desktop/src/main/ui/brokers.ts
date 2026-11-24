@@ -304,6 +304,11 @@ export const SEND_INPUT_WINDOW_MS = 1_000;
 /** How long after a mouse press its frame's report (`seen`: the preload's trusted pointerdown) may still name where it landed. */
 export const PRESS_REPORT_MS = 1_000;
 
+/** How long an earlier press that never got its report may still have its report arrive and be taken for a later press's. */
+const OPEN_REPORT_MS = PRESS_REPORT_MS + STALL_CREDIT_MAX_MS;
+/** How many earlier unreported presses are remembered (the OLDEST are kept: a stall since the oldest is the likeliest to refuse). */
+const OPEN_MAX = 32;
+
 /** How long after a press's release the frame may send once (hold-to-talk: the release, then the transcription). */
 export const SEND_RELEASE_WINDOW_MS = 30_000;
 
@@ -387,7 +392,7 @@ export class SendGate {
     const stalled = this.stalled(p.at, arrived);
     const over = arrived - p.at - stalled - SEND_INPUT_WINDOW_MS;
     const stall = stalled > 0 ? `; the process itself was not running for ${stalled} ms of it` : "";
-    if (p.openSince !== undefined && p.frames === undefined && this.stalled(p.openSince, arrived) > 0) return `two presses close together on a stalled machine${stall}`;
+    if (p.frames === undefined && this.crowded(p, arrived)) return `two presses close together on a stalled machine${stall}`;
     if (over > 0) return `the call came ${over} ms past the press's bound${stall}`;
     if (p.frames === undefined) return `no pointerdown report named where the press landed${stall}`;
     return `the press landed in another frame${stall}`;
@@ -444,10 +449,12 @@ export class SendGate {
     this.dropAllowances(windowId);
     const at = this.now();
     const was = this.lastPress.get(windowId);
-    // The press before this one is still waiting for its report: whichever report comes next could be its. Whether that matters is
-    // judged when the report is taken (`seen`): once the machine has stalled since that earlier press, a report is refused.
-    const open = press.kind === "mouse" && was !== undefined && was.kind === "mouse" && !was.spent && was.frames === undefined && at - was.at - this.stalled(was.at, at) <= PRESS_REPORT_MS;
-    const h: Hold = { kind: press.kind, key: press.key, at, spent: false, ...(press.frames !== undefined ? { frames: new Set(press.frames) } : {}), ...(open ? { openSince: was!.at } : {}) };
+    // EVERY earlier mouse press that never got its report and is young enough for a report to be taken as its (the one just before
+    // this one, and those it already listed, whether or not a press between them was reported, and whether or not its own report
+    // window has closed): whichever report comes next could be any of theirs. Whether that matters is judged when the report is
+    // taken (`seen`): see `crowded`.
+    const open = [...(was?.open ?? []), ...(was !== undefined && was.kind === "mouse" && !was.spent && was.frames === undefined ? [was.at] : [])].filter((t) => at - t <= OPEN_REPORT_MS).slice(0, OPEN_MAX);
+    const h: Hold = { kind: press.kind, key: press.key, at, spent: false, ...(press.frames !== undefined ? { frames: new Set(press.frames) } : {}), ...(open.length > 0 ? { open } : {}) };
     this.holds.set(windowId, h);
     this.stalls?.arm(SEND_INPUT_WINDOW_MS + STALL_CREDIT_MAX_MS + 500);
     if (was !== undefined) this.framesKnown(was);
@@ -464,10 +471,26 @@ export class SendGate {
     if (p === undefined || p.kind !== "mouse" || p.frames !== undefined || frames.length === 0) return false;
     const age = this.now() - p.at;
     // A report taken once the machine has stalled since an earlier press that never reported may be that press's: refused.
-    if (p.openSince !== undefined && this.stalled(p.openSince) > 0) return false;
+    if (this.crowded(p, this.now())) return false;
     if (age - this.stalled(p.at) > PRESS_REPORT_MS) return false;
     this.holdFrames(windowId, p, frames);
     return true;
+  }
+
+  /** Whether a report (or call) for the press `p`, judged at `at`, could be an earlier unreported press's, with the machine's stall
+   *  to pay for the difference: some earlier press that never reported has had a stall since it, and EITHER it was still young when
+   *  `p` came (its own report could still have been due: its age less the stall since is within PRESS_REPORT_MS), OR `p` needs the
+   *  stall's credit at all (its report is more than PRESS_REPORT_MS after its mouse down): a page's own delay could then be paid for
+   *  by a stall, however long before the earlier press was (up to the cap). A press that needs no credit, after a stall that ended
+   *  well before it, is judged as it always was. */
+  private crowded(p: Hold, at: number): boolean {
+    if (p.open === undefined) return false;
+    const needsCredit = at - p.at > PRESS_REPORT_MS;
+    for (const o of p.open) {
+      if (this.stalled(o, at) <= 0) continue;
+      if (needsCredit || p.at - o - this.stalled(o, p.at) <= PRESS_REPORT_MS) return true;
+    }
+    return false;
   }
 
   /** The frames a mouse press happened in, once found (the release may already have come: it is credited now). */
@@ -550,8 +573,9 @@ export interface Hold {
   spent: boolean;
   frames?: Set<string>;
   releasedAt?: number;
-  /** The earlier mouse press that still had no report when this one came (`press`): a report may be its, once the machine stalled. */
-  openSince?: number;
+  /** The times of every earlier mouse press that still had no report and was within PRESS_REPORT_MS plus the cap when this one came
+   *  (`press`; oldest first, at most OPEN_MAX): a report may be any of theirs, once the machine stalled. */
+  open?: number[];
 }
 
 /** A hold nobody released (a right-button press, a press whose release went to another window) is forgotten after this. */

@@ -13,8 +13,8 @@ const WINDOWS = [1, 2] as const;
 
 function world() {
   const c = { now: 4_000_000, cpu: 0, sw: 0, tick: undefined as (() => void) | undefined };
-  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
-  const pass = (ms: number, cpu: number, tick: boolean, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
+  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => 100_000, load: () => ({ avg: 20, cores: 8 }), setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
+  const pass = (ms: number, cpu: number, tick: boolean, sw = ms > STALL_TICK_MS + 50 ? ms : Math.round(ms / 100)): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
   return { c, watch, pass };
 }
 

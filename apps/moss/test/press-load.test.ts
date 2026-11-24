@@ -16,10 +16,10 @@ const MAIN = "11:22";
 /** A press record on a clock the test moves, with the real StallWatch on the same clock and a CPU meter the test sets. */
 function rig() {
   const c = { now: 5_000_000, cpu: 0, sw: 0, tick: undefined as (() => void) | undefined };
-  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
+  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => 100_000, load: () => ({ avg: 20, cores: 8 }), setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
   const record = new PressRecord(() => c.now, watch);
   /** Time passes; the process used `cpu` ms of it; the watch's timer ticks when asked (and it exists). */
-  const pass = (ms: number, cpu = 1, tick = true, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
+  const pass = (ms: number, cpu = 1, tick = true, sw = ms > STALL_TICK_MS + 50 ? ms : Math.round(ms / 100)): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
   /** An ordinary stretch: the timer beats on time. */
   const calm = (ms: number): void => { for (let left = ms; left > 0; left -= STALL_TICK_MS) pass(Math.min(left, STALL_TICK_MS), 1); };
   return { c, watch, record, pass, calm };
@@ -116,8 +116,9 @@ describe("a genuine press while the machine stalled main (the same press, accept
 
   test("a real stall of this process (sleeping, not working) between the mouse down and the report, on the real clock and the real watch", () => {
     // The real clock and the real CPU meter; the OS's preemption count can't be made by a test, so it is read as a rising one.
-    let preempted = 0;
-    const watch = new StallWatch({ switches: () => (preempted += 5) });
+    const t0 = Date.now();
+    const starved = () => ({ switches: () => Date.now() - t0, uptime: () => 100_000, load: () => ({ avg: 30, cores: 8 }) });
+    const watch = new StallWatch(starved());
     const record = new PressRecord(Date.now, watch);
     const sleep = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
     record.mouseDown(WIN);
@@ -128,7 +129,7 @@ describe("a genuine press while the machine stalled main (the same press, accept
     const took = record.takeWrite(WIN, MAIN);
     expect(took.ok).toBe(true);
     // The same timeline on the sealed buttons' strict `take`: refused, as it always was (it has no report in time).
-    const strict = new PressRecord(Date.now, new StallWatch({ switches: () => (preempted += 5) }));
+    const strict = new PressRecord(Date.now, new StallWatch(starved()));
     strict.mouseDown(WIN);
     sleep(1_400);
     strict.frameSaw(WIN, MAIN);
@@ -136,8 +137,9 @@ describe("a genuine press while the machine stalled main (the same press, accept
   });
 
   test("the same real delay spent working (a busy loop) is not a stall: refused", () => {
-    let preempted = 0;
-    const record = new PressRecord(Date.now, new StallWatch({ switches: () => (preempted += 5) }));
+    const t0 = Date.now();
+    const starved = () => ({ switches: () => Date.now() - t0, uptime: () => 100_000, load: () => ({ avg: 30, cores: 8 }) });
+    const record = new PressRecord(Date.now, new StallWatch(starved()));
     const spin = (ms: number): void => { const end = Date.now() + ms; while (Date.now() < end) { /* the process is running */ } };
     record.mouseDown(WIN);
     spin(1_400);
@@ -264,6 +266,102 @@ describe("what a stall never buys", () => {
     r.record.frameSaw(WIN, "Y:1");
     r.calm(40);
     expect(r.record.takeWrite(WIN, "Y:1").ok).toBe(true);
+  });
+
+  const CROWDED = { ok: false, check: "two presses close together on a stalled machine" } as const;
+
+  test("three presses: A in X (report held back), B in Y (reports promptly), C in Z, then main stalls and X's report comes: it is not C's", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A, in frame X: its report is held back
+    r.calm(100);
+    r.record.mouseDown(WIN); // B, in frame Y: reports promptly
+    r.record.frameSaw(WIN, "Y:1");
+    r.calm(100);
+    r.record.mouseDown(WIN); // C, in frame Z: no report yet
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 3_000, 30, false); // main stalls
+    r.record.frameSaw(WIN, "X:1"); // A's report, which would name C's press
+    r.pass(30, 3);
+    for (const f of ["X:1", "Y:1", "Z:1"]) expect([f, r.record.takeWrite(WIN, f)]).toMatchObject([f, CROWDED]);
+    // Nothing was spent: the person's next press, alone, goes through.
+    r.calm(10_000);
+    r.record.mouseDown(WIN);
+    r.record.frameSaw(WIN, "Z:1");
+    r.calm(40);
+    expect(r.record.takeWrite(WIN, "Z:1").ok).toBe(true);
+  });
+
+  test("A's own report window had already closed: X delays its report over 1 s, B lands 1.1 s after A, main stalls 2 s with X's report queued ahead: it is not B's", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A, in frame X
+    r.calm(1_100); // X's report is over REPORT_MS late by the page's own doing (no stall yet)
+    r.record.mouseDown(WIN); // B, in frame Y
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 2_000, 30, false); // main stalls 2 s
+    r.record.frameSaw(WIN, "X:1"); // X's report, handled ahead of Y's: the stall would pay for X's own delay
+    r.record.frameSaw(WIN, "Y:1");
+    r.pass(30, 3);
+    expect(r.record.takeWrite(WIN, "X:1")).toMatchObject(CROWDED);
+    expect(r.record.takeWrite(WIN, "Y:1")).toMatchObject(CROWDED);
+  });
+
+  test("four presses, the first two never reported: the report that comes after a stall is none of theirs to spend", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A
+    r.calm(300);
+    r.record.mouseDown(WIN); // B
+    r.calm(300);
+    r.record.mouseDown(WIN); // C, reports promptly
+    r.record.frameSaw(WIN, "Z:1");
+    r.calm(300);
+    r.record.mouseDown(WIN); // D
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 4_000, 30, false);
+    r.record.frameSaw(WIN, "X:1");
+    for (const f of ["X:1", "Y:1", "Z:1"]) expect([f, r.record.takeWrite(WIN, f)]).toMatchObject([f, CROWDED]);
+  });
+
+  test("the earlier press's report came first and on time: the later press, stalled, still works (and the earlier press is not spendable)", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A
+    r.calm(100);
+    r.record.frameSaw(WIN, "X:1"); // A's report, on time
+    r.calm(100);
+    r.record.mouseDown(WIN); // B
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 3_000, 30, false); // main stalls between B's mouse down and B's report
+    r.record.frameSaw(WIN, "Y:1");
+    r.pass(30, 3);
+    expect(r.record.takeWrite(WIN, "X:1")).toMatchObject({ ok: false, check: "the press landed in another frame" });
+    expect(r.record.takeWrite(WIN, "Y:1")).toMatchObject({ ok: true, how: "click" });
+  });
+
+  test("an earlier unreported press 5 s ago (no stall since) makes a later stalled report refused; 9.5 s ago it is out of range; a stall that ended before a prompt press is no reason", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A, never reported
+    r.calm(5_000);
+    r.record.mouseDown(WIN); // B
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 3_000, 30, false);
+    r.record.frameSaw(WIN, "Y:1");
+    expect(r.record.takeWrite(WIN, "Y:1")).toMatchObject(CROWDED);
+    const old = rig();
+    old.record.mouseDown(WIN);
+    old.calm(9_500); // older than REPORT_MS plus the cap: nothing it could still be waiting for
+    old.record.mouseDown(WIN);
+    old.calm(20);
+    old.pass(STALL_TICK_MS + 3_000, 30, false);
+    old.record.frameSaw(WIN, "Y:1");
+    expect(old.record.takeWrite(WIN, "Y:1").ok).toBe(true);
+    // A stalled, then calm, then a prompt press: no credit is needed, and A is not in the way.
+    const tail = rig();
+    tail.record.mouseDown(WIN); // A, never reported
+    tail.pass(STALL_TICK_MS + 4_000, 30, true);
+    tail.calm(2_000);
+    tail.record.mouseDown(WIN);
+    tail.record.frameSaw(WIN, "Y:1");
+    tail.calm(40);
+    expect(tail.record.takeWrite(WIN, "Y:1").ok).toBe(true);
   });
 
   test("the same two presses with the report in time and no stall since A are judged as they always were", () => {

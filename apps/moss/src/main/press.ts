@@ -36,6 +36,10 @@ import type { KeyState } from "./answer-key";
 export const PRESS_MS = 1_500;
 /** How long after main's mouse down the frame's own trusted pointerdown report may come. */
 export const REPORT_MS = 1_000;
+/** How long an earlier press that never got its report may still have its report arrive and be taken for a later press's. */
+const OPEN_MS = REPORT_MS + STALL_CREDIT_MAX_MS;
+/** How many earlier unreported presses are remembered (the OLDEST are kept: a stall since the oldest is the likeliest to refuse). */
+const OPEN_MAX = 32;
 
 interface Down {
   at: number;
@@ -46,10 +50,12 @@ interface Down {
   /** A report that came after REPORT_MS: it counts only for a person's write (`takeWrite`), and only when the main process was
    *  itself not running for the delay (`credit`: the stall it was credited at the time the report was handled). */
   late?: { frame: string; at: number; credit: number };
-  /** Another press, at this time, was still waiting for its report when this one came: a report that comes later can't be told from
-   *  that press's. Judged when a write takes this press (`judgeClick`), not here: it matters once the machine has stalled since
-   *  that earlier press, or when this press's report came late. */
-  openSince?: number;
+  /** The times of EVERY earlier press in this window that never got its report and was within REPORT_MS plus the credit's cap
+   *  when this one came (oldest first, at most OPEN_MAX): a report that comes later can't be told from theirs, whether or not
+   *  their own report window has closed and whether or not a later press in between was reported. Judged when a write takes this
+   *  press (`judgeClick`), not here: it matters once the machine has stalled since the oldest of them, or when this press's
+   *  report came late. */
+  open?: number[];
   spent?: boolean;
 }
 
@@ -92,10 +98,11 @@ export class PressRecord {
   mouseDown(windowId: number, point?: { x: number; y: number }): void {
     const at = this.now();
     const was = this.downs.get(windowId);
-    // The press before this one is still waiting for its report (its report can still be taken: its age, less the machine's own stall since it, is within REPORT_MS):
-    // whichever report comes next could be its. Whether that matters is judged when a write takes this press.
-    const open = was !== undefined && !was.spent && was.frame === undefined && was.late === undefined && at - was.at - this.stalled(was.at, at) <= REPORT_MS;
-    this.downs.set(windowId, { at, ...(point !== undefined ? { point } : {}), ...(open ? { openSince: was!.at } : {}) });
+    // Every earlier press that never got its report and is still young enough for a report to be taken as its (the one just
+    // before this one, and those it already listed, whether or not a press between them was reported): a report that comes
+    // later could be any of theirs. Whether that matters is judged when a write takes this press.
+    const open = [...(was?.open ?? []), ...(was !== undefined && was.frame === undefined && was.late === undefined ? [was.at] : [])].filter((t) => at - t <= OPEN_MS).slice(0, OPEN_MAX);
+    this.downs.set(windowId, { at, ...(point !== undefined ? { point } : {}), ...(open.length > 0 ? { open } : {}) });
     this.stalls?.arm(WATCH_MS);
   }
 
@@ -186,9 +193,21 @@ export class PressRecord {
   private judgeClick(d: Down, frame: string, now: number): WriteTake {
     if (now < d.at) return { ok: false, check: "no press seen" };
     const stalledMs = this.stalled(d.at, now);
-    // An earlier press had no report when this one came, and the machine has stalled since it (or this press's report came late):
-    // the report this press holds may be that press's, so no write takes it. A machine that kept up is judged as it always was.
-    if (d.openSince !== undefined && (d.late !== undefined || this.stalled(d.openSince, now) > 0)) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
+    // An earlier press (any of them) had no report when this one came, and the machine has stalled since it: the report this
+    // press holds may be that press's, so no write takes it when
+    //   - that press was still young when this one came (its own report could still have been due: its age less the stall since
+    //     is within REPORT_MS), or
+    //   - this press needs the stall's credit at all (its report came after REPORT_MS, or the write after PRESS_MS): then a
+    //     page's own delay could be paid for with the machine's stall, however long ago the earlier press was (up to the cap).
+    // A press that needs no credit, after a stall that ended well before it, is judged as it always was.
+    if (d.open !== undefined) {
+      const needsCredit = d.late !== undefined || now - d.at > PRESS_MS;
+      for (const p of d.open) {
+        if (this.stalled(p, now) <= 0) continue;
+        const young = d.at - p - this.stalled(p, d.at) <= REPORT_MS;
+        if (young || needsCredit) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
+      }
+    }
     const reported = d.frame ?? d.late?.frame;
     if (reported === undefined) return { ok: false, check: "no pointerdown report from this page", stalledMs, ...(now - d.at - stalledMs > PRESS_MS ? { overMs: now - d.at - stalledMs - PRESS_MS } : {}) };
     if (reported !== frame) return { ok: false, check: "the press landed in another frame", stalledMs };

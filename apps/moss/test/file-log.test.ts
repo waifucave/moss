@@ -23,6 +23,11 @@ const KEPT: string[] = [
   "host: the host is back",
   "send: refused by the press check (the write came too late, 151 ms past its bound; the process itself was not running for 3000 ms)",
   "send: the engine took nothing (no answer in time, 30001 ms after the call)",
+  "send: the engine took nothing (the connection closed, 12 ms after the call)",
+  "send: the engine took nothing (the engine refused (code -32000), 40 ms after the call)",
+  "send: the engine took nothing (failed, 9 ms after the call)",
+  "answer key: the kept key couldn't be read this start; it is kept as it is, and this start's key is in memory only",
+  "answer key: the engine holds another key for MOSS on this device, and this one can't replace it",
   "send: refused by the engine connection (MOSS isn't connected to its engine)",
   "press: send taken; the process itself was not running for 4200 ms of the press's age",
   "a write: refused by the press check (no press seen)",
@@ -55,6 +60,13 @@ const KEPT: string[] = [
 
 /** Lines that carry someone else's text: [as logged (with the planted words), what the file gets]. */
 const REDUCED: [string, string][] = [
+  // A kept source word is not a kept line: only the whole fixed line is, never one that carries someone's text after the prefix.
+  [`send: the engine took nothing (${SECRET}, 12 ms after the call)`, "send: (text not kept in the file)"],
+  [`send: ${SECRET} for ${BOT}`, "send: (text not kept in the file)"],
+  [`send: refused by the engine connection (${SECRET})`, "send: (text not kept in the file)"],
+  [`answer key: ${SECRET}`, "answer key: (text not kept in the file)"],
+  [`answer key: MOSS's key is registered for this device (${CARD})`, "answer key: (text not kept in the file)"],
+  [`answer key: the engine holds another key for MOSS on this device ${BOT}`, "answer key: (text not kept in the file)"],
   [`connection: a listener for ${CARD} failed: ${SECRET}`, "connection: a listener failed"],
   [`connection: the engine refused the hello (${SECRET})`, "connection: the engine refused the hello"],
   ["connection: the engine refused the hello (behind, needs 0.125.0)", "connection: the engine refused the hello (behind, needs 0.125.0)"],

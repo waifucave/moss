@@ -1,6 +1,7 @@
 // The shared log writer (src/app-log.ts) never writes through a symbolic link, and a looping caller can't rotate the log away.
 import { describe, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppLog, appLogPath, LineLimiter } from "../src/app-log";
@@ -56,6 +57,44 @@ describe("the log writer and links", () => {
       symlinkSync(target, file);
       log.write("after");
       expect(readFileSync(target, "utf8")).toBe("keep me\n");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!posix)("an existing log and older file that others could read are made owner-only, through the opened descriptor", () => {
+    const home = mkdtempSync(join(tmpdir(), "app-log-mode-"));
+    try {
+      const file = appLogPath(home);
+      mkdirSync(join(home, "logs"), { recursive: true });
+      writeFileSync(file, "old\n", { mode: 0o644 });
+      writeFileSync(`${file}.1`, "older\n", { mode: 0o644 });
+      chmodSync(file, 0o644);
+      chmodSync(`${file}.1`, 0o644);
+      new AppLog(file).write("hello");
+      expect(lstatSync(file).mode & 0o777).toBe(0o600);
+      expect(lstatSync(`${file}.1`).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!posix)("a hard link planted as the older file is not chmod-ed (it may be somebody else's file), and a pipe planted there does not hang the write", () => {
+    const home = mkdtempSync(join(tmpdir(), "app-log-hard-"));
+    try {
+      const file = appLogPath(home);
+      mkdirSync(join(home, "logs"), { recursive: true });
+      const target = join(home, "victim.txt");
+      writeFileSync(target, "keep me\n");
+      chmodSync(target, 0o644);
+      linkSync(target, `${file}.1`);
+      new AppLog(file).write("hello");
+      expect(lstatSync(target).mode & 0o777).toBe(0o644);
+      expect(readFileSync(target, "utf8")).toBe("keep me\n");
+      rmSync(`${file}.1`);
+      execFileSync("mkfifo", [`${file}.1`]);
+      new AppLog(file).write("after the pipe"); // returns: the open does not wait for a writer
+      expect(readFileSync(file, "utf8")).toContain("after the pipe");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

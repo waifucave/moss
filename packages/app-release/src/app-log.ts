@@ -4,7 +4,7 @@
 // `moss-app.log`, so the two programs' lines never interleave. Size-capped (it keeps the last file and the one before it),
 // appended a line at a time, owner-only, and holding only what the app wrote about itself: no key, and no message content
 // (the lines name methods and reasons, never a call's params).
-import { chmodSync, closeSync, constants, lstatSync, mkdirSync, openSync, renameSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, statSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const APP_LOG_MAX_BYTES = 1_000_000;
@@ -36,6 +36,22 @@ function isLink(path: string): boolean {
  *  stands alone there). */
 const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
 
+/** Makes an existing log file owner-only through a descriptor opened WITHOUT following a link (and without blocking on a pipe): the
+ *  mode changes on what was opened, never on whatever a path names a moment later. A file that is not a plain file, or that has
+ *  another hard link (one planted to somebody's file), is left as it is. Where the OS has no `O_NOFOLLOW` (Windows) the `lstat` in
+ *  `write` stands alone and there are no modes to set. */
+function ownerOnly(path: string): void {
+  if (process.platform === "win32") return;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (st.isFile() && st.nlink === 1) fchmodSync(fd, 0o600);
+  } catch { /* not there yet, or not ours to change */ } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* gone */ } }
+  }
+}
+
 export class AppLog {
   private size: number | undefined;
 
@@ -51,11 +67,12 @@ export class AppLog {
         mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
         try { this.size = statSync(this.file).size; } catch { this.size = 0; }
         // A log that already exists, and the one before it, are the owner's alone.
-        for (const f of [this.file, `${this.file}.1`]) { try { chmodSync(f, 0o600); } catch { /* not there yet */ } }
+        ownerOnly(this.file);
+        ownerOnly(`${this.file}.1`);
       }
       if (this.size + text.length > this.max) {
         renameSync(this.file, `${this.file}.1`);
-        try { chmodSync(`${this.file}.1`, 0o600); } catch { /* best effort */ }
+        ownerOnly(`${this.file}.1`);
         this.size = 0;
       }
       const fd = openSync(this.file, APPEND_FLAGS, 0o600);
