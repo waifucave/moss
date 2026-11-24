@@ -324,8 +324,9 @@ export interface PluginSelf {
   readonly version: string;
   /** The computer this half runs on. */
   readonly computer: string;
-  /** This device's id (`DeviceRecord.id`), which phones and browsers have too (lane I's ask). Optional until B-M2's
-   *  host fills it, so the stand-ins already on main still type-check. */
+  /** This device's id (`DeviceRecord.id`), which phones and browsers have too (lane I's ask). Only for a plugin the user
+   *  granted `devices.read`, which shows every paired device's id already (`devices.list`, with `isThis`); absent for any
+   *  other plugin, and for a host half started before this device's links were up. */
   readonly device?: string;
 }
 
