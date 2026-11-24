@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appFeedFile, APP_KEYS, expectedArtifacts, installersOf, RELEASE_OSES } from "./artifacts";
 import { FIXTURE_COMMIT, writeReleaseFixture } from "./fixture";
+import { SIGN_ONLY_LABEL, writeBuildCommit } from "./lib";
 import * as publish from "./publish";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -153,6 +154,23 @@ describe("publish.ts --dry-run", () => {
       expect(r.err).toContain("sha512 doesn't match");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a sign-only or a test-marked build is refused by the release step, from any system's BUILD-COMMIT", async () => {
+    for (const [os, mark] of [["mac", "sign-only"], ["win", "sign-only"], ["linux-x64", "test"]] as const) {
+      const dir = folder();
+      try {
+        const file = join(dir, `BUILD-COMMIT-${os}.txt`);
+        writeBuildCommit(dir, os, FIXTURE_COMMIT, mark);
+        expect(readFileSync(file, "utf8")).toContain(mark === "sign-only" ? SIGN_ONLY_LABEL : "test build");
+        const r = await run(["--dry-run", "--from", dir]);
+        expect(r.code, `${os} ${mark}`).toBe(1);
+        expect(r.err).toContain(mark === "sign-only" ? "sign-only" : "test-marked");
+        expect(r.out).not.toContain("DRY RUN: v");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
