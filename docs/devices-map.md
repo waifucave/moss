@@ -62,6 +62,7 @@ each `moss.json` `availability`). Every bundled host half now reads only the plu
   /v1/devices/<id>`; the forwarder: drop the device's key and its routines' delivery to it) at the moment it revokes.
 
 ## Known gaps in the plugin API's device doors
+- The parked mark (`availability: not-yet`, with its `note`) stays MOSS's own for the first release: a plugin outside the bundled `moss` tree is refused for it (the coordinator's ruling, 2026-11-24).
 - `api.plugin.device` (this device's id, for `devices.read` holders) is read when a host half starts: a grant of
   `devices.read` withdrawn later takes effect at the host's next start.
 - A development profile's local emulators can't take the account token yet: the daemon passes no `waifucaveTarget`
