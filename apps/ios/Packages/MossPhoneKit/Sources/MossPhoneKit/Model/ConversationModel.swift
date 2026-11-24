@@ -22,6 +22,7 @@ public final class ConversationModel {
     /// The question waiting in this conversation: the composer's place is taken by it.
     public private(set) var question: AskQuestion?
     public private(set) var staged: [StagedImage] = []
+    public private(set) var stagedFiles: [StagedFile] = []
     public private(set) var isInterrupting = false
     public var kind: ConversationKind { if case .bot = source { return .bot } else { return .codingSession } }
 
@@ -115,9 +116,9 @@ public final class ConversationModel {
         guard !text.isEmpty else { return false }
         let id = failedSend?.text == text ? failedSend!.id : makeID()
         do {
-            try await client.send(session: sessionID, text: text, clientMessageId: id, images: staged.map(\.path))
+            try await client.send(session: sessionID, text: text, clientMessageId: id, images: staged.map(\.path), files: stagedFiles.map(\.path))
             draft = ""
-            staged = []
+            staged = []; stagedFiles = []
             errorText = nil
             failedSend = nil
             return true
@@ -153,6 +154,18 @@ public final class ConversationModel {
         do { staged.append(StagedImage(path: try await client.stageImage(session: sessionID, data: data), thumbnail: thumbnail)) }
         catch { errorText = "That picture couldn't be added." }
     }
+    /// A picked file: refused with a plain line when it is over the limit, before any of it is read or sent.
+    public func stageFile(name: String, size: Int64, data: @autoclosure () -> Data?) async {
+        if let limit = offers?.fileLimit, size > limit {
+            errorText = "That file is too big. The limit is \(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file))."
+            return
+        }
+        guard let d = data() else { errorText = "That file couldn't be read."; return }
+        do { stagedFiles.append(try await client.stageFile(session: sessionID, name: name, data: d)); errorText = nil }
+        catch let e as FileTooLarge { errorText = "That file is too big. The limit is \(ByteCountFormatter.string(fromByteCount: e.limit, countStyle: .file))." }
+        catch { errorText = "That file couldn't be added." }
+    }
+    public func unstageFile(_ file: StagedFile) { stagedFiles.removeAll { $0 == file } }
     public func unstage(_ image: StagedImage) { staged.removeAll { $0 == image } }
     public func answerQuestion(_ answers: [String: String]) async -> Bool {
         guard let q = question else { return false }

@@ -7,7 +7,9 @@ public struct ComposerPreset: Equatable, Sendable {
     public var draft: String?
     public var focus = false
     public var picker = false
-    public init(draft: String? = nil, focus: Bool = false, picker: Bool = false) { self.draft = draft; self.focus = focus; self.picker = picker }
+    /// Stage a sample file at the start.
+    public var file = false
+    public init(draft: String? = nil, focus: Bool = false, picker: Bool = false, file: Bool = false) { self.draft = draft; self.focus = focus; self.picker = picker; self.file = file }
 }
 private struct ComposerPresetKey: EnvironmentKey { static let defaultValue = ComposerPreset() }
 extension EnvironmentValues {
@@ -35,6 +37,7 @@ struct ComposerView: View {
     @State private var page: Page = .rows
     @State private var showPhotos = false
     @State private var showCamera = false
+    @State private var showFiles = false
     @State private var photoItem: PhotosPickerItem?
     @FocusState private var focused: Bool
     @Environment(\.scenePhase) private var scenePhase
@@ -49,18 +52,19 @@ struct ComposerView: View {
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
     /// The rows this conversation offers, in the old picker's order.
     private var hasRows: Bool {
-        (offers.pictures && cameraAvailable) || offers.pictures || !offers.commands.isEmpty || !offers.efforts.isEmpty || !offers.models.isEmpty
+        offers.pictures || offers.files || !offers.commands.isEmpty || !offers.efforts.isEmpty || !offers.models.isEmpty
     }
     private var text: String { model.draft }
     private var canSend: Bool { model.canSend }
 
     var body: some View {
         VStack(spacing: 8) {
-            if !model.staged.isEmpty { stagedStrip }
+            if !model.staged.isEmpty || !model.stagedFiles.isEmpty { stagedStrip }
             composerBody
         }
         .task {
             if let d = preset.draft { model.draft = d }
+            if preset.file { try? await Task.sleep(for: .milliseconds(700)); await model.stageFile(name: "Quarterly report.pdf", size: 1_240_000, data: Data(count: 1_240_000)) }
             if preset.focus { try? await Task.sleep(for: .milliseconds(600)); focused = true }
             if preset.picker { try? await Task.sleep(for: .milliseconds(900)); withAnimation(.snappy(duration: 0.25)) { isPickerPresented = true } }
         }
@@ -68,6 +72,9 @@ struct ComposerView: View {
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task { await addPhoto(item) }
+        }
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { Task { await addFile(url) } }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { data in if let data { Task { await add(data) } } }.ignoresSafeArea()
@@ -159,6 +166,7 @@ struct ComposerView: View {
             case .rows:
                 if offers.pictures, cameraAvailable { action("Camera", "camera") { close(); showCamera = true } }
                 if offers.pictures { action("Photos", "photo") { close(); showPhotos = true } }
+                if offers.files { action("Files", "paperclip") { close(); showFiles = true } }
                 if !offers.commands.isEmpty { action("Plugins", "puzzlepiece", chevron: true) { go(.plugins) } }
                 if !offers.efforts.isEmpty { action("Effort", "gauge", value: offers.effort, selected: true, chevron: true) { go(.effort) } }
                 if !offers.models.isEmpty { action("Model", "cpu", value: offers.models.first { $0.id == offers.model }?.name, chevron: true) { go(.model) } }
@@ -274,6 +282,7 @@ struct ComposerView: View {
     private var stagedStrip: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
+                ForEach(model.stagedFiles) { file in fileChip(file) }
                 ForEach(model.staged) { image in
                     ZStack(alignment: .topTrailing) {
                         if let ui = UIImage(data: image.thumbnail) {
@@ -293,6 +302,31 @@ struct ComposerView: View {
             .padding(.horizontal, 40)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private func fileChip(_ file: StagedFile) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc").font(.body).foregroundStyle(.secondary).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(file.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)).font(.caption).foregroundStyle(.secondary)
+            }
+            Button { model.unstageFile(file) } label: {
+                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(Color(uiColor: .systemBackground), Theme.inverse).font(.title3)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(.rect)
+            }
+            .buttonStyle(.plain).accessibilityLabel("Remove \(file.name)")
+        }
+        .padding(.leading, 12).padding(.vertical, 2)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func addFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        await model.stageFile(name: url.lastPathComponent, size: size, data: try? Data(contentsOf: url))
     }
 
     private func addPhoto(_ item: PhotosPickerItem) async {

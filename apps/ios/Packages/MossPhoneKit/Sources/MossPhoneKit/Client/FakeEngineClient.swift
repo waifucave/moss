@@ -148,7 +148,7 @@ public actor FakeEngineClient: EngineClient {
 
     // MARK: Sending
 
-    public func send(session: String, text: String, clientMessageId: String, images: [String]) async throws {
+    public func send(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws {
         try await maybeFail()
         if scenario == .sendFails { throw Failure("send failed") }
         // A resend with the same client id is not a second message.
@@ -177,7 +177,7 @@ public actor FakeEngineClient: EngineClient {
         switch kind {
         case .bot:
             return ComposerOffers(pictures: true, commands: [PluginCommand(id: "summary.daily", title: "Daily summary")],
-                                  efforts: ["low", "medium", "high"], effort: efforts[session] ?? "medium")
+                                  efforts: ["low", "medium", "high"], effort: efforts[session] ?? "medium", files: true, fileLimit: Self.fileLimit)
         case .codingSession:
             let row = sessionList.first { $0.id == session }
             let backend = row?.backend ?? "claude-code"
@@ -186,7 +186,7 @@ public actor FakeEngineClient: EngineClient {
             let current = models[session] ?? row?.model ?? choices.first?.id
             let levels = choices.first { $0.id == current }?.efforts ?? choices.first?.efforts ?? []
             return ComposerOffers(pictures: true, commands: [PluginCommand(id: "tests.run", title: "Run the tests"), PluginCommand(id: "review.diff", title: "Review the diff")],
-                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current)
+                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current, files: true, fileLimit: Self.fileLimit)
         }
     }
     public func setModel(session: String, model: String?, effort: String?) async throws {
@@ -198,6 +198,34 @@ public actor FakeEngineClient: EngineClient {
         try await maybeFail()
         let path = "staged/\(session)/image-\(staged.count + 1).png"
         staged.append(path); return path
+    }
+    public static let fileLimit: Int64 = 10_000_000
+    public private(set) var stagedFiles: [String] = []
+    public func stageFile(session: String, name: String, data: Data) async throws -> StagedFile {
+        try await maybeFail()
+        if Int64(data.count) > Self.fileLimit { throw FileTooLarge(limit: Self.fileLimit) }
+        let path = "staged/\(session)/\(name)"
+        stagedFiles.append(path)
+        return StagedFile(path: path, name: name, size: Int64(data.count))
+    }
+    public private(set) var botsCreated: [(name: String, model: String?)] = []
+    public func newBotOptions() async throws -> NewBotOptions {
+        try await maybeFail()
+        let models = SampleData.options(for: "moss-code").models.map { ModelChoice(id: $0.id, name: $0.name, efforts: $0.efforts) }
+        return NewBotOptions(models: models, defaultModel: models.first?.id)
+    }
+    public func createBot(name: String, model: String?) async throws -> Bot {
+        try await maybeFail()
+        let id = "bot_" + String(name.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(12)) + "\(botsCreated.count)"
+        let bot = Bot(id: id, name: name, model: model, state: .idle, computer: SampleData.computerName, mainSession: "s_" + id)
+        botsCreated.append((name, model))
+        botList.append(bot)
+        let hello = ChatMessage(id: "\(id)-1", role: .bot, text: "Hello, I am \(name). What would you like to do?", at: clock())
+        conversations[bot.mainSession] = [hello]
+        let summary = BotSummary(id: id, last: .init(text: hello.text, from: .bot, at: hello.at), unread: false)
+        summaryList.append(summary)
+        emit(.botChanged(bot)); emit(.botSummaryChanged(summary))
+        return bot
     }
     public func runCommand(session: String, command: String) async throws { try await maybeFail(); commandsRun.append(command) }
     public func pendingQuestion(session: String) async throws -> AskQuestion? {

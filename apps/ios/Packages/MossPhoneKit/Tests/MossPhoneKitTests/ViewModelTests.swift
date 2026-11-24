@@ -267,4 +267,31 @@ final class ViewModelTests: XCTestCase {
         await m.loadComposer()
         XCTAssertNil(m.question)
     }
+
+    func testFileOverTheLimitIsRefusedWithAPlainLine() async {
+        let c = fake()
+        let m = ConversationModel(source: .bot(SampleData.bots[0]), client: c)
+        await m.loadComposer()
+        XCTAssertEqual(m.offers?.files, true)
+        await m.stageFile(name: "big.zip", size: 50_000_000, data: Data())
+        XCTAssertTrue(m.stagedFiles.isEmpty)
+        XCTAssertTrue(m.errorText?.contains("too big") ?? false)
+        await m.stageFile(name: "report.pdf", size: 1_200_000, data: Data(count: 1_200_000))
+        XCTAssertEqual(m.stagedFiles.map(\.name), ["report.pdf"])
+        m.unstageFile(m.stagedFiles[0])
+        XCTAssertTrue(m.stagedFiles.isEmpty)
+    }
+
+    func testNewBotPreselectsTheDefaultModelAndCreates() async throws {
+        let c = fake()
+        let m = NewBotModel(client: c)
+        await m.load()
+        XCTAssertNotNil(m.model)
+        XCTAssertFalse(m.canCreate)
+        m.name = "Hazel"
+        let bot = await m.create()
+        XCTAssertEqual(bot?.name, "Hazel")
+        let list = try await c.bots()
+        XCTAssertTrue(list.contains { $0.name == "Hazel" })
+    }
 }

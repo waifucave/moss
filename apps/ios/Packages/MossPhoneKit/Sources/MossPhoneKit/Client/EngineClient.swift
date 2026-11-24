@@ -41,7 +41,7 @@ public protocol EngineClient: AnyObject, Sendable {
 
     /// `session.send` with a `UserMessageInput` (the client id makes a resend one message). Bots' conversations and
     /// coding sessions are both sessions, so one call serves both.
-    func send(session: String, text: String, clientMessageId: String, images: [String]) async throws
+    func send(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws
     /// `session.interrupt`: Stop.
     func stop(session: String) async throws
 
@@ -66,6 +66,11 @@ public protocol EngineClient: AnyObject, Sendable {
     func setModel(session: String, model: String?, effort: String?) async throws
     /// `session.stageImage`: the staged picture's path, for `send(images:)`.
     func stageImage(session: String, data: Data) async throws -> String
+    /// A file for the next message, up to the engine's limit (`FileTooLarge` when over it). The shape follows the engine's door.
+    func stageFile(session: String, name: String, data: Data) async throws -> StagedFile
+    /// Making a bot from the phone: the models on offer, and the new bot (its conversation opens next).
+    func newBotOptions() async throws -> NewBotOptions
+    func createBot(name: String, model: String?) async throws -> Bot
     /// `command.run`.
     func runCommand(session: String, command: String) async throws
     /// The question waiting in a conversation, if any, and `session.answer`.
@@ -82,6 +87,6 @@ public protocol EngineClient: AnyObject, Sendable {
 
 public extension EngineClient {
     func send(session: String, text: String, clientMessageId: String) async throws {
-        try await send(session: session, text: text, clientMessageId: clientMessageId, images: [])
+        try await send(session: session, text: text, clientMessageId: clientMessageId, images: [], files: [])
     }
 }

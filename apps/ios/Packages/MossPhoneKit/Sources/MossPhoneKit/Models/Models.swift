@@ -386,10 +386,14 @@ public struct ComposerOffers: Equatable, Sendable {
     /// `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row.
     public var models: [ModelChoice]
     public var model: String?
-    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil) {
+    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil) {
+        self.files = files; self.fileLimit = fileLimit
         self.pictures = pictures; self.commands = commands; self.efforts = efforts; self.effort = effort; self.models = models; self.model = model
     }
-    public var isEmpty: Bool { !pictures && commands.isEmpty && efforts.isEmpty && models.isEmpty }
+    /// A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row.
+    public var files: Bool = false
+    public var fileLimit: Int64?
+    public var isEmpty: Bool { !pictures && !files && commands.isEmpty && efforts.isEmpty && models.isEmpty }
 }
 
 public enum ConversationKind: Sendable { case bot, codingSession }
@@ -418,4 +422,25 @@ public struct AskQuestion: Identifiable, Hashable, Sendable {
     public init(callId: String, header: String? = nil, text: String, options: [Option], multiSelect: Bool = false) {
         self.callId = callId; self.header = header; self.text = text; self.options = options; self.multiSelect = multiSelect
     }
+}
+
+/// A file staged for the next message: what the engine wrote, and how it reads in the chip.
+public struct StagedFile: Identifiable, Hashable, Sendable {
+    public var id: String { path }
+    public var path: String
+    public var name: String
+    public var size: Int64
+    public init(path: String, name: String, size: Int64) { self.path = path; self.name = name; self.size = size }
+}
+
+public struct FileTooLarge: Error, Equatable, Sendable {
+    public var limit: Int64
+    public init(limit: Int64) { self.limit = limit }
+}
+
+/// What a new bot is made from: the models the computer offers, and its default.
+public struct NewBotOptions: Hashable, Sendable {
+    public var models: [ModelChoice]
+    public var defaultModel: String?
+    public init(models: [ModelChoice], defaultModel: String? = nil) { self.models = models; self.defaultModel = defaultModel }
 }

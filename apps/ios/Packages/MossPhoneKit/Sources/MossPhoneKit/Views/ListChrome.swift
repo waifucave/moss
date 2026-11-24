@@ -95,22 +95,44 @@ struct NeedsYouTag: View {
     }
 }
 
-/// What the plus does in MOSS: a bot is made on the computer for now, and the sheet says so.
+/// What the plus does in MOSS: make a bot. A name, and a model with the computer's default preselected.
 struct NewBotSheet: View {
+    @Bindable var model: NewBotModel
     let computer: String?
-    let onDone: () -> Void
+    let onCreated: (Bot) -> Void
+    let onCancel: () -> Void
+    @FocusState private var nameFocused: Bool
+
     var body: some View {
         NavigationStack {
-            ContentUnavailableView {
-                Label("A new bot", systemImage: "face.smiling")
-            } description: {
-                Text("Making a bot needs \(computer ?? "your computer") for now. Make it there and it shows here.")
+            Form {
+                Section {
+                    TextField("Name", text: $model.name).focused($nameFocused).textInputAutocapitalization(.words).submitLabel(.done)
+                } footer: { Text("The bot is made on \(computer ?? "your computer") and its conversation opens here.") }
+                Section("Model") {
+                    if model.loading { ProgressView() }
+                    else if let o = model.options, !o.models.isEmpty {
+                        Picker("Model", selection: Binding(get: { model.model ?? o.defaultModel ?? "" }, set: { model.model = $0 })) {
+                            ForEach(o.models) { m in Text(m.name).tag(m.id) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+                if let e = model.errorText {
+                    Section { Label(e, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.secondary) }
+                }
             }
             .navigationTitle("New bot")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onDone) } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { Task { if let b = await model.create() { onCreated(b) } } }.disabled(!model.canCreate)
+                }
+            }
+            .task { await model.load(); nameFocused = true }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 }
 

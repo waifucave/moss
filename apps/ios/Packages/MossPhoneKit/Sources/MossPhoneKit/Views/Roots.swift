@@ -28,6 +28,8 @@ public struct AppLaunch {
         l.scrollTop = args.contains("-scrollTop")
         if let i = args.firstIndex(of: "-open"), i + 1 < args.count { l.openID = args[i + 1] }
         if let i = args.firstIndex(of: "-draft"), i + 1 < args.count { l.composer.draft = args[i + 1] }
+        l.newBot = args.contains("-newBot")
+        l.composer.file = args.contains("-file")
         l.composer.focus = args.contains("-focus"); l.composer.picker = args.contains("-picker")
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
@@ -42,6 +44,8 @@ public struct AppLaunch {
     public var scrollTo: String?
     /// For pictures: which bot or session to open, and what the composer starts with.
     public var openID: String?
+    /// For pictures: open the new-bot sheet with a name typed.
+    public var newBot = false
     public var composer = ComposerPreset()
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
@@ -58,6 +62,7 @@ public struct MossRoot: View {
     @State private var path: [Bot] = []
     @State private var showCards = false
     @State private var showNewBot = false
+    @State private var newBot: NewBotModel
     private let launch: AppLaunch
 
     public init(launch: AppLaunch = .fromProcess()) {
@@ -65,6 +70,8 @@ public struct MossRoot: View {
         let c = FakeEngineClient(scenario: launch.scenario)
         _client = State(initialValue: c)
         _bots = State(initialValue: BotsListModel(client: c, store: MemoryPinStore(SampleData.pinned)))
+        _newBot = State(initialValue: NewBotModel(client: c))
+        _showNewBot = State(initialValue: launch.newBot)
         _cards = State(initialValue: CardsModel(client: c, app: .moss, now: { SampleData.now }))
         _pairing = State(initialValue: PairingModel(client: c))
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
@@ -91,7 +98,12 @@ public struct MossRoot: View {
                 .sheet(isPresented: $showCards) {
                     NeedsYouSheet(cards: cards, who: { c in c.bot.flatMap { id in SampleData.bots.first { $0.id == id }?.name } ?? "A bot" }, onDone: { showCards = false })
                 }
-                .sheet(isPresented: $showNewBot) { NewBotSheet(computer: paired.name, onDone: { showNewBot = false }) }
+                .sheet(isPresented: $showNewBot) {
+                    NewBotSheet(model: newBot, computer: paired.name, onCreated: { bot in
+                        showNewBot = false
+                        Task { await bots.load(); path.append(bot) }
+                    }, onCancel: { showNewBot = false })
+                }
             } else {
                 PairingScreen(model: pairing, appName: "MOSS", simulatedCamera: true) { paired = $0 }
             }
