@@ -15,6 +15,14 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    // Which engine client the app runs on: `real`, the shared core over the link to the person's computer (anything a
+    // person runs), or `fake`, the in-memory sample (pictures of a running app, no native library needed).
+    flavorDimensions += "engine"
+    productFlavors {
+        create("real") { dimension = "engine" }
+        create("fake") { dimension = "engine" }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -29,4 +37,12 @@ kotlin {
 
 dependencies {
     implementation(project(":shared"))
+    "realImplementation"(project(":engine"))
+    // The real build's instrumented proof in an emulator (.github/workflows/android-engine.yml).
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

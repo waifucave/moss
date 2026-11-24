@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The real build keeps the phone core's sealed keys and pairing in the app's no-backup folder. Nothing of the app goes
+     to a cloud backup or to a new phone in a device-to-device transfer: `allowBackup="false"` (main manifest) stops cloud
+     and adb backup, and from Android 12 the transfer is governed by `dataExtractionRules`, which exclude every domain
+     from both; `fullBackupContent` excludes them as well on Android 11 and older. The Keystore key itself never leaves
+     the Keystore in any case. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/moss_data_extraction_rules"
+        android:fullBackupContent="@xml/moss_full_backup_content"
+        tools:targetApi="31" />
+</manifest>

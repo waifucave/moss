@@ -1,0 +1,132 @@
+name: Android engine
+
+# The Android apps on the real engine client (lane AW): the shared phone core (native/phone-core) built for the three
+# phone ABIs with its Kotlin binding, the :engine module's JVM tests, both apps built in both variants (`fake`, `real`)
+# with :shared's JVM tests still running without the native library, and the instrumented proof in an API 34 emulator:
+# MOSS and MOSS Code each pair with a real engine started on this runner (temp home, the real link sidecar on loopback, a
+# scripted driver in place of a model), list, talk, answer a card the engine raises, survive the engine restarting and
+# unpair. Not gating: a separate workflow whose job may fail without holding a merge. No secret, no signing.
+on:
+  push:
+    branches: ["lane/aw-**", "lane-int/**"]
+    paths:
+      - apps/android/**
+      - native/phone-core/**
+      - .github/workflows/android-engine.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: android-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.99.1
+  CARGO_TERM_COLOR: never
+
+jobs:
+  emulator:
+    name: android apps · real engine · emulator
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; the version is RUST_TOOLCHAIN
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-linux-android,aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            native/link -> target
+            native/phone-core -> target
+      # JDK 21: Robolectric needs it for :shared's tests (SDK 35); the code targets Java 17.
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
+        with:
+          gradle-version: "8.13"
+      - name: Build the core for Android (arm64-v8a, armeabi-v7a, x86_64)
+        run: |
+          cargo install cargo-ndk --version 3.5.4 --locked
+          cd native/phone-core
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o ../../apps/android/engine/phonecore/jniLibs build --release --locked --lib
+          ls -la ../../apps/android/engine/phonecore/jniLibs/*
+      - name: Generate the Kotlin binding
+        run: |
+          cd native/phone-core
+          cargo build --release --locked --lib
+          cargo run --release --locked --features bindgen --bin uniffi-bindgen -- generate --library target/release/libmoss_phone_core.so --language kotlin --out-dir ../../apps/android/engine/phonecore/kotlin
+          find ../../apps/android/engine/phonecore/kotlin -name '*.kt'
+      - name: Upload the generated binding
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phonecore-kotlin-binding
+          path: apps/android/engine/phonecore/kotlin/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Build both apps in both variants, the instrumented tests, and the JVM tests
+        working-directory: apps/android
+        run: >
+          gradle --no-daemon --stacktrace
+          :engine:testDebugUnitTest :shared:testDebugUnitTest
+          :moss:assembleFakeDebug :code:assembleFakeDebug
+          :moss:assembleRealDebug :code:assembleRealDebug
+          :moss:assembleRealDebugAndroidTest :code:assembleRealDebugAndroidTest
+      - name: Build moss-link
+        run: cargo build --release --locked --manifest-path native/link/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the engine
+        env:
+          MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
+        run: |
+          nohup bun --preload ./packages/core/test/preload.ts apps/android/engine/e2e/engine.ts > "$RUNNER_TEMP/engine.log" 2>&1 &
+          for i in $(seq 1 120); do grep -q "control ready" "$RUNNER_TEMP/engine.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/engine.log"
+          grep -q "control ready" "$RUNNER_TEMP/engine.log"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Both apps in an emulator against the engine
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          working-directory: apps/android
+          script: gradle --no-daemon --stacktrace :moss:connectedRealDebugAndroidTest :code:connectedRealDebugAndroidTest ; status=$? ; adb logcat -d -s MossE2E:V CodeE2E:V MossEngine:V TestRunner:V AndroidRuntime:E '*:F' > "$RUNNER_TEMP/logcat.txt" ; exit $status
+      - name: Logs
+        if: always()
+        run: |
+          echo "--- engine"; cat "$RUNNER_TEMP/engine.log" || true
+          echo "--- logcat"; cat "$RUNNER_TEMP/logcat.txt" || true
+          find apps/android -path '*androidTest-results*' -name '*.xml' -exec cat {} \; 2>/dev/null | head -400 || true
+      - name: Upload the test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-engine-reports
+          path: |
+            apps/android/*/build/reports/
+            apps/android/*/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14

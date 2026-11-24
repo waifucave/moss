@@ -13,6 +13,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val launch = AppLaunch.fromExtras(intent?.extras)
-        setContent { MossApp(launch) }
+        val engine = engineFor(this)
+        setContent { MossApp(launch, engine = engine) }
     }
 }

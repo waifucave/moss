@@ -123,9 +123,13 @@ fun SettingsScreen(model: SettingsModel, appName: String, onUnpaired: () -> Unit
     }
 }
 
-/** First run: scan the code shown on the computer, check the four words, confirm. The same screen in both apps. */
+/**
+ * First run: scan the code shown on the computer, check the four words, confirm. The same screen in both apps. With
+ * `codeEntry` (the real engine client, until the camera scanner exists), the pairing code is pasted into a field instead
+ * of the sample code's button.
+ */
 @Composable
-fun PairingScreen(model: PairingModel, appName: String, onPaired: (PairedComputer) -> Unit) {
+fun PairingScreen(model: PairingModel, appName: String, codeEntry: Boolean = false, onPaired: (PairedComputer) -> Unit) {
     val c = MossTheme.colors
     val scope = rememberCoroutineScope()
     Scaffold(
@@ -164,9 +168,20 @@ fun PairingScreen(model: PairingModel, appName: String, onPaired: (PairedCompute
                             Spacer(Modifier.height(10.dp))
                             Text("No camera here.", style = MossType.footnote, color = c.secondary)
                             Spacer(Modifier.height(10.dp))
-                            FilledTonalButton(onClick = { scope.launch { model.scanned("moss-pair:sample") } }) { Text("Use a sample code") }
+                            if (!codeEntry) FilledTonalButton(onClick = { scope.launch { model.scanned("moss-pair:sample") } }) { Text("Use a sample code") }
                         }
                         if (step == PairingModel.Step.Checking) CircularProgressIndicator(color = c.text)
+                    }
+                    if (codeEntry) {
+                        var code by remember { mutableStateOf("") }
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedTextField(
+                            value = code, onValueChange = { code = it }, singleLine = true,
+                            label = { Text("Pairing code") },
+                            modifier = Modifier.padding(horizontal = 32.dp).fillMaxWidth().semantics { contentDescription = "Pairing code" },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        FilledTonalButton(onClick = { scope.launch { model.scanned(code.trim()) } }, enabled = code.isNotBlank() && step == PairingModel.Step.Scanning) { Text("Pair") }
                     }
                 }
                 is PairingModel.Step.Confirming -> Words(step.proposal)

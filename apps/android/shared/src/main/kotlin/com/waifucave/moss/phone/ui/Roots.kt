@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.waifucave.moss.phone.client.EngineClient
 import com.waifucave.moss.phone.client.FakeEngineClient
 import com.waifucave.moss.phone.client.SampleData
 import com.waifucave.moss.phone.model.Bot
@@ -114,18 +115,24 @@ sealed class MossDest {
     data object Settings : MossDest()
 }
 
-/** The MOSS app: the bots, and what needs the person. The app module holds only this; the rest is shared. */
+/**
+ * The MOSS app: the bots, and what needs the person. The app module holds only this; the rest is shared. `engine` is the
+ * real engine client (the app's real build); without one the screens run on the fake, as the pictures and JVM tests do.
+ */
 @Composable
-fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme()) {
+fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme(), engine: EngineClient? = null) {
     val context = LocalContext.current
-    val client = remember { FakeEngineClient(launch.effectiveScenario) }
-    val bots = remember { BotsListModel(client, MemoryPinStore(SampleData.pinned)) }
-    val cards = remember { CardsModel(client, PhoneApp.moss) { SampleData.now } }
+    val real = engine != null
+    val client = remember { engine ?: FakeEngineClient(launch.effectiveScenario) }
+    val bots = remember { BotsListModel(client, MemoryPinStore(if (real) emptyList() else SampleData.pinned)) }
+    val cards = remember { CardsModel(client, PhoneApp.moss) { if (real) System.currentTimeMillis() else SampleData.now } }
     val pairing = remember { PairingModel(client) }
     val settings = remember { SettingsModel(client, appVersion(context)).also { it.confirmingUnpair = launch.confirmUnpair } }
     val newBot = remember { NewBotModel(client).also { it.name = launch.newBotName ?: "" } }
     val scope = rememberCoroutineScope()
-    var paired by remember { mutableStateOf(launch.effectiveScenario != FakeEngineClient.Scenario.unpaired) }
+    var paired by remember { mutableStateOf(real || launch.effectiveScenario != FakeEngineClient.Scenario.unpaired) }
+    val computerName = rememberComputerName(client, real, paired)
+    if (real) LaunchedEffect(client) { paired = client.pairedComputer() != null }
     var showNewBot by remember { mutableStateOf(launch.screen == AppLaunch.Screen.newBot) }
     val stack = remember {
         mutableStateListOf<MossDest>(MossDest.Home).also { s ->
@@ -137,17 +144,17 @@ fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme
             }
         }
     }
-    LaunchedEffect(cards) { cards.run() }
+    LaunchedEffect(cards, paired) { if (paired) cards.run() }
     LaunchedEffect(launch.screen) { if (launch.screen == AppLaunch.Screen.pairWords) pairing.scanned("moss-pair:sample") }
 
     MossTheme(dark) {
-        CompositionLocalProvider(LocalNow provides SampleData.now, LocalStill provides launch.still) {
+        CompositionLocalProvider(LocalNow provides (if (real) null else SampleData.now), LocalStill provides launch.still) {
             if (!paired) {
-                PairingScreen(pairing, "MOSS") { paired = true }
+                PairingScreen(pairing, "MOSS", codeEntry = real) { paired = true }
             } else {
                 BackStack(stack) { dest ->
                     when (dest) {
-                        MossDest.Home -> BotsScreen(bots, cards, SampleData.computerName,
+                        MossDest.Home -> BotsScreen(bots, cards, computerName,
                             onSettings = { stack.add(MossDest.Settings) }, onBell = { stack.add(MossDest.NeedsYou) },
                             onNew = { showNewBot = true }, onOpen = { stack.add(MossDest.Conversation(it)) },
                             startSearching = launch.screen == AppLaunch.Screen.search)
@@ -155,7 +162,7 @@ fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme
                             val model = remember(dest) { ConversationModel(ConversationModel.Source.OfBot(dest.bot), client, autoSend = launch.sendsOnOpen) }
                             ConversationScreen(model, cards, onBack = { stack.removeAt(stack.lastIndex) }, preset = launch.composer, startsAtTop = launch.scrollTop)
                         }
-                        MossDest.NeedsYou -> NeedsYouScreen(cards, { c -> c.bot?.let { id -> SampleData.bots.firstOrNull { it.id == id }?.name } ?: "A bot" }) {
+                        MossDest.NeedsYou -> NeedsYouScreen(cards, { c -> c.bot?.let { id -> (if (real) bots.rows.map { it.bot } else SampleData.bots).firstOrNull { it.id == id }?.name } ?: "A bot" }) {
                             stack.removeAt(stack.lastIndex)
                         }
                         MossDest.Settings -> SettingsScreen(settings, "MOSS", onUnpaired = {
@@ -163,7 +170,7 @@ fun MossApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme
                         }, onBack = { stack.removeAt(stack.lastIndex) })
                     }
                 }
-                if (showNewBot) NewBotSheet(newBot, SampleData.computerName, onCreated = { bot ->
+                if (showNewBot) NewBotSheet(newBot, computerName, onCreated = { bot ->
                     showNewBot = false
                     newBot.name = ""
                     scope.launch { bots.load(); stack.add(MossDest.Conversation(bot)) }
@@ -181,18 +188,21 @@ sealed class CodeDest {
     data object NewSession : CodeDest()
 }
 
-/** The MOSS Code app: the sessions with coding agents, and what needs the person. */
+/** The MOSS Code app: the sessions with coding agents, and what needs the person. `engine` as for [MossApp]. */
 @Composable
-fun MossCodeApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme()) {
+fun MossCodeApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkTheme(), engine: EngineClient? = null) {
     val context = LocalContext.current
-    val client = remember { FakeEngineClient(launch.effectiveScenario) }
+    val real = engine != null
+    val client = remember { engine ?: FakeEngineClient(launch.effectiveScenario) }
     val sessions = remember { SessionsListModel(client) }
-    val cards = remember { CardsModel(client, PhoneApp.code) { SampleData.now } }
+    val cards = remember { CardsModel(client, PhoneApp.code) { if (real) System.currentTimeMillis() else SampleData.now } }
     val pairing = remember { PairingModel(client) }
     val settings = remember { SettingsModel(client, appVersion(context)).also { it.confirmingUnpair = launch.confirmUnpair } }
-    val newSession = remember { NewSessionModel(client, SampleData.computerName) }
     val scope = rememberCoroutineScope()
-    var paired by remember { mutableStateOf(launch.effectiveScenario != FakeEngineClient.Scenario.unpaired) }
+    var paired by remember { mutableStateOf(real || launch.effectiveScenario != FakeEngineClient.Scenario.unpaired) }
+    val computerName = rememberComputerName(client, real, paired)
+    val newSession = remember(computerName) { NewSessionModel(client, computerName) }
+    if (real) LaunchedEffect(client) { paired = client.pairedComputer() != null }
     val stack = remember {
         mutableStateListOf<CodeDest>(CodeDest.Home).also { s ->
             when (launch.screen) {
@@ -204,7 +214,7 @@ fun MossCodeApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkT
             }
         }
     }
-    LaunchedEffect(cards) { cards.run() }
+    LaunchedEffect(cards, paired) { if (paired) cards.run() }
     LaunchedEffect(launch.screen) {
         if (launch.screen == AppLaunch.Screen.pairWords) pairing.scanned("moss-pair:sample")
         if (launch.startNew) {
@@ -217,19 +227,19 @@ fun MossCodeApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkT
     }
 
     MossTheme(dark) {
-        CompositionLocalProvider(LocalNow provides SampleData.now, LocalStill provides launch.still) {
+        CompositionLocalProvider(LocalNow provides (if (real) null else SampleData.now), LocalStill provides launch.still) {
             if (!paired) {
-                PairingScreen(pairing, "MOSS Code") { paired = true }
+                PairingScreen(pairing, "MOSS Code", codeEntry = real) { paired = true }
             } else BackStack(stack) { dest ->
                 when (dest) {
-                    CodeDest.Home -> SessionsScreen(sessions, cards, SampleData.computerName,
+                    CodeDest.Home -> SessionsScreen(sessions, cards, computerName,
                         onSettings = { stack.add(CodeDest.Settings) }, onBell = { stack.add(CodeDest.NeedsYou) },
                         onNew = { stack.add(CodeDest.NewSession) }, onOpen = { stack.add(CodeDest.Session(it)) })
                     is CodeDest.Session -> {
                         val model = remember(dest) { ConversationModel(ConversationModel.Source.OfSession(dest.session), client, autoSend = launch.sendsOnOpen) }
                         ConversationScreen(model, cards, onBack = { stack.removeAt(stack.lastIndex) }, preset = launch.composer, startsAtTop = launch.scrollTop)
                     }
-                    CodeDest.NeedsYou -> NeedsYouScreen(cards, { c -> c.session?.let { id -> SampleData.sessions.firstOrNull { it.id == id }?.title } ?: "A session" }) {
+                    CodeDest.NeedsYou -> NeedsYouScreen(cards, { c -> c.session?.let { id -> (if (real) sessions.sessions else SampleData.sessions).firstOrNull { it.id == id }?.title } ?: "A session" }) {
                         stack.removeAt(stack.lastIndex)
                     }
                     CodeDest.Settings -> SettingsScreen(settings, "MOSS Code", onUnpaired = {
@@ -246,4 +256,14 @@ fun MossCodeApp(launch: AppLaunch = AppLaunch(), dark: Boolean = isSystemInDarkT
             }
         }
     }
+}
+
+/** The paired computer's name: the sample's on the fake; the engine's own once paired on the real client. */
+@Composable
+private fun rememberComputerName(client: EngineClient, real: Boolean, paired: Boolean): String {
+    var name by remember { mutableStateOf(if (real) "" else SampleData.computerName) }
+    if (real) LaunchedEffect(client, paired) {
+        if (paired) name = try { client.pairedComputer()?.name ?: "" } catch (e: CancellationException) { throw e } catch (e: Exception) { "" }
+    }
+    return name
 }

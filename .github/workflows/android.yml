@@ -38,7 +38,8 @@ jobs:
         with:
           gradle-version: "8.13"
       - name: Build both apps
-        run: gradle --no-daemon --stacktrace :moss:assembleDebug :code:assembleDebug
+        # The fake variants: the real ones need the shared core's native library and binding, built by android-engine.yml.
+        run: gradle --no-daemon --stacktrace :moss:assembleFakeDebug :code:assembleFakeDebug
       - name: Tests and pictures
         run: gradle --no-daemon --stacktrace :shared:recordRoborazziDebug
       - name: Upload the pictures
