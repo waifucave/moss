@@ -124,8 +124,8 @@ describe("the shell's session list", () => {
     await mount({ route: { route: "agent", params: { session: "code-new" } } }, [], SESSIONS, (l) => (emit = l));
     expect(toggles()).not.toContain("Terminal");
     await act(async () => emit!(s("code-new", { kind: "coding", root: "home/Studio/projects/cli", title: "From the CLI", startedAt: 5 })));
-    await act(() => settle(20));
-    expect(toggles()).toContain("Terminal");
+    // Not a fixed wait: how long the list takes to reach the tab depends on the machine (a slow Windows runner missed 20 ms).
+    await waitFor(() => expect(toggles()).toContain("Terminal"));
   });
 
   test("the Code side goes to the newest coding session", () => {
