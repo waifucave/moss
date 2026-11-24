@@ -219,9 +219,21 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
             (raw, typed) => panic!("{method}: raw {raw:?}, typed {typed:?}"),
         }
     }
+    // session.openQuestions is the engine's own door now: on a session it doesn't hold it answers "not found", never
+    // "no such method" (which would send the phone to the log scan).
+    match conn.call("session.openQuestions".into(), json!({ "id": "s_nowhere" }).to_string()).await {
+        Ok(r) => assert!(r.contains("\"open\"")),
+        Err(CoreError::Rpc { code, .. }) => assert!(code != -32601 && code != -32010, "session.openQuestions isn't served: {code}"),
+        Err(e) => panic!("session.openQuestions: {e:?}"),
+    }
+    eprintln!("bots on the test engine: {}", typed_bots.len());
     if let Some(b) = typed_bots.first() {
         conn.conversation(b.id.clone(), None, 20).await.expect("conversation()");
         conn.history(b.main_session.clone(), None, 20).await.expect("history()");
+        // The engine's own door answers (no fallback to the log): nothing is open in a bot's quiet conversation.
+        let raw: Value = serde_json::from_str(&conn.call("session.openQuestions".into(), json!({ "id": b.main_session }).to_string()).await.expect("session.openQuestions")).unwrap();
+        assert_eq!(raw["open"], json!([]));
+        assert!(conn.open_questions(b.main_session.clone()).await.expect("open_questions()").is_empty());
         assert!(conn.pending_question(b.main_session.clone()).await.expect("pending_question()").is_none());
     }
     match conn.call("plugin.install".into(), "{}".into()).await {

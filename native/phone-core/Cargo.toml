@@ -19,6 +19,8 @@ required-features = ["bindgen"]
 
 [features]
 bindgen = ["uniffi/cli"]
+# Hooks only the core's own tests use (`Connection::poison_for_test`): absent from every other build.
+test-hooks = []
 
 [dependencies]
 # The link's own iroh, at the sidecar's exact version (native/link/Cargo.toml), so both ends speak one QUIC.

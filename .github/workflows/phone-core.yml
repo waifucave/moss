@@ -69,7 +69,7 @@ jobs:
           MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
         run: |
           export MOSS_PC_BUN="$(command -v bun)"
-          cargo test --locked --manifest-path native/phone-core/Cargo.toml -- --nocapture --test-threads 1
+          cargo test --locked --features test-hooks --manifest-path native/phone-core/Cargo.toml -- --nocapture --test-threads 1
 
   # Proof B: the core built for Android, its Kotlin bindings generated from the same definition, and an instrumented
   # test in an x86_64 emulator: the async calls complete, and it pairs with an engine running on this runner.

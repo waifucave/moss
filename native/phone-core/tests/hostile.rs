@@ -766,7 +766,18 @@ async fn a_computer_cant_keep_a_file_uploading_for_ever() {
     let (core, _) = phone_for(&[&f]).await;
     let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
     until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
-    assert!(tokio::time::timeout(Duration::from_millis(400), c.stage_file("s_slow".into(), "n.txt".into(), data)).await.is_err());
+    // The caller stops waiting once the computer has named the upload and the second chunk is on its way (slow there).
+    let task = tokio::spawn({
+        let c = c.clone();
+        async move { c.stage_file("s_slow".into(), "n.txt".into(), data).await }
+    });
+    let end = Instant::now() + Duration::from_secs(10);
+    while f.count("session.stageFile") < 2 {
+        assert!(Instant::now() < end, "the second chunk never came");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(cancels_within(&f, Duration::from_secs(4)).await, 1, "a cancelled upload is dropped at the computer");
     c.disconnect();
 }
@@ -1006,6 +1017,8 @@ async fn a_card_answered_while_its_event_waits_leaves_the_queue_whole() {
     c.disconnect();
 }
 
+/// Needs the `test-hooks` feature (the workflow runs the tests with it): `cargo test --features test-hooks`.
+#[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_poisoned_lock_doesnt_stop_the_link() {
     let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
