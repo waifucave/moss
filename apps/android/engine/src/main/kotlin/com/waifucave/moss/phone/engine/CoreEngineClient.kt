@@ -143,6 +143,8 @@ class CoreEngineClient(
     /** The connection to this app's paired computer, started on first use; `null` when this app isn't paired. */
     private suspend fun connection(): Connection? = lock.withLock {
         conn?.let { return it }
+        // An empty store is an unpaired phone with no identity yet: asking about it makes no keys (a pairing does).
+        if (core == null && withContext(Dispatchers.IO) { store.itemCount() } == 0) return null
         val core = coreLocked()
         val mine = withContext(Dispatchers.IO) { core.pairedComputers() }.filter { it.app == coreApp }.maxByOrNull { it.pairedAt } ?: return null
         val areas = listOf("approvals", "sessions", "bots", "devices", "computers")
