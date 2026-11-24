@@ -10,6 +10,7 @@ import { docFile, readOutline, sourcePath } from "../src/docs";
 import { allInstallerNames, releaseUrl } from "../src/downloads";
 import { renderDoc } from "../src/markdown";
 import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
+import { runCodeCommand } from "../../../packages/cli/src/code-cli";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -168,6 +169,23 @@ describe("the commands the docs print", () => {
     expect(JSON.parse(block("json"))).toEqual(JSON.parse(made.files["moss.json"]!));
     expect(block("ts").trim()).toBe(made.files["host/index.ts"]!.trim());
     expect(plugin).toContain("moss plugin new tool hello-tool");
+  });
+
+  test("every `moss code` line runs as printed, in a shell with no MOSS_COMPUTER", async () => {
+    const lines = commands.filter((c) => c.startsWith("moss code "));
+    expect(lines.length).toBeGreaterThan(0);
+    const home = "/Users/someone";
+    for (const line of lines) {
+      const argv = [...line.slice("moss code ".length).matchAll(/"([^"]*)"|(\S+)/g)].map((m) => (m[1] ?? m[2])!.replace(/^~\//, `${home}/`));
+      const calls: { method: string; params: unknown }[] = [];
+      const errors: string[] = [];
+      const code = await runCodeCommand(argv, {
+        connect: async () => ({ request: async (method: string, params?: unknown) => { calls.push({ method, params }); return { session: "s1" }; }, close() {} }),
+        log: () => {}, error: (l) => errors.push(l), cwd: home, home, env: {},
+      });
+      expect([line, code, errors]).toEqual([line, 0, []]);
+      expect(calls.map((c) => c.method)).toEqual(["agent.start"]);
+    }
   });
 
   test("no page tells anyone to make a bot plugin, a format bots no longer use", () => {

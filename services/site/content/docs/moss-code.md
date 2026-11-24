@@ -42,10 +42,10 @@ Press **+**, then pick the agent, its model and effort, and the folder it works 
 You can also start one from the command line:
 
 ```sh
-moss code ~/projects/web-app --backend opencode -p "Fix the flaky login test"
+moss code ~/projects/web-app --computer Studio --backend opencode -p "Fix the flaky login test"
 ```
 
-`--backend` is the agent's id (`claude-code`, `codex`, `opencode` and so on); `--model` and `--effort` pick the rest.
+`--computer` is this computer's name in MOSS, the one Settings shows beside its approval level (here, *Studio*); with `MOSS_COMPUTER` set in your shell you can leave it out. The folder must be inside your home folder. `--backend` is the agent's id (`claude-code`, `codex`, `opencode` and so on); `--model` and `--effort` pick the rest.
 
 ## The canvas
 
