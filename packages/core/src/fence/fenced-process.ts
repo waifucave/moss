@@ -297,7 +297,9 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
           try {
             result = await runCommand({ ...r, env: shimEnv }, {
               shell: "sh",
-              argv: [process.execPath, join(import.meta.dir, "linux-sandbox-shim.ts"), bwrap, ...plan.args,
+              // A broker run starts the relay as the sandbox's pid 1 (`--as-pid-1`): bwrap's own init, which would hold
+              // the relay's pipe ends as an ordinary dumpable process the command can open through /proc, isn't there.
+              argv: [process.execPath, join(import.meta.dir, "linux-sandbox-shim.ts"), bwrap, ...(broker === null ? [] : ["--as-pid-1"]), ...plan.args,
                 ...(broker === null ? inner : [process.execPath, relay, "4", "5", ...inner])],
               extraFds: broker === null ? [fd] : [fd, broker.childIn, broker.childOut],
             });

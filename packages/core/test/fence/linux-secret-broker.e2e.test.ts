@@ -222,15 +222,30 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     expect(outOf(own)).toContain("Access denied");
   }, 180_000);
 
-  test("the command can't reach the relay's pipe ends through /proc", async () => {
-    const r = await run([
-      "ls /proc/$PPID/fd >/dev/null 2>&1 && echo parent-fd-open || echo parent-fd-closed",
-      "ls /proc/1/fd >/dev/null 2>&1 && echo init-fd-open || echo init-fd-closed",
+  test("the command can't reach the relay's pipe ends through any /proc route of any process in the sandbox", async () => {
+    // Every pipe the command can see through another process's /proc entry (its fd, each thread's fd, fdinfo and
+    // map_files) that isn't one of the command's own stdio pipes is a pipe it shouldn't reach: the relay's two (and bwrap's
+    // init, without --as-pid-1, holds both). A child the command started is the control: its fds ARE listed, so the
+    // routes work and an empty answer means closed, not broken.
+    const script = [
+      'mine=" $(for f in /proc/$$/fd/*; do readlink "$f"; done | grep "^pipe:" | tr "\\n" " ")"',
+      "sleep 30 & kid=$!",
+      'found=""',
+      'for p in /proc/[0-9]*; do pid=${p#/proc/}; [ "$pid" = "$$" ] && continue; [ "$pid" = "$kid" ] && continue',
+      '  for f in $p/fd/* $p/task/*/fd/* $p/map_files/*; do l=$(readlink "$f" 2>/dev/null) || continue',
+      '    case "$l" in pipe:*) case "$mine" in *" $l "*) ;; *) found="$found $pid:$l";; esac;; esac; done',
+      '  for f in $p/fdinfo/*; do [ -r "$f" ] && cat "$f" >/dev/null 2>&1 && found="$found $pid:fdinfo"; done',
+      "done",
+      'echo "foreign=[${found}]"',
+      'n=0; for f in /proc/$kid/fd/*; do readlink "$f" >/dev/null 2>&1 && n=$((n+1)); done; echo "control=$n"',
+      "kill $kid",
       "secret-tool lookup service gh:github.com username octo",
-    ].join("; "), GRANTS);
-    expect(outOf(r)).toContain("parent-fd-closed");
-    expect(outOf(r)).toContain(GH_TOKEN_VALUE); // the relay still served the command
-    console.log(`[broker e2e] bwrap's own pid 1 fds from inside: ${outOf(r).includes("init-fd-open") ? "open" : "closed"}`);
+    ].join("\n");
+    const r = await run(script, GRANTS);
+    const out = outOf(r);
+    expect(out).toMatch(/control=[1-9]/);
+    expect(out).toContain("foreign=[]");
+    expect(out).toContain(GH_TOKEN_VALUE); // the relay still served the command
   }, 120_000);
 
   test("without grants a run reaches no bus at all, as before", async () => {
