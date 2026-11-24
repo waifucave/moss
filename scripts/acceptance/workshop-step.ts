@@ -343,7 +343,11 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
     const t0 = Date.now();
     const e = await ok(ctx, session, "Edit", { file_path: hostFile, old_string: GREETING.first, new_string: GREETING.second });
     if (e.raised.some((c) => c.pluginId === WORKSHOP_ID)) fail(`the edit raised a card for the plugin (${e.raised.map((c) => c.kind).join(", ")})`);
-    if (!readFileSync(hostFile, "utf8").includes(GREETING.second)) fail("the edit didn't land in the installed file");
+    if (!readFileSync(hostFile, "utf8").includes(GREETING.second)) {
+      // Say what the Edit answered and what the file holds, so a tool that wrote elsewhere is told from one that wrote nothing.
+      const now = readFileSync(hostFile, "utf8");
+      fail(`the edit didn't land in the installed file (the Edit answered "${e.result.text.slice(0, 200)}"; the file is ${now.length} chars, ${now.includes(GREETING.first) ? "still has" : "no longer has"} the old greeting, CRLF ${now.includes("\r\n")})`);
+    }
     // A live daemon reloads it from its folder watcher (registry/folders.ts SETTLE_MS, 2 s after the last write): a miss
     // says how long the row waited and what the tree hash and the state did, which is the registry's to explain.
     let last: { state?: string; treeHash?: string } | undefined;
