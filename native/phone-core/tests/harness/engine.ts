@@ -64,7 +64,9 @@ const app = await (async () => {
     data(_s: unknown, chunk: Uint8Array) {
       for (const l of decoder.push(chunk)) {
         const m = JSON.parse(l) as Record<string, unknown>;
-        if (typeof m.id === "number") { pending.get(m.id)?.(m); pending.delete(m.id); } else heard.push(m);
+        // The engine's own requests to its app (`app.ping` among them): answered, or it takes the app for gone.
+        if (typeof m.method === "string" && m.id !== undefined) writer.enqueue(encodeLine({ jsonrpc: "2.0", id: m.id, result: {} }));
+        else if (typeof m.id === "number") { pending.get(m.id)?.(m); pending.delete(m.id); } else heard.push(m);
       }
     },
     drain() { writer.onDrain(); },
