@@ -4256,6 +4256,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     const hostComputer = computerNameFor(defaultDeviceName(hostname())) || "Computer";
     const notify = new NotifyService({
       home: mossHome, computer: hostComputer, clock: { now: () => Date.now() }, registry: opened.registry, host: () => pluginHost?.host,
+      // Which phone app each paired phone is, for where the core's own updates are pushed (protocol `phonesToWake`).
+      phones: () => (ownDevices?.all() ?? []).filter((d) => d.kind === "phone").map((d) => ({ id: d.id, ...(d.app === undefined ? {} : { app: d.app }), ...(d.revokedAt === undefined ? {} : { revokedAt: d.revokedAt }) })),
       approvals: { pending: () => daemonParts?.broker?.pending() ?? [], watch: (fn) => pluginsBroker.watch(fn) },
       desktop: desktopPort, log: (line) => console.error(line),
     });

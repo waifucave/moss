@@ -23,7 +23,7 @@ const BOT_ID_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*(\/[a-z][a-z0-9]*(-[a-z0-9]+)*)?$
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_ID_RE = /^[a-z0-9]{16,64}$/;
 const SESSION_KINDS: readonly SessionKind[] = ["bot", "side-thread", "agent", "coding"];
-const CLIENT_KINDS: readonly ClientKind[] = ["app", "cli", "ios", "web"];
+const CLIENT_KINDS: readonly ClientKind[] = ["app", "cli", "ios", "android", "web"];
 
 export function isBotId(bot: unknown): bot is string {
   if (typeof bot !== "string" || bot.length > 81 || !BOT_ID_RE.test(bot)) return false;

@@ -25,7 +25,7 @@
 // Devices without an account also form one group per user for the lease: the host's group if it has one, else the
 // joiner's, else a new one the host founds; the device not yet in it joins, admitted by the other.
 import { hkdfSync } from "node:crypto";
-import { AnswerKeyHolder, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, PhoneApp, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
 import type { z } from "zod";
 import type { Clock } from "../contracts/clock";
 import { ContractError, isContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -712,8 +712,19 @@ export class PairingService {
       if (!verifyKeySignature(alg, raw, answerKeyStatement(d.id, ak.publicKey as string, ak.held, alg), proof)) return undefined;
       answerKey = { publicKey: ak.publicKey as string, held: ak.held as NonNullable<DeviceRecord["answerKey"]>["held"], ...(alg === "p256" ? { alg } : {}) } as AnswerKeyRecord;
     }
+    // A phone's app (`moss` or `code`) travels in its record, so it is in the transcript the pair secret and the four words
+    // cover: the one place it is taken from, and the app a phone has to say it is at the pairing. One that isn't one of the
+    // two, or sits on a device that isn't a phone, refuses the pairing (a value dropped here would leave the two sides'
+    // transcripts apart anyway).
+    let app: DeviceRecord["app"];
+    if (d.app !== undefined) {
+      const parsed = PhoneApp.safeParse(d.app);
+      if (!parsed.success || d.kind !== "phone") return undefined;
+      app = parsed.data;
+    }
     const record: Side["record"] = {
       id: d.id, name: d.name, kind: d.kind as DeviceRecord["kind"], runsCore: d.runsCore, publicKey: d.publicKey,
+      ...(app ? { app } : {}),
       ...(typeof d.os === "string" ? { os: d.os as DeviceRecord["os"] } : {}),
       ...(typeof d.computer === "string" ? { computer: d.computer } : {}),
       ...(typeof d.hasDisplay === "boolean" ? { hasDisplay: d.hasDisplay } : {}),

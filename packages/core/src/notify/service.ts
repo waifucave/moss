@@ -31,7 +31,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { NOTIFY_PER_HOUR, NOTIFY_PER_MINUTE, type NotifierUpdate } from "@waifucave/moss-plugin-sdk";
-import { APP_METHODS, topPluginIdOf } from "@waifucave/moss-protocol";
+import { APP_METHODS, phonesToWake, topPluginIdOf, type PairedPhone, type SessionKind } from "@waifucave/moss-protocol";
 import { handler, type MethodHandler } from "../rpc/handler";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -61,6 +61,10 @@ export interface NotifyServiceOptions {
   /** The plugin host the notifiers run on, read at each dispatch (it starts after this service, which it serves). */
   host: () => Pick<PluginHost, "invoke"> | undefined;
   approvals?: Pick<ApprovalBroker, "pending" | "watch">;
+  /** The paired phones and the app each paired as, read at each of the core's own updates (the device registry's phones,
+   *  revoked ones included: `phonesToWake` leaves them out). Without it an update names no phones, and a notifier that
+   *  wakes phones wakes them all. */
+  phones?: () => readonly PairedPhone[];
   desktop?: DesktopPort;
   log?: (line: string) => void;
 }
@@ -125,6 +129,17 @@ export function notifyLayerMethods(router: ApiRouter): Record<string, MethodHand
       return { ok: true as const };
     }),
   };
+}
+
+/** `newer` with the phones of both it and `older` (absent is every phone, which includes the rest): what a notifier that
+ *  was busy while two updates came in needs, so neither one's phones lose their push. */
+export function mergePhones(newer: NotifierUpdate, older: NotifierUpdate): NotifierUpdate {
+  if (newer.phones === undefined) return newer;
+  if (older.phones === undefined) {
+    const { phones: _all, ...everyone } = newer;
+    return everyone;
+  }
+  return { ...newer, phones: [...new Set([...older.phones, ...newer.phones])] };
 }
 
 /** One line, no control or direction marks, cut to `max` with an ellipsis. */
@@ -213,13 +228,17 @@ export class NotifyService {
 
   /** The core's own update for the notifiers (never a plugin's: the sender is MOSS's, and no mute or rate holds it back).
    *  `unseen` counts this bot's updates since `answered(bot)`. */
-  core(u: { kind: Exclude<NotifierUpdate["kind"], "notification">; bot?: string; session?: string; failed?: boolean }): void {
+  core(u: { kind: Exclude<NotifierUpdate["kind"], "notification">; bot?: string; session?: string; sessionKind?: SessionKind; failed?: boolean }): void {
     const bot = u.bot ?? "";
     const unseen = (this.#unseen.get(bot) ?? 0) + 1;
     this.#unseen.set(bot, unseen);
+    // Which phones this is for (push-routing.ts, the one place the rule is written): a bot's update to the phones paired as
+    // MOSS, a coding or agent session's to those paired as MOSS Code, and to every phone when none is of that app.
+    const phones = this.#o.phones === undefined ? undefined : phonesToWake({ ...(u.sessionKind === undefined ? {} : { sessionKind: u.sessionKind }), ...(u.bot === undefined ? {} : { bot: u.bot }) }, this.#o.phones());
     this.#dispatch({
       seq: ++this.#seq, kind: u.kind, unseen, at: this.#o.clock.now(),
       ...(u.bot === undefined ? {} : { bot: u.bot }), ...(u.session === undefined ? {} : { session: u.session }),
+      ...(phones === undefined ? {} : { phones }),
       ...(u.failed === undefined ? {} : { failed: u.failed }),
       sender: { pluginId: "moss", name: "MOSS", bundled: true },
     });
@@ -247,7 +266,8 @@ export class NotifyService {
       const key = `${e.pluginId}\u0000${handler}`;
       const lane = this.#lanes.get(key) ?? { running: false };
       this.#lanes.set(key, lane);
-      lane.waiting = update;
+      // A newer update replaces the one waiting, but never takes its phones away: the two's phones are woken together.
+      lane.waiting = lane.waiting === undefined ? update : mergePhones(update, lane.waiting);
       if (!lane.running) void this.#drain(lane, e.pluginId, handler);
     }
   }

@@ -52,7 +52,8 @@
                     "macos",
                     "windows",
                     "linux",
-                    "ios"
+                    "ios",
+                    "android"
                   ]
                 },
                 "runsCore": {
@@ -66,6 +67,13 @@
                 },
                 "hasDisplay": {
                   "type": "boolean"
+                },
+                "app": {
+                  "type": "string",
+                  "enum": [
+                    "moss",
+                    "code"
+                  ]
                 },
                 "online": {
                   "type": "boolean"
@@ -1422,6 +1430,7 @@
                       "app",
                       "cli",
                       "ios",
+                      "android",
                       "web"
                     ]
                   },
@@ -2704,7 +2713,8 @@
                   "macos",
                   "windows",
                   "linux",
-                  "ios"
+                  "ios",
+                  "android"
                 ]
               },
               "runsCore": {
@@ -2718,6 +2728,13 @@
               },
               "hasDisplay": {
                 "type": "boolean"
+              },
+              "app": {
+                "type": "string",
+                "enum": [
+                  "moss",
+                  "code"
+                ]
               },
               "online": {
                 "type": "boolean"

@@ -181,6 +181,62 @@ describe("FileDeviceRegistry", () => {
     expect(await registry.verifyAnswer(phone.id, data, first.sign(data))).toBe(false);
   });
 
+  describe("a phone's app", () => {
+    const phoneRecord = async (extra: Record<string, unknown> = {}) => {
+      const key = await DeviceKey.fromKey(generateEd25519());
+      return { key, record: { id: key.id, name: "Phone", kind: "phone" as const, runsCore: false, os: "ios" as const, publicKey: key.publicKeyBase64, ...extra } };
+    };
+
+    test("is kept from the pairing, survives a restart and a rename, and no peer update or reopened registry changes it", async () => {
+      const { registry, dir, key, clock, store } = await open();
+      const p = await phoneRecord({ app: "code" });
+      await registry.add(p.record as never, { via: "code", card: "card_1" });
+      expect(registry.get(p.key.id)?.app).toBe("code");
+      await registry.rename(p.key.id, "Renamed");
+      const u = { name: "Again", at: clock.now() + 1 };
+      expect(await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))).toBe(true);
+      const again = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+      expect(again.get(p.key.id)).toMatchObject({ name: "Again", app: "code" });
+      expect(key.id).toBe(again.self().id);
+      // Written into the file only as the record's own field; no secret beside it.
+      expect(readFileSync(join(dir, "devices", "registry.json"), "utf8")).toContain("\"app\": \"code\"");
+    });
+
+    test("add takes an app of the two on a phone only; a device with none records none", async () => {
+      const { registry } = await open();
+      const bad = [["a desktop", { ...(await peer("Lap")).record, app: "moss" }], ["an unknown app", (await phoneRecord({ app: "host" })).record], ["a number", (await phoneRecord({ app: 1 })).record]] as const;
+      for (const [what, record] of bad) {
+        const err = await registry.add(record as never, { via: "terminal" }).catch((e: unknown) => e);
+        expect([what, isContractError(err, "invalid")]).toEqual([what, true]);
+      }
+      const none = await phoneRecord();
+      await registry.add(none.record, { via: "terminal" });
+      expect(registry.get(none.key.id)?.app).toBeUndefined();
+      expect(registry.list().filter((d) => d.app !== undefined)).toEqual([]);
+    });
+
+    test("an account's device list carries none: a phone it adds records no app", async () => {
+      const { registry } = await open();
+      const p = await phoneRecord();
+      await registry.add(p.record, { via: "account", account: "acct" });
+      expect(registry.get(p.key.id)).toMatchObject({ kind: "phone", addedBy: "account" });
+      expect(registry.get(p.key.id)?.app).toBeUndefined();
+    });
+
+    test("this device's own app is written once, when its registry is made, and only a phone has one", async () => {
+      const dir = home();
+      const clock = new FakeClock();
+      const store = new MemorySecretStore();
+      const key = await DeviceKey.loadOrCreate(store);
+      const first = await FileDeviceRegistry.open({ home: dir, key, clock, self: { name: "Pixel", kind: "phone", os: "android", app: "moss" } });
+      expect(first.self()).toMatchObject({ kind: "phone", os: "android", app: "moss" });
+      const reopened = await FileDeviceRegistry.open({ home: dir, key, clock, self: { name: "Pixel", kind: "phone", os: "android", app: "code" } });
+      expect(reopened.self().app).toBe("moss");
+      const err = await FileDeviceRegistry.open({ home: home(), key, clock, self: { name: "Studio", app: "moss" } }).catch((e: unknown) => e);
+      expect(isContractError(err, "invalid")).toBe(true);
+    });
+  });
+
   test("removing a peer's answer key takes only its link key, and then no new first key is taken", async () => {
     const { registry, clock } = await open();
     const p = await peer();

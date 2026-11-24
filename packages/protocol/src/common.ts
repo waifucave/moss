@@ -153,13 +153,13 @@ export const SecretStoreView = z.object({
 export type SecretStoreView = z.infer<typeof SecretStoreView>;
 export type Os = z.infer<typeof Os>;
 
-/** A device's OS (lane H's ask): a computer's, or a phone's `ios`. `Os` stays the computers' alone, since the fence,
- *  the platforms and the tree are kept per computer OS. */
-export const DeviceOs = z.enum([...Os.options, "ios"]);
+/** A device's OS (lane H's ask): a computer's, or a phone's `ios` or `android`. `Os` stays the computers' alone, since the
+ *  fence, the platforms and the tree are kept per computer OS. */
+export const DeviceOs = z.enum([...Os.options, "ios", "android"]);
 export type DeviceOs = z.infer<typeof DeviceOs>;
 
-/** Whether a device's OS is one a computer runs (a phone's `ios` never is). */
-export const isComputerOs = (os: DeviceOs): os is Os => os !== "ios";
+/** Whether a device's OS is one a computer runs (a phone's `ios` or `android` never is). */
+export const isComputerOs = (os: DeviceOs): os is Os => os !== "ios" && os !== "android";
 /** The daemon's four targets; no darwin-x64, since macOS 27 is Apple silicon only (§3.1, §4). */
 export const Platform = z.enum(["darwin-arm64", "windows-x64", "linux-x64", "linux-arm64"]);
 export type Platform = z.infer<typeof Platform>;
@@ -192,8 +192,8 @@ export function levelAbove(a: Level, b: Level): boolean {
 export const SessionKind = z.enum(["bot", "side-thread", "agent", "coding"]);
 export type SessionKind = z.infer<typeof SessionKind>;
 
-/** The client a user acts through. */
-export const ClientKind = z.enum(["app", "cli", "ios", "web"]);
+/** The client a user acts through. `android` is a phone like `ios`, with no behaviour of its own. */
+export const ClientKind = z.enum(["app", "cli", "ios", "android", "web"]);
 export type ClientKind = z.infer<typeof ClientKind>;
 
 /** Who called (§5.4 "The caller"): the user and the client, a bot's or agent's session, a plugin by id, or the core

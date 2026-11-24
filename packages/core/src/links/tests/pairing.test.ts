@@ -17,6 +17,8 @@ import { EFF_SHORT_WORDLIST } from "../../identity/wordlist";
 import { HandshakeClient, openPairBox, pairKeyRef, pairSecretRef, sealPairBox } from "../handshake";
 import { type FakeHandshake, startFakeHandshake } from "../handshake-fake";
 import { MemoryNetwork } from "../memory-wire";
+import { FrameReader, frame } from "../frames";
+import type { WireConn, WireEndpoint } from "../wire";
 import { formatCode, MemoryRendezvous, PairingService, parseCode } from "../pairing";
 import { MossLinkTransport } from "../transport";
 
@@ -27,11 +29,11 @@ afterEach(async () => {
   cleanup = [];
 });
 
-async function device(net: MemoryNetwork, name: string, opts: { hs?: FakeHandshake; rendezvous?: MemoryRendezvous; account?: string; kind?: "phone"; clockOffsetMs?: number } = {}) {
+async function device(net: MemoryNetwork, name: string, opts: { hs?: FakeHandshake; rendezvous?: MemoryRendezvous; account?: string; kind?: "phone"; os?: "ios" | "android"; app?: "moss" | "code"; rewriteHello?: (device: Record<string, unknown>) => void; clockOffsetMs?: number } = {}) {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
-  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-pair-")), key, clock, self: { name, os: "macos", ...(opts.kind ? { kind: opts.kind } : {}) } });
-  const wire = net.endpoint(key.publicKey);
+  const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-pair-")), key, clock, self: { name, os: opts.os ?? "macos", ...(opts.kind ? { kind: opts.kind } : {}), ...(opts.app ? { app: opts.app } : {}) } });
+  const wire = opts.rewriteHello ? rewritingHello(net.endpoint(key.publicKey), opts.rewriteHello) : net.endpoint(key.publicKey);
   const handshake = opts.hs ? new HandshakeClient({ baseUrl: opts.hs.url, clock }) : undefined;
   const devClock = opts.clockOffsetMs ? { ...clock, now: () => clock.now() + opts.clockOffsetMs!, monotonic: () => clock.monotonic(), setTimeout: clock.setTimeout.bind(clock), clearTimeout: clock.clearTimeout.bind(clock), status: () => clock.status() } : clock;
   const pairing = new PairingService({
@@ -42,6 +44,50 @@ async function device(net: MemoryNetwork, name: string, opts: { hs?: FakeHandsha
   return { name, store, key, registry, wire, pairing };
 }
 type Dev = Awaited<ReturnType<typeof device>>;
+
+/** A wire that changes the hello this device sends after it has signed it, as someone on the path (or a client lying
+ *  about itself) would: `change` gets the record the hello carries. */
+function rewritingHello(inner: WireEndpoint, change: (device: Record<string, unknown>) => void): WireEndpoint {
+  return new Proxy(inner, {
+    get(target, prop) {
+      if (prop !== "dial") {
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      }
+      return async (...args: Parameters<WireEndpoint["dial"]>) => {
+        const conn = await target.dial(...args);
+        return new Proxy(conn, {
+          get(c, p) {
+            if (p !== "openStream") {
+              const v = Reflect.get(c, p, c);
+              return typeof v === "function" ? v.bind(c) : v;
+            }
+            return (...a: Parameters<WireConn["openStream"]>) => {
+              const stream = c.openStream(...a);
+              let first = true;
+              return new Proxy(stream, {
+                get(st, sp) {
+                  if (sp !== "write") {
+                    const v = Reflect.get(st, sp, st);
+                    return typeof v === "function" ? v.bind(st) : v;
+                  }
+                  return (chunk: Uint8Array) => {
+                    if (!first) return st.write(chunk);
+                    first = false;
+                    const body = new FrameReader().push(chunk)[0]!;
+                    const message = decode(body) as unknown[];
+                    change((message[1] as { device: Record<string, unknown> }).device);
+                    return st.write(frame(encode(message)));
+                  };
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  });
+}
 
 /** Runs a pairing to its words; returns both sides' words. */
 async function toWords(host: Dev, joiner: Dev, use: "qr" | "code" = "qr") {
@@ -229,6 +275,108 @@ describe("pairing", () => {
     expect(await host.registry.verifyAnswer(phone.key.id, data, phone.key.sign(data))).toBe(false);
     // The statement covers the algorithm: an Ed25519 statement doesn't register the same key.
     await expect(phone.registry.setOwnAnswerKey(pub, "secure-enclave", es256(answerKeyStatement(phone.key.id, pub, "secure-enclave")), undefined, "p256")).rejects.toThrow();
+  });
+
+  describe("a phone's app (spec §8: two phone apps, each paired on its own)", () => {
+    test("a phone that pairs as MOSS Code is recorded with that app, and device.list shows it; the same phone's other records name none", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const phone = await device(net, "Phone", { kind: "phone", os: "ios", app: "code" });
+      await pairBoth(host, phone);
+      expect(host.registry.get(phone.key.id)).toMatchObject({ kind: "phone", os: "ios", app: "code" });
+      // The phone's own record of the host has none: a desktop has no phone app.
+      expect(phone.registry.get(host.key.id)?.app).toBeUndefined();
+      const { deviceView } = await import("../../devices/rpc");
+      expect(deviceView(host.registry.get(phone.key.id)!, host.key.id, undefined)).toMatchObject({ kind: "phone", app: "code" });
+      expect(deviceView(host.registry.self(), host.key.id, undefined).app).toBeUndefined();
+    });
+
+    test("an Android phone pairs the same way, as either app", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const phone = await device(net, "Pixel", { kind: "phone", os: "android", app: "moss" });
+      await pairBoth(host, phone);
+      expect(host.registry.get(phone.key.id)).toMatchObject({ kind: "phone", os: "android", app: "moss" });
+    });
+
+    test("an old client names no app and records none; a phone with both apps is two paired devices", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const old = await device(net, "Old phone", { kind: "phone", os: "ios" });
+      const moss = await device(net, "MOSS", { kind: "phone", os: "ios", app: "moss" });
+      const code = await device(net, "MOSS Code", { kind: "phone", os: "ios", app: "code" });
+      await pairBoth(host, old);
+      await pairBoth(host, moss);
+      await pairBoth(host, code);
+      expect(host.registry.get(old.key.id)).toBeDefined();
+      expect(host.registry.get(old.key.id)?.app).toBeUndefined();
+      expect(host.registry.list().filter((d) => d.kind === "phone").map((d) => d.app ?? "none").sort()).toEqual(["code", "moss", "none"]);
+      expect(new Set(host.registry.list().map((d) => d.id)).size).toBe(4);
+    });
+
+    test("a record with no app encodes exactly as it did before the field", async () => {
+      const { canonicalRecord } = await import("../../identity/sas");
+      const r = { id: "x".repeat(32), name: "Phone", kind: "phone", os: "ios", runsCore: false, publicKey: "AAAA", answerKey: { publicKey: "BBBB", held: "secure-enclave", alg: "p256" } };
+      const before = encode([r.id, r.name, r.kind, r.os, r.runsCore, null, null, r.publicKey, ["BBBB", "secure-enclave", "p256"]]);
+      expect(Buffer.from(canonicalRecord(r)).equals(Buffer.from(before))).toBe(true);
+      expect(Buffer.from(canonicalRecord({ ...r, app: "moss" })).equals(Buffer.from(before))).toBe(false);
+      expect(Buffer.from(canonicalRecord({ ...r, app: "moss" })).equals(Buffer.from(canonicalRecord({ ...r, app: "code" })))).toBe(false);
+    });
+
+    test("the app changed on the wire after the phone signed its hello fails the pairing: the host records no phone", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const phone = await device(net, "Phone", { kind: "phone", os: "ios", app: "moss", rewriteHello: (d) => { d.app = "code"; } });
+      const view = await host.pairing.begin();
+      expect(isContractError(await phone.pairing.join(view.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+      await waitFor(() => host.pairing.get(view.pairingId)?.status === "failed");
+      // Refused for the right reason: the proof over the transcript, which holds the record, didn't check out.
+      expect(host.pairing.get(view.pairingId)?.error).toContain("without its secret");
+      expect(host.registry.list().filter((d) => d.kind === "phone")).toEqual([]);
+    });
+
+    test("(control) the same rewriting wire, changing nothing, pairs", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const phone = await device(net, "Phone", { kind: "phone", os: "ios", app: "moss", rewriteHello: () => {} });
+      await pairBoth(host, phone);
+      expect(host.registry.get(phone.key.id)?.app).toBe("moss");
+    });
+
+    test("an app added to a phone's hello that signed none, or taken off one that did, fails the same way", async () => {
+      for (const [from, rewrite] of [["none", (d: Record<string, unknown>) => { d.app = "code"; }], ["moss", (d: Record<string, unknown>) => { delete d.app; }]] as const) {
+        const net = new MemoryNetwork();
+        const host = await device(net, "Studio");
+        const phone = await device(net, `Phone ${from}`, { kind: "phone", os: "ios", ...(from === "moss" ? { app: "moss" as const } : {}), rewriteHello: rewrite });
+        const view = await host.pairing.begin();
+        expect(isContractError(await phone.pairing.join(view.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+        expect(host.registry.list().filter((d) => d.kind === "phone")).toEqual([]);
+      }
+    });
+
+    test("an app that is not one of the two, or on a device that is not a phone, refuses the pairing", async () => {
+      for (const [kind, app] of [["phone", "host"], ["phone", "other"], ["phone", 7], ["desktop", "moss"], ["desktop", "code"]] as const) {
+        const net = new MemoryNetwork();
+        const host = await device(net, "Studio");
+        const joiner = await device(net, "Joiner", { ...(kind === "phone" ? { kind: "phone" as const, os: "ios" as const } : {}), rewriteHello: (d) => { d.app = app; } });
+        const view = await host.pairing.begin();
+        expect(isContractError(await joiner.pairing.join(view.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+        expect(host.registry.list()).toHaveLength(1);
+      }
+    });
+
+    test("a revoked phone can't come back as the other app: it pairs again only with a new key", async () => {
+      const net = new MemoryNetwork();
+      const host = await device(net, "Studio");
+      const phone = await device(net, "Phone", { kind: "phone", os: "ios", app: "moss" });
+      await pairBoth(host, phone);
+      await host.registry.revoke(phone.key.id);
+      expect(host.registry.get(phone.key.id)).toMatchObject({ app: "moss" });
+      expect(host.registry.list().some((d) => d.id === phone.key.id)).toBe(false);
+      const view = await host.pairing.begin();
+      expect(isContractError(await phone.pairing.join(view.qr!).catch((e: unknown) => e), "refused")).toBe(true);
+      expect(host.registry.get(phone.key.id)).toMatchObject({ app: "moss" });
+    });
   });
 
   test("a host whose t is out of the statements' window is refused at its welcome (I's review)", async () => {

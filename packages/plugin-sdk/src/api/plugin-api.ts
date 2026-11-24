@@ -129,6 +129,11 @@ export interface NotifierUpdate {
   unseen: number;
   bot?: string;
   session?: string;
+  /** The paired phones, by device id, this update is meant for: the core's choice from which phone app each is (the bot's
+   *  phones for a bot's update, MOSS Code's for a coding or agent session's, and every phone when none is of that app).
+   *  Absent: every phone (a plugin's notice). A notifier that wakes phones asks its service to prefer these, never to wake
+   *  only these: the service may know phones this computer doesn't. Device ids only, no content. */
+  phones?: string[];
   /** When it happened, on the shared clock. */
   at: number;
   notification?: { title: string; body?: string };

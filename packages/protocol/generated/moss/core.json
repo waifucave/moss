@@ -132,6 +132,7 @@
                       "app",
                       "cli",
                       "ios",
+                      "android",
                       "web"
                     ]
                   },

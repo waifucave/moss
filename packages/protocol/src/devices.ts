@@ -17,6 +17,15 @@ import { UserMessageInput } from "./sessions";
 export const DeviceKind = z.enum(["desktop", "server", "cloud", "phone", "browser"]);
 export type DeviceKind = z.infer<typeof DeviceKind>;
 
+/** Which of the two phone apps a paired phone is: MOSS (the bots) or MOSS Code (sessions with coding agents). The program
+ *  names (`WindowProgram`, surfaces.ts: `PHONE_APPS` is the same list, checked in `push-routing.ts`; written out here
+ *  because surfaces.ts imports this file). It is recorded once, in the pairing exchange (`DeviceRecord.app`, links/pairing.ts), and
+ *  never changes: a paired phone can't later claim to be the other app. A phone that paired without one, or through the
+ *  account, has none. It decides only where a push goes (push-routing.ts), never what the phone may list or answer. */
+export const PHONE_APPS = ["moss", "code"] as const;
+export const PhoneApp = z.enum(PHONE_APPS);
+export type PhoneApp = z.infer<typeof PhoneApp>;
+
 /** How a link reaches its peer (§8.2): the same LAN, direct over the internet, or through a relay plugin. */
 export const LinkPath = z.enum(["lan", "direct", "relay"]);
 export type LinkPath = z.infer<typeof LinkPath>;
@@ -95,6 +104,8 @@ export const DeviceView = z.object({
   /** Its folder-tree name, for a device that runs moss-core. */
   computer: ComputerName.optional(),
   hasDisplay: z.boolean().optional(),
+  /** For a phone: the app it paired as (`PhoneApp`); absent for any other device and for a phone that recorded none. */
+  app: PhoneApp.optional(),
   online: z.boolean(),
   link: LinkView.optional(),
   isThis: z.boolean(),

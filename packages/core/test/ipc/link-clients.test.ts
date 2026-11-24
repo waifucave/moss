@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MOSS_ERR, MOSS_PROTOCOL_VERSION, ERR } from "@waifucave/moss-protocol";
+import { phoneAppOf } from "../../src/contracts/device-registry";
 import { SystemClock } from "../../src/clock/system-clock";
 import { MossTokens, ERR_UNAUTHORIZED } from "../../src/auth/moss-tokens";
 import { SessionProcesses } from "../../src/auth/moss-caller";
@@ -90,6 +91,29 @@ describe("remote clients over links, on the MOSS server", () => {
     const ok = await s.linkHello(5, hello(tokens.mint({ role: "remote", device: phone }), "remote", phone), { device: phone, role: "remote" }, () => {});
     expect(ok.conn.caller).toEqual({ kind: "user", client: "ios", device: phone });
     await expect(s.linkHello(5, hello(tokens.mint({ role: "remote", device: phone }), "remote", phone), { device: phone, role: "remote" }, () => {})).rejects.toMatchObject({ code: ERR.INVALID_REQUEST });
+  });
+
+  test("which phone app a connection is comes from its device's record at pairing, never from the hello", async () => {
+    const { tokens, server: s } = server();
+    const mossPhone = "m".repeat(32), codePhone = "c".repeat(32), oldPhone = "o".repeat(32);
+    const records = new Map<string, { kind: "phone" | "desktop"; app?: "moss" | "code"; revokedAt?: number }>([
+      [mossPhone, { kind: "phone", app: "moss" }], [codePhone, { kind: "phone", app: "code" }], [oldPhone, { kind: "phone" }], ["r".repeat(32), { kind: "phone", app: "code", revokedAt: 3 }], ["d".repeat(32), { kind: "desktop" }],
+    ]);
+    // A phone that says it is the other app, or a surface, in its hello: the surface is refused, and the app field is nothing the engine reads.
+    const hello = (device: string, extra: Record<string, unknown> = {}) => ({ protocolVersion: MOSS_PROTOCOL_VERSION, role: "remote", device, clientName: "x", token: tokens.mint({ role: "remote", device }), ...extra });
+    const link = (device: string) => ({ device, role: "remote" as const });
+    await expect(s.linkHello(21, hello(codePhone, { surface: "moss" }), link(codePhone), () => {})).rejects.toMatchObject({ code: MOSS_ERR.SURFACE_REFUSED });
+    await expect(s.linkHello(22, hello(codePhone, { surface: "host" }), link(codePhone), () => {})).rejects.toMatchObject({ code: MOSS_ERR.SURFACE_REFUSED });
+    const lying = await s.linkHello(23, hello(codePhone, { app: "moss", phoneApp: "moss", program: "moss" }), link(codePhone), () => {});
+    expect(lying.conn.caller).toEqual({ kind: "user", client: "ios", device: codePhone });
+    expect("surface" in lying.conn).toBe(false);
+    expect("app" in lying.conn || "program" in lying.conn).toBe(false);
+    const appOf = (conn: { caller: { kind: string; device?: string } }) => phoneAppOf(conn.caller.device === undefined ? undefined : (records.get(conn.caller.device) as never));
+    expect(appOf(lying.conn)).toBe("code");
+    expect(appOf((await s.linkHello(24, hello(mossPhone), link(mossPhone), () => {})).conn)).toBe("moss");
+    expect(appOf((await s.linkHello(25, hello(oldPhone), link(oldPhone), () => {})).conn)).toBeUndefined();
+    // A revoked phone has none, and a desktop never does.
+    expect([phoneAppOf(records.get("r".repeat(32)) as never), phoneAppOf(records.get("d".repeat(32)) as never), phoneAppOf(undefined)]).toEqual([undefined, undefined, undefined]);
   });
 
   test("the door's server: the device from the door's socket, the role from the registry, never the hello", async () => {

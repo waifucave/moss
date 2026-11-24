@@ -107,9 +107,12 @@ export function derivePairId(pairSecret: Uint8Array): Bytes {
 /** A device record in the one form both sides hash. */
 export function canonicalRecord(r: {
   id: string; name: string; kind: string; os?: string; runsCore: boolean; computer?: string; hasDisplay?: boolean; publicKey: string;
-  answerKey?: { publicKey: string; held: string; alg?: string };
+  answerKey?: { publicKey: string; held: string; alg?: string }; app?: string;
 }): Bytes {
   // The answer key with its algorithm (B's #187; ed25519 when absent), so the words cover it too.
   const ak = r.answerKey ? [r.answerKey.publicKey, r.answerKey.held, r.answerKey.alg ?? "ed25519"] : null;
-  return own(encode([r.id, r.name, r.kind, r.os ?? null, r.runsCore, r.computer ?? null, r.hasDisplay ?? null, r.publicKey, ak]));
+  // A phone's app is the record's tenth item, and only when it has one: a record with none encodes exactly as it did
+  // before, so a client that doesn't know the field pairs as it always did, and one that names it can't be talked out of it.
+  const base = [r.id, r.name, r.kind, r.os ?? null, r.runsCore, r.computer ?? null, r.hasDisplay ?? null, r.publicKey, ak];
+  return own(encode(r.app === undefined ? base : [...base, r.app]));
 }

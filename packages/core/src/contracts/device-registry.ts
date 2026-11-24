@@ -16,7 +16,7 @@
 // can't (Linux, and Windows without a TPM), the owner accepted the risk: "any desktop may answer; a
 // compromised plugin on a Windows or Linux computer could approve actions on other computers". A server, a cloud
 // computer and a browser never sign: their only key is the core's, or they may answer no card (`mayAnswerCards`).
-import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
+import type { AnswerKeyAlg, AnswerKeyHolder, DeviceKind, DeviceOs, PhoneApp } from "@waifucave/moss-protocol";
 import { isStrictEd25519Point, isStrictEd25519Signature } from "../identity/ed25519-strict";
 import type { Unsubscribe } from "./common";
 
@@ -31,6 +31,12 @@ export interface DeviceRecord {
   /** Its folder-tree name, for a device that runs moss-core. */
   computer?: string;
   hasDisplay?: boolean;
+  /** A phone's app, `moss` or `code` (spec §8, the owner's decision of 2026-11-24: two phone apps, each paired on its own).
+   *  Taken from the pairing exchange only (the record in its transcript, which the pair secret and the four words cover) and
+   *  never changed after: not by `device.rename`, a peer's update, the account or the phone's later hello. A phone that
+   *  paired without one has none. It decides only where a push goes (`phonesToWake`), never what the phone may list or
+   *  answer. */
+  app?: PhoneApp;
   /** Its Ed25519 public key, raw 32 bytes, base64: the core's link key on a computer. */
   publicKey: string;
   /** A desktop's answer key: its app's key, apart from the core's, how the OS holds it, and its algorithm (`alg`,
@@ -94,6 +100,15 @@ export function answerKeyOf(d: Pick<DeviceRecord, "kind" | "publicKey" | "answer
   if (d.revokedAt !== undefined) return undefined;
   if (d.kind === "phone" || d.kind === "desktop") return d.answerKey?.publicKey;
   return undefined;
+}
+
+/** The phone app a device is, as the registry recorded it at pairing: `moss` or `code` for a phone that paired as one,
+ *  and nothing for any other device, a phone that recorded none, or a revoked one. A connection's app is this of its
+ *  device's record (`registry.get(caller.device)`), never anything the connection said: the hello has no such field, and
+ *  its `surface` is refused on a phone's link. */
+export function phoneAppOf(d: Pick<DeviceRecord, "kind" | "app" | "revokedAt"> | undefined): PhoneApp | undefined {
+  if (d === undefined || d.kind !== "phone" || d.revokedAt !== undefined) return undefined;
+  return d.app === "moss" || d.app === "code" ? d.app : undefined;
 }
 
 /** The one algorithm a holder's keys can have, where it has only one: the Secure Enclave makes only P-256 keys, so a

@@ -9,7 +9,7 @@
 // computer, which shows its own card (`mountMainChoiceRequests`), since its main choice is its own to take. The peer
 // methods (`peer.*`, `sync.*`) ride the link and aren't here.
 import {
-  MOSS_ERR, DEVICES_METHODS, ERR,
+  MOSS_ERR, DEVICES_METHODS, ERR, PhoneApp,
   type AccountView, type Caller, type ChangeResult, type DeviceView, type LinkView, type MethodSpec,
 } from "@waifucave/moss-protocol";
 import type { z } from "zod";
@@ -454,6 +454,7 @@ export function deviceView(d: DeviceRecord, self: string, link: LinkView | undef
   return {
     id: d.id, name: d.name, kind: d.kind, runsCore: d.runsCore, online: d.id === self || link?.up === true, isThis: d.id === self, isMain, addedAt: d.addedAt,
     ...(d.os ? { os: d.os } : {}), ...(d.computer ? { computer: d.computer } : {}), ...(d.hasDisplay !== undefined ? { hasDisplay: d.hasDisplay } : {}),
+    ...(d.kind === "phone" && PhoneApp.safeParse(d.app).success ? { app: d.app } : {}),
     ...(link ? { link } : {}), ...(d.lastSeenAt !== undefined ? { lastSeenAt: d.lastSeenAt } : {}), ...(answers ? { answers } : {}),
   };
 }

@@ -16,7 +16,7 @@
 // * the guided rotation a revocation starts: the synced keys the revoked device held, to be rotated (§8.1).
 import { join } from "node:path";
 import type { DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
-import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, COMPUTER_NAME_RE, PhoneApp } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import {
@@ -189,7 +189,10 @@ export interface FileDeviceRegistryOptions {
   /** The MOSS home; the registry is `devices/registry.json` in it. */
   home: string;
   key: DeviceKey;
-  self: { name: string; kind?: DeviceKind; os?: DeviceOs; computer?: string; hasDisplay?: boolean };
+  self: { name: string; kind?: DeviceKind; os?: DeviceOs; computer?: string; hasDisplay?: boolean;
+    /** A phone's app (`moss` or `code`), written into its own record when the registry is made and never again: an
+     *  existing registry keeps the app it has, whatever is passed here. Only a phone has one. */
+    app?: PhoneApp };
   clock: Pick<Clock, "now">;
   /** For a revocation's rotation list: the synced items in the secret store (names only, never values). */
   syncedSecrets?: () => Promise<SecretMeta[]>;
@@ -224,12 +227,14 @@ export class FileDeviceRegistry implements DeviceRegistry {
       }, opts);
     }
     if (!NAME_RE.test(opts.self.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
+    if (opts.self.app !== undefined) checkApp(kind, opts.self.app);
     const self: DeviceRecord = {
       id: opts.key.id, name: opts.self.name, kind, runsCore, publicKey: opts.key.publicKeyBase64,
       addedAt: opts.clock.now(), addedBy: "self",
       ...(opts.self.os === undefined ? {} : { os: opts.self.os }),
       ...(runsCore ? { computer: ((c) => (computerNameProblem(c) === null ? c : computerNameFor(c) || "Computer"))(opts.self.computer ?? opts.self.name) } : {}),
       ...(opts.self.hasDisplay === undefined ? {} : { hasDisplay: opts.self.hasDisplay }),
+      ...(opts.self.app === undefined ? {} : { app: opts.self.app }),
     };
     const state: FileShape = { v: 1, self: self.id, devices: [self], pairs: [], rotations: [], updates: {}, boxKeys: {}, answerKeyGone: {}, pendingRevokes: [], groupsLeft: {} };
     writeJsonFile(path, state);
@@ -263,6 +268,8 @@ export class FileDeviceRegistry implements DeviceRegistry {
     if (!key || (await deviceIdFor(key)) !== device.id) throw new ContractError("invalid", "the id doesn't match the key");
     if (!NAME_RE.test(device.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
     if (!KINDS.includes(device.kind)) throw new ContractError("invalid", `unknown device kind ${String(device.kind)}`);
+    // A phone's app is taken as the pairing gave it, here and nowhere else; an account's device list carries none.
+    if (device.app !== undefined) checkApp(device.kind, device.app);
     // A record's answer key as its pairing or the account gave it: its holder and algorithm must be known ones; a key
     // that doesn't fit its algorithm (a P-256 point labelled Ed25519) is kept, and simply never verifies an answer
     // (B's DeviceRegistry conformance, `answer-alg`).
@@ -648,6 +655,12 @@ export function computerNameProblem(name: string): string | null {
  *  `Studio-2`); empty when nothing usable is left. */
 export function computerNameFor(name: string): string {
   return name.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
+}
+
+/** A device's `app` is one of the two phone apps, and only a phone has one. */
+function checkApp(kind: DeviceKind, app: unknown): void {
+  if (kind !== "phone") throw new ContractError("invalid", "only a phone has an app");
+  if (!PhoneApp.safeParse(app).success) throw new ContractError("invalid", `unknown phone app ${String(app)}`);
 }
 
 function stripUndefined<T extends object>(o: T): T {
