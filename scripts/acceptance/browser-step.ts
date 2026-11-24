@@ -231,7 +231,7 @@ export async function browserStep(ctx: ExampleCtx, session: string, fixture: Bro
         if (first !== undefined) {
           const text = (await filesLayer.request("plugin.layer.call", { call: "files.readText", args: [first.path] })) as { result: unknown };
           if (typeof text.result !== "string") fail(`the files panel's files.readText of ${first.path} gave ${JSON.stringify(text).slice(0, 200)}`);
-          readNote = `reads ${first.path.split("/").pop()}`;
+          readNote = `reads ${first.path.split(/[\\/]/).pop()}`;
         }
         lines.push(`files panel: lists the session folder (${listed.result.length} entries), ${readNote}`);
         const term = await openLayer("moss/panel-terminal");

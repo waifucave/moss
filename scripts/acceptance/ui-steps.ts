@@ -1064,7 +1064,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     if (page === undefined) fail(`the Plugins page didn't open from the sidebar (frames: ${await dumpFrames(cdp)})`);
     await clickText("the Add tab", "[role=tab]", "Add");
     await clickText("Choose a folder…", "button", "Choose a folder");
-    await waitText("the chosen folder's name", `Chosen: ${pick!.path.split("/").pop()}`);
+    await waitText("the chosen folder's name", `Chosen: ${pick!.path.split(/[\\/]/).pop()}`);
     const shownPath = await cdp.evaluate(page!.session, `document.body.innerText.includes(${JSON.stringify(pick!.path)})`);
     if (shownPath === true) fail("the page shows the picked folder's path: it should hold only a token and the name");
     // The reload this install makes is the first one after the app's log says the plugin's OK card was answered: a reload
@@ -1079,7 +1079,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     };
     // The document showing now is marked, so the check after the install reads the one loaded again, never this one.
     await cdp.evaluate(page!.session, "window.__acceptanceServedBefore = true");
-    await clickText("the chosen folder's Install", "button", `Install ${pick!.path.split("/").pop()}`);
+    await clickText("the chosen folder's Install", "button", `Install ${pick!.path.split(/[\\/]/).pop()}`);
     const okCard = await ctx.pressCard!("its OK card", (c) => c.kind === "plugin-ok" && c.pluginId === pick!.id);
     const running = await until(`${pick!.id} approved`, 30_000, async () => {
       const r = await rpc.request<{ plugin: { state: string } }>("plugin.get", { id: pick!.id }).catch(() => undefined);
@@ -2080,7 +2080,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       }, () => dumpFrames(cdp));
       await clickIn("the Installed tab", "[role=tab]", "Installed");
       await clickIn("Open Acceptance media", `button[aria-label=${JSON.stringify("Open Acceptance media")}]`, undefined);
-      const takeBack = `button[aria-label^="Take back "][aria-label$=${JSON.stringify(`/${picks.video.split("/").pop()}`)}]`;
+      const takeBack = `button[aria-label^="Take back "][aria-label$=${JSON.stringify(`${process.platform === "win32" ? "" : "/"}${picks.video.split(/[\\/]/).pop()}`)}]`;
       const shownGrants = async () => Number((await inTree<number>(cdp, `(() => { const n = document.querySelectorAll(${JSON.stringify(takeBack)}).length; return n > 0 ? n : null; })()`))?.value ?? 0);
       const grantsBefore = await until("its picked file under Files it may open", 20_000, async () => { const n = await shownGrants(); return n > 0 ? n : undefined; }, async () => `${(await treeText(cdp)).replace(/\s+/g, " ").slice(0, 300)}`);
       await clickIn("Take back on the video's grant", takeBack, undefined);

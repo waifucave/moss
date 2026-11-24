@@ -17,7 +17,7 @@ export const ui = {
     try {
       const st = await api.files.stat(token);
       const real = await api.files.path(token);
-      return { size: st === null ? null : st.size, file: real.split("/").pop() ?? "" };
+      return { size: st === null ? null : st.size, file: real.split(/[\\/]/).pop() ?? "" };
     } catch (err) {
       return { note: String((err as Error)?.message ?? err).slice(0, 160) };
     }

@@ -181,7 +181,7 @@ export async function pluginsPage(cdp: Cdp, tab: "Add" | "Installed"): Promise<v
  *  read before it is pressed; then presses it in the window. */
 export async function installFromPage(ctx: ExampleCtx, folder: string, id: string): Promise<{ card: string; text: string }> {
   const { cdp, rpc } = ctx;
-  const name = folder.split("/").pop()!;
+  const name = folder.split(/[\\/]/).pop()!;
   // The window's document loads again when a plugin's layer was installed after it was served ("layers: mN loads again", about a second after the
   // approval of the plugin installed just before, and a second time for its client), which drops the Add tab and what it had chosen. It can come
   // between the page opening and the picker's answer, or after the chosen folder's name stood and before the Install press landed (`cards` row 58,
