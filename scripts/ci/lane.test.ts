@@ -129,8 +129,24 @@ describe("lane start", () => {
     writeFileSync(join(dir, "gh.log"), "");
     writeFileSync(join(fixDir, "runlist.json"), "[]");
     const r = lane(["start"], { LANE_BASE_REF: "origin/no-such-branch" });
-    expect(r.err).toContain("no merge-base with origin/no-such-branch: running every job");
+    expect(r.err).toContain("no usable merge-base with origin/no-such-branch: running every job");
     expect(readFileSync(join(dir, "gh.log"), "utf8")).toContain("-f scope=all");
+  });
+
+  test("a shallow checkout starts everything and says why: its merge-base cannot be trusted", () => {
+    const shallow = join(dir, "shallow");
+    sh(["git", "clone", "--depth", "1", "--branch", "lane-int/moss", `file://${origin}`, shallow], dir);
+    sh(["git", "checkout", "-b", "lane/shallow"], shallow);
+    writeFileSync(join(shallow, "c.txt"), "3");
+    sh(["git", "add", "c.txt"], shallow);
+    sh(["git", "commit", "-m", "x"], shallow);
+    writeFileSync(join(dir, "gh.log"), "");
+    writeFileSync(join(fixDir, "runlist.json"), "[]");
+    const r = Bun.spawnSync(["bash", LANE, "start"], { cwd: shallow, stdout: "pipe", stderr: "pipe", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, FAKE_FIX: fixDir, FAKE_SHA: sha, FAKE_LOG: join(dir, "gh.log"), LANE_TEST_POLL: "0" } });
+    expect(r.stderr.toString()).toContain("this checkout is shallow");
+    const log = readFileSync(join(dir, "gh.log"), "utf8");
+    expect(log).toContain("-f scope=all");
+    expect(log).not.toContain("base=");
   });
 
   test("an unknown option is refused", () => {

@@ -97,6 +97,12 @@ case "$cmd" in
         if [ "$scope" = scoped ] && [ "$only" = all ]; then
           git fetch origin "${base_ref#origin/}" >/dev/null 2>&1 || say "note: could not refresh $base_ref; counting from the copy here"
           mb="$(git merge-base HEAD "$base_ref" 2>/dev/null)" || mb=""
+          # A shallow checkout (a depth-limited fetch writes .git/shallow) has a cut-off history: a merge-base found in it can be wrong,
+          # and the diff from it too small. No merge-base, or a shallow one, is every job.
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+            say "this checkout is shallow (git fetch --unshallow repairs it): its merge-base cannot be trusted, so the run starts EVERY job"
+            mb=""
+          fi
           if [ -n "$mb" ]; then
             args+=(-f scope=scoped -f "base=$mb")
             say "scoped run: your changes since ${mb:0:9} (the merge-base with $base_ref); --all runs every job"
@@ -104,7 +110,7 @@ case "$cmd" in
             top="$(git rev-parse --show-toplevel)"
             if [ -x "$top/scripts/pinned-bun" ] && [ -f "$top/scripts/ci/plan.ts" ]; then "$top/scripts/pinned-bun" "$top/scripts/ci/plan.ts" --base "$mb" 2>/dev/null | sed 's/^/lane: this run: /' >&2 || true; fi
           else
-            say "no merge-base with $base_ref: running every job (fail closed)"
+            say "no usable merge-base with $base_ref: running every job (fail closed)"
             args+=(-f scope=all)
           fi
         else
