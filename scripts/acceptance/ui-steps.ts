@@ -472,7 +472,7 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     // drag of a title area is the system's and selects nothing, so the selection the synthetic one left is taken back.
     await cdp.evaluate(side.session, "(() => { getSelection()?.removeAllRanges(); return true; })()").catch(() => undefined);
     const line = await until("the app's log of the window's move", 8_000, async () => (moved().length > was ? moved()[moved().length - 1] : undefined)).catch(() => undefined);
-    if (line === undefined) fail(`dragging the title row (${at.x},${at.y}) by (120, 60) moved the window nowhere: the app logged no move`);
+    if (line === undefined) fail(`dragging the title row (${at.x},${at.y}) by (120, 60) moved the window nowhere: the app logged no move (its window lines: ${ctx.appLog().split("\n").filter((l) => /window: (a drag|moved)/.test(l)).slice(-4).join(" | ") || "none"})`);
     // The line is the window's own position before and after (win.getPosition), so this is its bounds, moved by the drag.
     const m = /from \((-?\d+), (-?\d+)\) to \((-?\d+), (-?\d+)\)/.exec(line!);
     if (m === null) fail(`the app's log of the move is unreadable: ${line}`);

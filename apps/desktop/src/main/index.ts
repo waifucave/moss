@@ -803,6 +803,7 @@ async function ready(): Promise<void> {
       const [x, y] = win.getPosition();
       const r = windowDrags.start(windowId, { shell, titleHeight: TITLE_BAR_HEIGHT, cardPending: sealed.anyPending(), window: { x: x ?? 0, y: y ?? 0 }, cursor: cursorPoint(windowId) });
       if (!r.ok) log(`window: a drag was refused (${r.why})`);
+      else log(`window: a drag began (window at ${x ?? 0}, ${y ?? 0}; cursor at ${cursorPoint(windowId)?.x ?? "?"}, ${cursorPoint(windowId)?.y ?? "?"})`);
     },
     activeSession: (windowId, session) => {
       activeSessions.set(windowId, session);
@@ -3087,6 +3088,7 @@ function dragEnd(windowId: number): void {
     if (win.isDestroyed()) return;
     const [x, y] = win.getPosition();
     if (x !== from.x || y !== from.y) log(`window: moved by its title area, from (${from.x}, ${from.y}) to (${x}, ${y})`);
+    else log(`window: a drag ended with the window where it began (${x}, ${y})`);
   };
   if (process.platform === "linux") setTimeout(report, 300).unref?.();
   else report();
