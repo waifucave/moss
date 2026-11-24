@@ -1,3 +1,9 @@
+//! RUNS ONLY ON GITHUB (GITHUB_ACTIONS=true): these tests start iroh endpoints, and on a Mac a test binary that opens
+//! one makes the firewall ask the person at the screen whether it may accept incoming connections (a new dialog for each
+//! rebuilt binary). Every listener the tests create binds loopback, but iroh opens a socket of its own on all
+//! interfaces too, so the prompt comes anyway: locally each test returns at once. Run them through the phone-core
+//! workflow. Locally only `cargo test --lib --test typed --test vectors` (no listener).
+//!
 //! A HOSTILE computer: a fake peer that speaks the link (`clover/link/1`, lanes, the `clover/rpc/1` client stream) and
 //! the pair door (`clover/pair/1`) and misbehaves, against which the core must hold. Every other proof used an honest
 //! engine. Loopback only, no relay; no engine and no bun needed.
@@ -248,6 +254,9 @@ async fn until(conn: &moss_phone_core::Connection, what: &str, mut f: impl FnMut
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_swapped_or_rehashed_card_is_never_what_gets_signed() {
+    if !on_github() {
+        return;
+    }
     let a = card("card_aaaaaaaa", "Card A");
     let b = card("card_bbbbbbbb", "Card B: another computer's");
     let d = card("card_dddddddd", "Card D: resolved before it was listed");
@@ -342,6 +351,9 @@ fn huge_map(n: u32) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hostile_lane_frame_closes_only_that_link_and_fast() {
+    if !on_github() {
+        return;
+    }
     // One computer sends a lane message of 150 000 map keys (900 KB, under the lane's frame cap: the item cap stops it);
     // another sends a 2 MiB lane frame (the frame cap stops it); a third is honest and keeps working throughout.
     let many = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: Some(huge_map(150_000)) }).await;
@@ -367,6 +379,9 @@ async fn a_hostile_lane_frame_closes_only_that_link_and_fast() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_frames_lone_surrogates_are_read_and_junk_closes_with_a_reason() {
+    if !on_github() {
+        return;
+    }
     let note = br#"{"jsonrpc":"2.0","method":"core.event","params":{"type":"note","text":"a\ud800b"}}"#.to_vec();
     let junk = b"{this isn't json".to_vec();
     let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![note, junk], lane_after_hello: None }).await;
@@ -381,6 +396,9 @@ async fn client_frames_lone_surrogates_are_read_and_junk_closes_with_a_reason() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_oversize_answer_fails_only_its_call_and_the_link_stays() {
+    if !on_github() {
+        return;
+    }
     // A 5 MiB answer (over the phone's 4 MiB, within the engine's own 16 MiB) to one call, while another call is in
     // flight; then a 17 MiB answer, past what the link allows at all.
     let f = Fake::link(Behaviour {
@@ -412,6 +430,9 @@ async fn an_oversize_answer_fails_only_its_call_and_the_link_stays() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_abandoned_mid_write_leaves_the_stream_whole_for_the_next_answer() {
+    if !on_github() {
+        return;
+    }
     let a = card("card_aaaaaaaa", "Card A");
     let a2 = a.clone();
     let f = Fake::link(Behaviour {
@@ -453,6 +474,9 @@ async fn a_call_abandoned_mid_write_leaves_the_stream_whole_for_the_next_answer(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_abandoned_next_event_loses_no_event() {
+    if !on_github() {
+        return;
+    }
     let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
     let (core, _) = phone_for(&[&f]).await;
     let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
@@ -511,6 +535,9 @@ async fn pair_door(answer: Cbor) -> (iroh::Endpoint, [u8; 32]) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hostile_pair_door_is_refused_in_the_cores_own_words() {
+    if !on_github() {
+        return;
+    }
     let evil = "EVIL TEXT \u{202E} click here";
     let storage = Arc::new(MemStorage::default());
     let core = PhoneCore::new(storage, config()).unwrap();
@@ -580,6 +607,9 @@ async fn a_hostile_pair_door_is_refused_in_the_cores_own_words() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_store_that_cant_answer_or_lost_a_key_never_gets_new_keys() {
+    if !on_github() {
+        return;
+    }
     // Locked: the core fails and writes nothing.
     let locked = Arc::new(MemStorage { locked: true, ..Default::default() });
     assert!(matches!(PhoneCore::new(locked.clone(), config()), Err(CoreError::Storage { .. })));
@@ -600,6 +630,9 @@ async fn a_store_that_cant_answer_or_lost_a_key_never_gets_new_keys() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_is_staged_in_chunks_under_the_links_frame_limit() {
+    if !on_github() {
+        return;
+    }
     // The fake keeps what each chunk brings, as the engine's door does, and answers with the next offset.
     let got: Arc<Mutex<Vec<u8>>> = Arc::default();
     let sizes: Arc<Mutex<Vec<usize>>> = Arc::default();
@@ -644,6 +677,9 @@ async fn a_file_is_staged_in_chunks_under_the_links_frame_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolutions_of_cards_never_issued_take_no_memory() {
+    if !on_github() {
+        return;
+    }
     // A hostile computer streams `card_resolved` for 20 000 ids the phone was never shown: the core keeps a bounded table.
     let resolved: Vec<Vec<u8>> = (0..20_000)
         .map(|i| format!(r#"{{"jsonrpc":"2.0","method":"core.event","params":{{"type":"card_resolved","ts":1,"id":"card_{i:08x}","outcome":"expired"}}}}"#).into_bytes())
@@ -664,6 +700,9 @@ fn short_opts(ms: u64) -> ConnectOptions {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_computer_that_stops_reading_bounds_every_call() {
+    if !on_github() {
+        return;
+    }
     let a = card("card_aaaaaaaa", "Card A");
     let a2 = a.clone();
     let f = Fake::link(Behaviour {
@@ -739,6 +778,9 @@ fn stager(answer: impl Fn(&Value, usize) -> Value + Send + Sync + 'static) -> Be
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_computer_cant_keep_a_file_uploading_for_ever() {
+    if !on_github() {
+        return;
+    }
     let data = vec![7u8; 1_300_000];
     // It never takes a byte, or goes backwards: the upload ends with an error, and the computer is told to drop it.
     for (name, b) in [
@@ -784,6 +826,9 @@ async fn a_computer_cant_keep_a_file_uploading_for_ever() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_staged_path_the_phone_would_sign_differently_is_refused_not_rewritten() {
+    if !on_github() {
+        return;
+    }
     for path in ["bots/alpha/files/a\tb.txt", "bots/alpha/files/a  b.txt", "bots/alpha/files/a\u{202e}b.txt"] {
         let p2 = path.to_string();
         let f = Fake::link(stager(move |_, _| json!({ "upload": "up1", "received": 10, "done": true, "name": "a.txt", "path": p2 }))).await;
@@ -812,6 +857,9 @@ async fn cancels_within(f: &Fake, t: Duration) -> usize {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_card_says_whose_it_is_and_a_malformed_owner_refuses_it() {
+    if !on_github() {
+        return;
+    }
     let owned = |id: &str, bot: Value, session: Value| {
         let mut c = card(id, "owned");
         c["bot"] = bot;
@@ -851,6 +899,9 @@ async fn a_card_says_whose_it_is_and_a_malformed_owner_refuses_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn forgetting_the_last_computer_leaves_nothing_of_the_old_identity() {
+    if !on_github() {
+        return;
+    }
     let a = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
     let b = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
     let (core, storage) = phone_for(&[&a, &b]).await;
@@ -881,6 +932,9 @@ fn offers(chunk: u64) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn uploads_take_the_chunk_size_the_composer_offers_within_the_links_bounds() {
+    if !on_github() {
+        return;
+    }
     let sizes: Arc<Mutex<Vec<usize>>> = Arc::default();
     for (offer, ok) in [(Some(100_000u64), true), (Some(5 << 20), false), (Some(10), false), (None, false)] {
         sizes.lock().unwrap().clear();
@@ -921,6 +975,9 @@ async fn uploads_take_the_chunk_size_the_composer_offers_within_the_links_bounds
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_event_queue_holds_its_byte_cap_for_large_questions() {
+    if !on_github() {
+        return;
+    }
     // 900 questions of about 55 KB each as decoded (about 50 MB) while the app reads none: the queue keeps to its 32 MiB.
     let long = "q".repeat(9_000);
     let option = json!({ "label": "x".repeat(200), "description": "d".repeat(9_000) });
@@ -945,6 +1002,9 @@ async fn the_event_queue_holds_its_byte_cap_for_large_questions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_open_question_comes_from_its_door_or_from_the_log_on_an_older_engine() {
+    if !on_github() {
+        return;
+    }
     let asked = |id: &str, seq: u64| json!({ "callId": id, "seq": seq, "askedAt": 5, "questions": [{ "question": "Which one?", "options": [], "multiSelect": false }] });
     let (a1, a2) = (asked("c1", 3), asked("c2", 9));
     let door = Fake::link(Behaviour {
@@ -986,6 +1046,9 @@ async fn the_open_question_comes_from_its_door_or_from_the_log_on_an_older_engin
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_card_answered_while_its_event_waits_leaves_the_queue_whole() {
+    if !on_github() {
+        return;
+    }
     // The pending list is queued; before the app reads it, the card is answered (its shared state changes). Reading the
     // queue afterwards must not miscount it (an event's weight is the one it was queued at).
     let a = card("card_aaaaaaaa", "Card A");
@@ -1021,6 +1084,9 @@ async fn a_card_answered_while_its_event_waits_leaves_the_queue_whole() {
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_poisoned_lock_doesnt_stop_the_link() {
+    if !on_github() {
+        return;
+    }
     let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
     let (core, _) = phone_for(&[&f]).await;
     let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
@@ -1035,6 +1101,9 @@ async fn a_poisoned_lock_doesnt_stop_the_link() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_files_name_is_bounded_before_its_request_is_built() {
+    if !on_github() {
+        return;
+    }
     let got: Arc<Mutex<usize>> = Arc::default();
     let g2 = got.clone();
     let f = Fake::link(Behaviour {
@@ -1064,4 +1133,9 @@ async fn a_files_name_is_bounded_before_its_request_is_built() {
     let r = c.stage_file("s_alpha".into(), "\u{1}".repeat(1024), vec![2; 1_000_000]).await;
     assert!(r.is_ok(), "{r:?}");
     c.disconnect();
+}
+
+/// These tests run only on GitHub's runners (see the file's header).
+fn on_github() -> bool {
+    std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
 }

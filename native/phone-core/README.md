@@ -1,5 +1,7 @@
 # phone-core
 
+> **Testing locally:** only `cargo test --lib --test typed --test vectors`, on AC power: they open no listener. `tests/hostile.rs` and `tests/engine.rs` start iroh endpoints, and on a Mac any test binary that does makes the firewall ask the person at the screen whether it may accept incoming connections (a new dialog for every rebuilt binary), even though every listener the tests create binds loopback (iroh opens a socket of its own on all interfaces). Those two run ONLY on GitHub (they return at once unless `GITHUB_ACTIONS=true`), through the phone-core workflow.
+
 The phone apps' shared core (spec §8, §5.5, §10; lane PC): one Rust library that MOSS and MOSS Code on the iPhone (Swift) and on Android (Kotlin) use to pair with a person's computer, hold the link, call the engine and sign card answers. Each app has native screens over it; each pairs on its own (`PhoneApp`).
 
 ## What it does
