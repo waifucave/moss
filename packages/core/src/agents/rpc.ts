@@ -97,7 +97,7 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
       // A phone's start (the owner's decision of 2026-11-24): the same call and the same checks below, with two more. The phone
       // is still a paired phone with an answer key (read from the registry now, so a revocation ends it), and it names this
       // computer, the one its link reaches: starting on another computer through this one is the desktop's door, not a phone's.
-      const fromPhone = ctx.caller.client === "ios" || ctx.caller.client === "android";
+      const fromPhone = ctx.caller.client !== "app" && ctx.caller.client !== "cli";
       if (fromPhone) {
         if (ctx.caller.device === undefined || o.phoneMayStart?.(ctx.caller.device) !== true) throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't start a session here");
         if (p.computer !== o.computer) throw new ContractError("refused", `a phone starts a session on the computer it is linked to (${o.computer}), not on ${p.computer.slice(0, 80)}`);

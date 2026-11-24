@@ -58,15 +58,19 @@ describe("a phone's start in a folder the computer has never run a session in", 
     // The card the desktop's start raises: the OK for an agent with no sandbox MOSS counts on, on this session.
     const card = await waitFor(() => w.approvals.cards()[0], "the OK card");
     expect(card).toMatchObject({ kind: "change", change: "agent-unsandboxed", session });
+    // The phone sees it as it sees every card (`card.list`, the user's own), and answers it with `card.answer` on its connection.
+    expect((await p.cards(w)).cards.map((c) => c.id)).toEqual([card.id]);
     expect(w.report("started")).toEqual([]);
     // A signature by any key but the phone's answer key is no answer; the app's sealed frame is not the phone's to give; and the
     // phone's own signature on the deny option does not approve.
     const stranger = await makeFakePhone();
-    expect(await p.answer(w, card, "approve", stranger)).toBe("bad-proof");
-    expect(await w.approvals.answer(card.id, { optionId: card.options.find((o) => o.kind === "approve")!.id, hash: card.hash, proof: { via: "sealed-frame", frame: "forged", input: "click", at: w.clock.now() } }, { role: "remote", device: p.phone.id })).toBe("bad-origin");
+    expect(await p.answer(w, card, "approve", stranger)).toEqual({ accepted: false, reason: "the answer's signature didn't check out" });
+    expect(await p.answer(w, card, "approve", undefined, { via: "sealed-frame", frame: "forged", input: "click", at: w.clock.now() })).toEqual({ accepted: false, reason: "the answer can't come from here" });
+    // Another device's id on the proof, over the phone's connection: refused before the broker.
+    expect(await p.answer(w, card, "approve", undefined, { via: "device", device: stranger.id, at: w.clock.now(), signature: "AAAA" })).toEqual({ accepted: false, reason: "the answer can't come from here" });
     expect(w.report("started")).toEqual([]);
     // The phone's signed approve: the agent starts and the turn the phone's prompt asked for runs.
-    expect(await p.answer(w, card, "approve")).toBe("accepted");
+    expect(await p.answer(w, card, "approve")).toEqual({ accepted: true });
     await waitFor(() => w.report("started")[0], "the agent starting");
     await waitFor(() => w.host.history(session).some((r) => r.type === "turn_ended") || undefined, "the turn's end");
   });
@@ -75,9 +79,36 @@ describe("a phone's start in a folder the computer has never run a session in", 
     const { w, p, start } = await make({ sandbox: "none", script: [[{ say: "never" }]] });
     const { session } = await start(p.caller("android"), {});
     const card = await waitFor(() => w.approvals.cards()[0], "the OK card");
-    expect(await p.answer(w, card, "deny")).toBe("accepted");
+    expect(await p.answer(w, card, "deny")).toEqual({ accepted: true });
     await waitFor(() => w.host.get(session)?.status === "stopped" || w.host.get(session)?.status === "failed" || w.host.history(session).some((r) => r.type === "turn_ended") || undefined, "the start ending");
     expect(w.report("started")).toEqual([]);
+  });
+});
+
+describe("the cards a phone's start raises are the desktop's", () => {
+  /** A card without what differs by session and moment: its id, hash, session, its time and the pieces derived from them. */
+  const shape = (c: { [k: string]: unknown }) => JSON.parse(JSON.stringify({ ...c, id: undefined, hash: undefined, session: undefined, createdAt: undefined, expiresAt: undefined, at: undefined, ts: undefined, options: (c.options as { id: string }[]).map((o) => ({ ...o, id: undefined })) }));
+
+  test("the no-sandbox OK (an agent MOSS can't count on, asked once per version and computer): the same card, word for word, from either", async () => {
+    const seen: unknown[] = [];
+    for (const who of ["desktop", "phone"] as const) {
+      const { w, p, start } = await make({ sandbox: "none", script: [[{ say: "x" }]] });
+      await start(who === "desktop" ? DESKTOP : p.caller(), {});
+      const card = await waitFor(() => w.approvals.cards()[0], "the OK card");
+      seen.push(shape(card as never));
+      await world?.close();
+      world = undefined;
+    }
+    expect(seen[1]).toEqual(seen[0]);
+    expect(seen[0]).toMatchObject({ kind: "change", change: "agent-unsandboxed" });
+  });
+
+  test("an agent MOSS counts on (its own sandbox admitted) raises no card from either, and both sessions run", async () => {
+    const { w, p, start } = await make({ script: [[{ say: "one" }], [{ say: "two" }]] });
+    const a = await start(DESKTOP, {});
+    const b = await start(p.caller(), {});
+    await waitFor(() => w.host.history(a.session).some((r) => r.type === "turn_ended") && w.host.history(b.session).some((r) => r.type === "turn_ended") || undefined, "both turns' ends");
+    expect(w.approvals.cards()).toEqual([]);
   });
 });
 

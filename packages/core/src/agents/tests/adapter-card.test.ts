@@ -211,8 +211,8 @@ describe("a phone's start", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(s.reg.asked).toEqual([]);
     // The app's sealed frame is not the phone's answer; the phone answers with its answer key's signature.
-    expect(await s.w.approvals.answer(card.id, { optionId: card.options.find((o) => o.kind === "approve")!.id, hash: card.hash, proof: { via: "sealed-frame", frame: "forged", input: "click", at: s.w.clock.now() } }, { role: "remote", device: p.phone.id })).toBe("bad-origin");
-    expect(await p.answer(s.w, card, "approve")).toBe("accepted");
+    expect(await p.answer(s.w, card, "approve", undefined, { via: "sealed-frame", frame: "forged", input: "click", at: s.w.clock.now() })).toEqual({ accepted: false, reason: "the answer can't come from here" });
+    expect(await p.answer(s.w, card, "approve")).toEqual({ accepted: true });
     await waitFor(() => s.w.host.history(session).some((r) => r.type === "turn_ended") || undefined, "the turn's end");
     expect(s.reg.asked.sort()).toEqual([tarballUrl(FAKE_REGISTRY, "@fake/claude-adapter", "1.0.0"), tarballUrl(FAKE_REGISTRY, "zod", "4.6.7")]);
     expect(s.w.host.get(session)).toMatchObject({ kind: "coding", backend: "claude-code" });
