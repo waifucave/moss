@@ -41,7 +41,11 @@ $rp.WaitForExit()
 if ($null -eq $accountGone -and -not (Get-LocalUser -Name $first -ErrorAction SilentlyContinue)) { $accountGone = $rsw.Elapsed.TotalSeconds }
 Get-Content $rOut, $rErr | Where-Object { $_ -ne "" } | Write-Output
 Write-Output ("remove round 1: exit {0} in {1:N1} s; marker gone at {2} s, {3} gone at {4} s" -f $rp.ExitCode, $rsw.Elapsed.TotalSeconds, $markerGone, $first, $accountGone)
-if ($rp.ExitCode -ne 0) { throw "remove round 1 exited $($rp.ExitCode)" }
+if ($rp.ExitCode -ne 0) {
+  Write-Output "pool account processes now: $((PoolProcs | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')"
+  Write-Output "the held command's caller: $(if ($hold.HasExited) { "exited $($hold.ExitCode)" } else { 'still running' }); result file: $(Test-Path -LiteralPath $holdOut)"
+  throw "remove round 1 exited $($rp.ExitCode)"
+}
 if ($null -eq $markerGone -or $null -eq $accountGone -or $markerGone -gt $accountGone) { throw "the marker was not gone before the first account (marker $markerGone s, account $accountGone s)" }
 if ($rsw.Elapsed.TotalSeconds -ge 180) { throw "remove waited the held command out ($([int]$rsw.Elapsed.TotalSeconds) s) instead of ending it" }
 $after = PoolProcs

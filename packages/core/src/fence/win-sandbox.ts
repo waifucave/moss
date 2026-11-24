@@ -178,7 +178,9 @@ export function statusArgs(launcher: string, sublayer: string): readonly string[
 export function endAccountProcessesArgs(principal: string): readonly string[] {
   if (!/^moss-sb-[0-9a-f]{6}-(?:[1-9][0-9]?|e)$/.test(principal)) throw new Error(`not a pool account: ${principal}`);
   return psEncodedArgs([
-    `$who = "$env:COMPUTERNAME\\${principal}"`,
+    // The machine's name from .NET, never `$env:COMPUTERNAME`: moss-core runs its children with a minimal
+    // environment, where that variable isn't set.
+    `$who = [Environment]::MachineName + "\\${principal}"`,
     `$ps = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,
     `foreach ($p in $ps) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }`,
     `$left = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -eq $who })`,

@@ -931,7 +931,8 @@ describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
   test("ending an account's processes names exactly that pool account, never a pattern", () => {
     for (const p of ["moss-sb-3d34c3-1", "moss-sb-3d34c3-e", "moss-sb-abcdef-12"]) {
       const script = decode(endAccountProcessesArgs(p));
-      expect(script).toContain(`$who = "$env:COMPUTERNAME\\${p}"`);
+      expect(script).toContain(`$who = [Environment]::MachineName + "\\${p}"`);
+      expect(script).not.toContain("$env:");
       expect(script).toContain("$_.UserName -eq $who");
       expect(script).toContain("Stop-Process -Id $p.Id -Force");
       expect(script).toContain("exit 4");

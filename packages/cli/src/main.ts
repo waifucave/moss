@@ -1992,7 +1992,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
          *  fails, saying to stop MOSS first). No pool state (removed already): `free`, nothing can hold it. */
         const memberLock = async (principal: string): Promise<{ release(): void } | "free" | "held"> => {
           const ended = await run([...endAccountProcessesArgs(principal)]);
-          if (ended.code !== 0) console.error(`sandbox remove: ${principal}: its processes couldn't all be ended (${ended.out.trim().slice(0, 300)})`);
+          console.error(`sandbox remove: ${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
           if (locks === null) return "free";
           for (let i = 0; i < 360; i++) {
             const g = locks.tryLock(poolStateFiles(poolDir, principal).lock);
