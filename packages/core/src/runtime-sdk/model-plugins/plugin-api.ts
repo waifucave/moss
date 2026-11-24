@@ -232,26 +232,31 @@ export function modelPluginApiHandlers(opts: ModelPluginApiOptions): ApiHandlers
         if (!mayUseWaifucaveAuth(ctx.record.id, url, ctx.process, opts.waifucaveTarget?.() ?? undefined)) {
           throw new ContractError("refused", "the waifucave account token goes only with MOSS's own plugins' requests to https waifucave.com hosts");
         }
+        // The manifest's own hosts first: nothing is minted for a waifucave host the plugin doesn't list.
+        if (!declaredHost(ctx.record, url)) throw Object.assign(new Error("that host isn't on the plugin's network list"), { code: "host_not_declared" });
         const audience = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
         const source = opts.accountTokens?.();
         const first = source === undefined ? null : await source.current(audience);
         if (source === undefined || first === null) throw noAccount();
+        // Masked in what this request hands back: the plugin's own keys and the tokens this request sent, never kept past it
+        // (a token lives at most five minutes; holding each one for the plugin's life would grow without end).
+        const masked = new Set(keys);
         const tokens = noteKeys({
           current: async () => ({ value: first.value.reveal(), generation: first.generation }),
           newer: async (generation) => {
             const t = await source.newer(generation, audience);
             return t === null ? null : { value: t.value.reveal(), generation: t.generation };
           },
-        }, keys);
+        }, masked);
         const accountFetch = createKeyedFetch({
           hosts: networkHostsOf(ctx.record), auth: { [WAIFUCAVE_AUTH]: { source: tokens } },
           fetch: withThisComputer(ctx.record, opts.fetch ?? pinnedFetch(), opts.loopbackFetch ?? LOOPBACK_FETCH),
           ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: clampKeyedIdleTimeoutMs(opts.idleTimeoutMs) } : {}),
         });
         try {
-          return maskResponse(await accountFetch(url, keyedInit(init), { ...fetchOpts, auth: WAIFUCAVE_AUTH }), keys);
+          return maskResponse(await accountFetch(url, keyedInit(init), { ...fetchOpts, auth: WAIFUCAVE_AUTH }), masked);
         } catch (err) {
-          throw maskError(err, keys);
+          throw maskError(err, masked);
         }
       }
       // The user pointed this plugin's provider at an endpoint of their own: a request to that origin (the provider's API

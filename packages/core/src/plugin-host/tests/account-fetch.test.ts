@@ -66,6 +66,7 @@ describe("the account token in a plugin's keyed fetch", () => {
     expect(await r.text()).toBe("ok");
   });
 
+
   test("after a 401 a newer token is minted for the same host and the request tried once more", async () => {
     const w = world();
     w.setAnswer((n) => new Response(null, { status: n === 1 ? 401 : 204 }));
@@ -95,6 +96,9 @@ describe("the account token in a plugin's keyed fetch", () => {
       ["moss/push", "http://push.waifucave.com/v1/notify", "moss"],
       ["moss/push", "https://u:p@push.waifucave.com/v1/notify", "moss"],
     ];
+    // The right suffix but not on its network list: refused by the manifest's hosts, before anything is minted.
+    const unlisted = await w.call("moss/push", "https://hooks.waifucave.com/v1/next").then(() => undefined, (e: unknown) => e as { code?: string });
+    expect(unlisted?.code).toBe("host_not_declared");
     for (const [plugin, url, process] of cases) {
       const err = await w.call(plugin, url, process).then(() => undefined, (e: unknown) => e as { code?: string });
       expect([plugin, url, process, err?.code]).toEqual([plugin, url, process, "refused"]);
