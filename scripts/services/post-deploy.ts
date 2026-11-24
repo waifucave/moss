@@ -7,7 +7,7 @@
 //       only our Worker would give) and says pass or fail for each. Exit 1 when one fails.
 //
 // Names come from the same environment as deploy.ts (services/deploy.env.example); no secret is read or printed.
-import { loadEnvFile, resolveSettings, type Env } from "./lib";
+import { defaultWebLabel, loadEnvFile, resolveSettings, type Env } from "./lib";
 import { BUILT_IN_ADDRESSES, PARKED_PLUGINS, SERVICES, type ServiceId, type Settings, type SmokeSpec } from "./manifest";
 
 export interface Io {
@@ -23,7 +23,7 @@ export interface SmokeResult {
   detail: string;
 }
 
-export function addresses(s: Settings): Record<keyof typeof BUILT_IN_ADDRESSES, string> {
+export function addresses(s: Settings): { accounts: string; hooks: string; push: string; handshake: string; web: string } {
   return {
     accounts: s.issuer,
     hooks: `https://${s.hosts.hooks}`,
@@ -36,7 +36,8 @@ export function addresses(s: Settings): Record<keyof typeof BUILT_IN_ADDRESSES, 
 export function settingsReport(s: Settings, domainGiven: boolean): string[] {
   const a = addresses(s);
   const lines: string[] = [];
-  const same = (Object.keys(BUILT_IN_ADDRESSES) as (keyof typeof BUILT_IN_ADDRESSES)[]).every((k) => a[k] === BUILT_IN_ADDRESSES[k].url);
+  const builtIn: Record<keyof typeof a, string> = { ...Object.fromEntries(Object.entries(BUILT_IN_ADDRESSES).map(([k, v]) => [k, v.url])), web: `https://${defaultWebLabel()}.waifucave.com` } as Record<keyof typeof a, string>;
+  const same = (Object.keys(a) as (keyof typeof a)[]).every((k) => a[k] === builtIn[k]);
   lines.push("deployed addresses");
   for (const k of Object.keys(a) as (keyof typeof a)[]) lines.push(`  ${k.padEnd(10)} ${a[k]}`);
   lines.push("");
@@ -52,7 +53,7 @@ export function settingsReport(s: Settings, domainGiven: boolean): string[] {
     lines.push("  2. these are NOT the addresses built into today's builds (a release build ignores the environment, on purpose), so:");
     lines.push("     - a dev or test build: MOSS_ACCOUNT_SERVICE_URL, MOSS_HANDSHAKE_URL in its environment;");
     lines.push("     - a release build: change the built-in addresses and rebuild. They are in");
-    for (const f of [...new Set(Object.values(BUILT_IN_ADDRESSES).map((v) => v.file))]) lines.push(`         ${f}`);
+    for (const f of [...new Set([...Object.values(BUILT_IN_ADDRESSES).map((v) => v.file), "plugins/moss/plugins/companion-web/host/index.ts"])]) lines.push(`         ${f}`);
     lines.push("       plus packages/core/src/links/handshake.ts (HANDSHAKE_AUDIENCE), packages/core/src/routines/engine.ts (the webhook base),");
     lines.push("       the push and forwarder plugins' host/index.ts (DEFAULT_ORIGIN) and the `network:` lines in their moss.json;");
     lines.push("       the token audiences are the Workers' host names, so the engine and the Workers must name the same ones.");

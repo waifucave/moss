@@ -23,13 +23,13 @@ only (secrets already in Cloudflare stay). `--strict` makes the dry run fail whi
 
 | # | Service | Worker | Where | Why here |
 |---|---|---|---|---|
-| 1 | `services/accounts` | `clover-accounts` | `<domain>/auth/*` (or a host of its own) | the others bind to it (Cloudflare refuses a service binding to a Worker that does not exist) and fetch its public keys on their first request |
-| 2 | `services/handshake` | `clover-handshake` | `handshake.<domain>` | after accounts |
-| 3 | `services/push` | `clover-push` | `push.<domain>` | after accounts |
-| 4 | `services/forwarder` | `clover-forwarder` | `hooks.<domain>` | after accounts |
-| 5 | `services/web` | `clover-web` | `clover.<domain>` | after the handshake: its `/config.json` points at it (the handshake's `WEB_ORIGINS` names this host, which does not need to exist yet) |
-| - | `services/relay` | `clover-relay` | the user's own `workers.dev` address | NOT in the owner's deploy: each user runs it in their own Cloudflare account (spec §8.3); `--only relay` with `MOSS_RELAY_ORIGIN` and `MOSS_RELAY_KEY` |
-| - | `services/hello` | `clover-hello` | never | the layout's example and the emulator's smoke test |
+| 1 | `services/accounts` | (its `env.production.name`) | `<domain>/auth/*` (or a host of its own) | the others bind to it (Cloudflare refuses a service binding to a Worker that does not exist) and fetch its public keys on their first request |
+| 2 | `services/handshake` | (its `env.production.name`) | `handshake.<domain>` | after accounts |
+| 3 | `services/push` | (its `env.production.name`) | `push.<domain>` | after accounts |
+| 4 | `services/forwarder` | (its `env.production.name`) | `hooks.<domain>` | after accounts |
+| 5 | `services/web` | (its `env.production.name`) | `<web label>.<domain>` (the label services/web/wrangler.jsonc names) | after the handshake: its `/config.json` points at it (the handshake's `WEB_ORIGINS` names this host, which does not need to exist yet) |
+| - | `services/relay` | (its `env.production.name`) | the user's own `workers.dev` address | NOT in the owner's deploy: each user runs it in their own Cloudflare account (spec §8.3); `--only relay` with `MOSS_RELAY_ORIGIN` and `MOSS_RELAY_KEY` |
+| - | `services/hello` | (its `env.production.name`) | never | the layout's example and the emulator's smoke test |
 
 `services/shared` is not a Worker: the Workers bundle it.
 
@@ -43,7 +43,7 @@ It never edits the committed ones.
 | Service | One line | Durable Objects | Variables (by name) | Secrets | Bindings besides |
 |---|---|---|---|---|---|
 | accounts | account sign-in sessions in, short account tokens out; each account's device list; publishes the keys the others check tokens against | `AccountDO` (`ACCOUNTS`), `KeysDO` (`KEYS`, local keys only) | `ISSUER`, `PATH_PREFIX`, `AUTH_URL`, `AUTH_ANON_KEY`, `AUDIENCES`, `TOKEN_TTL?`; local profile only: `EPHEMERAL_KEYS`, `DEV_MINT` (never in production) | `SIGNING_JWKS` | rate limits `ADDRESS_RATE`, `API_RATE` |
-| handshake | introduces devices to each other (pair, short code, dial-now, WebRTC signalling, all sealed between them), holds the main computer's lease | `HandshakeDO`, `RendezvousDO` | `ACCOUNT_ISSUER`, `ACCOUNT_JWKS_URL`, `HANDSHAKE_AUDIENCE`, `HANDSHAKE_ORIGIN`, `WEB_ORIGINS` | `TICKET_SECRET` | service binding `ACCOUNT_SERVICE` to `clover-accounts`; `REGISTER_RATE`, `API_RATE`, `ADDRESS_RATE` |
+| handshake | introduces devices to each other (pair, short code, dial-now, WebRTC signalling, all sealed between them), holds the main computer's lease | `HandshakeDO`, `RendezvousDO` | `ACCOUNT_ISSUER`, `ACCOUNT_JWKS_URL`, `HANDSHAKE_AUDIENCE`, `HANDSHAKE_ORIGIN`, `WEB_ORIGINS` | `TICKET_SECRET` | service binding `ACCOUNT_SERVICE` to the accounts Worker; `REGISTER_RATE`, `API_RATE`, `ADDRESS_RATE` |
 | push | the content-free "you have N updates" push to phones (APNs) and browsers (Web Push) | `PushDO` | `ACCOUNT_ISSUER`, `ACCOUNT_JWKS_URL`, `PUSH_AUDIENCE`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_TOPIC_MOSS`, `APNS_TOPIC_CODE`, `APNS_PRODUCTION_ORIGIN`, `APNS_SANDBOX_ORIGIN`, `VAPID_SUBJECT`, `VAPID_PUBLIC_KEY`, `WEBPUSH_HOSTS`, `MAX_TARGETS` | `APNS_PRIVATE_KEY`, `VAPID_PRIVATE_KEY` | service binding `ACCOUNT_SERVICE`; `NOTIFY_RATE`, `API_RATE` |
 | forwarder | takes routines' webhooks, seals them to the account's computers, holds them 7 days | `ForwarderDO` | `ACCOUNT_ISSUER`, `ACCOUNT_JWKS_URL`, `HOOKS_AUDIENCE`, `HOOKS_ORIGIN`, `HOLD_DAYS` and the `MAX_*` limits | `TAG_KEYS`, `ACCOUNT_ID_KEY`, `TICKET_SECRET` | service binding `ACCOUNT_SERVICE`; `HOOK_RATE`, `API_RATE`, `TAG_RATE`, `CHECK_RATE` |
 | web | the web companion's page and its `/config.json` | none | `HANDSHAKE_ORIGIN`, `ALLOWED_HANDSHAKES` | none | static assets (`dist/`, built by `bun scripts/build.ts` first) |

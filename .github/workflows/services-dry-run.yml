@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: services-dry-run-${{ github.ref }}
@@ -40,6 +41,8 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: The deploy script's tests (fixtures; includes wrangler's dry run of every service)
         run: bun test scripts/services/services-deploy.test.ts

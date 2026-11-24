@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, type Io, type RunResult } from "./deploy";
-import { generateSecret, nameStates, orderServices, parseEnvFile, parseJsonc, renderConfig, resolveSettings, settingsProblems, REPO_ROOT } from "./lib";
+import { defaultWebLabel, generateSecret, nameStates, orderServices, parseEnvFile, parseJsonc, renderConfig, resolveSettings, settingsProblems, workerName, REPO_ROOT } from "./lib";
 import { BUILT_IN_ADDRESSES, ENV_NAMES, SERVICES } from "./manifest";
 import { main as postDeploy, settingsReport, smoke } from "./post-deploy";
 
@@ -57,8 +57,7 @@ describe("the files agree", () => {
     for (const spec of SERVICES) {
       const config = parseJsonc(read(`${spec.dir}/wrangler.jsonc`)) as { env: { production: { name: string; vars: Record<string, string>; services?: { service: string }[] } } };
       const prod = config.env.production;
-      expect(prod.name).toBe(spec.worker);
-      const computed = Object.keys(spec.vars(resolveSettings(fixtureEnv())));
+            const computed = Object.keys(spec.vars(resolveSettings(fixtureEnv())));
       for (const k of computed) expect(Object.keys(prod.vars)).toContain(k);
       // Every required string field of the Worker's Env is a production variable or a secret the manifest puts.
       const envTs = read(existsSync(join(REPO_ROOT, spec.dir, "src/env.ts")) ? `${spec.dir}/src/env.ts` : `${spec.dir}/src/worker.ts`);
@@ -67,13 +66,14 @@ describe("the files agree", () => {
       for (const f of required) expect(Object.keys(prod.vars).concat(secrets)).toContain(f);
       for (const s of secrets) expect(envTs).toContain(`${s}`);
       // The service binding points at the accounts Worker.
-      for (const b of prod.services ?? []) expect(b.service).toBe(accounts.worker);
+      for (const b of prod.services ?? []) expect(b.service).toBe(workerName(REPO_ROOT, accounts));
       // A computed variable that the owner supplies is empty (or a placeholder) in the committed profile, never a live value.
     }
   });
 
   test("the addresses the engine has built in are the ones post-deploy compares against", () => {
     for (const { url, file } of Object.values(BUILT_IN_ADDRESSES)) expect(read(file)).toContain(url);
+    expect(read("plugins/moss/plugins/companion-web/host/index.ts")).toContain(`https://${defaultWebLabel()}.waifucave.com`);
   });
 
   test("the secret and variable names the manifest lists for push exist in the push Worker's Env", () => {
@@ -99,7 +99,7 @@ describe("rendering and order", () => {
     expect(accounts.main.startsWith("/")).toBe(true);
     const web = renderConfig(REPO_ROOT, SERVICES.find((x) => x.id === "web")!, s).config as { assets: { directory: string }; routes: unknown[] };
     expect(web.assets.directory).toBe(join(REPO_ROOT, "services/web/dist"));
-    expect(web.routes).toEqual([{ pattern: "clover.example.test", custom_domain: true }]);
+    expect(web.routes).toEqual([{ pattern: `${defaultWebLabel()}.example.test`, custom_domain: true }]);
   });
 
   test("an accounts host of its own drops the path prefix", () => {
@@ -154,9 +154,11 @@ describe("the dry run", () => {
       expect(r.env.HOME).not.toBe(process.env.HOME);
     }
     const order = [...text.matchAll(/^\s+(\d)\. (\w+)  ->  Worker (\S+)/gm)].map((m) => `${m[1]}:${m[2]}:${m[3]}`);
-    expect(order).toEqual(["1:accounts:clover-accounts", "2:handshake:clover-handshake", "3:push:clover-push", "4:forwarder:clover-forwarder", "5:web:clover-web"]);
+    const names = SERVICES.filter((x) => x.group === "default").map((x) => `${x.id}:${workerName(REPO_ROOT, x)}`);
+    expect(order.map((o) => o.slice(2))).toEqual(["accounts", "handshake", "push", "forwarder", "web"].map((id) => names.find((n) => n.startsWith(`${id}:`))!));
+    expect(order.map((o) => o[0])).toEqual(["1", "2", "3", "4", "5"]);
     expect(text).toContain("why here: after accounts");
-    expect(text).toContain("clover.example.test (custom domain)");
+    expect(text).toContain(`${defaultWebLabel()}.example.test (custom domain)`);
     expect(text).toContain("every required name is set");
     expect(text).not.toContain(SENTINEL);
     expect(text).not.toContain("fixture-");
@@ -271,7 +273,7 @@ describe("post-deploy", () => {
     const other = settingsReport(resolveSettings({ MOSS_SERVICES_DOMAIN: "example.test" }), true).join("\n");
     expect(other).toContain("NOT the addresses built into today's builds");
     expect(other).toContain("packages/core/src/identity/account-config.ts");
-    expect(other).toContain("https://clover.example.test");
+    expect(other).toContain(`https://${defaultWebLabel()}.example.test`);
   });
 
   test("the smoke check passes live-looking Workers and fails an absent route, an empty key set and a private key", async () => {

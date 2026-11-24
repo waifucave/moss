@@ -81,8 +81,6 @@ export interface SecretSpec {
 export interface ServiceSpec {
   id: ServiceId;
   dir: string;
-  /** `env.production.name` in its wrangler.jsonc. */
-  worker: string;
   summary: string;
   /** `default`: part of the owner's deploy. `own-account`: each user runs it in their own Cloudflare account, so the owner's deploy leaves it out unless named with --only. */
   group: "default" | "own-account";
@@ -112,7 +110,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "accounts",
     dir: "services/accounts",
-    worker: "clover-accounts",
     summary: "account sign-in sessions in, short account tokens out; each account's device list; publishes the keys the other Workers check tokens against",
     group: "default",
     after: [],
@@ -134,7 +131,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "handshake",
     dir: "services/handshake",
-    worker: "clover-handshake",
     summary: "introduces two devices to each other (pairing, the short code, dial-now, WebRTC signalling, all sealed between them) and holds the main computer's lease",
     group: "default",
     after: ["accounts"],
@@ -153,7 +149,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "push",
     dir: "services/push",
-    worker: "clover-push",
     summary: "the content-free push: an empty \"you have N updates\" to the account's phones (APNs) and browsers (Web Push); never sees what happened",
     group: "default",
     after: ["accounts"],
@@ -176,7 +171,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "forwarder",
     dir: "services/forwarder",
-    worker: "clover-forwarder",
     summary: "takes routines' webhooks, seals them to the account's computers on arrival and holds them (7 days) until the routine's computer fetches them",
     group: "default",
     after: ["accounts"],
@@ -198,7 +192,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "web",
     dir: "services/web",
-    worker: "clover-web",
     summary: "the web companion's page (a browser pairs with a computer through the handshake, then talks to it over WebRTC)",
     group: "default",
     after: ["handshake"],
@@ -212,7 +205,6 @@ export const SERVICES: readonly ServiceSpec[] = [
   {
     id: "relay",
     dir: "services/relay",
-    worker: "clover-relay",
     summary: "the user's own relay: carries a link's end-to-end encrypted frames between two of their devices and keeps sealed sync mail for an away one",
     group: "own-account",
     after: [],
@@ -235,7 +227,6 @@ export const BUILT_IN_ADDRESSES = {
   hooks: { url: "https://hooks.waifucave.com", file: "packages/core/src/devices/account-devices.ts" },
   push: { url: "https://push.waifucave.com", file: "packages/core/src/devices/account-devices.ts" },
   handshake: { url: "https://handshake.waifucave.com", file: "packages/core/src/devices/account-devices.ts" },
-  web: { url: "https://clover.waifucave.com", file: "plugins/moss/plugins/companion-web/host/index.ts" },
 } as const;
 
 /** The plugins that stay "not yet" in the product until a service exists (docs/devices-map.md has the same table). */
