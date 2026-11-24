@@ -38,6 +38,10 @@ getrandom = "=0.4.3"
 ryu-js = "=1.0.4"
 zeroize = "=1.9.1"
 thiserror = "=2.0.21"
+# libc 0.2.191 (the sidecar's) hides net/route.h's constants and `in6_ifreq` on iOS, so iroh's netwatch 0.19.3 and
+# netdev 0.46.3 don't build for the iPhone; 0.2.189 still has them for every Apple target. Pinned here only (the
+# desktop sidecar keeps its own lockfile); lift it once a netwatch release builds against a newer libc on iOS.
+libc = "=0.2.189"
 
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["full"] }
@@ -48,7 +52,3 @@ debug = false
 codegen-units = 16
 lto = false
 
-# netdev 0.46.3 (iroh 1.4.1 → netwatch 0.19.3) doesn't build for iOS with libc 0.2.191: a one-function patch,
-# this crate only (vendor/README.md). The desktop sidecar keeps the crate as published.
-[patch.crates-io]
-netdev = { path = "vendor/netdev" }
