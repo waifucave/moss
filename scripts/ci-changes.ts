@@ -81,6 +81,10 @@ const READ_BY_SCRIPTSMAC: readonly Pattern[] = [
   // the helper embed test reads the helper's own version, the Cowork bundle tests its pins and sources, the runtimes test the pins file and the core's runtime-sdk
   "VERSIONS.json", "apple/ComputerUse/VERSION", "apple/Cowork/", "apple/Winter/project.yml", "packages/cli/src/", "packages/core/src/", "packages/core/test/cowork/",
 ];
+const READ_BY_WORKSPACES: readonly Pattern[] = [
+  // apps/desktop's file-log test reads the acceptance's evidence list and scans the steps' literal log needles (scripts/acceptance/*.ts)
+  "scripts/acceptance/",
+];
 const READ_BY_MACHINE: readonly Pattern[] = ["docs/live-gates/", "native/input/macos/screen.mm"];
 const READ_BY_EXTENSION: readonly Pattern[] = ["packages/core/src/computer-use/browser/"];
 
@@ -91,7 +95,7 @@ const CORE: readonly Pattern[] = ["packages/core/", "packages/protocol/", "packa
 export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // every workspace package's own tests, on all four machines
   // (the iPhone apps and the phone core are no workspace packages: they have their own workflows, so they take no machine here)
-  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh", ...READ_BY_MACHINE],
+  workspaces: ["packages/", "apps/desktop/", "apps/moss/", "apps/*/package.json", "plugins/", "services/", "native/*/package.json", "examples/", "spikes/", "scripts/workspaces.ts", "scripts/with-private-secret-service.sh", ...READ_BY_WORKSPACES, ...READ_BY_MACHINE],
   daemon: [...CORE, "packages/cli/", "scripts/build-daemon.ts", "scripts/seal-bun-doors.ts", "scripts/verify-sealed-core.ts", "scripts/moss-core.entitlements", ...READ_BY_MACHINE],
   // the app, and what it loads: MOSS's own plugins and the plugin SDK's UI API (E-M1)
   app: ["apps/desktop/", "apps/moss/", "plugins/moss/", "packages/plugin-sdk/", "packages/app-release/", ...READ_BY_MACHINE],

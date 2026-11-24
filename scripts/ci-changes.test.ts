@@ -419,11 +419,11 @@ describe("the path-to-area map", () => {
     { name: "the native helpers", files: ["native/sandbox/windows-probe.cs", "native/input/macos/Package.swift", "native/link-sidecar/src/main.rs"], areas: ["scripts"], units: [] },
     { name: "the link sidecar", files: ["native/link/src/main.rs"], areas: ["packages", "link"], units: [] },
     // The harness and its steps: a test file starts none, a step file its own unit, anything shared every unit.
-    { name: "a test of the acceptance harness", files: ["scripts/acceptance/sealed-press.test.ts"], areas: ["typecheck", "corelinux", "scripts"], units: [] },
-    { name: "one unit's step file", files: ["scripts/acceptance/canvas-step.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: ["canvas"] },
-    { name: "the acceptance driver", files: ["scripts/acceptance/run.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
-    { name: "the window's steps", files: ["scripts/acceptance/ui-steps.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
-    { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "a test of the acceptance harness", files: ["scripts/acceptance/sealed-press.test.ts"], areas: ["workspaces", "typecheck", "corelinux", "scripts"], units: [] },
+    { name: "one unit's step file", files: ["scripts/acceptance/canvas-step.ts"], areas: ["workspaces", "typecheck", "corelinux", "scripts", "acceptance"], units: ["canvas"] },
+    { name: "the acceptance driver", files: ["scripts/acceptance/run.ts"], areas: ["workspaces", "typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "the window's steps", files: ["scripts/acceptance/ui-steps.ts"], areas: ["workspaces", "typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
+    { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["workspaces", "typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     { name: "the unit runner", files: ["scripts/ci/acceptance-unit.ts"], areas: ["typecheck", "corelinux", "scripts", "acceptance"], units: "all" },
     // CI's own scripts take no macOS leg of the scripts' darwin tests: none reads them.
     { name: "the lane script", files: ["scripts/ci/lane"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "lockfiles", "extension", "core", "corelinux", "windows", "cli", "scripts", "scriptsmac", "codegen", "verify", "tree", "link", "linuxrepo", "adapters", "acceptance"], units: "all" },
