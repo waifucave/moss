@@ -1,6 +1,6 @@
 import { ReadElements } from "./approvals/browser-words";
 import { homeEraseMethods } from "./deletion/erase-rpc";
-import { eraseHome } from "./deletion/erase-home";
+import { dropMossOsItems, eraseHome } from "./deletion/erase-home";
 import { pluginToolContained, pluginToolReadOnly, pluginWebTool } from "./registry/read-only-tools";
 import { bundledManifest, bundledPluginsDir, loadBundledManifest, type BundledManifest } from "./bundled-plugins-dir";
 import { buildDevBundledPlugins, devBundledSource, stageBundledPlugins, stagedBotChoice, stagedBundledDir, stagedManifest } from "./registry/bundled-stage";
@@ -5322,7 +5322,10 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         }
       }
       try {
-        const out = await eraseHome({ home: mossHome, secrets: contractSecrets, log: (l) => console.error(l) });
+        // The OS store's other items of this home's service (tokens, inherited names, the file's key), only where the
+        // store is the real one (a test daemon's is in memory and its service a throwaway).
+        const realStore = opts.contractSecrets === undefined && opts.secrets === undefined;
+        const out = await eraseHome({ home: mossHome, secrets: contractSecrets, ...(realStore ? { dropOsItems: dropMossOsItems(keychainService(profile, home)) } : {}), log: (l) => console.error(l) });
         process.stderr.write(`[erase] erased ${out.home} and ${out.secrets} saved key(s)\n`);
       } catch (err) {
         process.stderr.write(`[erase] ${err instanceof Error ? err.message : "failed"}\n`);

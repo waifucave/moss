@@ -72,6 +72,11 @@ export function journalSessionDeletion(home: string, sessions: DeletedSession[])
   writeJournal(home, [...have, ...sessions.filter((s) => !have.some((h) => h.id === s.id))]);
 }
 
+/** Takes sessions off the journal without removing anything (their deletion was refused before it began). */
+export function unjournalSessions(home: string, ids: readonly string[]): void {
+  writeJournal(home, readJournal(home).filter((x) => !ids.includes(x.id)));
+}
+
 /** Removes a path as itself (a link is removed, never followed); absent is fine. */
 function removePath(path: string): void {
   try {

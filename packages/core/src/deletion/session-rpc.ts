@@ -5,7 +5,7 @@ import { SESSIONS_METHODS, type SessionView } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { handler, type CardOpener, type MethodHandler } from "../devices/rpc";
 import { byThePerson } from "./person";
-import { journalSessionDeletion, removeSessionFiles, type SessionFileDeps } from "./session-files";
+import { journalSessionDeletion, removeSessionFiles, unjournalSessions, type SessionFileDeps } from "./session-files";
 
 export interface SessionDeletionMethodsDeps {
   home: string;
@@ -39,7 +39,14 @@ export async function deleteSession(deps: SessionDeletionMethodsDeps, id: string
   const main = isMain(deps, v) ? v.bot : undefined;
   // The journal first: a stop from here on is finished at the next start.
   journalSessionDeletion(deps.home, [{ id, ...(v.bot === undefined ? {} : { bot: v.bot }), kind: v.kind }]);
-  const removed = await deps.host.remove(id);
+  let removed: { id: string; bot?: string; kind: string }[];
+  try {
+    removed = await deps.host.remove(id);
+  } catch (err) {
+    // Nothing of it was deleted: off the journal, so a start never removes a live session's files.
+    unjournalSessions(deps.home, [id]);
+    throw err;
+  }
   journalSessionDeletion(deps.home, removed);
   await removeSessionFiles({ home: deps.home, ...(deps.files ?? {}), ...(deps.log ? { log: deps.log } : {}) }, removed);
   for (const s of removed) deps.bots?.sessionRemoved(s.id);

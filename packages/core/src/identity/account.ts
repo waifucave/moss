@@ -31,6 +31,8 @@ import { randomBytes, toBase64Url, utf8 } from "./bytes";
 import type { DeviceKey } from "./device-key";
 
 export const ACCOUNT_SESSION_REF: SecretRef = { owner: { kind: "device" }, name: "account:session" };
+/** The account deletion's marker (account-deletion.ts): a device item, never synced, never in a file a plugin could write. */
+export const ACCOUNT_DELETION_REF: SecretRef = { owner: { kind: "device" }, name: "account:deletion" };
 
 export type AccountProvider = "email" | "discord" | "google";
 
@@ -53,6 +55,8 @@ export const leaveStatement = (account: string, device: string, t: number): Uint
 /** The account deletion's steps at the services, as the account service names them; each one it hasn't confirmed yet
  *  it retries on its own. */
 export type AccountDeletionStep = "hooks" | "push" | "handshake" | "sign-in";
+/** Why the account ended here without a sign-out (`whenEnded`). */
+export type AccountEnd = "deleted" | "sign-in-refused";
 export interface AccountDeletion {
   deletedAt: number;
   pending: AccountDeletionStep[];
@@ -103,7 +107,7 @@ export class AccountClient {
   readonly #o: AccountClientOptions;
   readonly #fetch: (req: Request) => Promise<Response>;
   readonly #listeners = new Listeners<AccountView>();
-  readonly #ends = new Listeners<"deleted">();
+  readonly #ends = new Listeners<AccountEnd>();
   #session: StoredSession | null | undefined;
   #refreshing: Promise<StoredSession | null> | undefined;
   #pending: { server: ReturnType<typeof Bun.serve>; timer: ReturnType<typeof setTimeout> } | undefined;
@@ -124,9 +128,11 @@ export class AccountClient {
     return this.#listeners.add(fn);
   }
 
-  /** The account ended without this device signing out: it was deleted, on another device (a 410 from the account
-   *  service). Told once, after the session here is gone; the daemon then removes what the account put here. */
-  whenEnded(fn: (why: "deleted") => void): Unsubscribe {
+  /** The account ended here without the person signing out: it was deleted on another device (a 410 from the account
+   *  service), or its sign-in was refused (the sign-in itself deleted, or ended at the project): either way the account
+   *  can't vouch for anything any more. Told once, after the session here is gone; the daemon then removes what the account
+   *  put here. */
+  whenEnded(fn: (why: AccountEnd) => void): Unsubscribe {
     return this.#ends.add(fn);
   }
 
@@ -259,6 +265,27 @@ export class AccountClient {
     return { deletedAt: d.deletedAt, pending: d.pending.filter((p): p is AccountDeletionStep => known.includes(p as AccountDeletionStep)) };
   }
 
+  /** The account deletion's marker, kept as a device item beside the session (account-deletion.ts). */
+  async deletionMark(): Promise<{ account: string; askedAt: number; answeredAt?: number } | null> {
+    const v = await this.#o.store.get(ACCOUNT_DELETION_REF);
+    if (!v) return null;
+    try {
+      const m = JSON.parse(v.value.reveal()) as { account?: unknown; askedAt?: unknown; answeredAt?: unknown };
+      if (typeof m.account !== "string" || typeof m.askedAt !== "number") return null;
+      return { account: m.account, askedAt: m.askedAt, ...(typeof m.answeredAt === "number" ? { answeredAt: m.answeredAt } : {}) };
+    } catch {
+      return null;
+    }
+  }
+
+  async setDeletionMark(m: { account: string; askedAt: number; answeredAt?: number }): Promise<void> {
+    await this.#o.store.set(ACCOUNT_DELETION_REF, new Secret(JSON.stringify(m)), { synced: false });
+  }
+
+  async clearDeletionMark(): Promise<void> {
+    await this.#o.store.delete(ACCOUNT_DELETION_REF);
+  }
+
   /** Drops the session here (the account is gone): no logout call, since there is no account to sign out of. */
   async forgetSession(): Promise<void> {
     await this.#o.store.delete(ACCOUNT_SESSION_REF);
@@ -357,6 +384,7 @@ export class AccountClient {
           await this.#o.store.delete(ACCOUNT_SESSION_REF);
           this.#session = null;
           this.#listeners.emit({ signedIn: false });
+          this.#ends.emit("sign-in-refused");
           return null;
         }
         throw err;

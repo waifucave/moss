@@ -16,6 +16,9 @@ import { existsSync, lstatSync, readdirSync, realpathSync, rmdirSync, rmSync, un
 import { homedir } from "node:os";
 import { join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
+import { TOKEN_NAMES } from "../auth/tokens";
+import { osStoreItemNames } from "../secrets/file-backend";
+import { bunVault, type Vault } from "../secrets/moss-secret-store";
 import { otherInstallHome } from "../other-installs";
 import { receivedRootOf } from "../bots/staged-files";
 
@@ -70,13 +73,27 @@ export function recogniseMossHome(home: string, userHome: string = homedir()): H
   return { ok: true, real, ...(real !== given ? { link: given } : {}) };
 }
 
+/**
+ * MOSS's own items in the OS store beside the secret store's listed ones, under its service (`keychainService`): the
+ * daemon's tokens (`TOKEN_NAMES`) and the inherited names (`osStoreItemNames`) under the base service, and the secrets
+ * file's key under `<service>.key`. Each by name: `Bun.secrets` can't list. Never another service's.
+ */
+export function dropMossOsItems(service: string, vault: (service: string) => Pick<Vault, "delete"> = bunVault): () => Promise<void> {
+  return async () => {
+    const base = vault(service);
+    for (const name of new Set([...osStoreItemNames(), ...Object.values(TOKEN_NAMES)])) await base.delete(name).catch(() => undefined);
+    await vault(`${service}.key`).delete("secrets-file-key").catch(() => undefined);
+  };
+}
+
 export interface EraseDeps {
   home: string;
   userHome?: string;
   /** MOSS's own secrets: every item the store lists is deleted through it (the Keychain items of MOSS's service). */
   secrets?: { list(): Promise<SecretMeta[]>; delete(ref: SecretRef): Promise<unknown> };
-  /** Windows and Linux: the secrets file's key in the OS store (Credential Manager, the Secret Service). */
-  dropFileKey?(): Promise<void>;
+  /** MOSS's items in the OS store the secret store doesn't list: the daemon's own tokens and the items kept under the
+   *  base service by older builds, and (Windows, Linux) the secrets file's key (`dropMossOsItems`). */
+  dropOsItems?(): Promise<void>;
   log?(line: string): void;
 }
 
@@ -112,9 +129,9 @@ export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
     }
   }
   try {
-    await deps.dropFileKey?.();
+    await deps.dropOsItems?.();
   } catch {
-    deps.log?.("erase: the secrets file's key in the OS store couldn't be deleted");
+    deps.log?.("erase: some of MOSS's items in the OS keyring couldn't be deleted");
   }
   // Every entry removed as itself (rmSync never follows a link inside what it removes), then the folder, then the link
   // the home was given as.

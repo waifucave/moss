@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
-import { eraseHome, recogniseMossHome } from "../erase-home";
+import { dropMossOsItems, eraseHome, recogniseMossHome } from "../erase-home";
+import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
 import { homeEraseMethods } from "../erase-rpc";
 
@@ -100,7 +101,24 @@ describe("erase: what goes and what stays", () => {
     expect(readFileSync(join(w.outside, "keep.txt"), "utf8")).toBe("the person's file");
   });
 
-  test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
+  test("MOSS's items in the OS store the store doesn't list go too: the daemon's tokens, inherited names, the file's key; another service's stay", async () => {
+    const w = world();
+    const vaults = new Map<string, ReturnType<typeof memoryVault>>();
+    const vault = (service: string) => { if (!vaults.has(service)) vaults.set(service, memoryVault()); return vaults.get(service)!; };
+    const svc = "com.example.throwaway.erase";
+    await vault(svc).set("harness-token", "PROBE_SECRET=dummy123");
+    await vault(svc).set("admin-token", "dummy");
+    await vault(svc).set(osStoreItemNames()[0]!, "dummy");
+    await vault(`${svc}.key`).set("secrets-file-key", "dummy");
+    await vault("com.example.other").set("harness-token", "someone else's");
+    const store = new MossSecretStore({ home: w.home, values: new KeychainValues(vault(`${svc}.items`)), status: { backend: "memory", plaintext: false, state: "unlocked" } });
+    await store.set({ owner: { kind: "device" }, name: "device-key" }, new Secret("dummy"), { synced: false });
+    await eraseHome({ home: w.home, userHome: w.user, secrets: store, dropOsItems: dropMossOsItems(svc, vault) });
+    for (const s of [svc, `${svc}.items`, `${svc}.key`]) expect([s, vaults.get(s)!.items.size]).toEqual([s, 0]);
+    expect(vaults.get("com.example.other")!.items.size).toBe(1);
+  });
+
+    test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
     const w = world();
     const link = join(w.user, "moss-link");
     symlinkSync(w.home, link);

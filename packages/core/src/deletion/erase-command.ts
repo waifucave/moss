@@ -20,7 +20,7 @@ export interface EraseCommandEnv {
   out(line: string): void;
   err(line: string): void;
   openSecrets?: () => Promise<NonNullable<EraseDeps["secrets"]>>;
-  dropFileKey?: () => Promise<void>;
+  dropOsItems?: () => Promise<void>;
   /** Takes MOSS's login item away (`moss-core autostart remove`). */
   removeLoginItem?: () => Promise<void>;
 }
@@ -62,7 +62,7 @@ export async function runErase(env: EraseCommandEnv): Promise<number> {
     env.err("erase: MOSS's saved keys couldn't be opened; delete them by hand (see the help page)");
   }
   try {
-    const out = await eraseHome({ home: env.home, ...(env.userHome ? { userHome: env.userHome } : {}), ...(secrets ? { secrets } : {}), ...(env.dropFileKey ? { dropFileKey: env.dropFileKey } : {}), log: env.err });
+    const out = await eraseHome({ home: env.home, ...(env.userHome ? { userHome: env.userHome } : {}), ...(secrets ? { secrets } : {}), ...(env.dropOsItems ? { dropOsItems: env.dropOsItems } : {}), log: env.err });
     env.out(`Erased ${out.home} and ${out.secrets} saved key(s).${out.secretsLeft > 0 ? ` ${out.secretsLeft} couldn't be deleted: delete them by hand.` : ""}`);
     return 0;
   } catch (err) {

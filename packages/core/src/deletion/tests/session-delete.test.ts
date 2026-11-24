@@ -62,6 +62,20 @@ function named(root: string, needle: string): string[] {
   return out;
 }
 
+/** Every file under `root` whose contents name `needle`. */
+function contentsNaming(root: string, needle: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink()) walk(p);
+      else if (e.isFile() && readFileSync(p).includes(needle)) out.push(relative(root, p));
+    }
+  };
+  walk(root);
+  return out;
+}
+
 /** The files the writers keep beside a session, made where each writer makes them. */
 function writeSideFiles(home: string, id: string, outside: string): void {
   mkdirSync(join(home, "sessions-runtime"), { recursive: true });
@@ -110,9 +124,19 @@ describe("deleting a session", () => {
     expect(named(w.home, "c_other1112222").length).toBeGreaterThan(0);
     // No journal left behind.
     expect(existsSync(join(w.home, "transcripts", "deleting.json"))).toBe(false);
+    // Nor a file whose contents still name it.
+    await w.host.close();
+    for (const id of gone) expect([id, contentsNaming(w.home, id)]).toEqual([id, []]);
   });
 
-  test("a restart doesn't bring it back", async () => {
+  test("a session the host refuses to delete stays off the journal: a start never removes its files", async () => {
+    const w = world();
+    const failing = { ...w.deps, host: { get: () => ({ id: "c_gggg11112222", kind: "coding" }) as never, remove: async () => { throw new Error("busy"); } } };
+    await expect(deleteSession(failing, "c_gggg11112222")).rejects.toThrow("busy");
+    expect(existsSync(join(w.home, "transcripts", "deleting.json"))).toBe(false);
+  });
+
+    test("a restart doesn't bring it back", async () => {
     const w = world();
     w.host.open({ id: "c_bbbb11112222", kind: "coding", computer: "Studio" }, new FakeSessionDriver());
     await w.host.sendUser("c_bbbb11112222", { text: "hello", device: "studio000000000000", sentAt: w.clock.now(), clientMessageId: "m1" });

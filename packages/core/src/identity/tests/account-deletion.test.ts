@@ -14,7 +14,7 @@ import { FileDeviceRegistry } from "../../devices/registry";
 import { accountDeletionMethods } from "../../deletion/account-rpc";
 import type { CardOpener, MethodContext } from "../../devices/rpc";
 import { ACCOUNT_SESSION_REF, AccountClient } from "../account";
-import { ACCOUNT_DELETION_FILE, deleteAccount, resumeAccountDeletion } from "../account-deletion";
+import { deleteAccount, resumeAccountDeletion } from "../account-deletion";
 import { startFakeAccountService } from "../account-fake";
 import { BoxKey } from "../box-key";
 import { DeviceKey } from "../device-key";
@@ -72,7 +72,7 @@ describe("deleting the account", () => {
     // The laptop came in through the account alone: forgotten, not revoked (it can be paired again by code).
     expect(out.forgotten).toEqual([laptop.key.id]);
     expect(studio.registry.get(laptop.key.id)).toBeUndefined();
-    expect(existsSync(join(studio.home, ACCOUNT_DELETION_FILE))).toBe(false);
+    expect(await studio.account.deletionMark()).toBeNull();
     expect(existsSync(join(studio.home, "conversation.ndjson"))).toBe(true);
     expect(await studio.account.tokens.current("push.waifucave.com")).toBeNull();
   });
@@ -97,16 +97,37 @@ describe("deleting the account", () => {
     expect(ended).toBe(1);
   });
 
-  test("half done: a crash after the marker and before the answer is finished at the next start", async () => {
+  test("with the sign-in itself deleted (production), the other computer's refused refresh ends the account there too: its account-only peers are forgotten", async () => {
+    const s = stack();
+    const studio = await device(s, "Studio");
+    const laptop = await device(s, "Laptop");
+    expect(laptop.registry.get(studio.key.id)).toBeDefined();
+    const ends: string[] = [];
+    laptop.account.whenEnded((why) => {
+      ends.push(why);
+      laptop.registry.dropAccountRevokeSteps();
+      laptop.registry.forgetAccountDevices();
+    });
+    const sub = (await studio.account.accountId())!;
+    // The account service's last step: GoTrue's admin delete, with the project's service-role key.
+    const res = await fetch(`${s.auth.url}/auth/v1/admin/users/${sub}`, { method: "DELETE", headers: { apikey: s.auth.serviceRoleKey, authorization: `Bearer ${s.auth.serviceRoleKey}` } });
+    expect(res.status).toBe(200);
+    await syncAccountDevices({ registry: laptop.registry, account: laptop.account, device: laptop.key, boxKey: laptop.boxKey }).catch(() => undefined);
+    expect(ends).toEqual(["sign-in-refused"]);
+    expect(await laptop.account.status()).toEqual({ signedIn: false });
+    expect(laptop.registry.get(studio.key.id)).toBeUndefined();
+  });
+
+    test("half done: a crash after the marker and before the answer is finished at the next start", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
     const sub = (await studio.account.accountId())!;
-    writeFileSync(join(studio.home, ACCOUNT_DELETION_FILE), JSON.stringify({ v: 1, account: sub, askedAt: Date.now() }));
+    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now() });
     const out = await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock });
     expect(out?.pending).toEqual([]);
     expect(s.service.deleted.has(sub)).toBe(true);
     expect(await studio.account.status()).toEqual({ signedIn: false });
-    expect(existsSync(join(studio.home, ACCOUNT_DELETION_FILE))).toBe(false);
+    expect(await studio.account.deletionMark()).toBeNull();
   });
 
   test("half done: the service answered but this computer stopped before its own part; the next start finishes it", async () => {
@@ -116,7 +137,7 @@ describe("deleting the account", () => {
     const sub = (await studio.account.accountId())!;
     // The service got it (as if the answer was lost on the way back).
     await studio.account.deleteAccount();
-    writeFileSync(join(studio.home, ACCOUNT_DELETION_FILE), JSON.stringify({ v: 1, account: sub, askedAt: Date.now() }));
+    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now() });
     const out = await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock });
     expect(out?.pending).toEqual(["sign-in"]);
     expect(await studio.account.status()).toEqual({ signedIn: false });
@@ -128,7 +149,17 @@ describe("deleting the account", () => {
     s.service.stop();
     await expect(deleteAccount({ home: studio.home, account: studio.account, registry: studio.registry, clock })).rejects.toBeDefined();
     expect((await studio.account.status()).signedIn).toBe(true);
-    expect(existsSync(join(studio.home, ACCOUNT_DELETION_FILE))).toBe(true);
+    expect(await studio.account.deletionMark()).not.toBeNull();
+  });
+
+  test("a marker file planted in the home (a plugin can write there) never sends a deletion", async () => {
+    const s = stack();
+    const studio = await device(s, "Studio");
+    const sub = (await studio.account.accountId())!;
+    writeFileSync(join(studio.home, "account-deletion.json"), JSON.stringify({ v: 1, account: sub, askedAt: Date.now() }));
+    expect(await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock })).toBeUndefined();
+    expect(s.service.deleted.size).toBe(0);
+    expect((await studio.account.status()).signedIn).toBe(true);
   });
 });
 
