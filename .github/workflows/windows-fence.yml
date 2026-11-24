@@ -141,7 +141,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Core · the Windows fence's unit tests (arm64)
         working-directory: packages/core
-        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts
 
   # The Windows fence's own unit tests, which no other job ran (the core suite's Windows run doesn't exist; the Linux
   # shards skip them): the named pipe, the job object and the launcher's pure half.
@@ -165,10 +165,13 @@ jobs:
 
       - name: Core · the Windows fence's unit tests
         working-directory: packages/core
-        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
+        run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts
 
       - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.85)
         working-directory: packages/core
         run: |
           $env:MOSS_WIN_RUNTIME_E2E = "1"
           bun test --timeout 300000 test/fence/win-driver.e2e.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Lane WS8: MOSS's coding agent's real turn on Windows, its Bash MOSS's.
+          bun test --timeout 300000 src/agents/tests/moss-code.test.ts -t "a real agent turn on Windows"

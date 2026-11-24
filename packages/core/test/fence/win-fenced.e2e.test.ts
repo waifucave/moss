@@ -16,7 +16,7 @@ import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
-import { stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
+import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
@@ -444,6 +444,44 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const survivors = list.split(/\r?\n/).filter((l) => l.trim() !== "" && !l.includes("Get-CimInstance"));
     console.log(`[e2e] outlive probe, after the command ended: ${survivors.length === 0 ? "nothing outlived it" : survivors.join(" | ")}`);
     for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
+  }, 900_000);
+
+  test("MOSS's coding agent on Windows (lane WS8): its command runs in its root, never reads the MOSS home or a secret, never leaves the sandbox, and runs beside a bot's", async () => {
+    const project = join(home, "ws8-agent-project");
+    rmSync(project, { recursive: true, force: true });
+    mkdirSync(project, { recursive: true });
+    const fwd = (p: string) => p.replace(/\\/g, "/");
+    const agent = { kind: "session", sessionId: "e2e-agent", sessionKind: "agent" } as Extract<Caller, { kind: "session" }>;
+    // An agent's sandbox as its backend draws it: written in its root, the MOSS home denied whole, the secret places too.
+    const agentSandbox = () => botSandbox(withSecretReads({ filesystem: { allowWrite: [project], denyWrite: [], denyRead: [moss] } }, { userHome: home, os: "windows" }), { userHome: home, os: "windows" });
+    const agentTools = Object.fromEntries(agentShellTools({ spawner: fencedSpawner({ fence }), caller: agent, cwd: () => project, sandbox: agentSandbox, userHome: home, temp: fence.temp, mossHome: moss }).map((t) => [t.name, t]));
+    const note = join(moss, "notes", "readme.txt"), secret = join(moss, "secrets.enc"), key = join(home, ".ssh", "id_e2e");
+    // The user's control: each is there and readable.
+    for (const f of [note, secret, key]) expect(readFileSync(f, "utf8").length).toBeGreaterThan(0);
+    const r = await call(agentTools.Bash!, { command: `echo AGENT-RAN > agent.txt; cat '${fwd(note)}' '${fwd(secret)}' '${fwd(key)}' 2>/dev/null; echo done` });
+    console.log(`[e2e] agent: wrote in its root ${existsSync(join(project, "agent.txt"))}; read the MOSS home's note ${r.text.includes("a note any bot may read")}; a secret ${r.text.includes("dummy123")}`);
+    expect(r.text).toContain("done");
+    expect(existsSync(join(project, "agent.txt"))).toBe(true);
+    expect(r.text).not.toContain("a note any bot may read");
+    expect(r.text).not.toContain("dummy123");
+    const ps = await call(agentTools.PowerShell!, { command: `Get-Content -LiteralPath '${secret}' -ErrorAction SilentlyContinue; 'ps-done'` });
+    expect(ps.text).toContain("ps-done");
+    expect(ps.text).not.toContain("dummy123");
+    // No escape (no card), and no background command.
+    const esc = await call(agentTools.Bash!, { command: "whoami", dangerouslyDisableSandbox: true }, { refusal: true });
+    expect(esc).toMatchObject({ isError: true });
+    const bg = await call(agentTools.Bash!, { command: "sleep 1", run_in_background: true }, { refusal: true });
+    expect(bg.isError).toBe(true);
+    // Beside a bot's command: each alone, then both at once. Under rule 3b they would wait for each other if a bot root
+    // granted for the first time lay under the agent's MOSS-home deny; rule 3c denies the roots granted before by name.
+    const timed = async (f: () => Promise<unknown>) => { const t0 = Date.now(); await f(); return Date.now() - t0; };
+    const alone = await timed(() => call(agentTools.Bash!, { command: "sleep 3; echo A" })) + await timed(() => call(tools.Bash!, { command: "sleep 3; echo B" }));
+    let a = "", b = "";
+    const both = await timed(async () => { const [x, y] = await Promise.all([call(agentTools.Bash!, { command: "sleep 3; echo A" }), call(tools.Bash!, { command: "sleep 3; echo B" })]); a = x.text; b = y.text; });
+    console.log(`[e2e] agent beside a bot: one after the other ${alone} ms, together ${both} ms`);
+    expect(a).toMatch(/^A$/m);
+    expect(b).toMatch(/^B$/m);
+    rmSync(project, { recursive: true, force: true });
   }, 900_000);
 
   test("rule 8c (lane WS8): a new conversation's sidecar made while a background command runs is stamped for it, and it runs on; a new protected root ends it", async () => {

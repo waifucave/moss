@@ -25,8 +25,10 @@
 //   here (D's reviewer's rule), so a session that moves here asks again on this computer's own card. The lease fences
 //   it: a record from an earlier lease is taken as late.
 import type { HookSource } from "./runtime-sdk/turn-loop/hooks";
-import type { CanUseTool, Options, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
-import type { AgentDefView } from "@waifucave/moss-protocol";
+import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
+import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
+import { fencedSpawner } from "./fence/fenced-process";
+import { agentShellTools } from "./fence/win-shell-tools";
 import { browserAppHandlers } from "./browser/app-port";
 import { browserRpcHandlers } from "./browser/rpc-handlers";
 import { startBrowser, type DaemonBrowser, type StartBrowserOptions } from "./browser/daemon";
@@ -483,6 +485,18 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
               defaultModel: a.defaultModel, ...(a.defaultEffort ? { defaultEffort: a.defaultEffort } : {}), ...(a.fillProvider ? { fillProvider: a.fillProvider } : {}),
               // Its background tasks that will wake a session (§9.5 "Waiting"): the host's graph.
               tasks: { started: (s, t) => d.host.taskStarted(s, t), ended: (s, t) => d.host.taskEnded(s, t), gone: (s) => d.host.tasksGone(s) },
+              // Windows (lane WS8): its Bash and PowerShell are MOSS's, under the fence's Windows leg, on the agent's own
+              // sandbox and as its own caller; it runs there once the fence is set up (`moss-core sandbox setup`).
+              ...(process.platform === "win32" ? (() => {
+                const spawner = fencedSpawner({ fence });
+                return {
+                  sandboxReady: () => spawner.available,
+                  windowsShell: (s: { sessionId: string; root: string; sandbox: () => SandboxSettingsConfig }) => agentShellTools({
+                    spawner, caller: { kind: "session", sessionId: s.sessionId, sessionKind: "agent" } as Extract<Caller, { kind: "session" }>,
+                    cwd: () => s.root, sandbox: s.sandbox, userHome: input.userHome, temp: fence.temp, mossHome: input.mossHome,
+                  }),
+                };
+              })() : {}),
             },
             inProcess: {
               home: input.mossHome, spawn: a.spawn, defaultModel: a.defaultModel, ...(a.fillProvider ? { provider: a.fillProvider } : {}),

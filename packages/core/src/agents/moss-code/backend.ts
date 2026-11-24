@@ -44,6 +44,7 @@ import { MISPLACED_SANDBOX_FLAG_REFUSAL, misplacedSandboxFlag, outsideSandboxFla
 import { botChildSandboxOf, botChildWriteRefusal, type BotChildSandbox } from "../../runtime-sdk/turn-loop/subagent-backend";
 import { fillProvider } from "../../runtime-sdk/turn-loop/embedded-session";
 import { mergedHooks } from "../../runtime-sdk/turn-loop/hook-merge";
+import { coreToolsServer, type CoreToolDef } from "../../runtime-sdk/turn-loop/servers";
 
 export const MOSS_CODE_ID = "moss-code";
 
@@ -118,8 +119,13 @@ export interface MossCodeDeps {
   selections?: UserSelections;
   /** Test seam. */
   query?: typeof sdkQuery;
-  /** Whether the embedded runtime's sandbox can run here (`inProcessSandboxReady`); a test seam. */
+  /** Whether the embedded runtime's sandbox can run here (`inProcessSandboxReady`); on Windows, whether MOSS's fence is
+   *  set up (the daemon's); a test seam. */
   sandboxReady?: () => boolean;
+  /** Lane WS8, Windows: MOSS's fenced Bash and PowerShell for a session (`agentShellTools`), served under their plain
+   *  names in place of the runtime's own, which has no Windows sandbox. Given, the runtime's `Bash` and `PowerShell` are
+   *  left out of the session's tools. */
+  windowsShell?: (o: { sessionId: string; root: string; sandbox: () => NonNullable<Options["sandbox"]> }) => readonly CoreToolDef[];
   log?(line: string): void;
   /** A bot's child: its command sandbox by the bot's own builder and its run-later check (agents/bot-child.ts).
    *  Required for a spec that names a bot: without it the child doesn't start. */
@@ -300,7 +306,7 @@ export class MossCodeBackend implements AgentBackend {
     // ACP client as ACP's `usage_update` (`used`) before the turn's end, as any agent that reports it does.
     const usage = contextUpdates();
     const tasks = deps.tasks;
-    const { query, options, abort, bridgeCalls } = await this.#agentParts(spec, bridge, spec.pause ?? deps.pause ?? CLOSED_GATE, usage.report, tasks === undefined ? undefined : {
+    const { query, options, abort, bridgeCalls } = await this.#agentParts({ ...spec, shellSession: spec.sessionId }, bridge, spec.pause ?? deps.pause ?? CLOSED_GATE, usage.report, tasks === undefined ? undefined : {
       started: (task) => tasks.started(spec.sessionId, task),
       ended: (task) => tasks.ended(spec.sessionId, task),
       gone: () => tasks.gone(spec.sessionId),
@@ -353,7 +359,7 @@ export class MossCodeBackend implements AgentBackend {
     const deps = this.#deps;
     // The user's own session: the bots' pause doesn't hold it (an open gate, never none: with none a session fails closed).
     const usage = contextUpdates();
-    const { query, options, abort } = await this.#agentParts(spec, undefined, { mayAct: () => true }, usage.report);
+    const { query, options, abort } = await this.#agentParts({ ...spec, shellSession: `served-${randomUUID()}` }, undefined, { mayAct: () => true }, usage.report);
     const server = serveAcpAgent({
       query,
       options: options as unknown as Record<string, unknown>,
@@ -379,7 +385,7 @@ export class MossCodeBackend implements AgentBackend {
 
   /** What `start` and `serve` share: the session's query on the embedded runtime and its options (the coding tools,
    *  the fence's sandbox and deny rules, the pause and the fence's hooks), checked and filled. */
-  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">>, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void, onTasks?: TaskFrames): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
+  async #agentParts(spec: Pick<AcpStartSpec, "root" | "model" | "effort" | "fence"> & Partial<Pick<AcpStartSpec, "bot" | "level">> & { shellSession: string }, bridge: AcpStartSpec["inProcessBridge"], gate: AgentPauseGate, onContext?: (tokens: number) => void, onTasks?: TaskFrames): Promise<{ query: AcpQueryFn; options: Options; abort: AbortController; bridgeCalls: Map<string, BridgeCall> }> {
     const deps = this.#deps;
     // The root is a folder that exists: the manager resolved it; one that went away isn't made again here.
     if (!isDirectory(spec.root)) throw new ContractError("not_found", `the agent's root folder ${spec.root} isn't there`);
@@ -446,9 +452,14 @@ export class MossCodeBackend implements AgentBackend {
     // Spelled as the runtime can check them (`runtimeDenyForms`): a rule's place is also a sandbox deny inside it.
     const denyOs = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
     const denials = [...(base.permissions?.deny ?? []), ...fileToolDenials(runtimeDenyForms(fence.denyRead, { os: denyOs }), runtimeDenyForms(fence.denyWrite, { os: denyOs }))];
+    // Windows (lane WS8): the core's fenced Bash and PowerShell in place of the runtime's (`windowsShell`), on the
+    // session's sandbox as drawn below; served by an in-process server under their plain names.
+    let sessionSandbox: NonNullable<Options["sandbox"]> | undefined;
+    const shellTools = deps.windowsShell?.({ sessionId: spec.shellSession, root: spec.root, sandbox: () => sessionSandbox! });
+    const shellServer = shellTools === undefined ? undefined : coreToolsServer(() => shellTools);
     const options: Options = {
       ...base,
-      tools: [...MOSS_CODE_TOOLS],
+      tools: shellTools === undefined ? [...MOSS_CODE_TOOLS] : MOSS_CODE_TOOLS.filter((t) => t !== "Bash" && t !== "PowerShell"),
       // Every MCP tool the bridge doesn't flag starts deferred (a plugin tool set "on demand"), and the bridge's `Glossary` loads
       // it in the turn (the runtime's load key in its result), as a bot's does; the flagged ones (always on, `anthropic/alwaysLoad`) are up front.
       toolSearchEnabled: true,
@@ -466,6 +477,7 @@ export class MossCodeBackend implements AgentBackend {
       // The sandbox holds Bash; the file tools get the same denials as deny rules (the fenced set and bots' memory).
       ...(denials.length === 0 && base.permissions === undefined ? {} : { permissions: { ...(base.permissions ?? {}), deny: denials } }),
     };
+    sessionSandbox = options.sandbox;
     await fillProvider(deps.fillProvider ? { provider: (m, o) => deps.fillProvider!(m, o) } : {}, options);
     const run = deps.query ?? sdkQuery;
     // The calls being asked about now that are a plugin's tool on the session's bridge (tool call id → its bridge name and
@@ -476,7 +488,10 @@ export class MossCodeBackend implements AgentBackend {
     // an outside client, no MCP server at all), and an allow that came while the pause came on waiting for the resume.
     const query: AcpQueryFn = (args) => {
       const o = args.options as unknown as Options & { canUseTool: CanUseTool; mcpServers?: Record<string, unknown> };
-      const servers = bridge ? { ...(o.mcpServers ?? {}), [bridge.name]: bridge as McpSdkServerConfigWithInstance } : {};
+      const servers = {
+        ...(bridge ? { ...(o.mcpServers ?? {}), [bridge.name]: bridge as McpSdkServerConfigWithInstance } : {}),
+        ...(shellServer === undefined ? {} : { [shellServer.name]: shellServer }),
+      };
       const ask = o.canUseTool;
       const canUseTool: CanUseTool = async (name, given, opts) => {
         // A file write is asked about, and runs, with its real path (agent SDK 0.0.77's write roots: `realFileWriteInput`).

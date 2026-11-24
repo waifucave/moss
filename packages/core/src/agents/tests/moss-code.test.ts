@@ -43,7 +43,7 @@ function baseOptionsFor(home: string, spawn: SpawnClaudeCodeProcess) {
   };
 }
 
-function make(spawn: SpawnClaudeCodeProcess, o: WorldOptions & { pause?: WorldOptions["pause"]; base?: Partial<Options>; query?: MossCodeDeps["query"] } = {}): World {
+function make(spawn: SpawnClaudeCodeProcess, o: WorldOptions & { pause?: WorldOptions["pause"]; base?: Partial<Options>; query?: MossCodeDeps["query"]; windowsShell?: MossCodeDeps["windowsShell"] } = {}): World {
   let w!: World;
   w = new World({
     ...o,
@@ -56,6 +56,7 @@ function make(spawn: SpawnClaudeCodeProcess, o: WorldOptions & { pause?: WorldOp
       // The core always hands a gate (an open one without a switch); with none the backend fails closed.
       pause: o.pause ?? { mayAct: () => true },
       ...(o.query ? { query: o.query } : {}),
+      ...(o.windowsShell ? { windowsShell: o.windowsShell } : {}),
     })],
   });
   world = w;
@@ -246,6 +247,56 @@ describeWithEmbeddedRuntime("MOSS's coding agent over ACP", (spawn) => {
       expect(end?.["status"] === "failed" || JSON.stringify(end).includes("was not run")).toBe(true);
     }
     expect(JSON.stringify(notification(w))).not.toContain("the-bot-remembers-a-secret");
+  });
+
+  test("on Windows its Bash and PowerShell are MOSS's fenced ones, on its own sandbox and as its own session, in place of the runtime's (lane WS8)", async () => {
+    let seen: Options | undefined;
+    const fakeQuery = ((args: { prompt: AsyncIterable<string>; options: Options }) => {
+      seen = args.options;
+      async function* run() {
+        yield { type: "system", subtype: "init", model: MODEL, permissionMode: "default" };
+        for await (const _ of args.prompt) yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+      }
+      return Object.assign(run(), { interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {}, setEffort: async () => {}, supportedModels: async () => [] });
+    }) as unknown as MossCodeDeps["query"];
+    const asked: { sessionId: string; root: string; sandbox: () => unknown }[] = [];
+    const ran: unknown[] = [];
+    const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object" }, run: async (i: unknown) => { ran.push(i); return { text: `${name}: fenced`, isError: false }; } });
+    const w = make(spawn, { query: fakeQuery, windowsShell: (o) => { asked.push(o); return [tool("Bash"), tool("PowerShell")]; } });
+    await w.manager.start({ caller: { kind: "bot", bot: "alpha", session: "s_alpha", origin: "user" }, backend: MOSS_CODE_ID, root: "home/Studio/project1", title: "Shell", prompt: "hi", model: MODEL });
+    await waitFor(() => notification(w), "the task notification");
+    // The runtime's own are not offered; the core's are, under their plain names, from the core's in-process server.
+    expect(seen!.tools).not.toContain("Bash");
+    expect(seen!.tools).not.toContain("PowerShell");
+    expect(seen!.tools).toContain("Read");
+    const server = (seen!.mcpServers as Record<string, { toolNames?: Record<string, string>; instance: { callTool(n: string, a: unknown): Promise<{ content: { text: string }[] }> } }>)["moss_core"]!;
+    expect(server.toolNames).toEqual({ Bash: "Bash", PowerShell: "PowerShell" });
+    expect((await server.instance.callTool("Bash", { command: "ls" })).content[0]!.text).toBe("Bash: fenced");
+    expect(ran).toEqual([{ command: "ls" }]);
+    // One set for the session: its own id (rules 3b and 3c key on it), its root, and the very sandbox its runtime has.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.sessionId).not.toBe("");
+    expect(asked[0]!.sandbox()).toBe(seen!.sandbox);
+    expect(seen!.sandbox!.filesystem!.denyRead).toContain(w.mossHome);
+    // An escape asked of it is refused by its own hook, before any card.
+    const escape = seen!.hooks!.PreToolUse![2]!;
+    const said = await escape.hooks[0]!({ tool_name: "Bash", tool_input: { command: "whoami", dangerouslyDisableSandbox: true } } as never, undefined, { signal: new AbortController().signal });
+    expect(JSON.stringify(said)).toContain('"permissionDecision":"deny"');
+  });
+
+  // Windows only, with MOSS_WIN_RUNTIME_E2E=1 (the windows-fence workflow's unit job): a real turn on the embedded runtime,
+  // whose scripted model calls Bash; the call is MOSS's tool's (a recording stand-in here: win-fenced.e2e.test.ts proves the
+  // fence itself under the agent's sandbox), never the runtime's, which refuses every command on Windows.
+  test.skipIf(!(process.platform === "win32" && process.env.MOSS_WIN_RUNTIME_E2E === "1"))("a real agent turn on Windows runs its Bash through MOSS's tool (lane WS8)", async () => {
+    const ran: unknown[] = [];
+    const tool = (name: string) => ({ name, description: `Run a command (${name}) in MOSS's sandbox`, inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      run: async (i: unknown) => { ran.push(i); return { text: "FENCED-ECHO", isError: false }; } });
+    const w = make(spawn, { windowsShell: () => [tool("Bash"), tool("PowerShell")] });
+    await w.manager.start({ caller: { kind: "bot", bot: "alpha", session: "s_alpha", origin: "user" }, backend: MOSS_CODE_ID, root: "home/Studio/project1", title: "Echo", prompt: 'CALL Bash {"command":"echo hi"}', model: MODEL });
+    await waitFor(() => notification(w), "the task notification");
+    console.log(`[windows agent turn] Bash calls: ${JSON.stringify(ran)}; report: ${JSON.stringify(notification(w)).slice(0, 300)}`);
+    expect(ran).toEqual([{ command: "echo hi" }]);
+    expect(JSON.stringify(notification(w))).toContain("FENCED-ECHO");
   });
 
   test("the base options' hooks are kept and the pause goes first; host messaging or a missing root refuses the start", async () => {

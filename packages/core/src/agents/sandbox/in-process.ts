@@ -2,7 +2,8 @@
 // runtime with its sandbox required: Seatbelt's on macOS, bubblewrap's on Linux (the runtime names bwrap when it is
 // missing, so a Linux machine with it works). Elsewhere (Windows) the runtime refuses every sandboxed tool call
 // ("refusing to silently run unsandboxed"); the backends say so at detection instead, so a delegation there, on this
-// computer or for another one, is refused up front with the reason, not left to fail call by call.
+// computer or for another one, is refused up front with the reason, not left to fail call by call. MOSS's coding agent
+// on Windows is the exception (lane WS8): its Bash and PowerShell are MOSS's, under the fence's Windows leg.
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { AgentDetection } from "../../contracts/agent-backend";
@@ -31,8 +32,13 @@ export function inProcessSandboxReady(): boolean {
 /** An in-process backend's detection where its sandbox can't run: not available, with the reason. */
 export function notAvailableHere(id: string, version?: string): AgentDetection {
   const where = process.platform === "linux" ? "on Linux" : process.platform === "win32" ? "on Windows" : process.platform === "darwin" ? "on this Mac (its sandbox-exec is missing)" : `on ${process.platform}`;
+  // Windows (lane WS8): MOSS's coding agent runs its commands under MOSS's own fence there (the daemon's `windowsShell`
+  // and `sandboxReady`), which needs `moss-core sandbox setup`; lane A's in-process agents don't run there yet.
+  const reason = process.platform === "win32" && id === "moss-code"
+    ? `${id} runs its commands under MOSS's sandbox, which isn't set up on this computer yet: run \`moss-core sandbox setup\` as an administrator (the installer does)`
+    : `${id} runs in the embedded runtime's sandbox, which is macOS-only for now: it isn't available ${where} yet`;
   return {
     installed: false, identityOk: true, versionOk: true, sandboxed: false, ...(version === undefined ? {} : { version }),
-    reason: `${id} runs in the embedded runtime's sandbox, which is macOS-only for now: it isn't available ${where} yet`,
+    reason,
   };
 }

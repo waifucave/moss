@@ -195,6 +195,16 @@ function resultText(r: { stdout: string; stderr: string; code?: number | null; t
   return parts.length === 0 ? "(no output)" : parts.join("\n");
 }
 
+/** Lane WS8: MOSS's coding agent's Bash and PowerShell on Windows, in place of the runtime's (which has no Windows
+ *  sandbox): the same fenced tools, held to the very sandbox settings the agent's runtime is given (its own policy: the
+ *  MOSS home denied whole, the user's home denied but its root), under the agent session's own caller (rules 3b and 3c
+ *  keep it apart from every bot's command). Never outside the sandbox (an agent's escape is refused, no card), and never
+ *  in the background (refused with the reason: an agent's background commands aren't served on Windows yet). The pool's
+ *  accounts are shared with the bots' commands: each is reset after every command. */
+export function agentShellTools(o: Omit<WindowsShellToolsOptions, "kind" | "wake" | "level">): CoreToolDef[] {
+  return windowsShellTools({ ...o, kind: "side-thread" });
+}
+
 /** The two tools, for a session on Windows. */
 export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
   const tool = (name: "Bash" | "PowerShell", shell: "bash" | "powershell", description: string): CoreToolDef => ({

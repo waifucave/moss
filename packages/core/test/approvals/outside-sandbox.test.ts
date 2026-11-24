@@ -215,6 +215,69 @@ describe("a subagent's escape (lane WS4: a rule about subagents, whatever tool o
   });
 });
 
+// Lane WS8: MOSS's own rule for a command that stays in the sandbox, the same on every OS. On Windows the shell tools are
+// MOSS's (fence/win-shell-tools.ts), and from agent SDK 0.0.86 (clover-sdk #90) the runtime no longer pre-approves a
+// host tool that took a built-in's name (the read-only Bash allow, the sandboxed-Bash allow): every such call reaches
+// this check. Its answer doesn't depend on the runtime's: these tests call the check directly, under 0.0.85 and after.
+describe("a command in the sandbox, by MOSS's own rule (Bash and PowerShell; lane WS8)", () => {
+  const expected = { "read-only": "deny", ask: "card", "ask-risky": "allow", "accept-edits": "allow", automatic: "allow" } as const;
+  for (const tool of ["Bash", "PowerShell"] as const) {
+    for (const level of Object.keys(expected) as (keyof typeof expected)[]) {
+      for (const command of ["ls", "npm test"]) {
+        test(`${tool} \`${command}\` at ${level}: ${expected[level]}, never the reviewer`, async () => {
+          const w = world();
+          let reviewed = 0;
+          const broker = brokerAt(level, async () => { reviewed++; return "safe"; });
+          const check = botApprovalCheck(broker, { commandsSandboxed: true });
+          const seen: Card[] = [];
+          const off = broker.watch((e) => { if (e.type === "requested") seen.push(e.card); });
+          const shown = expected[level] === "card" ? answerNext(broker, "deny") : undefined;
+          const r = await check(w.ctx, () => "user")(tool, { command }, callOpts);
+          await shown;
+          off();
+          expect(reviewed).toBe(0);
+          if (expected[level] === "allow") {
+            expect(r!).toMatchObject({ behavior: "allow" });
+            expect(seen).toHaveLength(0);
+          } else if (expected[level] === "deny") {
+            expect(r!).toMatchObject({ behavior: "deny", message: expect.stringContaining("level doesn't allow it") });
+            expect(seen).toHaveLength(0);
+          } else {
+            expect(seen).toHaveLength(1);
+            expect(r!).toMatchObject({ behavior: "deny" });
+          }
+        });
+      }
+    }
+  }
+  test("an agent's command (`agentAsking`): contained like the bot's, never more; its card names the agent and who started it", async () => {
+    const w = world();
+    const agentCtx = { ...w.ctx, agentAsking: { backend: "moss-code", bot: "luna", folder: w.user } } as unknown as BotSessionContext;
+    const allowed = await botApprovalCheck(brokerAt("ask-risky"), { commandsSandboxed: true })(agentCtx, () => "user")("Bash", { command: "npm test" }, callOpts);
+    expect(allowed!).toMatchObject({ behavior: "allow" });
+    const refused = await botApprovalCheck(brokerAt("read-only"), { commandsSandboxed: true })(agentCtx, () => "user")("PowerShell", { command: "Get-ChildItem" }, callOpts);
+    expect(refused!).toMatchObject({ behavior: "deny", message: expect.stringContaining("level doesn't allow it") });
+    const broker = brokerAt("ask");
+    const seen: Card[] = [];
+    const off = broker.watch((e) => { if (e.type === "requested") seen.push(e.card); });
+    const shown = answerNext(broker, "deny");
+    await botApprovalCheck(broker, { commandsSandboxed: true })(agentCtx, () => "user")("Bash", { command: "npm test" }, callOpts);
+    await shown;
+    off();
+    expect(seen).toHaveLength(1);
+    expect(JSON.stringify(seen[0]!.fields.source)).toContain("moss-code");
+    expect(JSON.stringify(seen[0]!.fields.source)).toContain("luna");
+  });
+  test("a computer whose sandbox isn't set up (Windows before `moss-core sandbox setup`) has no contained command: the reviewer judges it", async () => {
+    const w = world();
+    let reviewed = 0;
+    const broker = brokerAt("ask-risky", async () => { reviewed++; return "safe"; });
+    const check = botApprovalCheck(broker, { commandsSandboxed: false });
+    await check(w.ctx, () => "user")("PowerShell", { command: "Get-ChildItem" }, callOpts);
+    expect(reviewed).toBe(1);
+  });
+});
+
 describe("a flagged Bash at every level", () => {
   for (const level of ["ask", "ask-risky", "accept-edits", "automatic"] as const) {
     test(`at ${level}: exactly one card with the headline, the full command and the sentence; no "always"`, async () => {

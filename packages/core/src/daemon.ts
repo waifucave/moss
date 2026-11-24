@@ -4792,7 +4792,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
           touched: (path: string) => partsRegistry?.folders.touched(path),
           // A bot's Bash sandbox is drawn from this computer's fence at its level (lane C's `botSandboxSettings`, below):
           // no network, writes to its own folders and temp at ask for risky actions, so a command it holds runs.
-          commandsSandboxed: true,
+          // On Windows (lane WS8) only when the fence's Windows leg can run there (`moss-core sandbox setup` was run): its
+          // tool refuses every command otherwise, and a command no sandbox holds is never judged as contained.
+          commandsSandboxed: winSpawner === undefined || winSpawner.available,
           agentStart: agentStartPolicy({
             contained: async (backend) => (await agents()?.manager.isContainedBackend(backend)) === true,
             // A definition inside another bot (`own-bot`, its own or its plugin's) isn't this bot's to start (§5.5).
