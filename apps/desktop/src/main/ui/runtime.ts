@@ -132,6 +132,9 @@ export interface RuntimeOptions {
   log?: (line: string) => void;
   now?: () => number;
   token?: () => string;
+  /** A window's documents are gone (it closed), or one of its documents is loaded again (a layer or module changed): what its
+   *  frames last said (a card's buttons showing) no longer holds. The app places a pending card again. */
+  windowChanged?: (windowId: number, closed: boolean) => void;
   /** The most children one part may hold (`MAX_PART_CHILDREN` by default; a test lowers it). */
   maxPartChildren?: number;
   /** Delivers a message to a bound document. */
@@ -489,6 +492,7 @@ export class UiRuntime {
   closeWindow(windowId: number): void {
     for (const m of [...this.mounts.values()]) if (m.windowId === windowId) this.drop(m.id);
     this.windows.delete(windowId);
+    this.opts.windowChanged?.(windowId, true);
     for (const [id, p] of this.#placeholders) if (p.windowId === windowId) this.#placeholders.delete(id);
   }
 
@@ -633,6 +637,7 @@ export class UiRuntime {
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
     this.log(`layers: ${m.id} loads again (${why})`);
+    this.opts.windowChanged?.(m.windowId, false);
     this.post(parentDoc.id, { type: "child-reload", child: m.id, url: this.frameUrl(m), ...this.frameFlags(m) });
   }
 
@@ -654,6 +659,7 @@ export class UiRuntime {
     // drawing" once the shell's frame did this: acceptance window-3 and plugin-app).
     this.reloadedAt.set(doc.id, this.now());
     this.log(`layers: ${doc.id} loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
+    this.opts.windowChanged?.(doc.windowId, false);
     // The frame's flags go with it: a parent that builds the frame again (the core root) gives the new one the same `allow`.
     this.post(parentDoc.id, { type: "child-reload", child: doc.id, url, ...this.frameFlags(doc) });
   }

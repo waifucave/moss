@@ -68,7 +68,7 @@ export const KEEP: RegExp[] = [
   kp(String.raw`send: refused \((?:not a place the user's words go|MOSS Code isn't running|the frame reported no user activation)\)(?: \(\d{1,6} like it left out\))?`),
   kp(String.raw`overlap: (?:the OS window list wasn't read for a press \((?:no window list here|no window id)\); the in-page check stands alone|the OS window list read for a press \(${N} above, ${N} of this program's own(?:; headless: its own only)?(?:; no point: a keyboard press)?\))`),
   // sealed pages and cards
-  kp(String.raw`sealed: answer refused \((?:the button was covered or not shown at the press|the page's visibility report didn't come in time|no visibility report came with the press|a press (?:on the island|in the window) for a card the router placed (?:on the island|in the window)|no answer key|no client|no option|computer use acting)\)`),
+  kp(String.raw`sealed: answer refused \((?:the button was covered or not shown at the press|the page's visibility report didn't come in time|no visibility report came with the press|a press from a window that has closed|a press (?:on the island|in the window) for a card the router placed (?:on the island|in the window)|no answer key|no client|no option|computer use acting)\)`),
   kp(String.raw`sealed: refusing a sealed load \((?:bad host|bad token|no channel)\)`),
   kp(String.raw`card: ${N} card\(s\) resolved while the connection was down, dropped`),
   // layers and plugins' parts (a plugin or mount is named by its id, one token)
@@ -157,6 +157,7 @@ export const REDUCE: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [new RegExp(`^card: ${CARD} (frames asked|a button visible) in (${SURF}) (\\d{1,9}) ms after it arrived$`), "card: $1 in $2 $3 ms after it arrived"],
   [new RegExp(`^card: ${CARD} first ask in (${SURF}) (before it arrived|\\d{1,9} ms after it arrived) \\(([a-z ]{1,16})\\)$`), "card: first ask in $1 $2 ($3)"],
   [new RegExp(`^card: ${CARD} asks in (${SURF}) before the first made: (\\d{1,9}) not yet, (\\d{1,9}) refused$`), "card: asks in $1 before the first made: $2 not yet, $3 refused"],
+  [new RegExp(`^card: ${CARD} its place went away \\((its surface closed|a document loaded again)\\): placed again$`), "card: its place went away ($1): placed again"],
   [new RegExp(`^card: ${CARD} pending told to (${REF})'s layer (before it arrived|\\d{1,9} ms after it arrived)$`), "card: pending told to $1's layer $2"],
   [new RegExp(`^card: ${CARD} both buttons visible in (${SURF}) (\\d{1,9}) ms after it arrived$`), "card: both buttons visible in $1 $2 ms after it arrived"],
   [new RegExp(`^card: ${CARD} fallback timer armed \\(a button stopped showing in (${SURF})\\)$`), "card: fallback timer armed (a button stopped showing in $1)"],

@@ -123,6 +123,7 @@ const KEPT: string[] = [
   "overlap: the OS window list read for a press (2 above, 1 of this program's own; headless: its own only; no point: a keyboard press)",
   "sealed: answer refused (the button was covered or not shown at the press)",
   "sealed: answer refused (a press on the island for a card the router placed in the window)",
+  "sealed: answer refused (a press from a window that has closed)",
   "sealed: answer refused (computer use acting)",
   "sealed: refusing a sealed load (no channel)",
   "card: 2 card(s) resolved while the connection was down, dropped",
@@ -227,6 +228,7 @@ const REDUCED: [string, string][] = [
   [`card: ${CARD} frames asked in the main window 120 ms after it arrived`, "card: frames asked in the main window 120 ms after it arrived"],
   [`card: ${CARD} first ask in moss/pill#main before it arrived (made)`, "card: first ask in moss/pill#main before it arrived (made)"],
   [`card: ${CARD} asks in window 3 before the first made: 2 not yet, 1 refused`, "card: asks in window 3 before the first made: 2 not yet, 1 refused"],
+  [`card: ${CARD} its place went away (its surface closed): placed again`, "card: its place went away (its surface closed): placed again"],
   [`card: ${CARD} pending told to moss/shell's layer 40 ms after it arrived`, "card: pending told to moss/shell's layer 40 ms after it arrived"],
   [`card: ${CARD} both buttons visible in the main window 250 ms after it arrived`, "card: both buttons visible in the main window 250 ms after it arrived"],
   [`card: ${CARD} fallback timer armed (a button stopped showing in the main window)`, "card: fallback timer armed (a button stopped showing in the main window)"],
@@ -382,7 +384,7 @@ describe("what MOSS Code writes to its log file", () => {
       if (m > 0) dynamic[rel] = m;
     }
     expect(counts).toEqual({
-      "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "index.ts": 181, "overlap.ts": 1, "pair/optional-calls.ts": 1,
+      "answer-key.ts": 16, "browser/frame-sender.ts": 2, "host-runtime.ts": 6, "housing.ts": 1, "index.ts": 183, "overlap.ts": 1, "pair/optional-calls.ts": 1,
       "pair/pair.ts": 19, "pair/setup-retry.ts": 2, "prefs.ts": 1, "preview-control.ts": 4, "touch-tap.ts": 5, "tray.ts": 1, "ui/electron.ts": 17, "ui/model.ts": 2,
       "ui/runtime.ts": 12, "ui/strings.ts": 2, "ui/theme.ts": 5, "ui/web-views.ts": 10,
     });

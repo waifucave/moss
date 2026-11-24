@@ -19,10 +19,10 @@ function frame(url: string, parent: FrameRef | null = null, osPid = ++pid): Fram
   return { processId: osPid, routingId: ++pid, url, osPid, parent };
 }
 
-function setup(extra: UiPlugin[] = [], opts: { safeMode?: boolean; now?: () => number; log?: (line: string) => void; render?: boolean } = {}) {
+function setup(extra: UiPlugin[] = [], opts: { safeMode?: boolean; now?: () => number; log?: (line: string) => void; render?: boolean; windowChanged?: (windowId: number, closed: boolean) => void } = {}) {
   const sent: { to: string; m: LayerMessage }[] = [];
   let n = 0;
-  const rt = new UiRuntime({ os: "macos", platform: "darwin", ...(opts.safeMode ? { safeMode: true } : {}), ...(opts.now ? { now: opts.now } : {}), ...(opts.log ? { log: opts.log } : {}), token: () => `t${++n}`, send: (f, m) => sent.push({ to: `${f.processId}:${f.routingId}`, m }) });
+  const rt = new UiRuntime({ os: "macos", platform: "darwin", ...(opts.safeMode ? { safeMode: true } : {}), ...(opts.now ? { now: opts.now } : {}), ...(opts.log ? { log: opts.log } : {}), ...(opts.windowChanged ? { windowChanged: opts.windowChanged } : {}), token: () => `t${++n}`, send: (f, m) => sent.push({ to: `${f.processId}:${f.routingId}`, m }) });
   const plugins = [...readUiPlugins([...mossViews(), alphaView()] as never), ...extra];
   rt.setRegistry(plugins);
   rt.openWindow(WIN, { material: "vibrancy", ...(opts.render ? { render: true } : {}) });
@@ -567,7 +567,7 @@ describe("what a conversation's inner spots need is the data's own kind (spec re
 });
 
 describe("sleeping frames, surfaces, and the brokers' part of the runtime", () => {
-  function withFixtureFrame(o: { now?: () => number } = {}) {
+  function withFixtureFrame(o: { now?: () => number; windowChanged?: (windowId: number, closed: boolean) => void } = {}) {
     const s = setup(composerFixture(), o);
     const shell = mountShell(s);
     const tab = s.rt.resolve(shell.shellFrame, shell.info.mount, "main", "agent").items[0]!;
@@ -677,6 +677,16 @@ describe("sleeping frames, surfaces, and the brokers' part of the runtime", () =
     s.sent.length = 0;
     s.rt.serveDocument("fixture-composer", old);
     expect(s.sent.filter((x) => x.m.type === "child-reload")).toEqual([]);
+  });
+
+  test("a window closing, and one of its documents loading again, are told to the app (it places a card again): once each", () => {
+    const told: [number, boolean][] = [];
+    const { s } = withFixtureFrame({ now: () => 2_000_000, windowChanged: (w, closed) => told.push([w, closed]) });
+    const built = composerFixture().map((p) => ({ ...p, clientEntry: undefined, clientBuild: { base: "/x", file: "index.js", sha256: "cd".repeat(32) } }));
+    s.rt.setRegistry([...readUiPlugins([...mossViews(), alphaView()] as never), ...built]);
+    expect(told).toEqual([[WIN, false]]);
+    s.rt.closeWindow(WIN);
+    expect(told).toEqual([[WIN, false], [WIN, true]]);
   });
 
   test("the microphone follows the capability for a frame already open: the plugin stays listed, its live frame loads again with the new policy (withdrawn and given)", () => {

@@ -314,3 +314,65 @@ describe("a fresh reading that never came in time is 'late', not 'covered' (lane
     expect(b).toContain(JSON.stringify(PRESS_AGAIN_TEXT));
   });
 });
+
+describe("a card's place going away (the surface closed, the document loaded again)", () => {
+  // Windows: 10 the bundled island, 11 a copy of the island, 12 the pill, 1 the main window.
+  const showing = (store: SealedFrames, win: number, bind: { parent: { processId: number; routingId: number } }) => {
+    const approve = store.mint(CARD.id, "button:allow_once", bind, win)!.token;
+    const deny = store.mint(CARD.id, "button:deny", bind, win)!.token;
+    store.markVisible(approve, true);
+    store.markVisible(deny, true);
+    return { approve, deny };
+  };
+  const at = (n: number) => ({ parent: { processId: 100, routingId: n } });
+  const island = (id: number) => (w: number | undefined) => w === id || w === 10 || w === 11 || w === 12;
+
+  for (const [name, win] of [["the bundled island", 10], ["a copy of the island", 11], ["the pill", 12]] as const) {
+    test(`${name} closing: the card's buttons no longer show, the card is named for placing again`, () => {
+      const store = new SealedFrames();
+      store.fromCore(CARD);
+      showing(store, win, at(win));
+      expect(store.buttonsVisible(CARD.id, island(win))).toBe(true);
+      expect(store.windowGone(win, true)).toEqual([CARD.id]);
+      expect(store.buttonsVisible(CARD.id, island(win))).toBe(false);
+      // Its frames are gone with it: a press carrying one is nothing.
+      expect(store.size.channels).toBe(0);
+    });
+  }
+
+  test("two surfaces show it and one closes: the other still shows it; two closes in a row name the card each time, the second window's only", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    showing(store, 10, at(10));
+    showing(store, 11, at(11));
+    expect(store.windowGone(10, true)).toEqual([CARD.id]);
+    expect(store.buttonsVisible(CARD.id, island(10))).toBe(true);
+    expect(store.windowGone(10, true)).toEqual([]);
+    expect(store.windowGone(11, true)).toEqual([CARD.id]);
+    expect(store.buttonsVisible(CARD.id)).toBe(false);
+  });
+
+  test("a document loaded again keeps the window's frames (their own pagehide says they went); a card answered or resolved is not named", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    const { approve } = showing(store, 1, at(1));
+    expect(store.isTokenVisible(approve)).toBe(true);
+    store.resolvedOutcome(CARD.id, "approved");
+    expect(store.windowGone(1, true)).toEqual([]);
+  });
+
+  test("a press taken as its surface closes: one answer, once; the same token after the close is refused", () => {
+    const store = new SealedFrames();
+    store.fromCore(CARD);
+    const { approve } = showing(store, 10, at(10));
+    const first = store.buildAnswer(approve, "allow_once", undefined, "p:100:10", signer, "dev_a");
+    expect("error" in first).toBe(false);
+    store.windowGone(10, true);
+    expect(store.buildAnswer(approve, "allow_once", undefined, "p:100:10", signer, "dev_a")).toMatchObject({ error: expect.anything() });
+    const fresh = new SealedFrames();
+    fresh.fromCore(CARD);
+    const t = showing(fresh, 10, at(10)).approve;
+    fresh.windowGone(10, true);
+    expect(fresh.buildAnswer(t, "allow_once", undefined, "p:100:10", signer, "dev_a")).toMatchObject({ error: expect.anything() });
+  });
+});

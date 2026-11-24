@@ -293,7 +293,7 @@ export class SealedFrames {
    *  plugin has both buttons on screen and visible within 2 s). Matched to the card's own options: at least one
    *  visible button channel for an approve option, and at least one for a deny option. A plugin that places only
    *  Approve never cancels the fallback alone. With a window, only that window's frames count (which surface shows them). */
-  buttonsVisible(cardId: string, windowId?: number): boolean {
+  buttonsVisible(cardId: string, windowId?: number | ((window: number | undefined) => boolean)): boolean {
     const card = this.cards.get(cardId);
     if (card === undefined) return false;
     const approveIds = new Set(card.options.filter((o) => o.kind === "approve").map((o) => o.id));
@@ -303,13 +303,26 @@ export class SealedFrames {
     let denySeen = false;
     for (const [t, ch] of this.channels) {
       if (ch.cardId !== cardId || !ch.element.startsWith("button:")) continue;
-      if (windowId !== undefined && ch.windowId !== windowId) continue;
+      if (typeof windowId === "function" ? !windowId(ch.windowId) : windowId !== undefined && ch.windowId !== windowId) continue;
       if (!this.visible.has(t)) continue;
       const optionId = ch.element.slice("button:".length);
       if (approveIds.has(optionId)) approveSeen = true;
       if (denyIds.has(optionId)) denySeen = true;
     }
     return approveSeen && denySeen;
+  }
+
+  /** The frames of a window are gone (the window closed) or unknown until they report again (its document loaded again): what
+   *  they said of their visibility no longer holds, so no card counts them as showing a button. A closed window's channels
+   *  die with it (an answer carrying one is "unknown"). Returns the pending cards whose buttons this window showed. */
+  windowGone(windowId: number, closed: boolean): string[] {
+    const held = new Set<string>();
+    for (const [t, ch] of [...this.channels]) {
+      if (ch.windowId !== windowId) continue;
+      if (this.visible.delete(t) && this.isPending(ch.cardId)) held.add(ch.cardId);
+      if (closed) this.channels.delete(t);
+    }
+    return [...held];
   }
 
   /** Binds a channel to a frame key after the page has loaded (the fallback's own window's main frame isn't known at

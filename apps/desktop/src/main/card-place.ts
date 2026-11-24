@@ -69,6 +69,20 @@ export function pressMayBeTaken(input: { from: PressSource; placed: CardPlacemen
   return pressMatchesPlacement(placed, input.from === "island" ? { kind: "island" } : { kind: "window", program: "code", window: MAIN_WINDOW });
 }
 
+/** Whether the frames of a window count as showing a card's buttons: only those of the place the router put the card (the island's
+ *  surfaces for a card on the island, the window's own frames for one in the window). A button in a place a press is refused
+ *  from shows the card to nobody who can answer it. While the engine has placed none, every window counts. */
+export function windowShowsCard(placed: CardPlacement | undefined, isIslandWindow: boolean): boolean {
+  if (placed === undefined) return true;
+  return placed.kind === "island" || placed.kind === "elsewhere" ? isIslandWindow : !isIslandWindow;
+}
+
+/** A pending card's place went away: where it goes now (the same rule as its first place) and whether the safety net's timer
+ *  runs (no place shows its buttons, this program draws the net, and no card window of the net's is already open). */
+export function replacement(i: { placed: CardPlacement | undefined; front: boolean; drawnInWindow: boolean; buttonsShown: boolean; fallbackHere: boolean; fallbackWindowOpen: boolean }): { place: CardPlace; armFallback: boolean } {
+  return { place: placeFromEngine(i.placed, { front: i.front, drawnInWindow: i.drawnInWindow }), armFallback: !i.buttonsShown && i.fallbackHere && !i.fallbackWindowOpen };
+}
+
 /** What the window shows that a card can belong to, from the shell's state: a bot's tab, or a coding session's or an agent's
  *  (`agent`, its id the session's). Settings over the tab, or any other page, shows none. */
 export function showingOf(state: { tab: { kind: string; id?: string }; dialog?: string } | undefined): Showing | null {

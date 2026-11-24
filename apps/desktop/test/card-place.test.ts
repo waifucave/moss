@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
+import { replacement, windowShowsCard, APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
 import { SealedFrames } from "../src/main/sealed";
 
 /** The app's bookkeeping for where a pending card is drawn, as index.ts keeps it, over a fake front state: the three
@@ -403,5 +403,38 @@ describe("the preview keeps every card in its own window", () => {
     expect(placeCard({ front: st.focused, drawnInWindow: false })).toBe("window");
     expect(previewMainState(undefined).exists).toBe(false);
     expect(previewMainState({ isDestroyed: () => true }).focused).toBe(false);
+  });
+});
+
+describe("a pending card's place goes away: placed again by the same rule, the net armed when nothing shows its buttons", () => {
+  const base = { front: false, drawnInWindow: false, buttonsShown: false, fallbackHere: true, fallbackWindowOpen: false };
+  test("a card on the island stays on the island (window not in front) and the net runs; a card in the window goes where its first place went", () => {
+    expect(replacement({ ...base, placed: { kind: "island" } })).toEqual({ place: "island", armFallback: true });
+    expect(replacement({ ...base, placed: undefined })).toEqual({ place: "island", armFallback: true });
+    expect(replacement({ ...base, front: true, placed: { kind: "strip", program: "code", window: "main" } })).toEqual({ place: "window", armFallback: true });
+    expect(replacement({ ...base, front: true, drawnInWindow: true, placed: { kind: "conversation", program: "code", window: "main", session: "s" } as never })).toMatchObject({ place: "conversation" });
+  });
+  test("the net is not armed when another place shows the buttons, when this program does not draw it, or when its card window is open", () => {
+    expect(replacement({ ...base, buttonsShown: true, placed: { kind: "island" } }).armFallback).toBe(false);
+    expect(replacement({ ...base, fallbackHere: false, placed: { kind: "island" } }).armFallback).toBe(false);
+    expect(replacement({ ...base, fallbackWindowOpen: true, placed: { kind: "island" } }).armFallback).toBe(false);
+  });
+  test("a button counts only in the place the router chose: the window's frames do not hold the net back for a card on the island (row 88), nor an island surface for a card in the window", () => {
+    expect(windowShowsCard({ kind: "island" }, false)).toBe(false);
+    expect(windowShowsCard({ kind: "island" }, true)).toBe(true);
+    expect(windowShowsCard({ kind: "elsewhere" }, true)).toBe(true);
+    expect(windowShowsCard({ kind: "strip", program: "code", window: "main" }, true)).toBe(false);
+    expect(windowShowsCard({ kind: "strip", program: "code", window: "main" }, false)).toBe(true);
+    expect(windowShowsCard(undefined, true)).toBe(true);
+  });
+  test("the folded island (its button not visible) with the window's frames showing: no place shows the card, the net runs", () => {
+    const store = new SealedFrames();
+    const CARD = { id: "card_fold", kind: "tool", computer: "Studio", origin: "user", issuedAt: 0, expiresAt: null, hash: "a".repeat(64), fields: {}, options: [{ id: "a", kind: "approve", label: "A" }, { id: "d", kind: "deny", label: "D" }] } as never;
+    store.fromCore(CARD);
+    const f = { parent: { processId: 1, routingId: 1 } };
+    for (const [win, on] of [[1, true], [10, false]] as const) for (const e of ["button:a", "button:d"]) { const t = store.mint("card_fold", e, f, win)!.token; store.markVisible(t, on); }
+    const shown = store.buttonsVisible("card_fold", (w) => windowShowsCard({ kind: "island" }, w === 10));
+    expect(shown).toBe(false);
+    expect(replacement({ ...base, buttonsShown: shown, placed: { kind: "island" } }).armFallback).toBe(true);
   });
 });
