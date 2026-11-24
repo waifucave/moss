@@ -57,6 +57,9 @@ public struct ConversationScreen: View {
                 .padding(.horizontal, 16).padding(.top, 8)
             }
             .scrollDismissesKeyboard(.interactively)
+            // Messages pass under the bars as the system does it: the top and bottom scroll edge effects blur what is beneath the title and the composer.
+            .scrollEdgeEffectStyle(.hard, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
             .defaultScrollAnchor(startsAtTop ? .top : .bottom)
             .task(id: scrollTarget) { if let t = scrollTarget { try? await Task.sleep(for: .seconds(1)); proxy.scrollTo(t, anchor: .top) } }
             .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
