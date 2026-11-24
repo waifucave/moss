@@ -167,7 +167,7 @@ jobs:
         working-directory: packages/core
         run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts
 
-      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.84)
+      - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.85)
         working-directory: packages/core
         run: |
           $env:MOSS_WIN_RUNTIME_E2E = "1"

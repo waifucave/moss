@@ -111,12 +111,20 @@
         "value": {
           "inputPerMTokUsd": 1.25,
           "outputPerMTokUsd": 2.5,
-          "cacheReadPerMTokUsd": 0.2
+          "cacheReadPerMTokUsd": 0.2,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 2.5,
+              "outputPerMTokUsd": 5,
+              "cacheReadPerMTokUsd": 0.4
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — current global Standard Text API price table for grok-4.20-0309-non-reasoning; it charges the listed long-context rate for every token after the prompt reaches 200K and applies a 10% US-regional premium. This catalog records the standard short-context rate (retrieved 2026-09-19).",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.20-0309-non-reasoning: below 200k prompt tokens $1.25 input / $0.2 cached / $2.5 output per 1M; at 200k prompt tokens and above $2.5 / $0.4 / $5; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-19T00:00:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [],
       "status": "candidate",
@@ -230,12 +238,20 @@
         "value": {
           "inputPerMTokUsd": 1.25,
           "outputPerMTokUsd": 2.5,
-          "cacheReadPerMTokUsd": 0.2
+          "cacheReadPerMTokUsd": 0.2,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 2.5,
+              "outputPerMTokUsd": 5,
+              "cacheReadPerMTokUsd": 0.4
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — current global Standard Text API price table for grok-4.20-0309-reasoning; it charges the listed long-context rate for every token after the prompt reaches 200K and applies a 10% US-regional premium. This catalog records the standard short-context rate (retrieved 2026-09-19).",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.20-0309-reasoning: below 200k prompt tokens $1.25 input / $0.2 cached / $2.5 output per 1M; at 200k prompt tokens and above $2.5 / $0.4 / $5; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-19T00:00:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [],
       "status": "candidate",
@@ -333,12 +349,20 @@
         "value": {
           "inputPerMTokUsd": 1.25,
           "outputPerMTokUsd": 2.5,
-          "cacheReadPerMTokUsd": 0.2
+          "cacheReadPerMTokUsd": 0.2,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 2.5,
+              "outputPerMTokUsd": 5,
+              "cacheReadPerMTokUsd": 0.4
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — grok-4.20-multi-agent-0309 Standard global short-context rate (<200k prompt tokens): $1.25 input, $0.20 cached input, $2.50 output per 1M; >=200k the entire request is charged $2.50/$0.40/$5.00. US-regional 1.1x applies only to models currently on that endpoint, listed as grok-4.7 and grok-4.6; not this model (re-read 2026-09-25, WS-23).",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.20-multi-agent-0309: below 200k prompt tokens $1.25 input / $0.2 cached / $2.5 output per 1M; at 200k prompt tokens and above $2.5 / $0.4 / $5; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-25T17:09:48Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [
         "max_output_tokens",
@@ -437,12 +461,20 @@
         "value": {
           "inputPerMTokUsd": 1.25,
           "outputPerMTokUsd": 2.5,
-          "cacheReadPerMTokUsd": 0.2
+          "cacheReadPerMTokUsd": 0.2,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 2.5,
+              "outputPerMTokUsd": 5,
+              "cacheReadPerMTokUsd": 0.4
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — grok-4.3 Standard global short-context rate: $1.25 input/$2.5 output/$0.2 cached per million; long-context threshold 200K. US-regional 1.1x applies only to models currently on that endpoint, listed as grok-4.7 and grok-4.6; not grok-4.3.",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.3: below 200k prompt tokens $1.25 input / $0.2 cached / $2.5 output per 1M; at 200k prompt tokens and above $2.5 / $0.4 / $5; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-25T12:31:56.381Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [],
       "status": "candidate",
@@ -537,12 +569,20 @@
         "value": {
           "inputPerMTokUsd": 2,
           "outputPerMTokUsd": 6,
-          "cacheReadPerMTokUsd": 0.3
+          "cacheReadPerMTokUsd": 0.3,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 4,
+              "outputPerMTokUsd": 12,
+              "cacheReadPerMTokUsd": 0.6
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — grok-4.5 global short-context <200k prompt tokens: $2 input, $0.3 cached input, $6 output per 1M; >=200k entire request is charged long-context rates of $4/$0.6/$12; US regional endpoint adds 10%",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.5: below 200k prompt tokens $2 input / $0.3 cached / $6 output per 1M; at 200k prompt tokens and above $4 / $0.6 / $12; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-25T08:40:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [
         "presence_penalty",
@@ -639,12 +679,20 @@
         "value": {
           "inputPerMTokUsd": 2,
           "outputPerMTokUsd": 6,
-          "cacheReadPerMTokUsd": 0.5
+          "cacheReadPerMTokUsd": 0.5,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 4,
+              "outputPerMTokUsd": 12,
+              "cacheReadPerMTokUsd": 1
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/docs/models — Text API pricing table, headers \"Model | Context | Input / 1M tokens | Cached input / 1M tokens | Output / 1M tokens\": grok-4.6 (<200k prompt tokens) row reads $2.00 input / $0.50 cached input / $6.00 output per 1M tokens (retrieved 2026-09-07; ADDED in P6.6 Task 1b fix r1, I-1 — the cached-input column was on the page at authoring and was missed). The table also lists a >=200k tier at $4.00 input / $1.00 cached input / $12.00 output; `ModelPricing` carries one rate per direction, so the STANDARD (<200k) tier is recorded and the estimator UNDER-counts long-context turns on this row — same disclosed gap as openai/gpt-6-astra's long-context tier.",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.6: below 200k prompt tokens $2 input / $0.5 cached / $6 output per 1M; at 200k prompt tokens and above $4 / $1 / $12; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-07T00:00:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [
         "presence_penalty",
@@ -762,12 +810,20 @@
         "value": {
           "inputPerMTokUsd": 2,
           "outputPerMTokUsd": 6,
-          "cacheReadPerMTokUsd": 0.5
+          "cacheReadPerMTokUsd": 0.5,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200000,
+              "inputPerMTokUsd": 4,
+              "outputPerMTokUsd": 12,
+              "cacheReadPerMTokUsd": 1
+            }
+          ]
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.x.ai/developers/pricing — grok-4.7 global short-context <200k prompt tokens: $2 input, $0.5 cached input, $6 output per 1M; >=200k entire request is charged long-context rates of $4/$1/$12; US regional endpoint adds 10%",
+        "sourceRef": "https://docs.x.ai/docs/models (read 2026-11-24) — grok-4.7: below 200k prompt tokens $2 input / $0.5 cached / $6 output per 1M; at 200k prompt tokens and above $4 / $1 / $12; \"Long-context pricing applies to the whole request once the prompt reaches 200k tokens\" (so the tier starts at 200,000, inclusive).",
         "confidence": "declared",
-        "observedAt": "2026-09-25T08:40:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [
         "presence_penalty",
@@ -870,7 +926,7 @@
         "observedAt": "2026-09-25T12:31:56.381Z"
       },
       "unsupportedParameters": [],
-      "status": "candidate",
+      "status": "deprecated",
       "canonicalModelId": "grok-build-0.1",
       "modelFamily": "grok",
       "strength": "medium"

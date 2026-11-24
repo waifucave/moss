@@ -2,7 +2,7 @@ import { SDK_VERSION } from "@waifucave/clover-agent-sdk";
 
 /** The exact peer versions this daemon was written against (P8b-3). The ^ ranges in package.json
  *  are what INSTALLS; these are what the tests PROVE installed. Bump together with the pins. */
-export const REQUIRED_WINTER_AGENT_SDK = "0.0.84";
+export const REQUIRED_WINTER_AGENT_SDK = "0.0.85";
 /**
  * THE CODING AGENT BINARY, on its own pin since A-M1. Code sessions run embedded and no session spawns
  * it any more; it is lane K's (the coding agent that becomes an ACP agent, spec §9.3), and the tests that
@@ -11,7 +11,10 @@ export const REQUIRED_WINTER_AGENT_SDK = "0.0.84";
  * builds its own.
  */
 export const CODING_AGENT_BINARY_VERSION = "0.0.55";
-/** Bumped to 0.0.84 (2026-11-23): the runtime starts and runs a turn on Windows (its temp folder there is the user's own: `TEMP`, then `TMP`, from the
+/** Bumped to 0.0.85 (2026-11-24): a host tool that takes a built-in's name (MOSS's `Agent`) is offered exactly as the host defined
+ *  it, no built-in decoration added to its schema; the catalog refresh of 2026-11-24 (Gemini 4, Qwen4 Max, Muse Ember and Wonder,
+ *  Mistral Large 4, Hy4 and Hy4 Flash on TokenHub, Alibaba prices, uncloseai blocked, the family slots).
+ *  Earlier: bumped to 0.0.84 (2026-11-23): the runtime starts and runs a turn on Windows (its temp folder there is the user's own: `TEMP`, then `TMP`, from the
  *  session's environment when under the profile, else `<profile>\AppData\Local\Temp`; a host's `<PREFIX>TMPDIR` is used as given; the uid
  *  owner checks are skipped; the single-name stores refuse a backslash, colon, forbidden character, trailing dot or space, reserved device name).
  *  Earlier: bumped to 0.0.83 (2026-11-18): reasoning is carried natively across a model or provider switch or left out (the pasted-in

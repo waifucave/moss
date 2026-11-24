@@ -612,20 +612,20 @@
       "strength": "medium"
     },
     {
-      "key": "mistral/mistral-large-latest",
+      "key": "mistral/mistral-large-4",
       "providerId": "mistral",
-      "upstreamId": "mistral-large-latest",
-      "displayName": "Mistral Large 3",
+      "upstreamId": "mistral-large-4",
+      "displayName": "Mistral Large 4",
       "aliases": [],
       "endpoints": [
         "chat"
       ],
       "contextWindow": {
-        "value": 256000,
+        "value": 1000000,
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/models/mistral-large-3-25-12 — mistral-large-2512 model card lists 256k context; https://docs.mistral.ai/vibe/code/cli/configuration lists mistral-large-latest for this model",
-        "confidence": "inferred",
-        "observedAt": "2026-09-25T10:33:43Z"
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — \"contextWindow\": 1000000; Context 1M",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "inputModalities": {
         "value": [
@@ -633,9 +633,9 @@
           "image"
         ],
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/studio/conversations/vision — mistral-large-2512 model is multimodal / has vision input for chat; text also supported",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — \"inputs\": [\"text\", \"image\"]; outputs reasoning, text",
         "confidence": "declared",
-        "observedAt": "2026-09-25T10:33:43Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "outputModalities": {
         "value": [
@@ -649,16 +649,16 @@
       "toolCalling": {
         "value": "native",
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/models/mistral-large-3-25-12 — mistral-large-2512 feature list includes Function Calling",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include function-calling",
         "confidence": "declared",
-        "observedAt": "2026-09-25T10:33:43Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "nativeTools": {
         "value": true,
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/models/mistral-large-3-25-12 — mistral-large-2512 feature list includes Function Calling",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include function-calling",
         "confidence": "declared",
-        "observedAt": "2026-09-25T10:33:43Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "parallelTools": {
         "value": true,
@@ -670,9 +670,96 @@
       "structuredOutput": {
         "value": true,
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/models/mistral-large-3-25-12 — mistral-large-2512 feature list includes Structured Outputs",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include structured-outputs",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "promptCaching": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/studio/conversations/advanced/prompt-caching — Chat API supports prompt_cache_key; cache hits on shared prefixes are charged at 10% of standard input",
+        "confidence": "inferred",
+        "observedAt": "2026-09-25T10:33:43Z"
+      },
+      "pricing": {
+        "value": {
+          "inputPerMTokUsd": 0.7,
+          "outputPerMTokUsd": 2.1,
+          "cacheReadPerMTokUsd": 0.07
+        },
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — Input $0.7, Cached input $0.07, Output $2.1 per M tokens (USD)",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "unsupportedParameters": [],
+      "status": "candidate",
+      "canonicalModelId": "mistral-large-4",
+      "modelFamily": "mistral",
+      "strength": "strong"
+    },
+    {
+      "key": "mistral/mistral-large-latest",
+      "providerId": "mistral",
+      "upstreamId": "mistral-large-latest",
+      "displayName": "Mistral Large (latest: Large 4)",
+      "aliases": [],
+      "endpoints": [
+        "chat"
+      ],
+      "contextWindow": {
+        "value": 1000000,
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — \"contextWindow\": 1000000; Context 1M",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "inputModalities": {
+        "value": [
+          "text",
+          "image"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — \"inputs\": [\"text\", \"image\"]; outputs reasoning, text",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "outputModalities": {
+        "value": [
+          "text"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-3-25-12 — mistral-large-2512 chat text output is shown",
         "confidence": "declared",
         "observedAt": "2026-09-25T10:33:43Z"
+      },
+      "toolCalling": {
+        "value": "native",
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include function-calling",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "nativeTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include function-calling",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "parallelTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/studio/conversations/function-calling — parallel_tool_calls true is default for Mistral function calling; applied to this function-calling model",
+        "confidence": "inferred",
+        "observedAt": "2026-09-25T10:33:43Z"
+      },
+      "structuredOutput": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — features include structured-outputs",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "promptCaching": {
         "value": true,
@@ -683,20 +770,20 @@
       },
       "pricing": {
         "value": {
-          "inputPerMTokUsd": 0.5,
-          "outputPerMTokUsd": 1.5,
-          "cacheReadPerMTokUsd": 0.05
+          "inputPerMTokUsd": 0.7,
+          "outputPerMTokUsd": 2.1,
+          "cacheReadPerMTokUsd": 0.07
         },
         "source": "official-doc",
-        "sourceRef": "https://docs.mistral.ai/inference/pricing — current Mistral Standard regional-inference USD rates, per million tokens (retrieved 2026-09-19). Batch and Priority are distinct rate cards; the published page has no cache-write rate.",
+        "sourceRef": "https://docs.mistral.ai/models/mistral-large-4 (read 2026-11-24; the page's own model record) — Input $0.7, Cached input $0.07, Output $2.1 per M tokens (USD)",
         "confidence": "declared",
-        "observedAt": "2026-09-19T00:00:00Z"
+        "observedAt": "2026-11-24T00:00:00Z"
       },
       "unsupportedParameters": [],
       "status": "candidate",
-      "canonicalModelId": "mistral-large-latest",
+      "canonicalModelId": "mistral-large-4",
       "modelFamily": "mistral",
-      "strength": "medium"
+      "strength": "strong"
     },
     {
       "key": "mistral/mistral-medium-3-5",

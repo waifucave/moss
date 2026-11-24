@@ -34,6 +34,130 @@
   },
   "rows": [
     {
+      "key": "meta/muse-ember-1.0",
+      "providerId": "meta",
+      "upstreamId": "muse-ember-1.0",
+      "displayName": "Muse Ember 1.0",
+      "aliases": [],
+      "endpoints": [
+        "chat"
+      ],
+      "contextWindow": {
+        "value": 1048576,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — context window 1,048,576 tokens; https://dev.meta.ai/docs/models.md (read 2026-11-24): Muse Ember `muse-ember-1.0`",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "inputModalities": {
+        "value": [
+          "text",
+          "image",
+          "video",
+          "audio",
+          "pdf"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — input text, image, video, audio and PDF; output text",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "outputModalities": {
+        "value": [
+          "text"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — output text only",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "toolCalling": {
+        "value": "native",
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — \"works with computer use, image understanding, tool calling, structured output, and search grounding\"; API formats Responses, Chat Completions and Messages",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "nativeTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — tool calling supported",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "parallelTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/tool-calling — parallel_tool_calls true by default in Chat and Responses; multiple tool calls may be returned",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "structuredOutput": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — structured output supported",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "promptCaching": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits — Muse Spark cached input has a separate price and prompt-prefix cache hits are documented",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "reasoning": {
+        "supported": {
+          "value": true,
+          "source": "official-doc",
+          "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — reasoning effort from \"minimal\" to \"max\", default \"max\"",
+          "confidence": "declared",
+          "observedAt": "2026-11-24T00:00:00Z"
+        },
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "continuation": "none",
+        "defaultEffort": "max"
+      },
+      "pricing": {
+        "value": {
+          "inputPerMTokUsd": 0.1,
+          "outputPerMTokUsd": 0.5,
+          "cacheReadPerMTokUsd": 0.004,
+          "longContextTiers": [
+            {
+              "minPromptTokens": 200001,
+              "inputPerMTokUsd": 0.3,
+              "outputPerMTokUsd": 1.5,
+              "cacheReadPerMTokUsd": 0.012
+            }
+          ]
+        },
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits.md (read 2026-11-24) — Muse Ember (`muse-ember-1.0`, Standard only): up to 200K input tokens $0.10 input / $0.004 cached input / $0.50 output per 1M; over 200K input tokens $0.30 / $0.012 / $1.50, and \"A request over 200K input tokens is billed at the long-context rates for all of its tokens\". Contributor mode is not offered for Muse Ember.",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "unsupportedParameters": [],
+      "status": "candidate",
+      "maxOutputTokens": {
+        "value": 524288,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-ember (read 2026-11-24) — max output 524,288 tokens",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "canonicalModelId": "muse-ember-1.0",
+      "modelFamily": "muse",
+      "strength": "weak"
+    },
+    {
       "key": "meta/muse-spark-1.1",
       "providerId": "meta",
       "upstreamId": "muse-spark-1.1",
@@ -568,6 +692,115 @@
       "canonicalModelId": "muse-spark-1.3-contributor",
       "modelFamily": "muse",
       "strength": "medium"
+    },
+    {
+      "key": "meta/muse-wonder-1.0",
+      "providerId": "meta",
+      "upstreamId": "muse-wonder-1.0",
+      "displayName": "Muse Wonder 1.0 (preview)",
+      "aliases": [],
+      "endpoints": [
+        "chat"
+      ],
+      "contextWindow": {
+        "value": 1048576,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — context window 1,048,576 tokens",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "inputModalities": {
+        "value": [
+          "text",
+          "image",
+          "video",
+          "audio",
+          "pdf"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — input text, image, video, audio and PDF; output text",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "outputModalities": {
+        "value": [
+          "text"
+        ],
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/models — muse-spark-1.3 table lists text output",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "toolCalling": {
+        "value": "native",
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — tool calling supported, in parallel",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "nativeTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — tool calling supported",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "parallelTools": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — tools called in parallel",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "structuredOutput": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/structured-output — Muse Spark example uses response_format json_schema; family capability",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "promptCaching": {
+        "value": true,
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits — Muse Spark cached input has a separate price and prompt-prefix cache hits are documented",
+        "confidence": "declared",
+        "observedAt": "2026-09-25T10:38:08Z"
+      },
+      "reasoning": {
+        "supported": {
+          "value": true,
+          "source": "official-doc",
+          "sourceRef": "https://dev.meta.ai/docs/muse-wonder (read 2026-11-24) — reasoning effort from \"minimal\" to \"max\", default \"max\"",
+          "confidence": "declared",
+          "observedAt": "2026-11-24T00:00:00Z"
+        },
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "continuation": "none",
+        "defaultEffort": "max"
+      },
+      "pricing": {
+        "value": {
+          "inputPerMTokUsd": 4,
+          "outputPerMTokUsd": 20,
+          "cacheReadPerMTokUsd": 0.2
+        },
+        "source": "official-doc",
+        "sourceRef": "https://dev.meta.ai/docs/pricing-rate-limits.md (read 2026-11-24) — Muse Wonder (`muse-wonder-1.0`), Standard mode: $4.00 input / $0.20 cached input / $20.00 output per 1M; Contributor mode not available",
+        "confidence": "declared",
+        "observedAt": "2026-11-24T00:00:00Z"
+      },
+      "unsupportedParameters": [],
+      "status": "candidate",
+      "canonicalModelId": "muse-wonder-1.0",
+      "modelFamily": "muse",
+      "strength": "strong"
     }
   ]
 }
