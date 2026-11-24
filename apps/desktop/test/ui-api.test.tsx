@@ -608,6 +608,19 @@ describe("a document loaded again keeps the user's place", () => {
     expect(sessionStorage.getItem("moss.kept:moss:route")).toBe(JSON.stringify("plugins/installed"));
     expect(sessionStorage.getItem("moss.kept:moss:other")).toBeNull();
     second.unmount();
+    // The old document's tree unwinding as it is replaced (an unmount) leaves the value for the NEW document: the same mount in another
+    // document (its id differs) within the note's time has it; the same document's remount (the user left and came back) does not.
+    seen.length = 0;
+    const note = JSON.parse(sessionStorage.getItem("moss.kept.left:moss.kept:moss:route")!) as { doc: string };
+    expect(sessionStorage.getItem("moss.kept:moss:route")).toBeNull();
+    render(h(Keeper)).unmount();
+    expect(seen[0]).toBe("home");
+    sessionStorage.setItem("moss.kept.left:moss.kept:moss:route", JSON.stringify({ ...note, doc: "another-document", at: Date.now(), v: "plugins/installed" }));
+    seen.length = 0;
+    const third = render(h(Keeper));
+    expect(seen[0]).toBe("plugins/installed");
+    third.unmount();
+    sessionStorage.removeItem("moss.kept.left:moss.kept:moss:route");
     // Left (an unmount, the user going elsewhere): the next mount starts from its initial value.
     seen.length = 0;
     render(h(Keeper));

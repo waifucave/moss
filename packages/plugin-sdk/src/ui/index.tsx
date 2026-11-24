@@ -1673,11 +1673,16 @@ export function useBackendNames(): (backend: string | undefined) => string | und
   }, [names, reader]);
 }
 
+/** What a kept value's unmount leaves for a document that replaces this one (see `useKept`): the note's name prefix, this document's id, how long a note counts. */
+const KEPT_LEFT = "moss.kept.left:";
+const KEPT_DOC = Math.random().toString(36).slice(2);
+const KEPT_LEFT_MS = 15_000;
+
 /** State that outlives its document's reload in this window (`useState`'s shape): the user's place, a draft. A layer's
  *  document loads again when a plugin with its own layer is installed, turned on or updated (the frames it may hold are
  *  fixed when it is served), and what a part keeps this way is there again, from the first render, so the window shows
- *  the same page with no flash of another. Only a reload: the part's unmount (the user left the page) drops it, as it
- *  drops plain state, and so does a change of `key` (another conversation's draft starts from its own). A value that
+ *  the same page with no flash of another. The part's unmount (the user left the page) drops it, as it
+ *  drops plain state (a note of it is left for 15 s for a document that replaces this one: see the code), and so does a change of `key` (another conversation's draft starts from its own). A value that
  *  can't be stored or read is plain state.
  *
  *  Where it lives: the window's session storage (never `localStorage`), per plugin and key, as JSON. Session storage is
@@ -1697,6 +1702,12 @@ export function useKept<T>(key: string, initial: T | (() => T)): [T, (next: T | 
     try {
       const raw = globalThis.sessionStorage?.getItem(k);
       if (raw !== null && raw !== undefined) return JSON.parse(raw) as T;
+      // A value an unmount left (below): another document's, a moment ago, is the old document's tree unwinding as it was replaced.
+      const left = globalThis.sessionStorage?.getItem(KEPT_LEFT + k);
+      if (left !== null && left !== undefined) {
+        const l = JSON.parse(left) as { doc?: string; at?: number; v?: T };
+        if (l.doc !== KEPT_DOC && typeof l.at === "number" && Date.now() - l.at <= KEPT_LEFT_MS && "v" in l) return l.v as T;
+      }
     } catch {
       /* no storage, or not JSON: the initial value */
     }
@@ -1713,9 +1724,16 @@ export function useKept<T>(key: string, initial: T | (() => T)): [T, (next: T | 
       /* too large, or no storage: kept for this document only */
     }
   }, [current.k, current.v]);
-  // An unmount, or another key: this one goes. A document that goes away runs no cleanup, so a reload keeps it.
+  // An unmount, or another key: this one goes. A document that goes away runs no cleanup, so a reload keeps it. But a document being
+  // replaced can unwind its tree first (the old one stays alive, inert, until the new one has drawn: Linux window-2 lost the Plugins tab
+  // that way, run 45434352854), and a clear then left the new document nothing. So the value is not just dropped: a note of it is left
+  // under another name, with this document's id and the time. A mount in ANOTHER document within KEPT_LEFT_MS takes it (a reload); a mount in
+  // this same document (the user left the page and came back) never does, and starts from its initial value as before.
+  const latest = useRef(current.v);
+  latest.current = current.v;
   useEffect(() => () => {
     try {
+      if (latest.current !== undefined) globalThis.sessionStorage?.setItem(KEPT_LEFT + storeKey, JSON.stringify({ doc: KEPT_DOC, at: Date.now(), v: latest.current }));
       globalThis.sessionStorage?.removeItem(storeKey);
     } catch {
       /* no storage */
