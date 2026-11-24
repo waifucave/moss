@@ -1358,6 +1358,12 @@ async function questionRow(s: UnitState): Promise<string> {
   const t = tag("ASK");
   await sendInMoss(s, "MOSS", ask(t));
   await s.w.waitFor("the question drawn in her conversation, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(t)}))`, 120_000);
+  // 0. The Agent tool the bot is offered is MOSS's own (packages/core/src/agents/tools.ts, shadowing the runtime's built-in one,
+  // whose `model` is an enum of one family's aliases): its model is a plain string that points at AgentModels, no enum.
+  const offeredAgent = s.x.fake.requests.map((r) => r.agentModel).find((m) => m !== undefined) as { type?: string; enum?: unknown; description?: string } | undefined;
+  if (offeredAgent === undefined) s.x.fail("the bot's request offered no Agent tool with a model field");
+  else if (offeredAgent.type !== "string" || offeredAgent.enum !== undefined || !/AgentModels/.test(offeredAgent.description ?? "")) s.x.fail(`the bot's Agent tool tells the model its model field is ${JSON.stringify(offeredAgent).slice(0, 300)}, not a plain string that points at AgentModels`);
+
   const card = await s.w.eval<{ chip: string; options: string[]; described: string[]; send: boolean; box: boolean; stop: boolean }>(`(() => { const q = document.querySelector(${JSON.stringify(pendingSel)}); const o = [...q.querySelectorAll('.cl-conv-question__option')]; return { chip: q.querySelector('.cl-conv-question__chip')?.textContent ?? '', options: o.map((x) => x.querySelector('.cl-conv-question__option-label')?.textContent ?? ''), described: o.map((x) => x.querySelector('.cl-conv-question__option-description')?.textContent ?? ''), send: !q.querySelector('.cl-conv-question__send').disabled, box: !!q.querySelector('input[type=text]'), stop: !!document.querySelector('[data-composer] [data-stop]') }; })()`);
   if (card.chip !== "Model") s.x.fail(`the question's header is "${card.chip}", not "Model"`);
   if (JSON.stringify(card.options) !== JSON.stringify(["Codex's default (Recommended)", "Use opus", "Hold off"])) s.x.fail(`the options drawn are ${JSON.stringify(card.options)}`);
