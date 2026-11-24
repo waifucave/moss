@@ -13,6 +13,7 @@ leaves this file out of the site.
 | `moss-plugins-{light,dark}.png` | the same script, MOSS's Plugins page cut to "Add a plugin" and the MOSS Browser's tools (the page's next plugin, computer use, is left out: it is not in the first release) | 2026-11-18, 788 by 534 at 1x |
 | `moss-setup-{light,dark}.png` | the setup guide's first step, cut to its card | 2026-11-24, 2x |
 | `moss-setup-model-{light,dark}.png` | the setup guide's second step, cut to its card | 2026-11-24, 2x |
+| `moss-code-canvas-{light,dark}.png` | MOSS Code's live preview (`scripts/preview/run.ts --control --headless`, its throwaway home and sample sessions, nothing shown on screen), the canvas cut to the sessions on MOSS's own coding agent and the bot MOSS: the sample world's Codex, Claude Code and Gemini sessions, whose blocks carry those agents' marks, are below the cut. One block (Profile checkout page load) was dragged beside the others first, as a person can | 2026-11-24, 2x |
 
 ## To shoot again
 
@@ -21,8 +22,8 @@ leaves this file out of the site.
   (`offscreen: true` in `apps/moss/src/main/index.ts`), which draws at a scale of 1 whatever Chromium's
   `--force-device-scale-factor=2` says (tried: still 1280 by 820). A 2x render needs a scale in the render's own
   window, `offscreen: { deviceScaleFactor: 2 }` for `--moss-render`, which is the MOSS app's code, not this site's.
-* MOSS Code: there is no clean picture of it yet. Wanted: its canvas with sample sessions, and one session with its
-  panels, light and dark, at 2x, with no test titles, no temporary paths and no preview label. The site names agents
-  in text only, so a canvas picture must hold only MOSS's own agent's sessions and bots: the preview's sample world
-  (`scripts/preview/seed.ts`) also starts Codex, Claude Code and Gemini sessions, whose blocks carry those agents'
-  marks.
+* MOSS Code: one session open in its tab. The preview's sample sessions can't give one: its fake model answers every
+  message with test words (`ACCEPTANCE-REPLY-OK`, `scripts/acceptance/fake-anthropic.ts`), and the session's panel row
+  shows an Avatar tab, which this site leaves out. Wanted: a scripted sample conversation for a session on MOSS's own
+  agent, as MOSS's render has for its bots (`apps/moss/scripts/render.ts`'s long talk), and a way to leave the avatar
+  plugin out of a picture run; or a preview seed with only MOSS's own agent, so the whole canvas can be shown.

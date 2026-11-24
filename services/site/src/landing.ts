@@ -182,33 +182,13 @@ ${LEVELS.map(([name, what], i) => html`<div class="level${i === 2 ? " level--def
 </section>`;
 }
 
-/** The canvas sketch: blocks and lines in the page's own style. It is a drawing of what MOSS Code's start page shows,
- *  not a picture of the app, and its caption says so. */
-function canvasSketch(): Html {
-  const block = (id: string, title: string, agent: string, state: string, motion: "running" | "waiting" | "still") =>
-    html`<div class="cblock c-${id} cblock--${motion}" data-block="${id}"><span class="cblock__mark" aria-hidden="true">${agent.slice(0, 1)}</span><span class="cblock__text"><span class="cblock__title">${title}</span><span class="cblock__agent">${agent}</span><span class="cblock__state"><span class="cblock__dot" aria-hidden="true"></span>${state}</span></span></div>`;
-  // The lines join a session to the one that started it; the page's script draws them between the blocks as laid out.
-  return html`<figure class="sketch">
-<div class="canvas" role="img" aria-label="A sketch of MOSS Code's canvas. Fix the flaky upgrade test, on Claude Code, is running, and a line joins it to the helper it started, Read the logs, which is done. API refactor, on Codex, is waiting on two background jobs. MOSS, a bot, has started two sessions, joined to it by lines: Weekly usage report on MOSS's own coding agent, and Port the parser to Rust on OpenCode, both running." data-canvas>
-<svg class="canvas__lines" aria-hidden="true"><path data-link="fix>logs"/><path data-link="moss>report"/><path data-link="moss>port"/></svg>
-${block("fix", "Fix the flaky upgrade test", "Claude Code", "Running, editing run.ts", "running")}
-${block("logs", "Read the logs", "Claude Code, a helper", "Done, report sent", "still")}
-${block("api", "API refactor", "Codex", "Waiting on 2 background jobs", "waiting")}
-<div class="cblock cblock--bot c-moss" data-block="moss">${face({ name: "MOSS", pins: MOSS_PINS, mood: "working", size: "block" })}<span class="cblock__text"><span class="cblock__title">MOSS</span><span class="cblock__agent">a bot</span></span></div>
-${block("report", "Weekly usage report", "MOSS's coding agent", "Running, writing report.md", "running")}
-${block("port", "Port the parser to Rust", "OpenCode", "Running, cargo check", "running")}
-</div>
-<figcaption>A sketch of MOSS Code's canvas, drawn for this page. A picture of the app will take its place.</figcaption>
-</figure>`;
-}
-
 function code(): Html {
   return html`<section class="band" id="code" aria-labelledby="code-title">
 <div class="band__head">
 <h2 id="code-title">MOSS Code: your coding agents, side by side</h2>
 <p class="lead">MOSS Code is the second app. It runs the coding agents you already use, each in a session of its own, and lays them out on one canvas, so you can see what every one of them is doing and open any of them.</p>
 </div>
-${canvasSketch()}
+${picture({ name: "moss-code-canvas", alt: "MOSS Code's canvas with sample sessions, each a block with its title, its model and what it is doing: Fix login redirect loop, idle; Run the dev server, waiting on one background job; Profile checkout page load, running and lit; and MOSS, a bot, joined by a line to Study notes, the session it started.", caption: "MOSS Code's canvas with sample sessions on MOSS's own coding agent, and MOSS, a bot, joined to the session it started. Sessions on other agents sit on the same canvas." })}
 <div class="facts">
 <div class="fact"><h3>The agents you have</h3><p>${AGENTS.join(", ")}, and MOSS's own coding agent. You install an agent the usual way, and MOSS Code finds it on your computer.</p></div>
 <div class="fact"><h3>The same cards</h3><p>Each agent keeps its own sign-in and its own sandbox. When it asks to do something, the request goes through your level and comes to you on the same cards as a bot's.</p></div>

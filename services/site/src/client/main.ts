@@ -126,29 +126,6 @@ function yourSystem(): void {
   if (main !== null) main.textContent = `Download for ${names[key]}`;
 }
 
-/** The MOSS Code sketch's lines, drawn between its blocks as they are laid out (a curve from one block's right edge to
- *  the other's left edge), again whenever the sketch changes size. On a narrow screen the blocks stack and the lines hide. */
-function canvasLines(): void {
-  const canvas = document.querySelector<HTMLElement>("[data-canvas]");
-  const svg = canvas?.querySelector("svg");
-  if (!canvas || !svg) return;
-  const draw = () => {
-    const box = canvas.getBoundingClientRect();
-    svg.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
-    for (const path of svg.querySelectorAll("path[data-link]")) {
-      const [from, to] = (path.getAttribute("data-link") ?? "").split(">");
-      const a = canvas.querySelector(`[data-block="${from}"]`)?.getBoundingClientRect();
-      const b = canvas.querySelector(`[data-block="${to}"]`)?.getBoundingClientRect();
-      if (!a || !b) continue;
-      const x1 = a.right - box.left, y1 = a.top + a.height / 2 - box.top, x2 = b.left - box.left, y2 = b.top + b.height / 2 - box.top;
-      const bend = Math.max(24, (x2 - x1) / 2);
-      path.setAttribute("d", `M${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
-    }
-  };
-  new ResizeObserver(draw).observe(canvas);
-  draw();
-}
-
 /** Copy buttons on the docs' code blocks. */
 function copyButtons(): void {
   if (navigator.clipboard === undefined) return;
@@ -261,7 +238,6 @@ wakeFaces();
 liveList();
 tryName();
 yourSystem();
-canvasLines();
 copyButtons();
 docNav();
 search();

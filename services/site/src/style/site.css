@@ -20,7 +20,6 @@
   --user-bg: #0A0A0A;
   --user-text: #FFFFFF;
   --bot-bg: #F0F0F0;
-  --dot: rgba(0, 0, 0, 0.13);
   --code-bg: #F7F7F7;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -49,7 +48,6 @@
     --user-bg: #F2F2F2;
     --user-text: #111111;
     --bot-bg: #262626;
-    --dot: rgba(255, 255, 255, 0.12);
     --code-bg: #1A1A1A;
   }
 }
@@ -159,7 +157,7 @@ h3 { font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: 
 .note a { color: var(--text); }
 
 /* Every stacking grid's one column is never wider than its container, however wide a code block inside it is. */
-.hero, .hero__text, .band, .band__head, .facts, .pic, .moods, .split, .split__side, .levels, .connects, .sketch, .dl, .app, .dev,
+.hero, .hero__text, .band, .band__head, .facts, .pic, .moods, .split, .split__side, .levels, .connects, .dl, .app, .dev,
 .docs, .doc, .prose, .doc__head, .outline, .lost { grid-template-columns: minmax(0, 1fr); }
 
 /* ---------------------------------------------------------------- faces */
@@ -276,57 +274,6 @@ figcaption { font-size: 0.875rem; color: var(--muted); }
 .connects__list li { padding: 12px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9688rem; }
 .connects__list li:last-child { border-bottom: 1px solid var(--line); }
 .connects__list strong { color: var(--text); font-weight: 650; }
-
-/* The canvas sketch: MOSS Code's start page drawn in the page's own style. */
-.sketch { display: grid; gap: 12px; }
-.canvas {
-  position: relative; border-radius: var(--radius); border: 1px solid var(--line);
-  background-color: var(--list-bg);
-  background-image: radial-gradient(var(--dot) 1px, transparent 1.2px);
-  background-size: 18px 18px;
-  aspect-ratio: 1000 / 470;
-  overflow: hidden;
-}
-.canvas__lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.canvas__lines path { fill: none; stroke: var(--faint); stroke-width: 1.5; }
-.cblock {
-  position: absolute; width: 26%; min-width: 0;
-  display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: start;
-  padding: 12px 12px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line);
-  font-size: 0.8125rem; line-height: 1.35;
-}
-.cblock__mark {
-  width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
-  background: var(--field); color: var(--text); font-weight: 700; font-size: 0.875rem;
-}
-.cblock__text { display: grid; gap: 1px; min-width: 0; }
-.cblock__title { font-weight: 650; font-size: 0.875rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cblock__agent { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cblock__state { color: var(--muted); display: flex; gap: 6px; align-items: center; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cblock__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
-.cblock--running { border-color: var(--line-strong); }
-.cblock--running .cblock__dot { background: var(--text); }
-.cblock--waiting { border-style: dashed; border-color: var(--line-strong); }
-.cblock--waiting .cblock__dot { background: transparent; border: 1.5px solid var(--text); }
-.cblock--bot { width: auto; grid-template-columns: 40px auto; align-items: center; padding-right: 18px; }
-.cblock--bot .face { width: 40px; height: 40px; }
-.c-fix { left: 4%; top: 9%; }
-.c-logs { left: 40%; top: 9%; }
-.c-api { left: 4%; top: 62%; }
-.c-moss { left: 40%; top: 62%; }
-.c-report { left: 68%; top: 40%; width: 28%; }
-.c-port { left: 68%; top: 72%; width: 28%; }
-@media (prefers-reduced-motion: no-preference) {
-  .cblock--running .cblock__dot { animation: beat 1.6s ease-in-out infinite; }
-}
-@keyframes beat { 50% { opacity: 0.35; } }
-@media (max-width: 760px) {
-  .canvas { aspect-ratio: auto; display: grid; gap: 10px; padding: 14px; }
-  .canvas__lines { display: none; }
-  .cblock { position: static; width: auto; }
-  .c-report, .c-port { width: auto; }
-  .cblock--bot { justify-self: start; }
-}
 
 /* Systems */
 .systems { border-collapse: collapse; width: 100%; max-width: 760px; font-size: 1rem; }

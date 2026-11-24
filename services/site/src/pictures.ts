@@ -32,7 +32,7 @@ export interface PictureSpec {
  *  frame: drawn bare, on the page's own colour, which is the app's. */
 const BARE = new Set(["moss-card", "moss-setup", "moss-setup-model", "moss-plugins"]);
 /** Pictures rendered at 2x (public/pictures/SOURCES.md), drawn at half their pixel width. */
-const DENSITY: Readonly<Record<string, number>> = { "moss-setup": 2, "moss-setup-model": 2 };
+const DENSITY: Readonly<Record<string, number>> = { "moss-setup": 2, "moss-setup-model": 2, "moss-code-canvas": 2 };
 
 export function picture(p: PictureSpec): Html {
   const file = (theme: string, narrow = false) => `${p.name}${narrow ? "-narrow" : ""}-${theme}.png`;

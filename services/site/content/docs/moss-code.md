@@ -3,7 +3,7 @@ title: MOSS Code and coding agents
 description: MOSS Code runs the coding agents you already use, each in a session of its own, side by side on one canvas. This page covers starting a session, the canvas, the cards, and adding an agent.
 ---
 
-> **Not released yet.** This page describes MOSS Code as it is being built for the first release. It has no picture yet: one of the app with sample sessions will be added.
+> **Not released yet.** This page describes MOSS Code as it is being built for the first release.
 
 ## What MOSS Code is
 
@@ -50,6 +50,8 @@ moss code ~/projects/web-app --computer Studio --backend opencode -p "Fix the fl
 ## The canvas
 
 MOSS Code's start page is a canvas of all your sessions, each one a block with its agent, its title, its model and one line saying what it's doing.
+
+{{picture moss-code-canvas "MOSS Code's canvas with sample sessions: Fix login redirect loop, idle; Run the dev server, waiting on one background job, with a dashed edge; Profile checkout page load, running and lit; and MOSS, a bot, joined by a line to Study notes, the session it started." "Sample sessions on MOSS's own coding agent, and the bot that started one of them."}}
 
 - A block that is running is lit; one that is waiting on its own background work shows that it's waiting.
 - A helper an agent started (a subagent) hangs from its block by a line.

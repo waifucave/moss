@@ -34,8 +34,8 @@ The opening is a bot list: the headline, "Bots that do the work on your computer
 
 * **Type:** the system's own font (San Francisco on a Mac, Segoe UI on Windows), the font the apps use. No web font: zero bytes and zero requests. A clear scale: large tight headlines, 17 px body, 14 px notes.
 * **Colour:** the MOSS window's own tokens (`apps/moss/src/window/window.css`): white, `#F7F7F7`, black `#0A0A0A` for buttons and the person's words, `#F0F0F0` for the bot's words, and the same set turned for dark mode. Links are the text colour, underlined. No blue, no beige, no gradient, no glow.
-* **Faces:** the opening's list, the moods row, the name field's bot, the MOSS Code canvas sketch's bot block and the header's logo (MOSS, the default bot: the coral tile with round eyes, which is the app's icon) are all live. With "reduce motion" on, the kit leaves out jumps and turns, and a mood is also said in words beside every face.
-* **Pictures:** real renders of the MOSS app with sample data only, in light and dark (`public/pictures/SOURCES.md`). Where no clean picture exists (MOSS Code's canvas) the page shows a sketch and says that it is one.
+* **Faces:** the opening's list, the moods row, the name field's bot and the header's logo (MOSS, the default bot: the coral tile with round eyes, which is the app's icon) are all live. With "reduce motion" on, the kit leaves out jumps and turns, and a mood is also said in words beside every face.
+* **Pictures:** real renders of the apps with sample data only, in light and dark (`public/pictures/SOURCES.md`). MOSS Code's canvas is cut to sessions on MOSS's own coding agent: other agents are named in text, and their marks stay off the page.
 
 ## Rejected
 
