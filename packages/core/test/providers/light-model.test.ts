@@ -71,7 +71,7 @@ describe("the table", () => {
   });
 
   test("a family with one model has its default as its light model", () => {
-    for (const id of ["command", "ernie", "hunyuan", "muse", "nemotron", "grok", "kimi"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
+    for (const id of ["command", "ernie", "nemotron", "grok", "kimi"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
   });
 
   test("the family of a model: by the row's own family, so a model that is no slot still has one", () => {

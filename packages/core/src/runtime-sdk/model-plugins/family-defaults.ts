@@ -16,11 +16,11 @@
 // no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
 // Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
 // published catalog yet); gemma and llama dropped (weak); grok 4.6 -> 4.7.
-// WAITING FOR THE AGENT SDK RELEASE THAT CARRIES THE ROWS (clover-sdk PR #89; this file may name only ids the pinned
-// catalog has): gemini -> gemini-4-hydrogen (Google's everyday tier; 3.8 Flash is "previous-generation" and its price rises
-// to Hydrogen's on 2027-01-01; Hydrogen takes low/medium/high/xhigh, so medium is sent); mistral -> mistral-large-4 (GA
-// since 2026-10-05; Large 3 is deprecated since 2026-10-31 and retires 2027-04-30, https://docs.mistral.ai/models);
-// hunyuan -> hy4 (Hy4 Preview retires 2026-12-07); muse light -> muse-ember-1.0.
+// With agent SDK 0.0.85 (2026-11-24): gemini -> gemini-4-hydrogen at medium (Google's everyday tier; 3.8 Flash is
+// "previous-generation" and its price rises to Hydrogen's on 2027-01-01; no Vertex row yet, so Vertex recommends nothing for
+// Gemini until one is published); mistral -> mistral-large-4 (GA since 2026-10-05; Large 3 deprecated 2026-10-31, retiring
+// 2027-04-30, https://docs.mistral.ai/models); hunyuan -> hy4, light hy4-flash (Hy4 Preview goes offline 2026-12-07); muse
+// light -> muse-ember-1.0.
 //
 // THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
 // declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
@@ -40,12 +40,12 @@ export interface FamilyDefault {
 export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
-  gemini: { model: "gemini-3.8-flash", effort: "medium" },
+  gemini: { model: "gemini-4-hydrogen", effort: "medium" }, // Gemini 4's everyday tier (agent SDK 0.0.85); not on Vertex yet
   grok: { model: "grok-4.7", effort: "medium" }, // xAI's current model (https://docs.x.ai/docs/release-notes.md, September 2026), same price as 4.6
   deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium
   kimi: { model: "kimi-k3.1-pro", effort: "high" }, // rows take low, high, max: no medium
   qwen: { model: "qwen3.7-plus", effort: "medium" },
-  mistral: { model: "mistral-large-2512" }, // its vendors' rows take no effort
+  mistral: { model: "mistral-large-4" }, // its row takes no effort (agent SDK 0.0.85)
   glm: { model: "glm-5.3", effort: "high" }, // rows take low, high, max: no medium
   minimax: { model: "minimax-m3" }, // its vendors' rows take no effort
   command: { model: "command-a-03-2025" }, // its vendors' rows take no effort
@@ -53,7 +53,7 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   nova: { model: "amazon.nova-pro" }, // its row takes no effort
   nemotron: { model: "nemotron-3-super-120b-a12b" }, // its vendors' rows take no effort
   ernie: { model: "ernie-5.1" }, // its vendors' rows take no effort
-  hunyuan: { model: "hy4-preview", effort: "medium" },
+  hunyuan: { model: "hy4", effort: "medium" }, // Hy4 Preview goes offline 2026-12-07 (agent SDK 0.0.85)
   muse: { model: "muse-spark-1.3", effort: "medium" },
   "gpt-oss": { model: "gpt-oss-120b", effort: "medium" },
 };
@@ -102,8 +102,8 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   kimi: { model: "kimi-k3.1-pro", effort: "low" },
   command: { model: "command-a-03-2025", effort: "low" },
   ernie: { model: "ernie-5.1", effort: "low" },
-  hunyuan: { model: "hy4-preview", effort: "low" },
-  muse: { model: "muse-spark-1.3", effort: "low" },
+  hunyuan: { model: "hy4-flash", effort: "low" },
+  muse: { model: "muse-ember-1.0", effort: "low" }, // Meta's "efficient execution model" (agent SDK 0.0.85)
   nemotron: { model: "nemotron-3-super-120b-a12b", effort: "low" },
   // Its vendors serve only weak models, so no default; the light model is the family's own (a person who picks one gets its jobs on it).
   gemma: { model: "gemma-4-31b-it", effort: "low" },

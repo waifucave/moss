@@ -36,7 +36,7 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(FAMILY_DEFAULTS.gemma).toBeUndefined();
     expect(FAMILY_DEFAULTS.llama).toBeUndefined();
     expect(rec("deepinfra")).toBeUndefined(); // deepinfra is a vendor of llama only
-    expect(catalog.models.find((m) => m.key === recM("google"))?.canonicalModelId).toBe("gemini-3.8-flash"); // google serves gemini and gemma
+    expect(catalog.models.find((m) => m.key === recM("google"))?.canonicalModelId).toBe("gemini-4-hydrogen"); // google serves gemini and gemma (agent SDK 0.0.85: Hydrogen)
   });
   test("a weak row is never recommended, whatever the table says; a row with no class is weak", () => {
     const row = catalog.models.find((m) => m.key === recM("anthropic"))!;
@@ -54,7 +54,7 @@ describe("the recommended default: the family's one default, as the provider ser
     const built = catalogFromModelPlugins(inputs, { families: catalog.families, catalogVersion: "default-model-test" }).catalog;
     expect(built.models.find((m) => m.key === "anthropic/claude-opus-5-5")?.strength).toBe("strong");
     expect(recommended(built, "anthropic")).toEqual({ model: "anthropic/claude-opus-5-5", effort: "medium" });
-    expect(recommended(built, "google")?.model).toBe("google/gemini-3.8-flash");
+    expect(recommended(built, "google")?.model).toBe("google/gemini-4-hydrogen");
     expect(recommended(built, "deepseek")?.model).toBeDefined();
     expect(recommended(built, "deepinfra")).toBeUndefined(); // Llama, whose vendors serve only weak models
   });
