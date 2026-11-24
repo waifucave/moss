@@ -1103,14 +1103,27 @@ export function installIpc(runtime: UiRuntime, hooks: IpcHooks, log: (line: stri
 /** S9: Electron 45 raises nothing when a subframe's renderer is killed, so the runtime counts processes. A census runs
  *  every few seconds while windows exist, and at once when any child process goes. */
 export function startCensus(runtime: UiRuntime, intervalMs = 5_000): () => void {
+  // A frame is declared gone only when two looks, a moment apart, both miss it: a document being replaced (a layer installed, a frame loaded
+  // again) is for a moment a frame `webFrameMain` doesn't know or calls detached, and the process whose exit set this look off may be the
+  // one it replaced. A killed process stays missing, so it is found one look later (acceptance window-3: the shell's frame was marked gone
+  // in the middle of its own reload and the window said it had stopped drawing).
+  const missed = new Set<string>();
+  let confirm: ReturnType<typeof setTimeout> | undefined;
   const run = () => {
     if (BrowserWindow.getAllWindows().length === 0) return;
     const pids = new Set(app.getAppMetrics().map((m) => m.pid));
+    const now = new Set<string>();
     runtime.census((f) => {
       const wf = webFrameMain.fromId(f.processId, f.routingId);
-      if (wf === undefined || wf === null || wf.detached) return false;
-      return f.osPid === undefined || pids.has(f.osPid);
+      const here = wf !== undefined && wf !== null && !wf.detached && (f.osPid === undefined || pids.has(f.osPid));
+      if (here) return true;
+      const key = `${f.processId}:${f.routingId}`;
+      now.add(key);
+      return !missed.has(key);
     });
+    missed.clear();
+    for (const k of now) missed.add(k);
+    if (now.size > 0 && confirm === undefined) confirm = setTimeout(() => { confirm = undefined; run(); }, 400);
   };
   const timer = setInterval(run, intervalMs);
   const soon = () => setTimeout(run, 50);
@@ -1118,6 +1131,7 @@ export function startCensus(runtime: UiRuntime, intervalMs = 5_000): () => void 
   app.on("child-process-gone", soon);
   return () => {
     clearInterval(timer);
+    if (confirm !== undefined) clearTimeout(confirm);
     app.removeListener("render-process-gone", soon);
     app.removeListener("child-process-gone", soon);
   };
