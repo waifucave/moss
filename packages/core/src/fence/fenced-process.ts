@@ -17,6 +17,8 @@ import { fenceContextFor } from "../contracts/fence";
 import type { MossFence } from "./fence";
 import { bwrapPlan, heldFolderNote } from "./linux-bwrap";
 import { unixSocketFilter } from "./seccomp";
+import { type CredentialPolicy, type SecretBackend, serveSandboxBus, sessionBusSecrets, unixBusPath } from "./linux-secret-broker";
+import { ffiLib, ffiPtr } from "../platform/ffi";
 import { PROCESS_HOLDER_FILE } from "../build-kind";
 import { agentConfigDirs, agentConfigFiles, gitTemplateDir, globalHooksPathDirs, loginStartDirs, loginStartSafeFiles, loginStartUnsafeFiles, selfUpdateFiles } from "./layout";
 import { supervisorArch } from "./linux-supervisor";
@@ -283,8 +285,24 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
           const plan = bwrapPlan({ policy, mossHome: o.fence.mossHome, cwd: r.cwd, uid: process.getuid?.() ?? 0, seccompFd: 3, caller, repoHooks, supervised: supervisedFiles });
           // The supervisor watches the fenced files that don't exist yet (spec item 1116, #198 B1): it refuses
           // plants with EACCES. Its file list reaches the shim as JSON; the template dir rides GIT_TEMPLATE_DIR.
-          const shimEnv = { ...r.env, GIT_TEMPLATE_DIR: template, MOSS_SUPERVISED_FILES: JSON.stringify(supervisedFiles) };
-          const result = await runCommand({ ...r, env: shimEnv }, { shell: "sh", argv: [process.execPath, join(import.meta.dir, "linux-sandbox-shim.ts"), bwrap, ...plan.args, "/bin/sh", "-c", r.command], extraFds: [fd] });
+          const shimEnv: Record<string, string> = { ...r.env, GIT_TEMPLATE_DIR: template, MOSS_SUPERVISED_FILES: JSON.stringify(supervisedFiles) };
+          // The credential broker (docs/linux-credential-broker.md): only when the run carries grants and the engine
+          // has a session bus. The sandbox's mounts and filters are the same either way; the command then starts
+          // under the bus relay, which reaches the engine through two pipes (the child's fds 4 and 5).
+          const broker = (r.credentials?.grants.length ?? 0) > 0 ? openBroker(r.credentials!) : null;
+          const inner = ["/bin/sh", "-c", r.command];
+          if (broker !== null) shimEnv.MOSS_SANDBOX_EXTRA_FDS = "4,5";
+          let result: FencedRunResult;
+          try {
+            result = await runCommand({ ...r, env: shimEnv }, {
+              shell: "sh",
+              argv: [process.execPath, join(import.meta.dir, "linux-sandbox-shim.ts"), bwrap, ...plan.args,
+                ...(broker === null ? inner : [process.execPath, join(import.meta.dir, "linux-bus-relay.ts"), "4", "5", ...inner])],
+              extraFds: broker === null ? [fd] : [fd, broker.childIn, broker.childOut],
+            });
+          } finally {
+            await broker?.end();
+          }
           if (result.kind === "refused") return result;
           if (result.kind === "exited" && result.code === 127 && result.stderr.includes("(closed)")) {
             return { kind: "refused", reason: `a fenced process can't be started here: ${result.stderr.trim().slice(0, 200)}` };
@@ -310,6 +328,57 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
 }
 
 const BWRAP = "/usr/bin/bwrap";
+
+/** The credential broker's pipes and its server for one run (Linux), or null when there is no session bus to read the
+ *  keyring from (then the run reaches no bus, as before). `childIn`/`childOut` are the relay's ends, passed to the
+ *  child; `end()` closes them, waits for the broker to drain and closes the engine's ends. */
+function openBroker(policy: CredentialPolicy): { childIn: number; childOut: number; end(): Promise<void> } | null {
+  if (unixBusPath(process.env.DBUS_SESSION_BUS_ADDRESS) === null) return null;
+  const toRelay = linuxPipe();
+  if (toRelay === null) return null;
+  const fromRelay = linuxPipe();
+  if (fromRelay === null) { closeFd(toRelay[0]); closeFd(toRelay[1]); return null; }
+  const writer = Bun.file(toRelay[1]).writer();
+  const server = serveSandboxBus({
+    input: Bun.file(fromRelay[0]).stream() as unknown as AsyncIterable<Uint8Array>,
+    write: (b) => { writer.write(b); void writer.flush(); },
+    policy,
+    backend: () => sessionBusSecrets() ?? noKeyring,
+  });
+  let ended = false;
+  return {
+    childIn: toRelay[0],
+    childOut: fromRelay[1],
+    async end() {
+      if (ended) return;
+      ended = true;
+      // The child is gone: closing our copies of its ends lets the broker's input end.
+      closeFd(toRelay[0]);
+      closeFd(fromRelay[1]);
+      await Promise.race([server.done, Bun.sleep(2000)]);
+      server.close();
+      try { await writer.end(); } catch { /* closed */ }
+      closeFd(toRelay[1]);
+      closeFd(fromRelay[0]);
+    },
+  };
+}
+
+const noKeyring: SecretBackend = { search: async () => [], item: async () => null, secret: async () => null, close: () => {} };
+
+/** pipe2(O_CLOEXEC) through libc (Linux): [read, write], or null. */
+function linuxPipe(): [number, number] | null {
+  const lib = ffiLib("linux-pipe", "libc.so.6", { pipe2: { args: ["ptr", "i32"], returns: "i32" }, close: { args: ["i32"], returns: "i32" } });
+  if (lib === null) return null;
+  const fds = new Int32Array(2);
+  if ((lib.pipe2!(ffiPtr(fds), 0o2000000) as number) !== 0) return null;
+  return [fds[0]!, fds[1]!];
+}
+
+function closeFd(fd: number): void {
+  const lib = ffiLib("linux-pipe", "libc.so.6", { pipe2: { args: ["ptr", "i32"], returns: "i32" }, close: { args: ["i32"], returns: "i32" } });
+  try { lib?.close!(fd); } catch { /* closed */ }
+}
 
 /** MOSS's empty git template for the sandbox: made here if missing, read-only to runners, so `git init` and
  *  `git clone` install no hooks. A user's own `init.templateDir` in their git config is overridden by the env var

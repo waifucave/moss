@@ -246,7 +246,9 @@ export function bwrapPlan(input: BwrapInput): { args: string[]; held: HeldFolder
     if (fs.kind(template) === "dir") a.push("--ro-bind", template, template);
     a.push("--remount-ro", mossHome);
   }
-  // The closed doors: the user's session bus and systemd (systemd-run --user), and the system bus.
+  // The closed doors: the user's session bus and systemd (systemd-run --user), and the system bus. They stay hidden
+  // even for a run that may read saved logins: its bus is the engine's credential broker, reached over the sandbox's
+  // own loopback through the bus relay, never a socket here (docs/linux-credential-broker.md).
   if (policy.closedDoors.length > 0) {
     const run = `/run/user/${input.uid}`;
     if (fs.kind(run) === "dir") a.push("--tmpfs", run);

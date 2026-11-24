@@ -1249,8 +1249,20 @@ jobs:
 
       - name: The private Secret Service's tools, and bubblewrap
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends dbus gnome-keyring libsecret-1-0 bubblewrap socat
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends dbus gnome-keyring libsecret-1-0 bubblewrap socat libsecret-tools libsecret-1-dev libglib2.0-dev pkg-config gcc
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # The credential broker's e2e (test/fence/linux-secret-broker.e2e.test.ts, docs/linux-credential-broker.md) runs
+      # real clients inside the fence: git's libsecret helper, built here from the source the git package ships (Ubuntu
+      # ships no binary of it), secret-tool, busctl, systemd-run and the runner's own gh. MOSS_BROKER_E2E makes a missing
+      # one fail the test instead of skipping it.
+      - name: git's libsecret credential helper
+        run: |
+          src="$(ls /usr/share/doc/git/contrib/credential/libsecret/git-credential-libsecret.c* | head -1)"
+          zcat -f "$src" > "$RUNNER_TEMP/git-credential-libsecret.c"
+          gcc -O2 -o "$RUNNER_TEMP/git-credential-libsecret" "$RUNNER_TEMP/git-credential-libsecret.c" $(pkg-config --cflags --libs libsecret-1 glib-2.0)
+          echo "MOSS_GIT_CREDENTIAL_LIBSECRET=$RUNNER_TEMP/git-credential-libsecret" >> "$GITHUB_ENV"
+          echo "MOSS_BROKER_E2E=1" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

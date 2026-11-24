@@ -42,7 +42,12 @@ async function main(): Promise<number> {
   if (worker === null) return closed("no worker thread");
   const shared = new SharedArrayBuffer(16);
   const flag = new Int32Array(shared);
-  const req: SupervisorRequest = { argv: [bwrap, ...args], env: { ...process.env } as Record<string, string>, seccompFd: 3, shared };
+  // The credential broker's pipes, when the run has them (`MOSS_SANDBOX_EXTRA_FDS`, "4,5"): passed to bwrap at the same
+  // numbers. The variable itself stays out of the command's environment.
+  const env = { ...process.env } as Record<string, string>;
+  const extraFds = (env.MOSS_SANDBOX_EXTRA_FDS ?? "").split(",").filter((s) => /^\d+$/.test(s)).map(Number).filter((n) => n > 3);
+  delete env.MOSS_SANDBOX_EXTRA_FDS;
+  const req: SupervisorRequest = { argv: [bwrap, ...args], env, seccompFd: 3, extraFds, shared };
   worker.postMessage(req);
   // Wait for the worker to install (or give up): it signals before spawning anything that could trap.
   const started = Date.now();

@@ -45,6 +45,10 @@ export interface FencedRun {
    *  has grown past what it was started under (a path it may not read appeared, or the profile read grant's
    *  exclusions must be made again), so the caller ends it. Windows only; elsewhere never called. */
   readonly onFenceGrew?: () => void;
+  /** Linux: the saved logins of the user's keyring this run may read, through the credential broker
+   *  (`linux-secret-broker.ts`, docs/linux-credential-broker.md). Absent or with no grants, the run reaches no bus at
+   *  all, as before. macOS and Windows ignore it. */
+  readonly credentials?: import("./linux-secret-broker").CredentialPolicy;
   /** Whose run it is: the fence's set, the home default-deny's allows, and the network rule are this caller's. */
   readonly who: {
     readonly caller: Caller; readonly hook?: string;

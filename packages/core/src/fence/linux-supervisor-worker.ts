@@ -11,6 +11,8 @@ export interface SupervisorRequest {
   readonly env: Record<string, string>;
   /** bwrap's `--seccomp` fd number in this process (3, passed through from runCommand). */
   readonly seccompFd: number;
+  /** More fds passed through to bwrap at the same numbers after the seccomp fd (the credential broker's pipes). */
+  readonly extraFds?: readonly number[];
   /** Shared flag word: [state, exitCode, listener]. The listener fd is process-wide, so no fd passing is needed. */
   readonly shared: SharedArrayBuffer;
 }
@@ -50,7 +52,7 @@ async function run(r: SupervisorRequest): Promise<void> {
   Atomics.store(flag, 2, listener);
   Atomics.store(flag, 0, SupervisorState.Running);
   Atomics.notify(flag, 0);
-  const child = Bun.spawn(r.argv as string[], { stdio: ["inherit", "inherit", "inherit", r.seccompFd], env: r.env });
+  const child = Bun.spawn(r.argv as string[], { stdio: ["inherit", "inherit", "inherit", r.seccompFd, ...(r.extraFds ?? [])] as never, env: r.env });
   const code = await child.exited;
   Atomics.store(flag, 1, typeof code === "number" ? code : 128);
   Atomics.store(flag, 0, SupervisorState.Done);
