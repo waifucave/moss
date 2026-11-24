@@ -80,6 +80,13 @@ describe("deleting a bot", () => {
     await w.b.shutdown();
   });
 
+  test("a damaged record of what was deleted: making a bot is refused with the doctor's words, never a spin", async () => {
+    const w = await world();
+    writeFileSync(join(w.home, "deleted.json"), "{ not json");
+    await expect(w.call("bot.create", { name: "Nova" })).rejects.toThrow("can't be read");
+    await w.b.shutdown();
+  });
+
   test("a bot made later with the same name starts with nothing of the old one", async () => {
     const w = await world();
     await madeNova(w);

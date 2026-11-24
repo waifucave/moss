@@ -25,7 +25,7 @@
 //   folder move to `archive/bots/<seg>/`, from which `restore` moves them back. Nothing is deleted. A crash in the
 //   middle is finished at the next start (`archived.json`'s `state`).
 // * **The move** (`move`): once, each plugin bot to a record of the same id (below, `move`).
-import { isDeletedBot } from "../deletion/tombstones";
+import { isDeletedBot, tombstoneProblem } from "../deletion/tombstones";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -249,7 +249,10 @@ export class BotRecordStore implements BotRecords {
   #taken = (id: string): boolean => {
     if (this.#records.has(id) || this.#archive.has(id)) return true;
     // A deleted bot's id is never given again: its memory and conversation, which the person's other computers may
-    // still hold, must never come back under a new bot (deletion/tombstones.ts).
+    // still hold, must never come back under a new bot (deletion/tombstones.ts). While that record is damaged no id
+    // can be checked against it, so minting one is refused with the doctor's words (never a guess, never a spin).
+    const problem = tombstoneProblem(this.#home);
+    if (problem !== undefined) throw new ContractError("failed", `a new bot can't be made now: ${problem}`);
     if (isDeletedBot(this.#home, id)) return true;
     for (const r of this.#o.reserved?.() ?? []) if (r === id) return true;
     // A folder on the disk under that segment (a plugin bot's memory, a leftover) is never taken over either.

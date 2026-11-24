@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendRotating } from "../append-log";
 import { join } from "node:path";
 import {
   nameError, parseFactFile, parseIndexEntries, serializeIndex, factFileContent,
@@ -86,7 +87,8 @@ export interface MemDirAuditLine { ts: number; op: "delete"; name: string }
 
 function appendMemDirAudit(dir: string, line: MemDirAuditLine): void {
   mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, ".audit.jsonl"), JSON.stringify(line) + "\n", "utf8");
+  // Rotates as the engine's other local records do (append-log.ts), so it never grows without end.
+  appendRotating(join(dir, ".audit.jsonl"), JSON.stringify(line) + "\n");
 }
 
 /** Delete one fact from `dir`, drop its MEMORY.md index line, and append a `.audit.jsonl` line

@@ -1,6 +1,6 @@
 import { ReadElements } from "./approvals/browser-words";
 import { homeEraseMethods } from "./deletion/erase-rpc";
-import { dropMossOsItems, eraseHome, writeEraseSignal } from "./deletion/erase-home";
+import { dropMossOsItems, ensureHomeMarker, eraseHome, takeEraseSignalAtStart, writeEraseResult, writeEraseSignal } from "./deletion/erase-home";
 import { pluginToolContained, pluginToolReadOnly, pluginWebTool } from "./registry/read-only-tools";
 import { bundledManifest, bundledPluginsDir, loadBundledManifest, type BundledManifest } from "./bundled-plugins-dir";
 import { buildDevBundledPlugins, devBundledSource, stageBundledPlugins, stagedBotChoice, stagedBundledDir, stagedManifest } from "./registry/bundled-stage";
@@ -799,6 +799,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // Before anything reads or writes `home`: never another install's home (`other-installs.ts` names them), by real
   // path, whatever `MOSS_HOME` or `opts.home` says.
   assertNotOtherInstallHome(home, opts.userHomeForTests);
+  // The deletion lane: an erase's signal beside the home, read before anything of the home is made (the only reader).
+  const eraseResult = takeEraseSignalAtStart(home);
 
   // ── Migration B boot hook (P9c, WS-16 §18) ──────────────────────────────────────────────────
   // Runs BEFORE `bootstrapMossDir` creates a single directory and before the lock is taken: a
@@ -947,13 +949,18 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // Whether this home is new under this build (no settings yet): the only home the old install's copy is offered on.
   const homeWasNew = !existsSync(join(home, "settings.json"));
   let dirs = bootstrapMossDir(home);
+  ensureHomeMarker(home);
+  if (eraseResult !== undefined) writeEraseResult(home, eraseResult);
   const lock: Lock = await acquireLock(dirs.lockPath, dirs.socketPath);
   // The one-time copy of an old install's home (spec §12, item 125), under the lock and before any store opens: a
   // whole staged copy is swapped in (a swap a start cut short is finished), one cut short is removed (the offer comes
   // again). The offer itself is raised once the broker is up (below, after the parts).
   if (homeWasNew) markFresh(home, Date.now());
   try {
-    if (applyStagedCopy(home, { log: (line) => console.error(line) }).kind === "swapped") dirs = bootstrapMossDir(home);
+    if (applyStagedCopy(home, { log: (line) => console.error(line) }).kind === "swapped") {
+      dirs = bootstrapMossDir(home);
+      ensureHomeMarker(home);
+    }
   } catch (err) {
     lock.release();
     throw err;

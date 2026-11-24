@@ -13,7 +13,7 @@
 //   only loses this name;
 // * beside it, the folder of files paired phones sent to coding sessions (`<home>-received`) goes too, as itself.
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
@@ -26,8 +26,8 @@ import { receivedRootOf } from "../bots/staged-files";
 
 /** What erase leaves, said to the person every time. */
 /** The signal that an erase ran, beside the home (the home itself is gone): `<home>-erased`, an empty file. It carries
- *  nothing that is shown: the app, at its next open, decides what to say from what it checks on the disk itself, in its
- *  own words (apps/moss `erase-outcome.ts`). The folder above the home is any runner's to write, so the file is made under
+ *  nothing that is shown: the engine's next start is its only reader (`takeEraseSignalAtStart`), and decides from the
+ *  home's marker and what is left. The folder above the home is any runner's to write, so the file is made under
  *  a fresh name (`O_EXCL`, never through a link) and renamed into place, which replaces whatever a runner left at that
  *  name (a link included) instead of following it. */
 export const ERASE_SIGNAL_SUFFIX = "-erased";
@@ -35,6 +35,74 @@ export const ERASE_SIGNAL_SUFFIX = "-erased";
 export function eraseSignalPath(home: string): string {
   const h = resolve(home);
   return join(dirname(h), `${basename(h)}${ERASE_SIGNAL_SUFFIX}`);
+}
+
+/** A file the engine keeps in every home it runs (made at each start, `ensureHomeMarker`), inside `run/`: the MOSS home
+ *  is write-denied to every runner on every system (fence.ts `policy()`), so only the engine makes or removes it. An
+ *  erase removes it before anything else. */
+export function homeMarkerPath(home: string): string {
+  return join(home, "run", "home.marker");
+}
+
+export function ensureHomeMarker(home: string): void {
+  try {
+    writeFileSync(homeMarkerPath(home), "moss home\n", { flag: "wx", mode: 0o600 });
+  } catch {
+    // There already, or `run/` can't be written (the start fails elsewhere).
+  }
+}
+
+/** The kinds of MOSS data an erase can leave, by the home's top-level names (anything else isn't counted: the engine's
+ *  own start makes `logs/` and `run/` before it reads this, and a runner can't write the home). */
+export const ERASE_LEFT_KINDS = { bots: "bots", transcripts: "conversations", sessions: "conversations", "sessions-runtime": "conversations", scratch: "files", routines: "routines", plugins: "plugins", "plugin-data": "plugins", "settings.json": "settings" } as const;
+export type EraseLeftKind = (typeof ERASE_LEFT_KINDS)[keyof typeof ERASE_LEFT_KINDS];
+
+export interface EraseResult {
+  v: 1;
+  result: "erased" | "partial";
+  /** With `partial`: what is left, as kinds (never a name). */
+  left: EraseLeftKind[];
+}
+
+/**
+ * At the engine's start, before it makes anything of the home: the single reader of the erase's signal. It is taken
+ * only as a regular file of this user's (a link or anything else is removed unread) and removed either way. With the
+ * home's marker present the home is healthy (a runner planted the signal): nothing. Otherwise the erase ran on it:
+ * `erased` when no MOSS data is left, `partial` with the kinds left. Whichever app started the engine, the result waits
+ * inside the home (`writeEraseResult`) for MOSS to show once.
+ */
+export function takeEraseSignalAtStart(home: string, uid: number | undefined = process.getuid?.()): EraseResult | undefined {
+  const path = eraseSignalPath(home);
+  let ok = false;
+  try {
+    const st = lstatSync(path);
+    ok = st.isFile() && !st.isSymbolicLink() && (uid === undefined || st.uid === uid);
+    unlinkSync(path);
+  } catch {
+    return undefined;
+  }
+  if (!ok || existsSync(homeMarkerPath(home))) return undefined;
+  let names: string[] = [];
+  try {
+    names = readdirSync(home);
+  } catch {
+    // No home: all of it went.
+  }
+  const left = [...new Set(names.flatMap((n) => (Object.hasOwn(ERASE_LEFT_KINDS, n) ? [ERASE_LEFT_KINDS[n as keyof typeof ERASE_LEFT_KINDS]] : [])))].sort();
+  return { v: 1, result: left.length === 0 ? "erased" : "partial", left };
+}
+
+/** Inside the home (`run/`), where no runner can write: MOSS reads it once (apps/moss `erase-outcome.ts`). */
+export function eraseResultPath(home: string): string {
+  return join(home, "run", "erase-result.json");
+}
+
+export function writeEraseResult(home: string, r: EraseResult): void {
+  try {
+    writeFileSync(eraseResultPath(home), `${JSON.stringify(r)}\n`, { mode: 0o600 });
+  } catch {
+    // Not shown, then.
+  }
 }
 
 export function writeEraseSignal(home: string): void {
@@ -137,6 +205,8 @@ export interface EraseOutcome {
 export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   const check = recogniseMossHome(deps.home, deps.userHome);
   if (!check.ok) throw new ContractError("refused", `erase refused: ${check.why}; nothing was removed`);
+  // The home's marker goes first: a home an erase got into, whatever is left of it, never reads as healthy again.
+  rmSync(homeMarkerPath(check.real), { force: true });
   let secrets = 0;
   let secretsLeft = 0;
   if (deps.secrets) {

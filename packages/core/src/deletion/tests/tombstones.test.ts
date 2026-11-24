@@ -2,6 +2,7 @@
 // session-record sync and memory sync read (`deletion/tombstones.ts`).
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { botIdFromName } from "../../contracts/bot-records";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeletedBot, isDeletedSession, refusedSessionRecords, tombstoneBot, tombstoneConversation, tombstonePath, tombstoneProblem, tombstoneSessions } from "../tombstones";
@@ -51,6 +52,11 @@ describe("tombstones", () => {
     expect(() => tombstoneSessions(h, ["c_ok11112222", "../x y"], 1)).toThrow("nothing was deleted");
     expect(isDeletedSession(h, "c_ok11112222")).toBe(false);
     expect(tombstoneProblem(h)).toBeUndefined();
+  });
+
+  test("an id from a name is found within a bound whatever the check answers: a check that says yes to all throws, never spins", () => {
+    expect(botIdFromName("Nova", (id) => id === "nova")).toBe("nova-2");
+    expect(() => botIdFromName("Nova", () => true)).toThrow("no free bot id");
   });
 
   test("a hand-edited file keeps only well-formed ids and times", () => {

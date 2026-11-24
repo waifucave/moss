@@ -29,7 +29,7 @@
 //   that existed before the split, decided from what the home holds (`bots/move.ts`), so a bot plugin installed after
 //   the first completion is never given and makes no bot (decision 101).
 import type { ArchivedBot, BotFace, BotMaker, BotMoveJournal, BotPatch, BotRecordView, MakeBotInput, MakeBotResult, Text } from "@waifucave/moss-protocol";
-import type { Unsubscribe } from "./common";
+import { ContractError, type Unsubscribe } from "./common";
 
 /** A plugin bot as the move reads it (`bots/plugin-bot.ts`'s `PluginBot` and the user layer over it). */
 export interface PluginBotForMove {
@@ -86,5 +86,10 @@ export function botIdFromName(name: string, taken: (id: string) => boolean): str
   const base = name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^[^a-z]+/, "").replace(/-+$/, "").slice(0, 36).replace(/-+$/, "");
   const stem = base.length >= 2 ? base : "bot";
   if (!taken(stem)) return stem;
-  for (let n = 2; ; n++) if (!taken(`${stem}-${n}`)) return `${stem}-${n}`;
+  // Bounded whatever `taken` answers (a check that says yes to everything must never spin the engine).
+  for (let n = 2; n <= BOT_ID_TRIES; n++) if (!taken(`${stem}-${n}`)) return `${stem}-${n}`;
+  throw new ContractError("conflict", `no free bot id for that name after ${BOT_ID_TRIES} tries: pick another name`);
 }
+
+/** How many numbered ids `botIdFromName` tries before it gives up. */
+export const BOT_ID_TRIES = 10_000;
