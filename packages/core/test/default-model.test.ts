@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { loadCatalog } from "@waifucave/clover-provider-catalog";
+import { join } from "node:path";
+import { catalogFromModelPlugins, loadCatalog, type ModelEntry } from "@waifucave/clover-provider-catalog";
 import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
 import { FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
+import { BUNDLED_CHILDREN_DIR, modelPluginFolder, modelPluginId } from "../src/runtime-sdk/model-plugins/bundled";
 
 const catalog = loadCatalog();
 const rec = (p: string) => recommended(catalog, p);
@@ -42,6 +44,19 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(recommended(weakCatalog, "anthropic")).toBeUndefined();
     expect(isWeak({})).toBe(true);
     expect(isWeak({ strength: "medium" })).toBe(false);
+  });
+  test("the catalog the engine runs on (built from the bundled model plugins) keeps each row's class, so the weak rule does not drop real defaults", async () => {
+    const inputs = await Promise.all(["anthropic", "openai", "google", "deepseek", "deepinfra"].map(async (id) => {
+      const dir = join(BUNDLED_CHILDREN_DIR, modelPluginFolder(id));
+      const manifest = (await Bun.file(join(dir, "moss.json")).json()) as { contributes: { models: ModelEntry[] } };
+      return { pluginId: modelPluginId(id), entry: manifest.contributes.models[0]!, catalog: await Bun.file(join(dir, "catalog.json")).json(), trusted: true };
+    }));
+    const built = catalogFromModelPlugins(inputs, { families: catalog.families, catalogVersion: "default-model-test" }).catalog;
+    expect(built.models.find((m) => m.key === "anthropic/claude-opus-5-5")?.strength).toBe("strong");
+    expect(recommended(built, "anthropic")).toEqual({ model: "anthropic/claude-opus-5-5", effort: "medium" });
+    expect(recommended(built, "google")?.model).toBe("google/gemini-3.8-flash");
+    expect(recommended(built, "deepseek")?.model).toBeDefined();
+    expect(recommended(built, "deepinfra")).toBeUndefined(); // Llama, whose vendors serve only weak models
   });
   test("the effort is dropped for a row that doesn't take it", () => {
     const r = rec("deepseek");
