@@ -67,6 +67,11 @@ const sealedWords = (el: ParentNode) => [...el.querySelectorAll("iframe[data-mos
 
 const units = (container: HTMLElement) => [...container.querySelectorAll(".cl-conv__unit")].map((u) => (u as HTMLElement).dataset.unit);
 
+/** The link (an anchor) or blocked-link span that holds `text`, found by what it is, not by how deep its words sit (they are wrapped in a <bdi>). */
+function linkNamed(root: HTMLElement, text: string): HTMLElement {
+  return within(root).getByText(text).closest("a, [data-blocked]") as HTMLElement;
+}
+
 describe("the view", () => {
   test("an empty conversation says so", () => {
     renderView({ items: [] });
@@ -196,13 +201,14 @@ describe("user and bot messages", () => {
     expect(md.querySelector("img")).toBeNull();
     expect(md.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(md.querySelector("strong")?.textContent).toBe("bold");
-    const bad = within(md).getByText("bad") as HTMLAnchorElement;
+    const bad = linkNamed(md, "bad");
     expect(bad.getAttribute("href") ?? "").not.toContain("javascript");
+    expect(bad.hasAttribute("data-blocked")).toBe(true);
     const event = new MouseEvent("click", { bubbles: true, cancelable: true });
-    within(md).getByText("safe").dispatchEvent(event);
+    linkNamed(md, "safe").dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
     expect(onOpenLink).toHaveBeenCalledWith("https://example.com/");
-    fireEvent.click(within(md).getByText("Image: pic"));
+    fireEvent.click(linkNamed(md, "Image: pic"));
     expect(onOpenLink).toHaveBeenLastCalledWith("https://example.com/p.png");
   });
 
@@ -250,8 +256,9 @@ describe("user and bot messages", () => {
     });
     const md = container.querySelector(".cl-conv-md") as HTMLElement;
     for (const name of ["rel", "proto", "file"]) {
-      const el = within(md).getByText(name);
+      const el = linkNamed(md, name);
       expect(el.tagName).toBe("SPAN");
+      expect(el.hasAttribute("data-blocked")).toBe(true);
       fireEvent.click(el);
     }
     expect(onOpenLink).not.toHaveBeenCalled();
@@ -262,11 +269,11 @@ describe("user and bot messages", () => {
     footnote.dispatchEvent(click);
     expect(click.defaultPrevented).toBe(true);
     expect(onOpenLink).not.toHaveBeenCalled();
-    fireEvent.click(within(md).getByText("mail"));
+    fireEvent.click(linkNamed(md, "mail"));
     expect(onOpenLink).toHaveBeenLastCalledWith("mailto:hi@moss.dev");
     // A middle-click never navigates by itself; it goes to the host like a click.
     const middle = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
-    within(md).getByText("web").dispatchEvent(middle);
+    linkNamed(md, "web").dispatchEvent(middle);
     expect(middle.defaultPrevented).toBe(true);
     expect(onOpenLink).toHaveBeenLastCalledWith("https://moss.dev/a");
   });
