@@ -53,4 +53,9 @@ describe("MOSS's log file", () => {
     // Never the error's own words: the engine's message can quote the call.
     expect(engine.slice(engine.indexOf("send: the engine took nothing"), engine.indexOf("send: the engine took nothing") + 200)).not.toContain("err.message");
   });
+
+  test("the stall watch is given the app's own processes' load (a page's workers can raise the machine's load by themselves)", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src", "main", "index.ts"), "utf8");
+    expect(src).toContain("new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) })");
+  });
 });

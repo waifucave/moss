@@ -13,7 +13,7 @@ import { adoptHomeEngine, cliLauncher, installEngineCopy, startEngineThroughOs }
 import { createRelease, type ReleaseNotice } from "@waifucave/moss-app-release/release";
 import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@waifucave/moss-app-release/updater";
 import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
-import { StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { fileLine } from "./file-log";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
 import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
@@ -106,7 +106,7 @@ function log(line: string): void {
 const sealed = new SealedFrames("moss");
 const engine = new MossEngine(sealed, log);
 // The press record's stall watch: how long this process itself was not running since a press (press.ts `takeWrite`).
-const stalls = new StallWatch();
+const stalls = new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) });
 const record = new PressRecord(Date.now, stalls);
 const presence = new PresenceReporter(log);
 const answerKey = new ProgramAnswerKey((() => {

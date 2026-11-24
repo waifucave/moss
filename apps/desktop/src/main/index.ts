@@ -45,7 +45,7 @@ import { anyReady, guideOpens, guideStepsAside, listProviders, pageCall, type Co
 import type { KeyTarget } from "./ui/tree-calls";
 import { AnswerKey, KeyRegistration, fileVault, memoryVault, safeStorageVault } from "./answer-key";
 import { AppLog, appLogPath, LineLimiter } from "./app-log";
-import { StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { LAYER_CALL_MAX, LayerLinks } from "./layer-links";
 import { placeWindow, TitleDrag } from "./ui/window-drag";
 import { KeyLog, PasteModes, keyBytes, preparePaste } from "./terminal-input";
@@ -3035,7 +3035,7 @@ async function okToPaste(windowId: number, lines: number): Promise<boolean> {
 }
 
 /** Sends counted as the user's: one key press or click per send (the user-send gate). */
-const sends = new SendGate(Date.now, new StallWatch());
+const sends = new SendGate(Date.now, new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) }));
 /** At most a few refusal lines per frame in the app log (a frame that loops on a refused call is not a reason to lose the log). */
 const refusalLines = new LineLimiter();
 // A frame's own document received a trusted pointerdown (the preload, every frame): it names where the window's latest mouse

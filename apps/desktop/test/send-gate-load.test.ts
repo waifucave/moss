@@ -4,6 +4,8 @@
 // (never more than the cap, none for time it spent working); with no stall every bound is as it was. What must stay refused is
 // here beside the stalled cases.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { StallWatch, STALL_CREDIT_MAX_MS, STALL_TICK_MS } from "@waifucave/moss-app-release/stall-watch";
 import { PRESS_REPORT_MS, SEND_INPUT_WINDOW_MS, SendGate } from "../src/main/ui/brokers";
 
@@ -259,5 +261,12 @@ describe("a genuine press while the machine stalled main", () => {
     plain.seen(WIN, [A]);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_600);
     expect(plain.takeIn(WIN, A)).toBe(false);
+  });
+});
+
+describe("the wiring", () => {
+  test("the stall watch is given the app's own processes' load (a plugin page's workers can raise the machine's load by themselves)", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src", "main", "index.ts"), "utf8");
+    expect(src).toContain("new SendGate(Date.now, new StallWatch({ ownLoad: appOwnLoad(() => app.getAppMetrics()) }))");
   });
 });

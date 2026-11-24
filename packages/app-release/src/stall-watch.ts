@@ -13,8 +13,12 @@
 //      the CPU from it or kept it off) are at least STALL_SWITCH_MULTIPLE times what THIS process makes when idle. The idle
 //      rate is measured, not assumed: it starts as the process's lifetime average (startup bursts included, so it starts high)
 //      and follows the ticks that came on time (an exponential average), floored at one switch a tick;
-//   3. the machine is overloaded: the 1-minute load average is at least the number of cores
-//      (`os.loadavg()[0] >= os.availableParallelism()`).
+//   3. the machine is overloaded by something other than this product: the 1-minute load average, less the cores' worth of CPU
+//      the product's OWN processes are using over the lag (`ownLoad`: every renderer, helper and the main process, read by the
+//      app from Electron's process metrics), is at least the number of cores (`os.loadavg()[0] - own >= os.availableParallelism()`).
+//      A plugin page can burn CPU by itself (workers are allowed), and 20 to 28 busy workers push a 10 to 14 core Mac's load
+//      average past its cores in about 35 s: that load is the product's own doing, not a machine that kept main off the CPU, and
+//      earns nothing. A reading of the product's own load that is missing counts as no credit where the app supplies one.
 // No reading, no credit: Windows has no context-switch counts (libuv leaves them 0) and a load average of zeros, and wherever a
 // reading throws or the idle rate is not known yet, there is no credit and the bounds are exactly the plain ones.
 //
@@ -63,6 +67,9 @@ export interface StallWatchDeps {
   uptime?: () => number;
   /** The machine's load: the 1-minute average and the cores, or undefined where there is no reading (then nothing is credited). */
   load?: () => { avg: number; cores: number } | undefined;
+  /** The cores' worth of CPU this product's own processes are using now (see `ownLoadReader`), or undefined when it can't be read
+   *  (then nothing is credited). Absent: 0, for callers with no process metrics of their own (the apps both supply one). */
+  ownLoad?: () => number | undefined;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
 }
@@ -105,6 +112,55 @@ export const machineLoad = (platform: NodeJS.Platform = process.platform): { avg
   }
 };
 
+/** One process as the app's process metrics list it: its pid and the CPU seconds it has used since it started. */
+export interface ProcessCpu {
+  pid: number;
+  cpuSeconds?: number;
+}
+
+/** The cores' worth of CPU the product's own processes (all of them: the main process, every renderer, helper and utility) are using,
+ *  over the interval between this reader's own readings, from their cumulative CPU seconds (the app passes Electron's
+ *  `app.getAppMetrics()`; this module imports no Electron). Cumulative seconds rather than the metrics' own percentage: that one is
+ *  "since the last call by anyone". The first call only takes a baseline (undefined); a call within `minMs` of the last reading
+ *  repeats it; a process new since the last reading counts all it has used, one that has gone counts nothing; a metrics call that
+ *  throws, or that gives no CPU seconds for any process, is undefined (no reading, no credit). */
+export function ownLoadReader(metrics: () => readonly ProcessCpu[], now: () => number = Date.now, minMs = 200): () => number | undefined {
+  let at: number | undefined;
+  let seen = new Map<number, number>();
+  let last: number | undefined;
+  return () => {
+    const t = now();
+    if (at !== undefined && t - at < minMs) return last;
+    try {
+      const list = metrics();
+      const next = new Map<number, number>();
+      let used = 0;
+      let any = false;
+      for (const m of list) {
+        if (typeof m.cpuSeconds !== "number" || !Number.isFinite(m.cpuSeconds)) continue;
+        any = true;
+        next.set(m.pid, m.cpuSeconds);
+        used += Math.max(0, m.cpuSeconds - (seen.get(m.pid) ?? 0));
+      }
+      const first = at === undefined;
+      const wall = first ? 0 : (t - at!) / 1000;
+      at = t;
+      seen = next;
+      last = !any || first || wall <= 0 ? undefined : used / wall;
+    } catch {
+      at = t;
+      last = undefined;
+    }
+    return last;
+  };
+}
+
+/** The reader for an Electron app: `appOwnLoad(() => app.getAppMetrics())`. Every process of the app counts (main, renderers, GPU,
+ *  utilities), the metrics' cumulative CPU seconds being each one's own. */
+export function appOwnLoad(getMetrics: () => readonly { pid: number; cpu: { cumulativeCPUUsage?: number } }[], now: () => number = Date.now): () => number | undefined {
+  return ownLoadReader(() => getMetrics().map((m) => ({ pid: m.pid, ...(typeof m.cpu.cumulativeCPUUsage === "number" ? { cpuSeconds: m.cpu.cumulativeCPUUsage } : {}) })), now);
+}
+
 /** The unscheduled-time watch: `arm` when a press is seen, `credit` when it is judged. */
 export class StallWatch {
   private readonly now: () => number;
@@ -112,6 +168,7 @@ export class StallWatch {
   private readonly switches: () => number | undefined;
   private readonly uptime: () => number;
   private readonly load: () => { avg: number; cores: number } | undefined;
+  private readonly ownLoad: () => number | undefined;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (t: unknown) => void;
   private timer: unknown;
@@ -129,6 +186,7 @@ export class StallWatch {
     this.switches = deps.switches ?? (() => processSwitches());
     this.uptime = deps.uptime ?? processUptimeMs;
     this.load = deps.load ?? (() => machineLoad());
+    this.ownLoad = deps.ownLoad ?? (() => 0);
     this.setTimer = deps.setTimer ?? ((fn, ms) => { const t = setInterval(fn, ms); (t as { unref?: () => void }).unref?.(); return t; });
     this.clearTimer = deps.clearTimer ?? ((t) => clearInterval(t as ReturnType<typeof setInterval>));
   }
@@ -145,6 +203,7 @@ export class StallWatch {
         const up = this.uptime();
         if (up > 0) this.idleRate = this.lastSwitches / up;
       }
+      this.ownRead(); // the first reading of the product's own load: the next ones are over an interval
       this.timer = this.setTimer(() => this.tick(), STALL_TICK_MS);
     }
   }
@@ -165,6 +224,7 @@ export class StallWatch {
       const rate = Math.max(0, sw - this.lastSwitches) / (now - this.lastTick);
       this.idleRate = this.idleRate === undefined ? rate : this.idleRate * (1 - IDLE_RATE_WEIGHT) + rate * IDLE_RATE_WEIGHT;
     }
+    this.ownRead(); // every tick, so a reading covers the interval since the last one
     this.lastTick = now;
     this.lastCpu = this.cpu();
     this.lastSwitches = sw;
@@ -172,6 +232,15 @@ export class StallWatch {
     if (now >= this.armedUntil && this.timer !== undefined) {
       this.clearTimer(this.timer);
       this.timer = undefined;
+    }
+  }
+
+  private ownRead(): number | undefined {
+    try {
+      const n = this.ownLoad();
+      return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -187,7 +256,9 @@ export class StallWatch {
     const load = this.load();
     if (was === undefined || now === undefined || this.idleRate === undefined || load === undefined) return undefined;
     // Not overloaded: a late timer on a machine with room is the OS deferring it (or the process's own doing), not a stall.
-    if (!(load.avg >= load.cores)) return undefined;
+    // And not by this product's own processes (a plugin page's workers): their cores' worth comes off the load first.
+    const own = this.ownRead();
+    if (own === undefined || !(load.avg - Math.max(0, own) >= load.cores)) return undefined;
     // Switches far above this process's own idle rate over the whole interval since the last tick.
     const elapsed = at - this.lastTick;
     const idle = Math.max(this.idleRate, STALL_IDLE_RATE_FLOOR);

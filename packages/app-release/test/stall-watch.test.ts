@@ -1,14 +1,14 @@
 // The unscheduled-time watch (src/stall-watch.ts): what it credits, what it never does, and that it is quiet when idle.
 import { describe, expect, test } from "bun:test";
-import { machineLoad, processSwitches, StallWatch, STALL_CREDIT_MAX_MS, STALL_MIN_MS, STALL_SWITCH_MULTIPLE, STALL_TICK_MS } from "../src/stall-watch";
+import { machineLoad, ownLoadReader, processSwitches, StallWatch, STALL_CREDIT_MAX_MS, STALL_MIN_MS, STALL_SWITCH_MULTIPLE, STALL_TICK_MS } from "../src/stall-watch";
 
 /** A clock, a CPU meter, a switch counter, a load reading and a timer the test moves by hand. By default the machine is
  *  overloaded (load 20 on 8 cores) and a pass that ran long past its tick was preempted about once a ms (the reviewer
  *  measured 1.2/ms busy), an on-time one about once per 100 ms (he measured 2 to 3 per 250 ms tick idle). */
-function rig(opts: { load?: { avg: number; cores: number } | undefined; uptime?: number } = {}) {
+function rig(opts: { load?: { avg: number; cores: number } | undefined; uptime?: number; own?: number | undefined } = {}) {
   const c = { now: 1_000_000, cpu: 0, sw: 0, timers: 0, load: "load" in opts ? opts.load : ({ avg: 20, cores: 8 } as { avg: number; cores: number } | undefined), fn: undefined as (() => void) | undefined };
   const watch = new StallWatch({
-    now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => opts.uptime ?? 100_000, load: () => c.load,
+    now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => opts.uptime ?? 100_000, load: () => c.load, ...("own" in opts ? { ownLoad: () => opts.own } : {}),
     setTimer: (fn) => { c.timers++; c.fn = fn; return c.timers; },
     clearTimer: () => { c.fn = undefined; },
   });
@@ -167,6 +167,94 @@ describe("the stall watch", () => {
     pass(STALL_TICK_MS + 4_000, 20);
     expect(watch.credit(from)).toBe(0);
     expect(machineLoad("win32")).toBeUndefined();
+  });
+
+  test("load the product's own processes account for earns nothing: 20 on 12 cores with 16 cores' worth burned by our own renderers", () => {
+    const own = rig({ load: { avg: 20, cores: 12 }, own: 16 });
+    const from = own.c.now;
+    own.watch.arm(12_000);
+    own.pass(STALL_TICK_MS + 4_000, 20, true);
+    expect(own.watch.credit(from)).toBe(0);
+    const open = rig({ load: { avg: 20, cores: 12 }, own: 16 });
+    const f2 = open.c.now;
+    open.watch.arm(12_000);
+    open.pass(STALL_TICK_MS + 4_000, 20, false);
+    expect(open.watch.credit(f2)).toBe(0);
+  });
+
+  test("the same load from elsewhere earns credit; the product's own share only comes off the load", () => {
+    const other = rig({ load: { avg: 20, cores: 12 }, own: 0.5 });
+    const from = other.c.now;
+    other.watch.arm(12_000);
+    other.pass(STALL_TICK_MS + 4_000, 20, true);
+    expect(other.watch.credit(from)).toBeGreaterThan(3_900);
+    // 20 less 8 is exactly the 12 cores: still overloaded; a hair more of ours is not.
+    for (const [own, credited] of [[8, true], [8.01, false]] as const) {
+      const r = rig({ load: { avg: 20, cores: 12 }, own });
+      const f = r.c.now;
+      r.watch.arm(12_000);
+      r.pass(STALL_TICK_MS + 4_000, 20, true);
+      expect([own, r.watch.credit(f) > 3_900]).toEqual([own, credited]);
+    }
+  });
+
+  test("where the app supplies a reading of its own load and it can't be read, nothing is credited; a throwing reader is no reading", () => {
+    for (const own of [undefined, Number.NaN]) {
+      const r = rig({ own });
+      const from = r.c.now;
+      r.watch.arm(12_000);
+      r.pass(STALL_TICK_MS + 4_000, 20, true);
+      expect([own, r.watch.credit(from)]).toEqual([own, 0]);
+    }
+    const c = { now: 1_000_000, cpu: 0, sw: 0, fn: undefined as (() => void) | undefined };
+    const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => 100_000, load: () => ({ avg: 50, cores: 8 }), ownLoad: () => { throw new Error("boom"); }, setTimer: (fn) => { c.fn = fn; return 1; }, clearTimer: () => { c.fn = undefined; } });
+    const from = c.now;
+    watch.arm(12_000);
+    c.now += STALL_TICK_MS + 4_000; c.cpu += 10; c.sw += 5_000; c.fn?.();
+    expect(watch.credit(from)).toBe(0);
+  });
+
+  test("the reader of the product's own load: cores' worth from cumulative CPU seconds over the interval between readings", () => {
+    const t = { now: 1_000_000, procs: [{ pid: 1, cpuSeconds: 10 }, { pid: 2, cpuSeconds: 100 }] as { pid: number; cpuSeconds?: number }[] };
+    const read = ownLoadReader(() => t.procs, () => t.now);
+    expect(read()).toBeUndefined(); // the baseline
+    t.now += 1_000;
+    t.procs = [{ pid: 1, cpuSeconds: 18 }, { pid: 2, cpuSeconds: 108 }]; // 16 cores' worth over 1 s
+    expect(read()).toBeCloseTo(16, 5);
+    t.now += 50; // within the minimum interval: the same reading, nothing re-sampled
+    expect(read()).toBeCloseTo(16, 5);
+    t.now += 1_000;
+    t.procs = [{ pid: 1, cpuSeconds: 19 }, { pid: 3, cpuSeconds: 4 }]; // pid 3 is new: all it has used counts; pid 2 is gone
+    expect(read()).toBeCloseTo(5 / 1.05, 5); // (1 + 4) cpu seconds over the 1.05 s since the last reading
+  });
+
+  test("the reader: a metrics call that throws, or that has no CPU seconds, is no reading", () => {
+    let mode: "throw" | "none" | "ok" = "ok";
+    const t = { now: 1_000_000, n: 0 };
+    const read = ownLoadReader(() => { if (mode === "throw") throw new Error("x"); return [{ pid: 1, ...(mode === "ok" ? { cpuSeconds: (t.n += 1) } : {}) }]; }, () => t.now);
+    read();
+    t.now += 1_000;
+    expect(read()).toBeCloseTo(1, 5);
+    mode = "throw";
+    t.now += 1_000;
+    expect(read()).toBeUndefined();
+    mode = "none";
+    t.now += 1_000;
+    expect(read()).toBeUndefined();
+  });
+
+  test("end to end: the watch with the reader on fake process metrics, own renderers burning 16 cores' worth over the lag: no credit; burning nothing: credit", () => {
+    for (const [burn, credited] of [[16, false], [0.2, true]] as const) {
+      const c = { now: 1_000_000, cpu: 0, sw: 0, secs: 0, fn: undefined as (() => void) | undefined };
+      const read = ownLoadReader(() => [{ pid: 7, cpuSeconds: c.secs }], () => c.now);
+      const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, uptime: () => 100_000, load: () => ({ avg: 20, cores: 12 }), ownLoad: read, setTimer: (fn) => { c.fn = fn; return 1; }, clearTimer: () => { c.fn = undefined; } });
+      const step = (ms: number, tick = true): void => { c.now += ms; c.secs += (ms / 1000) * burn; c.sw += ms > 300 ? ms : Math.round(ms / 100); c.cpu += 5; if (tick) c.fn?.(); };
+      watch.arm(12_000);
+      step(STALL_TICK_MS);
+      const from = c.now;
+      step(STALL_TICK_MS + 3_000);
+      expect([burn, watch.credit(from) > 2_900]).toEqual([burn, credited]);
+    }
   });
 
   test("the bar is a multiple of THIS process's own idle rate, kept from ticks that came on time", () => {

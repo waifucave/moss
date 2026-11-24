@@ -33,8 +33,9 @@ function isLink(path: string): boolean {
 }
 
 /** The flags every append uses: never through a link where the OS can say so (`O_NOFOLLOW`; Windows has none, and the `lstat` above
- *  stands alone there). */
-const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
+ *  stands alone there), and never waiting on a pipe a writer-less open would block on (`O_NONBLOCK`: opening a pipe planted as the
+ *  log for writing with no reader fails at once instead of stopping the main process). */
+const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /** Makes an existing log file owner-only through a descriptor opened WITHOUT following a link (and without blocking on a pipe): the
  *  mode changes on what was opened, never on whatever a path names a moment later. A file that is not a plain file, or that has
@@ -76,7 +77,13 @@ export class AppLog {
         this.size = 0;
       }
       const fd = openSync(this.file, APPEND_FLAGS, 0o600);
-      try { writeSync(fd, text); } finally { closeSync(fd); }
+      try {
+        // Only a plain file with exactly one link is written: a pipe, a device or a hard link planted as the log (to somebody's file,
+        // which an append would grow) is looked at through the descriptor itself, so nothing is swapped in between the look and the write.
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1) return;
+        writeSync(fd, text);
+      } finally { closeSync(fd); }
       this.size += text.length;
     } catch { /* the log is best effort */ }
   }

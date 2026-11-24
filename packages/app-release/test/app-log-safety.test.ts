@@ -1,7 +1,7 @@
 // The shared log writer (src/app-log.ts) never writes through a symbolic link, and a looping caller can't rotate the log away.
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppLog, appLogPath, LineLimiter } from "../src/app-log";
@@ -95,6 +95,53 @@ describe("the log writer and links", () => {
       execFileSync("mkfifo", [`${file}.1`]);
       new AppLog(file).write("after the pipe"); // returns: the open does not wait for a writer
       expect(readFileSync(file, "utf8")).toContain("after the pipe");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!posix)("the append path: a hard link planted as the log is not appended to, and a pipe planted as the log does not block the open", () => {
+    const home = mkdtempSync(join(tmpdir(), "app-log-append-"));
+    try {
+      const file = appLogPath(home);
+      mkdirSync(join(home, "logs"), { recursive: true });
+      const target = join(home, "victim.txt");
+      writeFileSync(target, "keep me\n");
+      linkSync(target, file); // the log is a second name of somebody's file
+      const log = new AppLog(file);
+      log.write("one line that must not reach the target");
+      log.write("another");
+      expect(readFileSync(target, "utf8")).toBe("keep me\n");
+      // The same on a log that was fine when the first line went in and was swapped for a link after it (each write looks again).
+      const home2 = mkdtempSync(join(tmpdir(), "app-log-append-"));
+      try {
+        const f2 = appLogPath(home2);
+        const log2 = new AppLog(f2);
+        log2.write("before");
+        const t2 = join(home2, "victim2.txt");
+        writeFileSync(t2, "keep me too\n");
+        rmSync(f2);
+        linkSync(t2, f2);
+        log2.write("after");
+        expect(readFileSync(t2, "utf8")).toBe("keep me too\n");
+      } finally {
+        rmSync(home2, { recursive: true, force: true });
+      }
+      // A pipe: with no reader the open fails at once (the write returns); with a reader it is opened, found not to be a plain file, and not written.
+      rmSync(file);
+      execFileSync("mkfifo", [file]);
+      const started = Date.now();
+      new AppLog(file).write("must not block main");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      const reader = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK); // a reader is there now
+      try {
+        new AppLog(file).write("not into a pipe");
+        let got = 0;
+        try { got = readSync(reader, Buffer.alloc(256)); } catch { got = 0; } // EAGAIN: nothing in the pipe
+        expect(got).toBe(0);
+      } finally {
+        closeSync(reader);
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
