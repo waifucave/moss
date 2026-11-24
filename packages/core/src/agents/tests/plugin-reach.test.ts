@@ -919,7 +919,7 @@ describeWithEmbeddedRuntime("a plugin's tool from a coding session on MOSS's cod
     const card = await waitFor(() => mine(w, r.sessionId).find((c) => c.kind === "tool"), "the judge's card");
     expect(card.bot).toBe("alpha");
     expect(card.fields["what"]).toEqual({ type: "code", code: real });
-    expect(card.fields["reason"]).toEqual({ type: "text", text: "alpha's agent (moss-code) is asking, not alpha itself." });
+    expect(card.fields["reason"]).toEqual({ type: "text", text: "This agent was started by a bot (named below); the agent is asking, not the bot itself." });
     expect(card.fields["source"]).toMatchObject({ type: "rows", rows: [{ label: "Agent", value: "moss-code" }, { label: "Started by", value: "alpha" }, { label: "Folder" }] });
     expect(card.options.map((o) => o.remember)).toEqual([undefined, undefined]);
     await approve(w, card.id, "approve");

@@ -1100,10 +1100,12 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: `Download ${sealedText(name, 200)}'s adapter?` },
-        what: { type: "text", text: `${sealedText(name, 200)} doesn't speak ACP itself, so MOSS runs an adapter for it: ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm. It is code from npm that MOSS will run on this computer to talk to ${sealedText(name, 200)}, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes.` },
+        // The agent's name comes from a plugin or a registry entry, so it is a row of its own (a name), never a word of the engine's sentence.
+        title: { type: "text", text: "Download an adapter for an agent?" },
+        what: { type: "text", text: "The agent below doesn't speak ACP itself, so MOSS runs an adapter for it: the package named below, from npm. It is code from npm that MOSS will run on this computer to talk to the agent, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes." },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
+          { label: "Agent's name", value: sealedText(name, 200), name: true },
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
           ...this.#packageRows(offer),
           { label: "Kept in", value: sealedText(offer.folder, 4000) },
@@ -1134,7 +1136,7 @@ export class AgentManager {
    *  (`agent-unsandboxed`: always shown, never an "always"), which is the stronger of the two. */
   #oneCard(e: Entry, name: string, offer: AdapterOffer, facts: AdapterStartFacts): ApprovalRequest {
     const label = sealedText(name, 200);
-    const outside = `Its version ${sealedText(facts.version, 64)} is outside the versions MOSS was tested with`;
+    const outside = "Its version (below) is outside the versions MOSS was tested with";
     // The no-sandbox fact is said once (in "without a sandbox"); the version is said only where it is outside the tested ones.
     const risk = facts.sandboxed ? `${outside}, so its sandbox may not hold. ` : facts.versionOk ? "" : `${outside}. `;
     return {
@@ -1146,11 +1148,13 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: `Start ${label}?` },
-        what: { type: "text", text: `${label} needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads ${sealedText(offer.package, 300)} ${sealedText(offer.version, 64)} from npm (code from npm that MOSS will run, not MOSS's own) and starts ${label}${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
+        title: { type: "text", text: "Start an agent?" },
+        what: { type: "text", text: `The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
+          { label: "Agent's name", value: label, name: true },
           { label: "Agent", value: sealedText(e.backend.id, 4000) },
+          { label: "Its version", value: sealedText(facts.version, 64) },
           ...this.#packageRows(offer),
           { label: "Plugin", value: sealedText(e.backend.pluginId ?? "", 4000) },
           { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
@@ -1868,9 +1872,11 @@ function cardFields(e: Entry, ask: AgentPermissionAsk): ApprovalRequest["fields"
       { label: "Started by", value: e.bot === undefined ? "You" : sealedText(e.bot, 4000) },
       { label: "Folder", value: sealedText(e.root, 4000) },
       { label: "The agent's title", value: sealedText(ask.title, 4000) },
+      ...(e.bot === undefined ? [] : [{ label: "Its session's title", value: sealedText(e.title ?? e.backend.id, 4000), name: true as const }]),
     ] },
     // A bot's agent asks as itself, never as its bot: "<bot>'s agent <title> is asking, not <bot> itself".
-    ...(e.bot === undefined ? {} : { reason: { type: "text", text: sealedText(`${e.bot}'s agent "${e.title ?? e.backend.id}" (${e.backend.id}) is asking, not ${e.bot} itself.`, 4000) } }),
+    // The bot's and the agent's own words are rows (the "Started by" row and the agent's title), never words of the engine's sentence.
+    ...(e.bot === undefined ? {} : { reason: { type: "text", text: "This agent was started by a bot (named below); the agent is asking, not the bot itself." } }),
   };
   if (ask.paths.length > 0) {
     const shown = ask.paths.slice(0, 200).map((p) => sealedText(p, 4000));

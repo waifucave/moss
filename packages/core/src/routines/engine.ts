@@ -658,8 +658,11 @@ export class RoutineEngine {
       const decision = await approvals.request({
         kind: "change", change: "routine-level", bot: l.bot, origin: "routine", computers: [this.#o.computer], effect: "other",
         fields: {
-          title: { type: "text", text: `Let "${l.routine.name}" run at ${level}?` },
-          what: { type: "text", text: `The routine asks to run at ${level}, above this computer's level (${this.#o.computerLevel()}).${webhook ? " Anyone with its webhook URL can start it." : ""}` },
+          // The routine's name is chosen by whoever wrote the routine (a bot, maybe one that was led astray): it is a row of its own (a name),
+          // never a word of the title, and the level is said by the engine alone, in its own words.
+          title: { type: "text", text: "Let a routine run at a higher level?" },
+          what: { type: "text", text: `The routine named below asks to run at ${level}, above this computer's level (${this.#o.computerLevel()}).${webhook ? " Anyone with its webhook URL can start it." : ""}` },
+          detail: { type: "rows", rows: [{ label: "The routine", value: l.routine.name, name: true }] },
           computer: { type: "text", text: this.#o.computer },
           command: { type: "code", code: l.routine.body.slice(0, 64_000), language: "markdown" },
         },

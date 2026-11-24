@@ -329,7 +329,9 @@ export function pluginRegistryMethods(o: {
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-remove",
         fields: {
-          title: { type: "text", text: `Remove ${typeof r.name === "string" ? r.name : id}?` },
+          // The plugin's name is its own text: a row of its own (a name), never a word of the engine's title.
+          title: { type: "text", text: "Remove this plugin?" },
+          source: { type: "rows", rows: [{ label: "Plugin", value: typeof r.name === "string" ? r.name : id, name: true }, { label: "Id", value: id }] },
           detail: { type: "list", items: [
             deleteData === true ? "Its saved keys, settings and data on this computer are deleted, for good." : "Its saved keys and settings on this computer are deleted. Its data is set aside.",
             folders.okText(id, o.os ?? "macos").source,
@@ -396,7 +398,8 @@ export function pluginRegistryMethods(o: {
       const opened = await o.openCard!({
         kind: "change", origin: "user", computers: [], effect: "other", change: "dev-folder",
         fields: {
-          title: { type: "text", text: `Keep loading the plugin you're developing at ${d.path} for another 24 hours?` },
+          title: { type: "text", text: "Keep loading a plugin you're developing for another 24 hours?" },
+          source: { type: "rows", rows: [{ label: "Its folder", value: d.path }] },
           detail: { type: "list", items: ["Its code runs on this computer as it is, reloading when it changes."] },
         },
       });
@@ -435,7 +438,7 @@ export function pluginRegistryMethods(o: {
       // From the Plugins page (main sets `card`): an update that runs on the old OK asks on a sealed card first. The call answers at once (offered, "waiting for your yes on its card"); the yes applies that
       // tree, and only that one, by a check of its own, so an unanswered card never holds the updater's turn.
       const confirm = card === true
-        ? async (c: { id: string; from: string; to: string; source: string; treeHash: string; root: string; changed: string }): Promise<boolean | "asked" | "pending"> => {
+        ? async (c: { id: string; from: string; to: string; source: string; via: "npm" | "index"; treeHash: string; root: string; changed: string }): Promise<boolean | "asked" | "pending"> => {
           if (updateCards.has(c.id)) return "pending";
           if (o.openCard === undefined) throw new ContractError("refused", "applying this update from this page needs a sealed card, and this computer's approval broker isn't running");
           const n = registry.get(c.id)?.name;
@@ -444,7 +447,16 @@ export function pluginRegistryMethods(o: {
           const opened = await o.openCard({
             kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-update",
             fields: {
-              title: { type: "text", text: `Update ${typeof n === "string" ? n : c.id} ${c.from} → ${c.to} from ${c.source}?` },
+              // The name, the versions and the source's name are the plugin's or its index's own text: rows, never words of the engine's title.
+              // Where it comes from is said in the engine's own words (npm, or a plugin index); the name the index or package gives is a row.
+              title: { type: "text", text: "Update this plugin?" },
+              what: { type: "text", text: c.via === "npm" ? "A newer version of this plugin is on npm." : "A newer version of this plugin is in a plugin index." },
+              source: { type: "rows", rows: [
+                { label: "Plugin", value: typeof n === "string" ? n : c.id, name: true },
+                { label: "Now", value: c.from },
+                { label: "Update to", value: c.to },
+                { label: c.via === "npm" ? "From npm" : "From the index", value: c.source },
+              ] },
               detail: { type: "list", items: ["Its new code runs on the OK you gave before.", c.changed] },
             },
           });

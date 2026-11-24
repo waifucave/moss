@@ -411,7 +411,8 @@ export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; 
       const name = o.nameOf?.(p.id) ?? p.id;
       const opened = await o.openCard({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-sign-out",
-        fields: { title: { type: "text", text: `Sign ${name} out?` }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
+        // The plugin's name is its own text: a row of its own, never a word of the engine's title.
+        fields: { title: { type: "text", text: "Sign out of this plugin?" }, source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }] }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
       });
       onCardYes(o, opened.card, "plugin-sign-out", opened.allowed, async () => {
         await auth.signOut(p.id, p.index);

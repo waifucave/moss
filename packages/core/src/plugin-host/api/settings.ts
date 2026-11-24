@@ -213,8 +213,10 @@ export class PluginSettings {
       const opened = await this.#o.openCard({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-setting-host",
         fields: {
-          title: { type: "text", text: settingHostTemplates(this.#o.registry.get(pluginId)?.manifest).some((t) => t.keys.includes(key)) ? `Send ${name}'s requests somewhere else?` : `Change what ${name} runs with?` },
-          detail: { type: "list", items: [...moves.map((m) => `${m.from} → ${m.to}`), `${key} is written into where ${name} sends its requests or what it runs, with the keys it uses.`] },
+          // The plugin's name and its setting's key are the plugin's own text: rows (the name marked as one), never words of the engine's title.
+          title: { type: "text", text: settingHostTemplates(this.#o.registry.get(pluginId)?.manifest).some((t) => t.keys.includes(key)) ? "Send a plugin's requests somewhere else?" : "Change what a plugin runs with?" },
+          source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }, { label: "Setting", value: key }] },
+          detail: { type: "list", items: [...moves.map((m) => `${m.from} → ${m.to}`), "The setting is written into where the plugin sends its requests or what it runs, with the keys it uses."] },
         },
       });
       onCardYes(this.#o, opened.card, "plugin-setting-host", opened.allowed, () => {

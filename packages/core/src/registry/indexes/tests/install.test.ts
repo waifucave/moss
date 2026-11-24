@@ -550,7 +550,11 @@ describe("updating from an index or npm", () => {
         }
         expect((await w.m["plugin.update"]!({ id: "luna", card: true }, APP) as { offered?: { why: string }[] }).offered?.[0]?.why).toBe("waiting for your yes on its card");
         expect(asked[before]!.req.change).toBe("plugin-update");
-        expect(JSON.stringify(asked[before]!.req.fields)).toContain("Update luna 1.0.0 → 1.1.0 from npm (moss-luna)?");
+        const f = asked[before]!.req.fields as Record<string, { text?: string; rows?: { label: string; value: string; name?: true }[] }>;
+        expect(f["title"]!.text).toBe("Update this plugin?");
+        expect(f["what"]!.text).toBe("A newer version of this plugin is on npm.");
+        // The name, the versions and where from are rows (the name marked as one), never words of the engine's title.
+        expect(f["source"]!.rows).toEqual([{ label: "Plugin", value: "luna", name: true }, { label: "Now", value: "1.0.0" }, { label: "Update to", value: "1.1.0" }, { label: "From npm", value: "npm (moss-luna)" }]);
         asked[before]!.answer(true);
         for (let i = 0; i < 100 && w.opened.registry.get("luna")?.version !== "1.1.0"; i++) await Bun.sleep(20);
         expect(w.opened.registry.get("luna")).toMatchObject({ state: "running", version: "1.1.0" });
@@ -838,7 +842,11 @@ describe("updates: the review's cases", () => {
       expect(first.offered?.[0]?.why).toBe("waiting for your yes on its card");
       expect(asked[0]!.req.change).toBe("plugin-update");
       const text = JSON.stringify(asked[0]!.req.fields);
-      expect(text).toContain("Update luna 1.0.0 → 1.1.0 from");
+      const f = asked[0]!.req.fields as Record<string, { text?: string; rows?: { label: string; value: string; name?: true }[] }>;
+      expect(f["title"]!.text).toBe("Update this plugin?");
+      expect(f["what"]!.text).toBe("A newer version of this plugin is in a plugin index.");
+      expect(f["source"]!.rows!.slice(0, 3)).toEqual([{ label: "Plugin", value: "luna", name: true }, { label: "Now", value: "1.0.0" }, { label: "Update to", value: "1.1.0" }]);
+      expect(f["source"]!.rows![3]!.label).toBe("From the index");
       expect(text).toContain("Its new code runs on the OK you gave before.");
       expect(text).toContain("Its files: 2 changed, 0 added, 0 removed. It asks for the same things as before.");
       expect((await w.opened.updater!.check()).offered.map((x) => x.id)).toEqual(["luna"]);

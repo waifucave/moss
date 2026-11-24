@@ -553,7 +553,7 @@ export function botApprovalCheck(
     const asking = (ctx as { agentAsking?: { backend: string; bot?: string; folder: string } }).agentAsking;
     if (asking !== undefined) {
       const said = (s: string) => plainOf(s.toWellFormed()).slice(0, 4000);
-      if (asking.bot !== undefined) req.fields.reason = { type: "text", text: said(`${asking.bot}'s agent (${asking.backend}) is asking, not ${asking.bot} itself.`) };
+      if (asking.bot !== undefined) req.fields.reason = { type: "text", text: "This agent was started by a bot (named below); the agent is asking, not the bot itself." };
       req.fields.source = { type: "rows", rows: [
         { label: "Agent", value: said(asking.backend) },
         { label: "Started by", value: asking.bot === undefined ? "You" : said(asking.bot) },

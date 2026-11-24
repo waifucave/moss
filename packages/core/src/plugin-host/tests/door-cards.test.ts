@@ -49,7 +49,7 @@ describe("removing a plugin on a sealed card", () => {
       await secrets.set({ owner: { kind: "plugin", pluginId: "tarot" }, name: "KEY" }, "s3cret");
       const r = await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
       expect(r).toEqual({ applied: false, card: "card_1" });
-      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-remove", fields: { title: { text: "Remove Tarot?" } } });
+      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-remove", fields: { title: { text: "Remove this plugin?" }, source: { rows: [{ label: "Plugin", value: "Tarot", name: true }, { label: "Id", value: "tarot" }] } } });
       expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("Its saved keys and settings on this computer are deleted. Its data is set aside.");
       expect(existsSync(join(home, "plugins", "tarot"))).toBe(true);
       c.asked[0]!.answer(false);
@@ -95,6 +95,10 @@ describe("a setting that moves a plugin's host", () => {
     expect(r).toEqual({ applied: false, card: "card_1" });
     expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-setting-host" });
     expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("eu.relay.example.com → us.relay.example.com");
+    // The title is the engine's own words; the plugin's name and its setting's key are rows.
+    const fields = c.asked[0]!.req.fields as Record<string, { text?: string; rows?: { label: string; value: string; name?: true }[] }>;
+    expect(fields["title"]!.text).toBe("Send a plugin's requests somewhere else?");
+    expect(fields["source"]!.rows).toEqual([{ label: "Plugin", value: expect.any(String), name: true }, { label: "Setting", value: "region" }]);
     expect(s.get("relay", "region")).toBe("eu");
     c.asked[0]!.answer(false);
     await flush();
@@ -227,7 +231,7 @@ describe("signing out from the Plugins page", () => {
     const c = cards();
     const m = pluginAuthMethods(auth, { openCard: c.open as never, nameOf: (id) => (id === "luna" ? "Luna AI" : undefined) });
     expect(await m["plugin.auth.signOut"]!({ id: "luna", index: 0, card: true }, APP)).toEqual({ applied: false, card: "card_1" });
-    expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-sign-out", fields: { title: { text: "Sign Luna AI out?" } } });
+    expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "plugin-sign-out", fields: { title: { text: "Sign out of this plugin?" }, source: { rows: [{ label: "Plugin", value: "Luna AI", name: true }] } } });
     expect(JSON.stringify(c.asked[0]!.req.fields)).toContain("Its saved sign-in on this computer is deleted.");
     c.asked[0]!.answer(false);
     await flush();
@@ -285,7 +289,7 @@ describe("renewing a development folder from the Plugins page", () => {
       const first = expiry();
       await Bun.sleep(5);
       expect(await m["plugin.dev.renew"]!({ path: dev, card: true }, APP)).toEqual({ applied: false, card: "card_1" });
-      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "dev-folder", fields: { title: { text: `Keep loading the plugin you're developing at ${dev} for another 24 hours?` } } });
+      expect(c.asked[0]!.req).toMatchObject({ kind: "change", change: "dev-folder", fields: { title: { text: "Keep loading a plugin you're developing for another 24 hours?" }, source: { rows: [{ label: "Its folder", value: dev }] } } });
       c.asked[0]!.answer(false);
       await flush();
       expect(expiry()).toBe(first);
