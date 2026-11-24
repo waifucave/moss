@@ -33,6 +33,7 @@ import { DIST_BUILD } from "../build-kind";
 import { ContractError } from "../contracts/common";
 import { devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
 import type { UpdateRestartGate } from "../lease/main";
+import { safeDeviceName } from "../devices/names";
 import { HandshakeClient } from "../links/handshake";
 import { MemoryNetwork } from "../links/memory-wire";
 import { startDeviceLinks, type DeviceLinks, type DeviceLinksOptions } from "../links/node";
@@ -55,12 +56,11 @@ export function memoryLedger(): AnswerLedger {
 }
 
 /** This computer's device name by default: its host name without the domain (`studio.local` is `studio`), with no
- *  control characters, cut to the registry's 63 characters; `Computer` when nothing is left. A host name the registry
- *  can't take as it is (a CI runner's long generated one) must never keep the links from starting. */
+ *  anything the one rule for names refuses (`devices/names.ts`: control, invisible and direction-changing characters, fillers,
+ *  stacks of accents) left out, cut to 63 characters; `Computer` when nothing is left. A host name the registry can't take as it is
+ *  (a CI runner's long generated one) must never keep the links from starting, and never be a name every other device turns away. */
 export function defaultDeviceName(host: string): string {
-  const first = host.split(".")[0] ?? "";
-  const clean = [...first.replace(/[\u0000-\u001f\u007f]/gu, "").trim()].slice(0, 63).join("").trim();
-  return clean.length > 0 ? clean : "Computer";
+  return safeDeviceName(host.split(".")[0] ?? "");
 }
 
 /** The link sidecar beside the daemon's own binary (its links resolved, `bundledLinkBinary`); null when there's none

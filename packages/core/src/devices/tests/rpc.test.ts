@@ -7,8 +7,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  callBindingInput, cardAnswerSigningInput, cardHashInput, MOSS_ERR, DEVICES_METHODS, type Card, type CardContent, type Caller,
+  callBindingInput, cardAnswerSigningInput, cardHashInput, ERR, MOSS_ERR, DEVICES_METHODS, type Card, type CardContent, type Caller,
 } from "@waifucave/moss-protocol";
+import type { Clock } from "../../contracts/clock";
 import { isContractError } from "../../contracts/common";
 import { FakeApprovalBroker, MemoryAnswerLedger } from "../../contracts/fakes/approval-broker";
 import { FakeClock } from "../../contracts/fakes/clock";
@@ -21,7 +22,6 @@ import { MemoryNetwork } from "../../links/memory-wire";
 import { PairingService } from "../../links/pairing";
 import { peerCall } from "../../links/peer-call";
 import { answerKeyStatement, FileDeviceRegistry } from "../registry";
-import { cleanName } from "../../links/pairing";
 import { brokerCardOpener, devicesEvents, devicesMethods, type CardOpener, type MethodError } from "../rpc";
 
 const clock = new SystemClock();
@@ -36,7 +36,8 @@ const app: Caller = { kind: "user", client: "app" };
 const bot: Caller = { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" };
 
 /** `selfOverride`: what this computer says about itself on the wire, whatever its registry took (a hostile device is not bound by our own checks). */
-async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOverride?: Record<string, unknown>, over?: { openCard?: CardOpener }) {
+async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOverride?: Record<string, unknown>, over?: { openCard?: CardOpener; clock?: Clock }) {
+  const clk = over?.clock ?? clock;
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
   const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-rpc-")), key, clock, self: { name } });
@@ -44,13 +45,13 @@ async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOv
     const real = registry.self.bind(registry);
     (registry as unknown as { self: () => unknown }).self = () => ({ ...real(), ...selfOverride });
   }
-  const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, ...(ttlMs !== undefined ? { ttlMs } : {}) });
+  const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock: clk, store, selfTarget: () => ({}), account: () => null, ...(ttlMs !== undefined ? { ttlMs } : {}) });
   stops.push(() => pairing.close());
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
   const transport = { links: () => [], watch: () => () => undefined, connect: () => Promise.reject(new Error("no links in this test")) };
-  const methods = devicesMethods({ registry, pairing, transport, clock, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store } });
-  const events: { type: string }[] = [];
-  stops.push(devicesEvents({ registry, transport, pairing, clock }, (e) => events.push(e)));
+  const methods = devicesMethods({ registry, pairing, transport, clock: clk, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store } });
+  const events: { type: string; step?: string; reason?: string; peerName?: string }[] = [];
+  stops.push(devicesEvents({ registry, transport, pairing, clock: clk }, (e) => events.push(e)));
   const call = (method: string, params: unknown, caller: Caller) => methods[method]!(params, { caller });
   return { name, key, registry, pairing, broker, call, events };
 }
@@ -103,6 +104,8 @@ async function showWords(a: Awaited<ReturnType<typeof computer>>, b: Awaited<Ret
   await waitFor(() => ["words", "confirmed"].includes(a.pairing.get(view.pairingId)?.status ?? ""));
   return { view, joined };
 }
+/** The rows of a card's `detail` field. */
+const cardRows = (card: { fields?: unknown }): { label: string; value: string }[] => ((card.fields as Record<string, { rows?: { label: string; value: string }[] }>)["detail"]?.rows ?? []);
 const answer = (c: Awaited<ReturnType<typeof computer>>, id: string, optionId: "approve" | "deny") => {
   const card = c.broker.cards().find((x) => x.id === id)!;
   return c.broker.answer(card.id, { optionId, hash: card.hash, proof: { via: "sealed-frame", frame: c.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" });
@@ -125,7 +128,7 @@ describe("pairing's edges", () => {
     const lines = JSON.stringify(card);
     expect(lines).toContain(words.join(" "));
     expect(lines).toContain("same on the other device's screen");
-    expect(lines).toContain("It joins Studio.");
+    expect(cardRows(card)).toContainEqual({ label: "It would join", value: "Studio" });
     expect(JSON.stringify(b.broker.cards()[0]!)).toContain(words.join(" "));
     // Asking for it again (a caller that has the real words) is the same card, not a second one.
     const again = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words }, app)) as { applied: false; card: string };
@@ -181,16 +184,6 @@ describe("pairing's edges", () => {
     expect(b.registry.get(a.key.id)).toBeUndefined();
   });
 
-  test("cleanName: real names pass (an apostrophe, a curly one, accents, Thai, CJK, an emoji); the look-alikes and the invisible do not", () => {
-    for (const ok of ["Sam's phone", "Sam\u2019s iPhone", "Zo\u00E9 \u00E0 la maison", "\u0E42\u0E17\u0E23\u0E28\u0E31\u0E1E\u0E17\u0E4C\u0E02\u0E2D\u0E07\u0E09\u0E31\u0E19", "\u7530\u4E2D\u3055\u3093\u306E\u30D1\u30BD\u30B3\u30F3", "Pixel \u{1F4F1}", "e\u0301\u0302\u0303\u0304", "x".repeat(63)]) {
-      expect([ok, cleanName(ok)]).toEqual([ok, true]);
-    }
-    for (const bad of ["", " ", "x".repeat(64), "a\nb", "a\tb", "a\u0085b", "a\u2028b", "a\u200Eb", "a\u202Eb", "a\u2066b", "a\u200Db", "a\uFEFFb", "a\u3164", "\u115F", "\uFFA0",
-      "a\u201Db", "a\u201Cb", "a\u201Eb", "a\u00ABb", "a\"b", "a\uFF02b", "a\u{E0020}b", "a\uD800b", "e\u0301\u0302\u0303\u0304\u0305"]) {
-      expect([bad, cleanName(bad)]).toEqual([bad, false]);
-    }
-  });
-
   describe("what the other device calls itself is checked where the pairing reads it, and a pairing that sends anything else is refused", () => {
     const hostile: [string, string, string | undefined][] = [
       ["a name over 63 characters", "x".repeat(64), undefined],
@@ -199,8 +192,6 @@ describe("pairing's edges", () => {
       ["a name with a bidi override", "Pixel ‮trusted", undefined],
       ["a name with a bidi isolate", "Pixel⁦", undefined],
       ["a name that is only blanks", "   ", undefined],
-      ["a name that ends the card's quotation and speaks in the engine's voice (the reviewer's)", "Pixel\u201D and says it is a phone. Words: a b c d", undefined],
-      ["a name with a straight double quote", "Pixel\" and more", undefined],
       ["a name with a zero-width space", "Pi\u200Bxel", undefined],
       ["a name with a soft hyphen", "Pi\u00ADxel", undefined],
       ["a name with a tag character", "Pixel\u{E0041}", undefined],
@@ -235,7 +226,7 @@ describe("pairing's edges", () => {
       });
     }
 
-    test("a name of 63 characters, with spaces and accents, passes; the card shows it quoted as what the device calls itself, never as the engine's own words", async () => {
+    test("a name of 63 characters, with spaces and accents, passes; the card draws it as the value of a row of its own, never inside a sentence", async () => {
       const net = new MemoryNetwork();
       const a = await computer(net, "Studio");
       const name = `Zoé's ${"é".repeat(40)} phone`;
@@ -244,10 +235,46 @@ describe("pairing's edges", () => {
       await showWords(a, b, app);
       await waitFor(() => a.broker.cards().length === 1);
       const card = a.broker.cards()[0]!;
-      expect(JSON.stringify(card)).toContain(`It calls itself “${name}”`);
+      expect(cardRows(card)).toContainEqual({ label: "The name it gives itself", value: name });
       // The title is the engine's own and carries no name.
       expect(JSON.stringify((card.fields as Record<string, unknown>)["title"])).not.toContain("Zo");
     });
+
+    // The reviewer's case, and the look-alikes no list of quote marks ever ends: whatever the name holds, the card shows it as one row's
+    // whole value and nowhere else, so nothing in it can close or continue the engine's own words.
+    const speaking = [
+      "Pixel\u201D and says it is a phone. Words: a b c d",
+      "Pixel\u275E and says it is a phone. Words: a b c d",
+      "Pixel\" and says it is a phone. Words: a b c d",
+      "Pixel\u2033 and says it is a phone. Words: a b c d",
+      "Pixel\u00BB and says it is a phone. Words: a b c d",
+      "MacBook \"Pro\"",
+      "Sam''s phone",
+      "Sam\u2019\u2019s phone",
+    ];
+    for (const name of speaking) {
+      test(`the name ${JSON.stringify(name)} is one row's whole value on the add card, and no other field or row holds any of it`, async () => {
+        const net = new MemoryNetwork();
+        const a = await computer(net, "Studio");
+        const b = await computer(net, name);
+        await showWords(a, b, app);
+        await waitFor(() => a.broker.cards().length === 1);
+        const card = a.broker.cards()[0]!;
+        const fields = card.fields as Record<string, { type: string; text?: string; rows?: { label: string; value: string }[] }>;
+        expect(fields["title"]).toEqual({ type: "text", text: "Add this device?" });
+        const rows = fields["detail"]!.rows!;
+        expect(rows.map((r) => r.label)).toEqual(["The name it gives itself", "What it says it is", "It would join"]);
+        expect(rows[0]!.value).toBe(name);
+        expect(rows[1]!.value).toBe("desktop");
+        expect(rows[2]!.value).toBe("Studio");
+        // Everywhere else on the card (the title, the sentence, the other rows, their labels) none of the name's words appear.
+        const elsewhere = JSON.stringify([fields["title"], fields["what"], rows.slice(1), rows.map((r) => r.label)]);
+        for (const bit of ["says it is a phone", "Words: a b c d", "Pixel", "MacBook", "Sam"]) expect(elsewhere).not.toContain(bit);
+        // The engine's own sentence is the one place the words are, and they are the engine's real four.
+        const words = a.pairing.list()[0]!.view.words!;
+        expect(fields["what"]!.text).toBe(`Check that these four words are the same on the other device's screen: ${words.join(" ")}`);
+      });
+    }
 
     test("a card that can't be built fails the pairing at once: nothing is left at the words step with no card to press", async () => {
       const net = new MemoryNetwork();
@@ -319,6 +346,126 @@ describe("pairing's edges", () => {
       const words = a.pairing.get(x.view.pairingId)!.view.words!;
       expect(a.broker.cards().filter((card) => JSON.stringify(card).includes(words.join(" ")))).toHaveLength(1);
     }
+  });
+
+  describe("a pairing turned away over the other device's record says so in plain words on both sides", () => {
+    const cases: [string, Record<string, unknown>, RegExp][] = [
+      ["a name the rule refuses", { name: "Pixel​x" }, /name isn't one MOSS takes/],
+      ["a kind that isn't one of the enum", { kind: "toaster" }, /kind of device MOSS doesn't know/],
+      ["an os that isn't one of the enum", { os: "plan9" }, /system MOSS doesn't know/],
+    ];
+    for (const [what, over, said] of cases) {
+      test(`${what}: the host's page and terminal are told a device was turned away (its pairing still waits), and the joiner is told why`, async () => {
+        const net = new MemoryNetwork();
+        const good = await computer(net, "Studio");
+        const bad = await computer(net, "Hostile", undefined, over);
+        const view = (await good.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+        const err = (await bad.call("device.pair.join", { code: view.qr }, app).catch((e: unknown) => e)) as Error;
+        expect(err.message).toMatch(/turned this one away/);
+        expect(err.message).toMatch(said);
+        expect(err.message).not.toContain("key");
+        await waitFor(() => good.events.some((e) => e.step === "waiting" && (e.reason ?? "") !== ""));
+        const note = good.events.filter((e) => e.step === "waiting" && (e.reason ?? "") !== "").at(-1)!.reason!;
+        expect(note).toMatch(/A device tried to join and was turned away/);
+        expect(note).toMatch(said);
+        expect(note).toContain("This code still works");
+        // Nothing of the other device's own text is in what the person reads.
+        expect(`${err.message} ${note}`).not.toMatch(/Hostile|toaster|plan9|Pixel/);
+        expect(good.pairing.get(view.pairingId)?.status).toBe("waiting");
+        expect(good.pairing.get(view.pairingId)?.note).toBe(note);
+        // And the right device can still pair with the same code.
+        const fine = await computer(net, "Laptop");
+        await fine.call("device.pair.join", { code: view.qr }, app);
+        await waitFor(() => ["words", "confirmed"].includes(good.pairing.get(view.pairingId)?.status ?? ""));
+        expect(good.pairing.get(view.pairingId)?.note).toBeUndefined();
+      });
+      test(`${what}: a host like that is turned away by the joiner, which says so (the pairing fails, no card on either side)`, async () => {
+        const net = new MemoryNetwork();
+        const good = await computer(net, "Studio");
+        const bad = await computer(net, "Hostile", undefined, over);
+        const view = (await bad.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+        const err = (await good.call("device.pair.join", { code: view.qr }, app).catch((e: unknown) => e)) as Error;
+        expect(err.message).toMatch(/this device turned the other one away/);
+        expect(err.message).toMatch(said);
+        expect(err.message).not.toMatch(/isn't a pairing|doesn't match its key|Hostile|toaster|plan9|Pixel/);
+        await waitFor(() => good.events.some((e) => e.step === "failed" && /turned the other one away/.test(e.reason ?? "")));
+        expect(good.broker.cards()).toHaveLength(0);
+        expect(bad.broker.cards()).toHaveLength(0);
+      });
+    }
+  });
+
+  describe("a pairing expires by a timer in the engine, at the expiry its code shows", () => {
+    test("a host's pairing nobody joined ends as expired at that time: the step says so, a late join is refused, and nothing was added", async () => {
+      const net = new MemoryNetwork();
+      const fake = new FakeClock();
+      const a = await computer(net, "Studio", 60_000, undefined, { clock: fake });
+      const b = await computer(net, "Laptop", undefined, undefined, { clock: fake });
+      const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string; expiresAt: number };
+      expect(view.expiresAt).toBe(fake.now() + 60_000);
+      fake.advance(59_999);
+      expect(a.pairing.get(view.pairingId)?.status).toBe("waiting");
+      fake.advance(1);
+      expect(a.pairing.get(view.pairingId)).toMatchObject({ status: "failed", error: "expired" });
+      expect(a.events.at(-1)).toMatchObject({ type: "pairing_changed", step: "expired" });
+      await expect(b.call("device.pair.join", { code: view.qr }, app)).rejects.toThrow();
+      expect(a.registry.get(b.key.id)).toBeUndefined();
+      expect(b.registry.get(a.key.id)).toBeUndefined();
+    });
+
+    test("a pairing at its words step with its add card up ends at the expiry too, and the card is withdrawn: a yes on it adds nothing", async () => {
+      const net = new MemoryNetwork();
+      const fake = new FakeClock();
+      const a = await computer(net, "Studio", 60_000, undefined, { clock: fake });
+      const b = await computer(net, "Laptop", undefined, undefined, { clock: fake });
+      const { view } = await showWords(a, b, app);
+      await waitFor(() => a.broker.cards().length === 1);
+      const card = a.broker.cards()[0]!;
+      fake.advance(60_000);
+      expect(a.pairing.get(view.pairingId)).toMatchObject({ status: "failed", error: "expired" });
+      await waitFor(() => a.broker.cards().length === 0);
+      expect(await Promise.resolve().then(() => answer(a, card.id, "approve")).catch(() => "gone")).not.toBe("accepted");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(a.registry.get(b.key.id)).toBeUndefined();
+      expect(b.registry.get(a.key.id)).toBeUndefined();
+    });
+
+    test("a pairing that was cancelled or finished in time has no timer left to end anything", async () => {
+      const net = new MemoryNetwork();
+      const fake = new FakeClock();
+      const a = await computer(net, "Studio", 60_000, undefined, { clock: fake });
+      const b = await computer(net, "Laptop", undefined, undefined, { clock: fake });
+      const first = (await a.call("device.pair.begin", {}, app)) as { pairingId: string };
+      await a.call("device.pair.cancel", { pairingId: first.pairingId }, app);
+      const before = a.events.length;
+      fake.advance(120_000);
+      expect(a.events.length).toBe(before);
+      const { view, joined } = await showWords(a, b, terminal);
+      await b.call("device.pair.confirm", { pairingId: joined.pairingId, words: joined.words }, terminal);
+      await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal);
+      await waitFor(() => a.registry.get(b.key.id) !== undefined && b.registry.get(a.key.id) !== undefined);
+      fake.advance(120_000);
+      expect(a.registry.get(b.key.id)).toBeDefined();
+      expect(a.pairing.get(view.pairingId)?.status).not.toBe("failed");
+    });
+  });
+
+  describe("one rule for a device's name: a rename takes what the pairing takes", () => {
+    test("a rename to a name the rule refuses is refused with the reason in plain words; one it takes (quotes, a joiner between emoji) is applied", async () => {
+      const net = new MemoryNetwork();
+      const a = await computer(net, "Studio");
+      for (const bad of ["x".repeat(64), "Pi​xel", "Pixel‮trusted", "   ", "ㅤ", "é̂̃̄̅", "a\nb"]) {
+        const err = (await a.call("device.rename", { id: a.key.id, name: bad }, app).catch((e: unknown) => e)) as MethodError;
+        // The protocol's own length limit answers first for a name that is too long; every other refusal is this rule's, in its words.
+        expect([bad, [ERR.INVALID_REQUEST, ERR.INVALID_PARAMS].includes(err.code as never)]).toEqual([bad, true]);
+        if (bad.length <= 63) expect(err.message).toMatch(/^a device's name /);
+      }
+      expect(a.registry.self().name).toBe("Studio");
+      for (const ok of ["MacBook \"Pro\"", "Someone’s MacBook Pro", "MacBook \u{1F468}‍\u{1F469}‍\u{1F467}"]) {
+        expect(await a.call("device.rename", { id: a.key.id, name: ok }, app)).toEqual({ applied: true });
+        expect(a.registry.self().name).toBe(ok);
+      }
+    });
   });
 
   test("an expired code can't be joined", async () => {

@@ -1,7 +1,7 @@
 // The real device registry: B's conformance suite, then what lane H adds (the file, the answer key, pairs, the
 // group and the rotation list).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../contracts/common";
@@ -53,6 +53,47 @@ async function peer(name = "Laptop") {
   const key = await DeviceKey.fromKey(generateEd25519());
   return { key, record: { id: key.id, name, kind: "desktop" as const, runsCore: true, computer: name, publicKey: key.publicKeyBase64 } };
 }
+
+describe("one rule for a device's name (`names.ts`) at every door of the registry", () => {
+  const hostile = ["Pi\u200Bxel", "Pixel\u202Etrusted", "\u3164", "x".repeat(64), "e\u0301\u0302\u0303\u0304\u0305", "a\nb"];
+  test("add, rename and a peer's shared update refuse what the rule refuses and take what it takes (quotes, a joiner between emoji)", async () => {
+    const { registry, clock } = await open();
+    for (const name of hostile) {
+      const p = await peer("Other");
+      expect([name, isContractError(await registry.add({ ...p.record, name, computer: "Other" }, { via: "terminal" }).catch((e: unknown) => e), "invalid")]).toEqual([name, true]);
+      expect([name, isContractError(await registry.rename(registry.self().id, name).catch((e: unknown) => e), "invalid")]).toEqual([name, true]);
+    }
+    const p = await peer("Laptop");
+    await registry.add(p.record, { via: "terminal" });
+    let at = clock.now();
+    for (const name of hostile) {
+      const u = { name, at: ++at };
+      expect([name, await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))]).toEqual([name, false]);
+    }
+    expect(registry.get(p.key.id)?.name).toBe("Laptop");
+    for (const name of ["MacBook \"Pro\"", "Someone\u2019s MacBook Pro", "Mac \u{1F468}\u200D\u{1F469}\u200D\u{1F467}"]) {
+      const u = { name, at: ++at };
+      expect(await registry.applyPeerUpdate(p.key.id, u, p.key.sign(peerUpdateStatement(p.key.id, u)))).toBe(true);
+      await registry.rename(registry.self().id, name);
+      expect([registry.get(p.key.id)?.name, registry.self().name]).toEqual([name, name]);
+    }
+  });
+
+  test("a registry written before the rule, with a name every other device would now turn away for itself, is opened with the name made safe and saved so", async () => {
+    const { dir, store, clock } = await open();
+    const file = join(dir, "devices", "registry.json");
+    const state = JSON.parse(readFileSync(file, "utf8")) as { devices: { name: string }[] };
+    state.devices[0]!.name = "Stu\u200Bdio\u202E \u3164";
+    writeFileSync(file, JSON.stringify(state));
+    const again = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+    expect(again.self().name).toBe("Studio");
+    expect(readFileSync(file, "utf8")).not.toContain("u200b");
+    expect(JSON.parse(readFileSync(file, "utf8")).devices[0].name).toBe("Studio");
+    // A name that was fine is left alone, and nothing is written for it.
+    const third = await FileDeviceRegistry.open({ home: dir, key: await DeviceKey.loadOrCreate(store), clock, self: { name: "Studio", os: "macos" } });
+    expect(third.self().name).toBe("Studio");
+  });
+});
 
 describe("FileDeviceRegistry", () => {
   test("survives a restart, keeps no secret, and is readable by the user only", async () => {

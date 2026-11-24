@@ -17,6 +17,7 @@
 import { join } from "node:path";
 import type { DeviceKind, DeviceOs, PhoneApp } from "@waifucave/moss-protocol";
 import { AnswerKeyHolder, COMPUTER_NAME_RE } from "@waifucave/moss-protocol";
+import { cleanName, nameProblem, safeDeviceName } from "./names";
 import type { Clock } from "../contracts/clock";
 import { ContractError, Listeners, type Unsubscribe } from "../contracts/common";
 import {
@@ -144,7 +145,6 @@ const algOf = (k: object | undefined): AnswerKeyAlg => (k as { alg?: AnswerKeyAl
  *  re-anchors by pairing again. */
 const MAX_ROTATIONS = 256;
 
-const NAME_RE = /^[^\u0000-\u001f\u007f]{1,63}$/u;
 const KINDS: readonly DeviceKind[] = ["desktop", "server", "cloud", "phone", "browser"];
 
 // Keeps its old spelling on purpose: clients that keep the old name speak this value on the wire.
@@ -221,12 +221,19 @@ export class FileDeviceRegistry implements DeviceRegistry {
     const runsCore = kind === "desktop" || kind === "server" || kind === "cloud";
     if (existing) {
       if (existing.v !== 1 || existing.self !== opts.key.id) throw new ContractError("conflict", "the device registry belongs to another device key");
-      return new FileDeviceRegistry(path, {
+      // This device's own name, from before the one rule for names (`names.ts`) or from the operating system, is made safe now: every
+      // other device turns away a name that fails it, and a person could not have chosen it.
+      const own = existing.devices.find((d) => d.id === existing.self);
+      const cleaned = own !== undefined && nameProblem(own.name) !== null;
+      if (own !== undefined && cleaned) own.name = safeDeviceName(own.name);
+      const reg = new FileDeviceRegistry(path, {
         ...existing, pairs: existing.pairs ?? [], rotations: existing.rotations ?? [], updates: existing.updates ?? {}, boxKeys: existing.boxKeys ?? {},
         answerKeyGone: existing.answerKeyGone ?? {}, pendingRevokes: existing.pendingRevokes ?? [], groupsLeft: existing.groupsLeft ?? {},
       }, opts);
+      if (cleaned) reg.#save();
+      return reg;
     }
-    if (!NAME_RE.test(opts.self.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
+    { const why = nameProblem(opts.self.name); if (why !== null) throw new ContractError("invalid", why); }
     if (opts.self.app !== undefined) assertPhoneApp(kind, opts.self.app);
     const self: DeviceRecord = {
       id: opts.key.id, name: opts.self.name, kind, runsCore, publicKey: opts.key.publicKeyBase64,
@@ -266,7 +273,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
     if (proof.via === "self") throw new ContractError("invalid", "only this device is added as itself");
     const key = publicKeyFromBase64(device.publicKey);
     if (!key || (await deviceIdFor(key)) !== device.id) throw new ContractError("invalid", "the id doesn't match the key");
-    if (!NAME_RE.test(device.name)) throw new ContractError("invalid", "a device name is 1–63 characters");
+    { const why = nameProblem(device.name); if (why !== null) throw new ContractError("invalid", why); }
     if (!KINDS.includes(device.kind)) throw new ContractError("invalid", `unknown device kind ${String(device.kind)}`);
     // A phone's app is taken as the pairing gave it, here and nowhere else; an account's device list carries none.
     if (device.app !== undefined) assertPhoneApp(device.kind, device.app);
@@ -306,7 +313,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
   async rename(id: string, name: string): Promise<void> {
     const d = this.#find(id);
     if (!d || d.revokedAt !== undefined) throw new ContractError("not_found", `no device ${id}`);
-    if (!NAME_RE.test(name)) throw new ContractError("invalid", "a device name is 1–63 characters");
+    { const why = nameProblem(name); if (why !== null) throw new ContractError("invalid", why); }
     d.name = name;
     // A computer's tree name follows its name (§9.1; lane J keeps the old one as an alias). This device's own change
     // reaches every peer's device list over the link (`shareDeviceUpdates`), since a hello no longer renames.
@@ -422,7 +429,7 @@ export class FileDeviceRegistry implements DeviceRegistry {
       }
     }
     if (update.name !== undefined) {
-      if (!NAME_RE.test(update.name)) return false;
+      if (!cleanName(update.name)) return false;
       d.name = update.name;
     }
     if (update.computer !== undefined && d.runsCore) {
