@@ -89,6 +89,17 @@ describe("erase: what goes and what stays", () => {
     expect(out.keeps.length).toBeGreaterThan(0);
   });
 
+  test("the folder of files phones sent to coding sessions, beside the home, goes too; a link there is unlinked, not followed", async () => {
+    const w = world();
+    const received = `${w.home}-received`;
+    mkdirSync(join(received, "c_abc", "phone-1"), { recursive: true });
+    writeFileSync(join(received, "c_abc", "phone-1", "a.pdf"), "pdf");
+    symlinkSync(w.outside, join(received, "planted"));
+    await eraseHome({ home: w.home, userHome: w.user });
+    expect(existsSync(received)).toBe(false);
+    expect(readFileSync(join(w.outside, "keep.txt"), "utf8")).toBe("the person's file");
+  });
+
   test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
     const w = world();
     const link = join(w.user, "moss-link");

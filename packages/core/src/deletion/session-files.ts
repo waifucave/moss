@@ -10,6 +10,7 @@
 // | `scratch/_/<stem>/`                                       | a session with no bot: its working files     |
 // | `outputs/<id>/`, `diffs/<id>/`                            | its outputs and captured diffs               |
 // | `<tmp>/<id>/` (`sessionTmpDirPath`)                       | images staged for it                         |
+// | `<home>-received/<id>/` (`receivedRootOf`)                | files a paired phone sent to a coding session (beside the home) |
 // | `runtime-state.db`                                        | its runtime rows (the runtime's own §16 deletion) |
 //
 // A bot's scratch folder and memory are the bot's, not one conversation's: they stay (deleting the bot removes them).
@@ -23,6 +24,7 @@ import { sessionTmpDirPath } from "../agent/session-tmp";
 import { outdirPath } from "../sessions/outdir";
 import { diffDirPath } from "../diffs/store";
 import { transcriptsDir } from "../sessions/ids";
+import { receivedRootOf } from "../bots/staged-files";
 import { runtimeStderrPath } from "../runtime-sdk/turn-loop/runtime-stderr";
 
 export interface DeletedSession {
@@ -95,6 +97,8 @@ export function sessionSidePaths(home: string, s: DeletedSession): string[] {
   tryAdd(() => diffDirPath(home, s.id));
   tryAdd(() => transcriptPaths(home, s.id, s.bot).dir);
   tryAdd(() => sessionTmpDirPath(s.id));
+  // A coding session's files from a paired phone, in their folder beside the home (lane PH's `staged-files.ts`).
+  if (/^[A-Za-z0-9_-]{1,96}$/.test(s.id)) tryAdd(() => join(receivedRootOf(home), s.id));
   if (s.bot === undefined) tryAdd(() => sessionScratchDir(home, { id: s.id }));
   return paths;
 }

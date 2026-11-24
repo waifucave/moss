@@ -17,6 +17,7 @@ import { sessionTmpDirPath } from "../../agent/session-tmp";
 import { runtimeStderrPath } from "../../runtime-sdk/turn-loop/runtime-stderr";
 import { deleteSession, sessionDeletionMethods } from "../session-rpc";
 import { finishSessionDeletions, journalSessionDeletion } from "../session-files";
+import { receivedRootOf } from "../../bots/staged-files";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -35,7 +36,7 @@ function world() {
   cleanups.push(() => {
     if (before === undefined) delete process.env.MOSS_TMPDIR;
     else process.env.MOSS_TMPDIR = before;
-    for (const d of [home, tmp, outside]) rmSync(d, { recursive: true, force: true });
+    for (const d of [home, tmp, outside, receivedRootOf(home)]) rmSync(d, { recursive: true, force: true });
   });
   const deletedRuntime: string[] = [];
   const removed: string[] = [];
@@ -77,6 +78,9 @@ function writeSideFiles(home: string, id: string, outside: string): void {
   writeFileSync(join(home, "scratch", "_", id, "work.txt"), "w");
   mkdirSync(sessionTmpDirPath(id), { recursive: true });
   writeFileSync(join(sessionTmpDirPath(id), "image.png"), "png");
+  // A file a paired phone sent to it, in the folder beside the home.
+  mkdirSync(join(receivedRootOf(home), id, "phone-1"), { recursive: true });
+  writeFileSync(join(receivedRootOf(home), id, "phone-1", "notes.pdf"), "pdf");
 }
 
 describe("deleting a session", () => {
@@ -93,6 +97,7 @@ describe("deleting a session", () => {
     expect(gone.sort()).toEqual(["a_child1111222", "c_aaaa11112222"]);
     for (const id of gone) {
       expect(named(w.home, id)).toEqual([]);
+      expect(existsSync(join(receivedRootOf(w.home), id))).toBe(false);
       expect(named(w.tmp, id)).toEqual([]);
       expect(w.host.get(id)).toBeUndefined();
     }

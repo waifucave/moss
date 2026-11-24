@@ -10,12 +10,14 @@
 // * never `/`, the user's home or any folder above it, another install's home (`~/.clover`, the old Winter's), or a
 //   folder that holds a `.git` (a project, not a home);
 // * inside it, every entry is removed as itself: a link is unlinked, never followed out of the home, and a hard link
-//   only loses this name.
+//   only loses this name;
+// * beside it, the folder of files paired phones sent to coding sessions (`<home>-received`) goes too, as itself.
 import { existsSync, lstatSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
 import { otherInstallHome } from "../other-installs";
+import { receivedRootOf } from "../bots/staged-files";
 
 /** What erase leaves, said to the person every time. */
 export const ERASE_KEEPS = [
@@ -118,6 +120,16 @@ export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   // the home was given as.
   for (const name of readdirSync(check.real)) rmSync(join(check.real, name), { recursive: true, force: true });
   rmdirSync(check.real);
+  // The files paired phones sent to coding sessions live beside the home (`<home>-received`, lane PH): removed as itself, never
+  // followed if it is a link.
+  const received = receivedRootOf(check.real);
+  try {
+    const st = lstatSync(received);
+    if (st.isSymbolicLink()) unlinkSync(received);
+    else if (st.isDirectory()) rmSync(received, { recursive: true, force: true });
+  } catch {
+    // None.
+  }
   if (check.link !== undefined) {
     try {
       if (lstatSync(check.link).isSymbolicLink()) unlinkSync(check.link);
