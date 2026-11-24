@@ -161,6 +161,28 @@ export class PressRecord {
     return click ?? key ?? { ok: false, check: used ? "the press was already used" : "no press seen" };
   }
 
+  /** Why `take` (the sealed buttons' strict bounds) found no press for `frame`, for the log line only (it spends nothing and
+   *  never changes what is refused): which check, and by how many ms. */
+  explainTake(windowId: number, frame: string): string {
+    const now = this.now();
+    const d = this.downs.get(windowId);
+    const k = this.keys.get(windowId);
+    if (d === undefined && k === undefined) return "main saw no mouse down or key down in this window";
+    const why = (x: Down | undefined, kind: string): string | undefined => {
+      if (x === undefined) return undefined;
+      if (x.spent === true) return `the ${kind} was already used`;
+      const age = now - x.at;
+      if (kind === "click" && x.frame === undefined) return `no report from the page named a frame (the mouse down was ${age} ms ago${x.late !== undefined ? `; a report came ${x.late.at - x.at} ms after it, limit ${REPORT_MS}` : ""})`;
+      if (x.frame !== frame) return `the ${kind} landed in another frame`;
+      if (age > PRESS_MS) return `the answer came ${age - PRESS_MS} ms past the bound (${PRESS_MS})`;
+      return undefined;
+    };
+    const click = why(d, "click");
+    const key = why(k, "key");
+    if (click !== undefined && key !== undefined) return d!.at >= k!.at ? click : key;
+    return click ?? key ?? "no press found";
+  }
+
   private judgeClick(d: Down, frame: string, now: number): WriteTake {
     const stalledMs = this.stalled(d.at, now);
     if (d.crowded === true) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
@@ -252,7 +274,7 @@ export async function answerPress(d: PressDeps, a: { token: string; option: stri
   if (fresh !== "ok") return refuse(fresh === "covered" ? "the button was covered or not shown at the press" : "no visibility reading came with the press", fresh === "covered" ? "the button wasn't fully showing when it was pressed" : "the press wasn't checked just now");
   // 3. The press record.
   const how = d.record.take(a.windowId, a.frame);
-  if (how === undefined) return refuse("MOSS saw no press of its own land in this button", "the press didn't come to this button");
+  if (how === undefined) return refuse(`MOSS saw no press of its own land in this button (${d.record.explainTake(a.windowId, a.frame)})`, "the press didn't come to this button");
   // 4. The stacking rule.
   const w = d.standing(a.windowId);
   const stacked = w === undefined ? "not MOSS's window" : stackingRule(d.placementOf(cardId), w);

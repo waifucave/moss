@@ -405,7 +405,15 @@ export class SendGate {
     const p = this.lastPress.get(windowId);
     if (p === undefined || p.frames !== undefined) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms);
+      const started = this.now();
+      // The timer fires after the wait on a machine that kept up. If the process was itself not running meanwhile (the stall that
+      // held the report up held the timer too, and the report may be queued right behind it), it waits once more for as long as it
+      // was stalled (at most `ms`), so the wait is not measured across the stall.
+      let timer = setTimeout(() => {
+        const stalled = this.stalled(started);
+        if (stalled > 0) timer = setTimeout(resolve, Math.min(stalled, ms));
+        else resolve();
+      }, ms);
       const list = this.waiting.get(p) ?? [];
       list.push(() => { clearTimeout(timer); resolve(); });
       this.waiting.set(p, list);
