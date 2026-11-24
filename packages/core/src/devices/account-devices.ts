@@ -38,7 +38,7 @@ export interface AccountDevicesOptions {
 }
 
 /** Registers this device with the account and takes the account's devices into the registry. */
-export async function syncAccountDevices(o: AccountDevicesOptions): Promise<{ added: string[]; revoked: string[] }> {
+export async function syncAccountDevices(o: AccountDevicesOptions): Promise<{ added: string[]; revoked: string[]; dropped: string[] }> {
   const sub = await o.account.accountId();
   if (sub === null) throw new ContractError("refused", "not signed in");
   const self = o.registry.self();
@@ -46,7 +46,12 @@ export async function syncAccountDevices(o: AccountDevicesOptions): Promise<{ ad
   o.registry.setBoxKey(self.id, o.boxKey.publicKeyBase64Url);
   const added: string[] = [];
   const revoked: string[] = [];
-  for (const d of await o.account.listDevices()) {
+  const listing = await o.account.listDevices();
+  // A device the account brought in that it no longer lists (it left at sign-out, or its revoke was kept past 30 days
+  // and cut to its id): forgotten here, so it isn't trusted on the account's word any more.
+  const listed = new Set(listing.map((d) => d.id));
+  const dropped = o.registry.forgetAccountDevices((id) => !listed.has(id));
+  for (const d of listing) {
     if (d.id === self.id) continue;
     const local = o.registry.get(d.id);
     if (d.revokedAt !== undefined) {
@@ -69,7 +74,7 @@ export async function syncAccountDevices(o: AccountDevicesOptions): Promise<{ ad
     }
     if (o.registry.get(d.id)?.revokedAt === undefined) o.registry.setBoxKey(d.id, d.boxKey);
   }
-  return { added, revoked };
+  return { added, revoked, dropped };
 }
 
 export interface RevokeOptions {

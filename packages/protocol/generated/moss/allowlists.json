@@ -1,6 +1,7 @@
 {
   "app": {
     "calls": [
+      "account.delete",
       "account.signIn",
       "account.signOut",
       "account.status",
@@ -379,6 +380,7 @@
   },
   "cli": {
     "calls": [
+      "account.delete",
       "account.signIn",
       "account.signOut",
       "account.status",

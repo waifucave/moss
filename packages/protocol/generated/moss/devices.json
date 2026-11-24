@@ -777,7 +777,7 @@
       }
     },
     "account.signOut": {
-      "doc": "Signs this computer out of the account.",
+      "doc": "Signs this computer out of the account: it leaves the account's device list first, then its sign-in ends here.",
       "owner": "H",
       "direction": "to-daemon",
       "roles": [
@@ -803,6 +803,77 @@
           "ok"
         ],
         "additionalProperties": false
+      }
+    },
+    "account.delete": {
+      "doc": "Deletes the waifucave account: at waifucave the account's devices, push addresses, webhook keys and waiting webhooks, connection records and the sign-in itself; here the sign-in and the devices the account alone added. Conversations, bots, memory, settings and files stay. `pending` names what waifucave still confirms; it finishes on its own.",
+      "owner": "H",
+      "direction": "to-daemon",
+      "roles": [
+        "app",
+        "cli"
+      ],
+      "userOnly": true,
+      "change": "sensitive",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              },
+              "pending": {
+                "maxItems": 4,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "hooks",
+                    "push",
+                    "handshake",
+                    "sign-in"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "applied",
+              "pending"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": false
+              },
+              "card": {
+                "type": "string",
+                "pattern": "^card_[A-Za-z0-9_-]{6,64}$"
+              }
+            },
+            "required": [
+              "applied",
+              "card"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "main.get": {
@@ -1755,7 +1826,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {

@@ -16,7 +16,11 @@
 //   GET    /v1/devices                               {devices: [...]}, revoked ones with `revokedAt`
 //   DELETE /v1/devices/:id                           revokes a device of the account
 //   POST   /v1/tokens            {aud, dev, t, sig} {token, expiresAt} (sig over `mintStatement`, which names the account)
+//   POST   /v1/devices/leave     {dev, t, sig}      this device leaves at sign-out (sig over `leaveStatement`)
+//   POST   /v1/account/delete    {dev, t, sig}      {deletion}: deletes the account (sig over `deleteStatement`)
 //   GET    /.well-known/jwks.json                    the keys tokens are checked against
+// A 410 `account_deleted` from the service means the account was deleted (here or on another device): the session is
+// dropped and the account's end is told once (`whenEnded`), never asked about again.
 // Each takes the Supabase access token as `Authorization: Bearer`.
 import { createHash } from "node:crypto";
 import type { AccountView, DeviceKind, DeviceOs } from "@waifucave/moss-protocol";
@@ -40,6 +44,19 @@ export const registerStatement = (account: string, d: { id: string; publicKey: s
 /** What a device signs to have a token minted: the account it's on too, as the register statement names it (lane I). */
 export const mintStatement = (account: string, audience: string, device: string, t: number): Uint8Array =>
   utf8(["clover-account-v1 mint", account, audience, device, String(t)].join("\n"));
+/** What a device signs to delete the account (services/accounts PROTOCOL.md, "Deleting the account"): its own purpose
+ *  tag, so no registration's or mint's signature can pass as one. */
+export const deleteStatement = (account: string, device: string, t: number): Uint8Array => encode(["moss-account-v1 delete", account, device, t]);
+/** What a device signs to leave the account at sign-out (PROTOCOL.md, "Leaving"). */
+export const leaveStatement = (account: string, device: string, t: number): Uint8Array => encode(["moss-account-v1 leave", account, device, t]);
+
+/** The account deletion's steps at the services, as the account service names them; each one it hasn't confirmed yet
+ *  it retries on its own. */
+export type AccountDeletionStep = "hooks" | "push" | "handshake" | "sign-in";
+export interface AccountDeletion {
+  deletedAt: number;
+  pending: AccountDeletionStep[];
+}
 
 export interface AccountConfig {
   /** The Supabase project URL. */
@@ -86,6 +103,7 @@ export class AccountClient {
   readonly #o: AccountClientOptions;
   readonly #fetch: (req: Request) => Promise<Response>;
   readonly #listeners = new Listeners<AccountView>();
+  readonly #ends = new Listeners<"deleted">();
   #session: StoredSession | null | undefined;
   #refreshing: Promise<StoredSession | null> | undefined;
   #pending: { server: ReturnType<typeof Bun.serve>; timer: ReturnType<typeof setTimeout> } | undefined;
@@ -94,11 +112,22 @@ export class AccountClient {
   constructor(opts: AccountClientOptions) {
     this.#o = opts;
     this.#fetch = opts.fetch ?? ((req) => fetch(req));
-    this.tokens = mintedTokenSource((aud) => this.mint(aud), opts.clock);
+    const minted = mintedTokenSource((aud) => this.mint(aud), opts.clock);
+    // Never a cached token once the session is gone (signed out, or the account deleted).
+    this.tokens = {
+      current: async (aud) => ((await this.#load()) ? minted.current(aud) : null),
+      newer: async (generation, aud) => ((await this.#load()) ? minted.newer(generation, aud) : null),
+    };
   }
 
   watch(fn: (view: AccountView) => void): Unsubscribe {
     return this.#listeners.add(fn);
+  }
+
+  /** The account ended without this device signing out: it was deleted, on another device (a 410 from the account
+   *  service). Told once, after the session here is gone; the daemon then removes what the account put here. */
+  whenEnded(fn: (why: "deleted") => void): Unsubscribe {
+    return this.#ends.add(fn);
   }
 
   async status(): Promise<AccountView> {
@@ -186,11 +215,52 @@ export class AccountClient {
     return this.status();
   }
 
-  async signOut(): Promise<void> {
+  /** Signs this computer out: it leaves the account first (its row at the account service goes, so the account no
+   *  longer lists it and it can sign in again later), then ends its Supabase session and deletes it here. Neither call
+   *  stops the sign-out: a leave that fails leaves the row behind, which the next sign-in's registration updates. */
+  async signOut(): Promise<{ left: boolean }> {
     const s = await this.#load();
+    let left = false;
     if (s) {
+      left = await this.leave().then(() => true, () => false);
       await this.#auth("POST", "/auth/v1/logout?scope=local", undefined, s.accessToken).catch(() => undefined);
     }
+    await this.#o.store.delete(ACCOUNT_SESSION_REF);
+    this.#session = null;
+    this.#listeners.emit({ signedIn: false });
+    return { left };
+  }
+
+  /** This device leaves the account: its row at the account service goes (signed by its link key). */
+  async leave(): Promise<void> {
+    const s = await this.#load();
+    if (!s) return;
+    const t = Math.floor(this.#o.clock.now());
+    await this.#service("POST", "/v1/devices/leave", { dev: this.#o.device.id, t, sig: toBase64Url(this.#o.device.sign(leaveStatement(s.user.id, this.#o.device.id, t))) });
+  }
+
+  /**
+   * Deletes the account at waifucave (services/accounts PROTOCOL.md, "Deleting the account"), signed by this device:
+   * the account service wipes its rows at once and refuses the account from then on, and tells the other services and
+   * the sign-in project itself, retrying until each confirms. Asked again, it answers how far that got. The session
+   * here is NOT dropped by this call (the caller does, once it has kept what it needs to finish): a 410 is the deletion
+   * already done, and answers with nothing pending at the account service's own rows.
+   */
+  async deleteAccount(): Promise<AccountDeletion> {
+    const s = await this.#load();
+    if (!s) throw new ContractError("refused", "not signed in");
+    const t = Math.floor(this.#o.clock.now());
+    const body = { dev: this.#o.device.id, t, sig: toBase64Url(this.#o.device.sign(deleteStatement(s.user.id, this.#o.device.id, t))) };
+    const res = await this.#service("POST", "/v1/account/delete", body, { gone: "answer" });
+    const out = (await res.json()) as { deletion?: { deletedAt?: unknown; pending?: unknown } };
+    const d = out.deletion;
+    if (!d || typeof d.deletedAt !== "number" || !Array.isArray(d.pending)) throw new ContractError("failed", "the account service answered without the deletion's state");
+    const known: AccountDeletionStep[] = ["hooks", "push", "handshake", "sign-in"];
+    return { deletedAt: d.deletedAt, pending: d.pending.filter((p): p is AccountDeletionStep => known.includes(p as AccountDeletionStep)) };
+  }
+
+  /** Drops the session here (the account is gone): no logout call, since there is no account to sign out of. */
+  async forgetSession(): Promise<void> {
     await this.#o.store.delete(ACCOUNT_SESSION_REF);
     this.#session = null;
     this.#listeners.emit({ signedIn: false });
@@ -323,7 +393,14 @@ export class AccountClient {
     throw new ContractError(res.status === 400 || res.status === 401 || res.status === 403 ? "refused" : "failed", `the sign-in service answered ${res.status}`);
   }
 
-  async #service(method: string, path: string, body?: unknown): Promise<Response> {
+  /** The account ended elsewhere (a 410): the session goes and `onEnded` is told, once. */
+  async #ended(): Promise<void> {
+    if ((await this.#load()) === null) return;
+    await this.forgetSession();
+    this.#ends.emit("deleted");
+  }
+
+  async #service(method: string, path: string, body?: unknown, opts: { gone?: "answer" } = {}): Promise<Response> {
     const token = await this.accessToken();
     const send = async (bearer: string) => this.#fetch(new Request(`${this.#o.config.serviceUrl.replace(/\/+$/, "")}${path}`, {
       method,
@@ -338,6 +415,13 @@ export class AccountClient {
       res = await send(s.accessToken);
     }
     if (res.ok) return res;
+    if (res.status === 410) {
+      // The account was deleted. The deletion's own call answers with what's left (nothing at this service); every
+      // other call ends the session here, once, so a device that learns of it never asks again.
+      if (opts.gone === "answer") return new Response(JSON.stringify({ deletion: { deletedAt: this.#o.clock.now(), pending: [] } }), { status: 200 });
+      await this.#ended();
+      throw new ContractError("refused", "the account was deleted");
+    }
     const code = res.status === 404 ? "not_found" : res.status === 409 ? "conflict" : res.status === 401 || res.status === 403 ? "refused" : "failed";
     throw new ContractError(code, `the account service answered ${res.status}`);
   }

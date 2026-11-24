@@ -6,7 +6,7 @@ import { createPrivateKey, randomUUID, sign as nodeSign } from "node:crypto";
 import { fromBase64Url, toBase64Url, utf8 } from "./bytes";
 import { generateEd25519, verifyEd25519 } from "./keys";
 import { deviceIdFor } from "../contracts/device-registry";
-import { mintStatement, registerStatement, type AccountDevice } from "./account";
+import { deleteStatement, leaveStatement, mintStatement, registerStatement, type AccountDevice } from "./account";
 
 const PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
@@ -18,6 +18,10 @@ export interface FakeAccountService {
   devices(account: string): AccountDevice[];
   /** Mints issued, newest last (audience and device only). */
   readonly mints: { aud: string; dev: string }[];
+  /** The accounts deleted, as the real service's mark that refuses them (410); `pending` is what the test says is left. */
+  readonly deleted: Map<string, { deletedAt: number; pending: string[] }>;
+  /** What a deletion answers as still pending (the real service's steps at the other services and the sign-in). */
+  pendingOnDelete: string[];
   stop(): void;
 }
 
@@ -28,6 +32,8 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
   const jwks = JSON.stringify({ keys: [{ kty: "OKP", crv: "Ed25519", x: toBase64Url(key.publicKey), kid, alg: "EdDSA", use: "sig" }] });
   const accounts = new Map<string, AccountDevice[]>();
   const mints: { aud: string; dev: string }[] = [];
+  const deleted = new Map<string, { deletedAt: number; pending: string[] }>();
+  const state = { pendingOnDelete: [] as string[] };
   const ttl = Math.min(opts.tokenTtlSeconds ?? 300, 300);
   let issuer = "";
 
@@ -53,9 +59,32 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
       if (url.pathname === "/.well-known/jwks.json") return new Response(jwks, { headers: { "content-type": "application/json" } });
       const sub = await user(req);
       if (!sub) return Response.json({ error: "unauthorized" }, { status: 401 });
+      const gone = deleted.get(sub);
+      if (gone) {
+        if (url.pathname === "/v1/account/delete" && req.method === "POST") return Response.json({ deletion: gone });
+        return Response.json({ error: "account_deleted" }, { status: 410 });
+      }
       const list = accounts.get(sub) ?? [];
       accounts.set(sub, list);
       const parts = url.pathname.split("/").slice(1);
+      if ((url.pathname === "/v1/devices/leave" || url.pathname === "/v1/account/delete") && req.method === "POST") {
+        const b = (await req.json()) as { dev?: string; t?: number; sig?: string };
+        if (typeof b.dev !== "string" || !fresh(b.t)) return Response.json({ error: "bad_request" }, { status: 400 });
+        const d = list.find((x) => x.id === b.dev);
+        const leave = url.pathname === "/v1/devices/leave";
+        if (!d) return leave ? new Response(null, { status: 204 }) : Response.json({ error: "not_member" }, { status: 403 });
+        if (d.revokedAt !== undefined) return Response.json({ error: leave ? "revoked" : "not_member" }, { status: 403 });
+        const statement = leave ? leaveStatement(sub, b.dev, b.t!) : deleteStatement(sub, b.dev, b.t!);
+        if (!sigOk(d.publicKey, statement, b.sig)) return Response.json({ error: "bad_signature" }, { status: 403 });
+        if (leave) {
+          list.splice(list.indexOf(d), 1);
+          return new Response(null, { status: 204 });
+        }
+        accounts.delete(sub);
+        const deletion = { deletedAt: Date.now(), pending: [...state.pendingOnDelete] };
+        deleted.set(sub, deletion);
+        return Response.json({ deletion });
+      }
       if (url.pathname === "/v1/devices" && req.method === "GET") return Response.json({ devices: list });
       if (url.pathname === "/v1/devices" && req.method === "POST") {
         const b = (await req.json()) as { device?: AccountDevice; t?: number; sig?: string };
@@ -100,6 +129,13 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
     jwks,
     devices: (account) => (accounts.get(account) ?? []).map((d) => ({ ...d })),
     mints,
+    deleted,
+    get pendingOnDelete() {
+      return state.pendingOnDelete;
+    },
+    set pendingOnDelete(v: string[]) {
+      state.pendingOnDelete = v;
+    },
     stop: () => server.stop(true),
   };
 }

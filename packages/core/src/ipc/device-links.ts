@@ -21,6 +21,8 @@
 //     server through `mountMossRemoteClients`, C-M3 item 3) when the daemon passes `clients`.
 // Still to come: the sidecar's spawn under the fence (with C-M2's Bash fence: UDP and its pipes only), and the devices
 // area's events (`devicesEvents`), once the MOSS server sends `core.event`s.
+import { accountDeletionMethods } from "../deletion/account-rpc";
+import { endAccountHere, resumeAccountDeletion } from "../identity/account-deletion";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import type { Caller, MossRole } from "@waifucave/moss-protocol";
@@ -189,12 +191,23 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
   });
   const offs: Array<() => void> = [];
   try {
+    const signedAccount = account?.account;
     Object.assign(input.handlers, laneMethodHandlers(devicesMethods({
       registry: links.registry, pairing: links.pairing, transport: links.transport, clock: links.clock, openCard,
-      revoke: links.revokeOptions(), ...(links.main ? { main: links.main } : {}),
+      revoke: links.revokeOptions(), ...(links.main ? { main: links.main } : {}), ...(signedAccount ? { account: signedAccount } : {}),
       ...(input.answerKeyRotation ? { answerKeyRotation: input.answerKeyRotation } : {}),
       ...(input.answerKeyServed ? { answerKey: false as const } : {}),
     })));
+    // The account's deletion (the deletion lane): the person's `account.delete`; an account deleted on another device ends
+    // here at this device's next contact with the account service (its 410), once; and a deletion the last run began is
+    // finished.
+    Object.assign(input.handlers, laneMethodHandlers(accountDeletionMethods({
+      home: input.home, ...(signedAccount ? { account: signedAccount } : {}), registry: links.registry, clock: input.clock, openCard, log,
+    })));
+    if (signedAccount) {
+      offs.push(signedAccount.whenEnded(() => void endAccountHere({ account: signedAccount, registry: links.registry, log }).catch(() => undefined)));
+      void resumeAccountDeletion({ home: input.home, account: signedAccount, registry: links.registry, clock: input.clock, log });
+    }
     // The devices area's events: a page learns a device came or went, a link's path changed, and the pairing it started moved on
     // (the four words arrived, its card was answered): it never has to poll.
     if (input.emit) {

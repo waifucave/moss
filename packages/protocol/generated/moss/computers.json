@@ -675,7 +675,11 @@
                           "plugin-index-remove",
                           "plugin-update",
                           "plugin-confirm-adult",
-                          "home-copy"
+                          "home-copy",
+                          "account-delete",
+                          "session-delete",
+                          "bot-delete",
+                          "home-erase"
                         ]
                       },
                       "binds": {
@@ -1171,7 +1175,11 @@
                         "plugin-index-remove",
                         "plugin-update",
                         "plugin-confirm-adult",
-                        "home-copy"
+                        "home-copy",
+                        "account-delete",
+                        "session-delete",
+                        "bot-delete",
+                        "home-erase"
                       ]
                     },
                     "binds": {
@@ -1933,7 +1941,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -2508,7 +2520,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -3081,7 +3097,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -3652,7 +3672,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -4220,7 +4244,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -4751,7 +4779,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -5286,7 +5318,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -5834,7 +5870,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -6409,7 +6449,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -6937,7 +6981,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -7465,7 +7513,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -7999,7 +8051,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -8580,7 +8636,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -9261,7 +9321,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -10180,7 +10244,11 @@
                       "plugin-index-remove",
                       "plugin-update",
                       "plugin-confirm-adult",
-                      "home-copy"
+                      "home-copy",
+                      "account-delete",
+                      "session-delete",
+                      "bot-delete",
+                      "home-erase"
                     ]
                   },
                   "binds": {
@@ -10736,7 +10804,11 @@
                           "plugin-index-remove",
                           "plugin-update",
                           "plugin-confirm-adult",
-                          "home-copy"
+                          "home-copy",
+                          "account-delete",
+                          "session-delete",
+                          "bot-delete",
+                          "home-erase"
                         ]
                       },
                       "binds": {

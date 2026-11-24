@@ -51,7 +51,7 @@ function toMethodError(err: unknown): MethodError {
   return new MethodError(ERR.INTERNAL, err instanceof Error ? err.message : "failed");
 }
 
-function handler<S extends MethodSpec>(spec: S, impl: (params: z.output<S["params"]>, ctx: MethodContext) => Promise<z.input<S["result"]>> | z.input<S["result"]>): MethodHandler {
+export function handler<S extends MethodSpec>(spec: S, impl: (params: z.output<S["params"]>, ctx: MethodContext) => Promise<z.input<S["result"]>> | z.input<S["result"]>): MethodHandler {
   return async (raw, ctx) => {
     const parsed = spec.params.safeParse(raw);
     if (!parsed.success) throw new MethodError(ERR.INVALID_PARAMS, `${spec.name}: ${parsed.error.issues.map((i) => i.message).join("; ")}`);

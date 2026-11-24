@@ -571,6 +571,48 @@ export class FileDeviceRegistry implements DeviceRegistry {
     this.#save();
   }
 
+  // ---- the account's end (the deletion lane) ----
+
+  /**
+   * The account was deleted (here or on another device): the devices it alone brought in (`addedBy: "account"`, with no
+   * pair made by code and not in a group) are forgotten here, their records and box keys, and their links cut (a
+   * `revoked` change per id). Forgotten, not revoked: the person's other computers stay theirs, and can be paired again
+   * by code, or by a new account, with the keys they have. A device also paired by code or in the group stays. Returns
+   * the ids forgotten. With `only`, just the ones it picks (a sync forgets those the account no longer lists).
+   */
+  forgetAccountDevices(only?: (id: string) => boolean): string[] {
+    const self = this.#state.self;
+    const inGroup = new Set(Object.keys(this.#state.group?.members ?? {}));
+    const gone = this.#state.devices.filter((d) => d.id !== self && d.addedBy === "account" && d.revokedAt === undefined && !this.pairWith(d.id) && !inGroup.has(d.id) && (only === undefined || only(d.id)));
+    if (gone.length === 0) return [];
+    const ids = new Set(gone.map((d) => d.id));
+    this.#state.devices = this.#state.devices.filter((d) => !ids.has(d.id));
+    for (const id of ids) {
+      delete this.#state.boxKeys[id];
+      delete this.#state.updates[id];
+    }
+    this.#save();
+    for (const id of ids) this.#listeners.emit({ type: "revoked", id, reason: only === undefined ? "the account was deleted" : "the account no longer lists it" });
+    return [...ids];
+  }
+
+  /** The account was deleted: the steps of a pending revoke that would tell the account's services are dropped (there
+   *  is no account left to tell, and no token to tell it with); the steps at a pair or the group stay. */
+  dropAccountRevokeSteps(): void {
+    const accountSteps = new Set(["account", "hooks", "push", "handshake-account"]);
+    let changed = false;
+    for (const r of this.#state.pendingRevokes) {
+      const kept = r.steps.filter((s) => !accountSteps.has(s));
+      if (kept.length !== r.steps.length) {
+        r.steps = kept as typeof r.steps;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.#state.pendingRevokes = this.#state.pendingRevokes.filter((r) => r.steps.length > 0);
+    this.#save();
+  }
+
   // ---- a revocation's steps at the services (S5) ----
 
   pendingRevokes(): PendingRevoke[] {

@@ -82,6 +82,11 @@ export const ChangeSubject = z.enum([
    *  (bring the data over, or start fresh; quit the old app first while it runs), and its notice after the copy (what
    *  to set up again, and the old engine's own `autostart disable`). */
   "home-copy",
+  /** Deleting things for good (the deletion lane), each only by the person: their own terminal with its own
+   *  confirmation, or their yes on this card, which names what goes and what stays. The waifucave account
+   *  (`account.delete`), a session or a bot's conversation (`session.delete`), a bot (`bot.delete`), and everything MOSS
+   *  keeps on this computer (`home.erase`). */
+  "account-delete", "session-delete", "bot-delete", "home-erase",
 ]);
 export type ChangeSubject = z.infer<typeof ChangeSubject>;
 

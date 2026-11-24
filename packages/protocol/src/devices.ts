@@ -8,8 +8,12 @@
 import { z } from "zod";
 import { utf16 } from "./strings";
 import {
-  BotId, Caller, ChangeResult, ComputerName, DeviceId, DeviceOs, Empty, FencingToken, Ok, Os, SessionId, Text, Timestamp,
+  BotId, Caller, CardId, ChangeResult, ComputerName, DeviceId, DeviceOs, Empty, FencingToken, Ok, Os, SessionId, Text, Timestamp,
 } from "./common";
+
+/** What the account's deletion still has waifucave confirm (services/accounts PROTOCOL.md, "Deleting the account"). */
+export const AccountDeletionStep = z.enum(["hooks", "push", "handshake", "sign-in"]);
+export type AccountDeletionStep = z.infer<typeof AccountDeletionStep>;
 import { SignedCardAnswer } from "./approvals";
 import { coreEvent, defineEvent, defineMethod } from "./rpc";
 import { UserMessageInput } from "./sessions";
@@ -275,7 +279,19 @@ export const DEVICES_METHODS = {
   accountSignOut: defineMethod({
     name: "account.signOut", owner: "H", roles: ["app", "cli"], userOnly: true,
     params: Empty, result: Ok,
-    doc: "Signs this computer out of the account.",
+    doc: "Signs this computer out of the account: it leaves the account's device list first, then its sign-in ends here.",
+  }),
+  accountDelete: defineMethod({
+    /** The person only (the deletion lane, item 1): from an app the engine raises its sealed card naming what goes and
+     *  what stays, and deletes on its yes alone; in their own terminal `confirm: true` is the CLI's own typed
+     *  confirmation. Never a bot, an agent, a plugin, a phone, the web page or another computer. */
+    name: "account.delete", owner: "H", roles: ["app", "cli"], userOnly: true, change: "sensitive",
+    params: z.object({ confirm: z.literal(true).optional() }),
+    result: z.union([
+      z.object({ applied: z.literal(true), pending: z.array(AccountDeletionStep).max(4) }),
+      z.object({ applied: z.literal(false), card: CardId }),
+    ]),
+    doc: "Deletes the waifucave account: at waifucave the account's devices, push addresses, webhook keys and waiting webhooks, connection records and the sign-in itself; here the sign-in and the devices the account alone added. Conversations, bots, memory, settings and files stay. `pending` names what waifucave still confirms; it finishes on its own.",
   }),
   mainGet: defineMethod({
     name: "main.get", owner: "H", roles: ["app", "cli", "remote", "web"],
