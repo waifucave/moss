@@ -73,7 +73,8 @@ class ConversationModel(
             messages = p.messages
             hasEarlier = p.hasMore
             errorText = null
-            if (source is Source.OfBot) runCatching { client.markRead(source.bot.id) }
+            val s = source
+            if (s is Source.OfBot) runCatching { client.markRead(s.bot.id) }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             errorText = UNREACHABLE_TEXT
         }
