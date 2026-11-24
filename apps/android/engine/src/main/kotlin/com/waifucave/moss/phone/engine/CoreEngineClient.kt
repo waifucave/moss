@@ -480,7 +480,10 @@ class CoreEngineClient(
 
     override suspend fun stageImage(session: String, data: ByteArray): String = io {
         if (offersOf(session)?.pictures != true) throw EngineRefusal("This conversation doesn't take pictures from the phone.")
-        c().stageImage(session, mediaType(data), data)
+        try { c().stageImage(session, mediaType(data), data) } catch (e: CoreException) {
+            Log.w(tag, "a picture wasn't staged: ${e.javaClass.simpleName}: ${e.message}")
+            throw e
+        }
     }
 
     override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile = io {
@@ -488,7 +491,11 @@ class CoreEngineClient(
         if (offers?.files != true) throw EngineRefusal("This conversation doesn't take files from the phone.")
         val limit = offers.fileLimit ?: STAGE_FILE_MAX_BYTES
         if (data.size > limit) throw FileTooLarge(limit)
-        val f = c().stageFile(session, name, data)
+        val f = try { c().stageFile(session, name, data) } catch (e: CoreException) {
+            // The core's words, cleaned (never a key or a path of the phone's): what the screens say only as "couldn't be added".
+            Log.w(tag, "a file wasn't staged: ${e.javaClass.simpleName}: ${e.message}")
+            throw e
+        }
         StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
     }
 

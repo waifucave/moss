@@ -46,8 +46,10 @@ const ADVERTISE = "10.0.2.2";
 const log = (line: string) => process.stderr.write(`[engine] ${line}\n`);
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "moss-aw-engine-")));
-const home = join(root, "home");
+// The MOSS home inside the user's home, as an install keeps it (`~/.moss`): the folder tree names a conversation's files
+// from the user's home, so a file a phone sends has a place it can be named.
 const userHome = join(root, "user");
+const home = join(userHome, ".moss");
 mkdirSync(join(userHome, "project1"), { recursive: true });
 // The engine's own secrets (its device key among them) in memory, as a test daemon keeps them, but ONE store for this
 // harness's whole life: the engine restarted on this home is the same device, with the same link key.
