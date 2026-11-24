@@ -82,7 +82,7 @@ async function setup(opts: { longTalk?: { bot: string; messages: number } } = {}
     signIn: (p, i, k) => engine.signIn(p, i, k), signOut: (p, i) => engine.signOut(p, i),
     botRecord: (id) => engine.botRecord(id), editBot: (id, patch) => engine.editBot(id, patch), models: () => engine.models(),
     setup: () => engine.setup(), setupProviders: () => engine.setupProviders(), openTerms: async () => false, setDefaultModel: (m) => engine.setDefaultModel(m), skipSetup: () => engine.skipSetup(),
-    archiveBot: (id) => engine.archiveBot(id), archivedBots: () => engine.archivedBots(), restoreBot: (id) => engine.restoreBot(id), retry: (b) => engine.retry(b), answer: (b, c, a, n) => engine.answerQuestion(b, c, a, n), stop: (b) => engine.stop(b), openLink: async () => false, pictureInput: () => {},
+    archiveBot: (id) => engine.archiveBot(id), deleteBot: (id) => engine.deleteBot(id), deleteConversation: (b) => engine.deleteConversation(b), deleteAccount: () => engine.deleteAccount(), eraseEverything: () => engine.eraseEverything(), archivedBots: () => engine.archivedBots(), restoreBot: (id) => engine.restoreBot(id), retry: (b) => engine.retry(b), answer: (b, c, a, n) => engine.answerQuestion(b, c, a, n), stop: (b) => engine.stop(b), openLink: async () => false, pictureInput: () => {},
   };
   const used: string[] = [];
   const bridge = new Proxy(real, { get: (t, k: string) => { const f = t[k as keyof MossBridge] as unknown; return typeof f === "function" ? (...a: unknown[]) => { used.push(k); return (f as (...x: unknown[]) => unknown)(...a); } : f; } });
@@ -435,6 +435,27 @@ describe("Settings", () => {
     // The bot's settings from plugins: the fake's voice plugin, drawn from its schema.
     await until(() => r.container.querySelector("[data-plugin-settings=\"moss/voice\"] [data-bot-setting=voice] select") !== null);
     r.unmount();
+  });
+
+  test("deleting (the deletion lane): a bot, its conversation, and everything here are each one press that asks the engine, whose card decides", async () => {
+    const { e, engine } = await setup();
+    const bots = engine.view().bots;
+    const r = render(h(SettingsPage, { bots, bot: "juniper" }));
+    await until(() => r.container.querySelector("[data-delete-bot=juniper]") !== null);
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-delete-conversation=juniper]")!); });
+    await until(() => callsOf(e, "session.delete").length === 1);
+    expect(callsOf(e, "session.delete")[0]).toEqual({ id: engine.view().bots.find((b) => b.id === "juniper")?.mainSession ?? callsOf(e, "session.delete")[0]!.id });
+    await act(async () => { fireEvent.click(r.container.querySelector("[data-delete-bot=juniper]")!); });
+    await until(() => callsOf(e, "bot.delete").length === 1);
+    expect(callsOf(e, "bot.delete")[0]).toEqual({ id: "juniper" });
+    // Never with a confirmation of the page's own: the engine's card is the confirmation.
+    expect(callsOf(e, "bot.delete")[0]!.confirm).toBeUndefined();
+    r.unmount();
+    const all = render(h(SettingsPage, { bots }));
+    await until(() => all.container.querySelector("[data-erase-everything]") !== null);
+    await act(async () => { fireEvent.click(all.container.querySelector("[data-erase-everything]")!); });
+    await until(() => callsOf(e, "home.erase").length === 1);
+    all.unmount();
   });
 
   test("a bot's plugin settings are drawn from any plugin's declared schema", async () => {

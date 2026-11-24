@@ -105,6 +105,7 @@ function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | unde
             <span className="chip chip--on">Signed in</span>
           </div>
         ) : <p className="muted">Not signed in. Signing in links your computers and phone.</p>}
+        {s !== undefined && s.account !== "waiting" && s.account.signedIn ? <DeleteAccount /> : null}
       </Card>
       {props.onSetupGuide !== undefined ? (
         <Card title="Setup guide" id="setup" note="Add a model provider and pick your default model, step by step.">
@@ -137,6 +138,7 @@ function General(props: { onSetupGuide?: () => void; pairing?: PairingRow | unde
       {/* Drawn once the cards above it are in: a list read before the keys (a few hundred rows) would be pushed down under
           the person's pointer as they press Bring back (row 107's miss). */}
       {s === undefined ? <Pending /> : <Archived />}
+      {s === undefined ? null : <EraseEverything />}
       <Card title="Devices" id="devices">
         {s === undefined ? <Pending /> : s.devices === "waiting" ? <Waiting what="devices" /> : s.devices.length === 0 ? <p className="muted">Only this computer.</p> : (
           <ul className="kv">
@@ -395,6 +397,10 @@ function BotPage(props: { bot: BotRow }) {
       <Card title="Archive" id="archive" note={`Archiving puts ${rec.name} away: nothing is deleted. Its conversation, memory and routines come back with it from Settings.`}>
         <button type="button" className="text-button" data-archive-bot={rec.id} onClick={() => void bridge().archiveBot(rec.id).then((ok) => { if (!ok) setNote("The engine didn't archive the bot."); })}>Archive {rec.name}</button>
       </Card>
+      <Card title="Delete" id="delete" note={`Deleting is for good. You confirm on a card that says what goes and what stays.`}>
+        <button type="button" className="text-button" data-delete-conversation={rec.id} onClick={() => void bridge().deleteConversation(rec.id).then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete the conversation."); })}>Delete the conversation with {rec.name}</button>
+        <button type="button" className="text-button text-button--danger" data-delete-bot={rec.id} onClick={() => void bridge().deleteBot(rec.id).then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete the bot."); })}>Delete {rec.name}</button>
+      </Card>
     </div>
   );
 }
@@ -441,6 +447,28 @@ function Memory(props: { bot: string; name: string }) {
   );
 }
 
+/** The account's deletion (the deletion lane): the engine's card names what goes at waifucave and here, and what stays. */
+function DeleteAccount() {
+  const [note, setNote] = useState<string | undefined>(undefined);
+  return (
+    <div className="ma2-delete">
+      <button type="button" className="text-button text-button--danger" data-delete-account onClick={() => void bridge().deleteAccount().then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete your account."); })}>Delete account</button>
+      {note !== undefined ? <p className="add__note" role="status">{note}</p> : null}
+    </div>
+  );
+}
+
+/** Erase everything MOSS keeps on this computer (the deletion lane): the engine's card first; on its yes the apps quit. */
+function EraseEverything() {
+  const [note, setNote] = useState<string | undefined>(undefined);
+  return (
+    <Card title="Erase everything" id="erase" note="Deletes every conversation, bot, memory, setting, plugin and log MOSS keeps on this computer, and MOSS's saved keys and logins. The apps, your projects and files bots wrote elsewhere stay. You confirm on a card first; then MOSS quits and erases.">
+      <button type="button" className="text-button text-button--danger" data-erase-everything onClick={() => void bridge().eraseEverything().then((ok) => { if (!ok) setNote("The engine didn't take the ask to erase."); })}>Erase everything</button>
+      {note !== undefined ? <p className="add__note" role="status">{note}</p> : null}
+    </Card>
+  );
+}
+
 /** The archived bots, each with Bring back (`bot.restore`: its conversation, memory and routines whole). */
 function Archived() {
   const [bots, setBots] = useState<{ id: string; name: string }[] | "waiting" | undefined>(undefined);
@@ -456,6 +484,7 @@ function Archived() {
             <li key={b.id} data-archived-bot={b.id}>
               <span>{b.name}</span>
               <button type="button" className="text-button" onClick={() => void bridge().restoreBot(b.id).then((ok) => { setNote(ok ? `${b.name} is back.` : "The engine didn't bring the bot back."); load(); })}>Bring back</button>
+              <button type="button" className="text-button text-button--danger" data-delete-archived={b.id} onClick={() => void bridge().deleteBot(b.id).then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete the bot."); })}>Delete</button>
             </li>
           ))}
         </ul>

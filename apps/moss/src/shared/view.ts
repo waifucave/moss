@@ -369,6 +369,14 @@ export interface MossBridge {
   /** Archives a bot after the person's press (nothing is deleted); `archivedBots` lists them and `restoreBot` brings one
    *  back with its conversation whole. */
   archiveBot(id: string): Promise<boolean>;
+  /** The deletion lane: each asks the engine, which raises its own sealed card naming what goes and what stays; only the
+   *  person's yes there deletes. `false` when the engine didn't take the ask. A bot, listed or archived (`bot.delete`); a
+   *  bot's conversation (`session.delete` of its main session: it starts again empty); the account (`account.delete`);
+   *  and everything MOSS keeps here (`home.erase`: the apps quit, then the engine erases). */
+  deleteBot(id: string): Promise<boolean>;
+  deleteConversation(bot: string): Promise<boolean>;
+  deleteAccount(): Promise<boolean>;
+  eraseEverything(): Promise<boolean>;
   archivedBots(): Promise<{ id: string; name: string }[] | { waiting: true }>;
   restoreBot(id: string): Promise<boolean>;
   /** Try again on the bot's failed latest turn (`session.resend`): the engine sends the same words once more, after the

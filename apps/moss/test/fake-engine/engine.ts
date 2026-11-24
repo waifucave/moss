@@ -479,6 +479,13 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
       case "bot.archived":
         piece("bots", method);
         return { bots: bots.archived() };
+      // The deletion lane: from an app each answers with the engine's own card, as the real engine does; nothing is deleted
+      // until the person's yes there (which the fake never gives).
+      case "bot.delete":
+      case "session.delete":
+      case "account.delete":
+      case "home.erase":
+        return { applied: false, card: "card_delete_00001" };
       case "bot.remove":
         piece("bots", method);
         await bots.remove(String(params.id));

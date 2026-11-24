@@ -873,6 +873,39 @@ export class MossEngine {
     return ok;
   }
 
+  /** The deletion lane: each ends on the engine's own sealed card (it names what goes and what stays), placed in this
+   *  window like any card; only the person's yes there deletes. */
+  async deleteBot(id: string): Promise<boolean> {
+    return this.askToDelete("bot.delete", { id });
+  }
+
+  async deleteConversation(bot: string): Promise<boolean> {
+    const session = this.records.get(bot)?.mainSession;
+    if (session === undefined) return false;
+    return this.askToDelete("session.delete", { id: session });
+  }
+
+  async deleteAccount(): Promise<boolean> {
+    return this.askToDelete("account.delete", {});
+  }
+
+  async eraseEverything(): Promise<boolean> {
+    return this.askToDelete("home.erase", {});
+  }
+
+  /** Sends one of the person's deletion asks; true once the engine took it (its card is then up). */
+  private async askToDelete(method: string, params: unknown): Promise<boolean> {
+    const client = this.client;
+    if (client === undefined) return false;
+    try {
+      await client.request(method, params, 15_000);
+      return true;
+    } catch (err) {
+      this.log(`engine: ${method} failed (${err instanceof Error ? err.message.slice(0, 160) : "error"})`);
+      return false;
+    }
+  }
+
   /** Try again on a bot's failed latest turn: the engine resends the person's own message that began it, once. */
   async retry(bot: string): Promise<{ ok: true } | { ok: false; why: string }> {
     const client = this.client;

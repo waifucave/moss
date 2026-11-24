@@ -855,6 +855,19 @@ function wireBridge(): void {
     if (id === undefined || !personPressed(w)) return false;
     return engine.archiveBot(id);
   });
+  // The deletion lane: each only right after the person's own press, and each ends on the engine's sealed card.
+  handle("moss:delete-bot", (w, a) => {
+    const id = str(a.id, 64);
+    if (id === undefined || !personPressed(w)) return false;
+    return engine.deleteBot(id);
+  });
+  handle("moss:delete-conversation", (w, a) => {
+    const bot = str(a.bot, 64);
+    if (bot === undefined || !personPressed(w)) return false;
+    return engine.deleteConversation(bot);
+  });
+  handle("moss:delete-account", (w) => (personPressed(w) ? engine.deleteAccount() : false));
+  handle("moss:erase-everything", (w) => (personPressed(w) ? engine.eraseEverything() : false));
   handle("moss:archived-bots", () => engine.archivedBots());
   handle("moss:retry", (w, a) => {
     const bot = str(a.bot, 64);

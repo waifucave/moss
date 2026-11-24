@@ -52,7 +52,7 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
     setPermission: async () => false, signIn: async () => ({ ok: false, why: "no" }), signOut: async () => false,
     botRecord: async () => ({ waiting: true }), botInstructions: async () => ({ waiting: true }), editBot: async () => false, models: async () => ({ waiting: true }),
     setup: async () => ({ waiting: true }), setupProviders: async () => ({ waiting: true }), openTerms: async () => false, setDefaultModel: async () => ({ ok: false, why: "no" }), skipSetup: async () => false,
-    archiveBot: async () => false, archivedBots: async () => [], restoreBot: async () => false, retry: async (bot) => { retried.push(bot); return { ok: true }; }, pictureInput: () => {},
+    archiveBot: async () => false, deleteBot: async () => false, deleteConversation: async () => false, deleteAccount: async () => false, eraseEverything: async () => false, archivedBots: async () => [], restoreBot: async () => false, retry: async (bot) => { retried.push(bot); return { ok: true }; }, pictureInput: () => {},
     answer: async (bot, callId, answers, notes) => { answered.push({ bot, callId, answers, ...(notes !== undefined ? { notes } : {}) }); return answerWhy === undefined ? { ok: true } : { ok: false, why: answerWhy }; },
     stop: async (bot) => { stopped.push(bot); return { ok: true }; }, openLink: async (url) => { opened.push(url); return true; },
   };
