@@ -10,6 +10,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -30,9 +32,9 @@ import java.util.Locale
 import java.util.TimeZone
 
 /** One picture: which app, what it was launched to show, and the text scale. */
-data class Picture(val name: String, val code: Boolean, val launch: AppLaunch, val fontScale: Float = 1f)
+data class Picture(val name: String, val code: Boolean, val launch: AppLaunch, val fontScale: Float = 1f, val press: String? = null)
 
-private fun moss(name: String, launch: AppLaunch, fontScale: Float = 1f) = Picture("moss-$name", false, launch.copy(still = true), fontScale)
+private fun moss(name: String, launch: AppLaunch, fontScale: Float = 1f, press: String? = null) = Picture("moss-$name", false, launch.copy(still = true), fontScale, press)
 private fun code(name: String, launch: AppLaunch, fontScale: Float = 1f) = Picture("code-$name", true, launch.copy(still = true), fontScale)
 
 /** Every screen and state of both apps, as the iPhone's rounds pictured them. */
@@ -62,6 +64,7 @@ val PICTURES = listOf(
     moss("22-new-bot-empty", AppLaunch(Screen.newBot, scenario = Scenario.quiet)),
     moss("23-file-chip", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(file = true))),
     moss("24-files-row", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(picker = true))),
+    moss("26-new-bot-refused", AppLaunch(Screen.newBot, scenario = Scenario.botLimit, newBotName = "Hazel"), press = "Create"),
     moss("25-file-too-big", AppLaunch(Screen.conversation, scenario = Scenario.quiet, composer = ComposerPreset(bigFile = true))),
     code("01-sessions", AppLaunch(scenario = Scenario.quiet)),
     code("02-sessions-waiting", AppLaunch()),
@@ -115,6 +118,7 @@ class PicturesTest(private val picture: Picture, private val dark: Boolean) {
             }
         }
         compose.waitForIdle()
+        picture.press?.let { compose.onNodeWithText(it).performClick(); compose.waitForIdle() }
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()
         captureScreenRoboImage("build/outputs/roborazzi/${picture.name}-${if (dark) "dark" else "light"}.png")

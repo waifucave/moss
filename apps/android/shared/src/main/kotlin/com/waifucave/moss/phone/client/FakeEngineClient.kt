@@ -37,12 +37,17 @@ class FakeEngineClient(
         cardStates,
         /** Paired; sending a message fails. */
         sendFails,
+        /** Paired; this phone already made its 5 bots today. */
+        botLimit,
     }
 
     class Failure(message: String) : Exception(message)
 
     companion object {
-        const val FILE_LIMIT: Long = 10_000_000
+        /** 50 MiB a file, 10 files a message, 5 new bots a day per device: the engine's limits for a phone. */
+        const val FILE_LIMIT: Long = 50L * 1024 * 1024
+        const val FILES_PER_MESSAGE = 10
+        const val BOTS_PER_DAY = 5
     }
 
     private var paired: PairedComputer?
@@ -75,6 +80,7 @@ class FakeEngineClient(
         when (scenario) {
             Scenario.quiet -> cardList = mutableListOf()
             Scenario.idle, Scenario.loading, Scenario.sendFails -> {}
+            Scenario.botLimit -> cardList = mutableListOf()
             Scenario.midTurn -> {
                 statusLines["s_alpha"] = "Alpha is working"
                 statusLines["c1"] = "Working"
@@ -184,7 +190,7 @@ class FakeEngineClient(
         maybeFail()
         return when (kind) {
             ConversationKind.bot -> ComposerOffers(pictures = true, commands = listOf(PluginCommand("summary.daily", "Daily summary")),
-                efforts = listOf("low", "medium", "high"), effort = efforts[session] ?: "medium", files = true, fileLimit = FILE_LIMIT)
+                files = true, fileLimit = FILE_LIMIT, fileCount = FILES_PER_MESSAGE)
             ConversationKind.codingSession -> {
                 val row = sessionList.firstOrNull { it.id == session }
                 val options = SampleData.options(row?.backend ?: "claude-code")
@@ -192,7 +198,7 @@ class FakeEngineClient(
                 val current = models[session] ?: row?.model ?: choices.firstOrNull()?.id
                 val levels = choices.firstOrNull { it.id == current }?.efforts ?: choices.firstOrNull()?.efforts ?: emptyList()
                 ComposerOffers(pictures = true, commands = listOf(PluginCommand("tests.run", "Run the tests"), PluginCommand("review.diff", "Review the diff")),
-                    efforts = levels, effort = efforts[session] ?: levels.firstOrNull(), models = choices, model = current, files = true, fileLimit = FILE_LIMIT)
+                    efforts = levels, effort = efforts[session] ?: levels.firstOrNull(), models = choices, model = current, files = true, fileLimit = FILE_LIMIT, fileCount = FILES_PER_MESSAGE)
             }
         }
     }
@@ -214,7 +220,9 @@ class FakeEngineClient(
         stagedFiles.add(path)
         return StagedFile(path, name, data.size.toLong())
     }
-    val botsCreated = mutableListOf<Pair<String, String?>>()
+    val botsCreated = mutableListOf<Pair<String, String?>>().also { list ->
+        if (scenario == Scenario.botLimit) repeat(BOTS_PER_DAY) { list.add("Earlier $it" to null) }
+    }
     override suspend fun newBotOptions(): NewBotOptions {
         maybeFail()
         val models = SampleData.options("moss-code").models.map { ModelChoice(it.id, it.name, it.efforts) }
@@ -222,6 +230,7 @@ class FakeEngineClient(
     }
     override suspend fun createBot(name: String, model: String?): Bot {
         maybeFail()
+        if (botsCreated.size >= BOTS_PER_DAY) throw EngineRefusal("This phone has made $BOTS_PER_DAY bots today, the most a phone may make in a day. Try again tomorrow, or make it on ${SampleData.computerName}.")
         val id = "bot_" + name.lowercase().filter { it.isLetterOrDigit() }.take(12) + botsCreated.size
         val bot = Bot(id, name, model = model, state = BotState.idle, computer = SampleData.computerName, mainSession = "s_$id")
         botsCreated.add(name to model)

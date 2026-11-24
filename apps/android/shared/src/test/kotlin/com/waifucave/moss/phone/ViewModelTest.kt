@@ -247,6 +247,7 @@ class ViewModelTest {
         bot.loadComposer()
         assertEquals(true, bot.offers?.pictures)
         assertTrue(bot.offers!!.models.isEmpty())           // a bot's phone composer has no Model row
+        assertTrue(bot.offers!!.efforts.isEmpty())          // nor an Effort row
         val code = ConversationModel(ConversationModel.Source.OfSession(SampleData.sessions[1]), c)
         code.loadComposer()
         assertFalse(code.offers!!.models.isEmpty())
@@ -304,13 +305,13 @@ class ViewModelTest {
         val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots[0]), c)
         m.loadComposer()
         var read = false
-        m.stageFile("Site backup.zip", 52_000_000) { read = true; null }
+        m.stageFile("Site backup.zip", 60_000_000) { read = true; null }
         assertFalse(read)
         assertTrue(m.stagedFiles.isEmpty()); assertTrue(c.stagedFiles.isEmpty())
-        assertEquals("That file is too big. The limit is 10 MB.", m.errorText)
+        assertEquals("That file is too big. The limit is 50 MB.", m.errorText)
         // The engine refuses too when the size it was told was wrong.
-        m.stageFile("tiny.bin", 10) { ByteArray(10_000_001) }
-        assertEquals("That file is too big. The limit is 10 MB.", m.errorText)
+        m.stageFile("tiny.bin", 10) { ByteArray((FakeEngineClient.FILE_LIMIT + 1).toInt()) }
+        assertEquals("That file is too big. The limit is 50 MB.", m.errorText)
     }
 
     @Test fun newBotPreselectsTheDefaultModelAndOpensTheBot() = runTest {
@@ -344,5 +345,26 @@ class ViewModelTest {
         val drawn = m.cards.first()
         m.answer(drawn, drawn.options.first())
         assertEquals(drawn.id to drawn.options.first().id, c.answered.single())
+    }
+
+    @Test fun aMessageCarriesAtMostTenFiles() = runTest {
+        val m = ConversationModel(ConversationModel.Source.OfBot(SampleData.bots[0]), fake())
+        m.loadComposer()
+        repeat(10) { m.stageFile("f$it.txt", 3) { "abc".toByteArray() } }
+        assertEquals(10, m.stagedFiles.size)
+        m.stageFile("f10.txt", 3) { "abc".toByteArray() }
+        assertEquals(10, m.stagedFiles.size)
+        assertEquals("A message can carry 10 files. Send these first.", m.errorText)
+    }
+
+    @Test fun theSixthBotOfTheDayIsRefusedInTheEnginesWords() = runTest {
+        val c = fake()
+        val m = NewBotModel(c)
+        m.load()
+        repeat(5) { m.name = "Bot $it"; assertNotNull(m.create()) }
+        m.name = "One more"
+        assertNull(m.create())
+        assertTrue(m.errorText!!.startsWith("This phone has made 5 bots today"))
+        assertEquals("One more", m.name)
     }
 }
