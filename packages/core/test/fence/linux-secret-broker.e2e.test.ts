@@ -80,9 +80,11 @@ async function startStub(): Promise<() => void> {
   return () => sock.destroy();
 }
 
-const sh = (cmd: string, env: Record<string, string>, stdin?: string) => {
-  const r = Bun.spawnSync(["/bin/sh", "-c", cmd], { env, stdin: stdin === undefined ? "ignore" : Buffer.from(stdin) });
-  return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
+/** A command outside the fence, run without blocking this process's loop (the stub above answers from it). */
+const sh = async (cmd: string, env: Record<string, string>, stdin?: string) => {
+  const p = Bun.spawn(["/bin/sh", "-c", cmd], { env, stdin: stdin === undefined ? "ignore" : Buffer.from(stdin), stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  return { code, out, err };
 };
 
 describe.skipIf(!ready)("linux: the credential broker inside the real fence", () => {
@@ -108,12 +110,12 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     // The keyring: git's two logins through git's own helper, gh's token as go-keyring keeps it, and MOSS's own items,
     // one by secret-tool and one by Bun.secrets (the store MOSS really uses).
     for (const [host, token] of [["github.com", GIT_TOKEN], ["gitlab.com", GITLAB_TOKEN]] as const) {
-      expect(sh(`'${gitHelper}' store`, env, `protocol=https\nhost=${host}\nusername=octo\npassword=${token}\n\n`).code).toBe(0);
+      expect((await sh(`'${gitHelper}' store`, env, `protocol=https\nhost=${host}\nusername=octo\npassword=${token}\n\n`)).code).toBe(0);
     }
     for (const user of ["", "octo"]) {
-      expect(sh(`secret-tool store --label="gh:github.com" service gh:github.com username '${user}'`, env, GH_TOKEN_VALUE).code).toBe(0);
+      expect((await sh(`secret-tool store --label="gh:github.com" service gh:github.com username '${user}'`, env, GH_TOKEN_VALUE)).code).toBe(0);
     }
-    expect(sh(`secret-tool store --label="MOSS key" service com.waifucave.moss.core.key account file`, env, MOSS_KEY).code).toBe(0);
+    expect((await sh(`secret-tool store --label="MOSS key" service com.waifucave.moss.core.key account file`, env, MOSS_KEY)).code).toBe(0);
     const bun = Bun.spawnSync([process.execPath, "-e", `await Bun.secrets.set({ service: "com.waifucave.moss.core.items", name: "device-key", value: ${JSON.stringify(MOSS_KEY)} })`], { env });
     expect(bun.exitCode).toBe(0);
     // Find the Bun.secrets item's attributes outside (names and values, never its secret), to ask for it by exact name.
@@ -136,8 +138,8 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
   test("git's libsecret helper reads the ONE granted login, and not the other host's", async () => {
     const cmd = (host: string) => `printf 'protocol=https\\nhost=${host}\\nusername=octo\\n\\n' | '${gitHelper}' get`;
     // Outside: both logins are there.
-    expect(sh(cmd("github.com"), outsideEnv()).out).toContain(`password=${GIT_TOKEN}`);
-    expect(sh(cmd("gitlab.com"), outsideEnv()).out).toContain(`password=${GITLAB_TOKEN}`);
+    expect((await sh(cmd("github.com"), outsideEnv())).out).toContain(`password=${GIT_TOKEN}`);
+    expect((await sh(cmd("gitlab.com"), outsideEnv())).out).toContain(`password=${GITLAB_TOKEN}`);
     const refused: { label: string }[] = [];
     const gh = await run(cmd("github.com"), GRANTS, (i) => refused.push(i));
     expect(outOf(gh)).toContain(`password=${GIT_TOKEN}`);
@@ -152,7 +154,7 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
 
   test("gh reads its token from the keyring inside the fence", async () => {
     const cmd = "gh auth token --hostname github.com";
-    expect(sh(cmd, { ...outsideEnv(), GH_CONFIG_DIR: join(home, "gh"), GH_NO_UPDATE_NOTIFIER: "1" }).out.trim()).toBe(GH_TOKEN_VALUE);
+    expect((await sh(cmd, { ...outsideEnv(), GH_CONFIG_DIR: join(home, "gh"), GH_NO_UPDATE_NOTIFIER: "1" })).out.trim()).toBe(GH_TOKEN_VALUE);
     const r = await run(cmd, GRANTS);
     expect(outOf(r).trim().split("\n")[0]).toBe(GH_TOKEN_VALUE);
     // Without gh's grant, the same command gets nothing.
@@ -162,9 +164,9 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
 
   test("MOSS's own items are refused even when asked for by exact name and granted", async () => {
     const lookup = "secret-tool lookup service com.waifucave.moss.core.key account file";
-    expect(sh(lookup, outsideEnv()).out).toBe(MOSS_KEY);
+    expect((await sh(lookup, outsideEnv())).out).toBe(MOSS_KEY);
     const bunLookup = `secret-tool lookup ${Object.entries(mossBunAttrs).map(([k, v]) => `'${k}' '${v}'`).join(" ")}`;
-    expect(sh(bunLookup, outsideEnv()).out).toBe(MOSS_KEY);
+    expect((await sh(bunLookup, outsideEnv())).out).toBe(MOSS_KEY);
     const greedy: CredentialGrant[] = [...GRANTS, { label: "everything MOSS", attributes: { service: "com.waifucave.moss.core.key", account: "file" } },
       { label: "the device key", attributes: Object.fromEntries(Object.entries(mossBunAttrs).filter(([k]) => k !== "xdg:schema")) }];
     for (const cmd of [lookup, bunLookup, "secret-tool search --all service com.waifucave.moss.core.key"]) {
@@ -179,7 +181,7 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
       "busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings Read ss org.gnome a",
     ];
     for (const c of calls) {
-      const outside = sh(c, outsideEnv());
+      const outside = await sh(c, outsideEnv());
       expect(outside.code).toBe(0);
       expect(outside.out).toContain("stub-ok");
       const inside = await run(c, GRANTS);
