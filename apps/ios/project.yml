@@ -1,0 +1,60 @@
+name: MOSSPhone
+options:
+  bundleIdPrefix: com.waifucave
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  MossPhoneKit:
+    path: Packages/MossPhoneKit
+targets:
+  MOSS:
+    type: application
+    platform: iOS
+    sources: [Apps/MOSS]
+    dependencies:
+      - package: MossPhoneKit
+    info:
+      path: Apps/MOSS/Info.plist
+      properties:
+        CFBundleDisplayName: MOSS
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: MOSS uses the camera only to read the pairing code shown on your computer. Nothing is recorded.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.ios
+        PRODUCT_NAME: MOSS
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  MOSSCode:
+    type: application
+    platform: iOS
+    sources: [Apps/MOSSCode]
+    dependencies:
+      - package: MossPhoneKit
+    info:
+      path: Apps/MOSSCode/Info.plist
+      properties:
+        CFBundleDisplayName: MOSS Code
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: MOSS Code uses the camera only to read the pairing code shown on your computer. Nothing is recorded.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.code.ios
+        PRODUCT_NAME: MOSS Code
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+schemes:
+  MOSS:
+    build: {targets: {MOSS: all}}
+  MOSSCode:
+    build: {targets: {MOSSCode: all}}
