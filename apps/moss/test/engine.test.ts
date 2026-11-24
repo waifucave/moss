@@ -425,3 +425,86 @@ describe("the status line's inputs", () => {
     expect(messages).toEqual([]);
   });
 });
+
+describe("a bot's question (AskUserQuestion)", () => {
+  const Q = { type: "question_asked", callId: "call_1", questions: [{ question: "Which model should the agent use?", header: "Model", multiSelect: false, options: [{ label: "Codex's default (Recommended)", description: "Whatever Codex picks." }, { label: "Use opus" }, { label: "Hold off" }] }] };
+  const TEXT = "Which model should the agent use?";
+  const questionsOf = async (engine: MossEngine, bot = "kite") => {
+    const page = await engine.conversation(bot);
+    if ("waiting" in page) throw new Error("waiting");
+    return page.messages.filter((m) => m.from === "question");
+  };
+
+  test("a question already waiting when the conversation is read is in it, pending, with its options", async () => {
+    const { e, engine } = await setup();
+    e.say("kite", Q);
+    const [m] = await questionsOf(engine);
+    expect(m).toMatchObject({ from: "question", text: "", question: { callId: "call_1", state: "pending" } });
+    expect(m!.question!.questions[0]).toMatchObject({ question: TEXT, header: "Model", multiSelect: false });
+    expect(m!.question!.questions[0]!.options.map((o) => o.label)).toEqual(["Codex's default (Recommended)", "Use opus", "Hold off"]);
+    expect(m!.question!.questions[0]!.options[0]!.description).toBe("Whatever Codex picks.");
+  });
+
+  test("an answer goes to the engine as session.answer on the bot's session; the question reads answered at once and the engine's own event says the same", async () => {
+    const { e, engine } = await setup();
+    const got: { id: string; state: string; answers?: Record<string, string> }[] = [];
+    engine.onMessage((_b, m) => { if (m.from === "question") got.push({ id: m.id, state: m.question!.state, ...(m.question!.answers !== undefined ? { answers: m.question!.answers } : {}) }); });
+    await engine.conversation("kite");
+    await new Promise((r) => setTimeout(r, 30));
+    e.say("kite", Q);
+    await until(() => got.length === 1);
+    expect(got[0]).toMatchObject({ state: "pending" });
+    // Words the card didn't ask are refused before the engine sees them.
+    expect(await engine.answerQuestion("kite", "call_1", { "something else": "x" })).toEqual({ ok: false, why: "That isn't what the question asked." });
+    expect(e.calls().filter((c) => c.method === "session.answer")).toEqual([]);
+    expect(await engine.answerQuestion("kite", "call_1", { [TEXT]: "Use opus" })).toEqual({ ok: true });
+    const call = e.calls().find((c) => c.method === "session.answer")!;
+    expect(call.params).toMatchObject({ id: e.bots.get("kite")!.mainSession, callId: "call_1", answers: { [TEXT]: "Use opus" } });
+    await until(() => got.length >= 2);
+    expect(got.at(-1)).toEqual({ id: got[0]!.id, state: "answered", answers: { [TEXT]: "Use opus" } });
+    // It no longer waits: a second answer is refused in words, and the page now reads it answered.
+    expect(await engine.answerQuestion("kite", "call_1", { [TEXT]: "Hold off" })).toEqual({ ok: false, why: "That question isn't waiting any more." });
+    const [m] = await questionsOf(engine);
+    expect(m!.question).toMatchObject({ state: "answered", answers: { [TEXT]: "Use opus" } });
+  });
+
+  test("answered elsewhere (a phone, MOSS Code, the terminal), run out of time or withdrawn: the same message changes in place", async () => {
+    const { e, engine } = await setup();
+    const got: Record<string, string> = {};
+    const states: string[] = [];
+    engine.onMessage((_b, m) => { if (m.from === "question") { got[m.id] = m.question!.state; states.push(`${m.question!.callId}:${m.question!.state}`); } });
+    await engine.conversation("kite");
+    await new Promise((r) => setTimeout(r, 30));
+    e.say("kite", { ...Q, callId: "a" });
+    e.say("kite", { ...Q, callId: "b" });
+    e.say("kite", { ...Q, callId: "c" });
+    await until(() => states.length === 3);
+    e.say("kite", { type: "question_resolved", callId: "a", answers: { [TEXT]: "Hold off" }, by: "device:phone" });
+    e.say("kite", { type: "question_resolved", callId: "b", answers: {}, by: "timeout" });
+    await until(() => states.includes("a:answered") && states.includes("b:expired"));
+    // A turn that ends with a question still open (the engine stopped mid-turn) withdraws it.
+    e.say("kite", { type: "turn_completed", stopReason: "aborted" });
+    await until(() => states.includes("c:withdrawn"));
+    expect(Object.keys(got).length).toBe(3);
+    expect(await engine.answerQuestion("kite", "c", { [TEXT]: "Hold off" })).toMatchObject({ ok: false });
+    // A fresh read of the conversation tells the same.
+    const read = Object.fromEntries((await questionsOf(engine)).map((m) => [m.question!.callId, m.question!.state]));
+    expect(read).toEqual({ a: "answered", b: "expired", c: "withdrawn" });
+  });
+
+  test("a question whose turn ended without an answer is withdrawn when the conversation is read, never shown as waiting", async () => {
+    const { e, engine } = await setup();
+    e.say("kite", { ...Q, callId: "old" });
+    e.say("kite", { type: "turn_completed", stopReason: "aborted" });
+    e.say("kite", { ...Q, callId: "now" });
+    const read = Object.fromEntries((await questionsOf(engine)).map((m) => [m.question!.callId, m.question!.state]));
+    expect(read).toEqual({ old: "withdrawn", now: "pending" });
+  });
+
+  test("Stop interrupts the bot's one conversation", async () => {
+    const { e, engine } = await setup();
+    expect(await engine.stop("kite")).toEqual({ ok: true });
+    expect(e.calls().find((c) => c.method === "session.interrupt")!.params).toEqual({ id: e.bots.get("kite")!.mainSession });
+    expect(await engine.stop("nobody")).toMatchObject({ ok: false });
+  });
+});

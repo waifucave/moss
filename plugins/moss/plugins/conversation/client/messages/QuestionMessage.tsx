@@ -177,7 +177,6 @@ export function QuestionMessage({
     }
   };
   const minutes = item.expiresAt === undefined ? undefined : minutesUntil(item.expiresAt, ctx.now);
-  const several = item.questions.length > 1;
   return (
     <section className="cl-conv-question" data-kind="question" data-state="pending" aria-label={S.questionAsks(ctx.botName)}>
       <div className="cl-conv-question__head">
@@ -191,7 +190,7 @@ export function QuestionMessage({
           draft={drafts[i] ?? emptyDraft()}
           onDraft={(draft) => setDrafts((all) => all.map((d, j) => (j === i ? draft : d)))}
           disabled={sent}
-          showHeader={several}
+          showHeader
           onEnter={send}
         />
       ))}

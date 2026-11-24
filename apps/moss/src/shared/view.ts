@@ -120,9 +120,33 @@ export interface Attachment {
   kind: "file" | "image";
 }
 
+/** One question a bot asked (`AskUserQuestion`): its words and its options, as plain data. */
+export interface QuestionView {
+  question: string;
+  /** A short chip (12 characters at most). */
+  header?: string;
+  /** None: answered by typing; two to four: a menu, always with a free-text box beside it. */
+  options: { label: string; description?: string; preview?: string }[];
+  multiSelect: boolean;
+  placeholder?: string;
+}
+
+/** A bot's question in its conversation: pending while it waits for the person, then answered (with what was chosen),
+ *  expired (no answer in time) or withdrawn (its turn ended). */
+export interface QuestionState {
+  callId: string;
+  questions: QuestionView[];
+  state: "pending" | "answered" | "expired" | "withdrawn";
+  /** Keyed by the question's text. */
+  answers?: Record<string, string>;
+  notes?: Record<string, string>;
+}
+
 export interface Message {
   id: string;
-  from: "user" | "bot" | "note";
+  from: "user" | "bot" | "note" | "question";
+  /** A bot's question, when `from` is `question` (its text is empty). The same id again is the same question, changed. */
+  question?: QuestionState;
   /** The person's and a note's words are drawn as text; the bot's reply as Markdown (bold, lists, code, links), never as
    *  HTML: nothing a model wrote reaches the page as markup. */
   text: string;
@@ -350,6 +374,12 @@ export interface MossBridge {
   /** Try again on the bot's failed latest turn (`session.resend`): the engine sends the same words once more, after the
    *  person's own press. */
   retry(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Answers the bot's waiting question (`session.answer`), after the person's own press: the answers are keyed by the
+   *  question's text, and a question that no longer waits is refused in plain words. */
+  answer(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Stops the bot's turn now (`session.interrupt`, background tasks keep running), after the person's own press; a question
+   *  waiting in it is withdrawn. */
+  stop(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;
   /** Opens a link of a bot's reply in the person's browser: http, https or mailto, after the person's own click. */
   openLink(url: string): Promise<boolean>;
   /** The person tried to act on a bot's screen (a click, a key, a scroll): it is watch only, and main says so. */

@@ -29,6 +29,9 @@ function view(over: Partial<MossView> = {}): MossView {
 }
 
 let retried: string[] = [];
+let answered: { bot: string; callId: string; answers: Record<string, string>; notes?: Record<string, string> }[] = [];
+let answerWhy: string | undefined;
+let stopped: string[] = [];
 let opened: string[] = [];
 let messageTo: ((bot: string, m: import("../src/shared/view").Message) => void)[] = [];
 let viewTo: ((v: MossView) => void)[] = [];
@@ -50,7 +53,8 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
     botRecord: async () => ({ waiting: true }), botInstructions: async () => ({ waiting: true }), editBot: async () => false, models: async () => ({ waiting: true }),
     setup: async () => ({ waiting: true }), setupProviders: async () => ({ waiting: true }), openTerms: async () => false, setDefaultModel: async () => ({ ok: false, why: "no" }), skipSetup: async () => false,
     archiveBot: async () => false, archivedBots: async () => [], restoreBot: async () => false, retry: async (bot) => { retried.push(bot); return { ok: true }; }, pictureInput: () => {},
-    openLink: async (url) => { opened.push(url); return true; },
+    answer: async (bot, callId, answers, notes) => { answered.push({ bot, callId, answers, ...(notes !== undefined ? { notes } : {}) }); return answerWhy === undefined ? { ok: true } : { ok: false, why: answerWhy }; },
+    stop: async (bot) => { stopped.push(bot); return { ok: true }; }, openLink: async (url) => { opened.push(url); return true; },
   };
 }
 
@@ -177,6 +181,105 @@ describe("MOSS's window", () => {
     await act(async () => { for (const f of viewTo) f(running("thinking")); });
     expect(r.container.querySelector("[data-status-text]")?.textContent).toBe("Thinking");
     r.unmount();
+  });
+
+  const QTEXT = "Which model should the Codex agent use?";
+  const question = (state: "pending" | "answered" | "expired" | "withdrawn" = "pending", extra: object = {}): import("../src/shared/view").Message => ({
+    id: "s:qcall_1", from: "question", text: "", at: Date.now(),
+    question: {
+      callId: "call_1", state, ...extra,
+      questions: [{
+        question: QTEXT, header: "Model", multiSelect: false,
+        options: [{ label: "Codex's default (Recommended)", description: "Whatever Codex picks for itself." }, { label: "Use fable" }, { label: "Use opus", description: "A Claude model." }, { label: "Hold off" }],
+      }],
+    },
+  });
+  /** The window on Kite's conversation (the one that asks). */
+  const drawKite = async (v: MossView, messages: import("../src/shared/view").Message[]) => {
+    pendingBot = { bot: "kite" };
+    try { return await draw(v, { bot: "kite", hasMore: false, messages }); } finally { pendingBot = undefined; }
+  };
+  const press = async (el: Element): Promise<void> => { await act(async () => { (el as HTMLElement).click(); await new Promise((res) => setTimeout(res, 20)); }); };
+
+  test("a bot's question is drawn in its conversation (header, text, each option with its description, a box for the person's own words) and one already waiting at load is shown", async () => {
+    answered = []; answerWhy = undefined;
+    const r = await drawKite(view(), [{ id: "u", from: "user", text: "start a codex agent", at: Date.now() }, question()]);
+    const card = r.container.querySelector("[data-kind=question][data-state=pending]")!;
+    expect(card).not.toBeNull();
+    expect(card.closest(".messages")).not.toBeNull();
+    expect(card.querySelector(".cl-conv-question__chip")?.textContent).toBe("Model");
+    expect(card.querySelector(".cl-conv-question__text")?.textContent).toBe(QTEXT);
+    const options = [...card.querySelectorAll(".cl-conv-question__option")];
+    expect(options.map((o) => o.querySelector(".cl-conv-question__option-label")?.textContent)).toEqual(["Codex's default (Recommended)", "Use fable", "Use opus", "Hold off"]);
+    expect(options[0]!.querySelector(".cl-conv-question__option-description")?.textContent).toBe("Whatever Codex picks for itself.");
+    expect(card.querySelector("input[type=text]")).not.toBeNull();
+    // Nothing is sent before the person chooses.
+    expect(card.querySelector<HTMLButtonElement>(".cl-conv-question__send")!.disabled).toBe(true);
+    r.unmount();
+  });
+
+  test("a press on an option and Send answer answers it through the bridge, keyed by the question's words; it then reads as answered with what was chosen", async () => {
+    answered = []; answerWhy = undefined; messageTo = [];
+    const r = await drawKite(view(), [question()]);
+    await press(r.container.querySelectorAll(".cl-conv-question__option input")[2]!);
+    const send = r.container.querySelector<HTMLButtonElement>(".cl-conv-question__send")!;
+    expect(send.disabled).toBe(false);
+    await press(send);
+    expect(answered).toEqual([{ bot: "kite", callId: "call_1", answers: { [QTEXT]: "Use opus" } }]);
+    // The engine says it is answered (the same message again): it changes in place and offers nothing more to press.
+    await act(async () => { for (const f of messageTo) f("kite", question("answered", { answers: { [QTEXT]: "Use opus" } })); });
+    expect(r.container.querySelectorAll("[data-kind=question]").length).toBe(1);
+    const done = r.container.querySelector("[data-kind=question]")!;
+    expect(done.getAttribute("data-state")).toBe("answered");
+    expect(done.textContent).toContain("You answered");
+    expect(done.querySelector("dd")?.textContent).toBe("Use opus");
+    expect(done.querySelector("button, input")).toBeNull();
+    r.unmount();
+  });
+
+  test("a typed answer of the person's own is sent as it is; a refusal says why and gives the card back", async () => {
+    answered = []; answerWhy = "That question isn't waiting any more.";
+    const r = await drawKite(view(), [question()]);
+    const box = r.container.querySelector<HTMLInputElement>("input[type=text]")!;
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(box, "terra");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await press(r.container.querySelector(".cl-conv-question__send")!);
+    expect(answered).toEqual([{ bot: "kite", callId: "call_1", answers: { [QTEXT]: "terra" } }]);
+    expect(r.container.querySelector("[data-question-said]")?.textContent).toBe("That question isn't waiting any more.");
+    expect(r.container.querySelector<HTMLButtonElement>(".cl-conv-question__send")!.disabled).toBe(false);
+    answerWhy = undefined;
+    r.unmount();
+  });
+
+  test("a question answered elsewhere, run out of time or withdrawn changes in place and offers nothing to press", async () => {
+    messageTo = [];
+    const r = await drawKite(view(), [question()]);
+    await act(async () => { for (const f of messageTo) f("kite", question("expired")); });
+    expect(r.container.querySelectorAll("[data-kind=question]").length).toBe(1);
+    expect(r.container.querySelector("[data-kind=question]")?.getAttribute("data-state")).toBe("expired");
+    expect(r.container.querySelector("[data-kind=question]")?.textContent).toContain("No answer in time; Kite went on without it.");
+    await act(async () => { for (const f of messageTo) f("kite", question("withdrawn")); });
+    expect(r.container.querySelector("[data-kind=question]")?.textContent).toContain("Withdrawn when the turn ended");
+    expect(r.container.querySelector("[data-kind=question] button, [data-kind=question] input")).toBeNull();
+    r.unmount();
+  });
+
+  test("while a turn runs or waits on a question the composer offers Stop; an idle bot has none; Stop reaches the bridge for that bot", async () => {
+    stopped = [];
+    const idle = await drawKite(view({ bots: [{ id: "kite", name: "Kite", mood: "idle", unread: false }] }), []);
+    expect(idle.container.querySelector("[data-stop]")).toBeNull();
+    idle.unmount();
+    for (const mood of ["thinking", "working", "asking"] as const) {
+      const r = await drawKite(view({ bots: [{ id: "kite", name: "Kite", mood, unread: false }] }), [question()]);
+      const button = r.container.querySelector<HTMLButtonElement>("[data-composer] [data-stop]");
+      expect(button?.getAttribute("aria-label")).toBe("Stop");
+      await press(button!);
+      r.unmount();
+    }
+    expect(stopped).toEqual(["kite", "kite", "kite"]);
   });
 
   test("a conversation the engine doesn't serve yet says so", async () => {

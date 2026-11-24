@@ -103,6 +103,9 @@ export interface FakeEngine {
   ask(method: string, params?: unknown): Promise<unknown[]>;
   /** A `release_changed` event to every connection that follows `release`. */
   releaseChanged(e: { state: "current" | "waiting" | "switching"; incoming?: string; waitingFor?: { turns: number; agents: number } }): void;
+  /** A session event of a bot's main conversation, as the engine's log has it: kept (a page lists it) and sent to each
+   *  connection following that session. Its seq, session and time are filled in. */
+  say(bot: string, e: Record<string, unknown>): Record<string, unknown>;
   /** A core event of the `devices` area to every connection that follows it (`pairing_changed`, `device_changed`). */
   devicesEvent(e: Record<string, unknown>): void;
   /** Ends every connection (the engine went away, as a release switch does). */
@@ -147,6 +150,15 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
   };
   /** Each bot's conversation, as its main session's events. */
   const talk = new Map<string, Record<string, unknown>[]>();
+  const say = (bot: string, e: Record<string, unknown>): Record<string, unknown> => {
+    const v = bots.get(bot)!;
+    const events = talk.get(bot) ?? [];
+    const full = { seq: events.length + 1, sessionId: v.mainSession, ts: Date.now(), threadId: "main", ...e };
+    events.push(full);
+    talk.set(bot, events);
+    for (const k of conns.values()) if (k.attached.has(v.mainSession)) write(k, { jsonrpc: "2.0", method: "event", params: full });
+    return full;
+  };
   const summaries = new Map<string, { id: string; last?: { text: string; from: "user" | "bot" | "note"; at: number }; unread: boolean }>();
   for (const b of BOTS) {
     const v = await bots.create({ name: b.name, ...(b.face !== undefined ? { face: b.face } : {}), ...(b.model !== undefined ? { model: b.model } : {}), ...(b.instructions !== undefined ? { instructions: b.instructions } : {}) }, { kind: "user" });
@@ -414,6 +426,17 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
         for (const k of conns.values()) if (k.attached.has(v.mainSession)) write(k, { jsonrpc: "2.0", method: "event", params: e });
         return { seq: e.seq };
       }
+      case "session.answer": {
+        // A question waits when its `question_asked` has no `question_resolved` yet; the first answer wins.
+        const bot = [...talk.keys()].find((b) => bots.get(b)?.mainSession === params.id);
+        const events = bot === undefined ? [] : talk.get(bot) ?? [];
+        const asked = events.find((x) => x.type === "question_asked" && x.callId === params.callId);
+        if (bot === undefined || asked === undefined || events.some((x) => x.type === "question_resolved" && x.callId === params.callId)) throw new RpcError(-32004, `no question ${String(params.callId)} is waiting`, { code: "not_found" });
+        say(bot, { type: "question_resolved", callId: params.callId, answers: params.answers, ...(params.notes !== undefined ? { notes: params.notes } : {}), by: "user" });
+        return { ok: true };
+      }
+      case "session.interrupt":
+        return { ok: true };
       case "session.attach": {
         c.attached.add(String(params.id));
         for (const [bot, call] of Object.entries(o.running ?? {})) {
@@ -571,7 +594,7 @@ export async function startFakeEngine(o: FakeEngineOptions): Promise<FakeEngine>
   void pictureId;
 
   return {
-    home: o.home, token, endpoint, bots, feed, router, keys,
+    home: o.home, token, endpoint, bots, feed, router, keys, say,
     calls: () => [...log],
     answered: () => [...answered],
     placements: () => router.list(),

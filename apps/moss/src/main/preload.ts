@@ -92,6 +92,8 @@ if (where === "moss-app:" && location.host === "app" && window.top === window) {
     archivedBots: () => ipcRenderer.invoke("moss:archived-bots"),
     restoreBot: (id) => ipcRenderer.invoke("moss:restore-bot", { id }),
     retry: (bot) => ipcRenderer.invoke("moss:retry", { bot }),
+    answer: (bot, callId, answers, notes) => ipcRenderer.invoke("moss:answer", { bot, callId, answers, ...(notes !== undefined ? { notes } : {}) }),
+    stop: (bot) => ipcRenderer.invoke("moss:stop", { bot }),
     openLink: (url) => ipcRenderer.invoke("moss:open-link", { url }),
     pictureInput: (kind) => ipcRenderer.send("moss:picture-input", { kind }),
     models: () => ipcRenderer.invoke("moss:models"),

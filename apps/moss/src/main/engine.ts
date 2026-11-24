@@ -18,6 +18,7 @@ import { MAIN_WINDOW_ID } from "./identity";
 import { oneLine, safeDetail } from "../shared/status-line";
 import type { SealedFrames } from "./sealed";
 import { talkCommandOf, type TalkCommand } from "./voice";
+import { QuestionLog } from "./questions";
 import type {
   BotEdit, BotRecordRow, BotRow, BotSetting, CardRow, ConnectionKind, MemoryFileRow, ModelRow, ProviderRow, SettingsView, SetupRow, ConversationPage, Message, MossView, PairingRow, RelayRow, Piece, PieceState, PictureFrameView, PictureRow, PluginRow, RoutineEdit, RoutineRow, ToolRow,
 } from "../shared/view";
@@ -155,6 +156,8 @@ export class MossEngine {
    *  at once, and a still picture sends no other): kept until the answer comes, a few streams at most. */
   private early = new Map<string, PictureFrameView & { stream: string }>();
   private emitTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The bots' questions (`AskUserQuestion`): which wait, and how each ended. */
+  private questions = new QuestionLog();
   /** The bot session the window follows live now. */
   private attached: string | undefined;
   /** The pairing the person started in Settings (the engine's steps fill it in), and how often the devices changed. */
@@ -493,6 +496,8 @@ export class MossEngine {
       this.liveCall.set(bot, { name: e.name, ...(detail !== undefined ? { detail } : {}), ...(title !== "" ? { title } : {}) });
       this.changed();
     } else if ((e.type === "tool_result" || e.type === "assistant_message" || e.type === "turn_completed" || e.type === "user_message") && this.liveCall.delete(bot)) this.changed();
+    // A bot's question, and how it ended (answered here or elsewhere, no answer in time, its turn stopped): the same message again.
+    for (const q of this.questions.live(e)) for (const l of this.messageListeners) l(bot, q);
     const m = messageOf(e);
     if (m === undefined) return;
     for (const l of this.messageListeners) l(bot, m);
@@ -524,7 +529,8 @@ export class MossEngine {
     const r = await this.read<{ session: string; events: Record<string, unknown>[]; hasMore: boolean }>("bots", "bot.conversation", { id: bot, limit: 100, ...(before !== undefined ? { before } : {}) });
     if (r === undefined) return { waiting: true };
     this.sessionBot.set(r.session, bot);
-    const messages = r.events.flatMap((e) => { const m = messageOf(e); return m === undefined ? [] : [m]; });
+    this.questions.learn(r.events);
+    const messages = r.events.flatMap((e) => { const m = e.type === "question_asked" ? this.questions.messageOf(e) : messageOf(e); return m === undefined ? [] : [m]; });
     const first = r.events.find((e) => typeof e.seq === "number");
     const last = [...r.events].reverse().find((e) => typeof e.seq === "number");
     // Follow the conversation live from the last event read (MOSS's own connection; the window draws what comes).
@@ -877,6 +883,40 @@ export class MossEngine {
       return { ok: true };
     } catch (err) {
       return { ok: false, why: notServed(err) ? "Trying again isn't served by this engine yet." : "It could not be sent again: send it from the composer." };
+    }
+  }
+
+  /** The person's answer to the bot's waiting question (`session.answer`); a question that no longer waits is said so. */
+  async answerQuestion(bot: string, callId: string, answers: Record<string, string>, notes?: Record<string, string>): Promise<{ ok: true } | { ok: false; why: string }> {
+    const client = this.client;
+    const session = this.records.get(bot)?.mainSession;
+    if (client === undefined || session === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    const asks = this.questions.waiting(session, callId);
+    if (asks === undefined) return { ok: false, why: "That question isn't waiting any more." };
+    if (Object.keys({ ...answers, ...notes }).some((k) => !asks.includes(k))) return { ok: false, why: "That isn't what the question asked." };
+    try {
+      await client.request("session.answer", { id: session, callId, answers, ...(notes !== undefined && Object.keys(notes).length > 0 ? { notes } : {}) }, 15_000);
+    } catch (err) {
+      if (notServed(err)) return { ok: false, why: "Answering isn't served by this engine yet." };
+      if (err instanceof RpcCallError && (err.data as { code?: unknown } | undefined)?.code === "not_found") return { ok: false, why: "That question isn't waiting any more." };
+      return { ok: false, why: "The engine didn't take the answer. Try again." };
+    }
+    // The question reads answered at once; the engine's own `question_resolved` follows and says the same.
+    const m = this.questions.answered(session, callId, answers, notes);
+    if (m !== undefined) for (const l of this.messageListeners) l(bot, m);
+    return { ok: true };
+  }
+
+  /** Stops the bot's turn now (`session.interrupt`): the one step ends, background tasks keep running. */
+  async stop(bot: string): Promise<{ ok: true } | { ok: false; why: string }> {
+    const client = this.client;
+    const session = this.records.get(bot)?.mainSession;
+    if (client === undefined || session === undefined) return { ok: false, why: "MOSS isn't connected to its engine." };
+    try {
+      await client.request("session.interrupt", { id: session }, 15_000);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, why: notServed(err) ? "Stopping isn't served by this engine yet." : "The turn could not be stopped." };
     }
   }
 

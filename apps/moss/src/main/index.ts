@@ -563,6 +563,18 @@ function fromPage(event: IpcMainEvent | IpcMainInvokeEvent): BrowserWindow | und
 /** What the person picked or dropped for the composer, by id, until sent, removed or its composer goes (attachments.ts). */
 const attachments = new PickedAttachments();
 
+/** A table of at most four texts keyed by texts (an answer to a question, keyed by the question's own words), or null. */
+function textMap(v: unknown): Record<string, string> | null {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const entries = Object.entries(v);
+  if (entries.length > 4) return null;
+  const out: Record<string, string> = {};
+  for (const [k, x] of entries) {
+    if (k.length > 2_000 || typeof x !== "string" || x.length > 10_000) return null;
+    out[k] = x;
+  }
+  return out;
+}
 const str = (v: unknown, max: number): string | undefined => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
 
 function handle(channel: string, fn: (w: BrowserWindow, a: Record<string, unknown>) => unknown): void {
@@ -849,6 +861,24 @@ function wireBridge(): void {
     if (bot === undefined) return { ok: false, why: "No bot." };
     if (!personPressed(w)) return { ok: false, why: "Try again goes only right after your own click." };
     return engine.retry(bot);
+  });
+  // A bot's waiting question is answered only right after the person's own press (a click on Send answer, or Enter in its box),
+  // as a send is; the answers are text keyed by the question's own text, sized here before the engine sees them.
+  handle("moss:answer", (w, a) => {
+    const bot = str(a.bot, 64);
+    const callId = str(a.callId, 200);
+    const answers = textMap(a.answers);
+    const notes = a.notes === undefined ? undefined : textMap(a.notes);
+    if (bot === undefined || callId === undefined || answers === null || Object.keys(answers).length === 0 || notes === null) return { ok: false, why: "Not an answer." };
+    if (!personPressed(w)) return { ok: false, why: "A question is answered only right after your own key press or click." };
+    return engine.answerQuestion(bot, callId, answers, notes);
+  });
+  // Stop on the composer: the person's own press ends the bot's turn (background tasks keep running).
+  handle("moss:stop", (w, a) => {
+    const bot = str(a.bot, 64);
+    if (bot === undefined) return { ok: false, why: "No bot." };
+    if (!personPressed(w)) return { ok: false, why: "Stop goes only right after your own click." };
+    return engine.stop(bot);
   });
   // A link in a bot's reply: the person's own click, an http, https or mailto address only, opened in their browser.
   handle("moss:open-link", (w, a) => {

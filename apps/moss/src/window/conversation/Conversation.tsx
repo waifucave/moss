@@ -8,8 +8,15 @@
 // Markdown, drawn by the same renderer MOSS Code's conversation uses (bold, italics, lists, inline code, code blocks, links):
 // raw HTML in it stays the text it is, links open only as http, https or mailto in the person's browser, and an image is a link
 // that never loads. No `dangerouslySetInnerHTML`, no HTML from a message reaches the page.
+//
+// A bot's question (`AskUserQuestion`) is drawn in the conversation where it was asked, by MOSS Code's own question card
+// (`QuestionMessage`): the header, the text, each option with its description, single or several choices, a box for the
+// person's own words. It is answered right after the person's own press; once answered, expired or withdrawn it reads so.
 import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { MarkdownText } from "../../../../../plugins/moss/plugins/conversation/client/Markdown";
+import { QuestionMessage } from "../../../../../plugins/moss/plugins/conversation/client/messages/QuestionMessage";
+import type { MessageContext } from "../../../../../plugins/moss/plugins/conversation/client/context";
+import type { QuestionItem } from "../../../../../plugins/moss/plugins/conversation/client/types";
 import { Face, MoodWords } from "../faces/Face";
 import { bridge, shortTime } from "../bridge";
 import { CardFrame } from "../cards/CardFrame";
@@ -52,7 +59,8 @@ export function Conversation(props: { bot: BotRow; cards: CardRow[]; strip?: Rea
     });
     const off = bridge().onMessage((bot, m) => {
       if (bot !== id) return;
-      setMessages((now) => now.some((x) => x.id === m.id) ? now : [...now, m]);
+      // A question comes again with the same id when it is answered (here or elsewhere), runs out or is withdrawn: it changes in place.
+      setMessages((now) => now.some((x) => x.id === m.id) ? (m.from === "question" ? now.map((x) => x.id === m.id ? m : x) : now) : [...now, m]);
     });
     bridge().markRead(id);
     return () => { live = false; off(); };
@@ -154,7 +162,7 @@ export function Conversation(props: { bot: BotRow; cards: CardRow[]; strip?: Rea
         {older === "start" && messages.length > 0 ? <p className="messages__note" data-conversation-start>The start of your conversation with {props.bot.name}.</p> : null}
         {state === "waiting" ? <p className="messages__note">Waiting for the engine to serve {props.bot.name}'s conversation.</p> : null}
         {state === "ready" && messages.length === 0 ? <p className="messages__note">Say hello to {props.bot.name}.</p> : null}
-        {messages.map((m, i) => <Bubble key={m.id} m={m} showTime={i === messages.length - 1 || messages[i + 1]?.from !== m.from} {...(m.failed === true && i === messages.length - 1 ? { bot: props.bot.id } : {})} />)}
+        {messages.map((m, i) => <Bubble key={m.id} m={m} showTime={i === messages.length - 1 || messages[i + 1]?.from !== m.from} asker={props.bot.id} askerName={props.bot.name} {...(m.failed === true && i === messages.length - 1 ? { bot: props.bot.id } : {})} />)}
         {props.cards.map((c) => <CardFrame key={c.id} card={c} />)}
         {phrase !== undefined && props.cards.length === 0 ? <StatusLine phrase={phrase} /> : null}
         <div ref={end} />
@@ -173,8 +181,9 @@ export function merge(older: readonly Message[], now: readonly Message[]): Messa
 }
 
 /** One message; drawn again only when it or its neighbours' grouping changes, so a page put in above costs only its own. */
-const Bubble = memo(function Bubble(props: { m: Message; showTime: boolean; /** The failed turn's note while it is the last thing: Try again. */ bot?: string }) {
+const Bubble = memo(function Bubble(props: { m: Message; showTime: boolean; /** The bot whose conversation this is, for a question it asked. */ asker: string; askerName: string; /** The failed turn's note while it is the last thing: Try again. */ bot?: string }) {
   const m = props.m;
+  if (m.from === "question" && m.question !== undefined) return <BotQuestion m={m} bot={props.asker} name={props.askerName} />;
   if (m.from === "note" && props.bot !== undefined) return <FailedNote text={m.text} bot={props.bot} />;
   if (m.from === "note") return <p className={`note${m.routineFailed === true ? " note--failed" : ""}`} data-bubble="note" {...(m.routineFailed === true ? { "data-routine-failed": "" } : {})}>{m.text}</p>;
   return (
@@ -200,6 +209,38 @@ const Bubble = memo(function Bubble(props: { m: Message; showTime: boolean; /** 
 
 /** A link of a bot's reply: main opens it in the person's browser after their click (http, https or mailto only). */
 const openLink = (url: string): void => { void bridge().openLink(url); };
+
+/** A bot's question: MOSS Code's question card on the engine's data, answered through MOSS's main process. */
+function BotQuestion(props: { m: Message; bot: string; name: string }) {
+  const q = props.m.question!;
+  const [why, setWhy] = useState<string | undefined>(undefined);
+  const item: QuestionItem = {
+    id: props.m.id, kind: "question", at: props.m.at, callId: q.callId, state: q.state,
+    questions: q.questions.map((x) => ({
+      question: x.question, ...(x.header !== undefined ? { header: x.header } : {}), multiSelect: x.multiSelect, ...(x.placeholder !== undefined ? { placeholder: x.placeholder } : {}),
+      options: x.options.map((o) => ({ label: o.label, ...(o.description !== undefined ? { description: o.description } : {}), ...(o.preview !== undefined ? { preview: o.preview } : {}) })),
+    })),
+    ...(q.answers !== undefined ? { answers: q.answers } : {}), ...(q.notes !== undefined ? { notes: q.notes } : {}),
+  };
+  const ctx: MessageContext = {
+    botId: props.bot, botName: props.name, session: props.bot, now: Date.now(), format: {}, turnLive: q.state === "pending",
+    actions: {
+      onAnswerQuestion: async (callId, answer) => {
+        const r = await bridge().answer(props.bot, callId, answer.answers, answer.notes);
+        setWhy(r.ok ? undefined : r.why);
+        // The card takes answers again when the answer did not go in (it says so beside the engine's own words).
+        if (!r.ok) throw new Error(r.why);
+      },
+      onOpenLink: openLink,
+    },
+  };
+  return (
+    <div className="question" data-question={q.callId} data-question-state={q.state}>
+      <QuestionMessage item={item} ctx={ctx} />
+      {why !== undefined ? <p className="composer__why" role="status" data-question-said>{why}</p> : null}
+    </div>
+  );
+}
 
 /** The status line: one line of plain words, a soft highlight moving across it. Not a control (no hover, no click, no
  *  focus stop); a polite live status for a screen reader, told at most once every few seconds, not on every change. */
@@ -251,6 +292,13 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
   const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
   const [why, setWhy] = useState<string | undefined>(undefined);
   const [holding, setHolding] = useState(false);
+  // A turn is running, or waits on a card or a question: the person may stop it from here (a new message would only fold in
+  // behind the tool call it waits on).
+  const turnLive = props.bot.mood === "thinking" || props.bot.mood === "working" || props.bot.mood === "asking";
+  const stop = async (): Promise<void> => {
+    const r = await bridge().stop(props.bot.id);
+    setWhy(r.ok ? undefined : r.why);
+  };
   const send = async (): Promise<void> => {
     const t = text.trim();
     if (t === "" && images.length === 0 && files.length === 0) return;
@@ -331,6 +379,11 @@ function Composer(props: { bot: BotRow; talk?: MossView["talk"] }) {
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
         </button>
         <textarea rows={1} placeholder={`Message ${props.bot.name}`} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} aria-label={`Message ${props.bot.name}`} />
+        {turnLive ? (
+          <button type="button" className="icon-button stop" aria-label="Stop" title={`Stop ${props.bot.name}'s turn`} data-stop onClick={() => void stop()}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" /></svg>
+          </button>
+        ) : null}
         {/* One round black button at the right: the mic while there is nothing to send, Send once there is (a held mic stays). */}
         {text.trim() === "" && images.length === 0 && files.length === 0 || holding ? (
         <button
