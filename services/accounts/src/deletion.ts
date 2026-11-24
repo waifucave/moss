@@ -18,17 +18,21 @@ const ERASE_TOKEN_SECONDS = 300;
 export const ERASE_DEVICE = "account-erase";
 
 interface ServiceStep {
-  aud: string;
+  /** Its place in `AUDIENCES` (hooks, push, handshake: the order the deploy renders them in): its token audience and,
+   *  without a URL or a binding, its host. */
+  index: number;
   path: string;
   url: keyof Pick<Env, "HOOKS_URL" | "PUSH_URL" | "HANDSHAKE_URL">;
   binding: keyof Pick<Env, "HOOKS_SERVICE" | "PUSH_SERVICE" | "HANDSHAKE_SERVICE">;
 }
 
 const SERVICES: Record<Exclude<DeletionStep, "sign-in">, ServiceStep> = {
-  hooks: { aud: "hooks.waifucave.com", path: "/v1/account", url: "HOOKS_URL", binding: "HOOKS_SERVICE" },
-  push: { aud: "push.waifucave.com", path: "/v1/account", url: "PUSH_URL", binding: "PUSH_SERVICE" },
-  handshake: { aud: "handshake.waifucave.com", path: "/v1/accounts/self", url: "HANDSHAKE_URL", binding: "HANDSHAKE_SERVICE" },
+  hooks: { index: 0, path: "/v1/account", url: "HOOKS_URL", binding: "HOOKS_SERVICE" },
+  push: { index: 1, path: "/v1/account", url: "PUSH_URL", binding: "PUSH_SERVICE" },
+  handshake: { index: 2, path: "/v1/accounts/self", url: "HANDSHAKE_URL", binding: "HANDSHAKE_SERVICE" },
 };
+
+const AUD_RE = /^[a-z0-9.-]{1,253}$/;
 
 /** Runs one step; true once the service confirms it (or says there was nothing of the account to forget). */
 export async function runDeletionStep(env: Env, account: string, step: DeletionStep): Promise<boolean> {
@@ -40,15 +44,17 @@ export async function runDeletionStep(env: Env, account: string, step: DeletionS
 }
 
 async function wipeService(env: Env, account: string, s: ServiceStep): Promise<boolean> {
+  const aud = env.AUDIENCES.split(",").map((a) => a.trim())[s.index];
+  if (!aud || !AUD_RE.test(aud)) return false;
   const binding = env[s.binding];
-  const base = env[s.url];
-  if (!binding && !(base && fetchableUrl(base))) return false;
+  const base = env[s.url] || `https://${aud}`;
+  if (!binding && !fetchableUrl(base)) return false;
   const iat = Math.floor(Date.now() / 1000);
   const token = await signerFor(env).sign({
-    iss: env.ISSUER, aud: s.aud, sub: account, dev: ERASE_DEVICE, iat, exp: iat + ERASE_TOKEN_SECONDS,
+    iss: env.ISSUER, aud, sub: account, dev: ERASE_DEVICE, iat, exp: iat + ERASE_TOKEN_SECONDS,
     jti: b64u(crypto.getRandomValues(new Uint8Array(12))), erase: true,
   });
-  const url = `${(base ?? `https://${s.aud}`).replace(/\/+$/, "")}${s.path}`;
+  const url = `${base.replace(/\/+$/, "")}${s.path}`;
   const init: RequestInit = { method: "DELETE", headers: { authorization: `Bearer ${token}` }, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) };
   const res = binding ? await binding.fetch(url, init) : await fetch(url, init);
   await res.body?.cancel();

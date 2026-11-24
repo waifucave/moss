@@ -3669,7 +3669,7 @@ export function startIpcServer(opts: IpcServerOptions): IpcServer {
                 saveAnswerInProject({ root, mossHome, trusted: opts.trust ? projectScopeTrusted(cwd, opts.trust) : false }, option.rule);
               }
             } catch (err) {
-              console.error(`approval.respond: a rule for session ${p.sessionId} was not saved (${(err as Error).name}): a rule holds a tool's input, so it is not logged`);
+              console.error(`approval.respond: a rule for session ${p.sessionId} was not saved: ${(err as Error).message} (the rule holds a tool's input, so it is not logged)`);
             }
           }
         }

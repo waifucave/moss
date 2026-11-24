@@ -900,8 +900,8 @@ export class MossEngine {
     try {
       await client.request(method, params, 15_000);
       return true;
-    } catch (err) {
-      this.log(`engine: ${method} failed (${err instanceof Error ? err.message.slice(0, 160) : "error"})`);
+    } catch {
+      // Refused or unanswered: the page says so (false); nothing of it is logged.
       return false;
     }
   }

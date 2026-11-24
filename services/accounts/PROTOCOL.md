@@ -113,7 +113,7 @@ The token is a JWS (compact JWT), signed EdDSA or ES256 under a key of the JWKS:
 
 A step that fails is retried by the object's alarm (after 1 minute, 10 minutes, an hour, then every 6 hours) until it is confirmed: the deletion finishes without the device that asked. Asking again while it runs answers how far it got (the rows being gone, any session of the account may ask) and tries the pending steps at once. The answer's `pending` names the steps not confirmed yet: `hooks`, `push`, `handshake`, `sign-in`. Until `sign-in` is done the person's Supabase account exists but every call of it here is refused; with no service-role key set it stays pending.
 
-Where the wipes go: the service bindings `HOOKS_SERVICE`, `PUSH_SERVICE` and `HANDSHAKE_SERVICE` when set (production), else `HOOKS_URL`, `PUSH_URL` and `HANDSHAKE_URL`. A service with neither stays pending.
+Where the wipes go: the service bindings `HOOKS_SERVICE`, `PUSH_SERVICE` and `HANDSHAKE_SERVICE` when set, else `HOOKS_URL`, `PUSH_URL` and `HANDSHAKE_URL`, else `https://<host>` for the three hosts of `AUDIENCES`, in their order (hooks, push, handshake). Each erase token's `aud` is that service's entry in `AUDIENCES`. A service that can't be reached stays pending.
 
 ## Limits
 

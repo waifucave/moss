@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
+import { OLD_INSTALL_HOME_DIR } from "../../other-installs";
 import { dropMossOsItems, eraseHome, recogniseMossHome } from "../erase-home";
 import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
@@ -59,9 +60,9 @@ describe("erase: which folder", () => {
 
   test("another install's home is refused", () => {
     const w = world();
-    const clover = join(w.user, ".clover");
-    for (const d of ["run", "logs", "sessions"]) mkdirSync(join(clover, d), { recursive: true });
-    expect(recogniseMossHome(clover, w.user).ok).toBe(false);
+    const previous = join(w.user, OLD_INSTALL_HOME_DIR);
+    for (const d of ["run", "logs", "sessions"]) mkdirSync(join(previous, d), { recursive: true });
+    expect(recogniseMossHome(previous, w.user).ok).toBe(false);
   });
 
   test("a home given as a link to a folder that isn't a MOSS home is refused", () => {

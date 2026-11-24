@@ -7,7 +7,7 @@
 // The path is checked before anything goes:
 // * the home is resolved (a home given as a link is followed once, to the folder it names) and must be a folder MOSS
 //   made: its `run` and `logs` folders and one more of what a MOSS home holds;
-// * never `/`, the user's home or any folder above it, another install's home (`~/.clover`, the old Winter's), or a
+// * never `/`, the user's home or any folder above it, another install's home (the previous app's or the older one's, `otherInstallHome`), or a
 //   folder that holds a `.git` (a project, not a home);
 // * inside it, every entry is removed as itself: a link is unlinked, never followed out of the home, and a hard link
 //   only loses this name;
@@ -19,7 +19,7 @@ import type { SecretMeta, SecretRef } from "../contracts/secret-store";
 import { TOKEN_NAMES } from "../auth/tokens";
 import { osStoreItemNames } from "../secrets/file-backend";
 import { bunVault, type Vault } from "../secrets/moss-secret-store";
-import { otherInstallHome } from "../other-installs";
+import { OLD_INSTALL_HOME_DIR, otherInstallHome } from "../other-installs";
 import { receivedRootOf } from "../bots/staged-files";
 
 /** What erase leaves, said to the person every time. */
@@ -28,7 +28,7 @@ export const ERASE_KEEPS = [
   "the apps' own folders: their browser cookies and the key that signs your approvals",
   "your projects, and the .moss folder inside a project you opened",
   "files your bots or agents wrote outside MOSS's folder",
-  "the previous app's folder (~/.clover), if you had one",
+  `the previous app's folder (~/${OLD_INSTALL_HOME_DIR}), if you had one`,
   "anything at your AI providers, plugins' services and waifucave (delete your account first for that)",
 ] as const;
 
