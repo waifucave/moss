@@ -58,10 +58,12 @@ public struct ConversationScreen: View {
                         Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
                         Text(e).font(.footnote)
                         Spacer(minLength: 0)
-                        if model.failedSend != nil { Button("Retry") { Task { await model.retry() } }.font(.footnote.weight(.semibold)) }
+                        if model.failedSend != nil {
+                            Button("Retry") { Task { await model.retry() } }
+                                .font(.footnote.weight(.semibold)).buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                        }
                     }
                     .foregroundStyle(.secondary)
-                    .accessibilityElement(children: .combine)
                 }
                 ComposerBar(draft: $model.draft, placeholder: model.placeholder, running: model.isRunning,
                             onSend: { Task { await model.send() } }, onStop: { Task { await model.stop() } })

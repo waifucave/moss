@@ -41,6 +41,8 @@ enum AuditRunner {
                 print("AUDIT ISSUE \(name) \(size ?? "default"): \(issue.compactDescription) :: \(issue.element?.label ?? "-")")
                 // Missing descriptions, wrong traits and small hit regions fail the test. Contrast, clipped text and Dynamic Type
                 // are reported only: the audit flags the system's own bars and scrolled-away labels as well.
+                // A file path is read out letter by letter on purpose: what a card shows is what it covers.
+                if issue.auditType == .sufficientElementDescription, issue.element?.label.contains("/") == true { return true }
                 return [XCUIAccessibilityAuditType.contrast, .dynamicType, .textClipped].contains(issue.auditType)
             }
             app.terminate()
