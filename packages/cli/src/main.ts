@@ -2038,7 +2038,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           if (principalSid !== null) sids.push(principalSid);
           // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
           const held = await memberLock(principal);
-          if (held === "held") { fail(`${principal} is still in use (a command of MOSS's or the profile reset after 3 minutes, or a process of the account that couldn't be ended); stop MOSS and run remove again`); break; }
+          if (held === "held") { fail(`${principal} is still in use (a command of MOSS's or the profile reset after 3 minutes, or a process of the account that couldn't be ended); stop MOSS (or restart Windows) and run remove again`); break; }
           const guard = held === "free" ? null : held;
           try {
           // The profile for the reset below, resolved before the uninstall.

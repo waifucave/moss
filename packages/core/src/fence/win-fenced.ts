@@ -708,6 +708,10 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
       // command only as a pool account (no network); an install without the escape account refuses the escape.
       const members = got.marker.members.filter((m) => (m.network === true) === (r.network === true));
       if (members.length === 0) return refuse(r.network === true ? "the escape account isn't set up; run `moss-core sandbox setup` again" : setupBashRefusal(null));
+      // Rule 3c's seed first, before an account is leased: a refusal here uses no account up (leasing marks a generation used, and a failed
+      // read can wait up to 30 s for `user status`). It needs neither the plan nor the account.
+      if (!(await seedRoots())) return refuse("the sandbox's list of folders it already opened (srt-win user status) couldn't be read; try again in a moment, and if it keeps failing run `moss-core sandbox setup` again, or restart MOSS");
+      mark("seed");
       const lease = await leaseFresh(leases, { ...got.marker, members }, deps.ownerSid!);
       mark("lease");
       if (!lease.ok) return refuse(lease.reason);
@@ -752,7 +756,6 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // under one of this plan's read denies, is denied by name for this command (`strayRoots`).
         const own = uniq([...plan.writeRoots, ...plan.readGrants]);
         const literalDenies = plan.denyRead.filter((d) => !GLOB.test(d));
-        if (!(await seedRoots())) return refuse("the sandbox's list of folders it already opened (srt-win user status) couldn't be read; try again in a moment");
         const stray = strayRoots(grantedRoots.values(), literalDenies, own);
         // Only what is granted opens anything: the roots that exist (a missing one isn't granted) and the read grants.
         flight = { caller: callerKey(r.who.caller), opens: uniq([...roots, ...plan.readGrants]), denyRead: [...literalDenies, ...stray] };

@@ -544,7 +544,12 @@ describe("the roots seed gates every command (the WS5 reviewer's should-fix 2)",
         return exec(argv, o);
       } };
       const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(coding(cwd));
-      expect(r).toMatchObject({ kind: "refused", reason: expect.stringContaining("couldn't be read") });
+      expect(r.kind).toBe("refused");
+      const reason = r.kind === "refused" ? r.reason : "";
+      expect(reason).toContain("couldn't be read");
+      // It says what to do when it keeps failing, and the refusal uses no account up: nothing was leased, so no generation was marked used.
+      expect(reason).toContain("if it keeps failing run `moss-core sandbox setup` again, or restart MOSS");
+      expect(m.writes).toEqual([]);
       expect(rec.argv()).toBeNull();
     }
   });
