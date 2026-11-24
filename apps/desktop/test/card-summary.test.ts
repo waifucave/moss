@@ -53,7 +53,9 @@ describe("the one line", () => {
   });
   test("zero-width characters in a name or a command show as their escapes", () => {
     expect(sealedEscape("con\u200Bfig")).toBe("conU+200Bfig");
-    for (const c of ["\u200C", "\u200D", "\uFEFF"]) expect(sealedEscape(`a${c}b`)).toContain("U+");
+    expect(sealedEscape("a\uFEFFb")).toContain("U+");
+    // A joiner is real between two visible characters (a family emoji, Persian: sealed-joiners.test.ts); at either end of a word it is an escape.
+    for (const c of ["\u200C", "\u200D"]) expect(sealedEscape(`a${c}`)).toContain("U+");
   });
   test("\"always\" is worded from the stored rule: one test per shape, each naming every dimension the rule leaves open", () => {
     const rule = (kind: string, target: string, bot: string, computers: string) => ({ type: "rows" as const, rows: [{ label: "kind", value: kind }, { label: "target", value: target }, { label: "bot", value: bot }, { label: "computers", value: computers }] });

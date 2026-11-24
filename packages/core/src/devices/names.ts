@@ -17,38 +17,15 @@
 // looks past a variation selector or a skin-tone modifier on the character before it (🏳️‍🌈, 👩🏽‍💻). The subdivision flags
 // (🏴 and the tag block) are refused with the tag block; the flags drawn from two regional indicators pass.
 
-/** The refused characters, one at a time: controls, separators, every format character (joiners included: `joinerOk` takes them back
- *  where they sit between two visible characters), lone surrogates, and the fillers that draw as blanks. */
-const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}ᅟᅠㅤﾠ឴឵⠀]/u;
-const MARK = /^\p{M}$/u;
-const BLANK = /^\p{White_Space}$/u;
-const ZWNJ = "‌";
-const ZWJ = "‍";
+import { UNSHOWN_CHAR, isBlankChar, isJoinerChar, isMarkChar, joinerBetweenVisible } from "@waifucave/moss-protocol";
 
 /** Most combining marks after one character (a script's own need is a few; more is a stack that draws over its neighbours). */
 export const MARKS_MAX = 4;
 /** A name is at most this many UTF-16 units (the protocol's own limit). */
 export const NAME_MAX = 63;
 
-const isJoiner = (ch: string): boolean => ch === ZWJ || ch === ZWNJ;
-const isMark = (ch: string): boolean => MARK.test(ch);
-/** A skin-tone modifier (Fitzpatrick types 1–2 to 6). */
-const isToneModifier = (ch: string): boolean => {
-  const c = ch.codePointAt(0)!;
-  return c >= 0x1f3fb && c <= 0x1f3ff;
-};
-/** A character that shows something: not a blank, a mark, or anything `UNSAFE` holds (the joiners among them). */
-const isVisible = (ch: string): boolean => !UNSAFE.test(ch) && !isMark(ch) && !BLANK.test(ch);
-
-/** Whether the joiner at `chars[i]` sits between two visible characters (a mark or a skin-tone modifier on the one before is looked past). */
-function joinerOk(chars: readonly string[], i: number): boolean {
-  let j = i - 1;
-  while (j >= 0 && (isMark(chars[j]!) || isToneModifier(chars[j]!))) j--;
-  if (j < 0 || !isVisible(chars[j]!)) return false;
-  const next = chars[i + 1];
-  return next !== undefined && isVisible(next);
-}
-
+// What shows, and where a joiner is allowed, is decided in the protocol (`visible-text.ts`), where the sealed cards' pages read the same
+// rule: a name this file accepts is drawn on the add card as it was written.
 /** Why `name` can't be a device's name, in words the person reads; null when it can. */
 export function nameProblem(name: unknown): string | null {
   if (typeof name !== "string" || name.length < 1) return "a device's name can't be empty";
@@ -60,17 +37,17 @@ export function nameProblem(name: unknown): string | null {
   let prev: "start" | "blank" | "visible" | "mark" | "joiner" = "start";
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]!;
-    if (isJoiner(ch)) {
-      if (!joinerOk(chars, i)) return "a device's name can't hold a joiner that isn't between two visible characters";
+    if (isJoinerChar(ch)) {
+      if (!joinerBetweenVisible(chars, i)) return "a device's name can't hold a joiner that isn't between two visible characters";
       prev = "joiner";
       marks = 0;
-    } else if (UNSAFE.test(ch)) {
+    } else if (UNSHOWN_CHAR.test(ch)) {
       return "a device's name can't hold control, invisible or direction-changing characters";
-    } else if (isMark(ch)) {
+    } else if (isMarkChar(ch)) {
       if (prev === "start" || prev === "blank") return "a device's name can't start with an accent or hold one with no letter to sit on";
       if (++marks > MARKS_MAX) return `a device's name can't stack more than ${MARKS_MAX} accents on one character`;
       prev = "mark";
-    } else if (BLANK.test(ch)) {
+    } else if (isBlankChar(ch)) {
       prev = "blank";
       marks = 0;
     } else {
@@ -95,10 +72,10 @@ export function safeDeviceName(raw: string, fallback = "Computer"): string {
   let marks = 0;
   let onBase = false;
   for (const ch of raw.isWellFormed() ? raw : raw.toWellFormed()) {
-    if (UNSAFE.test(ch)) continue;
-    if (isMark(ch)) {
+    if (UNSHOWN_CHAR.test(ch)) continue;
+    if (isMarkChar(ch)) {
       if (onBase && ++marks <= MARKS_MAX) out += ch;
-    } else if (BLANK.test(ch)) {
+    } else if (isBlankChar(ch)) {
       if (out !== "" && !out.endsWith(" ")) out += " ";
       onBase = false;
       marks = 0;

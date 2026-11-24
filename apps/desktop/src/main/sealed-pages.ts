@@ -11,6 +11,7 @@
  * where a parsable page sees only its own). */
 
 import type { TokenValue } from "@waifucave/moss-plugin-sdk";
+import { isJoinerChar, joinerBetweenVisible } from "@waifucave/moss-protocol";
 import type { SealedValue } from "./sealed";
 import type { CardSummary, PreviewBlock } from "./card-summary";
 
@@ -198,10 +199,18 @@ function cssSafe(text: string): string | undefined {
 /** The sealed text at one line's length: control characters and bidirectional marks visible as their escapes. The
  *  set is the core's own (`http-read.ts`: C0 and C1 controls but tab, newline and carriage return, the bidi marks and
  *  overrides, U+061C), the zero-width characters (U+200B, U+200C, U+200D, U+FEFF) that make a name look like another, plus U+2028 and U+2029 — never Hebrew (0x0590-0x05FF), never dashes, curly quotes, bullets or
- *  the ellipsis (U+2010-2027). */
+ *  the ellipsis (U+2010-2027). The two joiners (U+200C, U+200D) are real in a name (a family emoji, Persian "می‌خواهم"): one that sits between
+ *  two visible characters is kept as it is (the protocol's `joinerBetweenVisible`, the same rule a device's name is held to); a joiner anywhere
+ *  else (first, last, doubled, beside a blank or another format character) is an escape like the rest. */
 export function sealedEscape(text: string): string {
   let out = "";
-  for (const ch of text) {
+  const chars = [...text];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    if (isJoinerChar(ch) && joinerBetweenVisible(chars, i)) {
+      out += ch;
+      continue;
+    }
     const code = ch.codePointAt(0)!;
     if ((code <= 0x08 || code === 0x0b || code === 0x0c || (code >= 0x0e && code <= 0x1f)) || code === 0x7f || (code >= 0x80 && code <= 0x9f) || code === 0x061c || code === 0x200b || code === 0x200c || code === 0x200d || code === 0xfeff || code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) || code === 0x2028 || code === 0x2029) {
       out += `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
@@ -210,13 +219,19 @@ export function sealedEscape(text: string): string {
   return out;
 }
 
+/** A row's value, isolated for direction: a name that starts or ends in right-to-left letters reorders only inside its own value, never
+ *  the label beside it or the punctuation after it. The text is already escaped (`sealedEscape`). */
+function valueHtml(escaped: string): string {
+  return `<bdi>${esc(escaped)}</bdi>`;
+}
+
 /** A text field's HTML: its lines in a block that scrolls inside the part's size, in the part's own typography. */
 export function fieldPage(input: { cardId: string; token: string; field: string; value: SealedValue; tokens?: Readonly<Record<string, TokenValue>> }): string {
   const body = (() => {
     if (input.value.type === "text") return `<p class="text">${esc(sealedEscape(input.value.text))}</p>`;
     if (input.value.type === "code") return `<pre class="code"><code>${esc(sealedEscape(input.value.code))}</code></pre>`;
     if (input.value.type === "list") return `<ul class="list">${input.value.items.map((i) => `<li>${esc(sealedEscape(i))}</li>`).join("")}</ul>`;
-    return `<dl class="rows">${input.value.rows.map((r) => `<dt>${esc(sealedEscape(r.label))}</dt><dd>${esc(sealedEscape(r.value))}</dd>`).join("")}</dl>`;
+    return `<dl class="rows">${input.value.rows.map((r) => `<dt>${esc(sealedEscape(r.label))}</dt><dd>${valueHtml(sealedEscape(r.value))}</dd>`).join("")}</dl>`;
   })();
   return page(input, body, `seal-${input.field}`, true, SIZE_SCRIPT);
 }
@@ -276,7 +291,7 @@ export function previewHtml(s: CardSummary): string {
         return `${label}<div class="${p.mono ? "codeblock" : "plainblock"}">${lines}</div>${more(p.hidden, "line")}`;
       }
       case "rows": {
-        const rows = p.rows.map((r) => `<div class="row"><span class="k">${e(r.label)}</span><span class="v">${e(r.value)}</span></div>`).join("");
+        const rows = p.rows.map((r) => `<div class="row"><span class="k">${e(r.label)}</span><span class="v">${valueHtml(sealedEscape(r.value))}</span></div>`).join("");
         return `<div class="rowsblock">${rows}</div>${more(p.hidden, "more field")}`;
       }
     }
@@ -456,7 +471,7 @@ export function ownCardPage(input: {
         ? `<pre class="code"><code>${esc(sealedNow(value.code))}</code></pre>`
         : value.type === "list"
           ? `<ul class="list">${value.items.map((i) => `<li>${esc(sealedNow(i))}</li>`).join("")}</ul>`
-          : `<dl class="rows">${value.rows.map((r) => `<dt>${esc(sealedNow(r.label))}</dt><dd>${esc(sealedNow(r.value))}</dd>`).join("")}</dl>`;
+          : `<dl class="rows">${value.rows.map((r) => `<dt>${esc(sealedNow(r.label))}</dt><dd>${valueHtml(sealedNow(r.value))}</dd>`).join("")}</dl>`;
     return `<section class="field" data-name="${esc(name)}"><h3 class="fname">${esc(FIELD_TITLES[name] ?? name)}</h3>${body}</section>`;
   }).join("\n");
   // Deny first, then an "always" approve, then the plain approve last, where the eye ends.
