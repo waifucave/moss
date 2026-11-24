@@ -88,7 +88,7 @@ function engineWords(card: { fields: Readonly<Record<string, unknown>> }): strin
 }
 const rowsOf = (card: { fields: Readonly<Record<string, unknown>> }): { label: string; value: string }[] => {
   const v = (card.fields as Record<string, SealedField>).detail;
-  return v?.type === "rows" ? v.rows : [];
+  return v?.type === "rows" ? v.rows.map((r) => ({ label: r.label, value: r.value })) : [];
 };
 
 /** Answers the card of that change on `d`; `check` picks the children to check by their labels (and returns them, for
@@ -270,6 +270,36 @@ describe("a join the service didn't take (I's review)", () => {
 });
 
 describe("voters and the quorum (lane I's proposal)", () => {
+  test("a name the asker gives for a device this computer doesn't know is drawn only if the name rule takes it; every name row is marked as a name", async () => {
+    const hs = service({ voteAfterMs: 0 });
+    const net = new MemoryNetwork();
+    const [a, b] = [await daemon(net, hs, "Studio"), await daemon(net, hs, "Laptop")];
+    await pair(a, b);
+    const g = groupOf(a)!;
+    await waitFor(() => hs.groups.get(g)?.members.size === 2);
+    const link = await a.links.transport.connect(b.links.key.id);
+    const { generateEd25519 } = await import("../../identity/keys");
+    const { GROUP_LINK } = await import("../group");
+    // An unknown key, named by the asker. A name with a control, nothing that shows, or past the length is not taken ("a device this computer doesn't
+    // know"); the name rule (`cleanName`) takes "Spare", a family emoji, and a joiner between letters, which the card's page then draws as an escape
+    // (the page, not the engine, narrows the joiners: `sealedEscape` with `joinerInName`).
+    const seen: string[] = [];
+    for (const name of [`exam\u200Dple`, "a\u202Eb", "\u200B", "x".repeat(200), "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]) {
+      const key = toBase64Url(generateEd25519().publicKey);
+      const before = b.broker.cards().length;
+      const asked = link.request(GROUP_LINK.cosign, { group: g, key, t: Date.now(), keeps: [], name }).catch((e: unknown) => e);
+      await waitFor(() => b.broker.cards().length > before);
+      const card = b.broker.cards().filter((c) => c.change === "device-revoke").at(-1)!;
+      const rows = rowsOf(card);
+      expect(rows.map((r) => r.label)).toEqual(["The device to remove", "Asked by"]);
+      for (const f of Object.values(card.fields as Record<string, { type: string; rows?: { name?: true }[] } | undefined>)) if (f?.type === "rows") for (const r of f.rows ?? []) expect(r.name).toBe(true);
+      seen.push(rows[0]!.value);
+      await answer(b, "device-revoke", false);
+      expect(isContractError(await asked, "refused")).toBe(true);
+    }
+    expect(seen).toEqual(["exam\u200Dple", "a device this computer doesn't know", "a device this computer doesn't know", "a device this computer doesn't know", "Spare", "MacBook \u{1F468}\u200D\u{1F469}"]);
+  }, 40_000);
+
   test("removing a member asks the other voters, each by its card: one declines, one agrees, and that's a quorum", async () => {
     const hs = service({ voteAfterMs: 0 });
     const net = new MemoryNetwork();

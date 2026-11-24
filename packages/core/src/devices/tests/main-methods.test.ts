@@ -68,7 +68,7 @@ const approve = async (d: Awaited<ReturnType<typeof daemon>>, cardId: string) =>
   expect(card.change).toBe("main-computer");
   // The computer's own name is the value of a row; the engine's title holds no name.
   expect((card.fields.title as { text: string }).text).toBe("Make this computer the main computer?");
-  expect((card.fields.detail as { type: string; rows: { label: string }[] }).rows.map((r) => r.label)).toEqual(["This computer"]);
+  expect((card.fields.detail as { type: string; rows: { label: string; name?: true }[] }).rows.map((r) => [r.label, r.name])).toEqual([["This computer", true]]);
   const channel = d.broker.frameChannel(card.id)!;
   expect(await d.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame: channel, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
 };

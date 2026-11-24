@@ -111,7 +111,7 @@ export const SealedValue = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: sealed(4000) }),
   z.object({ type: z.literal("code"), code: sealed(64_000), language: utf16(32).optional() }),
   z.object({ type: z.literal("list"), items: z.array(sealed(4000)).max(200) }),
-  z.object({ type: z.literal("rows"), rows: z.array(z.object({ label: sealed(200), value: sealed(4000) })).max(100) }),
+  z.object({ type: z.literal("rows"), rows: z.array(z.object({ label: sealed(200), value: sealed(4000), name: z.literal(true).optional() })).max(100) }),
 ]);
 export type SealedValue = z.infer<typeof SealedValue>;
 

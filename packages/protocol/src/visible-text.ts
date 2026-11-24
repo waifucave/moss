@@ -33,3 +33,16 @@ export function joinerBetweenVisible(chars: readonly string[], i: number): boole
   const next = chars[i + 1];
   return next !== undefined && isVisibleChar(next);
 }
+
+const isAscii = (ch: string): boolean => ch.codePointAt(0)! < 0x80;
+
+/** Whether the joiner at `chars[i]` is real in a human NAME (a device's, a bot's, a person's) as a card draws it: between two visible
+ *  characters (`joinerBetweenVisible`) AND neither neighbour is ASCII (an emoji sequence, Persian or Indic letters; a mark or a skin-tone
+ *  modifier on the one before it is looked past). A joiner between two Latin letters, a digit or a dot draws nothing, so beside ASCII it can
+ *  only make a name look like another ("exam\u200Cple") and stays an escape. */
+export function joinerInName(chars: readonly string[], i: number): boolean {
+  if (!joinerBetweenVisible(chars, i)) return false;
+  let j = i - 1;
+  while (j >= 0 && (isMarkChar(chars[j]!) || isToneModifierChar(chars[j]!))) j--;
+  return !isAscii(chars[j]!) && !isAscii(chars[i + 1]!);
+}

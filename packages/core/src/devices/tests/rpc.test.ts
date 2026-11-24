@@ -105,7 +105,11 @@ async function showWords(a: Awaited<ReturnType<typeof computer>>, b: Awaited<Ret
   return { view, joined };
 }
 /** The rows of a card's `detail` field. */
-const cardRows = (card: { fields?: unknown }): { label: string; value: string }[] => ((card.fields as Record<string, { rows?: { label: string; value: string }[] }>)["detail"]?.rows ?? []);
+type Row = { label: string; value: string; name?: true };
+const rawRows = (card: { fields?: unknown }): Row[] => ((card.fields as Record<string, { rows?: Row[] }>)["detail"]?.rows ?? []);
+const cardRows = (card: { fields?: unknown }): { label: string; value: string }[] => rawRows(card).map((r) => ({ label: r.label, value: r.value }));
+/** The labels of the rows the card's builder marked as a human name (their joiners may draw as written). */
+const nameLabels = (card: { fields?: unknown }): string[] => rawRows(card).filter((r) => r.name === true).map((r) => r.label);
 const answer = (c: Awaited<ReturnType<typeof computer>>, id: string, optionId: "approve" | "deny") => {
   const card = c.broker.cards().find((x) => x.id === id)!;
   return c.broker.answer(card.id, { optionId, hash: card.hash, proof: { via: "sealed-frame", frame: c.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" });
@@ -129,6 +133,7 @@ describe("pairing's edges", () => {
     expect(lines).toContain(words.join(" "));
     expect(lines).toContain("same on the other device's screen");
     expect(cardRows(card)).toContainEqual({ label: "It would join", value: "Studio" });
+    expect(nameLabels(card)).toEqual(["The name it gives itself", "It would join"]);
     expect(JSON.stringify(b.broker.cards()[0]!)).toContain(words.join(" "));
     // Asking for it again (a caller that has the real words) is the same card, not a second one.
     const again = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words }, app)) as { applied: false; card: string };

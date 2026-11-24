@@ -30,6 +30,7 @@ import type { LinkTransport } from "../contracts/link-transport";
 import type { SecretStore } from "../contracts/secret-store";
 import type { CardOpener } from "../devices/rpc";
 import type { FileDeviceRegistry, GroupLeaving, GroupRecord } from "../devices/registry";
+import { cleanName } from "../devices/names";
 import { fromBase64Url, randomBytes, toBase64Url, utf8 } from "../identity/bytes";
 import { isStrictEd25519Point } from "../identity/ed25519-strict";
 import { ed25519FromSecret, generateEd25519, type Ed25519Key, verifyEd25519 } from "../identity/keys";
@@ -88,8 +89,9 @@ export interface GroupKeeperOptions {
 const CARD_TIMEOUT_MS = 5 * 60_000;
 
 /** What a device is called, on a card: a row of its own, never a word inside a sentence of the engine's (the add card does the same,
- *  `devices/rpc.ts`), so no character in a name can end or continue what the engine says. */
-const nameRows = (rows: readonly { label: string; value: string }[]): { type: "rows"; rows: { label: string; value: string }[] } => ({ type: "rows", rows: rows.map((r) => ({ ...r })) });
+ *  `devices/rpc.ts`), so no character in a name can end or continue what the engine says. Each row is marked as a human name (`name`), so a card draws
+ *  a joiner in it (a family emoji, Persian) as written. */
+const nameRows = (rows: readonly { label: string; value: string }[]): { type: "rows"; rows: { label: string; value: string; name: true }[] } => ({ type: "rows", rows: rows.map((r) => ({ ...r, name: true as const })) });
 
 export class GroupKeeper {
   readonly #o: GroupKeeperOptions;
@@ -468,7 +470,7 @@ export class GroupKeeper {
     if (!key) throw new ContractError("not_found", "the group's key is gone");
     const target = deviceOfKey(g, p.key);
     // Its name as this computer knows it, else as the asker named it.
-    const name = (target && this.#o.registry.get(target)?.name) ?? (typeof p.name === "string" ? p.name.slice(0, 64) : "a device this computer doesn't know");
+    const name = (target && this.#o.registry.get(target)?.name) ?? (typeof p.name === "string" && cleanName(p.name) ? p.name : "a device this computer doesn't know");
     const asker = this.#o.registry.get(from)?.name ?? "another computer";
     const keptNames = keeps.map((k) => {
       const d = deviceOfKey(g, k);
