@@ -218,11 +218,14 @@ const session_ = linuxSession(process.env);
 registerSchemes();
 
 // Bots can read `<home>/logs`, so the file gets only what `fileLine` (file-log.ts) lets through: checks, numbers, lifecycle lines and error
-// kinds, never an error's message or stack, a card's id or a page's address. The process's output keeps every line (the acceptance run reads it).
+// kinds, never an error's message or stack, a card's id or a page's address. The process's output keeps every line. A test-marked or acceptance
+// build (never a person's, its home is a temporary one) writes the raw line to the file too: the acceptance run reads its steps' evidence there
+// (with the time of each line), and the filter itself is held by file-log.test.ts.
+const rawFileLines = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";
 const appLog = new AppLog(appLogPath(home));
 function log(line: string): void {
   process.stdout.write(`[moss-app] ${line}\n`);
-  appLog.write(fileLine(line));
+  appLog.write(rawFileLines ? line : fileLine(line));
 }
 
 // A packaged app never shows Electron's "A JavaScript error occurred in the main process" box: an uncaught exception or

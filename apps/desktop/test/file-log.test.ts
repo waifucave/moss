@@ -80,7 +80,6 @@ const KEPT: string[] = [
   "window 4: every document answers; it has 20 s to come back",
   "audio: muted (a headless run or a test build)",
   "audio: all plugin sound muted from the tray",
-  "preview: the window's files changed; reloading it",
   "smoke: the restart is left out",
   "smoke click: sent to a surface window (visible=true)",
   "smoke drop: sent to a surface window",
@@ -238,9 +237,6 @@ const REDUCED: [string, string][] = [
   [`overlap: no window list (${SECRET}); the in-page check stands alone`, "overlap: no window list; the in-page check stands alone"],
   [`overlap: the OS window list couldn't be read for a press (${SECRET}); the in-page check stands alone`, "overlap: the OS window list couldn't be read for a press; the in-page check stands alone"],
   [`prefs: not saved (${SECRET})`, "prefs: not saved"],
-  [`moss-preview-control: answered card ${CARD} with allow: taken`, "moss-preview-control: answered a card: taken"],
-  [`moss-preview-control: serving /Users/someone/${SECRET}.sock`, "moss-preview-control: serving"],
-  [`moss-preview-control: not serving: ${SECRET}`, "moss-preview-control: not serving"],
   [`answer key: not replaced: ${SECRET}`, "answer key: not replaced"],
   [`answer key: not registered (${SECRET})`, "answer key: not registered"],
   [`answer key: the replacement's answer was lost (${SECRET}); its key stays staged`, "answer key: the replacement's answer was lost; its key stays staged"],
@@ -337,7 +333,7 @@ describe("what MOSS Code writes to its log file", () => {
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
     for (const f of walk(root).sort()) {
       const text = readFileSync(f, "utf8");
-      const rel = f.slice(root.length + 1);
+      const rel = f.slice(root.length + 1).replaceAll("\\", "/");
       const n = [...text.matchAll(/(^|[^A-Za-z0-9_.])(?:this\.|d\.|o\.|deps\.)?log\(\s*[`"]/gm)].length;
       if (n > 0) counts[rel] = n;
       // A call whose line is a variable, a ternary or a function's result (`log(placeLine(...))`), not a declaration of a `log(line: string)` method.
@@ -367,7 +363,9 @@ describe("what MOSS Code writes to its log file", () => {
 
   test("the file's writer in index.ts is fed through fileLine, never the raw line, while the output keeps the raw line", () => {
     const src = readFileSync(join(import.meta.dir, "..", "src", "main", "index.ts"), "utf8");
-    expect(src).toContain("appLog.write(fileLine(line));");
+    // A test-marked or acceptance build keeps the raw line (its steps read it); every other build, the real one, writes only the classed line.
+    expect(src).toContain("appLog.write(rawFileLines ? line : fileLine(line));");
+    expect(src).toContain('const rawFileLines = typeof __MOSS_TEST_BUILD__ === "string" || typeof __MOSS_ACCEPTANCE_BUILD__ === "string";');
     expect(src).not.toMatch(/appLog\.write\(line\)/);
     expect(src).toContain("process.stdout.write(`[moss-app] ${line}\\n`);");
   });
