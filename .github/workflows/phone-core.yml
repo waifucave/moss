@@ -5,7 +5,7 @@ name: phone core
 # core, or what it is checked against, changes.
 on:
   push:
-    branches: ["lane/pc-**", "lane-int/**"]
+    branches: ["lane/pc*", "lane/pc*/**", "lane-int/**"]
     paths:
       - native/phone-core/**
       - native/link/**
