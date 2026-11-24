@@ -17,7 +17,9 @@ export function deviceRelayMethods(deps: DeviceRelayDeps): Record<string, Method
   return {
     [DEVICES_METHODS.deviceRelayGet.name]: handler(DEVICES_METHODS.deviceRelayGet, () => deps.get()),
     [DEVICES_METHODS.deviceRelaySet.name]: handler(DEVICES_METHODS.deviceRelaySet, async (p, ctx) => {
-      // The person's own choice: never a plugin's part, a session or a peer (the server's `userOnly` already says so; checked again here).
+      // The person's own choice: never a session, a bot, a peer or a plugin's own connection (`userOnly` says so; checked again here). A
+      // plugin's page in the app reaches this over main's connection, which calls as the user and so passes: that door is the app's
+      // (`tree-calls.ts`), which lets a part through only with the `devices.relay` capability, on the person's own press.
       if (ctx.caller.kind !== "user") throw new MethodError(MOSS_ERR.NOT_THE_USER, "only the user can choose the relay");
       let choice: RelayView;
       if (p.mode === "custom") {

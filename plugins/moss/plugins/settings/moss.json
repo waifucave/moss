@@ -15,6 +15,7 @@
     "computers.read",
     "devices.read",
     "devices.manage",
+    "devices.relay",
     "logs.read",
     "app.settings",
     "tools.permissions",

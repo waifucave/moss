@@ -152,8 +152,8 @@ test("a page calling everything it can reach, with a key press on every call, ad
     if (r["error"] !== undefined) throw new Error(JSON.stringify(r["error"]));
     return r["result"];
   };
-  const page = (method: string, params: unknown): Promise<unknown> => routeCall({
-    caller: { windowId: 1, pluginId: PAGE, capabilities },
+  const page = (method: string, params: unknown, held: ReadonlySet<string> = capabilities): Promise<unknown> => routeCall({
+    caller: { windowId: 1, pluginId: PAGE, capabilities: held },
     method, params,
     takeGesture: () => true,
     request: (m, p) => ask(a.app, m, p),
@@ -161,6 +161,14 @@ test("a page calling everything it can reach, with a key press on every call, ad
     log: (l) => void logs.push(l),
     refuse: (why) => new Error(why),
   });
+
+  // The relay is its own capability: a page that may pair and remove devices, and holds the rest, can neither read nor choose it, and the
+  // engine's relay stays n0's (a relay of someone's choosing learns which devices are online and can drop their traffic).
+  const noRelay = new Set([...capabilities].filter((c) => c !== "devices.relay"));
+  for (const [m, p] of [["device.relay.set", { mode: "off" }], ["device.relay.set", { mode: "custom", url: "https://relay.example.test" }], ["device.relay.get", {}]] as const) {
+    await expect(page(m, p, noRelay)).rejects.toThrow("devices.relay");
+  }
+  expect(await ok(a.app, "device.relay.get", {})).toEqual({ mode: "n0" });
 
   // The page begins a pairing (its own press, in its own frame): the code is its to show. B's person joins it from B's app.
   const begun = (await page("device.pair.begin", {})) as { pairingId: string; qr: string };

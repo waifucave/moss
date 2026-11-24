@@ -37,12 +37,18 @@ const PLUGIN_WITHHELD: Readonly<Record<string, readonly string[]>> = {
   plugin_changed: ["reason", "waitingFor"],
 };
 
-/** Fields only the user's own terminal (role `cli`) gets, by event type: the pairing's four words. Everyone else, the apps and
+/** Fields only the user's own terminal gets (a `cli` connection whose caller is the user, `{ kind: "user", client: "cli" }`: never a CLI
+ *  a bot's or an agent's session runs, which has role `cli` too but calls as that session), by event type: the pairing's four words. Everyone else, the apps and
  *  the plugins' pages with them, learn the step; the words are drawn by the engine in the add card's sealed frame (§5.5), so a
  *  page can neither show them (they would prove nothing) nor hand them back. */
 const TERMINAL_ONLY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   pairing_changed: ["words"],
 };
+
+/** The person's own terminal: role `cli` and a caller that is the user's (a CLI started inside a session's process is `cli` too, but its caller is that session). */
+function isUsersTerminal(conn: MossConn): boolean {
+  return conn.role === "cli" && conn.caller.kind === "user" && conn.caller.client === "cli";
+}
 
 /** A `core` event as a lane hands it over: its `type`, and `ts` (the shared clock's) unless the sender stamps it. */
 export interface CoreEventInput {
@@ -126,7 +132,7 @@ export function sendCoreEvent(r: CoreEventRouting, event: CoreEventInput, opts: 
       if (who === undefined || !opts.forPlugin(who, r.pluginCapabilities?.(who) ?? [])) continue;
     }
     try {
-      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : conn.role === "cli" ? forTerminal : forApps);
+      conn.notify(CORE_EVENT_NOTIFICATION, PLUGIN_ROLES.includes(conn.role) ? forPlugins : isUsersTerminal(conn) ? forTerminal : forApps);
       sent++;
     } catch {
       // closing: its close handler removes it

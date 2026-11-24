@@ -30,7 +30,7 @@
 // Devices without an account also form one group per user for the lease: the host's group if it has one, else the
 // joiner's, else a new one the host founds; the device not yet in it joins, admitted by the other.
 import { hkdfSync } from "node:crypto";
-import { AnswerKeyHolder, PhoneApp, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
+import { AnswerKeyHolder, DeviceKind, DeviceOs, PhoneApp, type PairingView as PairingViewSchema } from "@waifucave/moss-protocol";
 import type { z } from "zod";
 import type { Clock } from "../contracts/clock";
 import { ContractError, isContractError, Listeners, type Unsubscribe } from "../contracts/common";
@@ -161,6 +161,14 @@ export interface PairingServiceOptions {
   /** This device moved from its group into the host's in a confirmed pairing (R18): the old group's record, for the
    *  group keeper to ask the old group's computers to follow, each by its own card. */
   onMerged?(old: GroupRecord, via: string): void;
+}
+
+/** Control characters, line and paragraph separators, and the bidi controls (marks, embeddings, overrides, isolates). */
+const UNSAFE_IN_NAME = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/;
+
+/** Whether a name a device gave itself is one to show: 1 to 63 UTF-16 units, something besides blanks, and none of `UNSAFE_IN_NAME`. */
+export function cleanName(name: string): boolean {
+  return name.length >= 1 && name.length <= 63 && name.trim().length > 0 && !UNSAFE_IN_NAME.test(name);
 }
 
 export class PairingService {
@@ -333,6 +341,15 @@ export class PairingService {
       p.conn?.close(CLOSE_NORMAL, "cancelled");
     }
     this.#remove(p);
+  }
+
+  /** Ends a pairing that is under way as failed, with a reason the person can read: a wrong guess at the words, a card that could
+   *  not be shown. The other device is told by the closed connection. Does nothing to one that has ended already. */
+  abort(pairingId: string, reason: string): void {
+    const p = this.#pending.get(pairingId);
+    if (!p || p.status === "paired" || p.status === "failed" || p.status === "cancelled") return;
+    this.#fail(p, reason);
+    p.conn?.close(CLOSE_PROTOCOL, reason.slice(0, 100));
   }
 
   async close(): Promise<void> {
@@ -699,6 +716,12 @@ export class PairingService {
     const d = m.device as Record<string, unknown> | undefined;
     if (!d || typeof d !== "object") return undefined;
     if (typeof d.id !== "string" || typeof d.name !== "string" || typeof d.kind !== "string" || typeof d.runsCore !== "boolean" || typeof d.publicKey !== "string") return undefined;
+    // What the other device calls itself is its own word, from a stranger's machine until the person has checked the four words:
+    // the protocol's own limits (a name of 1 to 63 UTF-16 units, a kind and an os from the enums), no control characters, no line
+    // breaks and no bidi controls (a name that reorders what is drawn beside it), and the same for the tree name it may bring.
+    if (!cleanName(d.name) || !DeviceKind.safeParse(d.kind).success) return undefined;
+    if (d.os !== undefined && !DeviceOs.safeParse(d.os).success) return undefined;
+    if (d.computer !== undefined && (typeof d.computer !== "string" || !cleanName(d.computer))) return undefined;
     if (d.publicKey !== toBase64(key)) return undefined;
     if (!helloKeysStrict(m)) return undefined;
     if (m.group !== null && typeof m.group !== "string") return undefined;

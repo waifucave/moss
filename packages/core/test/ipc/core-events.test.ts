@@ -46,14 +46,17 @@ describe("the core.event sender", () => {
 
   test("the pairing's four words reach the user's terminal only: the app, a plugin's layer and every other role hear the step and the name", () => {
     const words = ["maple", "orbit", "velvet", "canyon"];
-    const app = conn("app", ["devices"]), cli = conn("cli", ["devices"]);
+    const app = conn("app", ["devices"]), cli = conn("cli", ["devices"], { caller: { kind: "user", client: "cli" } });
+    // A CLI a bot's or an agent's session runs is role `cli` too (its caller is that session): it is no one's terminal.
+    const botCli = conn("cli", ["devices"], { caller: { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" } });
+    const agentCli = conn("cli", ["devices"], { caller: { kind: "session", sessionId: "ses_abcdef34", sessionKind: "coding" } });
     const layer = conn("layer", ["devices"], { caller: { kind: "plugin", pluginId: "luna" } });
     const remote = conn("remote", ["devices"]), host = conn("plugin-host", ["devices"], { caller: { kind: "plugin", pluginId: "luna" }, hostProcess: { hostProcess: "own", pluginId: "luna" } as never });
     const step = { type: "pairing_changed", ts: 3, pairingId: "pair_1", step: "words", peerName: "Pixel", words };
-    sendCoreEvent({ connections: () => [app.c, cli.c, layer.c, remote.c, host.c], pluginCapabilities: () => ["devices.manage"] }, step);
+    sendCoreEvent({ connections: () => [app.c, cli.c, botCli.c, agentCli.c, layer.c, remote.c, host.c], pluginCapabilities: () => ["devices.manage"] }, step);
     const sent = (x: { got: unknown[] }) => (x.got[0] as [string, Record<string, unknown>] | undefined)?.[1];
     expect(sent(cli)).toEqual(step);
-    for (const other of [app, layer]) {
+    for (const other of [app, layer, botCli, agentCli]) {
       expect(sent(other)).toEqual({ type: "pairing_changed", ts: 3, pairingId: "pair_1", step: "words", peerName: "Pixel" });
       expect(JSON.stringify(other.got)).not.toContain("maple");
     }

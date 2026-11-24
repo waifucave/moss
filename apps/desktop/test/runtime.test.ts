@@ -988,6 +988,23 @@ describe("a plugin's sealed frames: its own cards only (the core's `ownedBy`: it
     for (const id of ["card_own", "card_other", "card_none", "card_named"]) expect(s.rt.sealedFrameOf(docFrame, mount, id, "button:allow_once")).toMatch(/^moss-sealed:\/\/card\//);
   });
 
+  test("the add-a-device card's four words stay in main's sealed store: a part that places it (approvals.all, the widest) is given a frame url and nothing of the card's text", () => {
+    const { s, store, docFrame, mount } = placed(false, true);
+    const words = "maple orbit velvet canyon";
+    store.fromCore({
+      ...card("card_add", undefined, undefined), kind: "change", change: "device-add",
+      fields: { title: { type: "text", text: "Add this device?" }, detail: { type: "list", items: ["It calls itself \u201cPixel\u201d and says it is a phone.", `Check that these four words are the same on the other device's screen: ${words}`, "It joins Studio."] } },
+    });
+    const got: unknown[] = [];
+    for (const el of ["field:detail", "field:title", "button:allow_once"]) got.push(s.rt.sealedFrameOf(docFrame, mount, "card_add", el));
+    for (const g of got) expect(String(g)).toMatch(/^moss-sealed:\/\/card\/card_add\//);
+    // What the part was handed, and everything main sent to any window while it asked: no word of the card.
+    const seen = JSON.stringify([got, s.sent]);
+    for (const w of words.split(" ")) expect(seen).not.toContain(w);
+    // The text is main's: the store has it, to draw in the frame's own page (a url single-use and bound to the frame), and no call of the part's reads it.
+    expect(JSON.stringify(store.get("card_add"))).toContain(words);
+  });
+
   test("approvals.all without approvals places nothing, and with both it places any card", () => {
     const plugins = readUiPlugins([folderView(join(FIXTURES, "fixture-card"))] as never).map((p) => ({ ...p, capabilities: new Set(["approvals.all"]) }));
     const s = setup(plugins);

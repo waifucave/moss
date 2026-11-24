@@ -420,8 +420,8 @@ export const LinkChangedEvent = coreEvent("link_changed", { link: LinkView });
 export const PairingChangedEvent = coreEvent("pairing_changed", {
   pairingId: utf16(128, 1),
   step: z.enum(["waiting", "words", "card", "done", "failed", "expired"]),
-  /** The four words to compare. Only the user's own terminal (role `cli`) ever gets them: an app or a plugin's page sees the
-   *  step only, and the words are drawn by the engine in the add card's sealed frame (`TERMINAL_ONLY_FIELDS`, §5.5). */
+  /** The four words to compare. Only the person's own terminal (a `cli` connection that calls as the user, never a CLI a bot's or
+   *  an agent's session runs) ever gets them: an app or a plugin's page sees the step only, and the words are drawn by the engine in the add card's sealed frame (`TERMINAL_ONLY_FIELDS`, §5.5). */
   words: z.array(utf16(32)).length(4).optional(),
   /** The name the other device gave itself, from the step where it is known (shown as text, never trusted). */
   peerName: utf16(63).optional(),
@@ -455,7 +455,7 @@ export const DEVICES_EVENTS = {
   }),
   pairingChanged: defineEvent({
     // `layer`: a plugin's part that holds `devices.manage` (Settings' Devices page) hears the steps of the pairings on this
-    // computer and the other device's name, never the four words: those go to the user's own terminal alone, and everyone else
+    // computer and the other device's name, never the four words: those go to the person's own terminal alone (a CLI that calls as the user, not one a session runs), and everyone else
     // compares them on the engine's sealed add card. No other plugin hears it (`capability`).
     type: "pairing_changed", owner: "H", roles: ["app", "cli", "layer"], capability: "devices.manage", schema: PairingChangedEvent,
     fixture: { type: "pairing_changed", ts: 1781270000000, pairingId: "pair_1", step: "words", words: ["maple", "orbit", "velvet", "canyon"] },

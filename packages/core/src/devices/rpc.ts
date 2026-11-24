@@ -22,7 +22,7 @@ import { renameRemote } from "../links/relay";
 import { answerKeyOf, type DeviceRecord } from "../contracts/device-registry";
 import type { LinkTransport } from "../contracts/link-transport";
 import type { AccountClient } from "../identity/account";
-import type { PairingService, PairingState } from "../links/pairing";
+import { cleanName, type PairingService, type PairingState } from "../links/pairing";
 import { type RevokeOptions, revokeDevice } from "./account-devices";
 import type { FileDeviceRegistry } from "./registry";
 import { ANSWER_KEY_ROTATE_MAX_SKEW_MS, type AnswerKeyRotationRefusal, rotateOwnAnswerKey } from "../approvals/answer-key-rotation";
@@ -75,12 +75,12 @@ export const UNNAMED_CARD = "card:unnamed";
 /** Opens a sealed card and hands back its id with the decision still to come. */
 /** Opens a card. `checked` is the children the answer checked, for a card with a checkbox per child (the group's
  *  cards: the computers to invite, the keys to keep). */
-export type CardOpener = (req: ApprovalRequest) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]> }>;
+export type CardOpener = (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<{ card?: string; allowed: Promise<boolean>; checked?: Promise<readonly string[]> }>;
 
 /** The opener over lane C's broker: the card's id comes from its `requested` event, the checked children from its
  *  `resolved` one. */
 export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch">): CardOpener {
-  return (req) => new Promise((resolve) => {
+  return (req, opts) => new Promise((resolve) => {
     let settled = false;
     let cardId: string | undefined;
     let gotChecked: (c: readonly string[]) => void = () => undefined;
@@ -95,6 +95,7 @@ export function brokerCardOpener(broker: Pick<ApprovalBroker, "request" | "watch
     });
     let allowed: Promise<boolean> = Promise.resolve(false);
     allowed = broker.request(req, {
+      ...(opts?.signal ? { signal: opts.signal } : {}),
       onCard: (id) => {
         if (settled) return;
         settled = true;
@@ -166,6 +167,8 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
   // raised once per pairing, and what a card says is the engine's, never a caller's.
   const cardDriven = new Set<string>();
   const asked = new Map<string, Promise<ChangeResult>>();
+  /** Each pairing's card is withdrawn when the pairing ends any other way (cancelled, failed, a wrong guess): a yes on it later adds nothing. */
+  const withdraw = new Map<string, AbortController>();
   const askToAdd = (pairingId: string): Promise<ChangeResult> => {
     const had = asked.get(pairingId);
     if (had) return had;
@@ -173,11 +176,17 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
       const state = pairing.get(pairingId);
       const real = state?.view.words;
       if (!state || real === undefined || state.status !== "words") throw new MethodError(ERR.INVALID_REQUEST, "the pairing isn't showing its words");
-      const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
-      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
+      // What the other device calls itself is its own word, checked when it was read (`cleanName`) and checked again here; the card says
+      // so in the engine's own sentence, with the name quoted, so it never reads as the engine's words.
+      const peer = state.peer;
+      if (!peer || !cleanName(peer.name) || typeof peer.kind !== "string") throw new MethodError(ERR.INVALID_REQUEST, "the other device's name can't be shown");
+      watchPairings();
+      const ctl = new AbortController();
+      withdraw.set(pairingId, ctl);
+      const opened = await deps.openCard(changeCard("device-add", "Add this device?", `It calls itself \u201c${peer.name}\u201d and says it is a ${peer.kind}.`, [
         `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
         `It joins ${registry.self().name}.`,
-      ]));
+      ]), { signal: ctl.signal });
       if (!opened.card) {
         // Answered before its id was known: still a card's answer, never the user's terminal.
         if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
@@ -189,26 +198,41 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
     };
     const once = run();
     asked.set(pairingId, once);
-    // A failed ask is not kept: the pairing is over or never reached its words.
-    once.catch(() => asked.delete(pairingId));
+    // A failed ask is not kept. The pairing is over, or it never reached its words, or its card could not be built: then it is
+    // ended here, at once and with a reason, never left at the words step with no card to press.
+    once.catch(() => {
+      asked.delete(pairingId);
+      pairing.abort(pairingId, "the card to add the device couldn't be shown");
+      withdraw.delete(pairingId);
+    });
     return once;
   };
-  /** Takes a pairing the engine raises the add card for. A joiner's words step is reached inside `join` itself, before its
-   *  caller has the id, so the step is looked at once here too. The pairing service is watched from the first one taken. */
+  /** The pairing service is watched from the first pairing taken (or asked for): a card is withdrawn when its pairing ends, and a
+   *  pairing the engine drives is asked for its card at its words step. */
   let watching = false;
+  const watchPairings = (): void => {
+    if (watching) return;
+    watching = true;
+    pairing.watch((c) => {
+      if (c.type === "removed") {
+        withdraw.get(c.pairingId)?.abort();
+        withdraw.delete(c.pairingId);
+        cardDriven.delete(c.pairingId);
+        asked.delete(c.pairingId);
+        return;
+      }
+      const pid = c.pairing.view.pairingId;
+      if (c.pairing.status === "failed" || c.pairing.status === "cancelled") {
+        withdraw.get(pid)?.abort();
+        return;
+      }
+      if (c.pairing.status === "words" && cardDriven.has(pid)) void askToAdd(pid).catch(() => undefined);
+    });
+  };
+  /** Takes a pairing the engine raises the add card for. A joiner's words step is reached inside `join` itself, before its
+   *  caller has the id, so the step is looked at once here too. */
   const drive = (id: string): void => {
-    if (!watching) {
-      watching = true;
-      pairing.watch((c) => {
-        if (c.type === "removed") {
-          cardDriven.delete(c.pairingId);
-          asked.delete(c.pairingId);
-          return;
-        }
-        const pid = c.pairing.view.pairingId;
-        if (c.pairing.status === "words" && cardDriven.has(pid)) void askToAdd(pid).catch(() => undefined);
-      });
-    }
+    watchPairings();
     cardDriven.add(id);
     if (pairing.get(id)?.status === "words") void askToAdd(id).catch(() => undefined);
   };
@@ -282,11 +306,14 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
         return { applied: true };
       }
-      // Words that aren't the pairing's fail it at once, with no card. A caller that has them (nothing a page can) gets the card
-      // the engine would have raised anyway.
+      // Words that aren't the pairing's end it at once, and withdraw its card: one guess per pairing, so this is no oracle on the words
+      // (the card is already up by itself, so a wrong guess has to cost the pairing, not only itself). A caller that has the right ones
+      // (nothing a page can) gets the card the engine raised, never a second.
+      if (state.status !== "words" && state.status !== "confirmed") throw new MethodError(ERR.INVALID_REQUEST, "the pairing is over");
       const real = state.view.words;
       if (real === undefined || p.words.length !== 4 || p.words.some((w, i) => w.toLowerCase() !== real[i])) {
-        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(false) });
+        pairing.abort(p.pairingId, "the words don't match");
+        withdraw.get(p.pairingId)?.abort();
         throw new MethodError(ERR.INVALID_REQUEST, "the words don't match: pair again");
       }
       return askToAdd(p.pairingId);

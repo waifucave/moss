@@ -57,6 +57,12 @@
       "warns": true
     },
     {
+      "name": "devices.relay",
+      "lets": "On the user's own press in its frame: read which relay the devices connect through, and choose n0's public relays, a relay server of its own choosing (an https address) or none; the relay it chooses sees which of the user's devices are online and from which addresses, which pairs talk and how much, can report a wrong public address and can drop traffic, though never what the devices say",
+      "ok": "chooses which relay your devices connect through when you press its controls: a relay sees which of your devices are online and from where, which of them talk to each other and how much, and can cut them off, but not read what they say",
+      "warns": true
+    },
+    {
       "name": "approvals",
       "lets": "Hear which of the cards its own tools' calls raised are pending (in any session or bot's turn), never their text, and place their sealed frames",
       "ok": "shows approval cards for its own tools",

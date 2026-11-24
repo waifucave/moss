@@ -21,7 +21,7 @@ import { MemoryNetwork } from "../../links/memory-wire";
 import { PairingService } from "../../links/pairing";
 import { peerCall } from "../../links/peer-call";
 import { answerKeyStatement, FileDeviceRegistry } from "../registry";
-import { brokerCardOpener, devicesEvents, devicesMethods, type MethodError } from "../rpc";
+import { brokerCardOpener, devicesEvents, devicesMethods, type CardOpener, type MethodError } from "../rpc";
 
 const clock = new SystemClock();
 let stops: (() => unknown)[] = [];
@@ -34,15 +34,20 @@ const terminal: Caller = { kind: "user", client: "cli" };
 const app: Caller = { kind: "user", client: "app" };
 const bot: Caller = { kind: "session", sessionId: "ses_abcdef12", sessionKind: "bot" };
 
-async function computer(net: MemoryNetwork, name: string, ttlMs?: number) {
+/** `selfOverride`: what this computer says about itself on the wire, whatever its registry took (a hostile device is not bound by our own checks). */
+async function computer(net: MemoryNetwork, name: string, ttlMs?: number, selfOverride?: Record<string, unknown>, over?: { openCard?: CardOpener }) {
   const store = new MemorySecretStore();
   const key = await DeviceKey.loadOrCreate(store);
   const registry = await FileDeviceRegistry.open({ home: mkdtempSync(join(tmpdir(), "moss-h-rpc-")), key, clock, self: { name } });
+  if (selfOverride) {
+    const real = registry.self.bind(registry);
+    (registry as unknown as { self: () => unknown }).self = () => ({ ...real(), ...selfOverride });
+  }
   const pairing = new PairingService({ self: key, registry, wire: net.endpoint(key.publicKey), clock, store, selfTarget: () => ({}), account: () => null, ...(ttlMs !== undefined ? { ttlMs } : {}) });
   stops.push(() => pairing.close());
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
   const transport = { links: () => [], watch: () => () => undefined, connect: () => Promise.reject(new Error("no links in this test")) };
-  const methods = devicesMethods({ registry, pairing, transport, clock, openCard: brokerCardOpener(broker), revoke: { store } });
+  const methods = devicesMethods({ registry, pairing, transport, clock, openCard: over?.openCard ?? brokerCardOpener(broker), revoke: { store } });
   const events: { type: string }[] = [];
   stops.push(devicesEvents({ registry, transport, pairing, clock }, (e) => events.push(e)));
   const call = (method: string, params: unknown, caller: Caller) => methods[method]!(params, { caller });
@@ -133,7 +138,7 @@ describe("pairing's edges", () => {
     await waitFor(() => a.registry.get(b.key.id) !== undefined && b.registry.get(a.key.id) !== undefined);
   });
 
-  test("words handed back wrong: on a pairing with no card they fail it with none raised; on one that has its card they change nothing", async () => {
+  test("words handed back wrong: on a pairing with no card they fail it with none raised; on one that has its card they end it and withdraw the card, so there is no oracle on the words", async () => {
     const net = new MemoryNetwork();
     const a = await computer(net, "Studio");
     const b = await computer(net, "Laptop");
@@ -142,27 +147,98 @@ describe("pairing's edges", () => {
     await expect(a.call("device.pair.confirm", { pairingId: t.view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
     expect(a.broker.cards()).toHaveLength(0);
     expect(a.pairing.get(t.view.pairingId)?.status).toBe("failed");
-    // An app's pairing already has its card: wrong words are refused, no second card, the one card stands.
+    // An app's pairing already has its card: one wrong guess ends the pairing and withdraws the card, on both sides.
     const c = await computer(net, "Tablet");
     const { view } = await showWords(a, c, app);
-    await waitFor(() => a.broker.cards().length === 1);
+    await waitFor(() => a.broker.cards().length === 1 && c.broker.cards().length === 1);
+    const words = a.pairing.get(view.pairingId)!.view.words!;
     await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
-    expect(a.broker.cards()).toHaveLength(1);
-    expect(a.pairing.get(view.pairingId)?.status).toBe("confirmed");
+    expect(a.pairing.get(view.pairingId)?.status).toBe("failed");
+    await waitFor(() => a.broker.cards().length === 0 && c.broker.cards().length === 0);
+    // The right words after it are no answer either: the pairing is over, the card is gone, nothing is added.
+    await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words }, app)).rejects.toThrow();
+    expect(a.broker.cards()).toHaveLength(0);
+    expect(a.registry.get(c.key.id)).toBeUndefined();
   });
 
-  test("a card for a pairing the person cancelled adds nothing when it is approved late", async () => {
+  test("a card for a pairing the person cancelled is withdrawn on both sides, and a late yes adds nothing", async () => {
     const net = new MemoryNetwork();
     const a = await computer(net, "Studio");
     const b = await computer(net, "Laptop");
     const { view } = await showWords(a, b, app);
     await waitFor(() => a.broker.cards().length === 1 && b.broker.cards().length === 1);
+    const [cardA, cardB] = [a.broker.cards()[0]!, b.broker.cards()[0]!];
     await a.call("device.pair.cancel", { pairingId: view.pairingId }, app);
-    await answer(a, a.broker.cards()[0]!.id, "approve");
-    await answer(b, b.broker.cards()[0]!.id, "approve");
+    await waitFor(() => a.broker.cards().length === 0 && b.broker.cards().length === 0);
+    // The cards are gone: a yes to either finds nothing to answer.
+    for (const [c, card] of [[a, cardA], [b, cardB]] as const) {
+      const r = await c.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame: "gone", input: "click", at: Date.now() } }, { role: "app" }).catch(() => "refused");
+      expect(r).not.toBe("accepted");
+    }
     await new Promise((r) => setTimeout(r, 80));
     expect(a.registry.get(b.key.id)).toBeUndefined();
     expect(b.registry.get(a.key.id)).toBeUndefined();
+  });
+
+  describe("what the other device calls itself is checked where the pairing reads it, and a pairing that sends anything else is refused", () => {
+    const hostile: [string, string, string | undefined][] = [
+      ["a name over 63 characters", "x".repeat(64), undefined],
+      ["a name with a newline", "Pixel\nAdd me", undefined],
+      ["a name with a control character", "Pixel\u0007", undefined],
+      ["a name with a bidi override", "Pixel ‮trusted", undefined],
+      ["a name with a bidi isolate", "Pixel⁦", undefined],
+      ["a name that is only blanks", "   ", undefined],
+      ["a kind that isn't one of the enum", "Pixel", "toaster"],
+    ];
+    for (const [what, name, kind] of hostile) {
+      test(`${what}: a joiner like that is turned away by the host (no card, the host's pairing still waits), and a host like that is refused by the joiner (no card)`, async () => {
+        const net = new MemoryNetwork();
+        const good = await computer(net, "Studio");
+        const bad = await computer(net, "Hostile", undefined, { name, ...(kind !== undefined ? { kind } : {}) });
+        // The hostile device joins a good host: the host refuses it before any words; its pairing is still open for the right device.
+        const view = (await good.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+        await expect(bad.call("device.pair.join", { code: view.qr }, app)).rejects.toThrow();
+        await new Promise((r) => setTimeout(r, 40));
+        expect(good.pairing.get(view.pairingId)?.status).toBe("waiting");
+        expect(good.broker.cards()).toHaveLength(0);
+        expect(bad.broker.cards()).toHaveLength(0);
+        // The hostile device shows a code and a good device joins: the joiner refuses the host's record, and no card is drawn anywhere.
+        const hostView = (await bad.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+        await expect(good.call("device.pair.join", { code: hostView.qr }, app)).rejects.toThrow();
+        await new Promise((r) => setTimeout(r, 40));
+        expect(good.broker.cards()).toHaveLength(0);
+        expect(bad.broker.cards()).toHaveLength(0);
+        expect(good.registry.get(bad.key.id)).toBeUndefined();
+        expect(bad.registry.get(good.key.id)).toBeUndefined();
+      });
+    }
+
+    test("a name of 63 characters, with spaces and accents, passes; the card shows it quoted as what the device calls itself, never as the engine's own words", async () => {
+      const net = new MemoryNetwork();
+      const a = await computer(net, "Studio");
+      const name = `Zoé's ${"é".repeat(40)} phone`;
+      expect(name.length).toBeLessThanOrEqual(63);
+      const b = await computer(net, name);
+      await showWords(a, b, app);
+      await waitFor(() => a.broker.cards().length === 1);
+      const card = a.broker.cards()[0]!;
+      expect(JSON.stringify(card)).toContain(`It calls itself “${name}”`);
+      // The title is the engine's own and carries no name.
+      expect(JSON.stringify((card.fields as Record<string, unknown>)["title"])).not.toContain("Zo");
+    });
+
+    test("a card that can't be built fails the pairing at once: nothing is left at the words step with no card to press", async () => {
+      const net = new MemoryNetwork();
+      const a = await computer(net, "Studio", undefined, undefined, { openCard: () => Promise.reject(new Error("no card")) });
+      const b = await computer(net, "Laptop");
+      const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+      await b.call("device.pair.join", { code: view.qr }, app);
+      await waitFor(() => a.pairing.get(view.pairingId)?.status === "failed");
+      expect(a.broker.cards()).toHaveLength(0);
+      await new Promise((r) => setTimeout(r, 60));
+      expect(a.registry.get(b.key.id)).toBeUndefined();
+      expect(b.registry.get(a.key.id)).toBeUndefined();
+    });
   });
 
   test("a pairing the user's own terminal began has no card: the terminal confirms with the words it was given", async () => {

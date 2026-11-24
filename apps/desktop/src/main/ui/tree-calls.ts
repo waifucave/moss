@@ -41,6 +41,7 @@ export const PLUGINS_MANAGE = "plugins.manage";
 export const TOOLS_PERMISSIONS = "tools.permissions";
 export const ACCOUNT_READ = "account.read";
 export const DEVICES_MANAGE = "devices.manage";
+export const DEVICES_RELAY = "devices.relay";
 export const COMMANDS_RUN = "commands.run";
 export const USER_SEND = "user.send";
 export const SESSIONS_START = "sessions.start";
@@ -173,7 +174,7 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   ...Object.fromEntries(PLUGINS_ACTS.map((m) => [m, press(PLUGINS_MANAGE)])),
   // Needs a card (spec §5.5: sensitive changes are a sealed card from every layer).
   "computer.setLevel": { disposition: "card" },
-  // The devices page: showing or entering a pairing code, cancelling, removing a device and choosing the relay are the user's own
+  // The devices page: showing or entering a pairing code, cancelling, removing a device and are the user's own
   // press in the page's frame (`devices.manage`). Adding a device is the engine's sealed card, raised by the engine itself the moment a
   // pairing reaches its four words (it draws them; a page never has them), and removing one is the card `device.revoke` raises: nothing
   // here applies either. `device.pair.confirm` is not this door's at all (`NEVER`): there is nothing for a page to confirm. The window
@@ -183,8 +184,11 @@ export const TREE_CALLS: Readonly<Record<string, TreeCall>> = {
   "device.pair.cancel": press(DEVICES_MANAGE),
   "device.revoke": press(DEVICES_MANAGE),
   // Which relay the links use (spec §8.3): reading it, and the person's own choice of n0's relays, none, or a server of their own.
-  "device.relay.get": read(DEVICES_MANAGE),
-  "device.relay.set": press(DEVICES_MANAGE),
+  // Its own capability, apart from `devices.manage`: a relay of someone's choosing learns which devices are online and from where, and can
+  // drop traffic, and the plugin's OK card says so (`devices.relay`). Nothing in the engine can tell a plugin's frame from the user's own
+  // (main's connection calls as the user), so this door is the gate.
+  "device.relay.get": read(DEVICES_RELAY),
+  "device.relay.set": press(DEVICES_RELAY),
   "main.set": { disposition: "card" },
   // Not served by the daemon.
   "models.catalog": { disposition: "unserved" },
@@ -634,17 +638,14 @@ export async function routeCall(r: TreeRoute): Promise<unknown> {
   const params = r.params !== null && typeof r.params === "object" && !Array.isArray(r.params) && Object.keys(r.params).some((k) => CALLER_KEYS.has(k))
     ? Object.fromEntries(Object.entries(r.params).filter(([k]) => !CALLER_KEYS.has(k)))
     : r.params;
+  const got = await r.request(r.method, logsCapped(r.method, params));
   // The pairing's four words are the engine's sealed card's, never a page's: a result that carries them (the engine gives them to the
   // user's own terminal only) is cut here as well.
-  if (r.method.startsWith("device.pair.")) {
-    const got = await r.request(r.method, params);
-    if (got !== null && typeof got === "object" && !Array.isArray(got)) {
-      const { words: _words, ...rest } = got as Record<string, unknown>;
-      return rest;
-    }
-    return got;
+  if (r.method.startsWith("device.pair.") && got !== null && typeof got === "object" && !Array.isArray(got)) {
+    const { words: _words, ...rest } = got as Record<string, unknown>;
+    return rest;
   }
-  return r.request(r.method, logsCapped(r.method, params));
+  return got;
 }
 
 /** The most log lines a part asks for at once. */

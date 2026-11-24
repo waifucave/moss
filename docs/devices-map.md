@@ -51,15 +51,24 @@ computers. "Live check" means only a person with two machines can show it.
 6. Live check: with the relay page set to n0's relays, a pair across two networks connects; set to none, it connects only directly.
 
 ## For the reviewer: who holds `devices.manage`, and what `pairing_changed` carries
-- Held by one bundled plugin: `plugins/moss/plugins/settings/moss.json` (the Settings part). No other bundled plugin asks for it.
+- Held by one bundled plugin: `plugins/moss/plugins/settings/moss.json` (the Settings part), which also holds `devices.relay`. No other bundled plugin asks for either.
 - A third-party plugin may ask for it (`packages/plugin-sdk/src/catalogs/capabilities.ts`, `warns: true`). Its OK card says it pairs and
   removes your devices when you press its controls, and sees the step of a pairing and the other device's name; never the four words.
-- What a holder can do: call `device.pair.begin/join/cancel`, `device.revoke` and `device.relay.get/set` through the door (a press
-  each, except `get`), and hear `pairing_changed` (the step and the other device's name). It cannot confirm: `device.pair.confirm` is not
+- What a holder can do: call `device.pair.begin/join/cancel` and `device.revoke` through the door (a press each), and hear `pairing_changed` (the step and the other device's name). It cannot confirm: `device.pair.confirm` is not
   the door's call at all (`NEVER` in `tree-calls.ts`). It cannot add or remove a device: the engine raises the sealed card for each,
   the ADD card is raised by the engine itself when the pairing reaches its words step, and it draws the engine's four words and the
   computer it joins. The words go only to role `cli` (the user's terminal, `TERMINAL_ONLY_FIELDS` in `core-events.ts`), are cut from an
   app caller's join result, and are cut again at main's door.
+- The relay is its own capability, `devices.relay` (`device.relay.get` a read, `device.relay.set` a press, both refused at main's door without
+  it; `tree-calls.ts`). A relay of someone's choosing sees which devices are online and from where, which pairs talk and how much, can
+  report a wrong public address and can drop traffic (never what they say), so its OK card says so, and `devices.manage` does not open it.
+  The engine cannot tell a plugin's frame from the person's own press (main's connection calls as the user): the door is the gate.
+- The four words go only to a `cli` connection whose caller is the user (`isUsersTerminal` in `core-events.ts`): a CLI that a bot's or an
+  agent's session runs is role `cli` too, but calls as that session, and hears the step without them.
+- What the other device calls itself is checked where the pairing reads it (`cleanName` in `links/pairing.ts`: 1 to 63 UTF-16 units, no
+  control character, line break or bidi control; its kind and os from the enums); a pairing that sends otherwise is refused. The add card says
+  "It calls itself “<name>” and says it is a <kind>" with a fixed title, and a card that cannot be built fails the pairing at once.
+- A wrong guess at the words, from any app connection, ends the pairing and withdraws its card (one guess per pairing, so no oracle).
 - The code, its QR and its expiry reach the page that began the pairing: showing a code is what the page is for.
 - Scope, as it is: a holder hears `pairing_changed` (the step, the name) for ANY pairing on this computer while it lasts, not only one
   begun in its own frame. The engine cannot tell which part began one: the door calls it as the user over the app's connection. Scoping it

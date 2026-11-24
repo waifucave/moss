@@ -59,6 +59,7 @@ const OK_WORDS: Record<string, string> = {
   audio: "Can hear your microphone",
   "devices.read": "Sees your devices",
   "devices.manage": "Pairs and removes your devices when you press its controls (each still asks on MOSS's own card)",
+  "devices.relay": "Chooses the relay your devices connect through when you press its controls (a relay sees which devices are online, which talk and how much)",
 };
 
 export function okWords(detail: Pick<PluginDetail, "capabilities" | "networkHosts">): string[] {
