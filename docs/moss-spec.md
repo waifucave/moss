@@ -95,7 +95,7 @@ The engine is the daemon: one `moss-core` process per home, shared by both apps.
 ┌───────────────────────────── one device ─────────────────────────────┐
 │                                                                      │
 │  MOSS (bots)       MOSS Code (coding agents)        other clients    │
-│  fixed window      window made of plugin parts      CLI · phones · web │
+│  fixed window      window made of plugin parts     CLI · phone · web │
 │       │                    │                              │          │
 │       │         background host (no window)               │          │
 │       │         island · pill · on-screen parts           │          │
