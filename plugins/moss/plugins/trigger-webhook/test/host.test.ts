@@ -45,4 +45,17 @@ describe("the webhook trigger", () => {
   test("its unseen-character rule is the protocol's, character for character", () => {
     expect([UNSHOWN_CHAR.source, UNSHOWN_CHAR.flags]).toEqual([PROTOCOL_UNSHOWN.source, PROTOCOL_UNSHOWN.flags]);
   });
+
+  test("the cut is made on the escaped text: a body of control characters stays within the limit, cut on an escape's edge", () => {
+    const body = "\u0001".repeat(WEBHOOK_TEXT_MAX_CHARS);
+    const text = untrusted("a webhook", body, undefined, "=====0000000000000000=====");
+    const inside = text.split("\n=====0000000000000000=====\n")[1]!.split("\n=====0000000000000000=====")[0]!;
+    expect(inside.length).toBeLessThanOrEqual(WEBHOOK_TEXT_MAX_CHARS);
+    expect(inside).toMatch(/^(\\u\{1\})+$/);
+    const kept = inside.length / "\\u{1}".length;
+    expect(text).toContain(`(The rest, ${WEBHOOK_TEXT_MAX_CHARS - kept} more characters, was cut.)`);
+    // A plain body at the limit is whole; one past it is cut by the one character.
+    expect(untrusted("x", "a".repeat(WEBHOOK_TEXT_MAX_CHARS))).not.toContain("was cut");
+    expect(untrusted("x", "a".repeat(WEBHOOK_TEXT_MAX_CHARS + 1))).toContain("(The rest, 1 more characters, was cut.)");
+  });
 });
