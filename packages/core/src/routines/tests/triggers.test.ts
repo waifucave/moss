@@ -36,11 +36,11 @@ async function installed(children: string[], o: { asShipped?: boolean } = {}) {
 }
 
 describe("the bundled triggers", () => {
-  test("as this build ships them: the webhook trigger and the forwarder are parked, so no webhook trigger type and no ingress", async () => {
+  test("as this build ships them: the webhook trigger and the forwarder run, so the webhook trigger type and the forwarder's ingress are there", async () => {
     const { registry } = await installed(["trigger-schedule", "trigger-webhook", "forwarder"], { asShipped: true });
-    expect(registry.entries("triggers").map((c) => c.entryId)).toEqual(["schedule"]);
-    expect(registry.entries("webhook.ingress")).toEqual([]);
-    expect(triggerOwnersFrom(registry)("webhook")).toEqual([]);
+    expect(registry.entries("triggers").map((c) => c.entryId)).toEqual(["schedule", "webhook"]);
+    expect(registry.entries("webhook.ingress").map((c) => [c.pluginId, c.entryId])).toEqual([["moss/forwarder", "waifucave"]]);
+    expect(triggerOwnersFrom(registry)("webhook")).toEqual(["moss/trigger-webhook"]);
   });
 
   test("both validate as children of moss and their triggers come up", async () => {
