@@ -695,8 +695,12 @@ export function createMossServer(deps: MossServerDeps): MossServer {
     // another process's.
     opened(socket) {
       if (!pipePeers) { if (!deps.probe) handleOf(socket); return false; }
-      if (pipePeers.opened(socket) !== null && !deps.probe) handleOf(socket);
-      return pipePeers.isEarly(socket);
+      const pid = pipePeers.opened(socket);
+      if (pid !== null && !deps.probe) handleOf(socket);
+      // A connection whose client the handle scan could not name (two arrived before either was seen) is closed, as its comment on
+      // WindowsPipePeers says ("the client connects again"): left open, its server end stays unowned and makes every later connection
+      // ambiguous too, so no app could ever pair (the setup unit: -32020 on every attempt, 214 times).
+      return pipePeers.isEarly(socket) || (pid === null && !deps.probe);
     },
 
     lockedDown() { pipePeers?.lockedDown(); },
