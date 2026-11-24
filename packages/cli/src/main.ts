@@ -1536,6 +1536,24 @@ async function stopRunningDaemon(spec: LoginSpec): Promise<string> {
  *  installer invokes the installed binary, and passes the app's path with `--app` so the daemon can
  *  start the app (spec §3.1). `disable` turns off only the login trigger: the running pair keeps
  *  running and either side can still start the other. `remove` is for an uninstaller. */
+/** `moss account|session|bot delete` (delete-cli.ts): typed DELETE in the person's terminal, then the engine's method. */
+async function runPersonDelete(argv: readonly string[]): Promise<number> {
+  const { runDelete } = await import("./delete-cli");
+  if (!(await endpointAnswers(socketPath()))) { console.error("MOSS isn't running on this computer: start it, then try again"); return 1; }
+  const c = await connect("cli-delete");
+  const lines = (async function* () { for await (const l of console) yield l; })();
+  try {
+    return await runDelete(argv, {
+      request: (method, params) => c.request(method, params),
+      interactive: process.stdin.isTTY === true,
+      readLine: async () => { const n = await lines.next(); return n.done ? null : String(n.value); },
+      out: (l) => console.log(l), err: (l) => console.error(l),
+    });
+  } finally {
+    c.close();
+  }
+}
+
 async function runAutostartCommand(sub: string | undefined, rest: readonly string[] = []): Promise<void> {
   // A test-marked build (scripts/test-build.ts) never registers a login item or starts anything through the OS.
   if (typeof __MOSS_TEST_BUILD__ === "string") { console.error(TEST_BUILD_NO_OS_START); process.exitCode = 1; return; }
@@ -3802,7 +3820,14 @@ if (import.meta.main) {
     console.error(routinesUsage);
     process.exit(1);
   }
+  case "account":
+  case "session": {
+    // The deletion lane: `moss account delete`, `moss session delete <id>` (delete-cli.ts), the person's own terminal.
+    process.exit(await runPersonDelete(argv));
+    break;
+  }
   case "bot": {
+    if (process.argv[3] === "delete") process.exit(await runPersonDelete(argv));
     // usage: moss bot avatar <bot> <folder|zip|file>: the user's own model, copied into the user's folder. What a model
     // may be is the installed renderers' (`bot.avatarFormats`), said after the usage line when the daemon answers.
     const botUsage = "usage: moss bot avatar <bot id> <a folder, a .zip or a model file of a format an installed renderer draws>";
