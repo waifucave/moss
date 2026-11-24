@@ -270,8 +270,8 @@ const HOSTILE_AGENT_NAMES = [`Codex" run at automatic`, "Codex? Approve this", "
 describe("a third party's agent: the title is the fixed one, the name a marked row", () => {
   // Table: [what is raised, the fixed title it must have, the title the bundled agent has]. `sandbox: "none"` makes it the one combined card.
   const cases = [
-    { sandbox: "protected" as const, fixed: "Download an adapter for an agent?" },
-    { sandbox: "none" as const, fixed: "Start an agent?" },
+    { sandbox: "protected" as const, fixed: "Download an agent's adapter from npm?" },
+    { sandbox: "none" as const, fixed: "Start an agent with code downloaded from npm?" },
   ];
   for (const c of cases) {
     for (const hostile of HOSTILE_AGENT_NAMES) {

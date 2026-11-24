@@ -1105,7 +1105,7 @@ export class AgentManager {
       effect: "other",
       fields: {
         // The agent's name comes from a plugin or a registry entry, so it is a row of its own (a name), never a word of the engine's sentence.
-        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Download ${n}'s adapter?`, "Download an adapter for an agent?") },
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Download ${n}'s adapter?`, "Download an agent's adapter from npm?") },
         what: { type: "text", text: "The agent below doesn't speak ACP itself, so MOSS runs an adapter for it: the package named below, from npm. It is code from npm that MOSS will run on this computer to talk to the agent, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes." },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
@@ -1152,7 +1152,7 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Start ${n}?`, "Start an agent?") },
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Start ${n}?`, "Start an agent with code downloaded from npm?") },
         what: { type: "text", text: `The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [

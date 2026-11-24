@@ -217,7 +217,7 @@ export class PluginSettings {
           // The plugin's name and its setting's key are the plugin's own text: rows (the name marked as one), never words of the engine's title.
           title: { type: "text", text: settingHostTemplates(this.#o.registry.get(pluginId)?.manifest).some((t) => t.keys.includes(key))
             ? titleWithName({ kind: "plugin", record: this.#o.registry.get(pluginId) }, name, (n) => `Send ${n}'s requests somewhere else?`, "Send a plugin's requests somewhere else?")
-            : titleWithName({ kind: "plugin", record: this.#o.registry.get(pluginId) }, name, (n) => `Change what ${n} runs with?`, "Change what a plugin runs with?") },
+            : titleWithName({ kind: "plugin", record: this.#o.registry.get(pluginId) }, name, (n) => `Change what ${n} runs with?`, "Change a setting a plugin passes into the programs it runs?") },
           source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }, { label: "Setting", value: key }] },
           detail: { type: "list", items: [...moves.map((m) => `${m.from} → ${m.to}`), "The setting is written into where the plugin sends its requests or what it runs, with the keys it uses."] },
         },

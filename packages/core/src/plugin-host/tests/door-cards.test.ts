@@ -156,6 +156,18 @@ describe("a saved key never through the Plugins page", () => {
 });
 
 describe("every templated setting cards, not only a host's", () => {
+  test("a bundled plugin's setting that feeds a program it runs has its name in the title; a third party's has the specific fixed one", async () => {
+    const m = { manifest: 1, id: "runner", name: "Runner", version: "1.0.0", capabilities: ["network"], settings: { profile: { type: "string", title: "Profile", default: "default" } }, contributes: { mcpServers: { tools: { type: "stdio", command: "bin/server", env: { PROFILE: "${setting:profile}" } } } } };
+    const titles: string[] = [];
+    for (const record of [{ id: "moss/runner", source: "bundled" }, { id: "runner", source: "local" }, { id: "moss/runner", source: "index" }]) {
+      const c = cards();
+      const s = new PluginSettings({ registry: { get: (id: string) => (id === "runner" ? ({ ...record, name: "Runner", manifest: m } as never) : undefined) }, backend: memoryPluginSettings(), openCard: c.open as never });
+      await s.setByUser("runner", "profile", "work");
+      titles.push((c.asked[0]!.req.fields as { title: { text: string } }).title.text);
+    }
+    expect(titles).toEqual(["Change what Runner runs with?", "Change a setting a plugin passes into the programs it runs?", "Change a setting a plugin passes into the programs it runs?"]);
+  });
+
   // A tree with open network: a setting a stdio server's command, args or env, a hook's command or args, or an http
   // server's URL takes (the manifest's own fields: the only places the core fills `${setting:k}`), from any client, is
   // the same kind of change as a host's. An agent backend is named, never templated.
@@ -201,6 +213,8 @@ describe("every templated setting cards, not only a host's", () => {
     for (const [i, [key, from, to]] of wants.entries()) {
       expect(await s.setByUser("runner", key, to)).toEqual({ applied: false, card: `card_${i + 1}` });
       expect(c.asked[i]!.req).toMatchObject({ kind: "change", change: "plugin-setting-host" });
+      // A third party's plugin: the title says what the change reaches (a host, or a program's arguments and environment), never its name.
+      expect((c.asked[i]!.req.fields as { title: { text: string } }).title.text).toBe(key === "server" ? "Send a plugin's requests somewhere else?" : "Change a setting a plugin passes into the programs it runs?");
       // The value line ("key: old → new"), or the host line for a URL's host.
       expect(JSON.stringify(c.asked[i]!.req.fields)).toMatch(new RegExp(`${from}(\\.example\\.com)? → ${to}`));
       expect(s.get("runner", key)).toBe(from);
