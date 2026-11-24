@@ -52,8 +52,15 @@ async function userSidOf(deps: PrivateFileDeps): Promise<string | undefined> {
 
 /** Locks `path` (a file or a folder that exists) to the user alone. Throws when the OS will not: a secret is never
  *  written under an ACL that anyone else's inherited entry could widen. */
+let windowsAclForTests: ((path: string) => Promise<void>) | undefined;
+/** Tests only: what locks a file to the user on Windows instead of `icacls` (one process per write), for the generated-
+ *  sequence tests, whose hundreds of writes are about order and crashes, not the ACL. The ACL itself is proven by its
+ *  own test (`icacls` read back, secrets-file-backend.test.ts) and the Windows fence e2e. */
+export function setWindowsAclForTests(fn: ((path: string) => Promise<void>) | undefined): void { windowsAclForTests = fn; }
+
 export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Promise<void> {
   if ((deps.platform ?? process.platform) !== "win32") { chmodSync(path, 0o600); return; }
+  if (windowsAclForTests !== undefined && deps.run === undefined) { await windowsAclForTests(path); return; }
   const sid = await userSidOf(deps);
   if (sid === undefined) throw new Error("no user SID for the file's ACL");
   const r = await system32(deps.run ?? bunRunner)(["icacls", path, "/inheritance:r", "/grant:r", `*${sid}:F`]);

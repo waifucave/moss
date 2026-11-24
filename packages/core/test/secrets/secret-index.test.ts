@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encryptedFileStatus, type SecretRef } from "../../src/contracts/secret-store";
 import { DEVICE_KEY_REF, DeviceKey } from "../../src/identity/device-key";
+import { setWindowsAclForTests } from "../../src/secrets/private-file";
 import { EncryptedFileValues, KeychainValues, MossSecretStore, keyFileKey, memoryVault, vaultKey, type ValueBackend } from "../../src/secrets/moss-secret-store";
 
 // The contract store's index (`credentials/index.json`: each item's owner, name, generation and time, never a value) on
@@ -108,6 +109,8 @@ for (const [label, make] of backends) {
     });
 
     test("generated sequences of writes, removals, crashes and a harmed index: every read is the last value written", async () => {
+      setWindowsAclForTests(process.platform === "win32" ? async () => {} : undefined);
+      try {
       const refs: SecretRef[] = [plugin("A"), plugin("B"), { owner: { kind: "core" }, name: "C" }, { owner: { kind: "device" }, name: "D" }];
       const keyOf = (r: SecretRef) => (r.owner.kind === "plugin" ? `plugin:${r.owner.pluginId}` : r.owner.kind) + `/${r.name}`;
       for (const seed of [1, 2, 3, 4, 5, 6]) {
@@ -117,6 +120,13 @@ for (const [label, make] of backends) {
         const values = make();
         const open = () => new MossSecretStore({ home: h, values: values(h), status: MEMORY, log: () => {} });
         const model = new Map<string, string>();
+        // A write or removal that threw (its index couldn't be read or written) may have changed the value before it threw:
+        // the values are the authority, so it reads as either the value before or the one asked for, and nothing else.
+        const settleRefused = async (r: SecretRef, allowed: (string | null)[]) => {
+          const got = (await open().get(r))?.value.reveal() ?? null;
+          expect([seed, keyOf(r), allowed.includes(got)]).toEqual([seed, keyOf(r), true]);
+          if (got === null) model.delete(keyOf(r)); else model.set(keyOf(r), got);
+        };
         for (let step = 0; step < 120; step++) {
           const ref = refs[rnd(refs.length)]!;
           const op = rnd(10);
@@ -124,9 +134,11 @@ for (const [label, make] of backends) {
           if (op <= 3) {
             const r = await open().set(ref, value).then(() => true, () => false);
             if (r) model.set(keyOf(ref), value);
+            else await settleRefused(ref, [model.get(keyOf(ref)) ?? null, value]);
           } else if (op <= 5) {
             const r = await open().delete(ref).then(() => true, () => false);
             if (r) model.delete(keyOf(ref));
+            else await settleRefused(ref, [model.get(keyOf(ref)) ?? null, null]);
           } else if (op === 6) {
             await values(h).set(keyOf(ref), value); // a crash after the value and before the index
             model.set(keyOf(ref), value);
@@ -144,6 +156,7 @@ for (const [label, make] of backends) {
           }
         }
       }
+      } finally { setWindowsAclForTests(undefined); }
     }, 60_000);
 
     test("a crash after the value was written and before the index: the value reads, and nothing is made over it", async () => {

@@ -6,7 +6,7 @@ import { encryptedFileStatus, type SecretRef } from "../../src/contracts/secret-
 import type { ApiCallContext } from "../../src/plugin-host/api/router";
 import { keysApi } from "../../src/plugin-host/api/keys";
 import { EncryptedFileValues, MossSecretStore, memoryVault, vaultKey } from "../../src/secrets/moss-secret-store";
-import { withSecretsLock, type PrivateFileStep } from "../../src/secrets/private-file";
+import { setWindowsAclForTests, withSecretsLock, type PrivateFileStep } from "../../src/secrets/private-file";
 
 // The second review of lane SE (2026-11-24): each fix with the test that failed before it.
 
@@ -105,6 +105,8 @@ describe("3: a replaced value never comes back from the copy", () => {
   });
 
   test("generated sequences of writes, rotations, removals, crashes at any step and harmed copies: a value replaced or removed by a write that returned is never read again", async () => {
+    setWindowsAclForTests(process.platform === "win32" ? async () => {} : undefined);
+    try {
     const names = ["A", "B"];
     const steps: PrivateFileStep[] = ["created", "locked", "written", "file-flushed", "renamed", "rename-flushed"];
     for (const seed of [21, 22, 23, 24, 25, 26, 27, 28, 29, 30]) {
@@ -136,5 +138,6 @@ describe("3: a replaced value never comes back from the copy", () => {
         }
       }
     }
+    } finally { setWindowsAclForTests(undefined); }
   }, 60_000);
 });

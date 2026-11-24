@@ -7,7 +7,7 @@ import { encryptedFileStatus, type SecretRef } from "../../src/contracts/secret-
 import { DeviceKey } from "../../src/identity/device-key";
 import { fileSecretsBackend } from "../../src/secrets/file-backend";
 import { EncryptedFileValues, MossSecretStore, chooseFileStore, memoryVault, vaultKey } from "../../src/secrets/moss-secret-store";
-import { setSecretStatForTests, withSecretsLock, type PrivateFileStep } from "../../src/secrets/private-file";
+import { setSecretStatForTests, setWindowsAclForTests, withSecretsLock, type PrivateFileStep } from "../../src/secrets/private-file";
 
 // The adversarial review of lane SE's first round (2026-11-24): each fix with the test that failed before it.
 
@@ -66,6 +66,8 @@ describe("blocker 1: a removed secret never comes back, from any copy", () => {
   });
 
   test("generated sequences of writes, removals, crashes and harmed copies: a key removed (and not written since) is never read again", async () => {
+    setWindowsAclForTests(process.platform === "win32" ? async () => {} : undefined);
+    try {
     const names = ["A", "B", "C"];
     const steps: PrivateFileStep[] = ["created", "locked", "written", "file-flushed", "renamed", "rename-flushed"];
     for (const seed of [11, 12, 13, 14, 15, 16, 17, 18]) {
@@ -95,6 +97,7 @@ describe("blocker 1: a removed secret never comes back, from any copy", () => {
         }
       }
     }
+    } finally { setWindowsAclForTests(undefined); }
   }, 60_000);
 });
 
