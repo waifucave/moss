@@ -17,7 +17,7 @@ import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
 import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
 import { stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
-import { profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin } from "../../src/fence/win-fenced";
+import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
 import { resolveEndpoint } from "../../src/platform/transport";
 import { currentUserSid, lockPipeDacl } from "../../src/platform/win-pipe";
@@ -473,6 +473,11 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     const whole = readFileSync(log, "utf8");
     console.log(`[e2e] background: the command's own log written by it: ${whole.includes("INJECTED")}; a name planted beside the logs: ${existsSync(planted) || whole.includes("PLANTED")}`);
     expect(whole).toContain("all-done");
+    // Rule 8c's cost: one look at what a bot's background command's watch covers (it looks every 30 s while it runs).
+    const denyRead = planFromSettings(sandboxFor()).denyRead;
+    const t0 = performance.now();
+    const watched = watchedReadDenies(denyRead);
+    console.log(`[e2e] rule 8c watch: ${denyRead.length} read denies, ${watched.length} there now, one look ${(performance.now() - t0).toFixed(1)} ms`);
     expect(whole).not.toContain("INJECTED");
     expect(whole).not.toContain("PLANTED");
     expect(existsSync(planted)).toBe(false);

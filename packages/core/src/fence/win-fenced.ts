@@ -166,6 +166,14 @@ export function existingDenies(paths: readonly string[], o: WalkOptions = {}): s
   return existingDeniesOf(paths, o).paths;
 }
 
+/** Rule 8c: what a long command's watch looks at, each time: the literal read denies that exist and the matches of
+ *  the fixed-depth globs (expanded a segment at a time, listing only the folders the pattern names, never walking a
+ *  tree). A `**` glob is not watched: it would walk a whole tree every time (none is among a bot's read denies; a
+ *  match made later under one is the per-command stamp's limit, as for a foreground command). */
+export function watchedReadDenies(denyRead: readonly string[], o: WalkOptions = {}): string[] {
+  return existingDeniesOf(denyRead.filter((p) => !win32.normalize(p).split("\\").includes("**")), o).paths;
+}
+
 export interface WalkOptions {
   exists?: (p: string) => boolean;
   list?: (dir: string) => readonly string[];
@@ -858,17 +866,23 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // so what the fence protects that appears later (a secret file made in a folder its grant opens, a new match
           // of a pattern, a place the profile grant must now exclude) would stay open to it for its whole life, and the
           // grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced set is
-          // looked at again every `fenceWatchMs`: the paths its read denies match now (a new transcript sidecar in the
-          // MOSS home included: a new conversation's), and the profile grant's exclusions; once anything is there that
-          // wasn't at its start, its caller is told (once) and ends it. Its write denies are not watched: inside its own
+          // looked at again every `fenceWatchMs`: the paths its read denies match now (`watchedReadDenies`: the literal
+          // ones and the fixed-depth globs, a new conversation's transcript sidecar in the MOSS home included) against
+          // those at its start, and the profile grant's exclusions against what the grant IN FORCE holds (the WS7
+          // reviewer: a place that appeared before it started but after the grant counts too, or the refresh would wait
+          // for it); once either has grown, its caller is told (once) and ends it. Its write denies are not watched: inside its own
           // write roots the command makes such paths itself (a `git clone` makes `.git\hooks`), and those are dealt
           // with after it, as any command's are (rule 4's belt). A foreground command has no watch: it lives at most
           // its 10-minute limit, and the next one is planned anew.
           const fenceWatch = r.onFenceGrew === undefined ? null : (() => {
-            const fencedNow = () => [...existingDeniesOf(plan.denyRead).paths, ...profileExcludes()];
-            const had = new Set([...readWalk.paths, ...profileExcludes()].map(fold));
+            const had = new Set(watchedReadDenies(plan.denyRead).map(fold));
+            const grew = (): boolean => {
+              if (watchedReadDenies(plan.denyRead).some((p) => !had.has(fold(p)))) return true;
+              const granted = grantedExcludes.get(grantKey);
+              return granted !== undefined && profileExcludes().some((p) => !granted.some((e) => fold(e) === fold(p)));
+            };
             const t = setInterval(() => {
-              if (!fencedNow().some((p) => !had.has(fold(p)))) return;
+              if (!grew()) return;
               clearInterval(t);
               try { r.onFenceGrew!(); } catch { /* the caller's own */ }
             }, deps.fenceWatchMs ?? 30_000);

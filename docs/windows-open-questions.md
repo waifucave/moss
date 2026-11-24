@@ -37,7 +37,17 @@ Keep A on a laptop you sign in to every day.
 **The choice.** A bot's commands run in a sandbox that can't read your passwords and keys. That's on purpose. It also
 means a bot can't `git push` to your GitHub, run `gh` (GitHub's command-line tool), pull a private Docker image, or
 use your SSH keys. MOSS can stand in the middle and lend your sign-in to one command at a time, without ever handing
-the bot the password or key itself. We need five answers from you.
+the bot the password or key itself. We need six answers from you, starting with the network.
+
+**First, the network.** A bot's command in the sandbox reaches no network at all, so lending it a sign-in helps only
+a command that can reach the service. Today that's only a command you approved on a card to run outside the sandbox.
+
+- Option 1: lend sign-ins only to commands you approved to run outside the sandbox. Costs you: a card for each such
+  command, as today. Risks: such a command reaches the whole network, not just the one service.
+- Option 2: let a sandboxed command reach exactly the service it was lent a sign-in for (github.com for git, a Docker
+  registry for Docker), and nothing else. Costs you: nothing more per command once the service is allowed. Risks: the
+  command can send what it reads on your computer to that one service, as you. This is more to build (a large piece).
+- Our recommendation: option 2 for git and gh to github.com, once per bot (2b below); option 1 for everything else.
 
 **2a. Which tools should be able to ask?**
 - git (push and pull to services you're signed in to).

@@ -8,7 +8,7 @@ import type { Caller, Level } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { endWindowsBackgroundOf, endWindowsBackgroundOn, escapedSandbox, stopWindowsBackground, windowsBackgroundOf, windowsShellTools, WIN_SHELL_BACKGROUND_ENGINE, WIN_SHELL_BACKGROUND_PER_SESSION } from "../../src/fence/win-shell-tools";
 import {
-  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
+  existingDenies, existingDeniesOf, grantsConflict, parsePersistentRoots, parseProfileExclusions, strayRoots, treeWithin, planFromSettings, profileExcludeCandidates, quarantineWin, shellArgv, winChainIsClean, winChildEnv, winExecArgv, watchedReadDenies, winFencedSpawner, windowsRoots, windowsShells, WIN_ARGV_LIMIT,
   type WinFencedDeps,
 } from "../../src/fence/win-fenced";
 import { formatInstallMarker, poolStateFiles, type LeaseStore } from "../../src/fence/win-sandbox";
@@ -765,4 +765,36 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
       expect([appears, grew]).toEqual([appears, appears ? 1 : 0]);
     }
   }, 30_000);
+  test.skipIf(process.platform === "win32")("rule 8c's baseline is the grant in force: a place that appeared before the command but that the grant doesn't hold yet (its refresh failed) ends it", async () => {
+    const m = machine();
+    const dir = mkdtempSync(join(tmpdir(), "ws7-8c-"));
+    const launcher = join(dir, "sleepy-srt.sh");
+    writeFileSync(launcher, "#!/bin/sh\n/bin/sleep 2\nexit 0\n");
+    chmodSync(launcher, 0o755);
+    let grants = 0;
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher, fenceWatchMs: 50, exec: (argv, o) => {
+      if (argv[1] === "profile" && argv[2] === "grant" && ++grants > 1) return Promise.resolve({ code: 24, stdout: "", stderr: "" }); // the refresh fails
+      return exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o);
+    } };
+    const s = winFencedSpawner({ fence: m.fence, deps, grantAhead: false });
+    await s.run({ ...runOf(m.home), timeoutMs: 10_000 }); // the grant, made with what exists now
+    mkdirSync(profileExcludeCandidates(m.fence).find((p) => !existsSync(p))!, { recursive: true });
+    m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
+    let grew = 0;
+    const r = await s.run({ ...runOf(m.home), timeoutMs: 10_000, onFenceGrew: () => { grew++; } });
+    expect(r).not.toMatchObject({ kind: "refused" });
+    expect(grants).toBeGreaterThan(1); // the refresh was tried, and failed
+    expect(grew).toBe(1);
+  }, 30_000);
+  test("rule 8c watches the literal denies and the fixed-depth globs, never a `**` walk", () => {
+    const tree = new Map<string, string[]>([["C:\\m", ["projects", "deep"]], ["C:\\m\\projects", ["p1"]], ["C:\\m\\projects\\p1", ["s.provider-state.jsonl"]], ["C:\\m\\deep", ["a"]], ["C:\\m\\deep\\a", ["k.pem"]]]);
+    const all = new Set(["C:\\m\\secret.txt", ...[...tree].flatMap(([d, ns]) => [d, ...ns.map((n) => `${d}\\${n}`)])]);
+    const listed: string[] = [];
+    const got = watchedReadDenies(["C:\\m\\secret.txt", "C:\\m\\absent", "C:\\m\\projects\\*\\*.provider-state.jsonl", "C:\\m\\deep\\**\\*.pem"], {
+      exists: (p) => all.has(p), list: (d) => { listed.push(d); return tree.get(d) ?? []; }, isDir: (p) => tree.has(p),
+    });
+    expect(got.sort()).toEqual(["C:\\m\\projects\\p1\\s.provider-state.jsonl", "C:\\m\\secret.txt"]);
+    expect(listed.some((d) => d.startsWith("C:\\m\\deep"))).toBe(false);
+  });
 });
