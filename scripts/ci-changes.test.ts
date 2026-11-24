@@ -70,7 +70,9 @@ describe("ci-changes", () => {
 
   test("a service's change: its tests and the typecheck", () => {
     // (and the scripts: the services' deploy tests read their wrangler configs)
-    expect(on(["services/forwarder/src/index.ts"])).toEqual(["workspaces", "typecheck", "scripts"]);
+    expect(on(["services/accounts/src/index.ts"])).toEqual(["workspaces", "typecheck", "scripts"]);
+    // the forwarder also starts the core's Linux shards: the webhook proof there starts its Worker (routines/tests/forwarder-e2e.test.ts)
+    expect(on(["services/forwarder/src/index.ts"])).toEqual(["workspaces", "typecheck", "corelinux", "scripts"]);
   });
 
   test("macOS: a merge-queue run takes three macOS jobs (its machine's, the sealed-core gate's and the one for core, cli, scripts and verify, which runs in legs); a pull request takes none (the local gate); Swift runs on demand only", () => {
