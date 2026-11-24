@@ -43,6 +43,20 @@ jobs:
         run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
       - name: Build MOSS Code
         run: xcodebuild -project MOSSPhone.xcodeproj -scheme MOSSCode -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build
+      - name: Release builds carry no launch-argument door
+        run: |
+          for S in MOSS MOSSCode; do
+            xcodebuild -project MOSSPhone.xcodeproj -scheme $S -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd-rel" CODE_SIGNING_ALLOWED=NO build
+          done
+          FOUND=0
+          for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
+            BIN="$APP/$(basename "$APP" .app)"
+            for A in -newBotTry -newBot -scenario -screen -confirmUnpair -startNew -scrollTop -scrollTo -draft -picker -focus; do
+              if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qx -e "$A"; then echo "release build of $(basename "$APP") reads launch argument $A"; FOUND=1; fi
+            done
+          done
+          [ "$FOUND" = 0 ] && echo "no launch argument in either Release build"
+          exit $FOUND
       - name: Accessibility audits at the default and the largest text size (MOSS)
         continue-on-error: true
         run: |
