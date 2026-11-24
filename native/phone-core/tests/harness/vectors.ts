@@ -11,7 +11,7 @@ const { isStrictEd25519Point } = await import(join(core, "identity/ed25519-stric
 const { deviceIdFor } = await import(join(core, "contracts/device-registry"));
 const { pairStatement, admitStatement } = await import(join(core, "links/handshake"));
 const { answerKeyStatement } = await import(join(core, "devices/registry"));
-const { canonicalJson, cardHashInput, cardAnswerSigningInput } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
+const { canonicalJson, cardHashInput, cardAnswerSigningInput, userMessageHashInput, userMessageSigningInput } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 const { createHash } = await import("node:crypto");
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
@@ -82,6 +82,8 @@ console.log(JSON.stringify({
   card: JSON.stringify(card),
   canonical: canonicalJson(card),
   cardHash: createHash("sha256").update(cardHashInput(card)).digest("hex"),
+  userMessageHash: createHash("sha256").update(userMessageHashInput({ text: "Hi \"there\"\n😀" })).digest("hex"),
+  userMessageInput: userMessageSigningInput({ session: "s_alpha", clientMessageId: "m-1", hash: "ab", sentAt: 1781270000123 }),
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
   points: Object.fromEntries(Object.entries(points).map(([k, v]) => [k, { hex: v, strict: isStrictEd25519Point(Uint8Array.from(Buffer.from(v, "hex"))) }])),
 }));

@@ -115,6 +115,18 @@ pub fn card_answer_signing_input(id: &str, hash: &str, option: &str, at: i64, ch
     format!("clover/card-answer/2\n{id}\n{hash}\n{option}\n{at}\n{}", c.join(","))
 }
 
+/// What a user message's hash covers (`userMessageHashInput`): its text and attachments, canonical. A phone's
+/// message here carries text only.
+pub fn user_message_hash(text: &str) -> String {
+    let input = canonical_json(&serde_json::json!({ "text": text, "images": [], "files": [] }));
+    bytes::hex(&sha256(input.as_bytes()))
+}
+
+/// What the sending device signs for a message another computer may relay (`userMessageSigningInput`, review N3).
+pub fn user_message_signing_input(session: &str, client_message_id: &str, hash: &str, sent_at: i64) -> String {
+    format!("clover/user-message/1\n{session}\n{client_message_id}\n{hash}\n{sent_at}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -538,6 +538,19 @@ impl Inner {
         })
     }
 
+    /// The person's message to a session: stamped with this phone's clock and signed with its answer key, as the
+    /// desktop app signs (`AnswerKey.signUserMessage`), so a computer that relays it can show the turn is the user's.
+    async fn send_message(&self, session: &str, text: &str, client_message_id: &str) -> Result<u64, CoreError> {
+        let sent_at = now_ms() as i64;
+        let hash = cards::user_message_hash(text);
+        let input = cards::user_message_signing_input(session, client_message_id, &hash, sent_at);
+        let signature = bytes::b64(&self.identity.answer.sign(input.as_bytes()));
+        let r = self
+            .call("session.send", json!({ "id": session, "message": { "text": text, "clientMessageId": client_message_id, "sentAt": sent_at, "signature": signature } }))
+            .await?;
+        r.get("seq").and_then(Value::as_u64).ok_or_else(|| CoreError::protocol("session.send answered no seq"))
+    }
+
     fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -619,6 +632,13 @@ impl Connection {
         let card: Value = serde_json::from_str(&card_json).map_err(|_| CoreError::TamperedCard { reason: "the card isn't JSON".into() })?;
         let inner = self.inner.clone();
         crate::runtime::spawn(async move { inner.answer(&card, &option, children).await }).await
+    }
+
+    /// Sends the person's message to a session (a bot's conversation or a coding session), signed by this phone.
+    /// `client_message_id` makes a resend the same message. Returns the message's place in the session.
+    pub async fn send_message(&self, session: String, text: String, client_message_id: String) -> Result<u64, CoreError> {
+        let inner = self.inner.clone();
+        crate::runtime::spawn(async move { inner.send_message(&session, &text, &client_message_id).await }).await
     }
 
     /// The OS reported a network change or a wake: re-dial now instead of waiting out the backoff.
