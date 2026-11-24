@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// What the process was asked to show, for pictures and tests of the apps (`-screen`, `-scenario`). Real runs pass none.
+/// The launch arguments are read in a Debug build only: a Release build ignores every one of them, so there is no debugging door in it.
 public struct AppLaunch {
     public enum Screen: String { case home, conversation, cards, pairScan, pairWords, sessions, session, settings, newSession }
     public var screen: Screen = .home
@@ -8,6 +9,7 @@ public struct AppLaunch {
     public init(screen: Screen = .home, scenario: FakeEngineClient.Scenario = .idle) { self.screen = screen; self.scenario = scenario }
 
     public static func fromProcess(_ args: [String] = ProcessInfo.processInfo.arguments) -> AppLaunch {
+        #if DEBUG
         var l = AppLaunch()
         if let i = args.firstIndex(of: "-screen"), i + 1 < args.count, let s = Screen(rawValue: args[i + 1]) { l.screen = s }
         if let i = args.firstIndex(of: "-scenario"), i + 1 < args.count {
@@ -36,6 +38,9 @@ public struct AppLaunch {
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
         return l
+        #else
+        return AppLaunch()
+        #endif
     }
     /// Opens the new-session sheet, fills nothing, and starts with the preselected choices (for the picture of the result).
     public var startNew = false
