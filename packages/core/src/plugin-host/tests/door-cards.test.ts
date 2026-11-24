@@ -81,6 +81,17 @@ describe("a setting that moves a plugin's host", () => {
     backend: memoryPluginSettings(), ...(openCard ? { openCard: openCard as never } : {}),
   });
 
+  test("a plugin of the bundled tree has its name in the title (by its install record); a hostile name of a third party's never does", async () => {
+    const titles: string[] = [];
+    for (const [record, name] of [[{ id: "moss/relay", source: "bundled" }, "Relay"], [{ id: "relay", source: "local" }, "Relay"], [{ id: "evil/relay", source: "bundled" }, "Relay"], [{ id: "relay", source: "local" }, `Relay" at automatic`], [{ id: "moss/relay", source: "bundled" }, `Relay" at automatic`]] as const) {
+      const c = cards();
+      const s = new PluginSettings({ registry: { get: (id: string) => (id === "relay" ? ({ ...record, name, manifest } as never) : undefined) }, backend: memoryPluginSettings(), openCard: c.open as never });
+      await s.setByUser("relay", "region", "us");
+      titles.push((c.asked[0]!.req.fields as { title: { text: string } }).title.text);
+    }
+    expect(titles).toEqual(["Send Relay's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?", "Send a plugin's requests somewhere else?"]);
+  });
+
   test("the templates and their hosts", () => {
     const t = settingHostTemplates(manifest as never);
     expect(t).toEqual([{ template: "${setting:region}.relay.example.com", keys: ["region"] }]);
@@ -221,6 +232,19 @@ describe("every templated setting cards, not only a host's", () => {
     expect(by("theme")).not.toHaveProperty("asks");
     // With the command hook, every plain setting feeds it.
     expect((await make().views("runner")).every((v) => v.asks === true)).toBe(true);
+  });
+});
+
+describe("signing out from the Plugins page: whose name is in the title", () => {
+  test("a bundled plugin's name is (the old title); a third party's, or a hostile one, is not", async () => {
+    const titles: string[] = [];
+    for (const [bundled, name] of [[true, "Luna AI"], [false, "Luna AI"], [true, `Luna" at automatic`], [false, `Luna" at automatic`], [true, "x".repeat(60)]] as const) {
+      const c = cards();
+      const m = pluginAuthMethods({ signOut: async () => {} } as never, { openCard: c.open as never, nameOf: () => name, bundled: () => bundled });
+      await m["plugin.auth.signOut"]!({ id: "luna", index: 0, card: true }, APP);
+      titles.push((c.asked[0]!.req.fields as { title: { text: string } }).title.text);
+    }
+    expect(titles).toEqual(["Sign Luna AI out?", "Sign out of this plugin?", "Sign out of this plugin?", "Sign out of this plugin?", "Sign out of this plugin?"]);
   });
 });
 

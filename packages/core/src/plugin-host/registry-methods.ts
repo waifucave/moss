@@ -330,6 +330,7 @@ export function pluginRegistryMethods(o: {
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-remove",
         fields: {
           // The plugin's name is its own text: a row of its own (a name), never a word of the engine's title.
+          // Always the fixed title: a bundled plugin is never removed here (refused above), so the name is always a third party's.
           title: { type: "text", text: "Remove this plugin?" },
           source: { type: "rows", rows: [{ label: "Plugin", value: typeof r.name === "string" ? r.name : id, name: true }, { label: "Id", value: id }] },
           detail: { type: "list", items: [
@@ -449,6 +450,7 @@ export function pluginRegistryMethods(o: {
             fields: {
               // The name, the versions and the source's name are the plugin's or its index's own text: rows, never words of the engine's title.
               // Where it comes from is said in the engine's own words (npm, or a plugin index); the name the index or package gives is a row.
+              // Always the fixed title: an update comes from an index or npm (a third party's text), and a bundled plugin updates with the app.
               title: { type: "text", text: "Update this plugin?" },
               what: { type: "text", text: c.via === "npm" ? "A newer version of this plugin is on npm." : "A newer version of this plugin is in a plugin index." },
               source: { type: "rows", rows: [

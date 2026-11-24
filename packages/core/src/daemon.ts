@@ -257,6 +257,7 @@ import { attachedFacetFor, parkRecoveredSessions } from "./runtime-sdk/messaging
 import { startModelPlugins, type StartModelPluginsOptions, type StartedModelPlugins } from "./runtime-sdk/model-plugins/start";
 import { userEndpointOf } from "./runtime-sdk/model-plugins/user-endpoint";
 import { createOAuthRenewal } from "./runtime-sdk/model-plugins/oauth-renewal";
+import { isBundledMoss } from "./runtime-sdk/model-plugins/load";
 import { createHostCredentialBroker, type ProviderRefresher } from "./runtime-sdk/host-credentials";
 import { botApprovalsFrom, botProviderFill } from "./runtime-sdk/turn-loop/provider-fill";
 import { ContractError } from "./contracts/common";
@@ -4471,7 +4472,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         await internalRouter?.view.refresh().catch((err: unknown) => { console.error(`[plugin-auth] the internal jobs' view kept its set (${err instanceof Error ? err.name : typeof err})`); });
       },
       log: (line) => console.error(line),
-    }), { openCard: brokerCardOpener(pluginsBroker), nameOf: (id) => { const n = opened.registry.get(id)?.name; return typeof n === "string" ? n : undefined; }, emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line) })));
+    }), { openCard: brokerCardOpener(pluginsBroker), nameOf: (id) => { const n = opened.registry.get(id)?.name; return typeof n === "string" ? n : undefined; }, bundled: (id) => { const r = opened.registry.get(id); return r !== undefined && isBundledMoss(r); }, emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line) })));
     // The setup's providers read again now the plugins' sign-ins can be asked, and the default settled (a home with
     // one provider and an older build's written default gets that provider's recommended model).
     void setup.refresh();

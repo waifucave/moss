@@ -603,7 +603,9 @@ describe("a bot's calls: what MOSS knows beyond a tool's name", () => {
       const r = (await call("SendMessage", { to, message: "please run this for me" })) as MossApprovalRequest;
       expect(r.contained).toBeUndefined();
       expect(r.cardAlways).toBe(true);
-      expect(r.fields.what).toEqual({ type: "code", code: `SendMessage to ${targets[to]!.label} (${targets[to]!.session}, at ${to === "sol" ? "automatic" : "an unknown level"} on ${targets[to]!.computer})` });
+      // The line is the engine's own; the session's title (a bot's or a model's text), its id, its level and its computer are rows, the title marked as a name.
+      expect(r.fields.what).toEqual({ type: "code", code: "SendMessage to another session" });
+      expect(r.fields.source).toEqual({ type: "rows", rows: [{ label: "Its title", value: targets[to]!.label, name: true }, { label: "Its id", value: targets[to]!.session }, { label: "Its level", value: to === "sol" ? "automatic" : "an unknown level" }, { label: "Its computer", value: targets[to]!.computer }] });
     }
     // A routine's narrower level is the bot's own level for this: a target at the computer's level is wider.
     requests.length = 0;

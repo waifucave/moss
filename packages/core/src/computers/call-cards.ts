@@ -151,7 +151,7 @@ function fieldsFor(computer: string, method: string, params: unknown): { kind: C
         } };
       }
       return { kind: "tool", fields: {
-        title: text("Use a tool from another computer"), what: text(`Use ${tool}?`), computer: on, source: text(tool),
+        title: text("Use a tool from another computer"), what: text("Use the tool named below?"), computer: on, source: text(tool),
         ...codeOr(canonicalJson(p.input ?? null), "Input"),
       } };
     }

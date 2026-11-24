@@ -71,6 +71,7 @@ import { RESERVED_BACKEND_IDS } from "./plugin-backends";
 import { secretPlaceOf } from "../fence/secret-reads";
 import { runLaterByName } from "../fence/sandbox-settings";
 import { UNCLASSIFIED_TOOL_KIND } from "../contracts/agent-backend";
+import { titleWithName } from "../approvals/title-name";
 
 const hostOsOf = (): "macos" | "windows" | "linux" => (process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux");
 
@@ -118,6 +119,9 @@ export interface AgentManagerOptions {
   /** Tells the manager the levels changed (the computer registry's `watch`), so running sessions follow straight away
    *  (`levelsChanged`); without it they follow at their next turn. */
   watchLevels?: (fn: () => void) => () => void;
+  /** Whether a plugin is of the bundled `moss` tree, by its install record (never by what its manifest says): only an agent of ours has its
+   *  name in a card's title (`approvals/title-name.ts`); without it every title is the fixed one. */
+  bundledPlugin?: (pluginId: string) => boolean;
   /** The pause switch (lane D's gate, `mayAct()`): while it says no, a delegated agent is held (`#hold`). */
   pause?: AgentPauseGate;
   /** Tests only: start an agent that isn't sandboxed, or is outside its tested versions, without the user's OK. */
@@ -1101,7 +1105,7 @@ export class AgentManager {
       effect: "other",
       fields: {
         // The agent's name comes from a plugin or a registry entry, so it is a row of its own (a name), never a word of the engine's sentence.
-        title: { type: "text", text: "Download an adapter for an agent?" },
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Download ${n}'s adapter?`, "Download an adapter for an agent?") },
         what: { type: "text", text: "The agent below doesn't speak ACP itself, so MOSS runs an adapter for it: the package named below, from npm. It is code from npm that MOSS will run on this computer to talk to the agent, not MOSS's own. MOSS checks each download against a fingerprint its plugin names before anything is unpacked or run. Nothing is downloaded unless you say yes." },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [
@@ -1148,7 +1152,7 @@ export class AgentManager {
       computers: [e.computer],
       effect: "other",
       fields: {
-        title: { type: "text", text: "Start an agent?" },
+        title: { type: "text", text: titleWithName({ kind: "bundled", bundled: this.#o.bundledPlugin?.(e.backend.pluginId) === true }, name, (n) => `Start ${n}?`, "Start an agent?") },
         what: { type: "text", text: `The agent below needs an adapter that MOSS doesn't have yet. If you say yes, MOSS downloads the package named below from npm (code from npm that MOSS will run, not MOSS's own) and starts the agent${facts.sandboxed ? "" : " without a sandbox"}. ${risk}While it runs, it could read MOSS's logins and approve its own cards. Nothing is downloaded unless you say yes, and nothing is started.` },
         computer: { type: "text", text: e.computer },
         source: { type: "rows", rows: [

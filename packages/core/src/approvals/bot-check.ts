@@ -536,6 +536,7 @@ export function botApprovalCheck(
     });
     if (known.ruleKey !== undefined) req.ruleKey = known.ruleKey;
     if (known.what !== undefined) req.fields.what = { type: "code", code: plainOf(known.what) };
+    if (known.source !== undefined && req.fields.source === undefined) req.fields.source = { type: "rows", rows: known.source.map((r) => ({ label: r.label, value: plainOf(r.value.toWellFormed()).slice(0, 4000), ...(r.name === true ? { name: true as const } : {}) })) };
     if (known.command !== undefined) req.fields.command = { type: "code", code: plainOf(known.command) };
     if (known.host !== undefined) req.fields.host = { type: "code", code: plainOf(known.host) };
     if (known.cardAlways === true) req.cardAlways = true;
@@ -768,6 +769,8 @@ interface Known {
   ruleKey?: string;
   /** The card's `what` and `host` lines, as code. */
   what?: string;
+  /** Rows for the card's `source`, when the line says who or what it is about (values are their own text, never part of `what`). */
+  source?: { label: string; value: string; name?: true }[];
   host?: string;
   /** A card every time, with no "always" (`MossApprovalRequest.cardAlways`). */
   cardAlways?: boolean;
@@ -875,7 +878,12 @@ function messageKnown(
   const mine = ctx.level ?? opts.levelOf?.(ctx.computer);
   const theirs = opts.levelOf?.(target.computer);
   if (mine !== undefined && theirs !== undefined && LEVELS.indexOf(theirs) <= LEVELS.indexOf(mine)) return { contained: true };
-  return { what: `SendMessage to ${target.label} (${target.session}, at ${theirs ?? "an unknown level"} on ${target.computer})`, cardAlways: true };
+  // The session's title is a bot's or a model's own text: a row (a name), never a word of the engine's line. The level is the engine's.
+  return {
+    what: "SendMessage to another session",
+    source: [{ label: "Its title", value: target.label, name: true }, { label: "Its id", value: target.session }, { label: "Its level", value: theirs ?? "an unknown level" }, { label: "Its computer", value: target.computer }],
+    cardAlways: true,
+  };
 }
 
 /** Whether `path` is `folder` or inside it (both absolute, as `botToolRequest` resolves them). */

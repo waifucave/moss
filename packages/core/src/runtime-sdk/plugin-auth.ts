@@ -44,6 +44,7 @@ import { installedModelPlugins } from "./model-plugins";
 import { MOSS_CREDENTIAL_INVENTORY } from "./keychain";
 import { onCardYes, type CardYesOutput } from "../plugin-host/card-yes";
 import type { OAuthRenewal } from "./model-plugins/oauth-renewal";
+import { titleWithName } from "../approvals/title-name";
 
 /** One `auth` entry as a manifest has it (the plugin SDK's `AuthSchema`), and the provider of the `models` entry it
  *  belongs to. */
@@ -392,7 +393,7 @@ export function createPluginAuth(deps: PluginAuthDeps): PluginAuth {
 }
 
 /** The handlers lane C's server mounts. Signing in and out is the user's alone. */
-export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; nameOf?: (id: string) => string | undefined } & CardYesOutput = {}): Record<string, MethodHandler> {
+export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; nameOf?: (id: string) => string | undefined; /** Whether the plugin is of the bundled tree, by its install record: only then does its name stand in the title. */ bundled?: (id: string) => boolean } & CardYesOutput = {}): Record<string, MethodHandler> {
   const M = PLUGINS_METHODS;
   return {
     [M.pluginAuthList.name]: handler(M.pluginAuthList, async (p) => ({ auth: await auth.list(p.id) })),
@@ -412,7 +413,7 @@ export function pluginAuthMethods(auth: PluginAuth, o: { openCard?: CardOpener; 
       const opened = await o.openCard({
         kind: "change", origin: "user", computers: [], effect: "other", change: "plugin-sign-out",
         // The plugin's name is its own text: a row of its own, never a word of the engine's title.
-        fields: { title: { type: "text", text: "Sign out of this plugin?" }, source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }] }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
+        fields: { title: { type: "text", text: titleWithName({ kind: "bundled", bundled: o.bundled?.(p.id) === true }, name, (n) => `Sign ${n} out?`, "Sign out of this plugin?") }, source: { type: "rows", rows: [{ label: "Plugin", value: name, name: true }] }, detail: { type: "list", items: ["Its saved sign-in on this computer is deleted."] } },
       });
       onCardYes(o, opened.card, "plugin-sign-out", opened.allowed, async () => {
         await auth.signOut(p.id, p.index);

@@ -54,6 +54,8 @@ export function fakeAdmissions(sandbox: "protected" | "none", modeFloor?: (level
 export interface WorldOptions {
   /** The manager's log lines. */
   log?: (line: string) => void;
+  /** `AgentManagerOptions.bundledPlugin`: which plugin ids are of the bundled tree (default none, so every card title is the fixed one). */
+  bundledPlugin?: (pluginId: string) => boolean;
   /** The manager's `warmStart` (default on). */
   warmStart?: boolean;
   /** Each session's turn as it starts (`AgentManagerOptions.turnStarted`). */
@@ -201,6 +203,7 @@ export class World {
       home: this.mossHome, userHome: this.userHome, computer: this.computer, host: this.host, approvals: this.approvals, tree: this.tree, fence: this.fence,
       backends: () => [this.backend, ...extra], tokens: this.tokens, bridge: { ...bridgeCommand(), socketPath: sock, ...(o.bridgeServerName ? { serverName: o.bridgeServerName } : {}) }, watchdog: this.watchdog, clock: this.clock,
       ...(o.depths ? { depths: o.depths } : {}),
+      ...(o.bundledPlugin ? { bundledPlugin: o.bundledPlugin } : {}),
       ...(o.noApprovals ? {} : { pluginTools: o.pluginTools ?? ALLOWS_SENDS }),
       ...(o.watchTools ? { watchTools: o.watchTools } : {}),
       ...(o.oks ? { oks: o.oks } : {}),
