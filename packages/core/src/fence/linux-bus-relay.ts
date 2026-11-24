@@ -16,7 +16,18 @@ if (!Number.isInteger(inFd) || !Number.isInteger(outFd) || command.length === 0)
   process.exit(127);
 }
 
-type Sock = { write(d: Uint8Array): number; end(): void; data?: { id: number; queue: Uint8Array[] } };
+// Not dumpable: the command (same user, same pid namespace) can't open the relay's pipe ends through `/proc/<relay>/fd`
+// or trace it. The setting goes back to normal at the command's own exec, so the command itself is unaffected. If it
+// can't be set, the engine's bounds still hold.
+if (process.platform === "linux") {
+  try {
+    const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
+    const PR_SET_DUMPABLE = 4;
+    dlopen("libc.so.6", { prctl: { args: [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64], returns: FFIType.i32 } }).symbols.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+  } catch { /* the bounds stay */ }
+}
+
+type Sock ={ write(d: Uint8Array): number; end(): void; data?: { id: number; queue: Uint8Array[] } };
 const socks = new Map<number, Sock>();
 let nextId = 1;
 let channelOpen = true;

@@ -17,8 +17,8 @@ import { fenceContextFor } from "../contracts/fence";
 import type { MossFence } from "./fence";
 import { bwrapPlan, heldFolderNote } from "./linux-bwrap";
 import { unixSocketFilter } from "./seccomp";
-import { type CredentialPolicy, type SecretBackend, serveSandboxBus, sessionBusSecrets, unixBusPath } from "./linux-secret-broker";
-import { ffiLib, ffiPtr } from "../platform/ffi";
+import { BROKER_LIMITS, type CredentialPolicy, type SecretBackend, serveSandboxBus, sessionBusSecrets, unixBusPath } from "./linux-secret-broker";
+import { BoundedPipeWriter, closeFd, linuxPipe, setNonBlocking } from "./relay-pipe";
 import { PROCESS_HOLDER_FILE } from "../build-kind";
 import { agentConfigDirs, agentConfigFiles, gitTemplateDir, globalHooksPathDirs, loginStartDirs, loginStartSafeFiles, loginStartUnsafeFiles, selfUpdateFiles } from "./layout";
 import { supervisorArch } from "./linux-supervisor";
@@ -354,16 +354,18 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
   if (toRelay === null) return null;
   const fromRelay = linuxPipe();
   if (fromRelay === null) { closeFd(toRelay[0]); closeFd(toRelay[1]); return null; }
-  const writer = Bun.file(toRelay[1]).writer();
-  const server = serveSandboxBus({
+  // The engine's write end never blocks and holds at most `unread` bytes the relay hasn't taken: a command that stops
+  // the relay and leaves the pipe unread ends the run's broker, never the engine (Bun's own sink would buffer it all).
+  if (!setNonBlocking(toRelay[1])) { for (const fd of [...toRelay, ...fromRelay]) closeFd(fd); return null; }
+  let server: ReturnType<typeof serveSandboxBus> | null = null;
+  const writer = new BoundedPipeWriter(toRelay[1], BROKER_LIMITS.unread, () => server?.close());
+  server = serveSandboxBus({
     input: Bun.file(fromRelay[0]).stream() as unknown as AsyncIterable<Uint8Array>,
-    write: (b) => {
-      // A relay that is gone makes the write fail: the broker just stops answering it.
-      try { writer.write(b); const p = writer.flush(); if (p instanceof Promise) p.catch(() => {}); } catch { /* gone */ }
-    },
+    write: (b) => writer.write(b),
     policy,
     backend: () => sessionBusSecrets() ?? noKeyring,
   });
+  const srv = server;
   let ended = false;
   return {
     childIn: toRelay[0],
@@ -374,9 +376,9 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
       // The child is gone: closing our copies of its ends lets the broker's input end.
       closeFd(toRelay[0]);
       closeFd(fromRelay[1]);
-      await Promise.race([server.done, Bun.sleep(2000)]);
-      server.close();
-      try { await writer.end(); } catch { /* closed */ }
+      await Promise.race([srv.done, Bun.sleep(2000)]);
+      srv.close();
+      writer.close();
       closeFd(toRelay[1]);
       closeFd(fromRelay[0]);
     },
@@ -385,19 +387,6 @@ function openBroker(policy: CredentialPolicy): { childIn: number; childOut: numb
 
 const noKeyring: SecretBackend = { search: async () => [], item: async () => null, secret: async () => null, close: () => {} };
 
-/** pipe2(O_CLOEXEC) through libc (Linux): [read, write], or null. */
-function linuxPipe(): [number, number] | null {
-  const lib = ffiLib("linux-pipe", "libc.so.6", { pipe2: { args: ["ptr", "i32"], returns: "i32" }, close: { args: ["i32"], returns: "i32" } });
-  if (lib === null) return null;
-  const fds = new Int32Array(2);
-  if ((lib.pipe2!(ffiPtr(fds), 0o2000000) as number) !== 0) return null;
-  return [fds[0]!, fds[1]!];
-}
-
-function closeFd(fd: number): void {
-  const lib = ffiLib("linux-pipe", "libc.so.6", { pipe2: { args: ["ptr", "i32"], returns: "i32" }, close: { args: ["i32"], returns: "i32" } });
-  try { lib?.close!(fd); } catch { /* closed */ }
-}
 
 /** MOSS's empty git template for the sandbox: made here if missing, read-only to runners, so `git init` and
  *  `git clone` install no hooks. A user's own `init.templateDir` in their git config is overridden by the env var
