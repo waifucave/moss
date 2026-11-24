@@ -910,10 +910,10 @@ async fn uploads_take_the_chunk_size_the_composer_offers_within_the_links_bounds
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_event_queue_holds_its_byte_cap_for_large_questions() {
-    // 600 questions of about 80 KB each (48 MB) while the app reads none: the queue keeps to its 32 MiB.
+    // 900 questions of about 55 KB each as decoded (about 50 MB) while the app reads none: the queue keeps to its 32 MiB.
     let long = "q".repeat(9_000);
     let option = json!({ "label": "x".repeat(200), "description": "d".repeat(9_000) });
-    let events: Vec<Vec<u8>> = (0..600)
+    let events: Vec<Vec<u8>> = (0..900)
         .map(|i| {
             let questions: Vec<Value> = (0..4).map(|k| json!({ "question": format!("{long}{k}"), "options": [option, option, option, option], "multiSelect": false })).collect();
             serde_json::to_vec(&json!({ "jsonrpc": "2.0", "method": "event", "params": { "type": "question_asked", "seq": i, "sessionId": "s_alpha", "ts": 1, "callId": format!("c{i}"), "questions": questions } })).unwrap()
@@ -1003,5 +1003,52 @@ async fn a_card_answered_while_its_event_waits_leaves_the_queue_whole() {
     assert!(!cards[0].pending(), "the listed view shares the answered state");
     until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
     assert_eq!(c.queued_event_bytes(), 0, "the queue's count ends where it began");
+    c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_poisoned_lock_doesnt_stop_the_link() {
+    let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    c.poison_for_test();
+    // Calls still answer (the pending map), and events still come (the queue).
+    c.call("bot.list".into(), "{}".into()).await.expect("a call after the poisoning");
+    c.call("bot.get".into(), "{}".into()).await.expect("another");
+    c.disconnect();
+    until(&c, "closed", |e| matches!(e, ConnEvent::Closed)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_files_name_is_bounded_before_its_request_is_built() {
+    let got: Arc<Mutex<usize>> = Arc::default();
+    let g2 = got.clone();
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| match m {
+            "session.composerOffers" => Reply::Result(offers(768 * 1024 - 16 * 1024)),
+            "session.stageFile" => {
+                let mut g = g2.lock().unwrap();
+                *g += bytes::from_b64(p["dataBase64"].as_str().unwrap()).unwrap().len();
+                Reply::Result(json!({ "upload": "up1", "received": *g, "done": *g == 1_000_000, "name": "x", "path": "bots/alpha/files/x" }))
+            }
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    // Over 1024 characters: a plain refusal, nothing sent.
+    match c.stage_file("s_alpha".into(), "x".repeat(1025), vec![1; 10]).await {
+        Err(CoreError::Refused { reason }) => assert!(reason.contains("name"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(f.count("session.stageFile"), 0);
+    // 1024 control characters (6 bytes each as JSON) beside the largest chunk still fit one frame.
+    let r = c.stage_file("s_alpha".into(), "\u{1}".repeat(1024), vec![2; 1_000_000]).await;
+    assert!(r.is_ok(), "{r:?}");
     c.disconnect();
 }

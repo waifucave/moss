@@ -82,6 +82,13 @@ fn what_a_hostile_computer_sends_is_read_safely() {
     // A question: kept exactly where its text keys the answer, refused when that text hides a character.
     let q = |text: &str| json!({ "type": "question_asked", "seq": 9, "sessionId": "s1", "ts": 1, "callId": "c1",
         "questions": [{ "question": text, "header": "Pick", "options": [{ "label": "A" }, { "label": "B", "description": "the other" }], "multiSelect": false }] });
+    // A question in several lines (a model's often is) is kept exactly: line breaks and tabs are prose.
+    let multi = engine::session_item(&q("Which one?\n\nA\tfirst\r\nB\tsecond")).unwrap();
+    let ItemKind::QuestionAsked { question: m } = &multi.kind else { panic!("{multi:?}") };
+    assert_eq!(m.questions[0].question, "Which one?\n\nA\tfirst\r\nB\tsecond");
+    let open = engine::open_questions(&json!({ "open": [{ "callId": "c9", "seq": 1, "askedAt": 2, "questions": [{ "question": "Line one\nline two", "options": [{ "label": "Yes", "description": "first\nsecond" }, { "label": "No" }], "multiSelect": false }] }] })).unwrap();
+    assert_eq!(open[0].questions[0].question, "Line one\nline two");
+    assert_eq!(open[0].questions[0].options[0].description.as_deref(), Some("first\nsecond"));
     let asked = engine::session_item(&q("Which one?")).unwrap();
     let ItemKind::QuestionAsked { question } = &asked.kind else { panic!("{asked:?}") };
     assert_eq!(question.questions[0].question, "Which one?");

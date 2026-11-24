@@ -110,6 +110,13 @@ pub struct CardView {
     pub(crate) issuer: u64,
 }
 
+impl CardView {
+    /// What it costs the event queue: its strings, not its state (which may change while it waits).
+    pub(crate) fn size(&self) -> usize {
+        self.id.len() + self.hash.len() + self.card_json.len() + self.options.iter().map(|o| o.len() + 8).sum::<usize>() + self.bot.as_ref().map_or(0, String::len) + self.session.as_ref().map_or(0, String::len) + 64
+    }
+}
+
 #[uniffi::export]
 impl CardView {
     pub fn id(&self) -> String {
@@ -138,11 +145,11 @@ impl CardView {
     }
     /// Still waiting for an answer, as far as the core has heard.
     pub fn pending(&self) -> bool {
-        self.state.lock().unwrap().is_none()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()
     }
     /// Its outcome once resolved (`approved`, `denied`, `expired`, `withdrawn`, `cancelled`, `answered`).
     pub fn outcome(&self) -> Option<String> {
-        self.state.lock().unwrap().clone()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 

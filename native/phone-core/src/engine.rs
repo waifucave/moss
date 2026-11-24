@@ -39,6 +39,11 @@ fn text_of(v: Option<&Value>, max: usize) -> Option<String> {
     Some(sealed_escape(&s.chars().take(max).collect::<String>(), false))
 }
 
+/// A hidden character prose can't hold: the visible-text rule's set less tab, line feed and carriage return.
+fn prose_unshown(c: char) -> bool {
+    !matches!(c, '\t' | '\n' | '\r') && unshown(c)
+}
+
 fn text(v: &Value, k: &str, max: usize) -> Option<String> {
     text_of(get(v, k), max)
 }
@@ -377,8 +382,9 @@ fn ask(v: &Value, seq: u64, asked_at: i64) -> Option<AskQuestion> {
         .iter()
         .take(4)
         .filter_map(|q| {
-            // The question's own text keys its answer: kept exactly (refused when it holds a hidden character).
-            let question = raw_str(q, "question").filter(|t| !t.is_empty() && t.len() <= 10_000 && !t.chars().any(unshown))?.to_string();
+            // The question's own text keys its answer: kept exactly. It is prose, so tab, line feed and carriage return
+            // are its own (as the visible-text rule keeps them); any other hidden character refuses it.
+            let question = raw_str(q, "question").filter(|t| !t.is_empty() && t.len() <= 10_000 && !t.chars().any(prose_unshown))?.to_string();
             Some(Question {
                 question,
                 header: text(q, "header", 12),
@@ -877,4 +883,77 @@ pub async fn commands(c: &impl Caller) -> Result<Vec<PluginCommand>, CoreError> 
 
 pub async fn run_command(c: &impl Caller, name: &str) -> Result<(), CoreError> {
     c.call_json("command.run", json!({ "name": name })).await.map(|_| ())
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Sizes, for the event queue's byte cap: every string a record holds, plus a little for the rest. Written out, so a
+// new field is counted where it is added.
+// ---------------------------------------------------------------------------------------------------------------
+
+const FIELD: usize = 8;
+
+fn opt(s: &Option<String>) -> usize {
+    s.as_ref().map_or(0, String::len) + FIELD
+}
+
+impl Bot {
+    pub fn size(&self) -> usize {
+        let face = self.face.as_ref().map_or(0, |f| opt(&f.shape) + opt(&f.color) + opt(&f.eyes) + opt(&f.temper));
+        self.id.len() + self.name.len() + opt(&self.model) + opt(&self.effort) + face + 64 + opt(&self.computer) + self.main_session.len()
+    }
+}
+
+impl BotSummary {
+    pub fn size(&self) -> usize {
+        self.id.len() + self.last.as_ref().map_or(0, |l| l.text.len() + 64) + FIELD
+    }
+}
+
+impl SessionRow {
+    pub fn size(&self) -> usize {
+        self.id.len()
+            + 64
+            + opt(&self.bot)
+            + opt(&self.parent)
+            + self.computer.len()
+            + opt(&self.title)
+            + opt(&self.failure)
+            + opt(&self.backend)
+            + opt(&self.model)
+            + opt(&self.effort)
+            + opt(&self.root)
+            + opt(&self.branch)
+            + 64
+    }
+}
+
+impl AskQuestion {
+    pub fn size(&self) -> usize {
+        self.call_id.len()
+            + 16
+            + self
+                .questions
+                .iter()
+                .map(|q| {
+                    q.question.len() + opt(&q.header) + opt(&q.placeholder) + FIELD + q.options.iter().map(|o| o.label.len() + opt(&o.description) + opt(&o.preview)).sum::<usize>()
+                })
+                .sum::<usize>()
+    }
+}
+
+impl SessionItem {
+    pub fn size(&self) -> usize {
+        let kind = match &self.kind {
+            ItemKind::User { text, device } => text.len() + opt(device),
+            ItemKind::Assistant { text } | ItemKind::FromSession { text } | ItemKind::FromPlugin { text } | ItemKind::Agent { text } | ItemKind::TurnError { text } => text.len(),
+            ItemKind::FromBot { bot, text } => opt(bot) + text.len(),
+            ItemKind::Routine { name, text } => opt(name) + text.len(),
+            ItemKind::Note { label, text } => opt(label) + text.len(),
+            ItemKind::TurnEnded { reason } => reason.len(),
+            ItemKind::QuestionAsked { question } => question.size(),
+            ItemKind::QuestionResolved { call_id } => call_id.len(),
+            ItemKind::Other { kind } => kind.len(),
+        };
+        self.id.len() + self.session.len() + 32 + kind
+    }
 }
