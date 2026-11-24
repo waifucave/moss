@@ -9,7 +9,7 @@
 //   reaches its cloud only through the keyed fetch, with the user's own credentials.
 // * Every change in the registry, and every change of the lease, runs one reconcile after the one in flight, never two
 //   at once. Only the lease's holder acts (lane H's lease, not the registry's main flag: #254's review, B1).
-import { isContractError, type Unsubscribe } from "../contracts/common";
+import { ContractError, isContractError, type Unsubscribe } from "../contracts/common";
 import type { Lease } from "../contracts/lease";
 import type { PluginHost } from "../contracts/plugin-host";
 import type { PluginRegistry } from "../contracts/plugin-registry";
@@ -20,12 +20,18 @@ import type { CloudAuthority, CloudComputers, CloudFolder, CloudPairingDoor, Clo
 export function leaseAuthority(lease: Lease): CloudAuthority {
   // Hand-overs: how many times this computer stopped holding the lease since it started. A cloud pairing token made
   // while it was alone is the same main's after the group's founding, but not after a hand-over and a return.
-  let held = lease.state().holder === lease.self;
+  // Counted: this computer stopped holding the lease, or held it again under a NEW epoch of the same scope (another
+  // tenure, which another computer may have held in between without this one ever seeing it). Not counted: the scope
+  // appearing when the group is founded (`-` to a group's), which is the same holder's own pairing.
+  let last = lease.state();
   let handovers = 0;
-  lease.watch(() => {
-    const now = lease.state().holder === lease.self;
-    if (held && !now) handovers += 1;
-    held = now;
+  lease.watch((s) => {
+    const was = last;
+    last = s;
+    const wasMine = was.holder === lease.self;
+    const mine = s.holder === lease.self;
+    if (wasMine && !mine) handovers += 1;
+    else if (wasMine && mine && (was.scope ?? "-") === (s.scope ?? "-") && was.epoch !== s.epoch) handovers += 1;
   });
   return {
     handovers: () => handovers,
@@ -150,14 +156,24 @@ export class CloudPoint {
     return p;
   }
 
-  /** Before a provider plugin is removed: its machines are asked about first (`CloudComputers.retireProvider`). A plugin
-   *  that is no provider, or has no machines, goes at once. Throws when the removal must not go on. */
-  async guardRemoval(pluginId: string): Promise<void> {
+  /** Before a provider plugin is removed: its machines are asked about first (`CloudComputers.askRetire`); what the answer
+   *  means is done by the returned `commit`, once the removal itself is confirmed. A plugin that is no provider, or has no
+   *  machines, goes at once (`undefined`). Throws when the removal must not go on.
+   *
+   *  ONLY THE MAIN COMPUTER holds the machines and acts on them (§9.2), and a removal syncs as a delete (§5.1): removing a
+   *  provider anywhere else would remove it on the main with no question, and the machines would keep billing. So on any
+   *  other computer removing a plugin that provides cloud computers is refused, naming where to do it (the question is not
+   *  forwarded: the main may be asleep or away, and a question that can't be answered anywhere holds the removal open). */
+  async guardRemoval(pluginId: string): Promise<(() => Promise<void>) | undefined> {
     const ids = this.#registry.entries("computerProviders")
       .filter((c) => (c.pluginId === pluginId || c.pluginId.startsWith(`${pluginId}/`)) && c.entryId)
       .map((c) => c.entryId!);
-    if (ids.length === 0) return;
-    await this.#cloud.retireProvider(ids);
+    if (ids.length === 0) return undefined;
+    if (!this.#active()) {
+      throw new ContractError("refused", `${pluginId} provides cloud computers, and only the main computer manages them: remove it on the main computer, where you are asked what to do with their machines`);
+    }
+    const r = await this.#cloud.askRetire(ids);
+    return r === undefined ? undefined : async () => void (await r.commit());
   }
 
   /** What lane H's authenticated pairing door calls when a device presents a cloud computer's token. */

@@ -219,13 +219,38 @@ describe("what a plugin leaves when its folder goes by hand", () => {
       let answer: "refuse" | "ok" = "refuse";
       const m = pluginRegistryMethods({
         opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
-        beforeRemove: async (id) => { asked.push(id); if (answer === "refuse") throw new Error("its cloud computers weren't answered"); },
+        beforeRemove: async (id) => { asked.push(id); if (answer === "refuse") throw new Error("its cloud computers weren't answered"); return undefined; },
       });
       await expect(m["plugin.remove"]!({ id: "tarot" }, APP)).rejects.toThrow("weren't answered");
       expect(existsSync(w.dir)).toBe(true);
       answer = "ok";
       await m["plugin.remove"]!({ id: "tarot" }, APP);
       expect(asked).toEqual(["tarot", "tarot"]);
+      expect(existsSync(w.dir)).toBe(false);
+    } finally {
+      w.opened.close();
+    }
+  });
+
+  test("what beforeRemove returns runs only once the removal is confirmed: a declined removal runs nothing; a failing one stops the removal", async () => {
+    const w = await world();
+    try {
+      await w.opened.registry.approve("tarot", (await w.install(source("one"))).treeHash);
+      const ran: string[] = [];
+      let decline = true;
+      const m = pluginRegistryMethods({
+        opened: w.opened, host: { restart: async () => {} }, home: w.home, indexes: w.opened.indexes!,
+        openCard: async () => ({ allowed: Promise.resolve(!decline) }),
+        beforeRemove: async () => async () => { ran.push("commit"); if (ran.length > 1) throw new Error("a machine couldn't be deleted"); },
+      });
+      // The person declines the removal's own card: the machines' answer is never carried out.
+      await expect(m["plugin.remove"]!({ id: "tarot", card: true }, APP)).rejects.toThrow();
+      expect(ran).toEqual([]);
+      expect(existsSync(w.dir)).toBe(true);
+      // Confirmed: it runs, before the folder goes.
+      decline = false;
+      await m["plugin.remove"]!({ id: "tarot", card: true }, APP);
+      expect(ran).toEqual(["commit"]);
       expect(existsSync(w.dir)).toBe(false);
     } finally {
       w.opened.close();

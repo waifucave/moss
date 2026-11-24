@@ -4127,7 +4127,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   /** The install door for a component's `plugins.install`, handed out by the registry's methods once they're made. */
   let componentInstall: ComponentInstallDoor | undefined;
   // Set once this computer's node is up (it is the cloud computers' part): asks about a provider plugin's machines before it is removed.
-  let beforeCloudPluginRemoved: ((id: string) => Promise<void>) | undefined;
+  let beforeCloudPluginRemoved: ((id: string) => Promise<(() => Promise<void>) | undefined>) | undefined;
   // The main computer, for a host half whose `host.start` is `main`: not known until the links and the parts are up
   // (the lease), so such a host half waits; with no links, this computer is its own main.
   let pluginMain: MainHere | undefined | "later" = opts.links === false ? undefined : "later";
@@ -4371,7 +4371,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...glossaryMethods(glossary),
       // Its sealed cards (a development folder from the app, a removal or an update from the Plugins page) ask on the
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
-      ...pluginRegistryMethods({ beforeRemove: (id) => (beforeCloudPluginRemoved ? beforeCloudPluginRemoved(id) : Promise.resolve()), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
+      ...pluginRegistryMethods({ beforeRemove: (id) => (beforeCloudPluginRemoved ? beforeCloudPluginRemoved(id) : Promise.resolve(undefined)), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
     };
     const host = pluginHost;

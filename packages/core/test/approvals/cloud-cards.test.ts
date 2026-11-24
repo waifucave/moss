@@ -74,6 +74,14 @@ describe("cloud cards", () => {
     expect((c.fields.detail as { code: string }).code).toContain('image: "a custom image: projects/x/global/images/y"');
   });
 
+  test("an image name of any length the core accepts is shown whole on the card, never cut (the yes is bound to it)", () => {
+    const image = `projects/x/global/images/${"y".repeat(450)}-the-end`;
+    const c = cloudCardRequest({ kind: "cloud-create", name: "a", provider: "p", size: "s", region: "r", folder: "f", image });
+    expect((c.fields.detail as { code: string }).code).toContain(`${image}"`);
+    const long = cloudCardRequest({ kind: "cloud-create", name: "a", provider: "p", size: "s", region: "r", folder: "f", folder_: undefined, image: "z".repeat(5000) } as never);
+    expect((long.fields.detail as { code: string }).code.length).toBeLessThan(900);
+  });
+
   test("through the broker: approve is yes, deny and the report's OK are no", async () => {
     const clock = new FakeClock();
     const broker = new MossApprovalBroker({ clock });

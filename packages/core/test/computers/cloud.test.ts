@@ -500,6 +500,77 @@ describe("what the person is told and asked about a provider that goes (CC2)", (
   });
 });
 
+describe("removing a provider plugin (CC3)", () => {
+  /** Two providers of one plugin, each with its own machine; `gone` leaves one provider's handler out. */
+  async function two(o: { answers?: (c: CloudCard) => CloudAnswer | Promise<CloudAnswer>; removalWaitMs?: number; goneProvider?: { v: boolean } } = {}) {
+    const a = new FakeProvider();
+    const b = new FakeProvider();
+    const cards: CloudCard[] = [];
+    const home = mkdtempSync(join(tmpdir(), "lane-cc3-"));
+    const gone = o.goneProvider ?? { v: false };
+    const cloud = new CloudComputers({
+      clock: { now: () => 1_000_000 }, store: new FileCloudStateStore(home), providerIds: () => ["hetzner", "second"],
+      provider: (id) => (id === "hetzner" ? a : id === "second" && !gone.v ? b : undefined), authority: new FakeAuthority(),
+      confirm: async (c) => { cards.push(c); return (o.answers ?? (() => true))(c); }, userData,
+      ...(o.removalWaitMs !== undefined ? { removalWaitMs: o.removalWaitMs } : {}),
+    });
+    await cloud.reconcile([folder(), folder({ folder: "computer-second-1", provider: "second", name: "Cloud2" })]);
+    cards.length = 0;
+    return { a, b, cloud, cards, gone };
+  }
+
+  test("a plugin with two providers: each machine is looked up and deleted through its own provider, and none is dropped unseen", async () => {
+    const { a, b, cloud, cards } = await two();
+    expect([a.vms.size, b.vms.size]).toEqual([1, 1]);
+    const r = await cloud.askRetire(["hetzner", "second"]);
+    expect(cards).toEqual([{ kind: "cloud-provider-removal", provider: "hetzner, second", machines: ["Cloud1", "Cloud2"] }]);
+    expect([a.vms.size, b.vms.size]).toEqual([1, 1]);
+    expect(await r!.commit()).toBe("deleted");
+    expect([a.vms.size, b.vms.size]).toEqual([0, 0]);
+    expect(cloud.list()).toEqual([]);
+  });
+
+  test("a machine whose provider isn't there is never dropped: the commit stops and says so, the machine stays in the state", async () => {
+    const { b, cloud, gone } = await two();
+    const r = await cloud.askRetire(["hetzner", "second"]);
+    gone.v = true;
+    const e = await r!.commit().catch((x) => x);
+    expect(isContractError(e, "not_installed")).toBe(true);
+    expect(b.vms.size).toBe(1);
+    expect(cloud.get("Cloud2")).toBeDefined();
+  });
+
+  test("the answer is carried out only by the commit: a yes alone deletes nothing, and a no keeps them", async () => {
+    const { a, cloud } = await two({ answers: (c) => c.kind !== "cloud-provider-removal" });
+    const r = await cloud.askRetire(["hetzner"]);
+    expect(a.vms.size).toBe(1);
+    expect(await r!.commit()).toBe("kept");
+    expect(a.vms.size).toBe(1);
+  });
+
+  test("a question nobody answers doesn't hold the removal open: it stops with 'answer the card, then remove again', and the answer given later is used, never asked twice", async () => {
+    let answer!: (v: CloudAnswer) => void;
+    const { a, cloud, cards } = await two({ removalWaitMs: 20, answers: (c) => (c.kind === "cloud-provider-removal" ? new Promise<CloudAnswer>((r) => { answer = r; }) : true) });
+    const e = await cloud.askRetire(["hetzner"]).catch((x) => x);
+    expect(isContractError(e, "refused")).toBe(true);
+    expect((e as Error).message).toContain("answer its card, then remove the plugin again");
+    expect(a.vms.size).toBe(1);
+    answer(true);
+    await Bun.sleep(5);
+    const r = await cloud.askRetire(["hetzner"]);
+    expect(cards.filter((c) => c.kind === "cloud-provider-removal")).toHaveLength(1);
+    expect(await r!.commit()).toBe("deleted");
+    expect(a.vms.size).toBe(0);
+  });
+
+  test("an image name too long to show whole is refused before any card; one that fits is shown whole", async () => {
+    const { cloud, cards } = setup();
+    const long = `projects/x/global/images/${"y".repeat(600)}`;
+    expect((await cloud.reconcile([folder({ image: long })])).failed).toEqual([{ name: "Cloud1", reason: expect.stringContaining("image name is longer") }]);
+    expect(cards).toEqual([]);
+  });
+});
+
 describe("a card nobody answered is never a \"no\" (the controller's ruling on #290)", () => {
   test("an unanswered delete card keeps nothing hidden: the VM is asked about again on the next pass; only a decline keeps it", async () => {
     let delAnswer: CloudAnswer = "unanswered";

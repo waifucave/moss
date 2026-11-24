@@ -124,9 +124,10 @@ export function pluginRegistryMethods(o: {
    *  the app waits for it. Absent until the daemon's broker is wired, when adding one from the app is refused. */
   openCard?: CardOpener;
   /** Asked before a plugin is removed, after the checks and before its card: a part of the core that holds something the
-   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it,
-   *  and throws to stop the removal. Absent: nothing is asked. */
-  beforeRemove?: (pluginId: string) => Promise<void>;
+   *  plugin runs (a cloud computer provider's machines, `CloudPoint.guardRemoval`) asks the person what to do with it, and
+   *  throws to stop the removal. It may return what to do once the removal is confirmed (run just before the plugin's keys
+   *  and folder go, and a failure of it stops the removal). Absent: nothing is asked. */
+  beforeRemove?: (pluginId: string) => Promise<(() => Promise<void>) | undefined>;
   os?: "macos" | "windows" | "linux";
   /** The plugin indexes (§5.1); absent, there are none (the lists are empty and adding one is refused). */
   indexes?: IndexClient;
@@ -291,11 +292,14 @@ export function pluginRegistryMethods(o: {
       if (!folder.startsWith(pluginsDir + sep) || !existsSync(folder)) throw new ContractError("refused", `${id}'s folder isn't in the plugins directory`);
       // What the plugin holds is asked about first (its cloud computers keep billing once it is gone): the person's answer
       // to that question, then the removal's own card.
-      await o.beforeRemove?.(id);
+      // The question's answer is DONE only once the removal itself is confirmed (`commit`, below): a removal the person
+      // declines changes nothing the question was about.
+      const commit = await o.beforeRemove?.(id);
       const remove = async (): Promise<string | undefined> => {
         // The tree as it is when the user says yes (a card may wait).
         const now = registry.get(id);
         if (now === undefined) return "It was already removed.";
+        await commit?.();
         const children = registry.list().filter((c) => c.parent === now.id).map((c) => c.id);
         // What it leaves goes first: a secret that can't be deleted stops the removal, so no later plugin under the same
         // id finds it (#332's second review).

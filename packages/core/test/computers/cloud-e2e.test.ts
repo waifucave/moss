@@ -131,6 +131,23 @@ describe("what can reach a provider's handler", () => {
     expect(() => declaredPointFor(rig.registry, "computerProviders", "someone/else")).toThrow();
   });
 
+  test("a computer that is not the main refuses to remove a provider plugin: only the main holds the machines, and a removal syncs as a delete", async () => {
+    const { rig, cards, cloud } = await boot("hetzner");
+    const notMain = new CloudPoint({ registry: rig.registry, cloud, active: () => false });
+    const e = await notMain.guardRemoval(rig.pluginId).catch((x) => x);
+    expect((e as Error).message).toContain("only the main computer manages them");
+    // The main asks; a plugin that provides nothing goes at once on any computer.
+    const main = new CloudPoint({ registry: rig.registry, cloud, active: () => true });
+    await main.sync();
+    cards.length = 0;
+    expect(await notMain.guardRemoval("someone/else")).toBeUndefined();
+    const commit = await main.guardRemoval(rig.pluginId);
+    expect(cards.map((c) => c.kind)).toEqual(["cloud-provider-removal"]);
+    expect(rig.cloud.billed()).toBe(1);
+    await commit!();
+    expect(rig.cloud.billed()).toBe(0);
+  });
+
   test("a provider that isn't installed or off is not reached, and nothing is asked", async () => {
     const { rig, cards, point } = await boot("hetzner");
     await rig.registry.setEnabled(rig.pluginId, false);
