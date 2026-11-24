@@ -1,6 +1,7 @@
 // A small MOSS protocol client for the acceptance run: JSON-RPC 2.0 over NDJSON on the daemon's socket, a hello in
 // a role, and answers to the daemon's own requests (`app.ping`, which the pair's heartbeat sends every 5 s).
 import { createConnection, type Socket } from "node:net";
+import { scaled } from "./time-scale";
 
 export class RpcError extends Error {
   constructor(readonly method: string, readonly code: number, message: string, readonly data?: unknown) {
@@ -24,7 +25,10 @@ export class MossClient {
     socket.on("error", () => this.onClose());
   }
 
-  static connect(path: string, timeoutMs = 5_000): Promise<MossClient> {
+  // Every wait here is the run's patience (time-scale.ts): a hello that a loaded runner answers in 12 s (its load average was 86 at the
+  // job's start, run 45381009835's host row) is a slow runner, not a daemon that does not answer.
+  static connect(path: string, timeoutMsAsked = 5_000): Promise<MossClient> {
+    const timeoutMs = scaled(timeoutMsAsked);
     return new Promise((resolve, reject) => {
       const s = createConnection({ path });
       const t = setTimeout(() => { s.destroy(); reject(new Error(`no answer on the socket within ${timeoutMs} ms`)); }, timeoutMs);
@@ -37,7 +41,8 @@ export class MossClient {
 
   onNotification(fn: (method: string, params: unknown) => void): void { this.listeners.push(fn); }
 
-  request<T = Record<string, unknown>>(method: string, params: unknown = {}, timeoutMs = 15_000): Promise<T> {
+  request<T = Record<string, unknown>>(method: string, params: unknown = {}, timeoutMsAsked = 15_000): Promise<T> {
+    const timeoutMs = scaled(timeoutMsAsked);
     if (this.closed) return Promise.reject(new RpcError(method, -1, "the connection is closed"));
     const id = `a${++this.seq}`;
     return new Promise<T>((resolve, reject) => {

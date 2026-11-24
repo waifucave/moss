@@ -458,6 +458,17 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
     const side = await until("the sidebar's title row", 20_000, () => inTree<boolean>(cdp, "!!document.querySelector('.cl-sidebar__top')"));
     const area = await cdp.evaluate(side.session, "getComputedStyle(document.querySelector('.cl-sidebar__top')).getPropertyValue('-webkit-app-region')");
     if (area !== "drag") fail(`the sidebar's title row declares no drag region (${String(area)})`);
+    // A press sent through DevTools has no place on the screen of its own: the app reads the cursor's screen point as the point in the
+    // frame, which is the window's own point only with the window's origin at the screen's. A window is centred where it first shows
+    // (xvfb: (0, 102), run 45427983543: "a drag began (window at 0, 102; cursor at 225, 23)"), the cursor then reads as above the
+    // window and the app takes the drag for over. A real mouse reads the true place, so the harness puts the window at the origin first.
+    if (process.platform === "linux") {
+      const main = [...cdp.frames.values()].find((f) => f.type === "page" && f.url === "moss-core://app/" && f.targetId !== undefined);
+      if (main === undefined) fail("the main window has no DevTools target to place at the screen's origin");
+      const w = await cdp.send<{ windowId: number }>("Browser.getWindowForTarget", { targetId: main!.targetId }).catch((e: Error) => fail(`DevTools can't name the main window's place (${e.message})`));
+      await cdp.send("Browser.setWindowBounds", { windowId: w.windowId, bounds: { left: 0, top: 0 } }).catch((e: Error) => fail(`DevTools can't put the main window at the screen's origin (${e.message})`));
+      await sleep(600);
+    }
     const moved = () => ctx.appLog().split("\n").filter((l) => l.includes("window: moved by its title area"));
     const was = moved().length;
     // Pressed on MOSS's mark, which is part of the row and no control: a fixed point in the row can be under one of its
@@ -1100,7 +1111,12 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
       await sleep(250);
       tab = (await inTree<string>(cdp, "document.querySelector('.cl-plugin-index [role=tab][aria-selected=true]')?.textContent ?? null").catch(() => undefined))?.value?.trim() ?? tab;
     }
-    if (tab !== "Add") fail(`after the reload the Plugins page shows the ${tab} tab, not the Add tab the user was on`);
+    if (tab !== "Add") {
+      // What the page kept (its sessionStorage keys, the tab's among them) in each tree document, so a lost value reads as lost or as moved.
+      const keptKeys: string[] = [];
+      for (const d of await treeDocs(cdp)) keptKeys.push(String(await cdp.evaluate(d.session, "(() => { try { return Object.keys(sessionStorage).filter((k) => k.includes('plugins.tab')).map((k) => k + '=' + sessionStorage.getItem(k)).join(',') || 'none'; } catch (e) { return 'no storage'; } })()").catch(() => "gone")));
+      fail(`after the reload the Plugins page shows the ${tab} tab, not the Add tab the user was on (kept tab keys by tree document: ${keptKeys.join(" | ")}; the app's layer lines: ${ctx.appLog().split("\n").filter((l) => /layers: .*(loads again|bound to no mount)/.test(l)).slice(-4).map((l) => l.slice(0, 120)).join(" | ")})`);
+    }
     const stale = await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true");
     if (stale !== undefined) await until("the document served before out of the window", 10_000, async () => ((await inTree<boolean>(cdp, "window.__acceptanceServedBefore === true")) === undefined ? true : undefined), () => dumpFrames(cdp));
     page = { session: kept.session, value: true };

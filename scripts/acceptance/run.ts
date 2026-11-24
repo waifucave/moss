@@ -1557,7 +1557,13 @@ async function pressApprove(cdp: Cdp, card: Card, appLog = join(logs, "app.log")
       return first;
     }, 300).catch((err: unknown) => fail(`${why(err)}: ${firstLine(appLog, new RegExp(`fallback card for ${card.id}`)) ?? "the app logged nothing about its fallback"}${tried.length ? `; pressed before: ${tried.join(" | ")}` : ""} [apps/desktop/src/main/index.ts showFallbackCard]`));
     const isOwn = found.url.startsWith(`${cardUrl}own`);
-    if (isOwn && !fallbackChecked) { await fallbackLooksRight(cdp, found.session, card); fallbackChecked = true; }
+    // The page found can be drawn again before it is read (its session is then gone: "Session with given id not found", canvas row 128,
+    // run 45384059255): the card's page is looked for again, as for a press that brought no answer.
+    if (isOwn && !fallbackChecked) {
+      const checked = await fallbackLooksRight(cdp, found.session, card).then(() => true, (err: unknown) => { if (/Session with given id not found/.test(String((err as Error)?.message))) return false; throw err; });
+      if (!checked) { tried.push("fallback: its page was drawn again while it was read"); continue; }
+      fallbackChecked = true;
+    }
     const s = found.session;
     const btn = await until("the card's Approve button", 10_000, () => cdp.centerOf(s, PLAIN_APPROVE), 300).catch(() => undefined);
     if (btn === undefined) { tried.push(`${isOwn ? "fallback" : "island"}: no button`); continue; }

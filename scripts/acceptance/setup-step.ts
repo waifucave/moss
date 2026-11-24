@@ -17,6 +17,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { Cdp } from "./cdp";
+import { pressUntilShown } from "./click-until";
+import { scaled } from "./time-scale";
 import type { MossClient } from "./client";
 import type { FakeProvider } from "./fake-anthropic";
 import type { Status } from "./steps";
@@ -269,9 +271,13 @@ async function openRow(s: Ctx): Promise<string> {
   if (!/add a model provider/.test(refused.message ?? "")) s.x.fail(`the refusal doesn't lead to adding a provider: "${refused.message}"`);
   if (s.x.fake.requests.length !== asked) s.x.fail(`the refused turn still reached a provider (${s.x.fake.requests.length - asked} request(s))`);
   // MOSS's Settings opens it again.
+  // A press is a down and an up on the same element: a page that redraws under a stalled runner between them (the run's harness ran
+  // 6.8 s late at its start, load average 92) turns it into no click, and the page said nothing (run 45384059255). The press is made
+  // again, the button found anew, until the guide shows.
   await s.moss.click(".nav-item.account");
-  await s.moss.click("[data-open-setup]");
-  await s.moss.waitFor("MOSS's guide opened again from Settings", `!!document.querySelector('${MOSS_STEP("providers")}')`);
+  const guideShown = () => s.moss.eval<boolean>(`!!document.querySelector('${MOSS_STEP("providers")}')`).catch(() => false);
+  const opened = await pressUntilShown({ press: () => s.moss.click("[data-open-setup]"), shown: guideShown, tries: 3, waitMs: scaled(8_000), sleep, now: Date.now });
+  if (opened === 0) s.x.fail("MOSS's guide opened again from Settings: not within three presses of Open the setup guide");
   return `setup.state on the fresh home: ${JSON.stringify({ ready: st.ready, missing: st.missing })}; MOSS Code's and MOSS's guides opened by themselves; MOSS's Skip for now kept by the engine (dismissed: true); MOSS's turn refused: "${refused.message!.slice(0, 90)}", no provider called; Settings opened it again${pictures.length > 0 ? `; pictures: ${pictures.length}` : ""}`;
 }
 
@@ -283,8 +289,9 @@ async function oneRow(s: Ctx): Promise<string> {
   const firsts = await s.code.eval<string[]>("[...document.querySelectorAll('[data-moss-provider]')].slice(0, 6).map((e) => e.getAttribute('data-moss-provider'))");
   if (firsts.findIndex((id) => id === plugin) < 0 || firsts.findIndex((id) => id === plugin) > 5) s.x.fail(`Anthropic isn't among the guide's first providers: ${firsts.join(", ")}`);
   // Each provider is a closed row: Anthropic's opened by a click.
-  await s.code.click(`[data-moss-open="${plugin}"]`);
   const field = `[data-moss-key="${plugin}#0"]`;
+  const rowOpen = await pressUntilShown({ press: () => s.code.click(`[data-moss-open="${plugin}"]`), shown: () => s.code.eval<boolean>(`!!document.querySelector('${field}')`).catch(() => false), tries: 3, waitMs: scaled(8_000), sleep, now: Date.now });
+  if (rowOpen === 0) s.x.fail(`Anthropic's row did not open (its key field ${field}) in three presses`);
   const accept = `[data-moss-terms="${plugin}"]`;
   if (await s.code.eval<boolean>(`!!document.querySelector('${accept}')`)) await s.code.click(accept);
   await s.code.type(field, s.x.dummyKey);
