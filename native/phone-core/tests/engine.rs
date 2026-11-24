@@ -1,0 +1,281 @@
+//! Proof A: the core against a REAL engine started from source on a temp home (tests/harness/engine.ts), over the
+//! real link sidecar on loopback: no relay, nothing leaves the machine. Needs `bun` (MOSS_PC_BUN, default the repo's
+//! scripts/pinned-bun) with the workspace installed, and the built sidecar (MOSS_LINK_BIN); skipped without
+//! MOSS_PC_ENGINE_TESTS=1, which CI's phone-core job sets.
+
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use moss_phone_core::{
+    bytes, cards, keys::Ed25519Key, AnswerKeyHolder, ConnEvent, ConnectOptions, Connection, CoreConfig, CoreError, PhoneApp, PhoneCore, PhoneOs, RelayChoice,
+    SecretStorage, StorageError,
+};
+use serde_json::{json, Value};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
+    process::{Child, ChildStdin, ChildStdout},
+};
+
+#[derive(Default)]
+struct MemStorage(Mutex<HashMap<String, Vec<u8>>>);
+
+impl SecretStorage for MemStorage {
+    fn load(&self, name: String) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.0.lock().unwrap().get(&name).cloned())
+    }
+    fn save(&self, name: String, value: Vec<u8>) -> Result<(), StorageError> {
+        self.0.lock().unwrap().insert(name, value);
+        Ok(())
+    }
+    fn delete(&self, name: String) -> Result<(), StorageError> {
+        self.0.lock().unwrap().remove(&name);
+        Ok(())
+    }
+}
+
+fn enabled() -> bool {
+    std::env::var("MOSS_PC_ENGINE_TESTS").as_deref() == Ok("1")
+}
+
+fn repo() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+}
+
+struct Engine {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Lines<BufReader<ChildStdout>>,
+    next: u64,
+}
+
+impl Engine {
+    async fn start() -> Engine {
+        let bun = std::env::var("MOSS_PC_BUN").map(PathBuf::from).unwrap_or_else(|_| repo().join("scripts/pinned-bun"));
+        let mut child = tokio::process::Command::new(bun)
+            .arg(repo().join("native/phone-core/tests/harness/engine.ts"))
+            .current_dir(repo())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("the engine harness");
+        let stdin = child.stdin.take().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let ready = tokio::time::timeout(Duration::from_secs(120), lines.next_line()).await.expect("the engine started in time").unwrap().unwrap();
+        assert!(ready.contains("\"ready\":true"), "the engine's first line: {ready}");
+        Engine { child, stdin, lines, next: 1 }
+    }
+
+    async fn cmd(&mut self, mut c: Value) -> Result<Value, String> {
+        let id = self.next;
+        self.next += 1;
+        c["id"] = json!(id);
+        self.stdin.write_all(format!("{c}\n").as_bytes()).await.unwrap();
+        loop {
+            let line = tokio::time::timeout(Duration::from_secs(90), self.lines.next_line()).await.expect("the engine answered in time").unwrap().expect("the engine is running");
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v["id"] == json!(id) {
+                return if v["ok"] == json!(true) { Ok(v["result"].clone()) } else { Err(v["error"].as_str().unwrap_or("").to_string()) };
+            }
+        }
+    }
+
+    async fn ok(&mut self, c: Value) -> Value {
+        let what = c["cmd"].clone();
+        self.cmd(c).await.unwrap_or_else(|e| panic!("engine {what}: {e}"))
+    }
+
+    async fn stop(mut self) {
+        let _ = self.cmd(json!({ "cmd": "stop" })).await;
+        let _ = tokio::time::timeout(Duration::from_secs(20), self.child.wait()).await;
+    }
+}
+
+fn phone(storage: Arc<MemStorage>) -> Arc<PhoneCore> {
+    PhoneCore::new(
+        storage,
+        CoreConfig { device_name: "Test phone".into(), holder: AnswerKeyHolder::Keychain, os: PhoneOs::Ios, relay: RelayChoice::Disabled, bind_addr: Some("127.0.0.1:0".into()) },
+    )
+    .unwrap()
+}
+
+/// Pairs a fresh phone with the engine, the engine's person confirming `words` (the right ones when None) and
+/// approving (or denying) the card.
+async fn pair(engine: &mut Engine, core: &Arc<PhoneCore>, words: Option<Vec<String>>, approve: bool) -> (Result<moss_phone_core::PairedComputer, CoreError>, Vec<String>) {
+    let begun = engine.ok(json!({ "cmd": "begin" })).await;
+    let pairing_id = begun["pairingId"].as_str().unwrap().to_string();
+    let pairing = core.clone().begin_pairing(begun["qr"].as_str().unwrap().into(), PhoneApp::Moss).await.expect("the phone reached the words");
+    let shown: Vec<String> = serde_json::from_value(engine.ok(json!({ "cmd": "words", "pairingId": pairing_id })).await).unwrap();
+    // Both show the same four words: the phone's are built from the same transcript as the engine's.
+    assert_eq!(pairing.words(), shown);
+    let typed = words.unwrap_or_else(|| shown.clone());
+    let phone_side = tokio::spawn(async move { pairing.confirm().await });
+    engine.ok(json!({ "cmd": "confirm", "pairingId": pairing_id, "words": typed, "approve": approve })).await;
+    (phone_side.await.unwrap(), shown)
+}
+
+async fn until_event(conn: &Connection, what: &str, mut f: impl FnMut(&ConnEvent) -> bool) -> ConnEvent {
+    let end = tokio::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let e = tokio::time::timeout_at(end, conn.next_event()).await.unwrap_or_else(|_| panic!("timed out waiting for {what}")).expect("the connection is open");
+        if f(&e) {
+            return e;
+        }
+        assert!(!matches!(e, ConnEvent::Closed), "closed while waiting for {what}");
+    }
+}
+
+fn card_event(e: &ConnEvent, card: &str) -> Option<Value> {
+    let ConnEvent::Notification { method, params_json } = e else { return None };
+    let p: Value = serde_json::from_str(params_json).ok()?;
+    (method == "core.event" && p["type"] == "card_requested" && p["card"]["id"] == card).then(|| p["card"].clone())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
+    if !enabled() {
+        return;
+    }
+    let mut engine = Engine::start().await;
+    let storage = Arc::new(MemStorage::default());
+    let core = phone(storage.clone());
+    let (paired, _) = pair(&mut engine, &core, None, true).await;
+    let computer = paired.expect("the pairing completed");
+    assert_eq!(computer.name, "Studio");
+    assert_eq!(computer.app, PhoneApp::Moss);
+    // The engine lists the phone, with the same id the phone derives from its own key.
+    let me = core.identity();
+    engine.ok(json!({ "cmd": "waitDevice", "id": me.device_id })).await;
+    let devices = engine.ok(json!({ "cmd": "devices" })).await;
+    let listed = devices["devices"].as_array().unwrap().iter().find(|d| d["id"] == json!(me.device_id)).expect("the phone is listed").clone();
+    assert_eq!(listed["kind"], "phone");
+    // The pair credential is kept through the host's storage, never anywhere else.
+    let pair_id = computer.pair_id.clone().unwrap();
+    assert!(storage.0.lock().unwrap().contains_key(&format!("pair-key:{pair_id}")));
+    assert!(storage.0.lock().unwrap().contains_key(&format!("pair-secret:{pair_id}")));
+
+    // A card already waiting at connect comes in the pending list.
+    let waiting = engine.ok(json!({ "cmd": "raiseCard", "title": "waiting at connect" })).await["cardId"].as_str().unwrap().to_string();
+    let conn = core
+        .clone()
+        .connect(computer.id.clone(), ConnectOptions { client_name: "phone-core test".into(), areas: vec!["approvals".into(), "bots".into(), "devices".into()], call_timeout_ms: 30_000 })
+        .await
+        .unwrap();
+    let pending = until_event(&conn, "the pending cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await;
+    let ConnEvent::PendingCards { cards_json } = pending else { unreachable!() };
+    assert!(cards_json.contains(&waiting), "the waiting card is in the pending list");
+    until_event(&conn, "up", |e| matches!(e, ConnEvent::Up)).await;
+
+    // Calls on the remote role's list work; one off it is refused by the engine.
+    let bots: Value = serde_json::from_str(&conn.call("bot.list".into(), "{}".into()).await.expect("bot.list")).unwrap();
+    assert!(bots.is_object());
+    match conn.call("plugin.install".into(), "{}".into()).await {
+        Err(CoreError::Rpc { .. }) => {}
+        other => panic!("a call off the remote list should be refused: {other:?}"),
+    }
+
+    // A card raised now arrives as an event; the phone answers it and the engine takes the signature.
+    let card_id = engine.ok(json!({ "cmd": "raiseCard" })).await["cardId"].as_str().unwrap().to_string();
+    let heard = until_event(&conn, "the card_requested event", |e| card_event(e, &card_id).is_some()).await;
+    let card = card_event(&heard, &card_id).unwrap();
+    assert_eq!(cards::card_hash(&card).unwrap(), card["hash"].as_str().unwrap(), "the phone rebuilds the engine's hash");
+    let answered = conn.answer_card(card_id.clone(), "approve".into(), vec![]).await.unwrap();
+    assert_eq!(answered, moss_phone_core::AnswerOutcome { accepted: true, reason: None });
+    let decision = engine.ok(json!({ "cmd": "decision", "cardId": card_id })).await;
+    assert_eq!(decision["allowed"], true);
+    assert_eq!(decision["by"], "card");
+
+    // Refusals. A replayed answer: the same card again is not taken (locally, and by the engine when sent anyway).
+    assert!(matches!(conn.answer_card(card_id.clone(), "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
+    let replay = conn.answer_card_json(card.to_string(), "approve".into(), vec![]).await.unwrap();
+    assert!(!replay.accepted, "the engine refuses a replay");
+
+    // A tampered card: the phone signs nothing for it.
+    let mut tampered = card.clone();
+    tampered["fields"]["title"]["text"] = json!("something else");
+    assert!(matches!(conn.answer_card_json(tampered.to_string(), "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
+
+    // The waiting card: an answer signed for one card is no proof for another, nor for another hash.
+    let view = conn.fetch_card(waiting.clone()).await.unwrap();
+    assert!(view.pending);
+    let answer_key = {
+        let seed = storage.0.lock().unwrap().get("answer-key").unwrap().clone();
+        Ed25519Key::from_seed_slice(&seed).unwrap()
+    };
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let signed_for_other = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&card_id, &view.hash, "approve", at, &[]).as_bytes()));
+    let forged = |sig: &str, hash: &str| {
+        json!({ "id": waiting, "hash": hash, "option": "approve", "proof": { "via": "device", "device": me.device_id, "at": at, "signature": sig } }).to_string()
+    };
+    let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged(&signed_for_other, &view.hash)).await.unwrap()).unwrap();
+    assert_eq!(r["accepted"], false, "another card's signature is refused: {r}");
+    let wrong_hash = "0".repeat(64);
+    let signed_wrong = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&waiting, &wrong_hash, "approve", at, &[]).as_bytes()));
+    let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged(&signed_wrong, &wrong_hash)).await.unwrap()).unwrap();
+    assert_eq!(r["accepted"], false, "an answer for a changed card is refused: {r}");
+    // And the honest deny is taken.
+    assert!(conn.answer_card(waiting.clone(), "deny".into(), vec![]).await.unwrap().accepted);
+    assert_eq!(engine.ok(json!({ "cmd": "decision", "cardId": waiting })).await["allowed"], false);
+
+    // Revoked on the computer: the link is cut and the phone stops dialling.
+    engine.ok(json!({ "cmd": "revoke", "id": me.device_id })).await;
+    until_event(&conn, "revoked", |e| matches!(e, ConnEvent::Revoked)).await;
+    assert!(matches!(conn.call("bot.list".into(), "{}".into()).await, Err(_)));
+    conn.close();
+    core.shutdown().await;
+    engine.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refusals_at_pairing() {
+    if !enabled() {
+        return;
+    }
+    let mut engine = Engine::start().await;
+
+    // The computer's person reads different words: both refuse, and nothing is added or kept.
+    let storage = Arc::new(MemStorage::default());
+    let core = phone(storage.clone());
+    let (r, shown) = pair(&mut engine, &core, Some(vec!["acid".into(), "acid".into(), "acid".into(), "acid".into()]), true).await;
+    assert_ne!(shown, vec!["acid"; 4]);
+    assert!(matches!(r, Err(CoreError::Refused { .. })), "wrong words: {r:?}");
+    assert!(core.paired_computers().unwrap().is_empty());
+    assert!(!storage.0.lock().unwrap().keys().any(|k| k.starts_with("pair-")));
+
+    // The computer's person denies the sealed card.
+    let core = phone(Arc::new(MemStorage::default()));
+    let (r, _) = pair(&mut engine, &core, None, false).await;
+    assert!(matches!(r, Err(CoreError::Refused { .. })), "denied card: {r:?}");
+    assert!(core.paired_computers().unwrap().is_empty());
+
+    // The phone's person says the words differ: the computer's pairing fails and adds nothing.
+    let core = phone(Arc::new(MemStorage::default()));
+    let begun = engine.ok(json!({ "cmd": "begin" })).await;
+    let pairing = core.clone().begin_pairing(begun["qr"].as_str().unwrap().into(), PhoneApp::Code).await.unwrap();
+    pairing.reject().await;
+    let confirmed = engine.ok(json!({ "cmd": "confirm", "pairingId": begun["pairingId"], "words": pairing.words(), "approve": true })).await;
+    let devices = engine.ok(json!({ "cmd": "devices" })).await;
+    assert!(!devices.to_string().contains(&core.identity().device_id), "after the phone's no, nothing is added ({confirmed})");
+
+    // A QR that isn't one, and one with its secret changed: refused before or at the computer's door.
+    assert!(matches!(core.clone().begin_pairing("clover-pair:1:AAAA".into(), PhoneApp::Moss).await, Err(CoreError::Invalid { .. })));
+    let begun = engine.ok(json!({ "cmd": "begin" })).await;
+    let qr = begun["qr"].as_str().unwrap();
+    let body = bytes::from_b64url(&qr["clover-pair:1:".len()..]).unwrap();
+    let mut v = moss_phone_core::cbor::decode(&body).unwrap();
+    if let moss_phone_core::cbor::Cbor::Array(a) = &mut v {
+        a[1] = moss_phone_core::cbor::Cbor::Bytes(vec![7u8; 32]);
+    }
+    let bad = format!("clover-pair:1:{}", bytes::b64url(&moss_phone_core::cbor::encode(&v)));
+    assert!(matches!(core.clone().begin_pairing(bad, PhoneApp::Moss).await, Err(CoreError::Refused { .. })));
+    engine.stop().await;
+}

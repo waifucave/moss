@@ -1,0 +1,9 @@
+# The bindings' names (`cargo run --features bindgen --bin uniffi-bindgen -- generate --library ...`).
+[bindings.kotlin]
+package_name = "com.waifucave.moss.phonecore"
+cdylib_name = "moss_phone_core"
+
+[bindings.swift]
+module_name = "MossPhoneCore"
+ffi_module_name = "MossPhoneCoreFFI"
+ffi_module_filename = "MossPhoneCoreFFI"
