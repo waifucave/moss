@@ -2,13 +2,13 @@
 // downloaded and nothing is fetched. Any static host serves the result at / and /docs/; the Worker in wrangler.jsonc
 // serves it with the headers in dist/_headers.
 //
-//   bun src/build.ts [--out <dir>] [--state unreleased|released] [--hero list|name]
+//   bun src/build.ts [--out <dir>] [--state unreleased|released]
 //
-// --state and --hero build with that switch changed from site.json's, for the check and the pictures; site.json
-// itself is the one switch a real build reads.
+// --state builds with the release switch changed from site.json's, for the check and the pictures; site.json
+// itself is what a real build reads.
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { readConfig, REPO_ROOT, SITE_DIR, withSwitches, type Hero, type ReleaseState, type SiteConfig } from "./config";
+import { readConfig, REPO_ROOT, SITE_DIR, withSwitches, type ReleaseState, type SiteConfig } from "./config";
 import { docsPages } from "./docs";
 import { html, tidy } from "./html";
 import { LANDING_DESCRIPTION, LANDING_TITLE, landingBody } from "./landing";
@@ -31,7 +31,6 @@ export const HEADERS = `/*
 export interface BuildOptions {
   out?: string;
   state?: ReleaseState;
-  hero?: Hero;
   config?: SiteConfig;
 }
 
@@ -66,7 +65,7 @@ function write(out: string, urlPath: string, text: string): void {
 
 export async function buildSite(opts: BuildOptions = {}): Promise<BuildResult> {
   const out = resolve(opts.out ?? join(SITE_DIR, "dist"));
-  const config = withSwitches(opts.config ?? readConfig(), { ...(opts.state !== undefined ? { state: opts.state } : {}), ...(opts.hero !== undefined ? { hero: opts.hero } : {}) });
+  const config = withSwitches(opts.config ?? readConfig(), { ...(opts.state !== undefined ? { state: opts.state } : {}) });
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
 
@@ -85,6 +84,16 @@ export async function buildSite(opts: BuildOptions = {}): Promise<BuildResult> {
   const docs = docsPages(config);
   for (const p of docs.pages) put(p.url, p.title, p.description, p.body, true);
   write(out, "/docs/search.json", JSON.stringify(docs.search));
+  // Privacy and Terms: placeholders until the first release, when the real ones are published.
+  put("/privacy/", "Privacy: MOSS", "MOSS's privacy policy comes with the first release.", html`<section class="wrap lost">
+<h1>Privacy</h1>
+<p class="lead">MOSS's privacy policy is coming with the first release.</p>
+<p>Until then, the landing page says <a href="/#privacy">what leaves your computer</a>.</p>
+</section>`, false);
+  put("/terms/", "Terms: MOSS", "MOSS's terms of use come with the first release.", html`<section class="wrap lost">
+<h1>Terms</h1>
+<p class="lead">MOSS's terms of use are coming with the first release.</p>
+</section>`, false);
   put("/404.html", "Not found: MOSS", "There is no page at this address.", html`<section class="wrap lost">
 <h1>There's no page here</h1>
 <p class="lead">The address may be mistyped, or the page has moved.</p>
@@ -105,9 +114,8 @@ if (import.meta.main) {
     const i = process.argv.indexOf(name);
     return i === -1 ? undefined : process.argv[i + 1];
   };
-  const state = arg("--state"), hero = arg("--hero");
+  const state = arg("--state");
   if (state !== undefined && state !== "released" && state !== "unreleased") throw new Error("--state is released or unreleased");
-  if (hero !== undefined && hero !== "list" && hero !== "name") throw new Error("--hero is list or name");
-  const r = await buildSite({ ...(arg("--out") !== undefined ? { out: arg("--out") } : {}), ...(state !== undefined ? { state } : {}), ...(hero !== undefined ? { hero } : {}) });
+  const r = await buildSite({ ...(arg("--out") !== undefined ? { out: arg("--out") } : {}), ...(state !== undefined ? { state } : {}) });
   console.log(`site: ${r.pages.length} pages in ${r.out}`);
 }

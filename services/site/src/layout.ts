@@ -74,6 +74,8 @@ ${f.body}
 <a href="${repo}/releases">Releases</a>
 <a href="${repo}/blob/main/SECURITY.md">Report a security problem</a>
 <a href="${repo}/blob/main/LICENSE">License</a>
+<a href="/privacy/">Privacy</a>
+<a href="/terms/">Terms</a>
 </nav>
 <p class="foot__note">This site loads nothing from any other site: no fonts, no analytics, no cookies. Claude Code, Codex and the other coding agents and model providers named here are trademarks of their owners, named only to say what MOSS works with; none of them made or endorses MOSS.</p>
 </div>

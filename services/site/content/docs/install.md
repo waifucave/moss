@@ -5,6 +5,8 @@ description: MOSS isn't released yet. Here is what the first release will hold f
 
 > **Not released yet.** There is nothing to download today. The first release brings both apps, MOSS and MOSS Code, to macOS, Windows and Linux at the same time, from the project's [releases on GitHub](https://github.com/waifucave/moss/releases). This page is ready for that day.
 
+MOSS is for people 13 and older.
+
 ## What you will download
 
 Each app has its own installer for each system. Install MOSS, MOSS Code, or both: each one carries the engine and runs on its own, and with both installed they share one engine and one home folder.
@@ -21,7 +23,7 @@ You need macOS 27 or later on a Mac with Apple silicon.
 2. Drag MOSS (or MOSS Code) into Applications.
 3. Open it from Applications.
 
-The apps are signed and notarized by Apple. They update themselves.
+The apps are signed and notarized by Apple.
 
 ## Windows
 
@@ -42,6 +44,10 @@ MOSS supports Ubuntu 26.04 LTS and current Fedora, on x64 and arm64.
 
 The `.deb` and `.rpm` are the ones to prefer: they also install the security profile that the app's sandbox needs on Ubuntu, which an AppImage can't. On Wayland, the island that shows cards at the top of the screen is an ordinary window, since Wayland doesn't let a window stay on top.
 
+## Updates
+
+Both apps update themselves, on every system. They check the project's releases on GitHub when they start and every 4 hours, download a new version on their own, and install it when MOSS has nothing running. There is no switch to turn this off.
+
 ## The engine
 
 Whichever app you install first also installs the engine, `moss-core`, and starts it every time you log in: as a launch agent on macOS, a scheduled task on Windows, and a `systemd --user` service on Linux. It keeps your bots running while every window is closed.
@@ -52,7 +58,7 @@ Removing one app leaves the other working.
 
 A setup guide walks you through three steps.
 
-**1. Add a model provider.** MOSS needs a model to talk to. Sign in to a subscription you already have, or paste an API key. You can search the list of providers, and add more than one.
+**1. Add a model provider.** MOSS needs a model to talk to, and doesn't come with one: you need an account or an API key with a model provider, or a model running on your own computer, with Ollama, LM Studio or another local server. Sign in to a subscription you already have, or paste an API key. You can search the list of providers, and add more than one.
 
 {{picture moss-setup "Step 1 of 3 of MOSS's setup guide: Welcome to MOSS. MOSS needs a model to talk to. Add a provider: sign in to a subscription you have, or paste an API key. A search field and a list of providers: Codex, Grok, OpenAI, Anthropic, Google Gemini API, OpenRouter, xAI." "Step 1: add a provider."}}
 

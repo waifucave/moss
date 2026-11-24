@@ -29,7 +29,7 @@
         { "slug": "approvals", "title": "Approval cards and levels", "summary": "What a card is, what each level lets a bot do alone, and what always asks.", "sources": ["docs/moss-spec.md §3.5, §5.5, §9.1", "packages/core/src/contracts/approval-broker.ts", "apps/moss/src/window/settings/SettingsPage.tsx", "packages/protocol/src/common.ts"] },
         { "slug": "sandbox", "title": "The command sandbox", "summary": "What a bot's commands can and cannot touch on each system, and asking for a folder.", "sources": ["docs/moss-spec.md §4, §9.1"] },
         { "slug": "where-cards-show", "title": "Where cards show", "summary": "The window, the island at the top of the screen, a phone: how MOSS decides where a card appears.", "sources": ["docs/moss-spec.md §3.5, §10", "plugins/moss/plugins/island"] },
-        { "slug": "privacy", "title": "What leaves your computer", "summary": "Every connection MOSS makes, to whom, and what each one carries.", "sources": ["docs/moss-spec.md §8", "plugins/moss/plugins/web/moss.json", "apps/moss/electron-builder.yml", "apps/moss/src/window/setup/SetupGuide.tsx"] }
+        { "slug": "privacy", "title": "What leaves your computer", "summary": "Every connection MOSS makes, to whom, and what each one carries.", "sources": ["docs/moss-spec.md §8", "plugins/moss/plugins/web/moss.json", "packages/app-release/src/updater.ts", "apps/moss/electron-builder.yml", "apps/moss/src/window/setup/SetupGuide.tsx", "packages/core/src/devices/relay.ts", "native/link-sidecar/src/stun.rs", "packages/core/src/clock/shared-clock.ts", "packages/core/src/sessions/cleaner.ts", "packages/core/src/agent/dreamer.ts", "docs/secrets-file.md"] }
       ]
     },
     {

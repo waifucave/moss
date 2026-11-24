@@ -19,7 +19,7 @@ You can install either one, or both. Each works on its own.
 
 ## One engine
 
-Both apps are windows onto one engine, `moss-core`, which runs in the background from the moment you log in. The engine holds everything: your bots and their conversations, coding sessions, plugins and settings live in one folder, `~/.moss`, and your keys in your system's secret store.
+Both apps are windows onto one engine, `moss-core`, which runs in the background from the moment you log in. The engine holds everything: your bots and their conversations, coding sessions, plugins and settings live in one folder, `~/.moss`. Your keys are kept apart from it: in the Keychain on macOS, and on Windows and Linux in an encrypted file whose key your system's secret store keeps.
 
 Because the engine does the work, closing a window stops nothing. Bots keep working, routines keep running, and when one needs you, its card still reaches you.
 
@@ -44,11 +44,20 @@ A bot can read and change files, run commands in a sandbox, search the web and r
 
 What it does on its own depends on the level you set for each computer. At the default level, it works on its own inside its sandbox and your ordinary folders, and asks you on a card before deleting anything, buying anything, or doing something MOSS's safety check isn't sure about. [Approval cards and levels](/docs/approvals/) has the details.
 
-## Your accounts and keys
+## Your model, and what leaves your computer
 
-MOSS has no account of its own to pay for. It runs on the model accounts you already have: sign in to a subscription, or paste an API key from one of the many providers it knows, or point it at a model on your own computer. The [setup guide](/docs/install/#when-you-first-open-moss) asks for one when you first open it.
+MOSS doesn't come with a model. You need an account or an API key with a model provider, or a model running on your own computer. Sign in to a subscription you already have, paste an API key from one of the many providers MOSS knows, or point it at a model server such as Ollama or LM Studio. The [setup guide](/docs/install/#when-you-first-open-moss) asks for one when you first open MOSS.
 
-MOSS keeps no telemetry and no analytics. Your keys stay in your system's secret store.
+Your conversations, memory, settings and logs stay in `~/.moss` on your computer. These leave it:
+
+- **Your model provider** gets what you write and what a bot reads to answer you: files, pages, command output, pictures you attach. It goes with your own key or sign-in. A few background jobs use the same provider: titles, a safety check before commands, and, in MOSS Code, passes that read idle sessions to keep its memory and to clear away sessions with nothing worth keeping.
+- **Your voice provider**, once you set a voice up with your own key, gets the replies to speak and what you say while you hold the talk button.
+- **Web searches go to Exa**, a search company, and this is on from the start, with no account or key. Exa gets the words searched for and your IP address. There is no separate switch: to stop it, switch off the *Web search and fetch* plugin in MOSS Code, or with `moss plugin disable` in a terminal. Pages a bot reads are fetched straight from your computer.
+- **Updates** come from the project's releases on GitHub. Both apps check when they start and every 4 hours, download a new version on their own, and install it when MOSS has nothing running. This can't be turned off. GitHub sees your IP address and the version you have.
+- **Paired devices** find each other through a small WaifuCave service, learn their own network address from Cloudflare's and Google's public STUN servers, and, when they can't connect directly, talk through a relay: n0's public relays, unless you choose your own. What passes between your devices is encrypted end to end; a relay still sees their IP addresses, which are online, and how much they send. While devices are linked they also ask Cloudflare's and Google's public time servers for the time.
+- **Downloads you OK on a card** come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave it. A plugin can then reach what its card said it may.
+
+MOSS has no analytics, no telemetry and no crash reports. You don't need an account: your devices pair with a code.
 
 ## Plugins
 
@@ -65,6 +74,8 @@ The first release brings both apps to macOS, Windows and Linux at the same time:
 | Linux | Ubuntu 26.04 LTS, current Fedora | x64 and arm64 |
 
 It includes pairing your computers so a bot can work on any of them.
+
+MOSS is for people 13 and older.
 
 **Not in the first release:**
 

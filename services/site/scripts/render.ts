@@ -99,7 +99,7 @@ interface Shot {
   url: string;
   width: number;
   theme: "light" | "dark";
-  /** Only the top of the page, this tall (the openings), instead of the whole page. */
+  /** Only the top of the page, this tall (the opening), instead of the whole page. */
   height?: number;
   /** Only this element (a CSS selector). */
   element?: string;
@@ -157,9 +157,8 @@ const scratch = mkdtempSync(join(process.env.MOSS_SITE_SCRATCH ?? tmpdir(), "mos
 mkdirSync(OUT, { recursive: true });
 const base = readConfig();
 const builds = {
-  unreleased: await buildSite({ out: join(scratch, "unreleased"), config: withSwitches(base, { state: "unreleased", hero: "list" }) }),
-  released: await buildSite({ out: join(scratch, "released"), config: withSwitches(base, { state: "released", hero: "list" }) }),
-  name: await buildSite({ out: join(scratch, "name"), config: withSwitches(base, { state: "unreleased", hero: "name" }) }),
+  unreleased: await buildSite({ out: join(scratch, "unreleased"), config: withSwitches(base, { state: "unreleased" }) }),
+  released: await buildSite({ out: join(scratch, "released"), config: withSwitches(base, { state: "released" }) }),
 };
 const servers = Object.fromEntries(Object.entries(builds).map(([k, b]) => [k, serveSite(b.out)])) as Record<keyof typeof builds, { url: string; stop: () => void }>;
 const profile = join(scratch, "profile");
@@ -173,8 +172,9 @@ const name = (path: string) => (path === "/" ? "landing" : path === "/404.html" 
 for (const theme of THEMES) for (const width of WIDTHS) {
   shots.push({ file: `landing-unreleased-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme });
   shots.push({ file: `landing-released-${width}-${theme}.png`, url: `${servers.released.url}/`, width, theme });
-  shots.push({ file: `landing-top-list-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme, height: width === 390 ? 844 : width === 820 ? 1180 : 900 });
-  shots.push({ file: `landing-top-name-${width}-${theme}.png`, url: `${servers.name.url}/`, width, theme, height: width === 390 ? 844 : width === 820 ? 1180 : 900 });
+  shots.push({ file: `landing-top-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme, height: width === 390 ? 844 : width === 820 ? 1180 : 900 });
+  shots.push({ file: `landing-bots-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme, element: "#bots" });
+  shots.push({ file: `landing-privacy-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme, element: "#privacy" });
   shots.push({ file: `landing-download-unreleased-${width}-${theme}.png`, url: `${servers.unreleased.url}/`, width, theme, element: "#download" });
   shots.push({ file: `landing-download-released-${width}-${theme}.png`, url: `${servers.released.url}/`, width, theme, element: "#download" });
   for (const p of builds.unreleased.pages.filter((p) => p !== "/")) shots.push({ file: `${name(p)}-${width}-${theme}.png`, url: `${servers.unreleased.url}${p}`, width, theme });
@@ -191,10 +191,11 @@ figure{margin:0}figcaption{margin-top:6px;opacity:.7}img{display:block;border:1p
 <h1>${title}</h1>${rows.map((r) => `<h2>${r.label}</h2><div class="row">${r.files.map((f, i) => `<figure><img src="/${f}" width="${r.widths[i]}"><figcaption>${f}</figcaption></figure>`).join("")}</div>`).join("")}`;
   for (const theme of THEMES) {
     writeFileSync(join(OUT, `_sheet-landing-${theme}.html`), sheet(`moss.waifucave.com, the landing page, ${theme}`, [
-      { label: "The opening, two directions: list (built) and name", files: [`landing-top-list-1440-${theme}.png`, `landing-top-name-1440-${theme}.png`], widths: [720, 720] },
-      { label: "The opening at 820 and 390", files: [`landing-top-list-820-${theme}.png`, `landing-top-name-820-${theme}.png`, `landing-top-list-390-${theme}.png`, `landing-top-name-390-${theme}.png`], widths: [410, 410, 222, 222] },
+      { label: "The opening, the bot list, at 1440, 820 and 390", files: [`landing-top-1440-${theme}.png`, `landing-top-820-${theme}.png`, `landing-top-390-${theme}.png`], widths: [720, 410, 222] },
+      { label: "The bots band, with Try a name at its end; and What leaves your computer", files: [`landing-bots-1440-${theme}.png`, `landing-privacy-1440-${theme}.png`], widths: [720, 720] },
       { label: "The download area: not released, and released", files: [`landing-download-unreleased-1440-${theme}.png`, `landing-download-released-1440-${theme}.png`], widths: [720, 720] },
       { label: "The whole page, not released yet, at 1440, 820 and 390", files: [`landing-unreleased-1440-${theme}.png`, `landing-unreleased-820-${theme}.png`, `landing-unreleased-390-${theme}.png`], widths: [720, 410, 195] },
+      { label: "Privacy and Terms, placeholders until the first release (the foot links to them)", files: [`privacy-1440-${theme}.png`, `terms-1440-${theme}.png`, `privacy-390-${theme}.png`], widths: [560, 560, 195] },
     ], theme));
     const docPages = builds.unreleased.pages.filter((p) => p.startsWith("/docs/"));
     writeFileSync(join(OUT, `_sheet-docs-${theme}.html`), sheet(`moss.waifucave.com/docs, ${theme}`, docPages.map((p) => ({

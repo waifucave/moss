@@ -18,7 +18,7 @@ interface Row {
   line: string;
   time: string;
   unread?: boolean;
-  /** What the row turns to while the page is open: [mood, status, line] steps, for the list opening. */
+  /** What the row turns to while the page is open: [mood, status, line] steps. */
   steps?: readonly (readonly [Mood, string, string])[];
 }
 
@@ -82,8 +82,8 @@ function actions(config: SiteConfig): Html {
 <p class="status"><span class="status__dot" aria-hidden="true"></span>Not released yet. The first release brings MOSS and MOSS Code to macOS, Windows and Linux together.</p>`;
 }
 
-function heroList(config: SiteConfig): Html {
-  return html`<section class="hero hero--list" aria-labelledby="hero-title">
+function hero(config: SiteConfig): Html {
+  return html`<section class="hero" aria-labelledby="hero-title">
 <div class="hero__text">
 <h1 id="hero-title">Bots that do the work on your computer.</h1>
 <p class="lead">${SENTENCE}</p>
@@ -97,29 +97,19 @@ ${botList(ROWS, true)}
 </section>`;
 }
 
-function nameTry(big: boolean): Html {
-  return html`<div class="tryname${big ? " tryname--big" : ""}" data-tryname>
-${face({ name: "Juniper", size: big ? "big" : "block", lively: true, data: { "data-tryname-face": "" } })}
+/** "Try a name": the bots band's own proof that a name makes a face, and always the same one. */
+function nameTry(): Html {
+  return html`<div class="tryname" data-tryname>
+${face({ name: "Juniper", size: "block", lively: true, data: { "data-tryname-face": "" } })}
 <div class="tryname__field">
-<label for="tryname-${big ? "hero" : "bots"}">Try a name</label>
-<input id="tryname-${big ? "hero" : "bots"}" type="text" value="Juniper" maxlength="40" autocomplete="off" spellcheck="false" data-tryname-input>
+<label for="tryname">Try a name</label>
+<input id="tryname" type="text" value="Juniper" maxlength="40" autocomplete="off" spellcheck="false" data-tryname-input>
 <p class="tryname__note" aria-live="polite" data-tryname-note>Juniper is a sky-blue dome. Every bot called Juniper looks like this.</p>
 </div>
 </div>`;
 }
 
-function heroName(config: SiteConfig): Html {
-  return html`<section class="hero hero--name" aria-labelledby="hero-title">
-<div class="hero__text">
-<h1 id="hero-title">Name a bot. Give it a job.</h1>
-<p class="lead">${SENTENCE}</p>
-${actions(config)}
-</div>
-<div class="hero__show">${nameTry(true)}</div>
-</section>`;
-}
-
-function bots(config: SiteConfig): Html {
+function bots(): Html {
   return html`<section class="band" id="bots" aria-labelledby="bots-title">
 <div class="band__head">
 <h2 id="bots-title">Each bot is someone you can talk to</h2>
@@ -138,7 +128,7 @@ ${MOODS.map(([mood, word, name]) => html`<li class="mood">${face({ name, mood, s
 </ul>
 <p class="note">The words are always there too, beside every face, and with reduced motion turned on the faces keep still.</p>
 </div>
-${config.hero === "list" ? nameTry(false) : ""}
+${nameTry()}
 </section>`;
 }
 
@@ -248,24 +238,23 @@ ${picture({ name: "moss-plugins", alt: "MOSS's Plugins page: a field to add a pl
 function privacy(): Html {
   return html`<section class="band" id="privacy" aria-labelledby="privacy-title">
 <div class="band__head">
-<h2 id="privacy-title">Your accounts, your keys, nothing reporting on you</h2>
-<p class="lead">MOSS runs on your own model accounts. Sign in to a subscription you already have or paste an API key, from OpenAI, Anthropic, Google, OpenRouter, xAI and many more, or run a model on your own computer with Ollama or LM Studio.</p>
+<h2 id="privacy-title">Your own model, and what leaves your computer</h2>
+<p class="lead">MOSS doesn't come with a model: you bring one. Sign in to a subscription you already have or paste an API key, from OpenAI, Anthropic, Google, OpenRouter, xAI and many more, or run a model on your own computer with Ollama or LM Studio.</p>
 </div>
 <div class="split split--wide">
 ${picture({ name: "moss-setup", alt: "MOSS's setup guide, step 1 of 3: Welcome to MOSS. MOSS needs a model to talk to. Add a provider: sign in to a subscription you have, or paste an API key. A list of providers: Codex, Grok, OpenAI, Anthropic, Google Gemini API, OpenRouter, xAI.", caption: "The setup guide that greets you on first open." })}
 <div class="connects">
-<h3>What it connects to</h3>
+<h3>What leaves your computer</h3>
 <ul class="connects__list">
-<li><strong>Your messages</strong> go to the model provider you picked. With a voice turned on, the replies it speaks go to your voice provider.</li>
-<li><strong>Web searches</strong> go to Exa. Pages are fetched straight from your computer.</li>
-<li><strong>Updates</strong> are checked against this project's releases on GitHub.</li>
-<li><strong>Your devices</strong> find each other through a small WaifuCave service. When two can't connect directly, a relay carries their traffic: n0's public relays unless you pick your own. Both pass only encrypted data, though a relay does see which of your devices are online.</li>
-<li><strong>The time</strong> is checked with Cloudflare's and Google's public time servers, so all your devices agree on it.</li>
-<li><strong>Downloads you OK</strong> come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave.</li>
-<li><strong>Your account</strong>, if you make one, signs in at waifucave.com.</li>
-<li><strong>Your keys</strong> stay in your system's secret store, and travel only to your own devices, encrypted end to end.</li>
+<li><strong>Your model provider</strong> gets what you write and what the bot reads to answer you: files, pages, command output, pictures you attach. A few background jobs use it too: titles, a safety check before commands, and, in MOSS Code, passes that read idle sessions to keep its memory and to clear away ones with nothing worth keeping. With a voice set up, what it speaks and what you say to it go to your voice provider.</li>
+<li><strong>Web searches go to Exa</strong>, a search company, from the start, with no account or key. Exa gets the words searched for and your IP address. To stop it, switch off the Web search and fetch plugin in MOSS Code, or with <code>moss plugin disable</code>. Pages a bot reads are fetched straight from your computer.</li>
+<li><strong>Updates</strong> come from this project's releases on GitHub. Both apps check when they start and every 4 hours, download a new version on their own and install it when MOSS has nothing running. There is no switch to turn this off. GitHub sees your IP address and which version you have.</li>
+<li><strong>Paired devices</strong> find each other through a small WaifuCave service, and learn their own network address from Cloudflare's and Google's public STUN servers. When two can't connect directly, a relay carries their traffic: n0's public relays unless you pick your own. What passes between your devices is encrypted end to end, but a relay sees their IP addresses, which are online and how much they send.</li>
+<li><strong>The time</strong>: while your devices are linked, they ask Cloudflare's and Google's public time servers, so they agree on it.</li>
+<li><strong>Downloads you OK</strong> come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave. A plugin can then reach what its card said it may.</li>
+<li><strong>Your keys</strong> stay on your computer: in the Keychain on macOS, and on Windows and Linux in an encrypted file whose key your system's secret store keeps (or, with no secret store, a key file only you can read).</li>
 </ul>
-<p class="note">No telemetry and no analytics. A plugin you add reaches the hosts its card names. An account is optional: it only helps your devices find each other. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
+<p class="note">MOSS has no analytics, no telemetry and no crash reports. You don't need an account: devices pair with a code. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
 </div>
 </div>
 </section>`;
@@ -345,6 +334,7 @@ function download(config: SiteConfig): Html {
 ${released
     ? html`<p class="lead">Pick the app and your system. The system you're on comes first.</p>`
     : html`<p class="lead">MOSS isn't released yet. The first release brings both apps to macOS, Windows and Linux at the same time. Until then, the code is on GitHub, and the docs say what to expect.</p>`}
+<p class="note">MOSS is for people 13 and older. You need an account or key with a model provider, or a model running on your own computer.</p>
 </div>
 ${released
     ? downloadReleased(config, downloads(config.release.version, config.repository))
@@ -372,8 +362,8 @@ moss plugin dev hello-tool</code></pre>
 }
 
 export function landingBody(config: SiteConfig): Html {
-  return html`${config.hero === "name" ? heroName(config) : heroList(config)}
-${bots(config)}
+  return html`${hero(config)}
+${bots()}
 ${canDo()}
 ${approvals()}
 ${code()}

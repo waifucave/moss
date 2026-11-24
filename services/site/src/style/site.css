@@ -171,7 +171,6 @@ h3 { font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: 
 .face--mood { width: 56px; height: 56px; }
 .face--block { width: 40px; height: 40px; }
 .face--app { width: 56px; height: 56px; }
-.face--big { width: clamp(150px, 34vw, 220px); height: clamp(150px, 34vw, 220px); }
 .face[data-lively] canvas { cursor: pointer; }
 
 /* ---------------------------------------------------------------- the opening */
@@ -211,24 +210,21 @@ h3 { font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: 
 .botrow__last { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .botrow__unread { width: 8px; height: 8px; border-radius: 50%; background: var(--text); justify-self: end; }
 
-/* The name opening: one large bot and the field that names it. */
-.tryname { display: grid; gap: 20px; justify-items: center; text-align: center; }
-.tryname--big { padding: 8px 0; }
+/* "Try a name", in the bots band: a bot and the field that names it. */
+.tryname {
+  display: grid; grid-template-columns: auto minmax(0, 340px); gap: 20px; justify-content: start; align-items: center;
+  padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); max-width: 560px;
+}
+.tryname .face { width: 88px; height: 88px; }
 .tryname__field { display: grid; gap: 8px; width: min(100%, 340px); justify-items: stretch; }
 .tryname__field label { font-size: 0.875rem; color: var(--muted); }
 .tryname__field input {
-  font: inherit; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.01em; text-align: center;
+  font: inherit; font-size: 1.125rem; font-weight: 650; letter-spacing: -0.01em;
   color: var(--text); background: var(--field); border: 1px solid transparent; border-radius: 14px; padding: 10px 14px;
 }
 .tryname__field input:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; background: var(--bg); border-color: var(--line-strong); }
 .tryname__note { font-size: 0.9375rem; color: var(--muted); min-height: 3em; }
-.band .tryname {
-  grid-template-columns: auto minmax(0, 340px); justify-content: start; justify-items: start; text-align: left; align-items: center;
-  padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); max-width: 560px;
-}
-.band .tryname .face { width: 88px; height: 88px; }
-.band .tryname__field input { font-size: 1.125rem; text-align: left; }
-@media (max-width: 520px) { .band .tryname { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .tryname { grid-template-columns: 1fr; } }
 
 /* ---------------------------------------------------------------- sections */
 

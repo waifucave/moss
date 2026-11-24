@@ -1,5 +1,4 @@
-// The site builds, in both release states and both openings, with no broken link and nothing loaded from another
-// host; its download area names the files the release scripts make; its docs outline points at files that exist.
+// The site builds, in both release states, with no broken link and nothing loaded from another host; its download area names the files the release scripts make; its docs outline points at files that exist.
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,9 +35,8 @@ function allText(dir: string): string {
 
 describe("the built site", () => {
   for (const [key, change] of [
-    ["unreleased-list", { state: "unreleased", hero: "list" }],
-    ["released-list", { state: "released", hero: "list", homebrew: true, winget: true }],
-    ["unreleased-name", { state: "unreleased", hero: "name" }],
+    ["unreleased", { state: "unreleased" }],
+    ["released", { state: "released", homebrew: true, winget: true }],
   ] as const) {
     test(`${key}: no broken link, nothing from another host, within the page budget`, async () => {
       const r = await build(key, change);
@@ -52,7 +50,7 @@ describe("the built site", () => {
   }
 
   test("not released: no version, no download, the repository and the docs instead", async () => {
-    const r = await build("unreleased-list", { state: "unreleased", hero: "list" });
+    const r = await build("unreleased", { state: "unreleased" });
     const page = read(r, "/");
     expect(page).not.toContain(base.release.version);
     expect(page).not.toContain("/releases/download/");
@@ -61,7 +59,7 @@ describe("the built site", () => {
   }, 60_000);
 
   test("released: a button for every installer the release scripts name, at the release's address", async () => {
-    const r = await build("released-list", { state: "released", hero: "list", homebrew: true, winget: true });
+    const r = await build("released", { state: "released", homebrew: true, winget: true });
     const page = read(r, "/");
     const hrefs = [...page.matchAll(/href="([^"]+\/releases\/download\/[^"]+)"/g)].map((m) => m[1]!);
     const want = allInstallerNames(base.release.version).map((n) => releaseUrl(base.repository, base.release.version, n));
@@ -72,28 +70,61 @@ describe("the built site", () => {
   }, 60_000);
 
   test("the package managers' lines show only once they are switched on", async () => {
-    const r = await build("released-plain", { state: "released", hero: "list", homebrew: false, winget: false });
+    const r = await build("released-plain", { state: "released", homebrew: false, winget: false });
     const page = read(r, "/");
     expect(page).not.toContain("brew install");
     expect(page).not.toContain("winget install");
   }, 60_000);
 
-  test("the two openings", async () => {
-    expect(read(await build("unreleased-list", { state: "unreleased", hero: "list" }), "/")).toContain("data-botlist");
-    const name = read(await build("unreleased-name", { state: "unreleased", hero: "name" }), "/");
-    expect(name).toContain("tryname--big");
-    expect(name).not.toContain("data-botlist");
+  test("one opening, the bot list; the name-a-bot moment is part of the bots band", async () => {
+    const page = read(await build("unreleased", { state: "unreleased" }), "/");
+    expect(page.match(/<h1[ >]/g)?.length).toBe(1);
+    expect(page).toContain("Bots that do the work on your computer.");
+    expect(page).toContain("data-botlist");
+    const bots = page.slice(page.indexOf('id="bots"'), page.indexOf('id="can-do"'));
+    expect(bots).toContain("data-tryname");
+  }, 60_000);
+
+  test("Privacy and Terms: in every page's foot, each a placeholder until the first release", async () => {
+    const r = await build("unreleased", { state: "unreleased" });
+    for (const path of ["/", "/docs/", "/docs/install/"]) {
+      expect(read(r, path)).toContain('href="/privacy/"');
+      expect(read(r, path)).toContain('href="/terms/"');
+    }
+    for (const path of ["/privacy/", "/terms/"]) expect(read(r, path)).toContain("coming with the first release");
+  }, 60_000);
+
+  test("today's facts are said plainly: searches go to Exa, updates can't be turned off, no model comes with it, 13 and older", async () => {
+    const r = await build("unreleased", { state: "unreleased" });
+    const text = (path: string) => read(r, path).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    const home = text("/");
+    expect(home).toContain("Web searches go to Exa");
+    expect(home).toContain("every 4 hours");
+    expect(home).toContain("There is no switch to turn this off.");
+    expect(home).toContain("MOSS doesn't come with a model");
+    expect(home).toContain("13 and older");
+    expect(text("/docs/").length).toBeGreaterThan(0);
+    expect(text("/docs/install/")).toContain("13 and older");
+    expect(text("/docs/overview/")).toContain("Web searches go to Exa");
   }, 60_000);
 
   test("no old product name, no character model, nothing of the owner's", async () => {
-    const text = allText((await build("unreleased-list", { state: "unreleased", hero: "list" })).out).toLowerCase();
+    const text = allText((await build("unreleased", { state: "unreleased" })).out).toLowerCase();
     // The old product names are written backwards here, so this file never spells them (the repo's rename tests read every file).
     const old = ["revolc", "retniw", "amron"].map((w) => [...w].reverse().join(""));
     for (const word of [...old, "alpha", "live2d", "vrm", "pngtuber", "deepseek-chan"]) expect([word, text.includes(word)]).toEqual([word, false]);
   }, 60_000);
 
+  test("no price: the word \"free\" is on no page, in either release state", async () => {
+    for (const [key, change] of [["unreleased", { state: "unreleased" }], ["released", { state: "released", homebrew: true, winget: true }]] as const) {
+      const out = (await build(key, change)).out;
+      const said = allText(out).match(/[^.<>"]{0,40}\bfree\b[^.<>"]{0,40}/gi) ?? [];
+      expect([key, said]).toEqual([key, []]);
+    }
+  }, 60_000);
+
   test("the docs: every written page is in the navigation and the search index", async () => {
-    const r = await build("unreleased-list", { state: "unreleased", hero: "list" });
+    const r = await build("unreleased", { state: "unreleased" });
     const written = readOutline().flatMap((g) => g.pages).filter((p) => existsSync(docFile(p.slug)));
     expect(written.length).toBeGreaterThanOrEqual(6);
     const home = read(r, "/docs/");
@@ -128,7 +159,6 @@ describe("site.json", () => {
   test("the committed switches are valid, and a wrong one is named", () => {
     expect(configProblem(JSON.parse(readFileSync(join(SITE_DIR, "site.json"), "utf8")))).toBeUndefined();
     expect(configProblem({ ...base, release: { ...base.release, state: "soon" } })).toContain("release.state");
-    expect(configProblem({ ...base, hero: "big" })).toContain("hero");
     expect(configProblem({ ...base, repository: "https://example.com/x" })).toContain("repository");
   });
 });

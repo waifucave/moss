@@ -12,10 +12,7 @@ The page is written for the first reader. The second and third find their part b
 
 The bots are the product, so the bots are the page. Each bot is a living face made from its name; on the page they are the real faces, drawn by the same code the app draws them with (`packages/plugin-sdk/src/ui/faces/living-bots.js`), so they blink, look around and change mood. They are the only colour on the page. Everything else is the app's own plain neutral look: white and light grey surfaces, black for the person's words and the main buttons, light grey for the bot's.
 
-Two openings are built, and `site.json`'s `hero` picks one:
-
-* `list`: the headline at the left, and at the right a bot list like the app's own, where the bots' moods change as they work.
-* `name`: one large bot and a field: type a name and its face appears. The same name always makes the same bot.
+The opening is a bot list: the headline, "Bots that do the work on your computer.", at the left, and at the right a list like the app's own, where the bots' moods change as they work. (A second opening, one large bot and a name field, was built and set aside on 2026-11-24; the name field lives on at the end of the bots band, where it proves the band's sentence that a name makes a face.)
 
 ## What each section must make the reader understand
 
@@ -27,17 +24,17 @@ Two openings are built, and `site.json`'s `hero` picks one:
 | You stay in charge | Before anything risky the bot asks on a card, and you choose how much it may do alone. A real card is shown. |
 | MOSS Code | The second app runs the coding agents you already have, side by side, with the same cards. |
 | Plugins | Almost everything is a plugin, and nothing new runs until you say OK. |
-| Your keys | You bring your own model accounts. Nothing reports on you; the page lists what does connect, and where. |
+| Your model, what leaves | MOSS comes with no model: you bring an account, a key or a local model. The page lists, plainly, everything that leaves the computer: the provider, Exa's web search (on from the start), the updates (every 4 hours, no off switch), the devices' services, relays, STUN and time servers, and downloads you OK. |
 | Devices and phones | Your computers pair with each other. Phone apps are being built. |
 | Open source | Apache-2.0, on GitHub. |
-| Systems and download | macOS, Windows and Linux; not released yet, or a button per system. |
+| Systems and download | macOS, Windows and Linux; not released yet, or a button per system; for people 13 and older. |
 | For developers | One engine, a local protocol, plugins as folders, ACP agents and MCP tools; then the docs. |
 
 ## Look
 
 * **Type:** the system's own font (San Francisco on a Mac, Segoe UI on Windows), the font the apps use. No web font: zero bytes and zero requests. A clear scale: large tight headlines, 17 px body, 14 px notes.
 * **Colour:** the MOSS window's own tokens (`apps/moss/src/window/window.css`): white, `#F7F7F7`, black `#0A0A0A` for buttons and the person's words, `#F0F0F0` for the bot's words, and the same set turned for dark mode. Links are the text colour, underlined. No blue, no beige, no gradient, no glow.
-* **Faces:** the hero, the list, the moods row, the MOSS Code canvas sketch's bot block and the header's logo (MOSS, the default bot: the coral tile with round eyes, which is the app's icon) are all live. With "reduce motion" on, the kit leaves out jumps and turns, and a mood is also said in words beside every face.
+* **Faces:** the opening's list, the moods row, the name field's bot, the MOSS Code canvas sketch's bot block and the header's logo (MOSS, the default bot: the coral tile with round eyes, which is the app's icon) are all live. With "reduce motion" on, the kit leaves out jumps and turns, and a mood is also said in words beside every face.
 * **Pictures:** real renders of the MOSS app with sample data only, in light and dark (`public/pictures/SOURCES.md`). Where no clean picture exists (MOSS Code's canvas) the page shows a sketch and says that it is one.
 
 ## Rejected
@@ -46,4 +43,5 @@ Two openings are built, and `site.json`'s `hero` picks one:
 * A web font: a request and 50 to 200 KB for a look that is the system font's anyway.
 * Agent and provider logos: they are colour that is not a face, and the agent marks are cleared for naming an agent in the app (`docs/agent-marks.md`), not for a marketing page. Agents are named in text.
 * A search service: the docs' search is an index built with the site and searched in the page, so it works offline.
-* An email form, analytics, a cookie banner: the product reports nothing about its user, and neither does its site.
+* An email form, analytics, a cookie banner: the product has no analytics, and neither does its site.
+* Any word about price: the page says what is true (open source, Apache-2.0) and nothing about cost.

@@ -1,11 +1,10 @@
 {
-  "$comment": "The site's switches. release.state: 'unreleased' shows 'not released yet' and the repository; 'released' shows a download per system and architecture, named by scripts/release/artifacts.ts for release.version. hero: 'list' or 'name' (DESIGN.md). homebrew and winget: true once the owner has published the cask to waifucave/homebrew-moss and the manifests to winget (docs/release-by-hand.md).",
+  "$comment": "The site's switches. release.state: 'unreleased' shows 'not released yet' and the repository; 'released' shows a download per system and architecture, named by scripts/release/artifacts.ts for release.version. homebrew and winget: true once the owner has published the cask to waifucave/homebrew-moss and the manifests to winget (docs/release-by-hand.md).",
   "release": {
     "state": "unreleased",
     "version": "1.111.1",
     "homebrew": false,
     "winget": false
   },
-  "hero": "list",
   "repository": "https://github.com/waifucave/moss"
 }

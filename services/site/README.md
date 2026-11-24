@@ -13,7 +13,6 @@ with static assets, or any static host, serves at `/` and `/docs/`. Why it looks
   (`scripts/release/artifacts.ts`) for `release.version`.
 * `release.homebrew`, `release.winget`: `true` once the casks are in `waifucave/homebrew-moss` and the manifests in
   winget, which adds their install lines.
-* `hero`: the opening, `"list"` (a bot list whose bots work) or `"name"` (type a name, see its bot).
 
 ## Commands
 
@@ -24,7 +23,7 @@ Run from this folder with the repository's Bun (`../../scripts/pinned-bun`):
 | `bun run build` | builds `dist/` |
 | `bun run check` | builds, then fails on a broken link or anything loaded from another host, and prints each page's weight |
 | `bun run serve` | serves `dist/` on 127.0.0.1:4321 the way the Worker does |
-| `bun test` | builds both release states and both openings, checks them, and checks the docs' sources exist |
+| `bun test` | builds both release states, checks them, checks the facts and words the page must and mustn't say, and checks the docs' sources exist |
 | `bun scripts/render.ts --out <folder>` | pictures of every page at 390, 820 and 1440, light and dark, and contact sheets; a headless browser, never in CI |
 
 ## Where things are
@@ -45,6 +44,10 @@ Run from this folder with the repository's Bun (`../../scripts/pinned-bun`):
    assets and attaches the custom domain `moss.waifucave.com` (`wrangler.jsonc`), which makes its DNS record.
 4. Open https://moss.waifucave.com and https://moss.waifucave.com/docs/, and check one response's headers carry the
    `Content-Security-Policy` from `dist/_headers`.
+
+The site goes live in the not-released state, with Privacy and Terms as placeholder pages until the first release.
+It holds one host, `moss.waifucave.com`, and one Worker, `moss-site`: the services' Workers (`services/*`, named
+`moss-*` too) and the web companion's host (`app.moss.waifucave.com`) are theirs, and this deploy touches none of them.
 
 Any other static host works too: serve `dist/` with `/docs` redirecting to `/docs/`, `404.html` for a missing page, and
 the headers in `dist/_headers`.
