@@ -649,6 +649,10 @@ export class UiRuntime {
     const parentDoc = parent === undefined ? undefined : this.docOf(parent);
     if (parentDoc === undefined) return;
     const url = this.reissue(doc);
+    // The address is on its way: a load of the one it replaced that lands in the next second (the old document, still loading) must not
+    // send it a second time, or the parent loads the same spent address twice and the second document can't bind (a window that "stopped
+    // drawing" once the shell's frame did this: acceptance window-3 and plugin-app).
+    this.reloadedAt.set(doc.id, this.now());
     this.log(`layers: ${doc.id} loads again ${why === "to frame a layer installed after it was served" ? why : `(${why})`}`);
     // The frame's flags go with it: a parent that builds the frame again (the core root) gives the new one the same `allow`.
     this.post(parentDoc.id, { type: "child-reload", child: doc.id, url, ...this.frameFlags(doc) });
