@@ -89,7 +89,7 @@ import { WebViews, isWebViewContents, webSpec } from "./ui/web-views";
 import type { Os } from "./ui/spots";
 import { CardReplacer } from "./card-replace";
 import { FallbackNet } from "./fallback-net";
-import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, windowShowsCard, pressWindowIsOpen, type CardPlace, type PressSource } from "./card-place";
+import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, windowShowsCard, pressWindowIsOpen, netMove, type CardPlace, type PressSource } from "./card-place";
 import { afterTap, afterTray, appIsRegular, mainWindowFront, surfaceShown, type MainWindowState, type PutAway } from "./front-rules";
 import { linuxSession, mainWindowPlan, surfaceDrawsOffscreen, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
 
@@ -732,8 +732,10 @@ async function ready(): Promise<void> {
       const step = fallbackOnVisibility({ visible: visible === true, bothVisible: buttonsInPlace(cardId), fallbackOpen, answering: sealed.isAnswering(cardId) });
       if (step === "disarm") disarmFallback(cardId);
       else if (step === "arm" && sealed.get(cardId) !== undefined) {
-        log(`card: ${cardId} fallback timer armed (a button stopped showing in ${surfaceName(sealed.windowOf(token))})`);
-        void armFallback(cardId);
+        // A page says "not visible" at every change of what it reads, not only the first (a cover moving across the button reports
+        // again and again): a timer that runs is kept, or a covering plugin could hold the card's own card back for good.
+        if (!fallbacks.isLive(cardId)) log(`card: ${cardId} fallback timer armed (a button stopped showing in ${surfaceName(sealed.windowOf(token))})`);
+        void armFallback(cardId, true);
       }
     },
     // The report a press asked for: logged with how long the page took to get it, so a limit that is too short shows in the log.
@@ -1235,7 +1237,7 @@ function enginePlaced(cardId: string, place: CardPlacement, from: "event" | "sna
   else if (heldOffFallbacks.delete(cardId) && sealed.isPending(cardId)) void armFallback(cardId);
   if (cardPlaces.has(cardId)) placeCardNow(cardId);
   // A card's place changed: the buttons that showed it in the old place don't count in the new one.
-  if (from === "event" && sealed.isPending(cardId) && !fallbacks.has(cardId) && !buttonsInPlace(cardId) && fallbackHere(cardId)) void armFallback(cardId);
+  if (from === "event" && sealed.isPending(cardId) && !fallbacks.isLive(cardId) && !buttonsInPlace(cardId) && fallbackHere(cardId)) void armFallback(cardId);
   tellGuideAside();
   // The surfaces hear it only when the island's hold changes (their `mainFront`): a message on every placement made the
   // island measure itself again under the pointer.
@@ -1269,7 +1271,7 @@ const replacer = new CardReplacer({
   drawnInWindow: (id) => windowDraws.has(id),
   buttonsShown: (id) => buttonsInPlace(id),
   fallbackHere: (id) => fallbackHere(id),
-  fallbackRunning: (id) => fallbacks.has(id),
+  fallbackRunning: (id) => fallbacks.isLive(id),
   fallbackWindowOpen: (id) => fallbacks.isOpen(id),
   armFallback: (id) => { fallbacks.armIfNone(id); },
   showFallbackNow: (id) => fallbacks.showNow(id),
@@ -1291,18 +1293,18 @@ function placeCardNow(cardId: string): void {
   if (cardPlaces.size > 256) cardPlaces.delete(cardPlaces.keys().next().value!);
   log(placeLine(cardId, now, before));
   const own = fallbacks.get(cardId);
-  if (now === "window") {
+  const act = netMove(before, now, fallbacks.isOpen(cardId));
+  if (act === "show-strip") {
     // The window's own card, at once: no 2-second wait.
     // An entry of its own first (a part that showed both buttons took the timer's entry away): the window is kept in it, so
     // the move back, or the answer, closes it. Without one the window was open for good, beside the island's card.
-    if (own?.win === undefined) {
-      if (own !== undefined) clearTimeout(own.timer);
-      fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0), strip: true });
-      void showFallbackCard(cardId, true);
-    }
-  } else {
+    if (own !== undefined) clearTimeout(own.timer);
+    fallbacks.set(cardId, { timer: setTimeout(() => undefined, 0), fired: true, strip: true });
+    void showFallbackCard(cardId, true);
+  } else if (act === "stand-down") {
     // The conversation draws it, or the island does: the app's own card stands down, its timer starts over as the safety net.
-    if (own?.win !== undefined && !own.win.isDestroyed()) { disarmFallback(cardId); void armFallback(cardId); }
+    disarmFallback(cardId);
+    void armFallback(cardId);
   }
 }
 /** A card arrives: the island's at once; one for the window gets a beat for its conversation to ask for it. */
@@ -1337,11 +1339,11 @@ function cardWaitingAtConnect(c: unknown): void {
   cardArrivedNow(card as { id: string; kind: string }, true);
 }
 
-async function armFallback(cardId: string): Promise<void> {
+async function armFallback(cardId: string, keepRunning = false): Promise<void> {
   // lane HS (B1): one card in one place: only the program the router's placement names arms its own card (and one held
   // off is armed when a later placement brings it here).
   if (!fallbackHere(cardId)) { fallbacks.disarm(cardId); heldOffFallbacks.add(cardId); return; }
-  fallbacks.arm(cardId);
+  if (keepRunning) fallbacks.armIfNone(cardId); else fallbacks.arm(cardId);
 }
 
 function disarmFallback(cardId: string): void {

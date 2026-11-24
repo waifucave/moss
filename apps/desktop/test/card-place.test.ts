@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { replacement, windowShowsCard, APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
+import { netMove, replacement, windowShowsCard, APP_EVENT_AREAS, previewMainState, subscribeThenListCards, mossFront, FrontWatcher, islandMayDraw, placeCard, placeFromEngine, placeLine, presenceOf, pressMayBeTaken, showingOf, type WatchedWindow } from "../src/main/card-place";
 import { SealedFrames } from "../src/main/sealed";
 
 /** The app's bookkeeping for where a pending card is drawn, as index.ts keeps it, over a fake front state: the three
@@ -436,5 +436,15 @@ describe("a pending card's place goes away: placed again by the same rule, the n
     const shown = store.buttonsVisible("card_fold", (w) => windowShowsCard({ kind: "island" }, w === 10));
     expect(shown).toBe(false);
     expect(replacement({ ...base, buttonsShown: shown, placed: { kind: "island" } }).armFallback).toBe(true);
+  });
+});
+
+describe("what a card's move does to the app's own card", () => {
+  test("an unchanged place does nothing; the window's place shows its card unless open; the island's or the conversation's stands an open one down", () => {
+    for (const open of [true, false]) for (const p of ["island", "window", "conversation"] as const) expect(netMove(p, p, open)).toBe("none");
+    expect(netMove("island", "window", false)).toBe("show-strip");
+    expect(netMove(undefined, "window", true)).toBe("none");
+    expect(netMove("window", "island", true)).toBe("stand-down");
+    expect(netMove("window", "conversation", false)).toBe("none");
   });
 });

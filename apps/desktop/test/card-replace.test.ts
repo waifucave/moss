@@ -2,7 +2,7 @@
 // stood in for is the window's maker (index.ts `showFallbackCard`), which like the real one does nothing without an entry for
 // the card and nothing for a card already open.
 import { describe, expect, test } from "bun:test";
-import { pressWindowIsOpen, placeFromEngine, windowShowsCard } from "../src/main/card-place";
+import { netMove, pressWindowIsOpen, placeFromEngine, windowShowsCard } from "../src/main/card-place";
 import { CardReplacer, MAX_REPLACEMENTS } from "../src/main/card-replace";
 import { FallbackNet } from "../src/main/fallback-net";
 import { SealedFrames, type SealedCard } from "../src/main/sealed";
@@ -16,8 +16,13 @@ const MAIN = 1;
 function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; window: string } = { kind: "island" }) {
   const sealed = new SealedFrames();
   const opened: Win[] = [];
+  // A fake clock: timers fire only when it is advanced.
+  let clock = 0;
+  const timers = new Map<object, { at: number; fn: () => void }>();
   const net = new FallbackNet<Win>({
-    delayMs: 1_000_000,
+    delayMs: 2_000,
+    schedule: (fn, ms) => { const h = { unref() { /* fake */ } }; timers.set(h, { at: clock + ms, fn }); return h as never; },
+    unschedule: (h) => { timers.delete(h as never); },
     show: (id) => { const e = net.get(id); if (e === undefined || (e.win !== undefined && !e.win.closed)) return; e.win = { closed: false }; opened.push(e.win); },
     closeWindow: (w) => { w.closed = true; },
     isAlive: (w) => !w.closed,
@@ -35,10 +40,11 @@ function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; wi
     place: (id) => {
       placeCalls.set(id, (placeCalls.get(id) ?? 0) + 1);
       const now = placeFromEngine(placed, { front: false, drawnInWindow: false });
-      if (cardPlaces.get(id) === now) return;
+      const before = cardPlaces.get(id);
+      const act = netMove(before, now, net.isOpen(id));
       cardPlaces.set(id, now);
-      net.disarm(id);
-      net.arm(id);
+      if (act === "show-strip") net.showNow(id, true);
+      else if (act === "stand-down") { net.disarm(id); net.arm(id); }
     },
     restack: () => undefined,
     engineplace: () => placed,
@@ -46,17 +52,18 @@ function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; wi
     drawnInWindow: () => false,
     buttonsShown,
     fallbackHere: () => true,
-    fallbackRunning: (id) => net.has(id),
+    fallbackRunning: (id) => net.isLive(id),
     fallbackWindowOpen: (id) => net.isOpen(id),
     armFallback: (id) => net.armIfNone(id),
     showFallbackNow: (id) => net.showNow(id),
     log: (l) => log.push(l),
   });
   const tokens: string[] = [];
+  let reportRef: (token: string, visible: boolean) => void = () => undefined;
   const frames = (id: string, win: number, visible = true, doc = win) => {
     if (sealed.get(id) === undefined) { sealed.fromCore(card(id)); cardPlaces.set(id, "island"); net.arm(id); }
     const f = { parent: { processId: 100, routingId: doc } };
-    for (const e of ["button:a", "button:d"]) { const t = sealed.mint(id, e, f, win)!.token; tokens.push(t); sealed.markVisible(t, visible); if (visible && buttonsShown(id)) net.disarm(id); }
+    for (const e of ["button:a", "button:d"]) { const t = sealed.mint(id, e, f, win)!.token; tokens.push(t); sealed.markVisible(t, visible); if (visible && buttonsShown(id)) net.disarm(id); else if (!visible) reportRef(t, false); }  // a new page says at once what it reads
   };
   /** The page's own visibility word, with the app's handler (`sealedVisible`). */
   const report = (token: string, visible: boolean) => {
@@ -65,9 +72,15 @@ function world(placed: { kind: "island" } | { kind: "strip"; program: "code"; wi
     if (id === undefined) return;
     const step = fallbackOnVisibility({ visible, bothVisible: buttonsShown(id), fallbackOpen: net.isOpen(id), answering: false });
     if (step === "disarm") net.disarm(id);
-    else if (step === "arm") net.arm(id);
+    else if (step === "arm") net.armIfNone(id);
   };
-  return { sealed, r, net, opened, placeCalls, log, frames, report, tokens, buttonsShown };
+  reportRef = report;
+  const advance = (ms: number) => {
+    clock += ms;
+    for (const [h, t] of [...timers]) if (t.at <= clock && timers.has(h)) { timers.delete(h); t.fn(); }
+  };
+  const timersOf = () => [...timers.values()].map((t) => t.at);
+  return { sealed, r, net, opened, advance, timersOf, now: () => clock, placeCalls, log, frames, report, tokens, buttonsShown };
 }
 const openWindows = (w: ReturnType<typeof world>) => w.opened.filter((x) => !x.closed).length;
 
@@ -124,6 +137,20 @@ describe("a place going away", () => {
     expect(w.net.isOpen("c1")).toBe(true);
   });
 
+  test("repeated \"not visible\" reports do not move the deadline: the net opens 2 s after the first", () => {
+    const w = world();
+    w.frames("c1", 10, true);
+    const [approve] = w.tokens;
+    expect(w.net.has("c1")).toBe(false);
+    w.report(approve!, false);
+    const deadline = w.net.get("c1")!.timer;
+    for (let i = 0; i < 9; i++) { w.advance(190); w.report(approve!, false); expect(w.net.get("c1")!.timer).toBe(deadline); expect(w.net.isOpen("c1")).toBe(false); }
+    w.advance(300);
+    expect(w.now()).toBeGreaterThanOrEqual(2_000);
+    expect(w.net.isOpen("c1")).toBe(true);
+    expect(openWindows(w)).toBe(1);
+  });
+
   test("an open net window survives a re-placement whose place did not change", () => {
     const w = world();
     w.frames("c1", 10, false);
@@ -175,29 +202,46 @@ describe("a place going away", () => {
     expect(w.net.has("c1")).toBe(true);
   });
 
-  test("generated sequences: after every step the card is shown somewhere or its net runs or is open, and never two places", () => {
+  test("generated sequences: from the moment its buttons stop showing the card has a deadline within 2 s of it, and the net really draws it then; never two places", () => {
     let seed = 987654;
     const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const store = (w: ReturnType<typeof world>) => (w.sealed as unknown as { channels: Map<string, { cardId: string; windowId?: number; element: string }> }).channels;
     for (let run = 0; run < 60; run++) {
       const w = world();
       w.frames("c", 10, false);
-      const wins = new Set([10]);
-      for (let step = 0; step < 60; step++) {
+      let hiddenSince: number | undefined = w.now();
+      const trace: string[] = [];
+      for (let step = 0; step < 80; step++) {
         const win = [10, 11, 12][rnd(3)]!;
-        switch (rnd(7)) {
-          case 0: w.frames("c", win, false); wins.add(win); break; // a surface opens (again)
-          case 1: w.r.lost(win, true); wins.delete(win); break;
+        const op = rnd(7);
+        trace.push(`${op}@${win}`);
+        switch (op) {
+          case 0: w.frames("c", win, false); break; // a surface opens (again)
+          case 1: w.r.lost(win, true); break;
           case 2: w.r.lost(win, false, `p:100:${win}`); break; // its own document reloads
           case 3: w.r.lost(win, false, `p:100:${50 + rnd(5)}`); break; // some other document's reload
-          case 4: case 5: { if (w.tokens.length > 0) w.report(w.tokens[rnd(w.tokens.length)]!, rnd(2) === 0); break; } // live or gone frames report
-          default: { const e = w.net.get("c"); if (e !== undefined && e.win === undefined) w.net.showNow("c"); } // a timer fires
+          case 4: case 5: if (w.tokens.length > 0) w.report(w.tokens[rnd(w.tokens.length)]!, rnd(2) === 0); break; // live or gone frames report
+          default: w.advance(rnd(700)); // time passes: timers fire on their own
         }
         const shown = w.buttonsShown("c");
-        // The independent oracle: from the store's own channels, not from the ops.
-        const live = [...(w.sealed as unknown as { channels: Map<string, { cardId: string; windowId?: number; element: string }> }).channels.entries()]
-          .filter(([t, c]) => c.cardId === "c" && c.element.startsWith("button:") && w.sealed.isTokenVisible(t) && c.windowId !== undefined && ISLAND.has(c.windowId));
-        expect(shown).toBe(new Set(live.map(([, c]) => c.element)).size === 2);
-        expect(shown || w.net.has("c")).toBe(true);
+        // Independent of the ops and of the code under test: both buttons visible in an island window, read off the raw channels.
+        const seen = new Set<string>();
+        for (const [t, c] of store(w)) if (c.cardId === "c" && c.element.startsWith("button:") && w.sealed.isTokenVisible(t) && c.windowId !== undefined && ISLAND.has(c.windowId)) seen.add(c.element);
+        expect(shown).toBe(seen.size === 2);
+        if (shown) hiddenSince = undefined;
+        else {
+          hiddenSince ??= w.now();
+          // Shown nowhere: its timer's deadline is no later than 2 s after it stopped showing, or the card's own window is open.
+          const e = w.net.get("c");
+          if (e === undefined) console.log(trace.join(" "));
+          expect(e !== undefined).toBe(true);
+          if (!w.net.isOpen("c")) {
+            expect(w.net.isLive("c")).toBe(true);
+            const deadline = w.timersOf().filter((at) => at > 0).sort((x, y) => x - y)[0];
+            expect(deadline === undefined || deadline <= hiddenSince + 2_000).toBe(true);
+          }
+        }
+        if (w.now() - (hiddenSince ?? w.now()) > 2_000 && !shown) expect(w.net.isOpen("c")).toBe(true);
         expect(shown && w.net.isOpen("c")).toBe(false);
         expect(openWindows(w)).toBeLessThanOrEqual(1);
       }

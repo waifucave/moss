@@ -83,6 +83,15 @@ export function replacement(i: { placed: CardPlacement | undefined; front: boole
   return { place: placeFromEngine(i.placed, { front: i.front, drawnInWindow: i.drawnInWindow }), armFallback: !i.buttonsShown && i.fallbackHere && !i.fallbackWindowOpen };
 }
 
+/** What a card's move from one place to another does to the app's own card: nothing when the place did not change (an open one
+ *  stays open, a running timer runs on); to the window's own place, its card at once unless one is already open; to the
+ *  conversation or the island, an open one stands down and the safety net's timer starts over. */
+export function netMove(before: CardPlace | undefined, now: CardPlace, netOpen: boolean): "none" | "show-strip" | "stand-down" {
+  if (before === now) return "none";
+  if (now === "window") return netOpen ? "none" : "show-strip";
+  return netOpen ? "stand-down" : "none";
+}
+
 /** Whether the window a press was made in is still there: a press from one that has closed since is taken for nothing (the card
  *  was placed again, and its buttons are where it is now). A frame minted for no window has none to ask. */
 export function pressWindowIsOpen(from: number | undefined, isLive: (windowId: number) => boolean): boolean {
