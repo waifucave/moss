@@ -21,8 +21,8 @@ pub enum CoreError {
     #[error("timeout: {reason}")]
     Timeout { reason: String },
     /// The engine answered a call with a JSON-RPC error.
-    #[error("rpc error {code}: {message}")]
-    Rpc { code: i64, message: String, data_json: Option<String> },
+    #[error("rpc error {code}: {text}")]
+    Rpc { code: i64, text: String, data_json: Option<String> },
     /// This computer revoked this phone: pair again.
     #[error("revoked: {reason}")]
     Revoked { reason: String },

@@ -460,7 +460,7 @@ impl Inner {
                     let r = match msg.get("error") {
                         Some(e) => Err(CoreError::Rpc {
                             code: e.get("code").and_then(Value::as_i64).unwrap_or(-32603),
-                            message: e.get("message").and_then(Value::as_str).unwrap_or("failed").chars().take(500).collect(),
+                            text: e.get("message").and_then(Value::as_str).unwrap_or("failed").chars().take(500).collect(),
                             data_json: e.get("data").map(Value::to_string),
                         }),
                         None => Ok(msg.get("result").cloned().unwrap_or(Value::Null)),
@@ -632,7 +632,7 @@ impl Connection {
     }
 
     /// Ends the link for good; `next_event` then ends with `Closed`.
-    pub fn close(&self) {
+    pub fn disconnect(&self) {
         self.inner.close();
     }
 }

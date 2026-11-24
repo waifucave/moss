@@ -65,7 +65,7 @@ final class PhoneCoreTests: XCTestCase {
                 continue
             }
         }
-        conn.close()
+        conn.disconnect()
         await core.shutdown()
     }
 }

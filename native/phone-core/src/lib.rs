@@ -7,7 +7,7 @@
 //!   `SecretStorage` (the Keychain, the Keystore); the core keeps no file of its own.
 //! * `begin_pairing(qr, app)` → `Pairing`: `words()` to show, then `confirm()` (→ the `PairedComputer`) or `reject()`.
 //! * `connect(computer_id, options)` → `Connection`: `call(method, params_json)`, `next_event()`, `fetch_card`,
-//!   `answer_card`, `answer_card_json`, `network_changed`, `close`. It re-dials by itself until closed or revoked.
+//!   `answer_card`, `answer_card_json`, `network_changed`, `disconnect`. It re-dials by itself until closed or revoked.
 //! * `card_hash(card_json)`: a card's hash as the engine computes it.
 
 uniffi::setup_scaffolding!();

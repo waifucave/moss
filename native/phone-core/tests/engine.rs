@@ -56,7 +56,10 @@ struct Engine {
 impl Engine {
     async fn start() -> Engine {
         let bun = std::env::var("MOSS_PC_BUN").map(PathBuf::from).unwrap_or_else(|_| repo().join("scripts/pinned-bun"));
+        // The core tests' own preload: a per-process temp root, the throwaway keychain service, no login shell.
         let mut child = tokio::process::Command::new(bun)
+            .arg("--preload")
+            .arg(repo().join("packages/core/test/preload.ts"))
             .arg(repo().join("native/phone-core/tests/harness/engine.ts"))
             .current_dir(repo())
             .stdin(Stdio::piped())
@@ -67,8 +70,17 @@ impl Engine {
             .expect("the engine harness");
         let stdin = child.stdin.take().unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let ready = tokio::time::timeout(Duration::from_secs(120), lines.next_line()).await.expect("the engine started in time").unwrap().unwrap();
-        assert!(ready.contains("\"ready\":true"), "the engine's first line: {ready}");
+        // The engine writes its own lines to stdout too: wait for the harness's.
+        tokio::time::timeout(Duration::from_secs(120), async {
+            loop {
+                let line = lines.next_line().await.unwrap().expect("the engine harness exited before it was ready");
+                if line.starts_with("{\"ready\":true") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the engine started in time");
         Engine { child, stdin, lines, next: 1 }
     }
 
@@ -230,7 +242,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     engine.ok(json!({ "cmd": "revoke", "id": me.device_id })).await;
     until_event(&conn, "revoked", |e| matches!(e, ConnEvent::Revoked)).await;
     assert!(matches!(conn.call("bot.list".into(), "{}".into()).await, Err(_)));
-    conn.close();
+    conn.disconnect();
     core.shutdown().await;
     engine.stop().await;
 }

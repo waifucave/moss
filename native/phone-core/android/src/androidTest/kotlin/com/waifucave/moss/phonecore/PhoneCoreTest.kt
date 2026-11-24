@@ -70,7 +70,7 @@ class PhoneCoreTest {
                     else -> Log.i(tag, "event $e")
                 }
             }
-            conn.close()
+            conn.disconnect()
             core.shutdown()
         }
     }

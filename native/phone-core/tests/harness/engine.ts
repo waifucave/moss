@@ -3,6 +3,7 @@
 // file the core's own tests use. It plays the computer's person through its app connection: shows a pairing, confirms
 // the words and approves (or denies) the sealed card, raises a card, revokes a device.
 //
+// Run with `--preload packages/core/test/preload.ts` (the core tests' isolation: temp roots, the throwaway keychain service).
 // Driven by JSON lines on stdin ({id, cmd, ...}); answers one JSON line each on stdout ({id, ok, result | error}).
 // The first line out is {"ready": true}. Nothing secret is printed: the QR (which carries the pairing secret) goes only
 // back over the pipe to the test that asked, or with `--qr-file` to a file the Android job pushes to the emulator.
