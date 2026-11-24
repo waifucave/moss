@@ -168,7 +168,8 @@ export function parentPid(pid: number, os: DaemonPlatform = currentOs()): number
     // the runner's) climbs into whichever new process took that number, a daemon's child among them (measured on a runner:
     // the harness counted as the daemon's own child, and the app's hello was refused).
     const born = createdAt(h), parentBorn = withProcess(ppid, (ph) => createdAt(ph));
-    return born !== null && parentBorn !== null && parentBorn <= born ? ppid : null;
+    // Dropped only when both times were read and the parent is the younger; a time the OS won't give leaves the parent in, as before.
+    return born !== null && parentBorn !== null && parentBorn > born ? null : ppid;
   });
 }
 
