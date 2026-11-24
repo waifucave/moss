@@ -28,6 +28,7 @@ import type { Clock } from "../contracts/clock";
 import type { SecretStore } from "../contracts/secret-store";
 import type { AnswerLedger, CallCardRenderer } from "../contracts/approval-broker";
 import { SntpTimeSource } from "../clock/shared-clock";
+import type { AccountClient } from "../identity/account";
 import { waifucaveAccount, type WaifucaveAccount } from "../identity/account-config";
 import { DIST_BUILD } from "../build-kind";
 import { ContractError } from "../contracts/common";
@@ -126,6 +127,8 @@ export interface DaemonLinksInput {
 
 export interface DaemonLinks {
   readonly links: DeviceLinks | null;
+  /** The waifucave account client, when the account is set up here (its tokens: `identity/account-tokens.ts`). */
+  readonly account?: AccountClient;
   /** `pair.quit{handOver}`: the bots go to another computer (`main.handOver`); nothing without a main computer. */
   handOver(): Promise<void>;
   close(): Promise<void>;
@@ -210,6 +213,7 @@ export async function startDaemonLinks(input: DaemonLinksInput): Promise<DaemonL
   void links.refresh().catch(() => undefined);
   return {
     links,
+    ...(account?.account ? { account: account.account } : {}),
     handOver: async () => {
       if (links.main) await links.main.coordinator.handOver();
     },
