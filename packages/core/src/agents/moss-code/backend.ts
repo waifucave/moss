@@ -471,7 +471,7 @@ export class MossCodeBackend implements AgentBackend {
       // floor for bots and in-process agents, set last so nothing here overrides it; and the runtime's file tools held to
       // these write roots (`botSandbox`, agent SDK 0.0.77).
       // A bot's child: the bot's own builder (`botChildSandboxOf`), never wider than its bot.
-      sandbox: botSandbox(spec.bot !== undefined ? botChildSandboxOf(spec as AcpStartSpec, deps.botChild, []) : {
+      sandbox: botSandbox(spec.bot !== undefined ? botChildSandboxOf(spec as unknown as AcpStartSpec, deps.botChild, []) : {
         filesystem: { allowWrite: fence.allowWrite.length > 0 ? [...fence.allowWrite] : [spec.root], denyWrite: [...fence.denyWrite], denyRead: [...fence.denyRead] },
       }),
       // The sandbox holds Bash; the file tools get the same denials as deny rules (the fenced set and bots' memory).
@@ -497,7 +497,7 @@ export class MossCodeBackend implements AgentBackend {
         // A file write is asked about, and runs, with its real path (agent SDK 0.0.77's write roots: `realFileWriteInput`).
         const input = realFileWriteInput(name, given as Record<string, unknown>, spec.root);
         // A bot's child never writes a run-later place: refused before any card, with the bot's own message.
-        const runLater = botChildWriteRefusal(spec as AcpStartSpec, deps.botChild, name, input as Record<string, unknown>);
+        const runLater = botChildWriteRefusal(spec as unknown as AcpStartSpec, deps.botChild, name, input as Record<string, unknown>);
         if (runLater !== undefined) return { behavior: "deny", message: runLater };
         // The bridge's `Glossary` is the runtime's host tool search, which it names plainly (`hostToolSearch`); the rest are
         // `mcp__<bridge server>__<name>`.
