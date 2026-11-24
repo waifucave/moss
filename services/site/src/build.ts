@@ -50,6 +50,7 @@ async function bundle(entry: string, out: string, kind: "js" | "css"): Promise<s
     minify: true,
     naming: `site-[hash].${kind}`,
     sourcemap: "none",
+    ...{ macros: false },
   });
   if (!r.success) throw new Error(`build: ${entry}: ${r.logs.map((l) => l.message).join("; ")}`);
   const file = r.outputs.find((o) => o.path.endsWith(`.${kind}`));
