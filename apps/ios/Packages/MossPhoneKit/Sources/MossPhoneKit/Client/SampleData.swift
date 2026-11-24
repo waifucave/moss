@@ -90,6 +90,10 @@ public enum SampleData {
             ]
         case "c2":
             return [
+                ChatMessage(id: "c2-a", role: .user, text: "Which settings pages still use the old form?", at: ago(20000)),
+                ChatMessage(id: "c2-b", role: .agent, text: "Four of them: profile, billing, notifications and the API keys page.", at: ago(19500)),
+                ChatMessage(id: "c2-c", role: .user, text: "Move them one by one and run the tests after each.", at: ago(19000)),
+                ChatMessage(id: "c2-d", role: .agent, text: "Starting with profile. I will keep the old component until all four are done.", at: ago(18500)),
                 ChatMessage(id: "c2-1", role: .user, text: "Move the settings page to the new form component.", at: ago(8900)),
                 ChatMessage(id: "c2-2", role: .agent, text: "Done in 12 files. I want to delete the old form folder, which needs your approval.", at: ago(700)),
             ]

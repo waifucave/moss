@@ -26,6 +26,7 @@ public struct AppLaunch {
         l.startNew = args.contains("-startNew")
         l.confirmUnpair = args.contains("-confirmUnpair")
         l.scrollTop = args.contains("-scrollTop")
+        if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
         return l
     }
@@ -34,6 +35,8 @@ public struct AppLaunch {
     public var confirmUnpair = false
     /// Opens conversations at their first message (for the picture of the top).
     public var scrollTop = false
+    /// A message id to show at the bottom edge, under the composer (for pictures).
+    public var scrollTo: String?
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
 
@@ -90,6 +93,7 @@ public struct MossRoot: View {
         .tint(Theme.accent)
         .environment(\.nowMs, SampleData.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
+        .environment(\.conversationScrollTo, launch.scrollTo)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
@@ -160,6 +164,7 @@ public struct MossCodeRoot: View {
         .tint(Theme.accent)
         .environment(\.nowMs, SampleData.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
+        .environment(\.conversationScrollTo, launch.scrollTo)
         .task { await cards.load(); cards.start() }
         .task(id: launch.screen) {
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }

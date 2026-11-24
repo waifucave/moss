@@ -8,6 +8,7 @@ public struct ConversationScreen: View {
     @FocusState private var composing: Bool
     @Environment(\.nowMs) private var nowOverride
     @Environment(\.conversationStartsAtTop) private var startsAtTop
+    @Environment(\.conversationScrollTo) private var scrollTarget
 
     public init(model: ConversationModel, cards: CardsModel) { self.model = model; self.cards = cards }
 
@@ -57,11 +58,12 @@ public struct ConversationScreen: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(startsAtTop ? .top : .bottom)
-            .onChange(of: model.messages.count) { _, _ in if !startsAtTop { withAnimation { proxy.scrollTo("end") } } }
-            .onChange(of: model.statusLine) { _, _ in if !startsAtTop { withAnimation { proxy.scrollTo("end") } } }
-            .onChange(of: waitingCards.count) { _, _ in if !startsAtTop { withAnimation { proxy.scrollTo("end") } } }
+            .task(id: scrollTarget) { if let t = scrollTarget { try? await Task.sleep(for: .seconds(1)); proxy.scrollTo(t, anchor: .top) } }
+            .onChange(of: model.messages.count) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
+            .onChange(of: model.statusLine) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
+            .onChange(of: waitingCards.count) { _, _ in if !startsAtTop, scrollTarget == nil { withAnimation { proxy.scrollTo("end") } } }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .safeAreaBar(edge: .bottom, spacing: 0) {
             VStack(spacing: 6) {
                 if let e = model.errorText {
                     HStack(spacing: 8) {
@@ -174,6 +176,12 @@ struct FileCard: View {
     }
 }
 
+private struct ScrollToKey: EnvironmentKey { static let defaultValue: String? = nil }
+extension EnvironmentValues {
+    /// For pictures: open a conversation with this message at the top edge, so later bubbles sit under the composer.
+    var conversationScrollTo: String? { get { self[ScrollToKey.self] } set { self[ScrollToKey.self] = newValue } }
+}
+
 private struct StartsAtTopKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     /// For pictures: open a conversation at its first message rather than its last.
@@ -195,38 +203,40 @@ public struct ComposerBar: View {
 
     @State private var note: String?
 
+    /// The pill is the system's own glass (Liquid Glass) on a rounded shape; the plus and the round button inside it are the
+    /// system's glass button styles, grouped in one container so they blend with the pill as the system does it.
     public var body: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            Button { note = "Adding files from the phone is not ready yet." } label: {
-                Image(systemName: "plus").font(.system(size: 16, weight: .medium)).foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
-                    .background(Color(uiColor: .systemBackground), in: Circle())
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
+        GlassEffectContainer(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 4) {
+                Button { note = "Adding files from the phone is not ready yet." } label: {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass).buttonBorderShape(.circle).tint(.primary)
+                .accessibilityLabel("Add")
+                TextField(placeholder, text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .padding(.vertical, 12)
+                    .accessibilityLabel(placeholder)
+                if running && !hasText {
+                    round("stop.fill", "Stop", onStop)
+                } else if hasText {
+                    round("arrow.up", "Send", onSend)
+                } else {
+                    round("mic.fill", "Voice") { note = "Talking to a bot from the phone is not ready yet." }
+                }
             }
-            .buttonStyle(.plain).accessibilityLabel("Add")
-            TextField(placeholder, text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .padding(.vertical, 12)
-                .accessibilityLabel(placeholder)
-            if running && !hasText {
-                round("stop.fill", "Stop", onStop)
-            } else if hasText {
-                round("arrow.up", "Send", onSend)
-            } else {
-                round("mic.fill", "Voice") { note = "Talking to a bot from the phone is not ready yet." }
-            }
+            .padding(4)
+            .glassEffect(.regular, in: .rect(cornerRadius: 26))
         }
-        .padding(.horizontal, 4)
-        .background(Theme.softButton, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .alert(note ?? "", isPresented: Binding(get: { note != nil }, set: { if !$0 { note = nil } })) { Button("OK") { note = nil } }
     }
 
     private func round(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(uiColor: .systemBackground))
-                .frame(width: 36, height: 36).background(Color.primary, in: Circle())
-                .frame(width: 44, height: 44).contentShape(Rectangle())
+                .frame(width: 36, height: 36)
         }
-        .buttonStyle(.plain).accessibilityLabel(label)
+        .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(.primary)
+        .accessibilityLabel(label)
     }
 }
