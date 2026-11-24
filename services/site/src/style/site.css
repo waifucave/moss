@@ -470,6 +470,8 @@ figcaption { font-size: 0.875rem; color: var(--muted); }
 
 .codeblock { position: relative; max-width: 70ch; }
 .codeblock pre { padding-right: 76px; }
+/* A command wraps at its spaces rather than running under the Copy button; copying takes it whole, as one line. */
+.codeblock code.language-sh { white-space: pre-wrap; overflow-wrap: anywhere; }
 .copy {
   position: absolute; top: 10px; right: 10px; min-height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg); color: var(--muted); font: inherit; font-size: 0.8125rem; cursor: pointer;

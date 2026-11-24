@@ -48,7 +48,7 @@ What it does on its own depends on the level you set for each computer. At the d
 
 MOSS doesn't come with a model. You need an account or an API key with a model provider, or a model running on your own computer. Sign in to a subscription you already have, paste an API key from one of the many providers MOSS knows, or point it at a model server such as Ollama or LM Studio. The [setup guide](/docs/install/#when-you-first-open-moss) asks for one when you first open MOSS.
 
-Your conversations, memory, settings and logs stay in `~/.moss` on your computer. These leave it:
+MOSS keeps your conversations, memory, settings and logs in `~/.moss`, on your computer. What leaves it:
 
 - **Your model provider** gets what you write and what a bot reads to answer you: files, pages, command output, pictures you attach. It goes with your own key or sign-in. A few background jobs use the same provider: titles, a safety check before commands, and, in MOSS Code, passes that read idle sessions to keep its memory and to clear away sessions with nothing worth keeping.
 - **Your voice provider**, once you set a voice up with your own key, gets the replies to speak and what you say while you hold the talk button.
