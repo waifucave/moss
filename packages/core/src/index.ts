@@ -53,6 +53,7 @@ export {
 } from "./fence/win-sandbox";
 export { claimDaemonChildren, spawnDisclaimed, type DisclaimedProcess } from "./platform/daemon-children";
 export { runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE } from "./update/engine-install-command";
+export { runErase, ERASE_USAGE } from "./deletion/erase-command";
 export { acquireLock, tryFileLock, AlreadyRunningError, LockHeldNoDaemonError, LockFailedError, classifyLockFailure, endpointAnswers, type Lock, type AcquireLockOptions } from "./lock";
 export { resolveMossProfile, keychainService, profileDisplayName, cliCommandName, type MossProfile } from "./profile";
 export {

@@ -5,7 +5,7 @@ import { migrateEarlierLayout, parseServerArgs, profileNote, serverBinary, serve
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
-import { resolveMossHome, isDefaultMossHome, OtherInstallHomeRefused, KeychainSecretStore, startDaemon, stopWithin, TOKEN_NAMES, loadSettings, CORE_VERSION, runWorkflowSubprocess, runAutomationWorker, AUTOMATION_WORKER_ARG, processSatisfiesRequirement, runRuntimeWorkflowWorker, RUNTIME_WORKFLOW_WORKER_ARG, runRuntimeStateProbe, runRuntimesProbe, keychainUnlocked, processStartSecondsViaSysctl, runEmbeddedProbe, runDevKeychainAdopt, DEV_KEYCHAIN_ADOPT_ARG, resolveMossProfile, splitTag, sdkLocalMcpServers, installMossProcessIdentity, loginEnable, loginDisable, loginRemove, loginStatus, liveLoginOsDeps, superviseLoop, UPDATE_RESTART_EXIT_CODE, readInstallMarker, writeInstallMarker, removeInstallMarker, updatesItself, startDaemonThroughOs, windowsUserSid, windowsProfilePath, stopDaemonCleanly, stopThroughOs, mossCall, checkDaemonServer, processImage, spawnDisclaimed, bunRunner, resolveEndpoint, endpointPresent, endpointAnswers, tlsEnvRefusal, TLS_ENV_REFUSAL_EXIT, DIST_BUILD, rawEnvironment, homeRefusal, type LoginSpec, type DaemonRun, type DaemonStartResult, dyldRefusal, testBuildStartRefusal, testKeychainRefusal, loadBundledManifest, loadPrebuiltHostBundles, runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE } from "@waifucave/moss-core";
+import { resolveMossHome, isDefaultMossHome, OtherInstallHomeRefused, KeychainSecretStore, startDaemon, stopWithin, TOKEN_NAMES, loadSettings, CORE_VERSION, runWorkflowSubprocess, runAutomationWorker, AUTOMATION_WORKER_ARG, processSatisfiesRequirement, runRuntimeWorkflowWorker, RUNTIME_WORKFLOW_WORKER_ARG, runRuntimeStateProbe, runRuntimesProbe, keychainUnlocked, processStartSecondsViaSysctl, runEmbeddedProbe, runDevKeychainAdopt, DEV_KEYCHAIN_ADOPT_ARG, resolveMossProfile, splitTag, sdkLocalMcpServers, installMossProcessIdentity, loginEnable, loginDisable, loginRemove, loginStatus, liveLoginOsDeps, superviseLoop, UPDATE_RESTART_EXIT_CODE, readInstallMarker, writeInstallMarker, removeInstallMarker, updatesItself, startDaemonThroughOs, windowsUserSid, windowsProfilePath, stopDaemonCleanly, stopThroughOs, mossCall, checkDaemonServer, processImage, spawnDisclaimed, bunRunner, resolveEndpoint, endpointPresent, endpointAnswers, tlsEnvRefusal, TLS_ENV_REFUSAL_EXIT, DIST_BUILD, rawEnvironment, homeRefusal, type LoginSpec, type DaemonRun, type DaemonStartResult, dyldRefusal, testBuildStartRefusal, testKeychainRefusal, loadBundledManifest, loadPrebuiltHostBundles, runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE, runErase, openMossSecretStore, bunVault, keychainService } from "@waifucave/moss-core";
 import type { CredentialRow, SecretStore, Settings } from "@waifucave/moss-core";
 import { METHODS, type ApprovalPolicy, type Task } from "@waifucave/moss-protocol";
 import { POLICY_ORDER } from "./tui/policy-order";
@@ -2709,6 +2709,22 @@ if (import.meta.main) {
     if (sub === "reset") process.exit(await runEngineReset({ home: resolveMossHome(), out: (l) => console.log(l), err: (l) => console.error(l) }));
     if (sub !== "install") { console.error(`${ENGINE_INSTALL_USAGE}\n${ENGINE_RESET_USAGE}`); process.exit(2); }
     process.exit(await runEngineInstall(process.argv.slice(4), { home: resolveMossHome(), out: (l) => console.log(l), err: (l) => console.error(l) }));
+    break;
+  }
+  case "erase": {
+    // `moss-core erase` (the deletion lane): the person erases everything MOSS keeps on this computer, in their own
+    // terminal, with MOSS quit; it asks them to type ERASE. The login item goes first (`autostart remove`).
+    const home = resolveMossHome();
+    const service = keychainService(resolveMossProfile(), home);
+    const lines = (async function* () { for await (const l of console) yield l; })();
+    process.exit(await runErase({
+      home, interactive: process.stdin.isTTY === true,
+      readLine: async () => { const n = await lines.next(); return n.done ? null : String(n.value); },
+      out: (l) => console.log(l), err: (l) => console.error(l),
+      openSecrets: () => openMossSecretStore({ home, service, interactive: true }),
+      ...(process.platform === "darwin" ? {} : { dropFileKey: async () => { await bunVault(`${service}.key`).delete("secrets-file-key"); } }),
+      removeLoginItem: async () => { await runAutostartCommand("remove", []); },
+    }));
     break;
   }
   case "autostart": {
