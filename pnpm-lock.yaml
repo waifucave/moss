@@ -1643,6 +1643,8 @@ importers:
 
   services/shared: {}
 
+  services/site: {}
+
   services/web:
     dependencies:
       '@waifucave/moss-service-handshake':

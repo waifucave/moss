@@ -979,6 +979,10 @@
       "name": "@waifucave/moss-service-shared",
       "version": "0.0.0",
     },
+    "services/site": {
+      "name": "@waifucave/moss-service-site",
+      "version": "0.0.0",
+    },
     "services/web": {
       "name": "@waifucave/moss-service-web",
       "version": "0.0.0",
@@ -1552,6 +1556,8 @@
     "@waifucave/moss-service-relay": ["@waifucave/moss-service-relay@workspace:services/relay"],
 
     "@waifucave/moss-service-shared": ["@waifucave/moss-service-shared@workspace:services/shared"],
+
+    "@waifucave/moss-service-site": ["@waifucave/moss-service-site@workspace:services/site"],
 
     "@waifucave/moss-service-web": ["@waifucave/moss-service-web@workspace:services/web"],
 

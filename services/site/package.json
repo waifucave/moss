@@ -1,0 +1,19 @@
+{
+  "name": "@waifucave/moss-service-site",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "moss.waifucave.com: the product's page and its docs, built to plain files (dist/) by Bun alone, with no dependency. Served by a Worker with static assets, or by any static host.",
+  "type": "module",
+  "scripts": {
+    "build": "bun src/build.ts",
+    "check": "bun src/build.ts && bun src/check.ts dist",
+    "serve": "bun src/serve.ts dist",
+    "render": "bun scripts/render.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "mossCi": {
+    "os": ["linux", "macos"]
+  }
+}

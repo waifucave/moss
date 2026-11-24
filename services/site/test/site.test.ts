@@ -1,0 +1,132 @@
+// The site builds, in both release states and both openings, with no broken link and nothing loaded from another
+// host; its download area names the files the release scripts make; its docs outline points at files that exist.
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildSite, type BuildResult } from "../src/build";
+import { checkSite } from "../src/check";
+import { configProblem, readConfig, REPO_ROOT, SITE_DIR, withSwitches } from "../src/config";
+import { docFile, readOutline, sourcePath } from "../src/docs";
+import { allInstallerNames, releaseUrl } from "../src/downloads";
+import { renderDoc } from "../src/markdown";
+
+const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+const base = readConfig();
+const built = new Map<string, BuildResult>();
+async function build(key: string, change: Parameters<typeof withSwitches>[1]): Promise<BuildResult> {
+  const have = built.get(key);
+  if (have !== undefined) return have;
+  const r = await buildSite({ out: join(root, key), config: withSwitches(base, change) });
+  built.set(key, r);
+  return r;
+}
+const read = (r: BuildResult, path: string) => readFileSync(join(r.out, ...path.split("/").filter(Boolean), path.endsWith("/") || path === "" ? "index.html" : ""), "utf8");
+
+function allText(dir: string): string {
+  let out = "";
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out += allText(p);
+    else if (/\.(html|json|css|js|txt)$/.test(name)) out += readFileSync(p, "utf8");
+  }
+  return out;
+}
+
+describe("the built site", () => {
+  for (const [key, change] of [
+    ["unreleased-list", { state: "unreleased", hero: "list" }],
+    ["released-list", { state: "released", hero: "list", homebrew: true, winget: true }],
+    ["unreleased-name", { state: "unreleased", hero: "name" }],
+  ] as const) {
+    test(`${key}: no broken link, nothing from another host, within the page budget`, async () => {
+      const r = await build(key, change);
+      const c = checkSite(r.out);
+      expect(c.problems).toEqual([]);
+      // Every load is a path on this site.
+      for (const list of Object.values(c.loads)) for (const u of list) expect(u.startsWith("/")).toBe(true);
+      // Links out go to the project's own GitHub pages only.
+      for (const u of c.outbound) expect(u.startsWith(base.repository)).toBe(true);
+    }, 60_000);
+  }
+
+  test("not released: no version, no download, the repository and the docs instead", async () => {
+    const r = await build("unreleased-list", { state: "unreleased", hero: "list" });
+    const page = read(r, "/");
+    expect(page).not.toContain(base.release.version);
+    expect(page).not.toContain("/releases/download/");
+    expect(page).toContain("Not released yet");
+    expect(page).toContain(`href="${base.repository}"`);
+  }, 60_000);
+
+  test("released: a button for every installer the release scripts name, at the release's address", async () => {
+    const r = await build("released-list", { state: "released", hero: "list", homebrew: true, winget: true });
+    const page = read(r, "/");
+    const hrefs = [...page.matchAll(/href="([^"]+\/releases\/download\/[^"]+)"/g)].map((m) => m[1]!);
+    const want = allInstallerNames(base.release.version).map((n) => releaseUrl(base.repository, base.release.version, n));
+    expect([...hrefs].sort()).toEqual([...want].sort());
+    expect(want.length).toBe(16);
+    expect(page).toContain("brew install --cask waifucave/moss/moss");
+    expect(page).toContain("winget install waifucave.MOSS");
+  }, 60_000);
+
+  test("the package managers' lines show only once they are switched on", async () => {
+    const r = await build("released-plain", { state: "released", hero: "list", homebrew: false, winget: false });
+    const page = read(r, "/");
+    expect(page).not.toContain("brew install");
+    expect(page).not.toContain("winget install");
+  }, 60_000);
+
+  test("the two openings", async () => {
+    expect(read(await build("unreleased-list", { state: "unreleased", hero: "list" }), "/")).toContain("data-botlist");
+    const name = read(await build("unreleased-name", { state: "unreleased", hero: "name" }), "/");
+    expect(name).toContain("tryname--big");
+    expect(name).not.toContain("data-botlist");
+  }, 60_000);
+
+  test("no old product name, no character model, nothing of the owner's", async () => {
+    const text = allText((await build("unreleased-list", { state: "unreleased", hero: "list" })).out).toLowerCase();
+    for (const word of ["clover", "winter", "norma", "alpha", "live2d", "vrm", "pngtuber", "deepseek-chan"]) expect([word, text.includes(word)]).toEqual([word, false]);
+  }, 60_000);
+
+  test("the docs: every written page is in the navigation and the search index", async () => {
+    const r = await build("unreleased-list", { state: "unreleased", hero: "list" });
+    const written = readOutline().flatMap((g) => g.pages).filter((p) => existsSync(docFile(p.slug)));
+    expect(written.length).toBeGreaterThanOrEqual(6);
+    const home = read(r, "/docs/");
+    const index = JSON.parse(readFileSync(join(r.out, "docs", "search.json"), "utf8")) as { u: string }[];
+    for (const p of written) {
+      expect(home).toContain(`href="/docs/${p.slug}/"`);
+      expect(index.some((e) => e.u === `/docs/${p.slug}/`)).toBe(true);
+    }
+  }, 60_000);
+});
+
+describe("the docs' sources", () => {
+  test("every page's sources are files or folders in the repository", () => {
+    const missing = readOutline().flatMap((g) => g.pages).flatMap((p) => p.sources.map(sourcePath).filter((s) => !existsSync(join(REPO_ROOT, s))).map((s) => `${p.slug}: ${s}`));
+    expect(missing).toEqual([]);
+  });
+
+  test("every Markdown page has its place in the outline", () => {
+    const slugs = new Set(readOutline().flatMap((g) => g.pages.map((p) => p.slug)));
+    const files = readdirSync(join(SITE_DIR, "content", "docs")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+    expect(files.filter((f) => !slugs.has(f))).toEqual([]);
+  });
+
+  test("the Markdown renderer gives headings ids and refuses a page without front matter", () => {
+    const r = renderDoc("---\ntitle: T\ndescription: D\n---\n\n## One thing\n\n## One thing\n", "x.md");
+    expect(r.headings.map((h) => h.id)).toEqual(["one-thing", "one-thing-2"]);
+    expect(() => renderDoc("## No front matter\n", "y.md")).toThrow();
+  });
+});
+
+describe("site.json", () => {
+  test("the committed switches are valid, and a wrong one is named", () => {
+    expect(configProblem(JSON.parse(readFileSync(join(SITE_DIR, "site.json"), "utf8")))).toBeUndefined();
+    expect(configProblem({ ...base, release: { ...base.release, state: "soon" } })).toContain("release.state");
+    expect(configProblem({ ...base, hero: "big" })).toContain("hero");
+    expect(configProblem({ ...base, repository: "https://example.com/x" })).toContain("repository");
+  });
+});

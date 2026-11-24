@@ -1,0 +1,23 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // moss.waifucave.com: the product's page and /docs. A Worker with static assets only: no code of its own runs; Cloudflare
+  // serves dist/ (from `bun run build`), with the headers in dist/_headers and dist/404.html for a missing page.
+  //
+  // The top level is the local profile (`wrangler dev`); env.production is what the owner's first deploy would use.
+  // Nothing here has been deployed.
+  "name": "moss-site-local",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "send_metrics": false,
+  "observability": { "enabled": false },
+  "assets": { "directory": "./dist", "html_handling": "auto-trailing-slash", "not_found_handling": "404-page" },
+  "env": {
+    "production": {
+      "name": "moss-site",
+      "workers_dev": false,
+      "observability": { "enabled": false },
+      "routes": [{ "pattern": "moss.waifucave.com", "custom_domain": true }],
+      "assets": { "directory": "./dist", "html_handling": "auto-trailing-slash", "not_found_handling": "404-page" }
+    }
+  }
+}
