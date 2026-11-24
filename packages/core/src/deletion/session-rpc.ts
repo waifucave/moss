@@ -17,6 +17,9 @@ export interface SessionDeletionMethodsDeps {
     mainSession(bot: string): string;
     conversationDeleted(bot: string): Promise<void>;
     sessionRemoved(id: string): void;
+    /** The bots whose conversations this computer runs (the main computer's): a conversation is deleted only there, where
+     *  its copy is the one the others follow. */
+    botsRunHere?(): string[];
   };
   openCard: CardOpener;
   files?: Omit<SessionFileDeps, "home">;
@@ -61,6 +64,9 @@ export function sessionDeletionMethods(deps: SessionDeletionMethodsDeps): Record
       const v = deps.host.get(p.id);
       if (!v) throw new ContractError("not_found", `no session ${p.id}`);
       const main = isMain(deps, v);
+      if (main && v.bot !== undefined && deps.bots?.botsRunHere !== undefined && !deps.bots.botsRunHere().includes(v.bot)) {
+        throw new ContractError("refused", `${v.bot}'s conversation runs on another computer: delete it there, where the copy the others follow is kept`);
+      }
       const name = (v.title ?? "").trim() || (main ? (v.bot ?? p.id) : p.id);
       const res = await byThePerson(ctx, {
         what: "delete a session", confirm: p.confirm, openCard: deps.openCard,
