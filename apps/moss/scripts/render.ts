@@ -2,7 +2,7 @@
 // conversation with an attachment and a card, the side panel with a live picture and routines, the strip with another
 // bot's card, the Plugins page, Settings), light and dark, at a usual and a narrow size, as PNGs.
 //
-//   bun run scripts/render.ts <out dir>
+//   bun run scripts/render.ts <out dir> [--2x]     (--2x: twice the pixels, for sharp pictures; the default is unchanged)
 //
 // Headless and silent: a test build of MOSS in a background-only Electron (MOSS_UI_LOCAL_ELECTRON on macOS, made by
 // scripts/background-electron.ts), its window offscreen and never shown, a temp home and user data.
@@ -18,7 +18,8 @@ import { pagePng } from "../test/picture";
 const ASKS = ["What's in the fridge that should go first?", "Can you make Tuesday vegetarian?", "Add a quick lunch for Wednesday.", "How much is that for the week?", "Swap the fish for something cheaper.", "Put it all in a shopping list."];
 const ANSWERS = ["The spinach and the leftover rice. I'd start Monday with a stir-fry that uses both.", "Done: a lentil curry on Tuesday, and the leftovers make Wednesday's lunch too.", "A chickpea wrap takes ten minutes and uses what's already open.", "About $64 with the pantry staples you already have.", "Chicken thighs instead: the same protein for about $9 less.", "The list is ready, grouped by shop aisle, with quantities for two."];
 const longText = (i: number): string => (i % 2 === 0 ? ASKS : ANSWERS)[Math.floor(i / 2) % 6]!;
-const out = process.argv[2];
+const out = process.argv.slice(2).find((a) => !a.startsWith("--"));
+const twice = process.argv.includes("--2x");
 if (out === undefined || out === "") {
   console.error("usage: bun run scripts/render.ts <out dir>");
   process.exit(2);
@@ -59,7 +60,7 @@ const env: NodeJS.ProcessEnv = { ...process.env, MOSS_HOME: home, MOSS_USER_DATA
 delete env.MOSS_PROFILE;
 delete env.ELECTRON_RUN_AS_NODE;
 const dir = resolve(out);
-const child = spawn(electron, [root, `--moss-render=${dir}`], { env, stdio: ["ignore", "inherit", "inherit"] });
+const child = spawn(electron, [root, `--moss-render=${dir}`, ...(twice ? ["--moss-render-scale=2"] : [])], { env, stdio: ["ignore", "inherit", "inherit"] });
 pid = child.pid;
 const code = await new Promise<number | null>((r) => {
   const t = setTimeout(() => { child.kill("SIGKILL"); r(null); }, 240_000);

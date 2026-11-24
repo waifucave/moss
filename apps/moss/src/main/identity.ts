@@ -36,6 +36,8 @@ export interface LaunchArgs {
   smoke?: string;
   /** `--moss-render=<dir>`: a headless run that draws the window offscreen, scene by scene, into PNGs. Test builds. */
   render?: string;
+  /** `--moss-render-scale=2`: with `--moss-render`, the offscreen window draws at twice the pixels (sharp pictures). Absent: 1. */
+  renderScale?: 2;
 }
 
 export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
@@ -45,10 +47,13 @@ export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
   };
   const smoke = value("--moss-smoke");
   const render = value("--moss-render");
+  // Only 2 is a scale; anything else is the default (1).
+  const scale = render !== undefined && value("--moss-render-scale") === "2" ? (2 as const) : undefined;
   return {
     headless: smoke !== undefined || render !== undefined || argv.includes("--moss-headless"),
     ...(smoke !== undefined ? { smoke } : {}),
     ...(render !== undefined ? { render } : {}),
+    ...(scale !== undefined ? { renderScale: scale } : {}),
   };
 }
 

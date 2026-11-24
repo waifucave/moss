@@ -31,6 +31,18 @@ describe("the conversation stylesheet", () => {
     expect([...listed].filter((v) => !used.has(v))).toEqual([]);
   });
 
+  test("hovering a link changes only its underline: no colour, size or direction (those belong to the host label alone)", () => {
+    const rules = parseCss(css);
+    const hover = rules.filter((r) => /:hover/.test(r.prelude) && /\.cl-conv-md/.test(r.prelude));
+    expect(hover.length).toBeGreaterThan(0);
+    for (const r of hover) {
+      for (const d of r.declarations) expect(["color", "font-size", "direction", "unicode-bidi"]).not.toContain(d.property);
+    }
+    expect(hover.some((r) => /\.cl-conv-md a:hover/.test(r.prelude) && r.declarations.some((d) => d.property === "text-decoration"))).toBe(true);
+    const host = rules.find((r) => r.prelude.trim() === ".cl-conv-md__host")!;
+    expect(host.declarations.map((d) => d.property)).toEqual(expect.arrayContaining(["unicode-bidi", "direction", "color", "font-size"]));
+  });
+
   test("holds no colour literals: every colour is a token", () => {
     const offenders = parseCss(css).flatMap((rule) =>
       rule.declarations.filter((d) => COLOR_LITERAL.test(d.value)).map((d) => `${rule.prelude} { ${d.property}: ${d.value} }`),

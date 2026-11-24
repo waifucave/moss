@@ -426,7 +426,7 @@ async function openWindow(): Promise<BrowserWindow> {
       preload: join(here, "preload.cjs"), session: windowSession, sandbox: true, contextIsolation: true, nodeIntegration: false,
       nodeIntegrationInSubFrames: true, nodeIntegrationInWorker: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false,
       spellcheck: false, navigateOnDragDrop: false, safeDialogs: true, autoplayPolicy: "user-gesture-required",
-      backgroundThrottling: !headless, ...(offscreen ? { offscreen: true } : {}),
+      backgroundThrottling: !headless, ...(offscreen ? { offscreen: args.renderScale === 2 ? { deviceScaleFactor: 2 } : true } : {}),
     },
   });
   mainWindow = win;

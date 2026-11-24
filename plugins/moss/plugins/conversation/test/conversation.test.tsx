@@ -33,6 +33,7 @@ import {
   at,
   bot,
   note,
+  question,
   thinking,
   tool,
   user,
@@ -578,6 +579,45 @@ describe("approvals", () => {
 });
 
 describe("questions", () => {
+  test("an override left open in the model's words cannot reach the app's words beside them (header chip, options, question, closed and answered heads)", async () => {
+    const RLO = "\u202E";
+    const q = {
+      question: `${RLO}Which one?`, header: `${RLO}Model`, multiSelect: false,
+      options: [{ label: `${RLO}Use opus`, description: `${RLO}A Claude model` }],
+    };
+    const pending = renderView({ items: [question(at(0, 1, 0), { questions: [q] })] });
+    const card = pending.container.querySelector("[data-kind=question]")!;
+    expect(card.querySelector(".cl-conv-question__chip bdi")).not.toBeNull();
+    expect(card.querySelector(".cl-conv-question__option-label bdi")).not.toBeNull();
+    expect(card.querySelector(".cl-conv-question__option-description bdi")).not.toBeNull();
+    expect(card.querySelector(".cl-conv-question__text")!.getAttribute("dir")).toBe("auto");
+    cleanup();
+    const closed = renderView({ items: [question(at(0, 1, 0), { questions: [q], state: "withdrawn" })] });
+    expect(closed.container.querySelector(".cl-conv-question__head span[dir=auto] bdi")).not.toBeNull();
+    cleanup();
+    const done = renderView({ items: [question(at(0, 1, 0), { questions: [q], state: "answered", answers: { [q.question]: `${RLO}Use opus` } })] });
+    expect(done.container.querySelector(".cl-conv-question__answers dt[dir=auto] bdi")).not.toBeNull();
+    expect(done.container.querySelector(".cl-conv-question__answers dd[dir=auto] bdi")).not.toBeNull();
+  });
+
+  test("a tool row's model text (its hint and result words) sits in an isolated run beside the app's phrase", () => {
+    const { container } = renderView({ items: [tool(at(0, 1, 0), { name: "Bash", detail: "\u202Eecho hi", output: "\u202Efine" })] });
+    expect(container.querySelector(".cl-conv-tools__detail bdi, .cl-conv-tools__sentence")).not.toBeNull();
+    for (const el of container.querySelectorAll(".cl-conv-tools__detail, .cl-conv-tools__meta")) expect(el.querySelector("bdi")).not.toBeNull();
+  });
+
+  test("two questions with the same words share the wire's one slot, and neither answer is lost to the other", () => {
+    const onAnswerQuestion = mock((_id: string, _a: unknown) => undefined);
+    const same = { question: "Which one?", multiSelect: false, options: [{ label: "A" }, { label: "B" }] };
+    const item = question(at(0, 1, 0), { questions: [same, same] });
+    const { container } = renderView({ items: [item], onAnswerQuestion });
+    const fields = [...container.querySelectorAll(".cl-conv-question__field")];
+    fireEvent.click(fields[0]!.querySelectorAll("input[type=radio]")[0]!);
+    fireEvent.click(fields[1]!.querySelectorAll("input[type=radio]")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAnswerQuestion).toHaveBeenCalledWith(item.callId, { answers: { "Which one?": "A; B" } });
+  });
+
   test("one choice: pick, send, and the answer is keyed by the question", () => {
     const onAnswerQuestion = mock((_id: string, _a: unknown) => undefined);
     renderView({ items: [QUESTION_SINGLE], onAnswerQuestion });

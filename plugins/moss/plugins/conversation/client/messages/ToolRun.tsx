@@ -152,11 +152,11 @@ function CallDetail({ call, ctx }: { call: ToolCall; ctx: MessageContext }) {
   if (detail && open && FILE_TOOLS.has(call.name)) {
     return (
       <button type="button" className="cl-conv-call__path" onClick={() => open(detail)} title={detail}>
-        {detail}
+        <bdi>{detail}</bdi>
       </button>
     );
   }
-  return detail === undefined ? null : <span className="cl-conv-call__detail">{detail}</span>;
+  return detail === undefined ? null : <span className="cl-conv-call__detail"><bdi>{detail}</bdi></span>;
 }
 
 export function ToolRun({ item, ctx, expanded, onToggle, renderResult }: ToolRunProps) {
@@ -191,14 +191,14 @@ export function ToolRun({ item, ctx, expanded, onToggle, renderResult }: ToolRun
         </span>
         <StatusGlyph status={status} />
         {others.length > 0 && <span className="cl-conv-tools__sentence">{toolSentence(others)}</span>}
-        {detail !== undefined && detail !== "" && <span className="cl-conv-tools__detail">{detail}</span>}
-        {meta !== undefined && <span className="cl-conv-tools__meta">{meta}</span>}
+        {detail !== undefined && detail !== "" && <span className="cl-conv-tools__detail"><bdi>{detail}</bdi></span>}
+        {meta !== undefined && <span className="cl-conv-tools__meta"><bdi>{meta}</bdi></span>}
         {own.length > 0 && (
           <span className="cl-conv-tools__chips">
             {own.map((c) => (
               <span key={c.callId} className="cl-conv-chip" data-tool={toolKind(c.name)} data-kind={c.display?.kind} data-status={c.status} title={titleFor(c, ctx.botId)}>
                 {c.display?.swatch && /^#[0-9A-Fa-f]{6}$/.test(c.display.swatch) ? <span className="cl-conv-chip__swatch" aria-hidden="true" style={{ background: c.display.swatch }} /> : null}
-                {chipText(c)}
+                <bdi>{chipText(c)}</bdi>
               </span>
             ))}
           </span>
@@ -234,7 +234,7 @@ export function ToolRun({ item, ctx, expanded, onToggle, renderResult }: ToolRun
                 <div className="cl-conv-call__head">
                   <StatusGlyph status={call.status} />
                   <span className="cl-conv-call__name">{callName(call, ctx.botId)}</span>
-                  {titleFor(call, ctx.botId) ? <span className="cl-conv-call__detail">{titleFor(call, ctx.botId)}</span> : null}
+                  {titleFor(call, ctx.botId) ? <span className="cl-conv-call__detail"><bdi>{titleFor(call, ctx.botId)}</bdi></span> : null}
                   <CallDetail call={call} ctx={ctx} />
                   {call.computer && !computer && <span className="cl-conv-call__computer">{S.toolOnComputer(call.computer)}</span>}
                   {call.reviewing && <span className="cl-conv-tools__reviewing">{S.toolReviewing}</span>}

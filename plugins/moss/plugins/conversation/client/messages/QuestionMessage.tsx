@@ -35,8 +35,8 @@ function Answered({ item }: { item: QuestionItem }) {
       <dl className="cl-conv-question__answers">
         {item.questions.map((q, i) => (
           <div key={i} className="cl-conv-question__answer">
-            <dt>{q.question}</dt>
-            <dd>{item.answers?.[q.question] ?? ""}</dd>
+            <dt dir="auto"><bdi>{q.question}</bdi></dt>
+            <dd dir="auto"><bdi>{item.answers?.[q.question] ?? ""}</bdi></dd>
           </div>
         ))}
       </dl>
@@ -55,7 +55,7 @@ function Closed({ item, ctx }: { item: QuestionItem; ctx: MessageContext }) {
     <section className="cl-conv-question" data-kind="question" data-state={item.state}>
       <div className="cl-conv-question__head">
         <IconQuestion />
-        <span>{item.questions[0]?.question}</span>
+        <span dir="auto"><bdi>{item.questions[0]?.question}</bdi></span>
       </div>
       <div className="cl-conv-question__closed">{text}</div>
     </section>
@@ -92,8 +92,8 @@ function QuestionFields({
   return (
     <fieldset className="cl-conv-question__field" disabled={disabled}>
       <legend className="cl-conv-question__legend">
-        {showHeader && question.header && <span className="cl-conv-question__chip">{question.header}</span>}
-        <span className="cl-conv-question__text">{question.question}</span>
+        {showHeader && question.header && <span className="cl-conv-question__chip"><bdi>{question.header}</bdi></span>}
+        <span className="cl-conv-question__text" dir="auto">{question.question}</span>
       </legend>
       <div className="cl-conv-question__body" data-preview={preview !== undefined || undefined}>
         <div className="cl-conv-question__choices">
@@ -106,8 +106,8 @@ function QuestionFields({
                 onChange={() => choose(option.label)}
               />
               <span className="cl-conv-question__option-text">
-                <span className="cl-conv-question__option-label">{option.label}</span>
-                {option.description && <span className="cl-conv-question__option-description">{option.description}</span>}
+                <span className="cl-conv-question__option-label"><bdi>{option.label}</bdi></span>
+                {option.description && <span className="cl-conv-question__option-description"><bdi>{option.description}</bdi></span>}
               </span>
             </label>
           ))}
@@ -132,7 +132,7 @@ function QuestionFields({
         {preview !== undefined && (
           <figure className="cl-conv-question__preview">
             <figcaption>{S.questionPreview}</figcaption>
-            <pre>{preview}</pre>
+            <pre dir="auto">{preview}</pre>
           </figure>
         )}
       </div>
@@ -163,7 +163,10 @@ export function QuestionMessage({
     if (!canSend) return;
     const keyed: Record<string, string> = {};
     item.questions.forEach((q, i) => {
-      keyed[q.question] = answers[i] ?? "";
+      // The wire keys answers by the question's TEXT (the SDK's contract), so two questions with the same words share one slot:
+      // their answers join in order there, and neither is lost to the other.
+      const a = answers[i] ?? "";
+      keyed[q.question] = keyed[q.question] === undefined ? a : `${keyed[q.question]}; ${a}`;
     });
     setSent(true);
     setFailed(false);

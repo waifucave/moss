@@ -384,7 +384,6 @@
   text-decoration: none;
 }
 
-.cl-conv-md a:hover,
 .cl-conv-md__host {
   unicode-bidi: isolate;
   direction: ltr;
@@ -393,6 +392,7 @@
   overflow-wrap: anywhere;
 }
 
+.cl-conv-md a:hover,
 .cl-conv-md__link:hover {
   text-decoration: underline;
   text-underline-offset: 2px;

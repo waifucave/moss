@@ -137,3 +137,13 @@ describe("a packaged MOSS's key across restarts", () => {
     expect(other).toBe(2);
   });
 });
+
+describe("the render's size", () => {
+  test("--moss-render-scale=2 asks for twice the pixels of a render only; the default and any other value leave it unset", async () => {
+    const { parseLaunchArgs } = await import("../src/main/identity");
+    expect(parseLaunchArgs(["x", "--moss-render=/tmp/o"]).renderScale).toBeUndefined();
+    expect(parseLaunchArgs(["x", "--moss-render=/tmp/o", "--moss-render-scale=2"]).renderScale).toBe(2);
+    expect(parseLaunchArgs(["x", "--moss-render=/tmp/o", "--moss-render-scale=3"]).renderScale).toBeUndefined();
+    expect(parseLaunchArgs(["x", "--moss-render-scale=2"]).renderScale).toBeUndefined();
+  });
+});
