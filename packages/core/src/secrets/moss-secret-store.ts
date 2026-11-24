@@ -1,7 +1,8 @@
 // The real SecretStore (B's contract `contracts/secret-store.ts`, owner lane C; spec §8.5, §9.1 "The secret store").
 //   - What the store knows about each item (its owner, name, generation, time and whether it syncs) sits in an index,
-//     `<home>/credentials/index.json`, inside the fenced set and owner-only. It never holds a value, so `list` and
-//     `watch` work while the values are locked.
+//     `<home>/credentials/index.json` with a second copy, inside the fenced set and owner-only. It never holds a value,
+//     so `list` and `watch` work while the values are locked. The values, not the index, say whether an item is there
+//     (`MossSecretStore`).
 //   - The values:
 //       macOS            one Keychain item per secret (`KeychainValues`), whose ACL trusts the daemon's binary
 //       Windows, Linux   one encrypted file, `<home>/secrets.enc` (AES-256-GCM, a fresh nonce per write), whose key
@@ -10,7 +11,7 @@
 //   - The OS stores are injected (`Vault`), so tests never touch the real Keychain, Credential Manager or keyring.
 // A value leaves only through `get`, wrapped in a `Secret`; nothing written to the index, a log or an error holds one.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { SecretKeySource } from "@waifucave/moss-protocol";
 import type { Clock } from "../contracts/clock";
@@ -18,8 +19,9 @@ import { ContractError, Listeners } from "../contracts/common";
 import { osSecretsBackend } from "../auth/secret-store";
 import { flushFile, readFileRetrying, renameDurably, withSecretsLock, writePrivateFile, type PrivateFileDeps } from "./private-file";
 import {
-  SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_MADE_SEGMENTS,
-  SECRETS_SEALED_KEY_FILE_NAME, SECRETS_TMP_DIR_SEGMENTS,
+  SECRETS_BACKUP_SEGMENTS, SECRETS_FILE_NAME, SECRETS_INDEX_COPY_SEGMENTS, SECRETS_INDEX_LOCK_SEGMENTS, SECRETS_INDEX_MADE_SEGMENTS,
+  SECRETS_INDEX_SEGMENTS, SECRETS_KEY_FILE_NAME, SECRETS_LOCK_SEGMENTS, SECRETS_MADE_SEGMENTS, SECRETS_SEALED_KEY_FILE_NAME,
+  SECRETS_TMP_DIR_SEGMENTS,
 } from "./secret-files";
 import {
   SECRET_NAME_RE, Secret, secretOwnerKey, secretRefKey,
@@ -284,15 +286,6 @@ export function keyFileKey(path: string, secretsFile: string): () => Promise<Buf
   };
 }
 
-function writeOwnerOnly(path: string, data: Buffer | string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(tmp, "", { mode: 0o600, flag: "wx" });
-  if (process.platform !== "win32") chmodSync(tmp, 0o600);
-  writeFileSync(tmp, data, { flag: "r+" });
-  renameSync(tmp, path);
-}
-
 export interface MossSecretStoreOptions {
   /** The MOSS home: the index is `credentials/index.json` there. */
   home: string;
@@ -301,21 +294,62 @@ export interface MossSecretStoreOptions {
   clock?: Pick<Clock, "now">;
   /** Starts locked with this reason (a keyring still locked at the login screen). */
   locked?: string;
+  /** Says when the index was read from its second copy (the daemon's log by default). */
+  log?: (line: string) => void;
 }
 
 interface Index { version: 1; items: Record<string, SecretMeta> }
 
+/** An index as this store writes it, or null: the version, and each entry an item's meta under its own key. */
+function parseIndex(bytes: Buffer): Index | null {
+  let i: unknown;
+  try { i = JSON.parse(bytes.toString("utf8")); } catch { return null; }
+  if (typeof i !== "object" || i === null || (i as Index).version !== 1) return null;
+  const items = (i as Index).items;
+  if (typeof items !== "object" || items === null || Array.isArray(items)) return null;
+  for (const [key, m] of Object.entries(items)) {
+    if (typeof m !== "object" || m === null || typeof m.generation !== "number" || typeof m.ref?.name !== "string" || typeof m.ref.owner?.kind !== "string") return null;
+    if (secretRefKey(m.ref) !== key) return null;
+  }
+  return i as Index;
+}
+
+const INDEX_DAMAGED = "the secret store's index (credentials/index.json) is damaged and its second copy (index.json.bak) can't be read: saved items still read, but none can be added, changed, removed or listed until one of them is restored (or both are deleted with credentials/index.made, to start the list afresh)";
+const INDEX_MISSING = "the secret store's index (credentials/index.json) and its second copy are missing though one was made here: saved items still read, but none can be added, changed, removed or listed until one is restored (or credentials/index.made is deleted, to start the list afresh)";
+
+/** The store's items over a value backend, with an index of what is there (every OS).
+ *
+ *  The VALUES are the authority: `get` answers what the value backend holds, so an index that is damaged, short, missing,
+ *  or behind (a crash after the value was written and before the index) never makes a stored value read as "nothing
+ *  there", and nothing that makes an item when it finds none (the device key) makes one over the old. An item the index
+ *  doesn't know reads with generation 0.
+ *
+ *  The index is written as the secrets file is (`writePrivateFile`: owner-only from its first byte, the Windows ACL,
+ *  flushed, renamed, the rename flushed), then its second whole copy, then once the note that one was made. A damaged or
+ *  missing index is read from the second copy, and said once. With neither readable a write, a removal and a listing
+ *  are refused with a plain reason (`invalid` when the index is there but damaged, `locked` when both are gone though
+ *  the note says one was made), and nothing is written over them. A write of an item and its index holds the index's
+ *  lock across this user's processes (`run/secrets-index.lock`, taken before the file's own), so the daemon and the CLI
+ *  writing at once lose no entry. */
 export class MossSecretStore implements SecretStore {
   readonly #o: MossSecretStoreOptions;
   readonly #listeners = new Listeners<SecretChange>();
   readonly #indexPath: string;
+  readonly #copyPath: string;
+  readonly #madePath: string;
+  readonly #lockPath: string;
+  readonly #disk: PrivateFileDeps;
   readonly #unlockedStatus: SecretStoreStatus;
   #status: SecretStoreStatus;
-  #queue: Promise<unknown> = Promise.resolve();
+  #toldCopy = false;
 
   constructor(o: MossSecretStoreOptions) {
     this.#o = o;
-    this.#indexPath = join(o.home, "credentials", "index.json");
+    this.#indexPath = join(o.home, ...SECRETS_INDEX_SEGMENTS);
+    this.#copyPath = join(o.home, ...SECRETS_INDEX_COPY_SEGMENTS);
+    this.#madePath = join(o.home, ...SECRETS_INDEX_MADE_SEGMENTS);
+    this.#lockPath = join(o.home, ...SECRETS_INDEX_LOCK_SEGMENTS);
+    this.#disk = { tmpDir: join(o.home, ...SECRETS_TMP_DIR_SEGMENTS) };
     this.#unlockedStatus = { ...o.status };
     this.#status = o.locked === undefined ? { ...o.status } : { ...o.status, state: "locked", reason: o.locked };
   }
@@ -333,33 +367,53 @@ export class MossSecretStore implements SecretStore {
     this.#listeners.emit({ status: this.status() });
   }
 
-  #index(): Index {
-    try {
-      const i = JSON.parse(readFileSync(this.#indexPath, "utf8")) as Index;
-      return i.version === 1 && typeof i.items === "object" ? i : { version: 1, items: {} };
-    } catch { return { version: 1, items: {} }; }
+  /** The index: the file, else its second copy (said once), else empty on a home where none was ever made. Throws
+   *  `invalid` when the index is there but neither copy reads, `locked` when both are gone though one was made. */
+  async #index(): Promise<Index> {
+    let damaged = false;
+    for (const [path, isCopy] of [[this.#indexPath, false], [this.#copyPath, true]] as const) {
+      if (!existsSync(path)) continue;
+      let bytes: Buffer;
+      try { bytes = await readFileRetrying(path); } catch { damaged ||= !isCopy; continue; }
+      const i = parseIndex(bytes);
+      if (i === null) { damaged ||= !isCopy; continue; }
+      if (isCopy && !this.#toldCopy) {
+        this.#toldCopy = true;
+        (this.#o.log ?? ((l: string) => console.error(l)))(`[secrets] the store's index (credentials/index.json) was ${damaged ? "damaged" : "missing"}: read from its second copy (index.json.bak); the next write puts it back`);
+      }
+      return i;
+    }
+    if (damaged) throw new ContractError("invalid", INDEX_DAMAGED);
+    if (existsSync(this.#madePath)) throw new ContractError("locked", INDEX_MISSING);
+    return { version: 1, items: {} };
   }
 
-  #save(i: Index): void { writeOwnerOnly(this.#indexPath, JSON.stringify(i)); }
+  /** Writes the index, then its second copy, then (once) the note that one was made: each whole and durable. */
+  async #save(i: Index): Promise<void> {
+    const bytes = JSON.stringify(i);
+    await writePrivateFile(this.#indexPath, bytes, this.#disk);
+    await writePrivateFile(this.#copyPath, bytes, this.#disk);
+    if (!existsSync(this.#madePath)) await writePrivateFile(this.#madePath, "an index of saved items was made here\n", this.#disk);
+  }
 
   #unlocked(): void {
     if (this.#status.state === "locked") throw new ContractError("locked", `the secret store is locked${this.#status.reason ? `: ${this.#status.reason}` : ""}`);
   }
 
-  /** One write at a time: the index and the encrypted file are read and rewritten whole. */
+  /** One write at a time, in this process and across this user's processes: an item and its index entry together. */
   #serial<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.#queue.then(fn, fn);
-    this.#queue = run.catch(() => undefined);
-    return run;
+    return withSecretsLock(this.#lockPath, fn);
   }
 
   async get(ref: SecretRef): Promise<SecretValue | null> {
     this.#unlocked();
     const key = secretRefKey(ref);
-    const meta = this.#index().items[key];
-    if (!meta) return null;
+    // The value is the authority; the index only gives its generation (0 when it can't).
     const value = await this.#o.values.get(key);
-    return value === null ? null : { value: new Secret(value), generation: meta.generation };
+    if (value === null) return null;
+    let generation = 0;
+    try { generation = (await this.#index()).items[key]?.generation ?? 0; } catch { /* the index can't be read: the value still can */ }
+    return { value: new Secret(value), generation };
   }
 
   set(ref: SecretRef, value: string | Secret, opts: { synced?: boolean } = {}): Promise<SecretMeta> {
@@ -367,7 +421,7 @@ export class MossSecretStore implements SecretStore {
       this.#unlocked();
       if (!SECRET_NAME_RE.test(ref.name)) throw new ContractError("invalid", "a secret's name is 1–128 of A-Z a-z 0-9 . _ : -");
       const key = secretRefKey(ref);
-      const index = this.#index();
+      const index = await this.#index(); // read before the value is written: a damaged index refuses the write whole
       const meta: SecretMeta = {
         ref: { owner: { ...ref.owner }, name: ref.name },
         generation: (index.items[key]?.generation ?? 0) + 1,
@@ -376,7 +430,7 @@ export class MossSecretStore implements SecretStore {
       };
       await this.#o.values.set(key, value instanceof Secret ? value.reveal() : value);
       index.items[key] = meta;
-      this.#save(index);
+      await this.#save(index);
       this.#listeners.emit({ meta: { ...meta }, deleted: false });
       return { ...meta };
     });
@@ -386,12 +440,14 @@ export class MossSecretStore implements SecretStore {
     return this.#serial(async () => {
       this.#unlocked();
       const key = secretRefKey(ref);
-      const index = this.#index();
-      const meta = index.items[key];
+      const index = await this.#index();
+      // An item the index doesn't know (a crash after its value was written) is still removed: the values are the authority.
+      const meta = index.items[key] ?? ((await this.#o.values.get(key)) === null ? undefined
+        : { ref: { owner: { ...ref.owner }, name: ref.name }, generation: 0, updatedAt: this.#o.clock?.now() ?? Date.now(), synced: false });
       if (!meta) return false;
       await this.#o.values.delete(key);
       delete index.items[key];
-      this.#save(index);
+      await this.#save(index);
       this.#listeners.emit({ meta: { ...meta }, deleted: true });
       return true;
     });
@@ -399,7 +455,7 @@ export class MossSecretStore implements SecretStore {
 
   async list(owner?: SecretOwner): Promise<SecretMeta[]> {
     const want = owner ? secretOwnerKey(owner) : undefined;
-    return Object.values(this.#index().items)
+    return Object.values((await this.#index()).items)
       .filter((m) => want === undefined || secretOwnerKey(m.ref.owner) === want)
       .map((m) => ({ ...m, ref: { owner: { ...m.ref.owner }, name: m.ref.name } }))
       .sort((a, b) => secretRefKey(a.ref).localeCompare(secretRefKey(b.ref)));
@@ -407,8 +463,8 @@ export class MossSecretStore implements SecretStore {
 
   watch(fn: (change: SecretChange) => void): () => void { return this.#listeners.add(fn); }
 
-  /** Removes the index (tests' and an uninstaller's clean-up; the values go with their backend). */
-  dropIndex(): void { rmSync(this.#indexPath, { force: true }); }
+  /** Removes the index, its second copy and the note (tests' and an uninstaller's clean-up; the values go with their backend). */
+  dropIndex(): void { for (const p of [this.#indexPath, this.#copyPath, this.#madePath]) rmSync(p, { force: true }); }
 }
 
 /** What `chooseFileStore` settled on for the secrets file on this computer. */
