@@ -29,8 +29,8 @@ Files: src/acl.rs; tests/persistent_grant_access_check.rs (one access-check case
 
 What changes, and nothing else, per session (`SbAceSet::aces`) and persistent
 (`persistent_aces`): the parent's FILE_DELETE_CHILD deny is written without
-OI|CI; a write-denied target gains `(D;OICI;FILE_DELETE_CHILD)`. Two unit tests
-of the persistent shape follow, and an access check of both entries.
+OI|CI; a write-denied target gains `(D;OICI;FILE_DELETE_CHILD)`. Three unit tests
+of the persistent shape follow (one on disk), and an access check of both entries.
 
 diff --git a/src/acl.rs b/src/acl.rs
 --- a/src/acl.rs
@@ -53,11 +53,10 @@ diff --git a/src/acl.rs b/src/acl.rs
      /// of every denied target so the sandbox user cannot `del`/`ren`
      /// it via parent-FDC even when the parent carries an inherited
      /// `BUILTIN\Users:(F)` (which the sandbox user, a Users member,
-@@ -1088,12 +1088,24 @@
-         let mut v = Vec::with_capacity(3);
+@@ -1089,11 +1089,23 @@
          if let Some(m) = self.deny {
              v.push(NewAce::Deny(sid, m.bits(), OICI));
-+        }
+         }
 +        // MOSS patch 0004: a write deny's own delete-child deny, on the target and all below
 +        // it. The write mask holds DELETE but not FILE_DELETE_CHILD, and a delete is granted
 +        // by the parent's FILE_DELETE_CHILD whatever the child's own DELETE says; what below
@@ -65,7 +64,7 @@ diff --git a/src/acl.rs b/src/acl.rs
 +        // target's own now (the read deny, FILE_ALL, holds it already).
 +        if self.deny == Some(DenyMask::WriteDeny) {
 +            v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), OICI));
-         }
++        }
          if self.deny_delete {
              v.push(NewAce::Deny(sid, Mask::DELETE.bits(), NO_INHERIT));
          }
@@ -111,7 +110,27 @@ diff --git a/src/acl.rs b/src/acl.rs
              ]
          );
          let both = persistent_aces(&PersistentWant {
-@@ -2069,6 +2087,7 @@
+@@ -2003,10 +2021,17 @@
+                 comparable(&want, true)
+             );
+         }
+-        // A file two levels down carries each of them as inherited.
++        // A file two levels down carries each inheritable one as inherited; the parent's delete-child deny is the
++        // folder's alone (MOSS patch 0004), so nothing below carries it.
+         let file = dir.join("sub").join("f.txt");
+         let below = read_aces(file.to_str().unwrap()).unwrap();
+-        for w in &want {
++        assert!(
++            !below
++                .iter()
++                .any(|a| a.inherited && a.deny && a.mask == Mask::FILE_DELETE_CHILD.bits()),
++            "the parent's delete-child deny was inherited"
++        );
++        for w in want.iter().filter(|w| w.flags & 0x3 != 0) {
+             assert!(
+                 below
+                     .iter()
+@@ -2069,6 +2094,7 @@
              list(Some(ProfileAce::Granted), Some(DenyMask::WriteDeny), None),
              [
                  format!("(D;OICI;{:#x};;;{GROUP})", DenyMask::WriteDeny.bits()),

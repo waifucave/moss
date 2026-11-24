@@ -82,8 +82,11 @@ jobs:
         working-directory: vendor/srt-win-src/vendor/srt-win-src
         run: |
           cargo test --locked --lib acl::
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $unit = $LASTEXITCODE
           cargo test --locked --test persistent_grant_access_check
+          $access = $LASTEXITCODE
+          Write-Output "acl unit tests: exit $unit; access-check tests: exit $access"
+          if ($unit -ne 0 -or $access -ne 0) { exit 1 }
 
   # The daemon as it runs for real: a standard user's, started by its password startup task, so in Session 0 with a
   # password logon. The user's unelevated setup refuses with exit 2; an administrator sets the sandbox up for it from
