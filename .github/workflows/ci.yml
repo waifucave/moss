@@ -1523,7 +1523,7 @@ jobs:
         if: ${{ !cancelled() && matrix.unit == 'chain' }}
         continue-on-error: true
         working-directory: packages/core
-        run: bun test src/plugin-host/tests/process.test.ts 2>&1 | tail -60
+        run: bun test src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/registry/tests/plugin-run.test.ts 2>&1 | tail -90
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
