@@ -7,7 +7,7 @@
   "engines": { "moss": "^1.0.0" },
   "availability": { "status": "not-yet", "reason": "device-id" },
   "host": { "entry": "host/index.ts", "runtime": "bun", "start": "each" },
-  "capabilities": ["network:*.workers.dev"],
+  "capabilities": ["devices.read", "network:*.workers.dev"],
   "settings": {
     "origin": {
       "type": "string",

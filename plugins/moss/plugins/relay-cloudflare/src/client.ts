@@ -28,8 +28,8 @@ export interface RelayClientOptions {
   origin: () => Promise<string | undefined>;
   /** The keyed fetch: adds the relay key. */
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
-  /** This device's id: whose mailbox `takeMail` and `ackMail` read. */
-  device: string;
+  /** This device's id (`api.plugin.device`): whose mailbox `takeMail` and `ackMail` read when a call names none. */
+  device?: string;
   now?: () => number;
 }
 
@@ -119,17 +119,25 @@ export class RelayClient {
     });
   }
 
-  async takeMail(args: { max?: number } = {}): Promise<Mail[]> {
+  /** Whose mailbox: the call's device (the core passes the taking device's id), else this device's. */
+  private mailbox(device: string | undefined): string {
+    const id = device ?? this.options.device;
+    if (id === undefined || !DEVICE_RE.test(id)) throw new RelayError("bad_request", "no device id for the mailbox");
+    return id;
+  }
+
+  async takeMail(args: { device?: string; max?: number } = {}): Promise<Mail[]> {
     const max = Math.min(Math.max(Math.floor(args.max ?? 16), 1), 64);
-    const response = await this.request(`/v1/mail/${this.options.device}?max=${max}`);
+    const response = await this.request(`/v1/mail/${this.mailbox(args.device)}?max=${max}`);
     const body = (await response.json()) as { mail?: { id: string; sealed: string }[] };
     return (body.mail ?? []).map((m) => ({ id: m.id, sealed: b64uDecode(m.sealed) }));
   }
 
-  async ackMail(args: { ids: string[] }): Promise<void> {
+  async ackMail(args: { device?: string; ids: string[] }): Promise<void> {
     if (args.ids.length === 0) return;
+    const device = this.mailbox(args.device);
     for (let i = 0; i < args.ids.length; i += 256) {
-      await this.request(`/v1/mail/${this.options.device}/ack`, {
+      await this.request(`/v1/mail/${device}/ack`, {
         method: "POST",
         body: JSON.stringify({ ids: args.ids.slice(i, i + 256) }),
         headers: { "content-type": "application/json" },

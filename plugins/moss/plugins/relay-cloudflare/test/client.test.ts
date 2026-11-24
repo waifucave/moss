@@ -97,7 +97,7 @@ describe("the host half", () => {
         },
       },
       settings: { get: async <T>() => "https://r.example" as T, watch: () => () => {}, set: async () => {} },
-      device: { id: "laptop" },
+      plugin: { id: "moss/relay-cloudflare", namespace: "moss", version: "0.0.0", computer: "Laptop", device: "laptop" },
     });
     expect(await relay.endpoints()).toEqual({ endpoints: [{ kind: "websocket", url: "wss://r/v1/rooms?ticket=t" }] });
     expect(auths).toEqual(["relay-key"]);
