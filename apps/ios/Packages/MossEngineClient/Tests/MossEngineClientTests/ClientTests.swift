@@ -260,8 +260,12 @@ final class ClientTests: XCTestCase {
         let offers = try await c.composerOffers(session: "s1", kind: .bot)
         XCTAssertTrue(offers.isEmpty, "no rows where the engine offers nothing")
         do { _ = try await c.createBot(name: "N", model: nil); XCTFail("no such door here") } catch let e as NotAvailableYet { XCTAssertEqual(e.method, "bot.create") }
+        do { _ = try await c.stageImage(session: "s1", data: Data([0x89, 0x50, 0x4E, 0x47])); XCTFail("a picture where none is offered") } catch is NotAvailableYet {}
         conn.offersOffered = true
         let offered = try await c.composerOffers(session: "s1", kind: .bot)
         XCTAssertTrue(offered.pictures)
+        let path = try await c.stageImage(session: "s1", data: Data([0x89, 0x50, 0x4E, 0x47]))
+        XCTAssertEqual(path, "staged/1.png")
+        do { _ = try await c.stageFile(session: "s1", name: "f", data: Data([1])); XCTFail("a file where only pictures are offered") } catch is NotAvailableYet {}
     }
 }

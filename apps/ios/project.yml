@@ -27,6 +27,7 @@ targets:
         CFBundleDisplayName: MOSS
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSLocalNetworkUsageDescription: MOSS connects to your computer on your local network.
         NSCameraUsageDescription: MOSS uses the camera to read the pairing code shown on your computer, and to take a picture you choose to send. Nothing is recorded otherwise.
     settings:
       base:
@@ -46,6 +47,7 @@ targets:
         CFBundleDisplayName: MOSS Code
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSLocalNetworkUsageDescription: MOSS Code connects to your computer on your local network.
         NSCameraUsageDescription: MOSS Code uses the camera to read the pairing code shown on your computer, and to take a picture you choose to send. Nothing is recorded otherwise.
     settings:
       base:

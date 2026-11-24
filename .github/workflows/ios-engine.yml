@@ -88,23 +88,6 @@ jobs:
             xcodebuild build-for-testing -project MOSSPhone.xcodeproj -scheme $s -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -skipPackagePluginValidation 2>&1 | grep -E "error:|warning: .*Moss(Engine|PhoneCore)|BUILD (SUCCEEDED|FAILED)|TEST BUILD" | head -80
             test ${PIPESTATUS[0]} -eq 0
           done
-      - name: The Release builds a person runs carry no fake, sample data or launch-argument door
-        working-directory: apps/ios
-        run: |
-          FOUND=0
-          for S in MOSS MOSSCode; do
-            xcodebuild -project MOSSPhone.xcodeproj -scheme $S -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd-rel" -skipPackagePluginValidation build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
-            test ${PIPESTATUS[0]} -eq 0 || FOUND=1
-          done
-          for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
-            BIN="$APP/$(basename "$APP" .app)"
-            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit moss-pair:sample "Use a sample code" Juniper Marlow Sorrel; do
-              if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qF -e "$W"; then echo "release build of $(basename "$APP") carries '$W'"; FOUND=1; fi
-            done
-            strings -a "$BIN" | grep -qF CoreEngineClient || { echo "release build of $(basename "$APP") has no real engine client"; FOUND=1; }
-          done
-          [ "$FOUND" = 0 ] && echo "both Release builds run on the real client only"
-          exit $FOUND
       - name: Start the engine
         env:
           MOSS_LINK_BIN: ${{ github.workspace }}/native/link/target/release/moss-link
@@ -134,6 +117,25 @@ jobs:
             xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$r.xcresult" | tee "$RUNNER_TEMP/$r.json"
             python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(sys.argv[1], "passed", s.get("passedTests"), "failed", s.get("failedTests"), "skipped", s.get("skippedTests")); sys.exit(1 if s.get("skippedTests",0) or s.get("failedTests",0) or not s.get("passedTests") else 0)' "$RUNNER_TEMP/$r.json"
           done
+      - name: The Release builds a person runs carry no fake, sample data or launch-argument door
+        if: always()
+        working-directory: apps/ios
+        run: |
+          FOUND=0
+          # The core's simulator slice is arm64 only (aarch64-apple-ios-sim), as the runner is.
+          for S in MOSS MOSSCode; do
+            xcodebuild -project MOSSPhone.xcodeproj -scheme $S -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd-rel" -skipPackagePluginValidation ARCHS=arm64 build 2>&1 | grep -E "error:|Undefined symbol|ld: |BUILD (SUCCEEDED|FAILED)" | head -40
+            test ${PIPESTATUS[0]} -eq 0 || FOUND=1
+          done
+          for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
+            BIN="$APP/$(basename "$APP" .app)"
+            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit moss-pair:sample "Use a sample code" Juniper Marlow Sorrel; do
+              if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qF -e "$W"; then echo "release build of $(basename "$APP") carries '$W'"; FOUND=1; fi
+            done
+            strings -a "$BIN" | grep -qF CoreEngineClient || { echo "release build of $(basename "$APP") has no real engine client"; FOUND=1; }
+          done
+          [ "$FOUND" = 0 ] && echo "both Release builds run on the real client only"
+          exit $FOUND
       - name: Logs
         if: always()
         run: |

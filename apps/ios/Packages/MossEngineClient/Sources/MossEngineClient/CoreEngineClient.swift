@@ -34,6 +34,9 @@ public actor CoreEngineClient: EngineClient {
     /// What the status line and the message roles need: which sessions are bots' and their bots' names.
     private var botOfSession: [String: Bot] = [:]
     private var stagedFiles: [String: Int] = [:]
+    /// What each conversation's composer offers, as the engine last said (`session.composerOffers`): a picture or a file
+    /// goes only where it is offered, within the limits it names.
+    private var offers: [String: ComposerOffers] = [:]
 
     public init(factory: CoreFactory, app: MossPhoneKit.PhoneApp, clientName: String? = nil,
                 now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
@@ -404,7 +407,12 @@ public actor CoreEngineClient: EngineClient {
     /// coding session the models it may switch to; no pictures or files (their doors came with it).
     public func composerOffers(session: String, kind: ConversationKind) async throws -> ComposerOffers {
         let c = try await link()
-        do { return try await c.composerOffers(session: session) } catch let e as LinkError where e.isNotOffered {
+        do {
+            let o = try await c.composerOffers(session: session)
+            offers[session] = o
+            return o
+        } catch let e as LinkError where e.isNotOffered {
+            offers[session] = nil
             guard kind == .codingSession else { return ComposerOffers() }
             let models = try await c.models(session: session).models
             let row = try? await c.sessions().first { $0.id == session }
@@ -422,7 +430,8 @@ public actor CoreEngineClient: EngineClient {
 
     /// A picture for the next message (`session.stagePicture`, in chunks, through the core).
     public func stageImage(session: String, data: Data) async throws -> String {
-        try await link().stageImage(session: session, mediaType: Self.mediaType(data), data: data)
+        guard offers[session]?.pictures == true else { throw NotAvailableYet("session.stagePicture") }
+        return try await link().stageImage(session: session, mediaType: Self.mediaType(data), data: data)
     }
     static func mediaType(_ d: Data) -> String {
         if d.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
@@ -434,8 +443,10 @@ public actor CoreEngineClient: EngineClient {
     }
 
     public func stageFile(session: String, name: String, data: Data) async throws -> StagedFile {
-        if Int64(data.count) > StagingLimits.maxFileBytes { throw FileTooLarge(limit: StagingLimits.maxFileBytes) }
-        if stagedFiles[session, default: 0] >= StagingLimits.maxFilesPerMessage { throw TooManyFiles(limit: StagingLimits.maxFilesPerMessage) }
+        guard let o = offers[session], o.files else { throw NotAvailableYet("session.stageFile") }
+        let limit = o.fileLimit ?? StagingLimits.maxFileBytes, most = o.maxFiles ?? StagingLimits.maxFilesPerMessage
+        if Int64(data.count) > limit { throw FileTooLarge(limit: limit) }
+        if stagedFiles[session, default: 0] >= most { throw TooManyFiles(limit: most) }
         let r = try await link().stageFile(session: session, name: name, data: data)
         stagedFiles[session, default: 0] += 1
         return StagedFile(path: r.path, name: r.name, size: Int64(data.count))

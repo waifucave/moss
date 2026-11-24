@@ -214,7 +214,8 @@ final class ConnectionImpl: ConnectionLink, @unchecked Sendable {
     func setModel(session: String, model: String, effort: String?) async throws { try await mapped { try await c.setModel(session: session, model: model, effort: effort) } }
     func composerOffers(session: String) async throws -> MossPhoneKit.ComposerOffers { try await mapped { Records.offers(try await c.composerOffers(session: session)) } }
     func pendingQuestion(session: String) async throws -> MossPhoneKit.AskQuestion? {
-        try await mapped { try await c.pendingQuestion(session: session).flatMap(Records.question) }
+        // The questions open in the session, in the order asked (`session.openQuestions`): the newest waits on the composer.
+        try await mapped { try await c.openQuestions(session: session).sorted { $0.seq < $1.seq }.last.flatMap(Records.question) }
     }
     func answerQuestion(session: String, callId: String, answers: [String: String]) async throws {
         try await mapped { try await c.answerQuestion(session: session, callId: callId, answers: answers) }

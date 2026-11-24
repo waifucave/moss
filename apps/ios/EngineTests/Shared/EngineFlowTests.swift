@@ -37,7 +37,9 @@ class EngineFlowTests: XCTestCase {
         let attrs = out as? [String: Any] ?? [:]
         XCTAssertEqual(attrs[kSecAttrAccessible as String] as? String, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
         XCTAssertNotEqual(attrs[kSecAttrSynchronizable as String] as? Bool, true)
-        XCTAssertNil(attrs[kSecAttrAccessControl as String], "no access control: nothing can ask for Face ID, Touch ID or a passcode")
+        // The Keychain reports the protection class alone as an access control (`cku`); the store never adds one, so no
+        // item asks for Face ID, Touch ID or a passcode (a user-presence constraint would show as `od(...)` here).
+        if let ac = attrs[kSecAttrAccessControl as String] { XCTAssertFalse(String(describing: ac).contains("od("), "no user-presence constraint: \(ac)") }
         try items.delete("k")
         XCTAssertNil(try items.load("k"))
         XCTAssertEqual(try items.count(), 0)
@@ -123,6 +125,35 @@ class EngineFlowTests: XCTestCase {
         XCTAssertTrue(sent, conversation.errorText ?? "")
         try await eventually("the reply") { conversation.messages.contains { $0.text == expected } }
         XCTAssertTrue(conversation.messages.contains { $0.role == .user && $0.text == "Hello from the phone" })
+
+        // A file goes only where the composer offers one, and then rides the next message.
+        let offers = try XCTUnwrap(conversation.offers)
+        print("IW offers: pictures \(offers.pictures) files \(offers.files) limit \(offers.fileLimit ?? -1)")
+        if offers.files {
+            await conversation.stageFile(name: "notes.txt", size: 12, data: Data("hello, file\n".utf8))
+            XCTAssertEqual(conversation.stagedFiles.count, 1, conversation.errorText ?? "")
+            conversation.draft = "With a file"
+            let withFile = await conversation.send()
+            XCTAssertTrue(withFile, conversation.errorText ?? "")
+            try await eventually("the message with its file") { conversation.messages.contains { $0.role == .user && $0.text.hasPrefix("With a file") } }
+        } else {
+            do { _ = try await client.stageFile(session: "none", name: "x", data: Data([1])); XCTFail("a file where none is offered") } catch is NotAvailableYet {}
+        }
+        if offers.pictures {
+            // The smallest PNG there is: one pixel.
+            let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+            await conversation.stage(png, thumbnail: png)
+            XCTAssertEqual(conversation.staged.count, 1, conversation.errorText ?? "")
+            conversation.draft = "With a picture"
+            let withPicture = await conversation.send()
+            XCTAssertTrue(withPicture, conversation.errorText ?? "")
+        }
+        if app == .moss {
+            // A bot made from the phone (the engine's `bot.create` door): it is listed next.
+            let made = try await client.createBot(name: "Gamma", model: nil)
+            let listed = try await client.bots()
+            XCTAssertTrue(listed.contains { $0.id == made.id })
+        }
 
         // The engine restarts on the same home: the phone dials back, and the conversation keeps working.
         let before = conversation.messages.count
