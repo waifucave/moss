@@ -1,3 +1,7 @@
+//! RUNS ONLY ON GITHUB (GITHUB_ACTIONS=true and MOSS_PC_ENGINE_TESTS=1): it starts a daemon and iroh endpoints, and on a
+//! Mac a test binary that opens one makes the firewall prompt the person at the screen. Run it through the phone-core
+//! workflow, never locally.
+//!
 //! Proof A: the core against a REAL engine started from source on a temp home (tests/harness/engine.ts), over the
 //! real link sidecar on loopback: no relay, nothing leaves the machine. Needs `bun` (MOSS_PC_BUN, default the repo's
 //! scripts/pinned-bun) with the workspace installed, and the built sidecar (MOSS_LINK_BIN); skipped without
@@ -38,8 +42,10 @@ impl SecretStorage for MemStorage {
     }
 }
 
+/// The engine tests run only on GitHub's runners, asked for (`MOSS_PC_ENGINE_TESTS=1`): they start a daemon and iroh
+/// endpoints, and on a Mac the firewall would ask the person at the screen about each test binary.
 fn enabled() -> bool {
-    std::env::var("MOSS_PC_ENGINE_TESTS").as_deref() == Ok("1")
+    std::env::var("MOSS_PC_ENGINE_TESTS").as_deref() == Ok("1") && std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
 }
 
 fn repo() -> PathBuf {
