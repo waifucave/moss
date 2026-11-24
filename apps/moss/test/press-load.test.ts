@@ -298,6 +298,30 @@ describe("what a stall never buys", () => {
   });
 });
 
+describe("a refused sealed press names its check and its ms in the log", () => {
+  test("explainTake reads the strict bounds and spends nothing", () => {
+    const none = rig();
+    expect(none.record.explainTake(WIN, MAIN)).toBe("main saw no mouse down or key down in this window");
+    const late = rig();
+    late.record.mouseDown(WIN);
+    late.calm(1_200);
+    late.record.frameSaw(WIN, MAIN);
+    expect(late.record.explainTake(WIN, MAIN)).toBe("no report from the page named a frame (the mouse down was 1200 ms ago; a report came 1200 ms after it, limit 1000)");
+    const old = rig();
+    old.record.mouseDown(WIN);
+    old.record.frameSaw(WIN, MAIN);
+    old.calm(1_700);
+    expect(old.record.explainTake(WIN, MAIN)).toBe("the answer came 200 ms past the bound (1500)");
+    expect(old.record.explainTake(WIN, "99:1")).toBe("the click landed in another frame");
+    expect(old.record.take(WIN, MAIN)).toBeUndefined(); // it spent nothing: the strict answer is the same after asking
+    const used = rig();
+    used.record.mouseDown(WIN);
+    used.record.frameSaw(WIN, MAIN);
+    expect(used.record.take(WIN, MAIN)).toBe("click");
+    expect(used.record.explainTake(WIN, MAIN)).toBe("the click was already used");
+  });
+});
+
 describe("what the person is told", () => {
   test("a press that was theirs and only late says the computer was busy and nothing was lost; anything else is the old sentence", () => {
     expect(writeRefusalWords({ check: "the write came too late", late: true })).toBe("Your computer was too busy to confirm that press in time. Nothing was lost: press again.");
