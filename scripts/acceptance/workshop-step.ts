@@ -47,8 +47,8 @@
 import { partElsewhere } from "./elsewhere-parts";
 import { ownTurnCompleted } from "./turn-end";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { templateFiles } from "../../packages/plugin-sdk/src/templates/index";
 import { escape, fail, frames, installFromPage, leave, sleep, toSessionTab, treeDocs, until, type ExampleCtx } from "./example-steps";
 import { clickShown } from "./window-open";
@@ -236,6 +236,11 @@ export async function ok(ctx: ExampleCtx, session: string, tool: string, input: 
 /** The plugin's tool, called once by Alpha; its card (the tool is on neither no-card list) pressed in the window. */
 const greet = (ctx: ExampleCtx, session: string) => ok(ctx, session, WORKSHOP_TOOL, { name: "Acceptance" }, () => true);
 
+/** Whether `file` sits in `dir`, both by their real paths (a Windows home may be spelled with 8.3 short names, and its separator is a backslash). */
+function underFolder(file: string, dir: string): boolean {
+  try { return realpathSync.native(file).startsWith(realpathSync.native(dir) + sep); } catch { return file.startsWith(dir + sep); }
+}
+
 async function run(ctx: ExampleCtx, session: string): Promise<string> {
   const { home } = ctx;
   const done: string[] = [];
@@ -310,7 +315,7 @@ async function run(ctx: ExampleCtx, session: string): Promise<string> {
       const head = `plugins drawn at ${w}x${h} (${size})`;
       if (!s.result.text.startsWith(head)) fail(`AppScreenshot ${size} answered "${s.result.text.slice(0, 200)}"`);
       const file = /^Saved: (.+\.png)$/m.exec(s.result.text)?.[1];
-      if (file === undefined || !file.startsWith(join(scratch, "shots") + "/")) fail(`AppScreenshot ${size} saved nothing under her scratch's shots/ ("${s.result.text.slice(0, 300)}")`);
+      if (file === undefined || !underFolder(file, join(scratch, "shots"))) fail(`AppScreenshot ${size} saved nothing under her scratch's shots/ ("${s.result.text.slice(0, 300)}")`);
       const png = (() => { try { return readFileSync(file!); } catch { return undefined; } })();
       if (png === undefined || png.length < 1000 || png.readUInt32BE(0) !== 0x89504e47) fail(`${file} isn't a PNG (${png?.length ?? 0} bytes)`);
       const [pw, ph] = [png!.readUInt32BE(16), png!.readUInt32BE(20)];
