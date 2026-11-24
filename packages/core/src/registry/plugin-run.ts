@@ -421,7 +421,7 @@ function lockFolderToUser(folder: string): void {
 
 /** Windows: `bin\\bun.exe` is the plugin Bun by a symlink where the user may make one, and otherwise (a standard user without Developer
  *  Mode: EPERM) by a hard link, which needs no privilege, and where that can't be made either (another volume) by a copy checked against the
- *  original's SHA-256. Each is judged again at every start, so a swapped file is replaced. The folder is the user's alone (`lockFolderToUser`). */
+ *  original's SHA-256 when it is made and again at every start (never by size and time). Each is judged again at every start, so a swapped file is replaced. The folder is the user's alone (`lockFolderToUser`). */
 export function placeBunOnWindows(bunLink: string, bun: string, ops: { symlink: typeof symlinkSync; link: typeof linkSync } = { symlink: symlinkSync, link: linkSync }): void {
   const current = (): boolean => {
     try {
@@ -429,7 +429,9 @@ export function placeBunOnWindows(bunLink: string, bun: string, ops: { symlink: 
       if (l.isSymbolicLink()) return readlinkSync(bunLink) === bun;
       const b = statSync(bun);
       if (!l.isFile() || l.size !== b.size) return false;
-      return (l.ino !== 0 && l.ino === b.ino && l.dev === b.dev) || l.mtimeMs === b.mtimeMs; // a hard link, or a copy made with its time
+      if (l.ino !== 0 && l.ino === b.ino && l.dev === b.dev) return true; // a hard link: the one file, whose bytes `checkPluginBun` judges
+      // A copy is the same bytes or it is replaced: its size and time can be set by anyone who can write it, so they prove nothing.
+      return sha256Hex(readFileSync(bunLink)) === sha256Hex(readFileSync(bun));
     } catch {
       return false;
     }

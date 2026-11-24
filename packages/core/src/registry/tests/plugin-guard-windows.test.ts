@@ -1,7 +1,7 @@
 // On Windows a junction inside a plugin's folder that points outside it is refused by the plugin guard, as a symlink is elsewhere.
 // (The runner runs elevated, which can make a junction or a link; a junction needs no privilege at all.)
 import { describe, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensurePluginRunFiles, guardedPluginEnv, placeBunOnWindows } from "../plugin-run";
@@ -58,6 +58,17 @@ describe.skipIf(process.platform !== "win32")("bin\\bun.exe for a standard user"
     const { bun, link } = fresh();
     placeBunOnWindows(link, bun, { symlink: eperm as never, link: eperm as never });
     expect(statSync(link).ino).not.toBe(statSync(bun).ino);
+    expect(readFileSync(link).equals(readFileSync(bun))).toBe(true);
+  });
+  test("a copy changed in place with the same size and modification time is replaced at the next start", () => {
+    const { bun, link } = fresh();
+    placeBunOnWindows(link, bun, { symlink: eperm as never, link: eperm as never });
+    const t = statSync(link);
+    const same = Buffer.from(readFileSync(link)); same[0] = same[0]! ^ 0xff;
+    writeFileSync(link, same);
+    utimesSync(link, t.atime, t.mtime); // what anyone who can write the file can do
+    expect(readFileSync(link).equals(readFileSync(bun))).toBe(false);
+    placeBunOnWindows(link, bun, { symlink: eperm as never, link: eperm as never });
     expect(readFileSync(link).equals(readFileSync(bun))).toBe(true);
   });
   test("a swapped file is replaced at the next start", () => {

@@ -17,8 +17,13 @@ export function ownerOnlyProblemOfSddl(sddl: string, userSid: string): string | 
   const sid = (t: string): string => (SHORT[t.toUpperCase()] ?? t).toUpperCase();
   const owner = /(?:^|[^A-Z])O:(.+?)(?=G:|D:|S:|$)/.exec(sddl)?.[1] ?? "";
   if (owner === "" || !trusted.has(sid(owner))) return `it is owned by ${owner === "" ? "no one it could read" : sid(owner)}, not the user, Administrators or SYSTEM`;
-  const dacl = sddl.slice(sddl.indexOf("D:") + 2);
   if (!sddl.includes("D:")) return "it has no access list";
+  const dacl = sddl.slice(sddl.indexOf("D:") + 2);
+  // What stands between the entries is the list's flags: P (protected), AI, AR. A NULL list (`D:NO_ACCESS_CONTROL`) gives everyone full access, and
+  // anything else there is not a list this reads: both refuse. An EMPTY list (`D:P`, no entries) grants no one and is fine.
+  const between = dacl.replace(/\([^)]*\)/g, "|").split("S:")[0]!.replace(/\|/g, "");
+  if (/NO_ACCESS_CONTROL/i.test(between)) return "it has a NULL access list, which gives everyone full access";
+  if (!/^(?:P|AI|AR)*$/.test(between)) return `its access list has parts this does not read (${between.slice(0, 40)})`;
   const foreign: string[] = [];
   for (const m of dacl.matchAll(/\(([^)]*)\)/g)) {
     const f = m[1]!.split(";");

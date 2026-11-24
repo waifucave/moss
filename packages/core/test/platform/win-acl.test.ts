@@ -9,6 +9,17 @@ import { systemDirectory } from "../../src/secrets/private-file";
 
 const ME = "S-1-5-21-1-2-3-1001";
 describe("an access list read back as SDDL", () => {
+  test("a NULL access list (everyone has full access) is refused, with or without flags", () => {
+    expect(ownerOnlyProblemOfSddl(`O:${ME}G:DUD:NO_ACCESS_CONTROL`, ME)).toMatch(/NULL access list/);
+    expect(ownerOnlyProblemOfSddl(`O:${ME}D:PAINO_ACCESS_CONTROL`, ME)).toMatch(/NULL access list/);
+    expect(ownerOnlyProblemOfSddl(`O:${ME}D:NO_ACCESS_CONTROLS:(AU;SA;FA;;;WD)`, ME)).toMatch(/NULL access list/);
+  });
+  test("an empty protected list grants no one and is fine; a missing list, or one that isn't read, is refused", () => {
+    expect(ownerOnlyProblemOfSddl(`O:${ME}G:DUD:P`, ME)).toBeNull();
+    expect(ownerOnlyProblemOfSddl(`O:${ME}D:PAI`, ME)).toBeNull();
+    expect(ownerOnlyProblemOfSddl(`O:${ME}G:DU`, ME)).toMatch(/no access list/);
+    expect(ownerOnlyProblemOfSddl(`O:${ME}D:PXYZ(A;;FA;;;${ME})`, ME)).toMatch(/does not read/);
+  });
   test("the user, SYSTEM and Administrators alone: fine, whoever of them owns it", () => {
     expect(ownerOnlyProblemOfSddl(`O:${ME}G:DUD:PAI(A;OICI;FA;;;${ME})(A;OICI;FA;;;SY)`, ME)).toBeNull();
     expect(ownerOnlyProblemOfSddl(`O:BAG:DUD:PAI(A;OICI;FA;;;${ME})`, ME)).toBeNull();
