@@ -136,7 +136,7 @@ describe("a plugin not available in this build yet", () => {
   // Every plugin this build parks, from its own manifest in the repository, as an upgrade from a build that ran it.
   const PLUGINS = join(import.meta.dir, "..", "..", "..", "..", "..", "plugins", "moss", "plugins");
   const PARKED = [
-    "companion-ios", "companion-web", "forwarder", "provider-gcp", "provider-hetzner", "push", "relay-cloudflare", "trigger-webhook",
+    "companion-ios", "companion-web", "provider-gcp", "provider-hetzner", "push", "relay-cloudflare",
   ];
   const real = (folder: string): Manifest => {
     const r = parseJsonc(readFileSync(join(PLUGINS, folder, "moss.json"), "utf8"));
