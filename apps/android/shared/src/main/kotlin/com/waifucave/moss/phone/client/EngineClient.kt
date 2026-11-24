@@ -66,9 +66,16 @@ interface EngineClient {
     suspend fun setModel(session: String, model: String?, effort: String?)
     /** `session.stageImage`: the staged picture's path, for `send(images)`. */
     suspend fun stageImage(session: String, data: ByteArray): String
-    /** A file for the next message, up to the engine's limit (throws [com.waifucave.moss.phone.model.FileTooLarge] over it). */
+    /**
+     * A file for the next message, up to the engine's limit (throws [com.waifucave.moss.phone.model.FileTooLarge] over it). The
+     * core sends it in 512 KiB chunks; a file is at most 50 MiB and a message carries at most 10. Pictures go by [stageImage],
+     * their own chunked call.
+     */
     suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile
-    /** Making a bot from the phone: the models on offer, and the new bot (its conversation opens next). */
+    /**
+     * Making a bot from the phone (`bot.create`: a name and a model, nothing else): the models on offer, and the new bot (its
+     * conversation opens next). The engine allows a device 5 a day and refuses past that with [com.waifucave.moss.phone.model.EngineRefusal].
+     */
     suspend fun newBotOptions(): NewBotOptions
     suspend fun createBot(name: String, model: String?): Bot
     /** `command.run`. */

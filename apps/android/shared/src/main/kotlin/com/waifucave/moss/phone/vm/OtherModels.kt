@@ -214,6 +214,7 @@ class NewBotModel(private val client: EngineClient) {
         if (!canCreate) return null
         creating = true
         return try { client.createBot(name.trim(), model).also { errorText = null } }
+        catch (e: EngineRefusal) { errorText = e.message; null }
         catch (e: CancellationException) { throw e } catch (e: Exception) { errorText = "The bot wasn't made. Check that your computer is on and try again."; null }
         finally { creating = false }
     }

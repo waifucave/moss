@@ -223,6 +223,8 @@ data class ComposerOffers(
     /** A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row. */
     val files: Boolean = false,
     val fileLimit: Long? = null,
+    /** How many files one message may carry. */
+    val fileCount: Int? = null,
 ) {
     val isEmpty: Boolean get() = !pictures && !files && commands.isEmpty() && efforts.isEmpty() && models.isEmpty()
 }
@@ -259,12 +261,15 @@ class FileTooLarge(val limit: Long) : Exception("file over $limit bytes")
 /** What a new bot is made from: the models the computer offers, and its default. */
 data class NewBotOptions(val models: List<ModelChoice>, val defaultModel: String? = null)
 
-/** "1.2 MB", "10 MB", "840 KB": a size as the chip and the refusal say it (decimal units, as the iPhone's formatter). */
+/** The engine refused something and said why in words meant for the person (a bot over the day's limit, for one). */
+class EngineRefusal(message: String) : Exception(message)
+
+/** "1.2 MB", "50 MB", "840 KB": a size as the chip and the refusal say it (the engine's limits are in binary units). */
 fun byteCount(bytes: Long): String {
-    if (bytes < 1000) return "$bytes bytes"
+    if (bytes < 1024) return "$bytes bytes"
     val units = listOf("KB", "MB", "GB")
-    var v = bytes / 1000.0; var u = 0
-    while (v >= 1000 && u < units.size - 1) { v /= 1000; u++ }
+    var v = bytes / 1024.0; var u = 0
+    while (v >= 1024 && u < units.size - 1) { v /= 1024; u++ }
     val n = if (v < 10) String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0") else Math.round(v).toString()
     return "$n ${units[u]}"
 }

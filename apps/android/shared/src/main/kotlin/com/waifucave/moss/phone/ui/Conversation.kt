@@ -69,7 +69,7 @@ fun ConversationScreen(model: ConversationModel, cards: CardsModel, onBack: () -
     LaunchedEffect(model.offers != null) {
         if (model.offers == null) return@LaunchedEffect
         if (preset.file && model.stagedFiles.isEmpty()) model.stageFile("Quarterly report.pdf", 1_240_000) { ByteArray(1_240_000) }
-        if (preset.bigFile) model.stageFile("Site backup.zip", 52_000_000) { null }
+        if (preset.bigFile) model.stageFile("Site backup.zip", 60_000_000) { null }
     }
 
     val waitingCards = cards.cards.filter { card ->

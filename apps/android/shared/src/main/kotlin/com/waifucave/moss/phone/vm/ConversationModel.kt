@@ -153,6 +153,8 @@ class ConversationModel(
     }
     /** A picked file: refused with a plain line when it is over the limit, before any of it is read or sent. */
     suspend fun stageFile(name: String, size: Long, data: () -> ByteArray?) {
+        val count = offers?.fileCount
+        if (count != null && stagedFiles.size >= count) { errorText = "A message can carry $count files. Send these first."; return }
         val limit = offers?.fileLimit
         if (limit != null && size > limit) { errorText = "That file is too big. The limit is ${byteCount(limit)}."; return }
         val d = data() ?: run { errorText = "That file couldn't be read."; return }
