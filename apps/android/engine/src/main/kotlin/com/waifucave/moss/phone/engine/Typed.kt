@@ -84,7 +84,7 @@ object Typed {
             is ItemKind.FromPlugin -> note(k.text)
             is ItemKind.Routine -> note(listOfNotNull(k.name, k.text).joinToString(": "))
             is ItemKind.Note -> note(listOfNotNull(k.label?.takeIf { it.isNotBlank() }, k.text).joinToString(": "))
-            is ItemKind.Error -> note("Something went wrong: ${k.text}")
+            is ItemKind.TurnError -> note("Something went wrong: ${k.text}")
             is ItemKind.TurnEnded -> if (k.reason == "aborted") note("Interrupted") else null
             else -> null
         }

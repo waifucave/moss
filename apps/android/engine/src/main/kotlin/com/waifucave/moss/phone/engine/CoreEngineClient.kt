@@ -343,7 +343,8 @@ class CoreEngineClient(
         page(c().history(session, beforeSeq(session, before), limit.coerceIn(1, 500).toUInt()))
 
     override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>) {
-        // Signed by the core with this phone's answer key; the same client id makes a resend the same message.
+        // Signed by the core with this phone's answer key. The same client id makes a resend the same message, so a retry
+        // after a timeout (which doesn't mean the computer didn't get it) is never a second message.
         c().sendMessage(session, text, clientMessageId, images, files)
     }
 
@@ -471,6 +472,9 @@ class CoreEngineClient(
      * this phone until the person revokes it there: a phone revoking itself would put a card on the computer.)
      */
     override suspend fun unpair() {
+        // An open pairing first: the core won't forget the last computer while one is open.
+        val open = synchronized(this) { pairings.values.toList().also { pairings.clear() } }
+        for (p in open) runCatching { p.reject() }
         lock.withLock {
             conn?.disconnect(); conn = null; reader?.cancel(); reader = null
             core?.let { c ->
