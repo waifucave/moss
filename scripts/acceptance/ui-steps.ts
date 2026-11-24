@@ -918,15 +918,15 @@ export async function uiSteps(ctx: Ctx, record: (index: number, status: UiStatus
   await step(11, async () => {
     if (ctx.cardTurn === undefined) return fail("no card turn can run here (the run has no plugin tool turn to press)");
     const darkOf = async (session: string) => (await cdp.evaluate(session, "window.matchMedia('(prefers-color-scheme: dark)').matches").catch(() => undefined)) as boolean | undefined;
-    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean }[] }> => {
-      const seen: { what: string; dark: boolean }[] = [];
+    const schemes = async (cardId: string): Promise<{ main?: boolean; seen: { what: string; dark: boolean; url?: string }[] }> => {
+      const seen: { what: string; dark: boolean; url?: string }[] = [];
       let main: boolean | undefined;
       for (const d of await cdp.documents()) {
         const what = d.url.startsWith(`moss-sealed://card/${encodeURIComponent(cardId)}/`) ? "card page" : /[?&]surface=(island|pill)/.test(d.url) ? `${/surface=island/.test(d.url) ? "island" : "pill"} page` : d.url.startsWith("moss-plugin://moss/") ? "main window" : d.url.startsWith("moss-core://") ? "core page" : undefined;
         if (what === undefined) continue;
         const dark = await darkOf(d.session);
         if (dark === undefined) continue;
-        seen.push({ what, dark });
+        seen.push({ what, dark, ...(what === "card page" ? { url: d.url.replace(/[?#].*/, "").replace(/se_[0-9a-f]+/g, "se_").slice(0, 90) } : {}) });
         if (what === "main window") main = dark;
       }
       return { ...(main === undefined ? {} : { main }), seen };
