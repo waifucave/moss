@@ -198,11 +198,13 @@ function csvFields(line: string): string[] {
   return out;
 }
 
-/** The PIDs `tasklist` (`TASKLIST_ARGS`) lists for exactly this account: its user column is `<computer>\<name>` (or the
- *  bare name), compared whole and case-blind, so no other account's process is ever picked. A line that isn't a row
- *  (the "no tasks" note, in any language) is skipped. */
-export function accountPids(tasklistOut: string, principal: string): number[] {
+/** The PIDs `tasklist` (`TASKLIST_ARGS`) lists for exactly this account: its user column is `<computer>\<name>` (this
+ *  computer's name, `COMPUTERNAME`: a pool account is local) or the bare name, compared whole and case-blind, so no
+ *  other account's process is ever picked: not a domain's account of the same name (`CORP\<name>`). A line that isn't a
+ *  row (the "no tasks" note, in any language) is skipped. */
+export function accountPids(tasklistOut: string, principal: string, computer: string | undefined = process.env.COMPUTERNAME): number[] {
   const want = principal.toLowerCase();
+  const local = computer === undefined || computer === "" ? undefined : `${computer.toLowerCase()}\\${want}`;
   const pids: number[] = [];
   for (const line of tasklistOut.split(/\r?\n/)) {
     const f = csvFields(line.trim());
@@ -210,7 +212,7 @@ export function accountPids(tasklistOut: string, principal: string): number[] {
     const user = f[6]!.toLowerCase();
     const pid = Number(f[1]);
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    if (user === want || user.endsWith(`\\${want}`)) pids.push(pid);
+    if (user === want || (local !== undefined && user === local)) pids.push(pid);
   }
   return pids;
 }
@@ -220,15 +222,15 @@ export function accountPids(tasklistOut: string, principal: string): number[] {
  *  only (lane WS8): `tasklist` to find them (`accountPids`), `taskkill /F` by PID, `tasklist` again. Exit 0 when none
  *  is left, 4 when one still runs after the kill (one outside the launcher's kill-on-close job, or one started between
  *  the look and the kill), 1 when the list couldn't be read; the text says how many were ended. */
-export async function endAccountProcesses(run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string): Promise<{ code: number; out: string }> {
+export async function endAccountProcesses(run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string, computer: string | undefined = process.env.COMPUTERNAME): Promise<{ code: number; out: string }> {
   if (!POOL_ACCOUNT_RE.test(principal)) throw new Error(`not a pool account: ${principal}`);
   const before = await run(TASKLIST_ARGS);
   if (before.code !== 0) return { code: 1, out: `the process list couldn't be read (tasklist exit ${before.code}): ${before.out.trim().slice(0, 200)}` };
-  const pids = accountPids(before.out, principal);
+  const pids = accountPids(before.out, principal, computer);
   if (pids.length > 0) await run(["taskkill", "/F", ...pids.flatMap((p) => ["/PID", String(p)])]);
   const after = pids.length === 0 ? before : await run(TASKLIST_ARGS);
   if (after.code !== 0) return { code: 1, out: `the process list couldn't be read again (tasklist exit ${after.code})` };
-  const left = accountPids(after.out, principal);
+  const left = accountPids(after.out, principal, computer);
   return { code: left.length > 0 ? 4 : 0, out: `ended ${pids.length}, left ${left.length}` };
 }
 
@@ -237,11 +239,11 @@ export async function endAccountProcesses(run: (argv: readonly string[]) => Prom
  *  ended. False: a process still lives, and the account must not be removed. Each try's line goes to `say`. */
 export async function endAccountUntilGone(
   run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string,
-  o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<void>; say?: (line: string) => void } = {},
+  o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<void>; say?: (line: string) => void; computer?: string } = {},
 ): Promise<boolean> {
   const tries = o.tries ?? 3;
   for (let i = 0; i < tries; i++) {
-    const ended = await endAccountProcesses(run, principal);
+    const ended = await endAccountProcesses(run, principal, o.computer ?? process.env.COMPUTERNAME);
     o.say?.(`${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
     if (ended.code === 0) return true;
     if (i + 1 < tries) await (o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))))(o.pauseMs ?? 1_000);

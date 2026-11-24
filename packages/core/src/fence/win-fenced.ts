@@ -48,6 +48,7 @@
 //     principal's whole profile and hive and makes a fresh one from the default profile, then writes a new generation;
 //     a command runs only as a principal whose generation isn't the one last used (`leaseFresh`), and marks it used
 //     before it starts. The reset is off the command's path; checked at every launch; failing closed.
+import { pathWithin } from "./fold";
 import { randomBytes } from "node:crypto";
 import { closeSync, cpSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { join, win32 } from "node:path";
@@ -103,10 +104,10 @@ const uniq = (paths: readonly string[]) => {
   for (const p of paths) { const k = fold(p); if (!seen.has(k)) { seen.add(k); out.push(win32.normalize(p)); } }
   return out;
 };
-/** Whether `child` is `dir` or sits under it, folded as NTFS compares names. */
+/** Whether `child` is `dir` or sits under it, by the fence's one comparison (`pathWithin`, lane WS8: a device prefix,
+ *  `/` and `\\`, `..`, trailing dots and streams, case). A device path it can't place is under nothing. */
 export function winUnder(child: string, dir: string): boolean {
-  const c = fold(child), d = fold(dir);
-  return c === d || c.startsWith(`${d}\\`);
+  return pathWithin(child, dir, "windows");
 }
 
 /** The plan from the runtime's sandbox settings: a bot's Bash gets on Windows exactly the settings Seatbelt and

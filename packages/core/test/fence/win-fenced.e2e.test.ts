@@ -15,7 +15,11 @@ import type { Caller } from "@waifucave/moss-protocol";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { botSandboxSettings } from "../../src/fence/sandbox-settings";
-import { botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
+import { botFileFence, botSandbox, withBotKeyReads, withSecretReads } from "../../src/runtime-sdk/turn-loop/driver";
+import { fileToolFenceRefusal } from "../../src/runtime-sdk/turn-loop/file-fence";
+import { fileToolRefusal } from "../../src/agents/moss-code/backend";
+import { secretReadPlaces } from "../../src/contracts/fence";
+import { rmdirSync, symlinkSync } from "node:fs";
 import { agentShellTools, stopWindowsBackground, windowsShellTools } from "../../src/fence/win-shell-tools";
 import { planFromSettings, profileExcludeCandidates, QUARANTINE_COPY_LIMITS, quarantineWin, watchedReadDenies } from "../../src/fence/win-fenced";
 import { fencedExecutor } from "../../src/computers/fenced-executor";
@@ -445,6 +449,53 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     console.log(`[e2e] outlive probe, after the command ended: ${survivors.length === 0 ? "nothing outlived it" : survivors.join(" | ")}`);
     for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
   }, 900_000);
+
+  test("8.3 short names and junctions (lane WS8, the reviewer's finding): the coding agent's and a bot's file tools refuse a denied folder and the MOSS home by any spelling", async () => {
+    // A folder's short name, from Windows itself (the Scripting runtime's ShortPath; the path in the environment, never quoted).
+    const shortOf = (p: string) => {
+      const r = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:WS8_P).ShortPath"], { env: { ...process.env, WS8_P: p } });
+      return r.stdout.toString().trim();
+    };
+    // One the volume made, or one set now (`fsutil file setshortname`; with the volume's 8.3 names off, they are let on first).
+    const shortened = (p: string, name: string): string | undefined => {
+      const has = () => { const s = shortOf(p); return s !== "" && s.toLowerCase() !== p.toLowerCase() ? s : undefined; };
+      let s = has();
+      if (s === undefined) { Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has(); }
+      if (s === undefined) { Bun.spawnSync(["fsutil", "8dot3name", "set", p.slice(0, 2), "0"]); Bun.spawnSync(["fsutil", "file", "setshortname", p, name]); s = has(); }
+      return s;
+    };
+    const ssh = join(home, ".ssh"), shortSsh = shortened(ssh, "SSHE2E~1"), shortMoss = shortened(moss, "MOSSE2~1");
+    console.log(`[e2e] 8.3: ${ssh} -> ${shortSsh ?? "(no short name could be made)"}; ${moss} -> ${shortMoss ?? "(no short name could be made)"}`);
+    expect(shortSsh).toBeDefined();
+    expect(shortMoss).toBeDefined();
+    const project = join(home, "ws8-short-project");
+    rmSync(project, { recursive: true, force: true });
+    mkdirSync(project, { recursive: true });
+    symlinkSync(ssh, join(project, "keys"), "junction");
+    symlinkSync(moss, join(project, "mosslink"), "junction");
+    const bot = botFileFence(fence, moss, "windows", home)({ caller: CALLER } as never);
+    const agentFence = { denyRead: [moss, ...secretReadPlaces("windows", home).map((p) => p.path)], denyWrite: [moss] };
+    const asked = [
+      join(shortSsh!, "id_e2e"),                     // a secret place by its short name
+      join(shortMoss!, "run", "token"),              // the MOSS home by its short name
+      join(shortMoss!, "secrets.enc"),
+      join(project, "keys", "id_e2e"),               // a junction in the root to a secret place
+      join(project, "mosslink", "run", "token"),     // a junction in the root to the MOSS home
+      `\\\\?\\${join(shortSsh!, "id_e2e")}`,     // the device prefix, with the short name
+    ];
+    for (const path of asked) {
+      const agentWhy = fileToolRefusal({ tool_name: "Read", tool_input: { file_path: path } }, agentFence, project);
+      const botWhy = fileToolFenceRefusal("Read", { file_path: path }, bot, scratch);
+      console.log(`[e2e] 8.3 Read ${path}: agent refused ${agentWhy !== undefined}; bot refused ${botWhy !== undefined}`);
+      expect([path, agentWhy !== undefined, botWhy !== undefined]).toEqual([path, true, true]);
+    }
+    // The control: a plain file in the project is read by both.
+    writeFileSync(join(project, "plain.txt"), "plain\n");
+    expect(fileToolRefusal({ tool_name: "Read", tool_input: { file_path: join(project, "plain.txt") } }, agentFence, project)).toBeUndefined();
+    expect(fileToolFenceRefusal("Read", { file_path: join(home, "ws-e2e-plain", "plain.txt") }, bot, scratch)).toBeUndefined();
+    for (const link of ["keys", "mosslink"]) { try { rmdirSync(join(project, link)); } catch { /* already gone */ } } // a junction, never its target
+    rmSync(project, { recursive: true, force: true });
+  }, 300_000);
 
   test("MOSS's coding agent on Windows (lane WS8): its command runs in its root, never reads the MOSS home or a secret, never leaves the sandbox, and runs beside a bot's", async () => {
     const project = join(home, "ws8-agent-project");

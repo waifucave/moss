@@ -13,6 +13,8 @@ import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { isInsideFolded, secretReadPlaces, type SandboxPolicy } from "../contracts/fence";
+import { canonicalPath } from "../fence/canonical";
+import { pathWithin } from "../fence/fold";
 import { ContractError } from "../contracts/common";
 
 /** The policy an agent's sandbox starts from. A bot's own Bash may work in its own memory (the controller's ruling: B's
@@ -46,13 +48,21 @@ export function withSecretsDenied(policy: SandboxPolicy, userHome: string | unde
 }
 
 /** A path as it really is: its real path, or for one that doesn't exist yet its nearest existing folder's, with the rest
- *  appended. */
+ *  appended. On Windows (lane WS8, the reviewer's 8.3 finding) as the fence resolves it (`canonicalPath`: links and
+ *  junctions followed in order, then the disk's own spelling, so an 8.3 short name such as `C:\Users\LONGNA~1` comes
+ *  back long): the JS `realpathSync` follows links but keeps a short name as written, and a short name of a denied
+ *  folder then matched no deny. Past `canonicalPath`'s link limit, the OS's own resolution (`realpathSync.native`). */
 export function realPathOf(path: string, cwd: string): string {
   let p = isAbsolute(path) ? path : resolve(cwd, path);
+  const win = process.platform === "win32";
+  if (win) {
+    try { return withoutDosDevicePrefix(canonicalPath(p)); } catch { /* past the link limit: the OS's resolution below */ }
+  }
+  const real = win ? (q: string) => withoutDosDevicePrefix(realpathSync.native(q)) : (q: string) => realpathSync(q);
   const rest: string[] = [];
   for (;;) {
     try {
-      return resolve(realpathSync(p), ...rest.reverse());
+      return resolve(real(p), ...rest.reverse());
     } catch {
       const up = dirname(p);
       if (up === p) return resolve(path);
@@ -65,20 +75,41 @@ export function realPathOf(path: string, cwd: string): string {
 /** How a path, as written or as it really is, reaches the MOSS home: inside it, holding it (a search from there would
  *  walk into it), or not at all. */
 export function homeReach(home: string, path: string, cwd: string, os?: Os): "inside" | "holds" | undefined {
-  let realHome = home;
-  try {
-    realHome = realpathSync(home);
-  } catch {
-    realHome = home;
-  }
+  // The home as it really is too (a short name or a link to it given as the home).
+  const realHome = realPathOf(home, cwd);
+  // A path the fence can't place lexically (a volume GUID path, `\\?\GLOBALROOT\…`, a device) reaches it: refused.
+  if (opaqueWindowsPath(path, os)) return "inside";
   let holds = false;
   for (const p of new Set([isAbsolute(path) ? path : resolve(cwd, path), realPathOf(path, cwd)])) {
     for (const h of new Set([home, realHome])) {
-      if (isInsideFolded(p, h, os)) return "inside";
-      if (isInsideFolded(h, p, os)) holds = true;
+      if (reachesInside(p, h, os)) return "inside";
+      if (reachesInside(h, p, os)) holds = true;
     }
   }
   return holds ? "holds" : undefined;
+}
+
+/** `\\?\C:\x` as `C:\x`, `\\?\UNC\s\x` as `\\s\x`: what `realpathSync.native` may give back on Windows. */
+function withoutDosDevicePrefix(p: string): string {
+  return p.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:)/, "");
+}
+
+/** Whether `path` is in the Win32 device namespace in a form other than a drive (`\\?\C:\`) or a share
+ *  (`\\?\UNC\`): a volume GUID path (`\\?\Volume{…}\`), `\\?\GLOBALROOT\…`, a pipe or a raw device. No path
+ *  comparison can say which folder it names (the same volume as `C:\` has a GUID spelling too), so a deny decision
+ *  refuses it (lane WS8, the reviewer's open point). Windows only. */
+export function opaqueWindowsPath(path: string, os?: Os): boolean {
+  if ((os ?? (process.platform === "win32" ? "windows" : "macos")) !== "windows") return false;
+  const m = /^[\\/]{2}[?.][\\/](.*)$/.exec(path.trim());
+  return m !== null && !/^([A-Za-z]:([\\/]|$)|UNC[\\/])/i.test(m[1]!);
+}
+
+/** Whether `path` is `root` or under it, for a deny: on Windows by the fence's one comparison (`pathWithin`: a device
+ *  prefix, both separators, `..`, trailing dots and streams, case); on macOS and Linux as before (`isInsideFolded`, which
+ *  folds on Linux too: a fold there only denies more, and `pathWithin` keeps Linux's names exact). */
+export function reachesInside(path: string, root: string, os?: Os): boolean {
+  const o = os ?? (process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux");
+  return o === "windows" ? pathWithin(path, root, "windows") : isInsideFolded(path, root, os);
 }
 
 /** Deny rules for the file tools: a read-denied folder for every file tool, a write-denied one for the editing ones. */

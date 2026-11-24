@@ -11,8 +11,8 @@
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
-import { isInsideFolded, secretReadPlaces, type SecretClass } from "../contracts/fence";
-import { realPathOf } from "../agents/memory";
+import { secretReadPlaces, type SecretClass } from "../contracts/fence";
+import { reachesInside, realPathOf } from "../agents/memory";
 
 export interface SecretReadOptions {
   /** The user's home, where the places are. */
@@ -60,7 +60,7 @@ export function askedForms(path: string, o: Pick<SecretReadOptions, "userHome" |
 export function secretPlaceOf(path: string, o: SecretReadOptions, places: Place[] = placesOf(o.userHome, o.os)): SecretClass | undefined {
   for (const form of askedForms(path, o)) {
     const real = realPathOf(form, o.cwd);
-    for (const p of places) if (p.paths.some((at) => isInsideFolded(real, at, o.os))) return p.cls;
+    for (const p of places) if (p.paths.some((at) => reachesInside(real, at, o.os))) return p.cls;
   }
   return undefined;
 }
@@ -69,7 +69,7 @@ export function secretPlaceOf(path: string, o: SecretReadOptions, places: Place[
 export function secretPlacesUnder(root: string, o: SecretReadOptions, places: Place[] = placesOf(o.userHome, o.os)): boolean {
   return askedForms(root, o).some((form) => {
     const real = realPathOf(form, o.cwd);
-    return places.some((p) => p.there && p.paths.some((at) => isInsideFolded(at, real, o.os) && !isInsideFolded(real, at, o.os)));
+    return places.some((p) => p.there && p.paths.some((at) => reachesInside(at, real, o.os) && !reachesInside(real, at, o.os)));
   });
 }
 

@@ -249,6 +249,8 @@ export function fencedSpawner(o: FencedProcessOptions): FencedSpawner {
           // the sandbox then binds them read-only instead of holding their parents, so ordinary new names stay
           // writable. MOSS's own browser partitions count too. A folder or file that can't be made refuses the
           // run rather than silently staying unbound (an existing link is the user's own: left alone).
+          // The Linux branch (bubblewrap): the plain `startsWith` prefixes below are this OS's own comparison (`/` only,
+          // names exact, MOSS's own absolute paths on both sides), so they stay off `pathWithin` (lane WS8's audit).
           const loginDirs = loginStartDirs(o.fence.home, o.fence.mossHome, "linux");
           const loginSafe = loginStartSafeFiles(o.fence.home, "linux");
           const browserProfiles = o.fence.fencedSet().filter((i) => i.kind === "browser-profiles").map((i) => i.path);

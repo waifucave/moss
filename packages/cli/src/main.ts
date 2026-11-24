@@ -2089,7 +2089,10 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
             ({ code, out } = await runT([...removeArgs(launcher, sublayer, principal)]));
           }
           if (code !== 0) {
-            fail(`${principal}: remove failed (exit ${code})${out.trim() ? `\n${out.trim().slice(0, 2000)}` : ""}`); break;
+            // Ended at its bound (lane WS8, the reviewer's nit): srt-win may have taken part of the account (its filters, or
+            // the principal) and not the rest; running remove again finishes it (each step skips what is gone).
+            const cut = code === SANDBOX_CHILD_TIMED_OUT ? "\nsrt-win was ended at its time limit, so this account's removal may be half done; run `moss-core sandbox remove` again to finish it." : "";
+            fail(`${principal}: remove failed (exit ${code})${out.trim() ? `\n${out.trim().slice(0, 2000)}` : ""}${cut}`); break;
           }
           // Undo what setup did outside srt-win (best effort: the uninstall already took the account).
           // A temporary profile is shared and keyless: never delete it or its (absent) key.

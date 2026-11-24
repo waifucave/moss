@@ -4,7 +4,9 @@
 //   - Folded on every OS, Linux included: NFC, then `toUpperCase().toLowerCase()`. APFS and NTFS take `ſettings` as
 //     `settings`; the plain NFC-plus-lowercase fold missed it, as it misses `ß` (→ `ss`) and the Kelvin sign
 //     (U+212A → `k`). Folding where a disk doesn't fold only fences more. (B's shared fold, coming in B-M1, is the
-//     same function; this one is swapped for it when it lands.)
+//     same function; this one is swapped for it when it lands.) The NFC step errs the same way on Windows: NTFS
+//     doesn't normalise, so `é` written composed and decomposed are two names there; taken as one here, a name that
+//     only looks like a fenced one is fenced too, and no fenced name is ever taken as another.
 //   - On Windows, a name also drops its trailing dots and spaces, and an alternate data stream (`settings.json:x`,
 //     `settings.json::$DATA`) names its file: NTFS opens the same file for each.
 //   - Where MOSS names things itself (the MOSS home's top level, and any folder holding a fenced item), a name

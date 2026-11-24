@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { pathKey, pathWithin } from "../../src/fence/fold";
 import { rootCovered } from "../../src/fence/sandbox-settings";
+import { homeReach, opaqueWindowsPath, reachesInside } from "../../src/agents/memory";
 
 const ROOT = "C:\\Users\\u\\.moss";
 
@@ -106,5 +107,26 @@ describe("the fence's comparisons use it (lane WS8)", () => {
     expect(rootCovered("/Users/u/proj/.git/hooks/pre-commit", ["/Users/u/**/.git/hooks"], "macos")).toBe(true);
     expect(rootCovered("/home/u/proj/.git/hooks", ["/home/u/**/.git/hooks"], "linux")).toBe(true);
     expect(rootCovered("/home/u/proj/.GIT/hooks", ["/home/u/**/.git/hooks"], "linux")).toBe(false);
+  });
+});
+
+describe("device paths no comparison can place, and the deny decisions that refuse them (lane WS8)", () => {
+  test("a volume GUID path, GLOBALROOT, a pipe or a raw device is opaque; a drive or a share in the device namespace is not", () => {
+    for (const p of ["\\\\?\\Volume{0e1b2c3d-1111-2222-3333-444455556666}\\Users\\u\\.ssh", "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\Users", "\\\\.\\pipe\\x", "//./PhysicalDrive0", "\\\\?\\Volume{x}"]) {
+      expect([p, opaqueWindowsPath(p, "windows")]).toEqual([p, true]);
+    }
+    for (const p of ["\\\\?\\C:\\Users\\u", "\\\\.\\C:\\x", "\\\\?\\UNC\\s\\share", "\\\\server\\share\\x", "C:\\Users", "relative\\x"]) {
+      expect([p, opaqueWindowsPath(p, "windows")]).toEqual([p, false]);
+    }
+    expect(opaqueWindowsPath("//./x", "macos")).toBe(false);
+  });
+  test("the agents' and bots' deny decision (`homeReach`) refuses an opaque path whatever folder it is asked about", () => {
+    expect(homeReach("C:\\Users\\u\\.moss", "\\\\?\\Volume{0e1b2c3d-1111-2222-3333-444455556666}\\Users\\u\\.moss\\run\\token", "C:\\Users\\u\\p", "windows")).toBe("inside");
+  });
+  test("`reachesInside`: the fence's comparison on Windows, the folded one elsewhere", () => {
+    expect(reachesInside("\\\\?\\C:\\USERS\\u\\.ssh.\\id", "C:\\Users\\u\\.ssh", "windows")).toBe(true);
+    expect(reachesInside("C:/Users/u/x/../.ssh/id", "C:\\Users\\u\\.ssh", "windows")).toBe(true);
+    expect(reachesInside("/home/u/.SSH/id", "/home/u/.ssh", "linux")).toBe(true); // folded on Linux too: only denies more
+    expect(reachesInside("/Users/u/.sshx/id", "/Users/u/.ssh", "macos")).toBe(false);
   });
 });

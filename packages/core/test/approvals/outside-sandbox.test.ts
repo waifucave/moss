@@ -220,33 +220,43 @@ describe("a subagent's escape (lane WS4: a rule about subagents, whatever tool o
 // host tool that took a built-in's name (the read-only Bash allow, the sandboxed-Bash allow): every such call reaches
 // this check. Its answer doesn't depend on the runtime's: these tests call the check directly, under 0.0.85 and after.
 describe("a command in the sandbox, by MOSS's own rule (Bash and PowerShell; lane WS8)", () => {
-  const expected = { "read-only": "deny", ask: "card", "ask-risky": "allow", "accept-edits": "allow", automatic: "allow" } as const;
+  // MOSS's handler answers the same under agent SDK 0.0.85 (the runtime pre-approves a read-only-looking Bash call before
+  // it, on every OS alike) and after 0.0.86 (every call reaches it); it decides by the level and by whether the computer's
+  // sandbox holds the command (`commandsSandboxed`: on Windows, the fence set up). A read-only-looking command gets no
+  // allowance of its own here until the SDK exports its classifier (the controller's ruling).
+  const expected = {
+    up: { "read-only": "deny", ask: "card", "ask-risky": "allow", "accept-edits": "allow", automatic: "allow" },
+    "not set up": { "read-only": "deny", ask: "card", "ask-risky": "review", "accept-edits": "review", automatic: "allow" },
+  } as const;
   for (const tool of ["Bash", "PowerShell"] as const) {
-    for (const level of Object.keys(expected) as (keyof typeof expected)[]) {
-      for (const command of ["ls", "npm test"]) {
-        test(`${tool} \`${command}\` at ${level}: ${expected[level]}, never the reviewer`, async () => {
-          const w = world();
-          let reviewed = 0;
-          const broker = brokerAt(level, async () => { reviewed++; return "safe"; });
-          const check = botApprovalCheck(broker, { commandsSandboxed: true });
-          const seen: Card[] = [];
-          const off = broker.watch((e) => { if (e.type === "requested") seen.push(e.card); });
-          const shown = expected[level] === "card" ? answerNext(broker, "deny") : undefined;
-          const r = await check(w.ctx, () => "user")(tool, { command }, callOpts);
-          await shown;
-          off();
-          expect(reviewed).toBe(0);
-          if (expected[level] === "allow") {
-            expect(r!).toMatchObject({ behavior: "allow" });
-            expect(seen).toHaveLength(0);
-          } else if (expected[level] === "deny") {
-            expect(r!).toMatchObject({ behavior: "deny", message: expect.stringContaining("level doesn't allow it") });
-            expect(seen).toHaveLength(0);
-          } else {
-            expect(seen).toHaveLength(1);
-            expect(r!).toMatchObject({ behavior: "deny" });
-          }
-        });
+    for (const fence of ["up", "not set up"] as const) {
+      for (const level of Object.keys(expected[fence]) as (keyof typeof expected["up"])[]) {
+        for (const command of ["ls", "npm test"]) {
+          const want = expected[fence][level];
+          test(`${tool} \`${command}\`, sandbox ${fence}, at ${level}: ${want}`, async () => {
+            const w = world();
+            let reviewed = 0;
+            const broker = brokerAt(level, async () => { reviewed++; return "safe"; });
+            const check = botApprovalCheck(broker, { commandsSandboxed: fence === "up" });
+            const seen: Card[] = [];
+            const off = broker.watch((e) => { if (e.type === "requested") seen.push(e.card); });
+            const shown = want === "card" ? answerNext(broker, "deny") : undefined;
+            const r = await check(w.ctx, () => "user")(tool, { command }, callOpts);
+            await shown;
+            off();
+            expect(reviewed).toBe(want === "review" ? 1 : 0);
+            if (want === "allow" || want === "review") {
+              expect(r!).toMatchObject({ behavior: "allow" }); // the reviewer said safe
+              expect(seen).toHaveLength(0);
+            } else if (want === "deny") {
+              expect(r!).toMatchObject({ behavior: "deny", message: expect.stringContaining("level doesn't allow it") });
+              expect(seen).toHaveLength(0);
+            } else {
+              expect(seen).toHaveLength(1);
+              expect(r!).toMatchObject({ behavior: "deny" });
+            }
+          });
+        }
       }
     }
   }
@@ -267,14 +277,6 @@ describe("a command in the sandbox, by MOSS's own rule (Bash and PowerShell; lan
     expect(seen).toHaveLength(1);
     expect(JSON.stringify(seen[0]!.fields.source)).toContain("moss-code");
     expect(JSON.stringify(seen[0]!.fields.source)).toContain("luna");
-  });
-  test("a computer whose sandbox isn't set up (Windows before `moss-core sandbox setup`) has no contained command: the reviewer judges it", async () => {
-    const w = world();
-    let reviewed = 0;
-    const broker = brokerAt("ask-risky", async () => { reviewed++; return "safe"; });
-    const check = botApprovalCheck(broker, { commandsSandboxed: false });
-    await check(w.ctx, () => "user")("PowerShell", { command: "Get-ChildItem" }, callOpts);
-    expect(reviewed).toBe(1);
   });
 });
 

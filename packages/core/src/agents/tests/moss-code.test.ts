@@ -43,13 +43,13 @@ function baseOptionsFor(home: string, spawn: SpawnClaudeCodeProcess) {
   };
 }
 
-function make(spawn: SpawnClaudeCodeProcess, o: WorldOptions & { pause?: WorldOptions["pause"]; base?: Partial<Options>; query?: MossCodeDeps["query"]; windowsShell?: MossCodeDeps["windowsShell"] } = {}): World {
+function make(spawn: SpawnClaudeCodeProcess, o: WorldOptions & { pause?: WorldOptions["pause"]; base?: Partial<Options>; query?: MossCodeDeps["query"]; windowsShell?: MossCodeDeps["windowsShell"]; sandboxReady?: () => boolean } = {}): World {
   let w!: World;
   w = new World({
     ...o,
     bridgeServerName: BRIDGE,
     extraBackends: (wire, self) => [new MossCodeBackend({
-      clock: { now: () => Date.now() } as never, wire, defaultModel: () => MODEL, sandboxReady: SANDBOX_READY,
+      clock: { now: () => Date.now() } as never, wire, defaultModel: () => MODEL, sandboxReady: o.sandboxReady ?? SANDBOX_READY,
       // A bot's child is drawn by the bot's own builder (as `createAgents` hands it).
       botChild: botChildFor({ mossHome: self.mossHome, userHome: self.userHome }),
       baseOptions: (x) => ({ ...baseOptionsFor(w.mossHome, spawn)(x), ...(o.base ?? {}) }),
@@ -297,6 +297,21 @@ describeWithEmbeddedRuntime("MOSS's coding agent over ACP", (spawn) => {
     console.log(`[windows agent turn] Bash calls: ${JSON.stringify(ran)}; report: ${JSON.stringify(notification(w)).slice(0, 300)}`);
     expect(ran).toEqual([{ command: "echo hi" }]);
     expect(JSON.stringify(notification(w))).toContain("FENCED-ECHO");
+  });
+
+  test("contained only when its sandbox is set up (lane WS8: on Windows, MOSS's fence): set up, the manager counts it contained and it starts; not, it is neither, and no command of it can ask", async () => {
+    let ready = true;
+    const w = make(spawn, { sandboxReady: () => ready });
+    // Set up: its detection says sandboxed, which is what the manager's `sandboxHeld` (each command request `contained`)
+    // and its bot-start check read.
+    expect(await w.manager.isContainedBackend(MOSS_CODE_ID)).toBe(true);
+    ready = false;
+    expect(await w.manager.isContainedBackend(MOSS_CODE_ID)).toBe(false);
+    // Not set up: it doesn't start (its first turn ends at once, saying why), so it has no command to ask about at all.
+    await w.manager.start({ caller: { kind: "bot", bot: "alpha", session: "s_alpha", origin: "user" }, backend: MOSS_CODE_ID, root: "home/Studio/project1", title: "No sandbox", prompt: 'CALL Bash {"command":"echo ran"}', model: MODEL });
+    const n = await waitFor(() => notification(w), "the refusal");
+    expect(n.stopReason).toBe("error");
+    expect(n.text ?? "").toMatch(/macOS-only for now|isn't set up on this computer yet/);
   });
 
   test("the base options' hooks are kept and the pause goes first; host messaging or a missing root refuses the start", async () => {

@@ -937,19 +937,21 @@ describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
     const out = [
       row("RUNNERVM\\moss-sb-3d34c3-1", 10), row("runnervm\\MOSS-SB-3D34C3-1", 11), row("RUNNERVM\\moss-sb-3d34c3-12", 12),
       row("RUNNERVM\\xmoss-sb-3d34c3-1", 13), row("NT AUTHORITY\\SYSTEM", 14), row("RUNNERVM\\moss-sb-3d34c3-1", 15, 'a ""quoted"", title'),
-      row("moss-sb-3d34c3-1", 16), "INFO: No tasks are running which match the specified criteria.", "",
+      row("moss-sb-3d34c3-1", 16), row("CORP\\moss-sb-3d34c3-1", 17), "INFO: No tasks are running which match the specified criteria.", "",
     ].join("\r\n");
-    expect(accountPids(out, "moss-sb-3d34c3-1")).toEqual([10, 11, 15, 16]);
+    // This computer's account only: `CORP\…` (a domain's of the same name) is not it.
+    expect(accountPids(out, "moss-sb-3d34c3-1", "RunnerVM")).toEqual([10, 11, 15, 16]);
+    expect(accountPids(out, "moss-sb-3d34c3-1", "")).toEqual([16]);
     expect(TASKLIST_ARGS).toEqual(["tasklist", "/V", "/FO", "CSV", "/NH"]);
   });
   test("ending them: the list, taskkill by PID, the list again; 4 while one is left, 1 when the list can't be read; a bad name throws", async () => {
     const seen: (readonly string[])[] = [];
     const lists = [[row("PC\\moss-sb-3d34c3-1", 7), row("PC\\moss-sb-3d34c3-2", 8), row("PC\\moss-sb-3d34c3-1", 9)], []];
     const run = async (argv: readonly string[]) => { seen.push(argv); return argv[0] === "tasklist" ? { code: 0, out: lists.shift()!.join("\r\n") } : { code: 0, out: "" }; };
-    expect(await endAccountProcesses(run, "moss-sb-3d34c3-1")).toEqual({ code: 0, out: "ended 2, left 0" });
+    expect(await endAccountProcesses(run, "moss-sb-3d34c3-1", "PC")).toEqual({ code: 0, out: "ended 2, left 0" });
     expect(seen).toEqual([TASKLIST_ARGS, ["taskkill", "/F", "/PID", "7", "/PID", "9"], TASKLIST_ARGS]);
     const stays = async (argv: readonly string[]) => (argv[0] === "tasklist" ? { code: 0, out: row("PC\\moss-sb-3d34c3-1", 7) } : { code: 0, out: "" });
-    expect((await endAccountProcesses(stays, "moss-sb-3d34c3-1")).code).toBe(4);
+    expect((await endAccountProcesses(stays, "moss-sb-3d34c3-1", "PC")).code).toBe(4);
     expect((await endAccountProcesses(async () => ({ code: 1, out: "Access denied" }), "moss-sb-3d34c3-1")).code).toBe(1);
     const none: (readonly string[])[] = [];
     expect(await endAccountProcesses(async (argv) => { none.push(argv); return { code: 0, out: "INFO: none" }; }, "moss-sb-3d34c3-1")).toEqual({ code: 0, out: "ended 0, left 0" });
@@ -993,13 +995,13 @@ describe("an account whose process can't be ended is not removed (the WS5 review
   const sleep = async () => {};
   test("one still alive after the kill is tried again, and still alive after three tries is false", async () => {
     const a = machine([true, true, true]);
-    expect(await endAccountUntilGone(a.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(await endAccountUntilGone(a.run, "moss-sb-abcdef-1", { sleep, computer: "PC" })).toBe(false);
     expect(a.tries()).toBe(3);
     const b = machine([true, false]);
-    expect(await endAccountUntilGone(b.run, "moss-sb-abcdef-1", { sleep })).toBe(true);
+    expect(await endAccountUntilGone(b.run, "moss-sb-abcdef-1", { sleep, computer: "PC" })).toBe(true);
     expect(b.tries()).toBe(2);
     // The list itself unreadable: never read as ended.
-    expect(await endAccountUntilGone(machine([], true).run, "moss-sb-abcdef-1", { sleep })).toBe(false);
-    expect(await endAccountUntilGone(machine([false]).run, "moss-sb-abcdef-1", { sleep })).toBe(true);
+    expect(await endAccountUntilGone(machine([], true).run, "moss-sb-abcdef-1", { sleep, computer: "PC" })).toBe(false);
+    expect(await endAccountUntilGone(machine([false]).run, "moss-sb-abcdef-1", { sleep, computer: "PC" })).toBe(true);
   });
 });

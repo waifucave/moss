@@ -25,7 +25,8 @@ import { handler, requireUser, type MethodHandler } from "../rpc/handler";
 import { ContractError } from "../contracts/common";
 import { secretReadPlaces, type FencedPath } from "../contracts/fence";
 import { readJsonFile, writeJsonFile } from "../devices/json-file";
-import { foldPath } from "./fold";
+import { foldPath, pathWithin } from "./fold";
+import { opaqueWindowsPath } from "../agents/memory";
 
 /** A token as main mints it: `grant:` and a UUID. */
 export const GRANT_TOKEN = /^grant:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,8 +61,14 @@ export interface PluginGrantsOptions {
 const osOf = (): Os => (process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux");
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** Whether `p` is `root` or inside it, both folded (the disk's own rules: case, Unicode form). */
+/** On Windows the OS's own resolution (lane WS8): it gives an 8.3 short name back long, which the JS `realpathSync`
+ *  doesn't, so a short spelling of a place MOSS keeps from plugins is judged as that place. */
+const realPath = (p: string): string => (process.platform === "win32" ? realpathSync.native(p).replace(/^\\\\\?\\(?=[A-Za-z]:)/, "") : realpathSync(p));
+
+/** Whether `p` is `root` or inside it, both folded (the disk's own rules: case, Unicode form). On Windows by the fence's
+ *  one comparison (`pathWithin`, lane WS8); on macOS and Linux as before (folded on Linux too: here that only refuses more). */
 function within(p: string, root: string, os: Os): boolean {
+  if (os === "windows") return pathWithin(p, root, "windows");
   const a = foldPath(p, os), r = foldPath(root, os).replace(/\/+$/, "");
   return a === r || a.startsWith(`${r}/`) || r === "";
 }
@@ -71,11 +78,11 @@ function within(p: string, root: string, os: Os): boolean {
 export function realGrantPath(path: string, kind: GrantKind): string {
   if (!isAbsolute(path) || CONTROL.test(path)) throw new ContractError("refused", "a picked path is absolute, with no control characters");
   try {
-    return realpathSync(path);
+    return realPath(path);
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (kind === "file" && code === "ENOENT") {
-      try { return join(realpathSync(dirname(path)), basename(path)); } catch { /* below */ }
+      try { return join(realPath(dirname(path)), basename(path)); } catch { /* below */ }
     }
     throw new ContractError("refused", `${path} can't be opened here (${code ?? "unknown"})`);
   }
@@ -86,6 +93,8 @@ export function grantRefusal(real: string, o: { mossHome: string; userHome: stri
   const os = o.os ?? osOf();
   const p = os === "windows" ? win32 : posix;
   if (CONTROL.test(real)) return "a picked path has no control characters";
+  // A device path no comparison can place (a volume GUID path and the like): never a grant (lane WS8).
+  if (opaqueWindowsPath(real, os)) return "a picked path is a drive-letter or network path, not a device path";
   if (p.dirname(real) === real) return "the whole disk can't be given to a plugin";
   const holdsOrIn = (place: string) => within(real, place, os) || within(place, real, os);
   if (within(o.userHome, real, os)) return "the whole home folder can't be given to a plugin: pick a folder or file in it";
@@ -196,11 +205,11 @@ export class PluginGrants {
     const target = names.length === 0 ? grant.path : join(grant.path, ...names);
     // Where it really lands: its real path, or its nearest folder that is there and the names below it.
     let real: string;
-    try { real = realpathSync(target); } catch {
+    try { real = realPath(target); } catch {
       let at = dirname(target);
       const below = [basename(target)];
       for (;;) {
-        try { real = join(realpathSync(at), ...below); break; } catch { /* not there yet */ }
+        try { real = join(realPath(at), ...below); break; } catch { /* not there yet */ }
         if (dirname(at) === at) throw new ContractError("refused", "that path can't be reached");
         below.unshift(basename(at));
         at = dirname(at);

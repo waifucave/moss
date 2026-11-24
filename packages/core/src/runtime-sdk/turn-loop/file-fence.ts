@@ -6,7 +6,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Os } from "@waifucave/moss-protocol";
 import { BOT_READ_DENIED, type FenceOp, type FenceVerdict } from "../../contracts/fence";
-import { homeReach, realPathOf } from "../../agents/memory";
+import { homeReach, opaqueWindowsPath, realPathOf } from "../../agents/memory";
 import { SECRET_FILE_SEGMENTS } from "../../secrets/secret-files";
 import { CONFIG_COPY_FILES } from "./home-deny";
 import { RESUME_STAGING_PREFIX } from "../host/vendor-paths";
@@ -110,6 +110,9 @@ export function fileToolFenceRefusal(name: string, input: unknown, fence: FileFe
   const secrets = secretsOf(fence, cwd);
   const places = secrets === undefined ? undefined : placesOf(secrets.userHome, secrets.os);
   for (const raw of paths) {
+    // A path in the device namespace that no comparison can place (a volume GUID path and the like): refused, never
+    // judged as outside every deny (lane WS8).
+    if (opaqueWindowsPath(raw.trim(), fence.os ?? hostOs())) return `${name} was not run: ${raw} is a device path; use the drive-letter form of the path.`;
     const path = opened(raw, cwd);
     const verdict = fence.check({ op: tool.op, path });
     if (verdict.allowed && tool.op === "read" && botReadDenied(fence.home, path, cwd)) return `${name} was not run: ${raw} holds secrets or keys, which bots never read.`;
