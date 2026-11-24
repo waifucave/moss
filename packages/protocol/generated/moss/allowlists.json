@@ -587,6 +587,9 @@
     "calls": [
       "account.status",
       "activity.list",
+      "agent.backends",
+      "agent.options",
+      "agent.recent",
       "agent.start",
       "bot.conversation",
       "bot.get",

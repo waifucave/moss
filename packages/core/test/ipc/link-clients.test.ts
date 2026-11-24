@@ -158,7 +158,7 @@ describe("remote clients over links, on the MOSS server", () => {
     const s = createMossServer({
       tokens, processes: new SessionProcesses(), serverVersion: "test", deviceId: "d".repeat(32),
       deviceOs: (d) => (d === "a".repeat(32) ? "android" : "ios"),
-      handlers: laneMethodHandlers({ "agent.start": record("agent.start"), "bot.create": record("bot.create"), "agent.backends": record("agent.backends"), "plugin.install": record("plugin.install") }),
+      handlers: laneMethodHandlers({ "agent.start": record("agent.start"), "agent.backends": record("agent.backends"), "agent.options": record("agent.options"), "agent.recent": record("agent.recent"), "bot.create": record("bot.create"), "agent.definitions": record("agent.definitions"), "plugin.install": record("plugin.install") }),
     });
     stops.push(() => s.dispose());
     const open = async (device: string, id: number) => {
@@ -171,11 +171,13 @@ describe("remote clients over links, on the MOSS server", () => {
     await expect(s.handle(ios, "agent.start", start)).resolves.toEqual({ session: "s_x" });
     await expect(s.handle(android, "agent.start", start)).resolves.toEqual({ session: "s_x" });
     expect(calls.map((c) => c.caller)).toEqual([{ kind: "user", client: "ios", device: "i".repeat(32) }, { kind: "user", client: "android", device: "a".repeat(32) }]);
+    // The sheet's three reads are the phone's too.
+    for (const method of ["agent.backends", "agent.options", "agent.recent"]) await expect(s.handle(ios, method, method === "agent.options" ? { backend: "moss-code" } : {})).resolves.toEqual({ session: "s_x" });
     // What a phone could not do before it still cannot: the role's list does not name these.
-    for (const method of ["bot.create", "agent.backends", "plugin.install"]) {
+    for (const method of ["bot.create", "agent.definitions", "plugin.install"]) {
       await expect(s.handle(ios, method, {})).rejects.toMatchObject({ code: MOSS_ERR.ROLE_REFUSED });
     }
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(5);
   });
 
   test("each minted token is spent by its hello, and the server closes a link connection itself", async () => {

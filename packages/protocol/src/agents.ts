@@ -168,9 +168,9 @@ export const BRIDGE_TOOLS_CHANGED_NOTIFICATION = "bridge.toolsChanged";
 
 export const AGENTS_METHODS = {
   agentBackends: defineMethod({
-    name: "agent.backends", owner: "K", roles: ["app", "cli"],
+    name: "agent.backends", owner: "K", roles: ["app", "cli", "remote"],
     params: Empty, result: z.object({ backends: z.array(AgentBackendView) }),
-    doc: "The agent backends plugins contribute, with what each computer has (§5.3, §9.3).",
+    doc: "The agent backends plugins contribute, with what each computer has (§5.3, §9.3). To a paired phone (`remote`), for its new-session sheet: only the backends a person can start, and without each program's version line (a phone has no use for it); the engine looks at the programs at most once in a while for phones.",
   }),
   agentDefinitions: defineMethod({
     name: "agent.definitions", owner: "K", roles: ["app", "cli"],
@@ -193,16 +193,16 @@ export const AGENTS_METHODS = {
     doc: "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3). From a plugin part (`sessions.start`, the app's door) it takes the model, the effort and a first message too (§9.5). From a paired phone (`remote`, the owner's decision of 2026-11-24) it starts one on the computer the phone is linked to and no other, in any folder of that computer's home the desktop's own start accepts, by a phone that is still paired and holds an answer key; the cards the start raises are raised as for the desktop's, and answered on the phone.",
   }),
   agentOptions: defineMethod({
-    name: "agent.options", owner: "CA", roles: ["app", "cli"],
+    name: "agent.options", owner: "CA", roles: ["app", "cli", "remote"],
     params: z.object({ backend: utf16(128, 1), computer: ComputerName.optional() }),
     result: AgentBackendOptions,
-    doc: "What a backend offers to start with, before any session exists: its models with their efforts and its defaults, or that they are unknown until it starts (§9.5).",
+    doc: "What a backend offers to start with, before any session exists: its models with their efforts and its defaults, or that they are unknown until it starts (§9.5). A paired phone (`remote`) is answered from what the engine already holds a moment ago, as for `agent.backends`.",
   }),
   agentRecent: defineMethod({
-    name: "agent.recent", owner: "CA", roles: ["app", "cli"],
+    name: "agent.recent", owner: "CA", roles: ["app", "cli", "remote"],
     params: Empty,
     result: RecentStart,
-    doc: "The person's last start: backend, model, effort and the folders started in last (tree paths, for the app's main process and the CLI only; a page gets a pick token) (§9.5).",
+    doc: "The person's last start: backend, model, effort and the folders started in last (tree paths, for the app's main process and the CLI only; a page gets a pick token) (§9.5). A paired phone (`remote`) is told the same, and its own starts are not part of it: a phone's start is not remembered.",
   }),
 
   // `moss-core code-agent` (K-M3b): an outside ACP client's (Zed's) relay to MOSS's coding agent, on a `cli`

@@ -45,6 +45,22 @@ export interface AgentMethodsOptions {
 
 export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<unknown>;
 
+/** How long a phone's `agent.backends` and `agent.options` answers are reused: each looks at programs on this computer (a
+ *  version line, a model list command), and a phone's sheet may ask on every open. */
+export const PHONE_LOOK_TTL_MS = 30_000;
+
+/** A caller that is neither this computer's app nor its terminal: a paired phone's connection (`remote`). Tested the other
+ *  way round so that a client label added later is held to the phone rules until someone says otherwise. */
+function isPhoneCaller(caller: Caller): boolean {
+  return caller.kind === "user" && caller.client !== "app" && caller.client !== "cli";
+}
+
+/** What a phone's sheet is shown of a backend: what it needs to draw the choice and to say what a start will ask. Left out: the
+ *  program's version line (the program's own output, which a phone has no use for). Backends a person can't start are not listed. */
+export function backendsForPhone(backends: readonly AgentBackendView[]): AgentBackendView[] {
+  return backends.filter((b) => b.userStartable).map((b) => ({ ...b, computers: b.computers.map(({ version: _version, ...rest }) => rest) }));
+}
+
 
 function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"]> {
   const r = spec.params.safeParse(raw ?? {});
@@ -53,9 +69,28 @@ function parse<S extends MethodSpec>(spec: S, raw: unknown): z.output<S["params"
 }
 
 export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod> {
-  const methods: Record<string, AgentMethod> = {
-    [AGENTS_METHODS.agentBackends.name]: async (raw) => {
-      parse(AGENTS_METHODS.agentBackends, raw);
+  const now = o.now ?? Date.now;
+  /** A phone's reads of what looks at programs here, kept for `PHONE_LOOK_TTL_MS` (by what was asked, not by who asks). */
+  const looked = new Map<string, { at: number; value: Promise<unknown> }>();
+  /** A phone's read: only a phone that is still paired with an answer key (as for a start); with a `key`, an answer under
+   *  `PHONE_LOOK_TTL_MS` old is reused instead of looking at the programs again. */
+  const phoneRead = (caller: Caller, key: string | undefined, make: () => Promise<unknown>): Promise<unknown> => {
+    if (caller.kind !== "user" || caller.device === undefined || o.phoneMayStart?.(caller.device) !== true) {
+      throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't read what a session starts with here");
+    }
+    if (key === undefined) return make();
+    const t = now();
+    const had = looked.get(key);
+    if (had !== undefined && t - had.at < PHONE_LOOK_TTL_MS) return had.value;
+    const value = make();
+    looked.set(key, { at: t, value });
+    // A failed look is not kept.
+    value.catch(() => { if (looked.get(key)?.value === value) looked.delete(key); });
+    while (looked.size > 64) looked.delete(looked.keys().next().value as string);
+    return value;
+  };
+  const desktopBackends = async (): Promise<{ backends: AgentBackendView[] }> => {
+    {
       const backends: AgentBackendView[] = [];
       const list = o.backends();
       const looks = await o.looks?.(list.map((b) => b.id)).catch(() => undefined);
@@ -86,6 +121,13 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
         });
       }
       return { backends };
+    }
+  };
+  const methods: Record<string, AgentMethod> = {
+    [AGENTS_METHODS.agentBackends.name]: async (raw, ctx) => {
+      parse(AGENTS_METHODS.agentBackends, raw);
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, "backends", async () => ({ backends: backendsForPhone((await desktopBackends()).backends) }));
+      return desktopBackends();
     },
     [AGENTS_METHODS.agentDefinitions.name]: async (raw) => {
       parse(AGENTS_METHODS.agentDefinitions, raw);
@@ -97,7 +139,7 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
       // A phone's start (the owner's decision of 2026-11-24): the same call and the same checks below, with two more. The phone
       // is still a paired phone with an answer key (read from the registry now, so a revocation ends it), and it names this
       // computer, the one its link reaches: starting on another computer through this one is the desktop's door, not a phone's.
-      const fromPhone = ctx.caller.client !== "app" && ctx.caller.client !== "cli";
+      const fromPhone = isPhoneCaller(ctx.caller);
       if (fromPhone) {
         if (ctx.caller.device === undefined || o.phoneMayStart?.(ctx.caller.device) !== true) throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't start a session here");
         if (p.computer !== o.computer) throw new ContractError("refused", `a phone starts a session on the computer it is linked to (${o.computer}), not on ${p.computer.slice(0, 80)}`);
@@ -125,12 +167,16 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
   };
   if (o.startOptions !== undefined) {
     const start = o.startOptions;
-    methods[AGENTS_METHODS.agentOptions.name] = async (raw) => {
+    methods[AGENTS_METHODS.agentOptions.name] = async (raw, ctx) => {
       const p = parse(AGENTS_METHODS.agentOptions, raw);
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, `options:${p.backend}`, () => start.options(p.backend, p.computer));
       return start.options(p.backend, p.computer);
     };
-    methods[AGENTS_METHODS.agentRecent.name] = async (raw) => {
+    methods[AGENTS_METHODS.agentRecent.name] = async (raw, ctx) => {
       parse(AGENTS_METHODS.agentRecent, raw);
+      // A phone is told what the desktop's start page is: the person's last starts at their computers. Its own starts are
+      // not part of it (they are not remembered), so a phone can't move what the desktop preselects.
+      if (isPhoneCaller(ctx.caller)) return phoneRead(ctx.caller, undefined, async () => start.recent());
       return start.recent();
     };
   }

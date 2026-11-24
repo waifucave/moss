@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
 import { makeFakePhone } from "../../contracts/fakes/device-registry";
-import { agentMethods } from "../rpc";
+import { agentMethods, PHONE_LOOK_TTL_MS } from "../rpc";
 import { pairedPhone, type TestPhone } from "./phone";
 import { waitFor, World, type WorldOptions } from "./world";
 
@@ -32,13 +32,25 @@ async function make(o: WorldOptions & { phone?: Parameters<typeof pairedPhone>[1
   const p = await pairedPhone(w.clock, phoneOpts);
   verify = p.verify;
   const remembered: unknown[] = [];
+  const optionCalls: string[] = [];
+  const listed = backends(w);
   const methods = agentMethods({
-    manager: w.manager, backends: () => [w.backend], computer: w.computer, localDevice: () => LOCAL, phoneMayStart: p.mayStart,
-    startOptions: { options: async () => ({ backend: "fake", known: false, source: "unknown", models: [] }), recent: () => ({ roots: [] }), remember: (...a: unknown[]) => void remembered.push(a) } as never,
+    manager: w.manager, backends: () => listed, now: () => w.clock.now(), computer: w.computer, localDevice: () => LOCAL, phoneMayStart: p.mayStart,
+    startOptions: { options: async (b: string) => { optionCalls.push(b); return { backend: b, known: true, source: "catalog", models: [{ id: "m1", name: "M1", efforts: ["low", "high"] }] }; }, recent: () => ({ backend: "fake", computer: "Studio", roots: [{ root: "home/Studio/project1", at: 5 }] }), remember: (...a: unknown[]) => void remembered.push(a) } as never,
   });
   const start = (caller: Caller, params: Record<string, unknown>) => methods["agent.start"]!({ backend: "fake", computer: w.computer, root: "home/Studio/project1", prompt: "go", ...params }, { caller }) as Promise<{ session: string }>;
   const refusal = async (caller: Caller, params: Record<string, unknown>) => start(caller, params).then(() => undefined, (e: { code?: string; message?: string }) => ({ code: e.code, message: e.message }));
-  return { w, p, start, refusal, remembered };
+  return { w, p, start, refusal, remembered, methods, optionCalls, detects };
+}
+
+/** What the world's backend says of itself, counted: a version line that is the program's own output (with a path in it), and one
+ *  backend a person can't start (MOSS's own subagents'). */
+let detects = 0;
+function backends(w: World) {
+  detects = 0;
+  const shown = Object.create(w.backend, { detect: { value: async () => { detects++; return { installed: true, sandboxed: true, version: "claude 2.1.316 (/Users/someone/.local/bin/claude)" }; } } });
+  const hidden = Object.create(w.backend, { id: { value: "subagents" }, userStartable: { value: false }, detect: { value: async () => { detects++; return { installed: true, sandboxed: true, version: "1" }; } } });
+  return [shown, hidden];
 }
 
 const coding = (w: World) => w.host.list({ kind: "coding" });
@@ -109,6 +121,78 @@ describe("the cards a phone's start raises are the desktop's", () => {
     const b = await start(p.caller(), {});
     await waitFor(() => w.host.history(a.session).some((r) => r.type === "turn_ended") && w.host.history(b.session).some((r) => r.type === "turn_ended") || undefined, "both turns' ends");
     expect(w.approvals.cards()).toEqual([]);
+  });
+});
+
+describe("what a phone's sheet reads: agent.backends, agent.options, agent.recent", () => {
+  const asked = (methods: Record<string, (p: unknown, c: { caller: Caller }) => Promise<unknown>>, name: string, caller: Caller, params: Record<string, unknown> = {}) => methods[name]!(params, { caller });
+
+  test("the desktop gets every backend with its version line; the phone gets only those a person can start, without the version line", async () => {
+    const { p, methods } = await make();
+    type Out = { backends: { id: string; pluginId: string; userStartable: boolean; computers: { computer: string; installed: boolean; sandboxed?: boolean; marks: string[]; version?: string }[] }[] };
+    const desktop = await asked(methods, "agent.backends", DESKTOP) as Out;
+    const phone = await asked(methods, "agent.backends", p.caller()) as Out;
+    expect(desktop.backends.map((b) => b.id)).toEqual(["fake", "subagents"]);
+    expect(desktop.backends[0]!.computers[0]!.version).toContain("/Users/someone/.local/bin/claude");
+    expect(phone.backends.map((b) => b.id)).toEqual(["fake"]);
+    // Kept: what draws the choice and says what a start will ask (its name, look, placement, whether it is installed and sandboxed, its marks).
+    expect(phone.backends[0]).toMatchObject({ id: "fake", userStartable: true, computers: [{ computer: "Studio", installed: true, sandboxed: true }] });
+    expect(Array.isArray(phone.backends[0]!.computers[0]!.marks)).toBe(true);
+    // Cut: the program's own version line, which here carries a path on disk.
+    expect("version" in phone.backends[0]!.computers[0]!).toBe(false);
+    const text = JSON.stringify(phone);
+    for (const secret of ["/Users/someone", ".local/bin", "claude 2.1.316"]) expect([secret, text.includes(secret)]).toEqual([secret, false]);
+    // The answer carries no path, digest or address of any kind.
+    expect(text).not.toMatch(/https?:\/\/|sha256|\/home\/|\\\\|[A-Za-z]:\\/);
+  });
+
+  test("a phone's reads of backends and options look at the programs once in 30 seconds; recent is read fresh; the desktop is never held to it", async () => {
+    const { w, p, methods, optionCalls } = await make();
+    await asked(methods, "agent.backends", p.caller());
+    await asked(methods, "agent.backends", p.caller("android"));
+    expect(detects).toBe(2); // one look at the two backends, the second answer reused
+    await asked(methods, "agent.options", p.caller(), { backend: "fake" });
+    await asked(methods, "agent.options", p.caller(), { backend: "fake" });
+    expect(optionCalls).toEqual(["fake"]);
+    await asked(methods, "agent.options", p.caller(), { backend: "other" });
+    expect(optionCalls).toEqual(["fake", "other"]);
+    w.clock.advance(PHONE_LOOK_TTL_MS + 1);
+    await asked(methods, "agent.backends", p.caller());
+    await asked(methods, "agent.options", p.caller(), { backend: "fake" });
+    expect(detects).toBe(4);
+    expect(optionCalls).toEqual(["fake", "other", "fake"]);
+    await asked(methods, "agent.backends", DESKTOP);
+    await asked(methods, "agent.backends", DESKTOP);
+    expect(detects).toBe(8);
+  });
+
+  test("options and recent: the phone is told what the desktop is, and its own starts change neither", async () => {
+    const { p, methods, start, remembered } = await make();
+    expect(await asked(methods, "agent.options", p.caller(), { backend: "fake" })).toEqual(await asked(methods, "agent.options", DESKTOP, { backend: "fake" }));
+    const before = await asked(methods, "agent.recent", p.caller());
+    expect(before).toEqual({ backend: "fake", computer: "Studio", roots: [{ root: "home/Studio/project1", at: 5 }] });
+    expect(before).toEqual(await asked(methods, "agent.recent", DESKTOP));
+    await start(p.caller(), { model: "m1" });
+    expect(remembered).toEqual([]); // the phone's own start is not remembered: nothing of it reaches the desktop's start page
+    expect(await asked(methods, "agent.recent", p.caller())).toEqual(before);
+  });
+
+  test("a revoked phone, a phone with no answer key and a connection with no device read nothing; a label added later is held to the same rule", async () => {
+    const live = await make();
+    await live.p.revoke();
+    for (const name of ["agent.backends", "agent.options", "agent.recent"]) {
+      const params = name === "agent.options" ? { backend: "fake" } : {};
+      for (const caller of [live.p.caller(), { kind: "user", client: "ios" } as Caller, { kind: "user", client: "web", device: live.p.phone.id } as unknown as Caller]) {
+        await expect(asked(live.methods, name, caller, params)).rejects.toMatchObject({ code: "refused" });
+      }
+    }
+    await world?.close();
+    world = undefined;
+    const keyless = await make({ phone: { answerKey: false } });
+    await expect(asked(keyless.methods, "agent.backends", keyless.p.caller())).rejects.toMatchObject({ code: "refused" });
+    // The app and the terminal are not held to any of it.
+    await expect(asked(keyless.methods, "agent.backends", DESKTOP)).resolves.toBeDefined();
+    await expect(asked(keyless.methods, "agent.recent", { kind: "user", client: "cli" } as Caller)).resolves.toBeDefined();
   });
 });
 
