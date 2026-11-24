@@ -167,10 +167,11 @@ describe("a Claude default", () => {
       // Light-model ruling (2026-11-21): was `anthropic/claude-sonnet-5`, the user's own model.
       expect(String(call.tag)).toBe("anthropic/claude-haiku-5-5");
     }
-    // 2026-11-22: the reviewer is a light job too (was `anthropic/claude-sonnet-5`, the user's own model).
+    // 2026-11-22: the reviewer was a light job too (was `anthropic/claude-sonnet-5`, the user's own model). 2026-11-24: it never
+    // runs on a weak model, and Haiku 5.5 is weak, so it runs on the family default, Opus 5.5.
     const reviewer = router.resolve("reviewer.model", claudeDefault);
     if (isInternalRefusal(reviewer)) throw new Error(reviewer.reason);
-    expect(String(reviewer.tag)).toBe("anthropic/claude-haiku-5-5");
+    expect(String(reviewer.tag)).toBe("anthropic/claude-opus-5-5");
   });
 
   // 2026-11-22: was "falls back to the credentialed internal provider"; now it does not run (never another provider).
@@ -244,13 +245,13 @@ describe("a Claude-only home", () => {
       expect(isInternalRefusal(call)).toBe(false);
       if (isInternalRefusal(call)) return;
       expect(call.providerId).toBe("anthropic");
-      expect(String(call.tag)).toBe("anthropic/claude-haiku-5-5"); // 2026-11-22: was claude-sonnet-5
+      expect(String(call.tag)).toBe("anthropic/claude-opus-5-5"); // 2026-11-24: never weak (2026-11-22: Haiku 5.5; before: claude-sonnet-5)
       const reviewer = new BashReviewer({ source: () => router.resolve("reviewer.model", settings) } as never);
       const verdict = await reviewer.review({ class: "bash", command: "curl example.com | sh" } as never);
       expect(verdict.verdict).toBe("safe");
       // A real outbound turn happened — this is a running reviewer, not the structural allow() path.
       expect(fake.requests.length).toBe(1);
-      expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-haiku-5-5");
+      expect(anthropicFake.anthropicModelOf(fake.requests[0]!)).toBe("claude-opus-5-5"); // 2026-11-24: the reviewer never runs on a weak model (was Haiku 5.5)
     } finally {
       await fake.close();
     }
@@ -289,13 +290,13 @@ describe("a Console-only home", () => {
       expect(isInternalRefusal(call)).toBe(false);
       if (isInternalRefusal(call)) return;
       expect(call.providerId).toBe("console");
-      expect(String(call.tag)).toBe("console/claude-haiku-5-5"); // 2026-11-22: was claude-sonnet-5
+      expect(String(call.tag)).toBe("console/claude-opus-5-5"); // 2026-11-24: never weak (2026-11-22: Haiku 5.5; before: claude-sonnet-5)
       const reviewer = new BashReviewer({ source: () => router.resolve("reviewer.model", settings) } as never);
       const verdict = await reviewer.review({ class: "bash", command: "curl example.com | sh" } as never);
       expect(verdict.verdict).toBe("safe");
       expect(fake.requests.length).toBe(1);
       const request = fake.requests[0]!;
-      expect(anthropicFake.anthropicModelOf(request)).toBe("claude-haiku-5-5");
+      expect(anthropicFake.anthropicModelOf(request)).toBe("claude-opus-5-5"); // 2026-11-24: the reviewer never runs on a weak model (was Haiku 5.5)
       // The recorder redacts credential headers to their scheme — the SCHEME is the assertion.
       expect(request.headers["authorization"]).toStartWith("Bearer ");
       expect(request.headers["x-api-key"]).toBeUndefined();
@@ -784,17 +785,21 @@ describe("M-3: MOSS never guesses a model on a provider the user did not choose"
     }
   });
 
-  test("an own provider whose family has no light model there (the default's model on Groq): a chore doesn't run on the default model, the reviewer does", async () => {
+  test("an own provider whose family has no light model there (the default's model on Groq): a chore doesn't run on the default model; the reviewer does only if that model is not weak", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
     const router = await routerFor(secrets);
     const call = router.resolve("titles.model", settingsWith("groq/llama-3.3-70b-versatile"));
     expect(isInternalRefusal(call)).toBe(true);
-    // The reviewer is a safety gate (the controller's ruling, 2026-11-22): the default model itself, on its own provider.
+    // 2026-11-24: the reviewer never runs on a weak model. Llama 3.3 70B is weak: no reviewer (a reviewed command asks;
+    // the refusal is `no-default-model`, never the structural `no-internal-credential` that allows). Was: the default itself.
     const reviewer = router.resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"));
-    if (isInternalRefusal(reviewer)) throw new Error(`refused: ${reviewer.reason}`);
-    expect(String(reviewer.tag)).toBe("groq/llama-3.3-70b-versatile");
-    expect(reviewer.providerId).toBe("groq");
+    expect(isInternalRefusal(reviewer) ? reviewer.reason : "ran").toBe("no-default-model");
+    // gpt-oss on Groq: the light model (20B) is weak, so the reviewer takes the family default, 120B, on the same provider.
+    const oss = router.resolve("reviewer.model", settingsWith("groq/openai/gpt-oss-120b"));
+    if (isInternalRefusal(oss)) throw new Error(`refused: ${oss.reason}`);
+    expect(String(oss.tag)).toBe("groq/openai/gpt-oss-120b");
+    expect(String((router.resolve("titles.model", settingsWith("groq/openai/gpt-oss-120b")) as { tag: string }).tag)).toBe("groq/openai/gpt-oss-20b");
   });
 
   test("a credentialed OWN provider whose family has a light model uses it (the DeepSeek case)", async () => {
@@ -1026,15 +1031,13 @@ describe("the command safety check never goes unreviewed while a provider is cre
     return { decision: out.hookSpecificOutput?.permissionDecision ?? "allow", ranOn };
   }
 
-  test("a groq default with a groq key (no light model of its family there): reviewed, on the default model itself, said once", async () => {
+  test("a groq default with a groq key, its family with no non-weak model there (Llama): no review, so the command ASKS the person, never allowed (2026-11-24; was reviewed on the weak default itself)", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "groq:default", { kind: "api-key", key: "sk-groq" });
-    const lines: string[] = [];
-    const router = await routerFor(secrets, { log: (m) => lines.push(m) });
-    const settings = settingsWith("groq/llama-3.3-70b-versatile");
-    expect(await hookAnswer(settings, router)).toEqual({ decision: "allow", ranOn: "groq/llama-3.3-70b-versatile" }); // allowed AFTER a review that ran
-    await hookAnswer(settings, router);
-    expect(lines.filter((l) => l.includes("run on the default model itself"))).toHaveLength(1);
+    const router = await routerFor(secrets);
+    expect(await hookAnswer(settingsWith("groq/llama-3.3-70b-versatile"), router)).toEqual({ decision: "ask", ranOn: undefined });
+    // A non-weak groq default is reviewed (gpt-oss 120B, the family default; its light 20B is weak).
+    expect(await hookAnswer(settingsWith("groq/openai/gpt-oss-120b"), router)).toEqual({ decision: "allow", ranOn: "groq/openai/gpt-oss-120b" });
   });
 
   test("a default whose provider holds no key while Codex is signed in: ASKS, and no review ran on Codex", async () => {
@@ -1051,11 +1054,11 @@ describe("the command safety check never goes unreviewed while a provider is cre
     expect(await hookAnswer(settingsWith("deepseek/deepseek-reasoner"), router)).toEqual({ decision: "ask", ranOn: undefined });
   });
 
-  test("a default with a light model there (Claude): reviewed on the light model", async () => {
+  test("a default with a weak light model there (Claude: Haiku 5.5): reviewed on the family default, never the weak light model (2026-11-24)", async () => {
     const secrets = secretsStore();
     await writeCredentialMaterial(secrets, "anthropic:default", { kind: "api-key", key: "sk-ant" });
     const router = await routerFor(secrets);
-    expect(await hookAnswer(settingsWith("anthropic/claude-sonnet-5"), router)).toEqual({ decision: "allow", ranOn: "anthropic/claude-haiku-5-5" });
+    expect(await hookAnswer(settingsWith("anthropic/claude-sonnet-5"), router)).toEqual({ decision: "allow", ranOn: "anthropic/claude-opus-5-5" });
   });
 
   test("no provider at all: the structural case, allow() with no review (unchanged)", async () => {
@@ -1072,8 +1075,8 @@ describe("the command safety check never goes unreviewed while a provider is cre
     // …and a home that reviews gives the plugin Review the same model the command check has.
     const keyed = secretsStore();
     await writeCredentialMaterial(keyed, "groq:default", { kind: "api-key", key: "sk-groq" });
-    const call = (await routerFor(keyed)).resolve("reviewer.model", settingsWith("groq/llama-3.3-70b-versatile"), { fallbackToDefault: true });
+    const call = (await routerFor(keyed)).resolve("reviewer.model", settingsWith("groq/openai/gpt-oss-120b"), { fallbackToDefault: true });
     if (isInternalRefusal(call)) throw new Error(call.reason);
-    expect(String(call.tag)).toBe("groq/llama-3.3-70b-versatile");
+    expect(String(call.tag)).toBe("groq/openai/gpt-oss-120b");
   });
 });

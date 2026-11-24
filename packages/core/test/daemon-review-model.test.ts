@@ -106,7 +106,9 @@ async function home(provider: string, withBundled = false) {
 // 2026-11-22: with no role set Review runs on the light model of the default's family on the default's own provider (the
 // default itself only where that family has no light model there): was the default model (or the one provider's recommended
 // model, for a default with no key).
-const LIGHT = "anthropic/claude-haiku-5-5";
+// 2026-11-24: Review (the command safety reviewer) never runs on a weak model; Claude's light model, Haiku 5.5, is weak, so it
+// runs on the family default, Opus 5.5 (was Haiku 5.5 from 2026-11-22). The name stays: it is the model Review runs on.
+const LIGHT = "anthropic/claude-opus-5-5";
 
 test("the reviewer role names a signed-in provider's model: Review runs on it though the default model is elsewhere, within a few seconds with the bundled model plugins watched", async () => {
   // The bundled tree (178 model plugins and the rest) staged as a source run stages it: the registry's watches on its

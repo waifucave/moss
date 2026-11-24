@@ -16,6 +16,21 @@
 // no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
 // Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
 // published catalog yet); gemma and llama dropped (weak).
+//
+// THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
+// declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
+// (DeepSeek V4 Pro, Kimi K3.1 Pro, GLM-5.3) the default is `high`: the nearest level to the medium every other family
+// declares (low is the light jobs' effort). Before, nothing was written and the row's own default ran: high on DeepSeek
+// and the Kimi Code plans, MAX on Moonshot's own API and on GLM, so those two now run one step lighter by default. Where
+// the vendors' rows take no effort at all (Mistral Large 3, MiniMax M3, Command A, MiMo V2.6 Pro, Nova Pro, Nemotron 3
+// Super, ERNIE 5.1) the default names none. Qwen 3.7 Plus, Hy4 Preview and Muse Spark keep medium: some of their vendors'
+// rows take it, the rest take no effort.
+/** A weak model (the catalog's hand-set class; a row that states none is weak, the agent SDK's own reading of
+ *  `WinterModelDescriptor.strength`). Never a family default, and never the model that reviews commands. */
+export function isWeak(row: { strength?: string } | undefined): boolean {
+  return row?.strength !== "strong" && row?.strength !== "medium";
+}
+
 export interface FamilyDefault {
   /** The catalog's canonical model id (`row.canonicalModelId`). */
   model: string;
@@ -28,17 +43,17 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
   gemini: { model: "gemini-3.8-flash", effort: "medium" },
   grok: { model: "grok-4.6", effort: "medium" },
-  deepseek: { model: "deepseek-v4-pro", effort: "medium" },
-  kimi: { model: "kimi-k3.1-pro", effort: "medium" },
+  deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium
+  kimi: { model: "kimi-k3.1-pro", effort: "high" }, // rows take low, high, max: no medium
   qwen: { model: "qwen3.7-plus", effort: "medium" },
-  mistral: { model: "mistral-large-2512", effort: "medium" },
-  glm: { model: "glm-5.3", effort: "medium" },
-  minimax: { model: "minimax-m3", effort: "medium" },
-  command: { model: "command-a-03-2025", effort: "medium" },
-  mimo: { model: "mimo-v2.6-pro", effort: "medium" },
-  nova: { model: "amazon.nova-pro", effort: "medium" },
-  nemotron: { model: "nemotron-3-super-120b-a12b", effort: "medium" },
-  ernie: { model: "ernie-5.1", effort: "medium" },
+  mistral: { model: "mistral-large-2512" }, // its vendors' rows take no effort
+  glm: { model: "glm-5.3", effort: "high" }, // rows take low, high, max: no medium
+  minimax: { model: "minimax-m3" }, // its vendors' rows take no effort
+  command: { model: "command-a-03-2025" }, // its vendors' rows take no effort
+  mimo: { model: "mimo-v2.6-pro" }, // its vendors' rows take no effort
+  nova: { model: "amazon.nova-pro" }, // its row takes no effort
+  nemotron: { model: "nemotron-3-super-120b-a12b" }, // its vendors' rows take no effort
+  ernie: { model: "ernie-5.1" }, // its vendors' rows take no effort
   hunyuan: { model: "hy4-preview", effort: "medium" },
   muse: { model: "muse-spark-1.3", effort: "medium" },
   "gpt-oss": { model: "gpt-oss-120b", effort: "medium" },

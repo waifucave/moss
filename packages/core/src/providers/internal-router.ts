@@ -38,7 +38,7 @@ import {
   type Settings,
 } from "../settings";
 import { activeCatalog } from "../runtime-sdk/model-plugins/catalog-source";
-import { familyOfModel, lightModelOn } from "../runtime-sdk/model-plugins/light-model";
+import { familyOfModel, lightModelOn, reviewerModelOn } from "../runtime-sdk/model-plugins/light-model";
 import { wireModelIdFor } from "./internal-adapters";
 import { buildInternalProvider, internalWireEffortFor } from "./internal-provider";
 import { INTERNAL_JOBS_LOGIN_HINT } from "./internal-login-hint";
@@ -355,7 +355,7 @@ export function createInternalRouter(deps: {
     const catalog = activeCatalog();
     const family = familyOfModel(catalog, providerId, model);
     if (family === undefined) return undefined;
-    const choice = lightModelOn(catalog, providerId, family);
+    const choice = role === "reviewer.model" ? reviewerModelOn(catalog, providerId, family) : lightModelOn(catalog, providerId, family);
     if (choice === undefined) {
       return { reason: "no-default-model", detail: `${providerDisplayName(providerId)} serves no light model of the ${family} family; pin a model for this job in Settings › Roles`, tag: null };
     }
@@ -417,7 +417,7 @@ export function createInternalRouter(deps: {
         const key = `reviewer-default|${tag}`;
         if (!said.has(key)) {
           said.add(key);
-          log(`internal-provider: the default model's family has no light model on its provider, so the command safety check and the plugin Review run on the default model itself, ${tag}`);
+          log(`internal-provider: the default model's family has no light model or default on its provider that is not weak, so the command safety check and the plugin Review run on the default model itself, ${tag}`);
         }
       }
       const first = resolveTag(role, settings, tag, lightEffort);

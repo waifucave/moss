@@ -25,7 +25,9 @@
 // nothing, and the person picks.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
 import { effortVocabularyOf, toolsRefusedFor } from "./runtime-sdk/provider-selection";
-import { FAMILY_DEFAULTS, type FamilyDefault } from "./runtime-sdk/model-plugins/family-defaults";
+import { FAMILY_DEFAULTS, isWeak, type FamilyDefault } from "./runtime-sdk/model-plugins/family-defaults";
+
+export { isWeak };
 
 /** The harness's provider-less test doubles (`winter-test/*`): always "had", they need no key. */
 const TEST_PREFIX = "winter-test/";
@@ -51,12 +53,6 @@ export interface Recommendation {
 /** The family a model row belongs to (whose `vendorProviders` names its provider), and that family's default. */
 function familyOf(catalog: Pick<WinterCatalog, "families">, providerId: string): { id: string; def: FamilyDefault }[] {
   return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => ({ id: f.id, def: FAMILY_DEFAULTS[f.id]! }));
-}
-
-/** A weak model is never recommended (`family-defaults.ts`): the catalog's hand-set class, and a row that states none
- *  is weak (the agent SDK's own reading, `WinterModelDescriptor.strength`). */
-export function isWeak(row: { strength?: string }): boolean {
-  return row.strength !== "strong" && row.strength !== "medium";
 }
 
 /** A provider's recommended default from its family's (see the header), or none. */

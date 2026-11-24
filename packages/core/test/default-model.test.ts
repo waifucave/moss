@@ -58,10 +58,15 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(recommended(built, "deepseek")?.model).toBeDefined();
     expect(recommended(built, "deepinfra")).toBeUndefined(); // Llama, whose vendors serve only weak models
   });
-  test("the effort is dropped for a row that doesn't take it", () => {
-    const r = rec("deepseek");
-    expect(r?.model).toBeDefined();
-    expect(r?.effort).toBeUndefined();
+  test("a declared effort is one the family's vendor rows take (2026-11-24: a declaration no row takes was silently dropped)", () => {
+    for (const [family, def] of Object.entries(FAMILY_DEFAULTS)) {
+      if (def.effort === undefined) continue;
+      const vendors = catalog.families!.find((f) => f.id === family)!.vendorProviders ?? [];
+      const takes = catalog.models.some((m) => m.canonicalModelId === def.model && vendors.includes(m.providerId) && (m.reasoning?.efforts ?? []).includes(def.effort!));
+      expect({ family, effort: def.effort, takes }).toEqual({ family, effort: def.effort, takes: true });
+    }
+    expect(rec("deepseek")).toEqual({ model: "deepseek/deepseek-v4-pro", effort: "high" });
+    expect(rec("mistral")?.effort).toBeUndefined(); // Large 3's row takes no effort, and none is declared
   });
   test("a picked model starts with its family's effort only when it is the family's default", () => {
     expect(defaultEffortFor(catalog, recM("anthropic")!)).toBe("medium");
