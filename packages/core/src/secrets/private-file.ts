@@ -74,7 +74,7 @@ let windowsAclForTests: ((path: string) => Promise<void>) | undefined;
 /** Tests only: what locks a file to the user on Windows instead of `icacls` (one process per write), for the generated-
  *  sequence tests, whose hundreds of writes are about order and crashes, not the ACL. The ACL itself is proven by its
  *  own test (`icacls` read back, secrets-file-backend.test.ts) and the Windows fence e2e. */
-export function setWindowsAclForTests(fn: ((path: string) => Promise<void>) | undefined): void { windowsAclForTests = fn; }
+export function setWindowsAclForTests(fn: ((path: string) => Promise<void>) | undefined): void { if (testHooksAllowed()) windowsAclForTests = fn; }
 
 export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Promise<void> {
   if ((deps.platform ?? process.platform) !== "win32") { chmodSync(path, 0o600); return; }
@@ -88,6 +88,25 @@ export async function lockToOwner(path: string, deps: PrivateFileDeps = {}): Pro
 }
 
 const RENAME_RETRIES = 12;
+
+declare const __MOSS_TEST_BUILD__: string | false | undefined;
+/** Whether this module's test hooks (`setWindowsAclForTests`, `setSecretStatForTests`) do anything. Decided when the
+ *  binary was built, never by the environment (a plugin can set a variable): every real build, dev and release
+ *  (`scripts/build-daemon.ts`), defines `__MOSS_TEST_BUILD__=false`, and there the hooks are inert; a test-marked build
+ *  (a label) and the core run from source under `bun test` (undefined) keep them. The same test `win-fenced.ts` uses
+ *  for its `MOSS_SRT_WIN` override. */
+export function testHooksAllowed(marker: string | false | undefined = typeof __MOSS_TEST_BUILD__ === "undefined" ? undefined : __MOSS_TEST_BUILD__): boolean {
+  return marker !== false;
+}
+
+/** How long to wait before each retry of a rename (or of a read or removal of a file being replaced) that Windows refused
+ *  with a sharing error. Elsewhere 12 tries 25 ms apart (300 ms: a lock reader's moment). On Windows an antivirus scan of
+ *  a file just written (Defender's real-time scan of a new file, commonly up to a second or two on a loaded disk) holds
+ *  it longer, and a rename that gives up while the value has already landed makes the write report a failure it did not
+ *  have: there the wait doubles from 25 ms to at most 1 s, 10 retries, 5.575 s in all, bounded. */
+export function renameRetryDelays(platform: NodeJS.Platform = process.platform): readonly number[] {
+  return platform === "win32" ? [25, 50, 100, 200, 400, 800, 1000, 1000, 1000, 1000] : Array.from({ length: RENAME_RETRIES }, () => 25);
+}
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const transient = (e: unknown) => ["EPERM", "EACCES", "EBUSY"].includes((e as NodeJS.ErrnoException).code ?? "");
 
@@ -122,7 +141,7 @@ export async function renameDurably(from: string, to: string, deps: PrivateFileD
   const platform = deps.platform ?? process.platform;
   for (let i = 0; ; i++) {
     try { assertLocksHeld(); renameSync(from, to); break; }
-    catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
+    catch (e) { const delays = renameRetryDelays(platform); if (!transient(e) || i >= delays.length) throw e; await sleep(delays[i]!); }
   }
   deps.step?.("renamed");
   if (platform === "win32") flushFile(to);
@@ -163,7 +182,7 @@ export async function writePrivateFile(path: string, data: Buffer | string, deps
 
 let statImpl: (path: string) => unknown = (p) => statSync(p);
 /** Tests only: what `present` stats with (a stat that throws EACCES or EIO). */
-export function setSecretStatForTests(fn: ((path: string) => unknown) | undefined): void { statImpl = fn ?? ((p) => statSync(p)); }
+export function setSecretStatForTests(fn: ((path: string) => unknown) | undefined): void { if (testHooksAllowed()) statImpl = fn ?? ((p) => statSync(p)); }
 
 /** Whether `path` is there. ONLY "no such file" (ENOENT, ENOTDIR) is absent: any other failure to look (a folder
  *  this process can't search, a disk error, a share gone) is not "absent" but `locked`, said plainly, so a store that
@@ -181,7 +200,7 @@ export function present(path: string): boolean {
 export async function readFileRetrying(path: string): Promise<Buffer> {
   for (let i = 0; ; i++) {
     try { return readFileSync(path); }
-    catch (e) { if (!transient(e) || i >= RENAME_RETRIES) throw e; await sleep(25); }
+    catch (e) { const delays = renameRetryDelays(); if (!transient(e) || i >= delays.length) throw e; await sleep(delays[i]!); }
   }
 }
 
