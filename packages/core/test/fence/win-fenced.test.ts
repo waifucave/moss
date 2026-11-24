@@ -656,7 +656,8 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     const a = make(s.spawner, "bg-f1", []), b = make(s.spawner, "bg-f2", []), c = make(s.spawner, "bg-f3", []);
     const ids = [idOf((await a.t.Bash!.run({ command: "x", run_in_background: true })).text), idOf((await b.t.Bash!.run({ command: "x", run_in_background: true })).text)];
     const third = await c.t.Bash!.run({ command: "x", run_in_background: true });
-    expect(third).toMatchObject({ isError: true, text: expect.stringContaining("running on this computer already") });
+    expect(third.isError).toBe(true);
+    expect(third.text).toContain("running on this computer already");
     expect(third.text).toContain("kept for ordinary commands");
     expect(s.runs).toHaveLength(2);
     // A foreground command of the third session still runs.
@@ -750,7 +751,7 @@ describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {
       const m = machine();
       const dir = mkdtempSync(join(tmpdir(), "ws7-8c-"));
       const launcher = join(dir, "sleepy-srt.sh");
-      writeFileSync(launcher, "#!/bin/sh\nsleep 2\nexit 0\n");
+      writeFileSync(launcher, "#!/bin/sh\n/bin/sleep 2\nexit 0\n");
       chmodSync(launcher, 0o755);
       const exec = m.deps.exec;
       const deps: WinFencedDeps = { ...m.deps, launcher, fenceWatchMs: 50, exec: (argv, o) => exec(argv[0] === launcher ? [m.deps.launcher, ...argv.slice(1)] : argv, o) };
