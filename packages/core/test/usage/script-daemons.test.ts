@@ -67,6 +67,7 @@ const NO_DAEMON_OF_ITS_OWN: Record<string, string> = {
   "scripts/release/check-plugins-tarball.ts": "asks the built moss-core for its bundled-plugins manifest (`__bundled-manifest`, which prints and exits, no daemon) and checks the plugins tarball against it",
   "scripts/release/name-scan.test.ts": "the build-time name scan's fixtures (a moss-core path among them); runs no daemon",
   "scripts/ci-changes.ts": "maps changed paths to CI jobs; names the core's seal and gate scripts, runs nothing",
+  "scripts/ci/queue-map.ts": "the merge queue's frozen copy of the old path-to-area map (a pull request and the queue take the union); names the core's seal and gate scripts, runs nothing",
   "scripts/seal-bun-doors.ts": "byte-patches and ad hoc signs a built moss-core; never runs it",
   "scripts/verify-sealed-core.ts": "runs the sealed moss-core with each door: `--version`, `bridge` without a session, `__runtimes-probe` and `__fetch-probe` (each prints and exits, no daemon)",
   "scripts/verify-automation-worker-compiled.ts": "runs only the `__automation-worker` route (a worker, no daemon)",
