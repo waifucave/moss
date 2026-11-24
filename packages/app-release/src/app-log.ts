@@ -95,10 +95,16 @@ export class AppLog {
  *  A key's own limit does not bound what many keys write together: a plugin that makes a frame after frame is a new key each time. So a
  *  line may also name its `group` (the window its frame is in): all the keys of one group together write at most `groupMax` lines in
  *  `groupWindowMs` (30 in a minute), whatever their names, and the lines left out are counted into the first line said after the quiet.
- *  At most `groups` groups are kept. */
+ *  At most `groups` groups are kept.
+ *
+ *  A group at its cap would let one looping frame bury every other frame's line, and the line of the frame whose button is dead is
+ *  the one a person needs. So a key that has written no line yet in the group's minute always gets its FIRST line through (a reserve of
+ *  `reserve` such lines per group per minute, on top of `groupMax`); a frame that is already writing gets none. The most one group writes
+ *  in a minute is `groupMax + reserve`. A plugin that makes a new frame for every line spends the reserve (a new key each time) and then
+ *  buries a frame that has not spoken yet: the reserve is a bound on that, not a proof against it. */
 export class LineLimiter {
   private readonly seen = new Map<string, { start: number; count: number; left: number }>();
-  private readonly byGroup = new Map<string, { start: number; count: number; left: number }>();
+  private readonly byGroup = new Map<string, { start: number; count: number; left: number; spoke: Set<string>; reserved: number }>();
 
   constructor(
     private readonly max = 5,
@@ -108,26 +114,30 @@ export class LineLimiter {
     private readonly groupMax = 30,
     private readonly groupWindowMs = 60_000,
     private readonly groups = 64,
+    private readonly reserve = 10,
   ) {}
 
   /** `ok`: write this line; `left`: how many of this key's (and this group's) lines were left out since the last one written. */
   check(key: string, group?: string): { ok: boolean; left: number } {
     const t = this.now();
-    let g: { start: number; count: number; left: number } | undefined;
+    let g: { start: number; count: number; left: number; spoke: Set<string>; reserved: number } | undefined;
     if (group !== undefined) {
       g = this.byGroup.get(group);
       if (g === undefined || t - g.start >= this.groupWindowMs) {
         // A new minute: what the last one left out and never said stays counted until a line is written.
-        g = { start: t, count: 0, left: g?.left ?? 0 };
+        g = { start: t, count: 0, left: g?.left ?? 0, spoke: new Set(), reserved: 0 };
         this.byGroup.delete(group);
         this.byGroup.set(group, g);
         if (this.byGroup.size > this.groups) this.byGroup.delete(this.byGroup.keys().next().value as string);
       }
-      if (g.count >= this.groupMax) { g.left++; return { ok: false, left: 0 }; }
+      // At the cap only a key's first line of the minute passes, from the reserve.
+      if (g.count >= this.groupMax && (g.spoke.has(key) || g.reserved >= this.reserve)) { g.left++; return { ok: false, left: 0 }; }
     }
     const r = this.#keyed(key, t);
     if (!r.ok) return r;
     if (g === undefined) return r;
+    if (g.count >= this.groupMax) g.reserved++;
+    g.spoke.add(key);
     g.count++;
     const left = r.left + g.left;
     g.left = 0;

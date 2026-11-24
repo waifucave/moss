@@ -172,12 +172,13 @@ describe("the line limiter", () => {
     expect(l.check("frame:1")).toEqual({ ok: true, left: 0 });
   });
 
-  test("one window's frames together write at most 30 lines a minute, however many keys they are; the lines left out are said on the first line after", () => {
+  test("one window's frames together write at most 30 lines and the reserve a minute, however many keys they are; the lines left out are said on the first line after", () => {
     let t = 1_000;
     const l = new LineLimiter(5, 10_000, 256, () => t);
     // A plugin that makes a new frame for every line: each key is new, so no key's own limit ever applies.
     const written = Array.from({ length: 100 }, (_, i) => l.check(`press:${i}`, "w1")).filter((r) => r.ok).length;
-    expect(written).toBe(30);
+    // The cap of 30, and the reserve of 10 first lines that frames not yet heard get at the cap (a new key each time spends it).
+    expect(written).toBe(40);
     // Another window has its own count, and an ungrouped caller is limited by its key alone.
     expect(l.check("press:x", "w2")).toEqual({ ok: true, left: 0 });
     for (let i = 0; i < 10; i++) expect(l.check("press:u").ok).toBe(i < 5);
@@ -185,13 +186,13 @@ describe("the line limiter", () => {
     t += 59_000;
     expect(l.check("press:late", "w1")).toEqual({ ok: false, left: 0 });
     t += 1_000;
-    expect(l.check("press:again", "w1")).toEqual({ ok: true, left: 70 + 1 });
+    expect(l.check("press:again", "w1")).toEqual({ ok: true, left: 60 + 1 });
     expect(l.check("press:again2", "w1")).toEqual({ ok: true, left: 0 });
   });
 
   test("a line the key's own limit refuses in a new minute does not lose the group's count, and the groups kept are bounded", () => {
     let t = 0;
-    const l = new LineLimiter(1, 120_000, 256, () => t, 2, 60_000, 3);
+    const l = new LineLimiter(1, 120_000, 256, () => t, 2, 60_000, 3, 0);
     expect(l.check("a", "g").ok).toBe(true);
     expect(l.check("b", "g").ok).toBe(true);
     expect(l.check("c", "g").ok).toBe(false); // the group's cap of 2: one left out
@@ -200,6 +201,24 @@ describe("the line limiter", () => {
     expect(l.check("d", "g")).toEqual({ ok: true, left: 1 });
     for (let i = 0; i < 100; i++) l.check(`k${i}`, `g${i}`);
     expect(l.check("e", "g")).toEqual({ ok: true, left: 0 }); // long forgotten: a fresh group
+  });
+
+  test("a looping frame cannot bury the first line of a frame that has not spoken: a reserve per group, once per frame, bounded", () => {
+    let t = 1_000;
+    const l = new LineLimiter(5, 10_000, 256, () => t);
+    // One frame loops across the whole minute: 5 lines per 10 s, 30 a minute, which is the group's cap.
+    let looped = 0;
+    for (let s = 0; s < 6; s++) { for (let i = 0; i < 50; i++) if (l.check("press:loop", "w1").ok) looped++; t += 10_000; }
+    expect(looped).toBe(30);
+    t -= 1_000;
+    // The Settings frame has said nothing yet: its first line passes at the cap, and its second does not (the reserve is one line per frame).
+    expect(l.check("press:settings", "w1").ok).toBe(true);
+    expect(l.check("press:settings", "w1").ok).toBe(false);
+    expect(l.check("press:loop", "w1").ok).toBe(false);
+    // Another window is untouched, and the reserve is bounded: 10 frames at most get a first line at the cap.
+    expect(l.check("press:s", "w2").ok).toBe(true);
+    const firsts = Array.from({ length: 30 }, (_, i) => l.check(`press:new${i}`, "w1")).filter((r) => r.ok).length;
+    expect(firsts).toBe(9); // the settings frame used 1 of the 10
   });
 
   test("it keeps a bounded number of keys", () => {
