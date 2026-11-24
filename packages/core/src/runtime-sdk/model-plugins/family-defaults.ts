@@ -6,6 +6,16 @@
 // (`@waifucave/clover-provider-catalog`), which this repo installs and cannot change without a release of it. One line
 // per family; Claude and GPT are the owner's, the rest are the lane's picks (each family's balanced tier at medium where
 // its rows take an effort), his to change. A family not listed (`o-series`, `other`) recommends nothing.
+//
+// A WEAK model is never a default (the catalog's hand-set `strength`, the class the file tools' read-before-edit rule
+// reads: `weak` is a model that must have read what it edits; the owner's ruling of 2026-11-12 sets it by hand per model).
+// A default must be `strong` or `medium` on every vendor row that serves it; `recommended()` also skips a weak row, so a
+// row the catalog reclasses later stops being recommended without an edit here. A family whose vendors serve only weak
+// models (Gemma, Llama in agent SDK 0.0.84) declares no default: its vendors recommend nothing there and the person picks.
+// The 2026-11-24 catalog audit (lane CT) moved: gemini 3.7 Flash -> 3.8 Flash (Google routes 3.7 Flash to 3.8 Flash and
+// no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
+// Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
+// published catalog yet); gemma and llama dropped (weak).
 export interface FamilyDefault {
   /** The catalog's canonical model id (`row.canonicalModelId`). */
   model: string;
@@ -16,23 +26,21 @@ export interface FamilyDefault {
 export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
-  gemini: { model: "gemini-3.7-flash", effort: "medium" },
+  gemini: { model: "gemini-3.8-flash", effort: "medium" },
   grok: { model: "grok-4.6", effort: "medium" },
   deepseek: { model: "deepseek-v4-pro", effort: "medium" },
   kimi: { model: "kimi-k3.1-pro", effort: "medium" },
   qwen: { model: "qwen3.7-plus", effort: "medium" },
-  mistral: { model: "mistral-medium-3.5", effort: "medium" },
+  mistral: { model: "mistral-large-2512", effort: "medium" },
   glm: { model: "glm-5.3", effort: "medium" },
   minimax: { model: "minimax-m3", effort: "medium" },
   command: { model: "command-a-03-2025", effort: "medium" },
   mimo: { model: "mimo-v2.6-pro", effort: "medium" },
-  llama: { model: "llama-4-scout-17b-16e-instruct", effort: "medium" },
   nova: { model: "amazon.nova-pro", effort: "medium" },
   nemotron: { model: "nemotron-3-super-120b-a12b", effort: "medium" },
   ernie: { model: "ernie-5.1", effort: "medium" },
   hunyuan: { model: "hy4-preview", effort: "medium" },
   muse: { model: "muse-spark-1.3", effort: "medium" },
-  gemma: { model: "gemma-4-31b-it", effort: "medium" },
   "gpt-oss": { model: "gpt-oss-120b", effort: "medium" },
 };
 
@@ -44,7 +52,14 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
 //     slot list; GPT: the `luna` slot; Gemini `lite`; DeepSeek `flash`; GLM and MiMo `flash`; Mistral `small`; Qwen `small`;
 //     Nova `micro`; gpt-oss `20b`);
 //   * a family with no cheaper tier (one model, or tiers that differ in speed or purpose, not size) has its default as
-//     its light model; the effort is what makes the job light there.
+//     its light model; the effort is what makes the job light there;
+//   * a family with no default (its vendors serve only weak models: Gemma, Llama) still names a light model, so a person who picks one of
+//     its models has its jobs run on it.
+// A light model may be weak: it is a deliberate choice for small jobs (titles, tidying), never a default.
+// The 2026-11-24 audit (lane CT) moved: GLM 4.7 Flash -> GLM-5.3 Flash (served by all four GLM vendors; 4.7 Flash is
+// missing on zhipu-anthropic); Qwen 3.6 27B -> Qwen 3.8 Flash (served by 7 of the 11 Qwen vendors, 3.6 27B by 5; the four
+// Coding Plan providers carry neither); MiniMax M3 -> MiniMax M3.1 Flash (MiniMax's small tier, on all six vendors);
+// Nemotron 3 Super -> Nemotron 3.5 Lightning 30B-A3B (NVIDIA's small tier).
 // The effort is the one a job that has none of its own asks for (titles; the dreamer and the cleaner keep theirs) when the
 // person set none for it; a row that doesn't list it drops it.
 // A family not listed (`o-series`, `other`) has no light model.
@@ -53,21 +68,22 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   gpt: { model: "gpt-6-luna", effort: "low" },
   gemini: { model: "gemini-3.1-flash-lite", effort: "low" },
   deepseek: { model: "deepseek-flash", effort: "low" },
-  glm: { model: "glm-4.7-flash", effort: "low" },
+  glm: { model: "glm-5.3-flash", effort: "low" },
   mimo: { model: "mimo-v2.6-flash", effort: "low" },
   mistral: { model: "mistral-small-latest", effort: "low" },
-  qwen: { model: "qwen3.6-27b", effort: "low" },
+  qwen: { model: "qwen3.8-flash", effort: "low" },
   nova: { model: "amazon.nova-micro", effort: "low" },
   "gpt-oss": { model: "gpt-oss-20b", effort: "low" },
+  minimax: { model: "minimax-m3.1-flash", effort: "low" },
+  nemotron: { model: "nemotron-3.5-lightning-30b-a3b", effort: "low" },
   // One tier, or tiers that differ in speed or purpose rather than size: the default is the light model.
   grok: { model: "grok-4.6", effort: "low" },
   kimi: { model: "kimi-k3.1-pro", effort: "low" },
-  minimax: { model: "minimax-m3", effort: "low" },
   command: { model: "command-a-03-2025", effort: "low" },
-  llama: { model: "llama-4-scout-17b-16e-instruct", effort: "low" },
-  nemotron: { model: "nemotron-3-super-120b-a12b", effort: "low" },
   ernie: { model: "ernie-5.1", effort: "low" },
   hunyuan: { model: "hy4-preview", effort: "low" },
   muse: { model: "muse-spark-1.3", effort: "low" },
+  // Its vendors serve only weak models, so no default; the light model is the family's own (a person who picks one gets its jobs on it).
   gemma: { model: "gemma-4-31b-it", effort: "low" },
+  llama: { model: "llama-3.3-70b-instruct-turbo", effort: "low" },
 };

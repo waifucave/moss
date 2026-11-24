@@ -31,9 +31,15 @@ const settingsWith = (model: string, extra: Record<string, unknown> = {}): Setti
 const LIGHT_ROLES = ["titles.model", "pins.dream", "pins.cleaner", "reviewer.model"] as const;
 
 describe("the table", () => {
-  test("every family with a default declares a light model, and no family is declared twice or unknown", () => {
+  test("every family with a default declares a light model; a light model's family has a default, or every model its vendors serve is weak (no default there)", () => {
     for (const id of Object.keys(FAMILY_DEFAULTS)) expect(FAMILY_LIGHT_MODELS[id]).toBeDefined();
-    for (const id of Object.keys(FAMILY_LIGHT_MODELS)) expect(FAMILY_DEFAULTS[id]).toBeDefined();
+    for (const id of Object.keys(FAMILY_LIGHT_MODELS)) {
+      if (FAMILY_DEFAULTS[id] !== undefined) continue;
+      // The family's own vendors' rows (an aggregator's Llama 4 Maverick is medium, but no vendor of the family serves it).
+      const vendors = catalog.families?.find((f) => f.id === id)?.vendorProviders ?? [];
+      const rows = catalog.models.filter((m) => m.modelFamily === id && vendors.includes(m.providerId) && m.status !== "deprecated" && m.status !== "blocked");
+      expect({ id, rows: rows.length > 0, allWeak: rows.every((m) => m.strength === "weak") }).toEqual({ id, rows: true, allWeak: true });
+    }
   });
 
   test("every light model is a catalog model that a vendor of its family serves, and its effort is dropped or mapped where its row lacks it", () => {
@@ -65,7 +71,7 @@ describe("the table", () => {
   });
 
   test("a family with one model has its default as its light model", () => {
-    for (const id of ["command", "ernie", "hunyuan", "muse", "gemma", "llama", "nemotron", "grok", "kimi", "minimax"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
+    for (const id of ["command", "ernie", "hunyuan", "muse", "grok", "kimi"]) expect(FAMILY_LIGHT_MODELS[id]!.model).toBe(FAMILY_DEFAULTS[id]!.model);
   });
 
   test("the family of a model: by the row's own family, so a model that is no slot still has one", () => {

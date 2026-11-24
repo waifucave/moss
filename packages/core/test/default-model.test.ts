@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadCatalog } from "@waifucave/clover-provider-catalog";
-import { defaultEffortFor, effectiveDefault, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
+import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
 import { FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
 
 const catalog = loadCatalog();
@@ -22,6 +22,26 @@ describe("the recommended default: the family's one default, as the provider ser
       expect(catalog.families!.some((f) => f.id === family)).toBe(true);
       expect(catalog.models.some((m) => m.canonicalModelId === def.model)).toBe(true);
     }
+  });
+  test("a weak model is never a default: every family default is strong or medium on each vendor row that serves it (2026-11-24)", () => {
+    for (const [family, def] of Object.entries(FAMILY_DEFAULTS)) {
+      const served = catalog.models.filter((m) => m.canonicalModelId === def.model && (catalog.families!.find((f) => f.id === family)!.vendorProviders ?? []).includes(m.providerId));
+      expect({ family, served: served.length > 0 }).toEqual({ family, served: true });
+      for (const m of served) expect({ key: m.key, weak: isWeak(m) }).toEqual({ key: m.key, weak: false });
+    }
+  });
+  test("a family whose every model is weak (Gemma, Llama) declares no default, so its vendors recommend nothing there", () => {
+    expect(FAMILY_DEFAULTS.gemma).toBeUndefined();
+    expect(FAMILY_DEFAULTS.llama).toBeUndefined();
+    expect(rec("deepinfra")).toBeUndefined(); // deepinfra is a vendor of llama only
+    expect(catalog.models.find((m) => m.key === recM("google"))?.canonicalModelId).toBe("gemini-3.8-flash"); // google serves gemini and gemma
+  });
+  test("a weak row is never recommended, whatever the table says; a row with no class is weak", () => {
+    const row = catalog.models.find((m) => m.key === recM("anthropic"))!;
+    const weakCatalog = { families: catalog.families, models: catalog.models.map((m) => (m.key === row.key ? { ...m, strength: "weak" as const } : m)) };
+    expect(recommended(weakCatalog, "anthropic")).toBeUndefined();
+    expect(isWeak({})).toBe(true);
+    expect(isWeak({ strength: "medium" })).toBe(false);
   });
   test("the effort is dropped for a row that doesn't take it", () => {
     const r = rec("deepseek");

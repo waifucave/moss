@@ -19,7 +19,8 @@
 //
 // The recommended model is the provider's family's ONE default (a model and an effort, `FAMILY_DEFAULTS`, the owner's
 // for Claude and GPT) as that provider serves it: a family whose `vendorProviders` names the provider, in catalog order,
-// and in it a row of that provider whose canonical id is the family's default, which a session can run. A provider
+// and in it a row of that provider whose canonical id is the family's default, which a session can run and which is not
+// weak (a weak model is never a default: `family-defaults.ts`). A provider
 // that is no family's vendor (an aggregator, a local server), or that doesn't serve its family's default, recommends
 // nothing, and the person picks.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
@@ -52,11 +53,17 @@ function familyOf(catalog: Pick<WinterCatalog, "families">, providerId: string):
   return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => ({ id: f.id, def: FAMILY_DEFAULTS[f.id]! }));
 }
 
+/** A weak model is never recommended (`family-defaults.ts`): the catalog's hand-set class, and a row that states none
+ *  is weak (the agent SDK's own reading, `WinterModelDescriptor.strength`). */
+export function isWeak(row: { strength?: string }): boolean {
+  return row.strength !== "strong" && row.strength !== "medium";
+}
+
 /** A provider's recommended default from its family's (see the header), or none. */
 export function recommended(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string): Recommendation | undefined {
   for (const { def } of familyOf(catalog, providerId)) {
     const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === def.model
-      && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m));
+      && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m) && !isWeak(m));
     if (row === undefined) continue;
     const efforts = effortVocabularyOf(row) ?? [];
     return { model: row.key, ...(def.effort !== undefined && efforts.includes(def.effort) ? { effort: def.effort } : {}) };
