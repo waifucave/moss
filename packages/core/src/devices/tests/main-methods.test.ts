@@ -37,12 +37,17 @@ async function waitFor(cond: () => boolean, ms = 8_000): Promise<void> {
   }
 }
 
+// The lease's steps wait in real time (a nudged main's 2 s, the others' 3 s takeover delay, a 2 s retry, a 15 s read): the hand-over and takeover
+// steps below chain several of them, so on a loaded runner the 8 s waits ran out with every step still on its way. The steps keep their order and
+// their reasons, at a tenth of the time.
+const STEP_TIMINGS = { nudgeWaitMs: 200, takeoverDelayMs: 300, retryMs: 200, readEveryMs: 1_000, reachTimeoutMs: 1_000 };
+
 async function daemon(net: MemoryNetwork, hs: { url: string }, name: string) {
   const store = new MemorySecretStore();
   const links = await startDeviceLinks({
     home: mkdtempSync(join(tmpdir(), "moss-h-main-")), store, clock, self: { name }, wire: (k) => net.endpoint(k.publicKey),
     handshake: new HandshakeClient({ baseUrl: hs.url, clock }),
-    mainComputer: { watchSleep: false, monotonic: () => performance.now(), log: (l: string) => void notes.push(`${Date.now() % 100_000} ${name} ${l}`) },
+    mainComputer: { watchSleep: false, timings: STEP_TIMINGS, monotonic: () => performance.now(), log: (l: string) => void notes.push(`${Date.now() % 100_000} ${name} ${l}`) },
   });
   stops.push(() => links.close());
   const broker = new FakeApprovalBroker({ clock: new FakeClock() });
