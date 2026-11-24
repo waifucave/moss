@@ -10,6 +10,8 @@ export class WireError extends Error {}
 export const MAX_MESSAGE = 1024 * 1024;
 /** How deep containers nest (the spec's own limits are 32 arrays and 32 structs). */
 export const MAX_DEPTH = 64;
+/** How many values one message may decode to (an `av` of a megabyte is hundreds of thousands of objects). */
+export const MAX_VALUES = 1_000_000;
 
 export class Variant {
   constructor(readonly sig: string, readonly value: DValue) {}
@@ -87,7 +89,8 @@ export const isObjectPath = (p: string): boolean => OBJECT_PATH.test(p);
 class Reader {
   off = 0;
   depth = 0;
-  constructor(readonly buf: Buffer, readonly le: boolean, readonly end: number, readonly base = 0) {}
+  values = 0;
+  constructor(readonly buf: Buffer, readonly le: boolean, readonly end: number, readonly base = 0, readonly maxValues = MAX_VALUES) {}
   need(n: number): void { if (this.off + n > this.end) throw new WireError("message ends early"); }
   align(n: number): void {
     const pad = (n - ((this.off - this.base) % n)) % n;
@@ -106,6 +109,7 @@ class Reader {
     return s;
   }
   value(t: string): DValue {
+    if (++this.values > this.maxValues) throw new WireError("too many values in one message");
     const c = t[0]!;
     const le = this.le;
     switch (c) {
@@ -281,10 +285,10 @@ export function messageLength(buf: Buffer, max = MAX_MESSAGE): number | null {
   return total;
 }
 
-/** Decodes one whole message (`messageLength` long); throws on anything malformed. */
-export function decodeMessage(buf: Buffer): Message {
+/** Decodes one whole message (`messageLength` long); throws on anything malformed or past `maxValues` values. */
+export function decodeMessage(buf: Buffer, maxValues = MAX_VALUES): Message {
   const le = buf[0] === 0x6c;
-  const r = new Reader(buf, le, buf.length);
+  const r = new Reader(buf, le, buf.length, 0, maxValues);
   r.off = 1;
   const type = r.u8();
   const flags = r.u8();
@@ -319,18 +323,20 @@ export function decodeMessage(buf: Buffer): Message {
   }
   if (type === MessageType.Call && (m.path === undefined || m.member === undefined)) throw new WireError("a call needs a path and a member");
   if ((type === MessageType.Return || type === MessageType.Error) && m.replySerial === undefined) throw new WireError("a reply needs its serial");
-  const body = new Reader(buf, le, buf.length, r.off);
+  const body = new Reader(buf, le, buf.length, r.off, maxValues);
+  body.values = r.values;
   body.off = r.off;
   m.body = splitSignature(m.signature).map((t) => body.value(t));
   if (body.off !== buf.length) throw new WireError("body longer than its signature");
   return m;
 }
 
-/** A buffer of incoming bytes that yields whole messages; throws on a malformed one or past `maxBuffered`. */
+/** A buffer of incoming bytes that yields whole messages; throws on a malformed one, one past `maxMessage` or
+ *  `maxValues`, or input past `maxBuffered`. */
 export class MessageReader {
   #chunks: Buffer[] = [];
   #size = 0;
-  constructor(readonly maxBuffered = 4 * MAX_MESSAGE) {}
+  constructor(readonly maxBuffered = 4 * MAX_MESSAGE, readonly maxMessage = MAX_MESSAGE, readonly maxValues = MAX_VALUES) {}
   push(b: Uint8Array): void {
     this.#size += b.length;
     if (this.#size > this.maxBuffered) throw new WireError("too much buffered input");
@@ -352,8 +358,21 @@ export class MessageReader {
   }
   next(): Message | null {
     const head = this.peek();
-    const n = messageLength(head);
+    const n = messageLength(head, this.maxMessage);
     if (n === null || head.length < n) return null;
-    return decodeMessage(Buffer.from(this.take(n)));
+    return decodeMessage(Buffer.from(this.take(n)), this.maxValues);
+  }
+  /** How many whole messages wait in the buffer, read from their headers alone (nothing is decoded); throws on a
+   *  header that is bad or past `maxMessage`. */
+  whole(): number {
+    const b = this.peek();
+    let at = 0;
+    let n = 0;
+    for (;;) {
+      const len = messageLength(b.subarray(at), this.maxMessage);
+      if (len === null || b.length - at < len) return n;
+      n++;
+      at += len;
+    }
   }
 }

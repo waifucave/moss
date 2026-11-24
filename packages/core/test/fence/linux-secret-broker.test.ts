@@ -4,12 +4,13 @@
 import { describe, expect, test } from "bun:test";
 import { dataFrames, encodeFrame, FrameReader, FrameType } from "../../src/fence/bus-frames";
 import { decodeMessage, encodeMessage, type DValue, type Message, MessageReader, MessageType, splitSignature, Variant, WireError } from "../../src/fence/dbus-wire";
-import { BROKER_LIMITS, type CredentialGrant, grantMatches, isMossItem, type KeyringItem, REFUSAL, type SecretBackend, serveSandboxBus, unixBusPath } from "../../src/fence/linux-secret-broker";
+import { BROKER_LIMITS, type CredentialGrant, grantForQuery, grantMatches, isMossItem, type KeyringItem, mossItemNames, REFUSAL, type SecretBackend, serveSandboxBus, unixBusPath } from "../../src/fence/linux-secret-broker";
+import { OTHER_INSTALL_KEYCHAIN_SERVICES } from "../../src/other-installs";
 
 const MOSS_NAMES = ["com.waifucave.", "moss.test.override"];
 
 /** A keyring of three items: a git login, gh's token and MOSS's own secrets-file key. */
-function fakeKeyring(): SecretBackend & { reads: string[]; searches: Record<string, string>[] } {
+function fakeKeyring(searchDelayMs = 0): SecretBackend & { reads: string[]; searches: Record<string, string>[] } {
   const items: Record<string, KeyringItem & { value: string }> = {
     "/real/1": { ref: "/real/1", label: "Git: https://github.com/", attributes: { "xdg:schema": "org.git.Password", server: "github.com", protocol: "https", user: "octo" }, locked: false, value: "git-token" },
     "/real/2": { ref: "/real/2", label: "gh:github.com", attributes: { service: "gh:github.com", username: "" }, locked: false, value: "gh-token" },
@@ -20,7 +21,7 @@ function fakeKeyring(): SecretBackend & { reads: string[]; searches: Record<stri
   const searches: Record<string, string>[] = [];
   return {
     reads, searches,
-    async search(a) { searches.push(a); return Object.values(items).filter((i) => Object.entries(a).every(([k, v]) => i.attributes[k] === v)).map((i) => i.ref); },
+    async search(a) { searches.push(a); if (searchDelayMs) await Bun.sleep(searchDelayMs); return Object.values(items).filter((i) => Object.entries(a).every(([k, v]) => i.attributes[k] === v)).map((i) => i.ref); },
     async item(ref) { const i = items[ref]; return i ? { ref, label: i.label, attributes: i.attributes, locked: i.locked } : null; },
     async secret(ref) { reads.push(ref); const i = items[ref]; return i ? { value: new TextEncoder().encode(i.value), contentType: "text/plain" } : null; },
     close() {},
@@ -44,12 +45,12 @@ function channel() {
   return { input, push(b: Uint8Array) { q.push(b); wake?.(); }, end() { closed = true; wake?.(); } };
 }
 
-function broker(grants: CredentialGrant[], refused: { label: string }[] = []) {
+function broker(grants: CredentialGrant[], refused: { attributes: Record<string, string> }[] = [], searchDelayMs = 0) {
   const ch = channel();
   const frames = new FrameReader();
   const byConn = new Map<number, Uint8Array[]>();
   const closedConns = new Set<number>();
-  const keyring = fakeKeyring();
+  const keyring = fakeKeyring(searchDelayMs);
   const server = serveSandboxBus({
     input: ch.input,
     write: (b) => { for (const f of frames.push(b)) { if (f.type === FrameType.Close) closedConns.add(f.conn); else (byConn.get(f.conn) ?? byConn.set(f.conn, []).get(f.conn)!).push(f.data); } },
@@ -99,7 +100,8 @@ function broker(grants: CredentialGrant[], refused: { label: string }[] = []) {
 
 const SVC = "org.freedesktop.Secret.Service";
 const SECRETS = "org.freedesktop.secrets";
-const GIT: CredentialGrant = { label: "GitHub (git)", attributes: { "xdg:schema": "org.git.Password", server: "github.com" } };
+/** Pinned to the github.com item's exact attributes, as the card's Allow makes it (`grantForQuery`). */
+const GIT: CredentialGrant = { label: "GitHub (git)", attributes: { "xdg:schema": "org.git.Password", server: "github.com", protocol: "https", user: "octo" } };
 const attrs = (o: Record<string, string>): DValue => Object.entries(o).map(([k, v]) => [k, v]);
 const text = (m: Message) => String(m.body[0] ?? "");
 
@@ -151,14 +153,37 @@ describe("the item rules", () => {
     expect(isMossItem({ label: "x", attributes: { a: "moss.test.override.items" } }, MOSS_NAMES)).toBe(true);
     expect(isMossItem({ label: "x", attributes: { service: "gh:github.com" } }, MOSS_NAMES)).toBe(false);
     expect(isMossItem({ label: "x", attributes: { service: "moss.test.overridex" } }, MOSS_NAMES)).toBe(false);
+    // The old products' keyring services are MOSS's too (named in one place: other-installs.ts).
+    for (const { service } of OTHER_INSTALL_KEYCHAIN_SERVICES) expect(isMossItem({ label: "x", attributes: { service } })).toBe(true);
+    expect(mossItemNames().length).toBeGreaterThan(OTHER_INSTALL_KEYCHAIN_SERVICES.length);
   });
 
-  test("a grant needs an attribute besides the schema, and matches only every attribute it names", () => {
+  test("a grant pins one item: exactly its attributes, never a subset", () => {
     expect(grantMatches({ label: "", attributes: {} }, { a: "1" })).toBe(false);
     expect(grantMatches({ label: "", attributes: { "xdg:schema": "org.git.Password" } }, { "xdg:schema": "org.git.Password" })).toBe(false);
-    expect(grantMatches(GIT, { "xdg:schema": "org.git.Password", server: "github.com", user: "o" })).toBe(true);
-    expect(grantMatches(GIT, { "xdg:schema": "org.git.Password", server: "gitlab.com" })).toBe(false);
+    expect(grantMatches(GIT, { ...GIT.attributes })).toBe(true);
+    // Another user's login on the same host carries the grant's attributes and more: not granted.
+    expect(grantMatches({ label: "", attributes: { "xdg:schema": "org.git.Password", server: "github.com" } }, { ...GIT.attributes })).toBe(false);
+    expect(grantMatches(GIT, { ...GIT.attributes, user: "someone" })).toBe(false);
     expect(grantMatches({ label: "", attributes: { toString: "x" } }, {})).toBe(false);
+  });
+
+  test("`__proto__` is an attribute like any other: never dropped, so MOSS's deny still sees its value", async () => {
+    const b = broker([GIT]);
+    const c = b.client();
+    await c.hello();
+    await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [[["__proto__", "x"], ["server", "github.com"]]]);
+    // The request had a key the grant doesn't: no grant fits, nothing is searched, and the card hears the whole ask.
+    expect(b.keyring.searches).toEqual([]);
+    b.end();
+  });
+
+  test("the card's Allow pins the one item a request names, never MOSS's, never several", async () => {
+    const k = fakeKeyring();
+    expect((await grantForQuery(k, { server: "github.com" }, "GitHub", MOSS_NAMES))?.attributes).toEqual(GIT.attributes);
+    expect(await grantForQuery(k, { "xdg:schema": "org.git.Password" }, "two", MOSS_NAMES)).toBeNull();
+    expect(await grantForQuery(k, { account: "file" }, "moss", MOSS_NAMES)).toBeNull();
+    expect(await grantForQuery(k, { server: "nowhere" }, "none", MOSS_NAMES)).toBeNull();
   });
 
   test("the session bus address: a path, an abstract name, none", () => {
@@ -171,7 +196,7 @@ describe("the item rules", () => {
 
 describe("the sandbox's bus", () => {
   test("the granted item is found and read; the others are not even listed", async () => {
-    const refused: { label: string }[] = [];
+    const refused: { attributes: Record<string, string> }[] = [];
     const b = broker([GIT], refused);
     const c = b.client();
     expect((await c.hello()).type).toBe(MessageType.Return);
@@ -179,14 +204,22 @@ describe("the sandbox's bus", () => {
     const session = s.body[1] as string;
     const all = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({})]);
     expect(all.body[0]).toHaveLength(1);
+    // The real keyring was searched with the grant's own attributes only.
+    expect(b.keyring.searches).toEqual([GIT.attributes]);
     const found = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: "github.com" })]);
     const [path] = found.body[0] as string[];
     expect(path).toMatch(/^\/org\/freedesktop\/secrets\/collection\/login\/\d+$/);
     const got = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "GetSecrets", "aoo", [[path!], session]);
     const value = ((got.body[0] as DValue[][])[0]![1] as DValue[])[2] as number[];
     expect(Buffer.from(value).toString()).toBe("git-token");
-    // A non-granted item asked for raises the card's callback; MOSS's own never does.
-    expect(refused.map((r) => r.label)).toEqual(["gh:github.com", "Git: https://gitlab.com/"]);
+    // A request no grant fits reaches the card as the request itself, and the keyring is never searched for it.
+    const before = b.keyring.searches.length;
+    for (let k = 0; k < 3; k++) await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: "gitlab.com" })]);
+    expect(b.keyring.searches.length).toBe(before);
+    expect(refused).toEqual([{ attributes: { server: "gitlab.com" } }]);
+    // Distinct requests: at most a few a run.
+    for (let k = 0; k < 10; k++) await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: `h${k}.example` })]);
+    expect(refused).toHaveLength(BROKER_LIMITS.refusalsPerRun);
     b.end();
   });
 
@@ -239,6 +272,55 @@ describe("the sandbox's bus", () => {
     // Unlock answers from the broker alone: what it serves is unlocked, nothing else is named.
     const u = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "Unlock", "ao", [["/org/freedesktop/secrets/collection/login", "/real/1"]]);
     expect(u.body).toEqual([["/org/freedesktop/secrets/collection/login"], "/"]);
+    b.end();
+  });
+
+  test("a hidden item changes neither the answer nor the keyring work of a refused search", async () => {
+    const b = broker([GIT]);
+    const c = b.client();
+    await c.hello();
+    // gitlab.com is in the keyring, nowhere.example is not: both searches look the same and touch the keyring the same.
+    const a1 = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: "gitlab.com" })]);
+    const a2 = await c.call(SECRETS, "/org/freedesktop/secrets", SVC, "SearchItems", "a{ss}", [attrs({ server: "nowhere.example" })]);
+    expect(a1.body).toEqual(a2.body);
+    expect(b.keyring.searches).toEqual([]);
+    b.end();
+  });
+
+  test("a flood of VALID messages behind a slow search: nothing more is decoded, and past the bound the connection closes", async () => {
+    const b = broker([GIT], [], 400);
+    const c = b.client();
+    await c.hello();
+    const ping = (serial: number) => encodeMessage({ type: MessageType.Call, flags: 0, serial, dest: SECRETS, path: "/org/freedesktop/secrets", iface: "org.freedesktop.DBus.Peer", member: "Ping", signature: "", body: [] });
+    c.send(encodeMessage({ type: MessageType.Call, flags: 0, serial: 100, dest: SECRETS, path: "/org/freedesktop/secrets", iface: SVC, member: "SearchItems", signature: "a{ss}", body: [attrs({})] }));
+    await Bun.sleep(20);
+    for (let k = 0; k < BROKER_LIMITS.waiting + 8; k++) c.send(ping(200 + k));
+    await Bun.sleep(50);
+    expect(c.closed()).toBe(true);
+    // The search began; nothing behind it was handled.
+    expect(b.keyring.searches).toHaveLength(1);
+    b.end();
+  });
+
+  test("valid but oversized input closes the connection: past a message's size, its values, or the buffer", async () => {
+    const b = broker([GIT], [], 400);
+    // One message past the sandbox's message size.
+    const big = b.client();
+    await big.hello();
+    big.send(encodeMessage({ type: MessageType.Call, flags: 0, serial: 9, dest: SECRETS, path: "/org/freedesktop/secrets", iface: SVC, member: "SearchItems", signature: "a{ss}", body: [[["k", "v".repeat(BROKER_LIMITS.message)]]] }));
+    // One small message with too many values.
+    const many = b.client();
+    await many.hello();
+    many.send(encodeMessage({ type: MessageType.Call, flags: 0, serial: 9, dest: SECRETS, path: "/org/freedesktop/secrets", member: "X", signature: "as", body: [Array.from({ length: BROKER_LIMITS.values + 10 }, () => "")] }));
+    // Valid messages, each under the size, behind a slow search, past the buffer.
+    const buf = b.client();
+    await buf.hello();
+    buf.send(encodeMessage({ type: MessageType.Call, flags: 0, serial: 10, dest: SECRETS, path: "/org/freedesktop/secrets", iface: SVC, member: "SearchItems", signature: "a{ss}", body: [attrs({})] }));
+    await Bun.sleep(20);
+    const chunk = encodeMessage({ type: MessageType.Call, flags: 0, serial: 11, dest: SECRETS, path: "/org/freedesktop/secrets", member: "X", signature: "s", body: ["x".repeat(BROKER_LIMITS.message - 200)] });
+    for (let k = 0; k * chunk.length <= BROKER_LIMITS.buffered; k++) buf.send(chunk);
+    await Bun.sleep(50);
+    expect([big.closed(), many.closed(), buf.closed()]).toEqual([true, true, true]);
     b.end();
   });
 

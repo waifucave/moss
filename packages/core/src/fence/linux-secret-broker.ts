@@ -7,15 +7,18 @@
 //   * everything else refused: another destination is `ServiceUnknown` (systemd1, portals, Flatpak, ...), another
 //     method `AccessDenied`; no name is owned, no descriptor is passed, nothing is ever forwarded to the real bus.
 // An item is served only when it isn't MOSS's own (`isMossItem`, checked first: no grant opens one) and a grant of the
-// run matches it (`grantMatches`). The command sees paths this module made for its connection, one per item that passed;
+// run pins it exactly (`grantMatches`: the grant's attributes ARE the item's). The real keyring is searched only with a
+// grant's own attributes, so what a command learns never depends on items it wasn't granted. The command sees paths this module made for its connection, one per item that passed;
 // it never sees a real path, a locked item or an item it wasn't granted.
 import { createConnection, type Socket } from "node:net";
 import { randomBytes } from "node:crypto";
 import { keychainService } from "../profile";
+import { OTHER_INSTALL_KEYCHAIN_SERVICES } from "../other-installs";
 import { dataFrames, encodeFrame, FrameReader, FrameType } from "./bus-frames";
 import { type DValue, encodeMessage, Flag, isObjectPath, type Message, MessageReader, MessageType, Variant, WireError } from "./dbus-wire";
 
-/** One saved login a run may use: a label for the person, and the attributes an item must carry (each, equal). */
+/** One saved login a run may use: a label for the person, and the EXACT attributes of that one item (the card's
+ *  Allow pins them with `grantForQuery`; a subset would open every login on a host). */
 export interface CredentialGrant {
   readonly label: string;
   readonly attributes: Readonly<Record<string, string>>;
@@ -24,8 +27,9 @@ export interface CredentialGrant {
 /** What a run may reach in the user's keyring, and who hears of an item it was refused (for the card). */
 export interface CredentialPolicy {
   readonly grants: readonly CredentialGrant[];
-  /** An item the command asked for that no grant matched: its label and attributes, never its value. */
-  readonly refused?: (item: { label: string; attributes: Record<string, string> }) => void;
+  /** A search no grant could answer: the attributes the command asked for (never an item: the broker never looks at
+   *  items it has no grant for). Each distinct request is told once a run, at most `BROKER_LIMITS.refusalsPerRun`. */
+  readonly refused?: (ask: { attributes: Record<string, string> }) => void;
 }
 
 /** An item of the user's keyring as the engine reads it. `ref` is the real object path, never shown to the command. */
@@ -49,7 +53,7 @@ export interface SecretBackend {
  *  old product's: all under `com.waifucave.`), and this engine's
  *  own service with its override. */
 export function mossItemNames(): string[] {
-  const names = ["com.waifucave."];
+  const names = ["com.waifucave.", ...OTHER_INSTALL_KEYCHAIN_SERVICES.map((s) => s.service)];
   try { names.push(keychainService()); } catch { /* the base names cover it */ }
   const o = process.env.MOSS_KEYCHAIN_SERVICE;
   if (o) names.push(o);
@@ -65,16 +69,55 @@ export function isMossItem(item: { label: string; attributes: Record<string, str
   return hit(item.label) || Object.values(item.attributes).some(hit);
 }
 
-/** Whether `grant` matches an item's attributes: it names at least one attribute besides `xdg:schema`, and the item
- *  carries every one it names, equal. */
+const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+
+/** Whether `grant` pins an item: it names at least one attribute besides `xdg:schema`, and the item's attributes are
+ *  exactly the grant's, no more and no fewer. */
 export function grantMatches(grant: CredentialGrant, attributes: Record<string, string>): boolean {
   const keys = Object.keys(grant.attributes);
   if (!keys.some((k) => k !== "xdg:schema")) return false;
-  return keys.every((k) => Object.prototype.hasOwnProperty.call(attributes, k) && attributes[k] === grant.attributes[k]);
+  if (Object.keys(attributes).length !== keys.length) return false;
+  return keys.every((k) => own(attributes, k) && attributes[k] === grant.attributes[k]);
+}
+
+/** Whether a search for `ask` could find the item a grant pins: every attribute asked for is the grant's, equal. */
+function askFits(ask: Record<string, string>, grant: CredentialGrant): boolean {
+  return Object.keys(ask).every((k) => own(grant.attributes, k) && grant.attributes[k] === ask[k]);
+}
+
+/** What the card's Allow turns into (outside every sandbox, by the engine): the ONE item a request names, pinned by
+ *  all its attributes. Null when the request names no item, more than one, a locked one or MOSS's own. */
+export async function grantForQuery(backend: SecretBackend, ask: Record<string, string>, label: string, names: readonly string[] = mossItemNames()): Promise<CredentialGrant | null> {
+  const refs = await backend.search(ask);
+  if (refs.length !== 1) return null;
+  const item = await backend.item(refs[0]!);
+  if (item === null || item.locked || isMossItem(item, names)) return null;
+  const grant = { label, attributes: item.attributes };
+  return grantMatches(grant, item.attributes) ? grant : null;
 }
 
 // ---- bounds ----
-export const BROKER_LIMITS = { keyringCalls: 4096, connections: 16, buffered: 4 * 1024 * 1024, attributes: 32, attributeLength: 1024, items: 256, searchResults: 256, saslLine: 1024, saslLines: 16, refusalsPerCall: 4 } as const;
+export const BROKER_LIMITS = {
+  /** Keyring work a run may cause, in calls; a search costs a fixed amount set by the grants alone (`searchCost`). */
+  keyringCalls: 4096,
+  connections: 16,
+  /** Undecoded input a connection may hold (16 connections: 4 MiB a run). */
+  buffered: 256 * 1024,
+  /** One message from the sandbox; nothing the broker serves comes near it. */
+  message: 64 * 1024,
+  /** Values one message from the sandbox may decode to. */
+  values: 4096,
+  /** Whole messages waiting while one is handled; past it the connection closes. */
+  waiting: 32,
+  attributes: 32, attributeLength: 1024, items: 256,
+  /** Grants a search is tried against, and items each grant's search may return. */
+  grantsPerSearch: 8, resultsPerGrant: 8,
+  saslLine: 1024, saslLines: 16,
+  /** Distinct refused requests told to the card, a run. */
+  refusalsPerRun: 4,
+  /** Bytes written to the relay and not yet taken by it; past it the run's broker closes. */
+  unread: 4 * 1024 * 1024,
+} as const;
 
 const DBUS = "org.freedesktop.DBus";
 const SECRETS = "org.freedesktop.secrets";
@@ -108,11 +151,13 @@ class Refusal extends Error {
 const denied = (why: string) => new Refusal(E_DENIED, `${REFUSAL} refuses ${why}`);
 
 type Attrs = Record<string, string>;
+/** An attribute map with no prototype: `__proto__` is a key like any other. */
+const attrs = (): Attrs => Object.create(null) as Attrs;
 
 function attributesArg(v: DValue | undefined): Attrs {
   if (!Array.isArray(v)) throw new Refusal(E_ARGS, "attributes expected");
   if (v.length > BROKER_LIMITS.attributes) throw new Refusal(E_ARGS, "too many attributes");
-  const out: Attrs = {};
+  const out = attrs();
   for (const e of v) {
     const [k, val] = e as [DValue, DValue];
     if (typeof k !== "string" || typeof val !== "string") throw new Refusal(E_ARGS, "attributes are strings");
@@ -130,8 +175,9 @@ class SandboxConnection {
   #saslAwaitData = false;
   #hello = false;
   #serial = 1;
-  readonly #in = new MessageReader(BROKER_LIMITS.buffered);
-  #queue: Promise<void> = Promise.resolve();
+  readonly #in = new MessageReader(BROKER_LIMITS.buffered, BROKER_LIMITS.message, BROKER_LIMITS.values);
+  /** A message is being handled: nothing more is decoded until it settles. */
+  #busy = false;
   #closed = false;
   /** Paths handed out on this connection: ours → the real item, and back. */
   readonly #items = new Map<string, string>();
@@ -199,14 +245,22 @@ class SandboxConnection {
     }
   }
 
+  /** One message at a time: while one is handled nothing else is decoded, the input waits undecoded in its bounded
+   *  buffer, and past `waiting` whole messages the connection closes. */
   #drain(): void {
-    for (;;) {
-      const m = this.#in.next();
-      if (m === null) return;
-      if (m.unixFds !== undefined) throw new WireError("descriptors are not passed");
-      // One message at a time, in order: a flood waits in the bounded input buffer, past which the connection closes.
-      this.#queue = this.#queue.then(() => this.#handle(m)).catch(() => this.close());
+    if (this.#busy) {
+      if (this.#in.whole() > BROKER_LIMITS.waiting) throw new WireError("too many messages waiting");
+      return;
     }
+    const m = this.#in.next();
+    if (m === null) return;
+    if (m.unixFds !== undefined) throw new WireError("descriptors are not passed");
+    this.#busy = true;
+    void this.#handle(m).then(() => {
+      this.#busy = false;
+      if (this.#closed) return;
+      try { this.#drain(); } catch { this.close(); }
+    }, () => this.close());
   }
 
   #send(m: Omit<Message, "serial">): void {
@@ -355,6 +409,7 @@ class SandboxConnection {
   async #judge(path: unknown): Promise<KeyringItem> {
     const ref = typeof path === "string" ? this.#items.get(path) : undefined;
     if (ref === undefined) throw denied(`${String(path)}: not an item this run was allowed`);
+    this.ctx.spend(2);
     const item = await this.ctx.backend().item(ref);
     if (item === null) throw new Refusal(E_NO_OBJECT, `${REFUSAL}: the item is gone`);
     const verdict = this.ctx.verdict(item);
@@ -363,20 +418,21 @@ class SandboxConnection {
     return item;
   }
 
-  async #search(attributes: Attrs): Promise<string[]> {
-    const refs = (await this.ctx.backend().search(attributes)).slice(0, BROKER_LIMITS.searchResults);
+  /** A search answered from the grants alone: the real keyring is searched only with the attributes of a grant the
+   *  request fits, so neither the cost nor the time of a refused search depends on what else the keyring holds. */
+  async #search(ask: Attrs): Promise<string[]> {
+    const fits = this.ctx.grants.filter((g) => askFits(ask, g)).slice(0, BROKER_LIMITS.grantsPerSearch);
+    this.ctx.spend(1 + fits.length * (1 + BROKER_LIMITS.resultsPerGrant));
+    if (fits.length === 0) { this.ctx.refused(ask); return []; }
     const out: string[] = [];
-    let told = 0;
-    for (const ref of refs) {
-      const item = await this.ctx.backend().item(ref);
-      if (item === null || item.locked) continue;
-      const v = this.ctx.verdict(item);
-      if (v === "moss") continue;
-      if (v === "refuse") {
-        if (told++ < BROKER_LIMITS.refusalsPerCall) this.ctx.refused(item);
-        continue;
+    for (const g of fits) {
+      const refs = (await this.ctx.backend().search({ ...g.attributes })).slice(0, BROKER_LIMITS.resultsPerGrant);
+      for (const ref of refs) {
+        const item = await this.ctx.backend().item(ref);
+        if (item === null || item.locked || this.ctx.verdict(item) !== "allow") continue;
+        const p = this.#handOut(ref);
+        if (!out.includes(p)) out.push(p);
       }
-      out.push(this.#handOut(ref));
     }
     return out;
   }
@@ -417,9 +473,12 @@ class SandboxConnection {
 
 interface BrokerContext {
   guid: string;
+  grants: readonly CredentialGrant[];
   backend(): SecretBackend;
+  /** Takes `n` from the run's keyring budget; throws once it is spent. */
+  spend(n: number): void;
   verdict(item: KeyringItem): "allow" | "moss" | "refuse";
-  refused(item: KeyringItem): void;
+  refused(ask: Attrs): void;
 }
 
 export interface SandboxBusOptions {
@@ -434,30 +493,32 @@ export interface SandboxBusOptions {
   readonly mossNames?: readonly string[];
 }
 
-/** The keyring behind a run's broker, with a bound on how many real-keyring calls the whole run may cause: a flood of
- *  searches can't keep the user's keyring busy past it. */
-function budgeted(b: SecretBackend): SecretBackend {
-  let left: number = BROKER_LIMITS.keyringCalls;
-  const spend = () => { if (left-- <= 0) throw new Error("the run's keyring budget is spent"); };
-  return {
-    search: async (a) => { spend(); return b.search(a); },
-    item: async (r) => { spend(); return b.item(r); },
-    secret: async (r) => { spend(); return b.secret(r); },
-    close: () => b.close(),
-  };
-}
-
 /** Serves one run's sandbox bus until its input ends or `close()`; `done` settles then. */
 export function serveSandboxBus(o: SandboxBusOptions): { done: Promise<void>; close(): void } {
   const names = o.mossNames ?? mossItemNames();
   let backend: SecretBackend | null = null;
   const conns = new Map<number, SandboxConnection>();
   let ended = false;
+  // The run's keyring budget: every search and item check spends a fixed amount, so a flood of requests can't keep the
+  // user's keyring busy past it (and what a request costs never depends on items the run wasn't granted).
+  let left: number = BROKER_LIMITS.keyringCalls;
+  const told = new Set<string>();
+  const grants = o.policy.grants.filter((g) => Object.keys(g.attributes).some((k) => k !== "xdg:schema"));
   const ctx: BrokerContext = {
     guid: randomBytes(16).toString("hex"),
-    backend: () => (backend ??= budgeted(o.backend())),
-    verdict: (item) => (isMossItem(item, names) ? "moss" : o.policy.grants.some((g) => grantMatches(g, item.attributes)) ? "allow" : "refuse"),
-    refused: (item) => { try { o.policy.refused?.({ label: item.label, attributes: { ...item.attributes } }); } catch { /* the card is best effort */ } },
+    grants,
+    backend: () => (backend ??= o.backend()),
+    spend: (n) => { left -= n; if (left < 0) throw new Error("the run's keyring budget is spent"); },
+    verdict: (item) => (isMossItem(item, names) ? "moss" : grants.some((g) => grantMatches(g, item.attributes)) ? "allow" : "refuse"),
+    refused: (ask) => {
+      // Each distinct request once a run, and only a few: a bot can't flood the person with cards.
+      const key = JSON.stringify(Object.keys(ask).sort().map((k) => [k, ask[k]]));
+      if (told.has(key) || told.size >= BROKER_LIMITS.refusalsPerRun) return;
+      told.add(key);
+      const copy: Record<string, string> = {};
+      for (const k of Object.keys(ask)) Object.defineProperty(copy, k, { value: ask[k], enumerable: true, writable: true, configurable: true });
+      try { o.policy.refused?.({ attributes: copy }); } catch { /* the card is best effort */ }
+    },
   };
   const write = (b: Uint8Array) => { if (!ended) { try { o.write(b); } catch { /* the relay is gone */ } } };
   const close = () => {
@@ -602,7 +663,7 @@ export function sessionBusSecrets(address: string | undefined = process.env.DBUS
       try {
         const m = await bus.call(SECRETS, ref, I_PROPS, "GetAll", "s", [I_ITEM]);
         const props = new Map((m.body[0] as [string, Variant][]).map(([k, v]) => [k, v.value]));
-        const attributes: Record<string, string> = {};
+        const attributes = attrs();
         for (const [k, v] of (props.get("Attributes") as [string, string][] | undefined) ?? []) attributes[k] = v;
         return { ref, label: String(props.get("Label") ?? ""), attributes, locked: props.get("Locked") !== false };
       } catch { return null; }

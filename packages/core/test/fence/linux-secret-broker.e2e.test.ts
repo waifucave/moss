@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { MossFence } from "../../src/fence/fence";
 import { fencedSpawner } from "../../src/fence/fenced-process";
 import { encodeMessage, MessageReader, MessageType } from "../../src/fence/dbus-wire";
-import { type CredentialGrant, REFUSAL, sessionBusSecrets, unixBusPath } from "../../src/fence/linux-secret-broker";
+import { type CredentialGrant, grantForQuery, REFUSAL, sessionBusSecrets, unixBusPath } from "../../src/fence/linux-secret-broker";
 import type { FencedRunResult } from "../../src/fence/spawn";
 
 const which = (bin: string): string | null => {
@@ -37,10 +37,9 @@ const GIT_TOKEN = "dummy-git-token-123";
 const GITLAB_TOKEN = "dummy-gitlab-token-456";
 const GH_TOKEN_VALUE = "dummy-gh-token-789";
 const MOSS_KEY = "dummy-moss-key-000";
-const GRANTS: CredentialGrant[] = [
-  { label: "GitHub (git)", attributes: { "xdg:schema": "org.git.Password", server: "github.com" } },
-  { label: "GitHub CLI", attributes: { service: "gh:github.com" } },
-];
+/** The run's grants, each pinned to one item's exact attributes by `grantForQuery` (what the card's Allow does), in
+ *  `beforeAll`: git's github.com login and gh's two items. */
+let GRANTS: CredentialGrant[] = [];
 
 /** A stub on the private bus that owns systemd's and the portal's names and answers every call "stub-ok": the
  *  outside control that each refused name is really there. */
@@ -92,10 +91,11 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
   let home = "";
   let stopStub = () => {};
   let mossBunAttrs: Record<string, string> = {};
+  let mossKeyAttrs: Record<string, string> = {};
   const outsideEnv = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS!, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? "" });
   const inEnv = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, GH_CONFIG_DIR: join(home, "gh"), GH_NO_UPDATE_NOTIFIER: "1", GIT_TERMINAL_PROMPT: "0" });
   let fence: MossFence;
-  const run = (command: string, grants: CredentialGrant[] | null, refused?: (i: { label: string }) => void): Promise<FencedRunResult> =>
+  const run = (command: string, grants: CredentialGrant[] | null, refused?: (i: { attributes: Record<string, string> }) => void): Promise<FencedRunResult> =>
     fencedSpawner({ fence }).run({ command, cwd: join(home, "project"), env: inEnv(), timeoutMs: 60_000, who: { caller: { kind: "session", sessionId: "c1", sessionKind: "coding" } },
       ...(grants === null ? {} : { credentials: { grants, ...(refused ? { refused } : {}) } }) });
   const outOf = (r: FencedRunResult) => (r.kind === "refused" ? `refused: ${r.reason}` : `${r.stdout}\n${r.stderr}`);
@@ -122,10 +122,22 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     const backend = sessionBusSecrets()!;
     for (const ref of await backend.search({})) {
       const item = await backend.item(ref);
-      if (item !== null && (item.label.includes("com.waifucave.moss.core.items") || Object.values(item.attributes).some((v) => v.includes("com.waifucave.moss.core.items")))) mossBunAttrs = item.attributes;
+      if (item !== null && (item.label.includes("com.waifucave.moss.core.items") || Object.values(item.attributes).some((v) => v.includes("com.waifucave.moss.core.items")))) mossBunAttrs = { ...item.attributes };
+      if (item !== null && item.attributes.service === "com.waifucave.moss.core.key") mossKeyAttrs = { ...item.attributes };
     }
+    const pinned = await Promise.all([
+      grantForQuery(backend, { "xdg:schema": "org.git.Password", server: "github.com" }, "GitHub (git)"),
+      grantForQuery(backend, { service: "gh:github.com", username: "" }, "GitHub CLI"),
+      grantForQuery(backend, { service: "gh:github.com", username: "octo" }, "GitHub CLI (octo)"),
+    ]);
+    // The card's Allow never pins MOSS's own item, nor a request that names several.
+    expect(await grantForQuery(backend, { service: "com.waifucave.moss.core.key" }, "x")).toBeNull();
+    expect(await grantForQuery(backend, { service: "gh:github.com" }, "x")).toBeNull();
     backend.close();
+    expect(pinned.every((g) => g !== null)).toBe(true);
+    GRANTS = pinned as CredentialGrant[];
     expect(Object.keys(mossBunAttrs).length).toBeGreaterThan(0);
+    expect(Object.keys(mossKeyAttrs).length).toBeGreaterThan(0);
     writeFileSync(join(home, "gh", "hosts.yml"), "github.com:\n    git_protocol: https\n    users:\n        octo:\n    user: octo\n");
     stopStub = await startStub();
   }, 60_000);
@@ -140,13 +152,14 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     // Outside: both logins are there.
     expect((await sh(cmd("github.com"), outsideEnv())).out).toContain(`password=${GIT_TOKEN}`);
     expect((await sh(cmd("gitlab.com"), outsideEnv())).out).toContain(`password=${GITLAB_TOKEN}`);
-    const refused: { label: string }[] = [];
+    const refused: { attributes: Record<string, string> }[] = [];
     const gh = await run(cmd("github.com"), GRANTS, (i) => refused.push(i));
     expect(outOf(gh)).toContain(`password=${GIT_TOKEN}`);
     const gl = await run(`${cmd("gitlab.com")}; ${cmd("github.com")}`, GRANTS, (i) => refused.push(i));
     expect(outOf(gl)).not.toContain(GITLAB_TOKEN);
     expect(outOf(gl).match(/password=/g)).toHaveLength(1); // github.com's, from the same run: the broker answered
-    expect(refused.map((r) => r.label).join(" ")).toContain("gitlab.com");
+    // The card hears what was asked for, never an item's details.
+    expect(JSON.stringify(refused)).toContain("gitlab.com");
     // And git itself, through `git credential fill`.
     const fill = await run(`printf 'protocol=https\\nhost=github.com\\nusername=octo\\n\\n' | git -c credential.helper='${gitHelper}' credential fill`, GRANTS);
     expect(outOf(fill)).toContain(`password=${GIT_TOKEN}`);
@@ -159,6 +172,7 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     expect(outOf(r).trim().split("\n")[0]).toBe(GH_TOKEN_VALUE);
     // Without gh's grant, the same command gets nothing.
     const without = await run(cmd, [GRANTS[0]!]);
+    // A grant for another user's login on the same host never opens this one (grants pin one item).
     expect(outOf(without)).not.toContain(GH_TOKEN_VALUE);
   }, 120_000);
 
@@ -167,8 +181,8 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     expect((await sh(lookup, outsideEnv())).out).toBe(MOSS_KEY);
     const bunLookup = `secret-tool lookup ${Object.entries(mossBunAttrs).map(([k, v]) => `'${k}' '${v}'`).join(" ")}`;
     expect((await sh(bunLookup, outsideEnv())).out).toBe(MOSS_KEY);
-    const greedy: CredentialGrant[] = [...GRANTS, { label: "everything MOSS", attributes: { service: "com.waifucave.moss.core.key", account: "file" } },
-      { label: "the device key", attributes: Object.fromEntries(Object.entries(mossBunAttrs).filter(([k]) => k !== "xdg:schema")) }];
+    // Grants pinned to MOSS's items' exact attributes, as if something had granted them: still refused.
+    const greedy: CredentialGrant[] = [...GRANTS, { label: "everything MOSS", attributes: mossKeyAttrs }, { label: "the device key", attributes: mossBunAttrs }];
     // Each command ends with a granted lookup, so the run proves the broker answered it.
     for (const cmd of [lookup, bunLookup, "secret-tool search --all service com.waifucave.moss.core.key"]) {
       const r = await run(`${cmd}; echo; secret-tool lookup service gh:github.com username octo`, greedy);
@@ -207,6 +221,17 @@ describe.skipIf(!ready)("linux: the credential broker inside the real fence", ()
     expect(code(own)).not.toBe(0);
     expect(outOf(own)).toContain("Access denied");
   }, 180_000);
+
+  test("the command can't reach the relay's pipe ends through /proc", async () => {
+    const r = await run([
+      "ls /proc/$PPID/fd >/dev/null 2>&1 && echo parent-fd-open || echo parent-fd-closed",
+      "ls /proc/1/fd >/dev/null 2>&1 && echo init-fd-open || echo init-fd-closed",
+      "secret-tool lookup service gh:github.com username octo",
+    ].join("; "), GRANTS);
+    expect(outOf(r)).toContain("parent-fd-closed");
+    expect(outOf(r)).toContain(GH_TOKEN_VALUE); // the relay still served the command
+    console.log(`[broker e2e] bwrap's own pid 1 fds from inside: ${outOf(r).includes("init-fd-open") ? "open" : "closed"}`);
+  }, 120_000);
 
   test("without grants a run reaches no bus at all, as before", async () => {
     const r = await run("busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames; echo addr=$DBUS_SESSION_BUS_ADDRESS", null);
