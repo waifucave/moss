@@ -17,7 +17,6 @@ const PLUGINS = join(ROOT, "plugins");
 
 /** Bundled host halves the scan skips, by plugin id, with why. Each must still fail the scan: one that passes comes off. */
 const SKIPPED: Record<string, string> = {
-  "moss/forwarder": "parked: PARKED.md",
   "moss/companion-web": "parked: PARKED.md",
   "moss/relay-cloudflare": "parked: PARKED.md",
 };
