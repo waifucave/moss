@@ -218,6 +218,13 @@ export function SettingsEntry({ props }: { props: SettingsEntryProps }) {
         if (now === undefined || e.pairingId !== now.id) return;
         const peerName = typeof e.peerName === "string" && e.peerName !== "" ? e.peerName : undefined;
         switch (e.step) {
+          case "waiting":
+            // A device was turned away at this code's door: the engine says so in its own words, and the code goes on working.
+            if (typeof e.reason === "string" && e.reason !== "") {
+              const note = e.reason.slice(0, 300);
+              setPairing((p) => ({ ...p, note }));
+            }
+            break;
           case "words":
           case "card":
             setPairing((p) => ({ ...p, checking: true, ...(peerName ? { peerName } : {}) }));

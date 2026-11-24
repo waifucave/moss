@@ -85,6 +85,8 @@ export interface PairingRow {
   checking?: boolean;
   /** The name the other device gave itself, once known. */
   peerName?: string;
+  /** While the code waits: a device tried to join and was turned away, said in the engine's words (never the other device's own text). */
+  note?: string;
   /** It ended: said in words (a device added, a failure, an expired code). */
   ended?: string;
 }

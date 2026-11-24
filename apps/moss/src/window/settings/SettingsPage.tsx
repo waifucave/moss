@@ -217,6 +217,7 @@ export function PairDevice(props: { pairing: PairingRow | undefined }) {
             <p className="muted small" data-pair-lapsed>The code stopped working. Show a new one to try again.</p>
           ) : (
             <>
+              {p.note !== undefined ? <p className="muted small" role="alert" data-pair-note>{p.note}</p> : null}
               {p.code !== undefined ? (
                 <>
                   <p className="muted small">Enter this code on the other device:</p>

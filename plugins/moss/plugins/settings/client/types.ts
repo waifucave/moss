@@ -171,6 +171,8 @@ export interface SettingsPairing {
   checking?: boolean;
   /** The name the other device gave itself, once it is known. */
   peerName?: string;
+  /** While the code waits: a device tried to join and was turned away, in the engine's words (never the other device's own text). */
+  note?: string;
   /** It ended without a device: why, in words. */
   ended?: string;
 }

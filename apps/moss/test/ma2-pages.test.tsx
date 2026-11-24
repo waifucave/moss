@@ -282,6 +282,13 @@ describe("Settings", () => {
     expect(r.container.querySelector("[data-pair-shown]")?.textContent).toBe("KQ7-M2P");
     expect(r.container.querySelector("[data-pair-qr]")).not.toBeNull();
     expect(r.container.querySelector("[data-pair-expiry]")?.textContent).toMatch(/^Works until \d/);
+    // A device turned away at this code's door: the engine says so in its own words, and the code is still shown; another pairing's note is not ours.
+    e.devicesEvent({ type: "pairing_changed", pairingId: "someone_else", step: "waiting", reason: "A device tried to join and was turned away: elsewhere." });
+    e.devicesEvent({ type: "pairing_changed", pairingId: "pair_host", step: "waiting", reason: "A device tried to join and was turned away: its name isn't one MOSS takes. This code still works." });
+    await until(() => engine.view().pairing?.note !== undefined);
+    await redraw();
+    expect(r.container.querySelector("[data-pair-note]")?.textContent).toBe("A device tried to join and was turned away: its name isn't one MOSS takes. This code still works.");
+    expect(r.container.querySelector("[data-pair-shown]")?.textContent).toBe("KQ7-M2P");
     // Another pairing's step is not ours; ours brings the other device's name and a card that has the words.
     e.devicesEvent({ type: "pairing_changed", pairingId: "someone_else", step: "words", peerName: "Stranger" });
     await settle();

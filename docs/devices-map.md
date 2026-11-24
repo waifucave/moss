@@ -65,20 +65,30 @@ computers. "Live check" means only a person with two machines can show it.
   The engine cannot tell a plugin's frame from the person's own press (main's connection calls as the user): the door is the gate.
 - The four words go only to a `cli` connection whose caller is the user (`isUsersTerminal` in `core-events.ts`): a CLI that a bot's or an
   agent's session runs is role `cli` too, but calls as that session, and hears the step without them.
-- What the other device calls itself is checked in `#readSide`, the one place the pairing reads a peer's record (`cleanName` in
-  `links/pairing.ts`): 1 to 63 UTF-16 units, at least one visible character, no control character or line break, no format character
-  (`Cf`: bidi controls, zero-width, soft hyphen, tag block, U+FFF9–FFFB, U+180E), no blank-drawing filler (Hangul, Khmer, braille blank), no
-  double-quote-like character (so a name can't end the card's quotation), no mark without a base and at most 4 marks after one; its
-  kind and os come from the enums, and a phone's `app` is PH's check beside them. A pairing that sends otherwise is refused. The add card
-  says "It calls itself “<name>” and says it is a <kind>" under a fixed title, and a card that cannot be built fails the pairing at once.
-  (A name with a ZWJ emoji sequence is refused with the other format characters.)
+- One rule for a device's name, `devices/names.ts` (`cleanName`, `nameProblem` says why, `safeDeviceName` cleans), at every door: the
+  registry's `open` (a stored name from before the rule is cleaned and saved), `add`, `rename` and a peer's shared update, `device.rename`
+  (refused with the reason in plain words), the pairing's `#readSide` (the one place a peer's record is validated: name, kind, os and
+  PH's `app`) and the name the operating system gives (`defaultDeviceName` cleans, never refuses). A name is 1 to 63 UTF-16 units, has
+  something visible, no control character or line break, no format character (`Cf`: bidi controls, zero-width, soft hyphen, tag block,
+  U+FFF9–FFFB, U+180E), no blank-drawing filler (Hangul, Khmer, braille blank), no mark with no base (first or after a blank) and at most
+  4 marks after one. ZWJ and ZWNJ are allowed only between two visible characters (a variation selector or skin tone before is looked past),
+  never first, last, doubled or beside another format character. Quotation marks are allowed: the add card draws the name as the whole value
+  of a row of its own ("The name it gives itself"), never inside a sentence, so nothing in it can close or continue the engine's words.
+  Subdivision flags (🏴 and the tag block) are refused with the tag block; flags of two regional indicators pass. The sealed frame draws
+  ZWJ and ZWNJ as the text `U+200D` and `U+200C` (`sealedEscape`, another lane's renderer): a name with one reads honestly, not as the emoji.
+- A pairing turned away over the other device's record (`PairRefusal`: name, kind, os, app, record) is said in plain words on both sides
+  and never in the other device's text: the host's pairing keeps waiting and carries a note (`PairingState.note`, a `pairing_changed` on the
+  `waiting` step with `reason`), the joiner gets a fixed code (`["refused", {reason, code}]`) and says it in its own words; the pages draw
+  the note beside the code. A card that cannot be built fails the pairing at once.
 - A wrong guess at the words, from any app connection, ends the pairing and withdraws its card (one guess per pairing, so no oracle).
 - The code, its QR and its expiry reach the page that began the pairing: showing a code is what the page is for.
 - Scope, as it is: a holder hears `pairing_changed` (the step, the name) for ANY pairing on this computer while it lasts, not only one
   begun in its own frame. The engine cannot tell which part began one: the door calls it as the user over the app's connection. Scoping it
   would need the app's main process to relay the steps to the part that pressed (a different design).
-- A waiting host pairing is never ended by a timer in the engine (it shows no `expired` step); the pages keep their own clock to the
-  code's expiry and say it lapsed.
+- A host pairing ends by a timer in the engine (`#armExpiry`, the injected `Clock`, one timer per pairing) at the `expiresAt` its code shows:
+  failed as `expired` (the `expired` step the pages draw), its connection closed and its add card withdrawn, at whatever step it had reached
+  (a pairing at its words with a card up included) except once both sides confirmed and the device is being written down. The timer is
+  cleared when the pairing ends, is cancelled or the service closes.
 - Where in the diff: `packages/protocol/src/devices.ts` (`pairing_changed` roles and `capability`), `apps/desktop/src/main/ui/tree-calls.ts`
   (`DEVICES_MANAGE`), `packages/plugin-sdk/src/catalogs/capabilities.ts`, `packages/core/src/devices/rpc.ts` (`askToAdd`, `drive`), `packages/core/src/ipc/core-events.ts` (`TERMINAL_ONLY_FIELDS`).
 - Proofs: see "Proven" under Pairing above. A live proof is owed for: a real network pair, the n0 relays, the short code through a

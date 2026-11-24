@@ -790,6 +790,10 @@ export class MossEngine {
     // The step and the other device's name only: the engine sends the four words to the user's terminal alone.
     const peerName = typeof e.peerName === "string" && e.peerName !== "" ? e.peerName.slice(0, 63) : undefined;
     switch (e.step) {
+      case "waiting":
+        // A device was turned away at this code's door: the engine says so in its own words, and the code goes on working.
+        if (typeof e.reason === "string" && e.reason !== "") now.row = { ...now.row, note: e.reason.slice(0, 300) };
+        break;
       case "words":
       case "card":
         now.row = { ...now.row, checking: true, ...(peerName !== undefined ? { peerName } : {}) };

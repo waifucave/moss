@@ -261,6 +261,12 @@ describe("settings on the runtime", () => {
     // What a phone scans, and the time the code stops working.
     expect(screen.getByRole("img", { name: /scan this/i })).toBeTruthy();
     expect(document.querySelector("[data-pairing-expiry]")?.textContent).toMatch(/^Works until \d/);
+    // A device turned away at this code's door: the engine's own words, with the code still shown; another pairing's note is not this one's.
+    await act(async () => { core.emit("pairing_changed", { pairingId: "other", step: "waiting", reason: "A device tried to join and was turned away: elsewhere." }); await settle(); });
+    expect(document.querySelector("[data-pairing-note]")).toBeNull();
+    await act(async () => { core.emit("pairing_changed", { pairingId: "p1", step: "waiting", reason: "A device tried to join and was turned away: its name isn't one MOSS takes. This code still works." }); await settle(); });
+    expect(document.querySelector("[data-pairing-note]")?.textContent).toBe("A device tried to join and was turned away: its name isn't one MOSS takes. This code still works.");
+    expect(screen.getByText("KQ7-M2P")).toBeTruthy();
     // Another pairing's step is not this one's.
     await act(async () => { core.emit("pairing_changed", { pairingId: "other", step: "words", peerName: "Stranger" }); await settle(); });
     expect(screen.queryByText(/Stranger/)).toBeNull();

@@ -425,6 +425,9 @@ export const PairingChangedEvent = coreEvent("pairing_changed", {
   words: z.array(utf16(32)).length(4).optional(),
   /** The name the other device gave itself, from the step where it is known (shown as text, never trusted). */
   peerName: utf16(63).optional(),
+  /** In words the person reads, never the other device's own text. On `failed`: why the pairing ended. On `expired`: absent (the code's
+   *  expiry came, which the engine's timer ends at that time, whatever step the pairing had reached). On `waiting`: a device tried to
+   *  join and was turned away over its name, kind or system; the code still works for the right device. */
   reason: Text.optional(),
 });
 export const AccountChangedEvent = coreEvent("account_changed", { account: AccountView });

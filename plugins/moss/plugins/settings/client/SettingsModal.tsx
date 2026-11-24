@@ -278,6 +278,7 @@ function Pairing({ props }: { props: SettingsModalProps }) {
           ) : (
             (p.code || p.qr) && (
               <div data-pairing-step="code">
+                {p.note && <p className="cl-settings__note" role="alert" data-pairing-note>{p.note}</p>}
                 {p.code && (
                   <>
                     <p className="cl-settings__note">{S.pairCodeNote}</p>
