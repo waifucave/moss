@@ -35,6 +35,9 @@ import type { BotService } from "./service";
 /** What is added to MOSS's home folder's name to name the folder the files a phone sends to coding sessions are kept in. */
 export const RECEIVED_SUFFIX = "-received";
 
+/** The folder inside a root where a folder is moved to be deleted when the engine's own spool is on another volume. No session's name begins with a dot. */
+export const DROP_FOLDER = ".drop";
+
 /** The folder the files a phone sends to coding sessions are kept in, one folder per session: a SIBLING of MOSS's home, named after it
  *  (`~/.moss` gives `~/.moss-received`, `~/.moss-dev` gives `~/.moss-dev-received`, a throwaway home `/tmp/x/home` gives `/tmp/x/home-received`),
  *  so a dev, preview or test daemon on its own home only ever writes beside that home and never in the person's real one. */
@@ -171,6 +174,8 @@ interface Upload {
   tree?: string;
   /** Once `sent`: the message that named it. */
   sentAs?: string;
+  /** It is to be deleted but its folder could not be moved away yet: no message can name it, and every sweep tries again. */
+  doomed?: boolean;
 }
 
 interface Ledger {
@@ -216,6 +221,8 @@ export interface StagerOptions {
   /** Whether this computer's host still holds a session. A coding session it no longer holds (removed, or let go with its bot) has its
    *  folder in the received folder deleted by the next sweep. Without it no session is ever taken for gone. */
   known?: (session: string) => boolean;
+  /** A test seam for moving a folder away (`fs.renameSync`'s shape), to make it fail the way another volume's does. */
+  rename?: (from: string, to: string) => void;
 }
 
 /** How often the sweep runs while the ledger holds anything: well inside the idle time (15 minutes), so a half-sent upload is gone
@@ -332,7 +339,7 @@ export class FileStager {
     for (const u of Object.values(l.uploads)) {
       const age = now - u.touchedAt;
       const gone = u.kind === "coding" && this.#o.known?.(u.session) === false;
-      if (gone) this.#drop(l, u);
+      if (gone || u.doomed === true) this.#drop(l, u);
       else if (u.state === "open" && age > this.#limits.partialTtlMs) this.#drop(l, u);
       else if (u.state === "ready" && age > this.#limits.keepMs) this.#drop(l, u);
       else if (u.state === "sent" && u.kind === "coding" && age > this.#limits.namedKeepMs) this.#drop(l, u);
@@ -360,38 +367,65 @@ export class FileStager {
     return Object.keys(l.uploads).length;
   }
 
-  /** Takes an upload out of the ledger and removes what it holds: its spool file, or the file it placed (and its folder). A sent bot file is the bot's. */
+  /** Takes an upload out of the ledger and removes what it holds: its spool file, or the file it placed (and its folder). A sent bot file is
+   *  the bot's. When the placed folder can't be moved away (`#discard`), the record STAYS, marked `doomed` (no message can name it again), and
+   *  the next sweep tries again: a file is never left behind untracked. */
   #drop(l: Ledger, u: Upload): void {
-    delete l.uploads[u.id];
     try { unlinkSync(this.#spoolPath(u.id)); } catch { /* not there */ }
-    if (u.dest === undefined || (u.state === "sent" && u.kind !== "coding")) return;
-    this.#discard(dirname(u.dest));
+    if (u.dest !== undefined && !(u.state === "sent" && u.kind !== "coding") && !this.#discard(dirname(u.dest), u.root)) {
+      u.doomed = true;
+      return;
+    }
+    delete l.uploads[u.id];
     if (u.kind === "coding") this.#tidy();
   }
 
-  /** Removes a folder this module made (`phone-<id>`, or a session's) without ever deleting by a name an agent that writes the folder's
-   *  parent can aim elsewhere: the folder is first RENAMED into the engine's own spool (a rename moves the entry itself, so a link planted in
-   *  its place is moved as a link and never followed), and what sits there is deleted, a link by unlinking it. If the rename can't be done
-   *  (the folder is gone, or the spool is on another volume) nothing is deleted by name. */
-  #discard(folder: string): void {
-    const away = join(this.#spool, `drop-${randomBytes(8).toString("hex")}`);
-    try {
-      mkdirSync(this.#spool, { recursive: true, mode: 0o700 });
-      renameSync(folder, away);
-    } catch { return; }
-    try { rmSync(away, { recursive: true, force: true }); } catch { /* the next sweep takes it */ }
+  /** Removes a folder this module made (`phone-<id>`) without ever deleting by a name an agent that writes the folder's parent can aim
+   *  elsewhere: the folder is first RENAMED out of the way (a rename moves the entry itself, so a link planted in its place is moved as a
+   *  link and never followed), and what sits there is deleted, a link by unlinking it. It goes first into the engine's own spool; when that
+   *  is on another volume (`EXDEV`: a MOSS home that is a link onto another disk) into `<root>/.drop`, beside the folder on its own
+   *  volume, a name no session can have. True when the folder is gone (moved, or never there); false when it could not be moved, so the
+   *  caller keeps its record and tries again. */
+  #discard(folder: string, root: string): boolean {
+    const name = `drop-${randomBytes(8).toString("hex")}`;
+    const rename = this.#o.rename ?? renameSync;
+    for (const spool of [this.#spool, join(root, DROP_FOLDER)]) {
+      try {
+        if (spool === this.#spool) mkdirSync(spool, { recursive: true, mode: 0o700 });
+        else {
+          try { mkdirSync(spool, { mode: 0o700 }); } catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
+          // Ours or nothing: never a link someone put there.
+          const st = lstatSync(spool);
+          if (!st.isDirectory() || st.isSymbolicLink()) continue;
+        }
+      } catch { continue; }
+      const away = join(spool, name);
+      try {
+        rename(folder, away);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+        continue;
+      }
+      try { rmSync(away, { recursive: true, force: true }); } catch { /* a drop-* the next tidy takes */ }
+      return true;
+    }
+    return false;
   }
 
   /** Removes the empty session folders in the received folder (the received folder itself too, once nothing is in it), the leftovers of
-   *  earlier discards in the spool, and what a half-done discard left. `rmdir` takes an empty folder only, and never through a link. */
+   *  earlier discards in the spool and in `.drop`. `rmdir` takes an empty folder only, and never through a link. */
   #tidy(): void {
-    try {
-      for (const name of readdirSync(this.#spool)) if (name.startsWith("drop-")) rmSync(join(this.#spool, name), { recursive: true, force: true });
-    } catch { /* no spool yet */ }
+    const clear = (dir: string): void => {
+      try { for (const name of readdirSync(dir)) if (name.startsWith("drop-")) rmSync(join(dir, name), { recursive: true, force: true }); } catch { /* none */ }
+    };
+    clear(this.#spool);
     const root = receivedRootOf(this.#o.home);
     try {
       if (!lstatSync(root).isDirectory()) return;
+      clear(join(root, DROP_FOLDER));
+      try { rmdirSync(join(root, DROP_FOLDER)); } catch { /* not there, or not empty */ }
       for (const session of readdirSync(root)) {
+        if (session.startsWith(".")) continue;
         const dir = join(root, session);
         if (!lstatSync(dir).isDirectory()) continue;
         for (const sub of readdirSync(dir)) if (sub.startsWith("phone-")) try { rmdirSync(join(dir, sub)); } catch { /* not empty */ }
@@ -682,8 +716,9 @@ export class FileStager {
       u.name = path.slice(folder.length + 1);
       try { unlinkSync(this.#spoolPath(u.id)); } catch { /* the sweep takes it */ }
     } catch (err) {
-      // Never `unlink(created)` by name: the folder is moved into the engine's own spool and removed there.
-      this.#discard(folder);
+      // Never `unlink` by name: the folder is moved out of the way and removed there; when it can't be, the upload's record keeps it (the
+      // caller's `#drop` sees a placed file and tries again at every sweep).
+      if (!this.#discard(folder, u.root)) u.dest = join(folder, ".pending");
       throw err;
     }
   }
@@ -696,7 +731,7 @@ export class FileStager {
     this.sweep();
     if (paths.length > this.#limits.perMessage) throw fileRefused(`A message can carry at most ${this.#limits.perMessage} files; you named ${paths.length}.`);
     const l = this.#read();
-    const mine = Object.values(l.uploads).filter((u) => u.device === who.device && u.client === who.client && u.session === session && u.tree !== undefined);
+    const mine = Object.values(l.uploads).filter((u) => u.device === who.device && u.client === who.client && u.session === session && u.tree !== undefined && u.doomed !== true);
     const named: Upload[] = [];
     for (const path of paths) {
       const u = mine.find((x) => x.tree === path);

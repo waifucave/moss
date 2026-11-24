@@ -2,8 +2,8 @@
 // the design names is here: a phone that isn't paired with an answer key, a file too big, too many, too much a day, a name that tries to
 // leave its folder, a link planted in the bot's own folder, something that runs when opened, a file named that this phone didn't send.
 import { afterEach, describe, expect, test } from "bun:test";
-import { closeSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { STAGE_FILE_CHUNK_BYTES, STAGE_FILE_DAY_MAX_BYTES, STAGE_FILE_DAY_MAX_FILES, STAGE_FILE_UNSENT_MAX, STAGE_FILE_MAX_BYTES, STAGE_FILE_OPEN_MAX, STAGE_FILE_PENDING_MAX_BYTES, STAGE_IMAGE_MAX_BYTES, type Caller } from "@waifucave/moss-protocol";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { FakeSessionDriver } from "../../contracts/fakes/session-host";
@@ -707,6 +707,52 @@ describe("the folder a phone's files for coding sessions are kept in, and what r
     expect(readFileSync(join(outside, "a.txt"), "utf8")).toBe("precious");
     expect(existsSync(nf)).toBe(false);
     await s.b.shutdown();
+  });
+});
+
+describe("a folder that can't be moved away is never left behind untracked", () => {
+  const who = { device: "d", client: "ios" };
+  const target = { kind: "coding" as const, session: "s_code" };
+  const make = (rename?: (from: string, to: string) => void) => {
+    const userHome = tempDir();
+    const home = join(userHome, ".moss");
+    mkdirSync(home, { recursive: true });
+    const stager = new FileStager({ home, userHome, computer: "Studio", now: () => Date.now(), ...(rename === undefined ? {} : { rename }) });
+    const sent = stager.stage(who, target, { name: "a.txt", size: 3, dataBase64: b64("abc") });
+    const folder = join(receivedRootOf(home), "s_code", `phone-${sent.upload}`);
+    return { stager, sent, folder, root: receivedRootOf(home) };
+  };
+  const exdev = (): Error => Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+
+  test("the engine's spool on another volume (EXDEV): the folder goes through `.drop` beside it, and the record goes", () => {
+    const tried: string[] = [];
+    const m = make((from, to) => {
+      tried.push(to);
+      if (to.includes(`${sep}.staged-files${sep}`)) throw exdev();
+      renameSync(from, to);
+    });
+    expect(existsSync(join(m.folder, "a.txt"))).toBe(true);
+    m.stager.stage(who, target, { upload: m.sent.upload, cancel: true });
+    expect(tried.length).toBe(2);
+    expect(tried[1]!.startsWith(join(m.root, ".drop"))).toBe(true);
+    expect(existsSync(m.folder)).toBe(false);
+    // Nothing left: not the folder, not the record, not `.drop`, and the received folder goes with the last of it.
+    expect(m.stager.sweep()).toBe(0);
+    expect(existsSync(m.root)).toBe(false);
+    m.stager.close();
+  });
+
+  test("a move that fails everywhere keeps the record (no message can name the file) and the next sweep retries and finishes it", () => {
+    let broken = true;
+    const m = make((from, to) => { if (broken) throw Object.assign(new Error("io"), { code: "EIO" }); renameSync(from, to); });
+    m.stager.stage(who, target, { upload: m.sent.upload, cancel: true });
+    expect(existsSync(join(m.folder, "a.txt"))).toBe(true);
+    expect(m.stager.sweep()).toBe(1);
+    expect(() => m.stager.claim(who, "s_code", "m1", [m.sent.path!])).toThrow();
+    broken = false;
+    expect(m.stager.sweep()).toBe(0);
+    expect(existsSync(m.folder)).toBe(false);
+    m.stager.close();
   });
 });
 
