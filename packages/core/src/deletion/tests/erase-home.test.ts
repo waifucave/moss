@@ -2,13 +2,13 @@
 // another install's home, a project), then what goes and what stays. Every test works in its own temp folders; the
 // secrets are a memory store's, never a Keychain.
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
 import { OLD_INSTALL_HOME_DIR } from "../../other-installs";
-import { dropMossOsItems, eraseHome, eraseOutcomePath, recogniseMossHome, writeEraseOutcome } from "../erase-home";
+import { dropMossOsItems, eraseHome, eraseSignalPath, recogniseMossHome, writeEraseSignal } from "../erase-home";
 import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
 import { homeEraseMethods } from "../erase-rpc";
@@ -119,14 +119,17 @@ describe("erase: what goes and what stays", () => {
     expect(vaults.get("com.example.other")!.items.size).toBe(1);
   });
 
-    test("the outcome is left beside the home for the app's next open: no secret, only whether it worked and what stays", () => {
+    test("the erase's signal beside the home is an empty file put in place by rename: a link a runner planted there is replaced, never followed", () => {
     const w = world();
-    writeEraseOutcome(w.home, { at: 1, ok: false, error: "erase refused: not a MOSS home; nothing was removed" });
-    const o = JSON.parse(readFileSync(eraseOutcomePath(w.home), "utf8")) as { ok: boolean; error: string; keeps: string[] };
-    expect(eraseOutcomePath(w.home)).toBe(`${w.home}-erase.json`);
-    expect(o.ok).toBe(false);
-    expect(o.error).toContain("nothing was removed");
-    expect(o.keeps.length).toBeGreaterThan(0);
+    const target = join(w.outside, "authorized_keys");
+    writeFileSync(target, "the person's keys");
+    symlinkSync(target, eraseSignalPath(w.home));
+    writeEraseSignal(w.home);
+    expect(readFileSync(target, "utf8")).toBe("the person's keys");
+    expect(lstatSync(eraseSignalPath(w.home)).isSymbolicLink()).toBe(false);
+    expect(lstatSync(eraseSignalPath(w.home)).isFile()).toBe(true);
+    expect(readFileSync(eraseSignalPath(w.home), "utf8")).toBe("");
+    expect(eraseSignalPath(w.home)).toBe(`${w.home}-erased`);
   });
 
   test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {

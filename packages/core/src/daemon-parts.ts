@@ -24,7 +24,7 @@
 //   open turns at once. What comes in goes through `hostForSync`: a grant copied from another computer never grants
 //   here (D's reviewer's rule), so a session that moves here asks again on this computer's own card. The lease fences
 //   it: a record from an earlier lease is taken as late.
-import { refusedSessionRecords } from "./deletion/tombstones";
+import { refusedSessionRecords, tombstoneProblem } from "./deletion/tombstones";
 import type { HookSource } from "./runtime-sdk/turn-loop/hooks";
 import type { CanUseTool, Options, SandboxSettingsConfig, SpawnClaudeCodeProcess } from "@waifucave/clover-agent-sdk";
 import type { AgentDefView, Caller } from "@waifucave/moss-protocol";
@@ -592,6 +592,7 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
       }
       if (links) {
         const lease = links.main?.lease;
+        let tombstoneWarned = false;
         const sync = new SessionRecordSync({
           self: links.key.id,
           computer: () => runner.self,
@@ -600,7 +601,14 @@ export async function startDaemonParts(input: DaemonPartsInput): Promise<DaemonP
           host: hostForSync(s.host),
           ...(lease ? { holder: () => lease.state().holder, isStale: (epoch: number, scope?: string) => lease.isStale(epoch, scope), scope: () => lease.scopeId() } : {}),
           // The deletion lane: a session or a bot the person deleted here never comes back from another computer.
-          deleted: (id: string, bot?: string, oldestTs?: number) => refusedSessionRecords(input.mossHome, id, bot, oldestTs),
+          deleted: (id: string, bot?: string, oldestTs?: number) => {
+            const problem = tombstoneProblem(input.mossHome);
+            if (problem !== undefined && !tombstoneWarned) {
+              tombstoneWarned = true;
+              log(`[sessions sync] ${problem}`);
+            }
+            return refusedSessionRecords(input.mossHome, id, bot, oldestTs);
+          },
           log: (line) => log(`[sessions sync] ${line}`),
         });
         closers.push(() => sync.close());

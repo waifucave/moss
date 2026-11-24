@@ -15,7 +15,7 @@ import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@
 import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { fileLine } from "./file-log";
-import { takeEraseOutcome } from "./erase-outcome";
+import { eraseOutcomeOnDisk, takeEraseSignal, type ShownOutcome } from "./erase-outcome";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
 import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
 import { EngineConnection, locateEngine, tokenPath, type ConnectionState } from "./connection";
@@ -51,6 +51,8 @@ const headless = args.headless;
 // The dev overrides (the engine binary, the token, the user-data folder) count only in an unpackaged or dev run.
 const devOverrides = !app.isPackaged || profile === "dev";
 const home = engineHome(process.env);
+/** What an erase from the app came to, decided at start and shown with the first window (erase-outcome.ts). */
+let eraseShown: ShownOutcome | undefined;
 
 app.setName(identity.productName);
 if (process.platform === "win32") app.setAppUserModelId(identity.appId);
@@ -462,8 +464,10 @@ async function openWindow(): Promise<BrowserWindow> {
   win.once("ready-to-show", () => {
     if (headless) return;
     win.show();
-    // An "Erase everything" the person said yes to ran after the engine stopped: what it came to, shown once.
-    const erased = takeEraseOutcome(home);
+    // An "Erase everything" the person said yes to ran after the engine stopped: what the disk showed before the engine
+    // started again, in the app's own words, shown once (erase-outcome.ts).
+    const erased = eraseShown;
+    eraseShown = undefined;
     if (erased) void dialog.showMessageBox(win, { type: erased.ok ? "info" : "warning", message: erased.message, detail: erased.detail });
   });
   // A headless run puts nothing on the screen: should anything ever show this window, it says so (the tests look for it).
@@ -1156,6 +1160,8 @@ if (!app.requestSingleInstanceLock()) {
     connection.stop();
   });
   void app.whenReady().then(async () => {
+    // Before the engine starts (it makes a new home): did an erase run, and what does the disk show of it.
+    if (!headless && takeEraseSignal(home)) eraseShown = eraseOutcomeOnDisk(home);
     if (headless) log("audio: muted (headless: every page muted)");
     startFrontSeam();
     startGlassSeam();

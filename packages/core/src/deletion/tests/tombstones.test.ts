@@ -1,10 +1,10 @@
 // What the person deleted here never comes back by sync (the review of f836c1544, blocker 2): the rules
 // session-record sync and memory sync read (`deletion/tombstones.ts`).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isDeletedBot, isDeletedSession, refusedSessionRecords, tombstoneBot, tombstoneConversation, tombstonePath, tombstoneSessions } from "../tombstones";
+import { isDeletedBot, isDeletedSession, refusedSessionRecords, tombstoneBot, tombstoneConversation, tombstonePath, tombstoneProblem, tombstoneSessions } from "../tombstones";
 
 const home = () => mkdtempSync(join(tmpdir(), "moss-tomb-"));
 
@@ -32,6 +32,25 @@ describe("tombstones", () => {
     expect(refusedSessionRecords(h, "b_nova", "nova", 1_000)).toBe(false);
     // A catch-up asks with no time to see whether to skip the stream: it isn't skipped for a reopened conversation.
     expect(refusedSessionRecords(h, "b_nova", "nova", Number.POSITIVE_INFINITY)).toBe(false);
+  });
+
+  test("a damaged record fails closed: every bot and session counts as deleted, the doctor names it, and no deletion writes over it", () => {
+    const h = home();
+    writeFileSync(tombstonePath(h), "{ not json");
+    expect(tombstoneProblem(h)).toContain("can't be read");
+    expect(isDeletedBot(h, "anyone")).toBe(true);
+    expect(isDeletedSession(h, "c_live11112222")).toBe(true);
+    expect(refusedSessionRecords(h, "c_live11112222", undefined, 1)).toBe(true);
+    expect(() => tombstoneBot(h, "nova", 1)).toThrow("nothing was deleted");
+    expect(readFileSync(tombstonePath(h), "utf8")).toBe("{ not json");
+  });
+
+  test("an id the record can't hold stops the deletion before anything goes", () => {
+    const h = home();
+    expect(() => tombstoneBot(h, "bad id with spaces", 1)).toThrow("nothing was deleted");
+    expect(() => tombstoneSessions(h, ["c_ok11112222", "../x y"], 1)).toThrow("nothing was deleted");
+    expect(isDeletedSession(h, "c_ok11112222")).toBe(false);
+    expect(tombstoneProblem(h)).toBeUndefined();
   });
 
   test("a hand-edited file keeps only well-formed ids and times", () => {

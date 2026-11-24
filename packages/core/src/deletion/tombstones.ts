@@ -14,9 +14,13 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
+import { ContractError } from "../contracts/common";
 
 interface TombstoneFile {
   v: 1;
+  /** The file is there but can't be read or parsed: everything counts as deleted (sync refuses it all) until it is
+   *  fixed, and no deletion writes over it. */
+  damaged?: true;
   bots: Record<string, number>;
   sessions: Record<string, number>;
   /** A bot's main conversation, deleted and opened again empty under the same id: records older than this are refused. */
@@ -41,6 +45,11 @@ function read(home: string): TombstoneFile {
   const hit = cache.get(path);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.file;
   const raw = readJson(path) as Partial<TombstoneFile> | undefined;
+  if (raw === undefined || raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    const damaged: TombstoneFile = { v: 1, damaged: true, bots: {}, sessions: {}, conversations: {} };
+    cache.set(path, { mtimeMs: st.mtimeMs, size: st.size, file: damaged });
+    return damaged;
+  }
   const clean = (o: unknown): Record<string, number> => {
     const out: Record<string, number> = {};
     if (o && typeof o === "object" && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) if (ID_RE.test(k) && typeof v === "number") out[k] = v;
@@ -51,30 +60,44 @@ function read(home: string): TombstoneFile {
   return file;
 }
 
+/** Why the record of what was deleted can't be trusted now, or undefined: shown by `moss doctor`, logged by the syncs. */
+export function tombstoneProblem(home: string): string | undefined {
+  return read(home).damaged ? `${tombstonePath(home)} can't be read: memory and conversation sync is refused until it is fixed or removed (removing it lets deleted bots' memory and sessions come back from your other computers)` : undefined;
+}
+
+/** Throws before anything is deleted: an id the record can't hold, or a damaged record. */
+function writable(home: string, ids: readonly string[]): TombstoneFile {
+  for (const id of ids) if (!ID_RE.test(id)) throw new ContractError("invalid", "that id can't be recorded as deleted; nothing was deleted");
+  const f = read(home);
+  if (f.damaged) throw new ContractError("failed", "the record of what was deleted here can't be read (moss doctor says more); nothing was deleted");
+  return f;
+}
+
 function write(home: string, file: TombstoneFile): void {
   writeJsonAtomic(tombstonePath(home), file);
   cache.delete(tombstonePath(home));
 }
 
 export function isDeletedBot(home: string, bot: string): boolean {
-  return Object.hasOwn(read(home).bots, bot);
+  const f = read(home);
+  return f.damaged === true || Object.hasOwn(f.bots, bot);
 }
 
 export function isDeletedSession(home: string, id: string): boolean {
-  return Object.hasOwn(read(home).sessions, id);
+  const f = read(home);
+  return f.damaged === true || Object.hasOwn(f.sessions, id);
 }
 
 /** Written BEFORE anything is removed, so a sync that lands in the middle is already refused. */
 export function tombstoneBot(home: string, bot: string, at: number): void {
-  if (!ID_RE.test(bot)) return;
-  const f = read(home);
+  const f = writable(home, [bot]);
   write(home, { ...f, bots: { ...f.bots, [bot]: at } });
 }
 
 export function tombstoneSessions(home: string, ids: readonly string[], at: number): void {
-  const add = ids.filter((id) => ID_RE.test(id));
+  const f = writable(home, ids);
+  const add = [...ids];
   if (add.length === 0) return;
-  const f = read(home);
   const sessions = { ...f.sessions };
   for (const id of add) sessions[id] = at;
   write(home, { ...f, sessions });
@@ -83,14 +106,14 @@ export function tombstoneSessions(home: string, ids: readonly string[], at: numb
 /** A bot's main conversation, deleted here and opened again empty under the same id: what was written before `at`
  *  is refused from now on, what the bot writes after it is the new conversation. */
 export function tombstoneConversation(home: string, id: string, at: number): void {
-  if (!ID_RE.test(id)) return;
-  const f = read(home);
+  const f = writable(home, [id]);
   write(home, { ...f, conversations: { ...f.conversations, [id]: at } });
 }
 
 /** Whether records of session `id` written at `ts` (the oldest of a batch) are of something deleted here. */
 export function refusedSessionRecords(home: string, id: string, bot: string | undefined, oldestTs: number | undefined): boolean {
   const f = read(home);
+  if (f.damaged) return true;
   if (Object.hasOwn(f.sessions, id)) return true;
   if (bot !== undefined && Object.hasOwn(f.bots, bot)) return true;
   const at = f.conversations[id];

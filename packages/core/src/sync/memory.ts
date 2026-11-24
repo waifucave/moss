@@ -50,7 +50,7 @@ import { sealToBoxKey } from "../identity/box-key";
 import { type Bytes, fromBase64, fromBase64Url, fromUtf8, toBase64, toBase64Url, utf8 } from "../identity/bytes";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
 import { botSegment } from "../sessions/ids";
-import { isDeletedBot } from "../deletion/tombstones";
+import { isDeletedBot, tombstoneProblem } from "../deletion/tombstones";
 import { MAIL_MAX_PIECE, type SyncMailbox } from "./mailbox";
 import { listMemory, memoryPath, readMemoryFile, removeMemoryFile, sha256Hex, writeMemoryFile } from "./memory-files";
 import { ContentKeyRing, contentAad, type SharedContentKey } from "./memory-keys";
@@ -211,6 +211,9 @@ export class MemorySync {
   /** A bot the person deleted on this computer (`deletion/tombstones.ts`): nothing of its memory is kept, sent or taken
    *  here again, from any computer, by any door. */
   #deleted(bot: string): boolean {
+    // A damaged record counts as everything deleted (fails closed): said once in the log, and by `moss doctor`.
+    const problem = tombstoneProblem(this.#o.home);
+    if (problem !== undefined) this.#warn("tombstones", problem);
     return isDeletedBot(this.#o.home, bot);
   }
 

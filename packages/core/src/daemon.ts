@@ -1,6 +1,6 @@
 import { ReadElements } from "./approvals/browser-words";
 import { homeEraseMethods } from "./deletion/erase-rpc";
-import { dropMossOsItems, eraseHome, writeEraseOutcome } from "./deletion/erase-home";
+import { dropMossOsItems, eraseHome, writeEraseSignal } from "./deletion/erase-home";
 import { pluginToolContained, pluginToolReadOnly, pluginWebTool } from "./registry/read-only-tools";
 import { bundledManifest, bundledPluginsDir, loadBundledManifest, type BundledManifest } from "./bundled-plugins-dir";
 import { buildDevBundledPlugins, devBundledSource, stageBundledPlugins, stagedBotChoice, stagedBundledDir, stagedManifest } from "./registry/bundled-stage";
@@ -466,8 +466,8 @@ export interface RunningDaemon {
    *  the CLI's `daemon run`). */
   releaseRestart: Promise<void>;
   /** The deletion lane: what runs after the daemon has stopped and before the process exits. It erases the home when the
-   *  person said yes on `home.erase`'s card (and does nothing otherwise), and leaves its outcome beside the home
-   *  (`<home>-erase.json`) for the app to show at its next open. Only the CLI's `daemon run` (the packaged engine's
+   *  person said yes on `home.erase`'s card (and does nothing otherwise), and leaves a text-free signal beside the
+   *  home (`<home>-erased`) so the app, at its next open, checks the disk and says what it finds. Only the CLI's `daemon run` (the packaged engine's
    *  path) calls it; the dev entry's `stopOnSignals` does not. */
   afterStop(): Promise<void>;
   /** M-M2: a server install's own update (`moss-core daemon run` sets it), which `update.status` and `update.apply`
@@ -5327,9 +5327,12 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         // store is the real one (a test daemon's is in memory and its service a throwaway).
         const realStore = opts.contractSecrets === undefined && opts.secrets === undefined;
         const out = await eraseHome({ home: mossHome, secrets: contractSecrets, ...(realStore ? { dropOsItems: dropMossOsItems(keychainService(profile, home)) } : {}), log: (l) => console.error(l) });
-        writeEraseOutcome(mossHome, { at: Date.now(), ok: out.secretsLeft === 0, ...(out.secretsLeft > 0 ? { secretsLeft: out.secretsLeft, error: "some saved keys couldn't be deleted" } : {}) });
+        process.stderr.write(`[erase] erased the home and ${out.secrets} saved key(s); ${out.secretsLeft} could not be deleted\n`);
       } catch (err) {
-        writeEraseOutcome(mossHome, { at: Date.now(), ok: false, error: err instanceof ContractError ? err.message : "the erase stopped before it finished" });
+        process.stderr.write(`[erase] ${err instanceof ContractError ? err.message : "the erase stopped before it finished"}\n`);
+      } finally {
+        // The app's next open checks the disk itself (it shows nothing this process writes).
+        writeEraseSignal(mossHome);
       }
     },
     setSelfUpdate(self) { selfUpdate = self; },

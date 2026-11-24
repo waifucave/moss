@@ -12,7 +12,8 @@
 // * inside it, every entry is removed as itself: a link is unlinked, never followed out of the home, and a hard link
 //   only loses this name;
 // * beside it, the folder of files paired phones sent to coding sessions (`<home>-received`) goes too, as itself.
-import { existsSync, lstatSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
@@ -24,33 +25,28 @@ import { OLD_INSTALL_HOME_DIR, otherInstallHome } from "../other-installs";
 import { receivedRootOf } from "../bots/staged-files";
 
 /** What erase leaves, said to the person every time. */
-/** The erase's outcome, beside the home (the home itself is gone): `<home>-erase.json`. An erase started from an app runs
- *  after the engine stopped, where nothing can answer the app, and its log is erased with the home; the app reads this
- *  file at its next open, shows it, and removes it (apps/moss `erase-outcome.ts`). No secret, name or content: whether
- *  it worked, how many saved keys could not be deleted, the engine's reason when it didn't, and what stays. */
-export const ERASE_OUTCOME_SUFFIX = "-erase.json";
+/** The signal that an erase ran, beside the home (the home itself is gone): `<home>-erased`, an empty file. It carries
+ *  nothing that is shown: the app, at its next open, decides what to say from what it checks on the disk itself, in its
+ *  own words (apps/moss `erase-outcome.ts`). The folder above the home is any runner's to write, so the file is made under
+ *  a fresh name (`O_EXCL`, never through a link) and renamed into place, which replaces whatever a runner left at that
+ *  name (a link included) instead of following it. */
+export const ERASE_SIGNAL_SUFFIX = "-erased";
 
-export function eraseOutcomePath(home: string): string {
+export function eraseSignalPath(home: string): string {
   const h = resolve(home);
-  return join(dirname(h), `${basename(h)}${ERASE_OUTCOME_SUFFIX}`);
+  return join(dirname(h), `${basename(h)}${ERASE_SIGNAL_SUFFIX}`);
 }
 
-export interface EraseOutcome {
-  v: 1;
-  at: number;
-  ok: boolean;
-  /** Saved keys that couldn't be deleted (the person removes them by hand). */
-  secretsLeft?: number;
-  /** The engine's own words on why nothing (or not everything) was erased. */
-  error?: string;
-  keeps: readonly string[];
-}
-
-export function writeEraseOutcome(home: string, o: Omit<EraseOutcome, "v" | "keeps">): void {
+export function writeEraseSignal(home: string): void {
+  const path = eraseSignalPath(home);
+  const tmp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString("hex")}`);
   try {
-    writeFileSync(eraseOutcomePath(home), `${JSON.stringify({ v: 1, ...o, keeps: ERASE_KEEPS } satisfies EraseOutcome)}\n`, { mode: 0o600 });
+    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+    closeSync(fd);
+    renameSync(tmp, path);
   } catch {
-    // Nowhere to write it: the CLI's own erase prints instead.
+    rmSync(tmp, { force: true });
+    // Nowhere to write it: the app shows nothing; the CLI's own erase prints instead.
   }
 }
 

@@ -55,6 +55,7 @@ export { claimDaemonChildren, spawnDisclaimed, type DisclaimedProcess } from "./
 export { runEngineInstall, runEngineReset, ENGINE_INSTALL_USAGE, ENGINE_RESET_USAGE } from "./update/engine-install-command";
 export { runErase, ERASE_USAGE } from "./deletion/erase-command";
 export { dropMossOsItems } from "./deletion/erase-home";
+export { tombstoneProblem } from "./deletion/tombstones";
 export { acquireLock, tryFileLock, AlreadyRunningError, LockHeldNoDaemonError, LockFailedError, classifyLockFailure, endpointAnswers, type Lock, type AcquireLockOptions } from "./lock";
 export { resolveMossProfile, keychainService, profileDisplayName, cliCommandName, type MossProfile } from "./profile";
 export {
