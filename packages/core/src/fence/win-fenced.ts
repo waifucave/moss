@@ -858,12 +858,15 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
           // so what the fence protects that appears later (a secret file made in a folder its grant opens, a new match
           // of a pattern, a place the profile grant must now exclude) would stay open to it for its whole life, and the
           // grant's refresh (rule 8b) can't run while it holds its session grant. So while it runs, its fenced set is
-          // looked at again every `fenceWatchMs`: the paths its read and write denies match now, and the profile
-          // grant's exclusions; once anything is there that wasn't at its start, its caller is told (once) and ends it.
-          // A foreground command has no watch: it lives at most its 10-minute limit, and the next one is planned anew.
+          // looked at again every `fenceWatchMs`: the paths its read denies match now (a new transcript sidecar in the
+          // MOSS home included: a new conversation's), and the profile grant's exclusions; once anything is there that
+          // wasn't at its start, its caller is told (once) and ends it. Its write denies are not watched: inside its own
+          // write roots the command makes such paths itself (a `git clone` makes `.git\hooks`), and those are dealt
+          // with after it, as any command's are (rule 4's belt). A foreground command has no watch: it lives at most
+          // its 10-minute limit, and the next one is planned anew.
           const fenceWatch = r.onFenceGrew === undefined ? null : (() => {
-            const fencedNow = () => [...existingDeniesOf(plan.denyRead).paths, ...existingDeniesOf(plan.denyWrite).paths.filter((d) => roots.some((x) => winUnder(d, x))), ...profileExcludes()];
-            const had = new Set([...readWalk.paths, ...denyWrite, ...profileExcludes()].map(fold));
+            const fencedNow = () => [...existingDeniesOf(plan.denyRead).paths, ...profileExcludes()];
+            const had = new Set([...readWalk.paths, ...profileExcludes()].map(fold));
             const t = setInterval(() => {
               if (!fencedNow().some((p) => !had.has(fold(p)))) return;
               clearInterval(t);
