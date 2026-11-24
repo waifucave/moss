@@ -198,6 +198,10 @@ export async function setupUnit(x: SetupUnitCtx): Promise<void> {
       try { return await Cdp.connect(codePort); } catch { return undefined; }
     }, 500);
     cdps.push(codeCdp);
+    // Windows names a connection's client by scanning the daemon's own pipe handles, and two connections arriving at once from different programs
+    // are ambiguous: both are closed, and apps that retry together can meet again every time. A user starts their apps apart, so the second app
+    // starts once the first has paired (where it does not within a minute the unit goes on, and a row says what the app logged).
+    if (process.platform === "win32") await x.until("MOSS Code's pairing", 60_000, async () => (/pair: connected/.test(x.readLog(codeApp.log)) ? true : undefined), 500).catch(() => undefined);
     code = new Doc(x, codeCdp, (u) => u === "moss-core://app/", "MOSS Code's root");
     const mossPort = x.freePort();
     const mossApp = x.startMossApp(mossPort);
