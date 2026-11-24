@@ -1675,7 +1675,9 @@ export function useBackendNames(): (backend: string | undefined) => string | und
 
 /** What a kept value's unmount leaves for a document that replaces this one (see `useKept`): the note's name prefix, this document's id, how long a note counts. */
 const KEPT_LEFT = "moss.kept.left:";
-const KEPT_DOC = Math.random().toString(36).slice(2);
+// One id per document, not per copy of this module: a document can hold the SDK twice (two bundles, or a test process that loads it by two
+// paths), and a copy that took the other's note as a replaced document's would carry a value into a part that never was replaced.
+const KEPT_DOC = ((globalThis as { __mossKeptDoc?: string }).__mossKeptDoc ??= Math.random().toString(36).slice(2));
 const KEPT_LEFT_MS = 15_000;
 
 /** State that outlives its document's reload in this window (`useState`'s shape): the user's place, a draft. A layer's
