@@ -43,6 +43,9 @@ object Runner {
     fun json(path: String): JSONObject = JSONObject(text(path))
 }
 
+/** A 1x1 PNG, for the picture a message carries. */
+const val PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
 /** Polls until `cond` holds, or fails naming what it waited for. */
 suspend fun eventually(what: String, ms: Long = 60_000, cond: suspend () -> Boolean) {
     val end = System.currentTimeMillis() + ms
@@ -98,6 +101,29 @@ class MossEndToEndTest {
             eventually("the reply") { conv.messages.any { it.role == MessageRole.bot && it.text == "Echo: hello from Android" } }
             assertTrue(conv.messages.any { it.role == MessageRole.user && it.text == "hello from Android" })
             Log.i(TAG, "the bot answered")
+
+            // A picture and a file, as the composer offers them (`session.composerOffers` on the engine's phone doors).
+            val offers = conv.offers!!
+            assertTrue("pictures offered: $offers", offers.pictures)
+            assertTrue("files offered: $offers", offers.files)
+            val png = android.util.Base64.decode(PNG_1PX, android.util.Base64.DEFAULT)
+            conv.stage(png, png)
+            assertEquals("a picture staged: ${conv.errorText}", 1, conv.staged.size)
+            val file = "hello from the phone\n".toByteArray()
+            conv.stageFile("note.txt", file.size.toLong()) { file }
+            assertEquals("a file staged: ${conv.errorText}", 1, conv.stagedFiles.size)
+            conv.draft = "with a picture and a file"
+            assertTrue("sent with attachments: ${conv.errorText}", conv.send())
+            eventually("the reply to the attachments") { conv.messages.any { it.role == MessageRole.bot && it.text.startsWith("Echo: with a picture and a file") } }
+            Log.i(TAG, "a picture and a file went with a message")
+
+            // A new bot from the phone (`bot.create`), then in the list.
+            val newBot = NewBotModel(client)
+            newBot.load()
+            newBot.name = "Hazel"
+            val hazel = newBot.create() ?: throw AssertionError("no bot made: ${newBot.errorText}")
+            eventually("the new bot in the list") { list.load(); list.rows.any { it.id == hazel.id } }
+            Log.i(TAG, "made a bot")
 
             // A card the engine raises, answered from the card the model holds (the one the screen draws).
             val cards = CardsModel(client, PhoneApp.moss)

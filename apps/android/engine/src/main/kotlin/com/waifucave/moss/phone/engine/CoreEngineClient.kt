@@ -355,7 +355,7 @@ class CoreEngineClient(
     override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>): Unit = io {
         // Signed by the core with this phone's answer key. The same client id makes a resend the same message, so a retry
         // after a timeout (which doesn't mean the computer didn't get it) is never a second message.
-        c().sendMessage(session, text, clientMessageId, images, files)
+        c().sendMessage(session, ReadBack.withTokens(text, images.size, files.size), clientMessageId, images, files)
     }
 
     override suspend fun stop(session: String): Unit = io { c().stop(session) }
@@ -377,12 +377,20 @@ class CoreEngineClient(
         if (view.hash() != card.hash || cardOf(view) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
         if (option.id !in view.options() || card.options.none { it == option }) throw IllegalArgumentException("not one of the card's options")
         if (!view.pending()) throw CardAnswerException(if (view.outcome() == "expired") CardAnswerError.expired else CardAnswerError.answeredElsewhere)
-        val outcome = c.answerCard(view, option.id, emptyList())
-        if (outcome.accepted) {
-            synchronized(this) { issued.remove(card.id) }
-            events.tryEmit(EngineEvent.CardResolved(card.id))
-            return@io
+        val outcome = try {
+            c.answerCard(view, option.id, emptyList())
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            if (!uncertain(e)) throw e
+            // The answer may have reached the computer: read the card back before anything is tried again.
+            val back = try { c.fetchCard(card.id) } catch (x: CancellationException) { throw x } catch (x: Exception) { throw e }
+            when (ReadBack.answer(back.pending(), back.outcome(), option)) {
+                ReadBack.Answer.accepted -> { resolvedHere(card.id); return@io }
+                ReadBack.Answer.stillPending -> throw e
+                ReadBack.Answer.expired -> throw CardAnswerException(CardAnswerError.expired)
+                ReadBack.Answer.answeredElsewhere -> throw CardAnswerException(CardAnswerError.answeredElsewhere)
+            }
         }
+        if (outcome.accepted) { resolvedHere(card.id); return@io }
         val why = outcome.computersReason?.lowercase() ?: ""
         throw when {
             "time ran out" in why || "expired" in why -> CardAnswerException(CardAnswerError.expired)
@@ -390,6 +398,14 @@ class CoreEngineClient(
             else -> IllegalStateException("the answer wasn't taken")
         }
     }
+
+    private fun resolvedHere(id: String) {
+        synchronized(this) { issued.remove(id) }
+        events.tryEmit(EngineEvent.CardResolved(id))
+    }
+
+    /** A failure that doesn't say whether the computer got the call: a timeout, or the link dropping while it was in flight. */
+    private fun uncertain(e: Throwable): Boolean = e is CoreException.Timeout || e is CoreException.Offline
 
     /**
      * Which cards this app shows (the engine's routing rule, `push-routing.ts`): a card belongs to MOSS when a bot's
@@ -416,7 +432,14 @@ class CoreEngineClient(
     override suspend fun startOptions(backend: String): BackendOptions = io { Typed.options(c().startOptions(backend, treeName)) }
     override suspend fun recentStart(): RecentStart = io { Typed.recent(c().recentStart()) }
     override suspend fun startSession(request: StartRequest): String = io { try {
-        c().startSession(CoreStart(request.backend, request.computer, request.root, request.model, request.effort, null))
+        val c = c()
+        val before = c.sessions().map { it.id }.toSet()
+        val calledAt = System.currentTimeMillis()
+        // A start may have happened though its answer never came: read the sessions back before anyone starts again.
+        ReadBack.afterUncertain(
+            { c.startSession(CoreStart(request.backend, request.computer, request.root, request.model, request.effort, null)) },
+            ::uncertain,
+        ) { ReadBack.startedSession(before, c.sessions().map(Typed::session), request, calledAt) }
             .also { synchronized(this) { sessionKinds[it] = "coding" } }
     } catch (e: CoreException.Rpc) {
         val w = e.computersWords.lowercase()
@@ -432,15 +455,15 @@ class CoreEngineClient(
     override suspend fun composerOffers(session: String, kind: ConversationKind): ComposerOffers = io { try {
         Typed.offers(c().composerOffers(session))
     } catch (e: CoreException.Rpc) {
-        // -32601: not served; -32010: not on the remote role's list. An engine without lane PH's door gets what the doors on
-        // today's remote list offer: pictures, the plugins' commands, a coding session's models; no Files row.
+        // -32601: not served; -32010: not on the remote role's list. An engine without the composer's door offers only the
+        // plugins' commands and a coding session's models: no Photos or Files row (its picture and file doors came with it).
         if (e.code != -32601L && e.code != -32010L) throw e
         val commands = runCatching { c().commands().map { PluginCommand(it.name, it.description) } }.getOrDefault(emptyList())
-        if (kind == ConversationKind.bot) ComposerOffers(pictures = true, commands = commands)
+        if (kind == ConversationKind.bot) ComposerOffers(commands = commands)
         else {
             val choices = runCatching { Typed.choices(c().models(session)) }.getOrDefault(emptyList())
             val current = synchronized(this) { sessionModels[session] }
-            ComposerOffers(pictures = true, commands = commands, models = choices, model = current,
+            ComposerOffers(commands = commands, models = choices, model = current,
                 efforts = choices.firstOrNull { it.id == current }?.efforts ?: emptyList())
         }
     } }
@@ -451,10 +474,20 @@ class CoreEngineClient(
         synchronized(this) { sessionModels[session] = m }
     }
 
-    override suspend fun stageImage(session: String, data: ByteArray): String = io { c().stageImage(session, mediaType(data), data) }
+    /** What this conversation offers now, as the engine says (`session.composerOffers`); nothing when it can't be read. */
+    private suspend fun offersOf(session: String): ComposerOffers? =
+        try { Typed.offers(c().composerOffers(session)) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+
+    override suspend fun stageImage(session: String, data: ByteArray): String = io {
+        if (offersOf(session)?.pictures != true) throw EngineRefusal("This conversation doesn't take pictures from the phone.")
+        c().stageImage(session, mediaType(data), data)
+    }
 
     override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile = io {
-        if (data.size > STAGE_FILE_MAX_BYTES) throw FileTooLarge(STAGE_FILE_MAX_BYTES)
+        val offers = offersOf(session)
+        if (offers?.files != true) throw EngineRefusal("This conversation doesn't take files from the phone.")
+        val limit = offers.fileLimit ?: STAGE_FILE_MAX_BYTES
+        if (data.size > limit) throw FileTooLarge(limit)
         val f = c().stageFile(session, name, data)
         StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
     }
@@ -463,12 +496,22 @@ class CoreEngineClient(
 
     override suspend fun createBot(name: String, model: String?): Bot = io {
         // A refusal (the day's limit, a name or model the engine won't take) in the engine's own words, cleaned by the core.
-        try { Typed.bot(c().createBot(name, model)).also(::remember) } catch (e: CoreException.Rpc) { throw EngineRefusal(e.computersWords) }
+        val c = c()
+        try {
+            val before = c.bots().map { it.id }.toSet()
+            // A bot may have been made though the answer never came: read the bots back before anyone makes it again.
+            ReadBack.afterUncertain({ Typed.bot(c.createBot(name, model)) }, ::uncertain) { ReadBack.madeBot(before, c.bots().map(Typed::bot), name) }
+                .also(::remember)
+        } catch (e: CoreException.Rpc) {
+            if (e.code == -32601L || e.code == -32010L) throw EngineRefusal("Making a bot from the phone isn't available on this computer yet.")
+            throw EngineRefusal(e.computersWords)
+        }
     }
 
     override suspend fun runCommand(session: String, command: String): Unit = io { c().runCommand(command) }
 
-    override suspend fun pendingQuestion(session: String): AskQuestion? = io { Typed.question(c().pendingQuestion(session)) }
+    /** The newest open question (`session.openQuestions`, through the core's `open_questions`, in the order asked). */
+    override suspend fun pendingQuestion(session: String): AskQuestion? = io { c().openQuestions(session).lastOrNull()?.let(Typed::question) }
 
     override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>): Unit = io {
         // The engine keys an answer by the question's text (the screens key it by its header when it has one).
