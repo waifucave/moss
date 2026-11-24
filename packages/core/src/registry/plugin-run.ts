@@ -25,9 +25,10 @@
 // neither does with them). The static check (`loaderReach`) stays as `moss plugin validate`'s early error.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { leasesDirAccessProblem, readLeasesDirSecurity } from "../fence/win-sandbox";
 import { currentUserSid } from "../platform/win-pipe";
 import { systemDirectory } from "../secrets/private-file";
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, type Stats } from "node:fs";
+import { copyFileSync, linkSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, type Stats } from "node:fs";
 import { RESERVED_ENV } from "@waifucave/moss-plugin-sdk";
 import { fencedCommand, fencedSpawn, pluginFenceAvailable, SPAWN_TRAMPOLINE_FILE, SPAWN_TRAMPOLINE_SOURCE, toolFence, type ProjectAccess } from "./plugin-fence";
 import { PLUGIN_BUN_FILE, pluginBunRequirement } from "../bundled-identities";
@@ -411,7 +412,47 @@ function lockFolderToUser(folder: string): void {
   if (sid === null) throw new Error(`plugin processes can't start: no user SID to lock ${folder} to`);
   const r = spawnSync(`${systemDirectory()}\\icacls.exe`, [folder, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { stdio: "ignore", windowsHide: true });
   if (r.status !== 0) throw new Error(`plugin processes can't start: icacls refused to lock ${folder} to this user`);
+  // And look: the guard's whole Windows case is this ACL, so what icacls said is not taken for what is there. The owner must be the
+  // user, Administrators or SYSTEM and nobody else allowed (the Windows sandbox's own check, fence/win-sandbox.ts).
+  const problem = leasesDirAccessProblem(folder, { security: readLeasesDirSecurity(folder) });
+  if (problem !== null) throw new Error(`plugin processes can't start: ${folder} is not owner-only (${problem})`);
   lockedFolders.add(folder);
+}
+
+/** Windows: `bin\\bun.exe` is the plugin Bun by a symlink where the user may make one, and otherwise (a standard user without Developer
+ *  Mode: EPERM) by a hard link, which needs no privilege, and where that can't be made either (another volume) by a copy checked against the
+ *  original's SHA-256. Each is judged again at every start, so a swapped file is replaced. The folder is the user's alone (`lockFolderToUser`). */
+export function placeBunOnWindows(bunLink: string, bun: string, ops: { symlink: typeof symlinkSync; link: typeof linkSync } = { symlink: symlinkSync, link: linkSync }): void {
+  const current = (): boolean => {
+    try {
+      const l = lstatSync(bunLink);
+      if (l.isSymbolicLink()) return readlinkSync(bunLink) === bun;
+      const b = statSync(bun);
+      if (!l.isFile() || l.size !== b.size) return false;
+      return (l.ino !== 0 && l.ino === b.ino && l.dev === b.dev) || l.mtimeMs === b.mtimeMs; // a hard link, or a copy made with its time
+    } catch {
+      return false;
+    }
+  };
+  if (current()) return;
+  try { unlinkSync(bunLink); } catch { /* none yet */ }
+  try {
+    ops.symlink(bun, bunLink);
+    return;
+  } catch (err) {
+    if ((err as { code?: string }).code !== "EPERM" && (err as { code?: string }).code !== "EACCES") throw err;
+  }
+  try {
+    ops.link(bun, bunLink);
+    return;
+  } catch { /* another volume, or a file system with no hard links: a copy */ }
+  copyFileSync(bun, bunLink);
+  const t = statSync(bun);
+  utimesSync(bunLink, t.atime, t.mtime);
+  if (sha256Hex(readFileSync(bunLink)) !== sha256Hex(readFileSync(bun))) {
+    rmSync(bunLink, { force: true });
+    throw new Error("plugin processes can't start: the copy of the plugin Bun differs from the original");
+  }
 }
 
 /** Writes MOSS's bunfig and guard for plugin processes into `dir` (the daemon's run folder), and returns their paths.
@@ -444,20 +485,23 @@ export function ensurePluginRunFiles(dir: string, o: { mossHome: string }): Plug
   const files: PluginRunFiles = { bunfig: join(real, "bunfig.toml"), guard: join(real, "guard.mjs"), hostGuard: join(real, "host-guard.mjs"), bin: join(real, "bin"), mossHome };
   mkdirSync(files.bin, { recursive: true, mode: 0o700 });
   const bunLink = join(files.bin, process.platform === "win32" ? "bun.exe" : "bun");
-  let linked: string | undefined;
-  try {
-    linked = readlinkSync(bunLink);
-  } catch {
-    linked = undefined;
-  }
   const bun = pluginBun(mossHome);
-  if (linked !== bun) {
+  if (process.platform === "win32") placeBunOnWindows(bunLink, bun);
+  else {
+    let linked: string | undefined;
     try {
-      unlinkSync(bunLink);
+      linked = readlinkSync(bunLink);
     } catch {
-      /* none yet */
+      linked = undefined;
     }
-    symlinkSync(bun, bunLink);
+    if (linked !== bun) {
+      try {
+        unlinkSync(bunLink);
+      } catch {
+        /* none yet */
+      }
+      symlinkSync(bun, bunLink);
+    }
   }
   // Written whole, never through a planted link (plugin-host/run-file.ts); `pluginRunFileChecks` names what each
   // start then checks.
