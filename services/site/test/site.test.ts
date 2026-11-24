@@ -9,6 +9,7 @@ import { configProblem, readConfig, REPO_ROOT, SITE_DIR, withSwitches } from "..
 import { docFile, readOutline, sourcePath } from "../src/docs";
 import { allInstallerNames, releaseUrl } from "../src/downloads";
 import { renderDoc } from "../src/markdown";
+import { templateFiles } from "../../../packages/plugin-sdk/src/templates/index";
 
 const root = mkdtempSync(join(tmpdir(), "moss-site-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -152,6 +153,28 @@ describe("the docs' sources", () => {
     const r = renderDoc("---\ntitle: T\ndescription: D\n---\n\n## One thing\n\n## One thing\n", "x.md");
     expect(r.headings.map((h) => h.id)).toEqual(["one-thing", "one-thing-2"]);
     expect(() => renderDoc("## No front matter\n", "y.md")).toThrow();
+  });
+});
+
+describe("the commands the docs print", () => {
+  const plugin = readFileSync(docFile("first-plugin"), "utf8");
+  const commands = [...readdirSync(join(SITE_DIR, "content", "docs"))].flatMap((f) =>
+    [...readFileSync(join(SITE_DIR, "content", "docs", f), "utf8").matchAll(/`(moss [^`]+)`|^(moss .+)$/gm)].map((m) => (m[1] ?? m[2])!.trim()));
+
+  test("the plugin page's manifest and code are what `moss plugin new tool hello-tool` writes, word for word", () => {
+    const made = templateFiles("tool", { id: "hello-tool", name: "Hello tool" });
+    if ("error" in made) throw new Error(made.error);
+    const block = (lang: string) => plugin.match(new RegExp("```" + lang + "\\n([\\s\\S]*?)```"))![1]!;
+    expect(JSON.parse(block("json"))).toEqual(JSON.parse(made.files["moss.json"]!));
+    expect(block("ts").trim()).toBe(made.files["host/index.ts"]!.trim());
+    expect(plugin).toContain("moss plugin new tool hello-tool");
+  });
+
+  test("no page tells anyone to make a bot plugin, a format bots no longer use", () => {
+    expect(commands.length).toBeGreaterThan(5);
+    for (const c of commands) expect([c, /^moss plugin new bot\b/.test(c)]).toEqual([c, false]);
+    // And none sends a reader to the bare template list, which still offers it.
+    for (const c of commands) expect([c, /^moss plugin new\s*$/.test(c)]).toEqual([c, false]);
   });
 });
 

@@ -24,7 +24,7 @@ hello-tool/
 └── README.md
 ```
 
-The folder's name is the plugin's id: lowercase letters, digits and single hyphens, 2 to 40 characters. Run `moss plugin new` with nothing after it to see every template, among them a theme, a part of MOSS Code's window, a model provider, a routine trigger, and a point other plugins can fill.
+The folder's name is the plugin's id: lowercase letters, digits and single hyphens, 2 to 40 characters. The same command makes other kinds of plugin from their own templates: `theme` (colours for MOSS Code's window), `ui` (a part of MOSS Code's window), `model` (a model provider), `trigger` (a routine trigger) and `point` (a list other plugins can add to). For example, `moss plugin new theme my-theme`.
 
 ## The manifest
 
@@ -70,6 +70,8 @@ A bot sees the tool as `mcp__hello-tool__hello`: `mcp`, the plugin's id, then th
 `host/index.ts` answers the MCP server's requests. It speaks MCP's JSON-RPC directly, so the plugin needs no dependency:
 
 ```ts
+// Hello tool's host half: one MCP server, `tools`, served on the in-process transport MOSS hands it. It speaks
+// MCP's JSON-RPC directly, so the plugin ships no dependency. Its key here is the one under `contributes.mcpServers`.
 import type { HostModule, McpServerTransport } from "@waifucave/moss-plugin-sdk";
 
 const TOOLS = [
