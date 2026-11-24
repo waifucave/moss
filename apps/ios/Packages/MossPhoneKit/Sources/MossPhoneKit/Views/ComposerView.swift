@@ -14,7 +14,7 @@ extension EnvironmentValues {
     var composerPreset: ComposerPreset { get { self[ComposerPresetKey.self] } set { self[ComposerPresetKey.self] = newValue } }
 }
 
-/// The composer of both apps, ported from the old Winter phone app's: neutral Liquid Glass that rests as a compact pill, then
+/// The composer of both apps, ported from the earlier phone app's: neutral Liquid Glass that rests as a compact pill, then
 /// grows into a rounded rectangle while its field is focused or the keyboard is up. The plus opens its own picker; a row is
 /// shown only when the conversation or session in front offers it (`ComposerOffers`), and the microphone and the voice orb are
 /// visual only and hidden from VoiceOver until there is voice.
