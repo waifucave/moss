@@ -15,11 +15,11 @@ const MAIN = "11:22";
 
 /** A press record on a clock the test moves, with the real StallWatch on the same clock and a CPU meter the test sets. */
 function rig() {
-  const c = { now: 5_000_000, cpu: 0, tick: undefined as (() => void) | undefined };
-  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
+  const c = { now: 5_000_000, cpu: 0, sw: 0, tick: undefined as (() => void) | undefined };
+  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
   const record = new PressRecord(() => c.now, watch);
   /** Time passes; the process used `cpu` ms of it; the watch's timer ticks when asked (and it exists). */
-  const pass = (ms: number, cpu = 1, tick = true): void => { c.now += ms; c.cpu += cpu; if (tick) c.tick?.(); };
+  const pass = (ms: number, cpu = 1, tick = true, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
   /** An ordinary stretch: the timer beats on time. */
   const calm = (ms: number): void => { for (let left = ms; left > 0; left -= STALL_TICK_MS) pass(Math.min(left, STALL_TICK_MS), 1); };
   return { c, watch, record, pass, calm };
@@ -115,7 +115,9 @@ describe("a genuine press while the machine stalled main (the same press, accept
   });
 
   test("a real stall of this process (sleeping, not working) between the mouse down and the report, on the real clock and the real watch", () => {
-    const watch = new StallWatch();
+    // The real clock and the real CPU meter; the OS's preemption count can't be made by a test, so it is read as a rising one.
+    let preempted = 0;
+    const watch = new StallWatch({ switches: () => (preempted += 5) });
     const record = new PressRecord(Date.now, watch);
     const sleep = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
     record.mouseDown(WIN);
@@ -126,7 +128,7 @@ describe("a genuine press while the machine stalled main (the same press, accept
     const took = record.takeWrite(WIN, MAIN);
     expect(took.ok).toBe(true);
     // The same timeline on the sealed buttons' strict `take`: refused, as it always was (it has no report in time).
-    const strict = new PressRecord(Date.now, new StallWatch());
+    const strict = new PressRecord(Date.now, new StallWatch({ switches: () => (preempted += 5) }));
     strict.mouseDown(WIN);
     sleep(1_400);
     strict.frameSaw(WIN, MAIN);
@@ -134,7 +136,8 @@ describe("a genuine press while the machine stalled main (the same press, accept
   });
 
   test("the same real delay spent working (a busy loop) is not a stall: refused", () => {
-    const record = new PressRecord(Date.now, new StallWatch());
+    let preempted = 0;
+    const record = new PressRecord(Date.now, new StallWatch({ switches: () => (preempted += 5) }));
     const spin = (ms: number): void => { const end = Date.now() + ms; while (Date.now() < end) { /* the process is running */ } };
     record.mouseDown(WIN);
     spin(1_400);
@@ -153,12 +156,12 @@ describe("what a stall never buys", () => {
     expect(r.record.takeWrite(WIN, MAIN)).toMatchObject({ ok: false, check: "the write came too late" });
   });
 
-  test("the credit is capped: the press may be held 1.5 s plus ten seconds at most, whatever the stall", () => {
+  test("the credit is capped: the press may be held 1.5 s plus eight seconds at most, whatever the stall", () => {
     const edge = rig();
     edge.record.mouseDown(WIN);
     edge.calm(10);
     edge.record.frameSaw(WIN, MAIN);
-    edge.pass(PRESS_MS + STALL_CREDIT_MAX_MS - 10, 5, false); // 11 500 ms in all, the whole of it waited
+    edge.pass(PRESS_MS + STALL_CREDIT_MAX_MS - 10, 5, false); // 9 500 ms in all, the whole of it waited
     expect(edge.record.takeWrite(WIN, MAIN).ok).toBe(true);
     const over = rig();
     over.record.mouseDown(WIN);
@@ -244,6 +247,48 @@ describe("what a stall never buys", () => {
     expect(r.record.takeWrite(WIN, MAIN).ok).toBe(true);
   });
 
+  test("press A in frame X with no report yet, press B in frame Y with no stall yet, then main stalls, then X's report: it is not B's (X can't spend Y's press, nor Y use X's)", () => {
+    const r = rig();
+    r.record.mouseDown(WIN); // A, which landed in frame X: its report is slow
+    r.calm(100);
+    r.record.mouseDown(WIN); // B, in frame Y: the machine had not stalled yet
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 4_000, 30, false); // then main stalls
+    r.record.frameSaw(WIN, "X:1"); // A's report, which would name B's press
+    r.pass(30, 3);
+    expect(r.record.takeWrite(WIN, "X:1")).toMatchObject({ ok: false, check: "two presses close together on a stalled machine" });
+    expect(r.record.takeWrite(WIN, "Y:1")).toMatchObject({ ok: false, check: "two presses close together on a stalled machine" });
+    // Nothing was spent: the person's next press, alone, goes through.
+    r.calm(2_000);
+    r.record.mouseDown(WIN);
+    r.record.frameSaw(WIN, "Y:1");
+    r.calm(40);
+    expect(r.record.takeWrite(WIN, "Y:1").ok).toBe(true);
+  });
+
+  test("the same two presses with the report in time and no stall since A are judged as they always were", () => {
+    const r = rig();
+    r.record.mouseDown(WIN);
+    r.calm(100);
+    r.record.mouseDown(WIN);
+    r.calm(20);
+    r.record.frameSaw(WIN, "Y:1");
+    r.calm(20);
+    expect(r.record.takeWrite(WIN, "Y:1").ok).toBe(true);
+  });
+
+  test("a clock that went backwards past a press is no press (the guard SendGate.takeIn has)", () => {
+    const r = rig();
+    r.record.mouseDown(WIN);
+    r.record.frameSaw(WIN, MAIN);
+    r.c.now -= 5_000;
+    expect(r.record.takeWrite(WIN, MAIN)).toEqual({ ok: false, check: "no press seen" });
+    const k = rig();
+    k.record.keyDown(WIN, MAIN);
+    k.c.now -= 5_000;
+    expect(k.record.takeWrite(WIN, MAIN)).toEqual({ ok: false, check: "no press seen" });
+  });
+
   test("two quick presses on a machine that kept up are as they were (nothing is crowded without a stall)", () => {
     const r = rig();
     r.record.mouseDown(WIN);
@@ -306,12 +351,12 @@ describe("a refused sealed press names its check and its ms in the log", () => {
     late.record.mouseDown(WIN);
     late.calm(1_200);
     late.record.frameSaw(WIN, MAIN);
-    expect(late.record.explainTake(WIN, MAIN)).toBe("no report from the page named a frame (the mouse down was 1200 ms ago; a report came 1200 ms after it, limit 1000)");
+    expect(late.record.explainTake(WIN, MAIN)).toBe("no report from the page named a frame; the mouse down was 1200 ms ago; a report came 1200 ms after it, limit 1000");
     const old = rig();
     old.record.mouseDown(WIN);
     old.record.frameSaw(WIN, MAIN);
     old.calm(1_700);
-    expect(old.record.explainTake(WIN, MAIN)).toBe("the answer came 200 ms past the bound (1500)");
+    expect(old.record.explainTake(WIN, MAIN)).toBe("the answer came 200 ms past the bound of 1500");
     expect(old.record.explainTake(WIN, "99:1")).toBe("the click landed in another frame");
     expect(old.record.take(WIN, MAIN)).toBeUndefined(); // it spent nothing: the strict answer is the same after asking
     const used = rig();

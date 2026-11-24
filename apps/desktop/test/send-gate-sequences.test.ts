@@ -12,9 +12,9 @@ const FRAMES = ["10:1", "10:2", "11:1"] as const;
 const WINDOWS = [1, 2] as const;
 
 function world() {
-  const c = { now: 4_000_000, cpu: 0, tick: undefined as (() => void) | undefined };
-  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
-  const pass = (ms: number, cpu: number, tick: boolean): void => { c.now += ms; c.cpu += cpu; if (tick) c.tick?.(); };
+  const c = { now: 4_000_000, cpu: 0, sw: 0, tick: undefined as (() => void) | undefined };
+  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
+  const pass = (ms: number, cpu: number, tick: boolean, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
   return { c, watch, pass };
 }
 

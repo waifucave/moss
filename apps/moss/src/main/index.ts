@@ -12,8 +12,9 @@ import { BotFace as ProtocolBotFace, compareReleases, CORE_EVENT_NOTIFICATION, R
 import { adoptHomeEngine, cliLauncher, installEngineCopy, startEngineThroughOs } from "@waifucave/moss-app-release/engine-launch";
 import { createRelease, type ReleaseNotice } from "@waifucave/moss-app-release/release";
 import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@waifucave/moss-app-release/updater";
-import { AppLog, appLogPath, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
+import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
 import { StallWatch } from "@waifucave/moss-app-release/stall-watch";
+import { fileLine } from "./file-log";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
 import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
 import { EngineConnection, locateEngine, tokenPath, type ConnectionState } from "./connection";
@@ -90,15 +91,16 @@ protocol.registerSchemesAsPrivileged([APP_SCHEME, SEALED_SCHEME].map((scheme) =>
 
 const logLines: string[] = [];
 // MOSS's own file under the home's logs (`<home>/logs/moss-app.log`, the shared writer MOSS Code's `app.log` uses): a refused
-// send or press leaves its reason here though the app is packaged and nobody watches its output. Lines name checks and
-// reasons, never a message's or a card's text.
+// send or press leaves its reason here though the app is packaged and nobody watches its output. Bots can read the home's logs,
+// so the file gets only what `fileLine` (file-log.ts) lets through: checks and ms, lifecycle lines, error kinds; never an
+// error's text, a card's id or text, or a bot's name. The process's output and the memory keep every line as before.
 const appLog = new AppLog(appLogPath(home, MOSS_APP_LOG_FILE));
 function log(line: string): void {
   const text = `${new Date().toISOString()} ${line}`;
   logLines.push(text);
   if (logLines.length > 2_000) logLines.shift();
   console.log(`moss: ${line}`);
-  appLog.write(line);
+  appLog.write(fileLine(line));
 }
 
 const sealed = new SealedFrames("moss");
@@ -581,6 +583,7 @@ function on(channel: string, fn: (w: BrowserWindow, a: Record<string, unknown>) 
  *  MOSS's page (main's press record, the page's own frame), one write per press. The press's age is counted without the time
  *  this process itself was not running (press.ts `takeWrite`). A refusal leaves one line saying which check refused and by
  *  how many ms; `what` names the write. */
+const refusalLines = new LineLimiter();
 function pressOf(w: BrowserWindow, what: string): WriteTake {
   const mainFrame = frameKey(w.webContents.mainFrame);
   const r: WriteTake = mainFrame === undefined ? { ok: false, check: "no press seen" } : record.takeWrite(w.id, mainFrame);
@@ -590,7 +593,9 @@ function pressOf(w: BrowserWindow, what: string): WriteTake {
   }
   // A test-marked build may stand in for the person's press (the label tested inline, so a real build has none of it).
   if ((typeof __MOSS_TEST_BUILD__ === "string") && process.env.MOSS_TEST_PRESSES === "1") return { ok: true, how: "click", stalledMs: 0 };
-  log(`${what}: refused by the press check (${r.check}${r.overMs !== undefined ? `, ${r.overMs} ms past its bound` : ""}${r.stalledMs !== undefined && r.stalledMs > 0 ? `; the process itself was not running for ${r.stalledMs} ms` : ""})`);
+  // A frame looping on a refused write can't rotate the log away: five lines per write kind in ten seconds, then the count.
+  const said = refusalLines.check(what);
+  if (said.ok) log(`${what}: refused by the press check (${r.check}${r.overMs !== undefined ? `, ${r.overMs} ms past its bound` : ""}${r.stalledMs !== undefined && r.stalledMs > 0 ? `; the process itself was not running for ${r.stalledMs} ms` : ""})${said.left > 0 ? ` (${said.left} like it left out)` : ""}`);
   return r;
 }
 function personPressed(w: BrowserWindow, what = "a write"): boolean {

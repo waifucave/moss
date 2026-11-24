@@ -46,7 +46,7 @@ describe("MOSS's log file", () => {
   test("main's log() writes through it, and a refused send and a refused press name their check (the wiring, read from the source)", () => {
     const src = readFileSync(join(import.meta.dir, "..", "src", "main", "index.ts"), "utf8");
     expect(src).toContain('new AppLog(appLogPath(home, MOSS_APP_LOG_FILE))');
-    expect(src).toMatch(/console\.log\(`moss: \$\{line\}`\);\s*appLog\.write\(line\);/);
+    expect(src).toMatch(/console\.log\(`moss: \$\{line\}`\);\s*appLog\.write\(fileLine\(line\)\);/);
     expect(src).toContain("refused by the press check (");
     const engine = readFileSync(join(import.meta.dir, "..", "src", "main", "engine.ts"), "utf8");
     expect(engine).toContain("send: the engine took nothing (");

@@ -1,17 +1,17 @@
 // The unscheduled-time watch (src/stall-watch.ts): what it credits, what it never does, and that it is quiet when idle.
 import { describe, expect, test } from "bun:test";
-import { StallWatch, STALL_CREDIT_MAX_MS, STALL_MIN_MS, STALL_TICK_MS } from "../src/stall-watch";
+import { processSwitches, StallWatch, STALL_CREDIT_MAX_MS, STALL_MIN_MS, STALL_MIN_SWITCHES, STALL_TICK_MS } from "../src/stall-watch";
 
 /** A clock, a CPU meter and a timer the test moves by hand. */
 function rig() {
-  const c = { now: 1_000_000, cpu: 0, timers: 0, fn: undefined as (() => void) | undefined };
+  const c = { now: 1_000_000, cpu: 0, sw: 0, timers: 0, fn: undefined as (() => void) | undefined };
   const watch = new StallWatch({
-    now: () => c.now, cpu: () => c.cpu,
+    now: () => c.now, cpu: () => c.cpu, switches: () => c.sw,
     setTimer: (fn) => { c.timers++; c.fn = fn; return c.timers; },
     clearTimer: () => { c.fn = undefined; },
   });
-  /** Time passes with the process using `cpu` ms of it; then the timer, if it is still there, ticks. */
-  const pass = (ms: number, cpu: number, tick = true): void => { c.now += ms; c.cpu += cpu; if (tick) c.fn?.(); };
+  /** Time passes with the process using `cpu` ms of it and the OS preempting it `sw` times; then the timer, if it is still there, ticks. */
+  const pass = (ms: number, cpu: number, tick = true, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.fn?.(); };
   return { c, watch, pass };
 }
 
@@ -94,7 +94,61 @@ describe("the stall watch", () => {
     expect(watch.running).toBe(true);
   });
 
-  test("the cap is the callers' number and is ten seconds", () => {
-    expect(STALL_CREDIT_MAX_MS).toBe(10_000);
+  test("a timer the OS deferred on an idle process (App Nap, timer coalescing) earns nothing: late, no CPU used, no involuntary switches", () => {
+    for (const tickFirst of [true, false]) {
+      const { c, watch, pass } = rig();
+      const from = c.now;
+      watch.arm(12_000);
+      pass(STALL_TICK_MS + 6_000, 3, tickFirst, 0); // the person went to another app; macOS held main's timer
+      expect([tickFirst, watch.credit(from)]).toEqual([tickFirst, 0]);
+      // One preemption is the ordinary run of a process, not starvation.
+      const one = rig();
+      const f1 = one.c.now;
+      one.watch.arm(12_000);
+      one.pass(STALL_TICK_MS + 6_000, 3, tickFirst, STALL_MIN_SWITCHES - 1);
+      expect([tickFirst, one.watch.credit(f1)]).toEqual([tickFirst, 0]);
+    }
+  });
+
+  test("real starvation (runnable, preempted, little CPU) earns credit, deferred or not before it and after it", () => {
+    const { c, watch, pass } = rig();
+    const from = c.now;
+    watch.arm(12_000);
+    pass(STALL_TICK_MS + 3_000, 20, true, STALL_MIN_SWITCHES);
+    expect(watch.credit(from)).toBeGreaterThan(2_900);
+    // A deferral first, starvation after: only the starvation counts.
+    const mixed = rig();
+    const f2 = mixed.c.now;
+    mixed.watch.arm(12_000);
+    mixed.pass(STALL_TICK_MS + 6_000, 3, true, 0);
+    mixed.pass(STALL_TICK_MS + 2_000, 10, true, 9);
+    const credited = mixed.watch.credit(f2);
+    expect(credited).toBeGreaterThan(1_900);
+    expect(credited).toBeLessThanOrEqual(2_000);
+  });
+
+  test("where the platform keeps no context-switch count (Windows) or the reading is missing, nothing is credited", () => {
+    const c = { now: 1_000_000, cpu: 0, fn: undefined as (() => void) | undefined };
+    const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => undefined, setTimer: (fn) => { c.fn = fn; return 1; }, clearTimer: () => { c.fn = undefined; } });
+    const from = c.now;
+    watch.arm(12_000);
+    c.now += STALL_TICK_MS + 5_000;
+    c.cpu += 10;
+    expect(watch.credit(from)).toBe(0);
+    c.fn?.();
+    expect(watch.credit(from)).toBe(0);
+    expect(processSwitches("win32")).toBeUndefined();
+  });
+
+  test("the default reading is the process's own count on this platform (non-negative, never falling)", () => {
+    if (process.platform === "win32") return;
+    const a = processSwitches();
+    const b = processSwitches();
+    expect(typeof a).toBe("number");
+    expect(b! >= a!).toBe(true);
+  });
+
+  test("the cap is the callers' number and is eight seconds", () => {
+    expect(STALL_CREDIT_MAX_MS).toBe(8_000);
   });
 });

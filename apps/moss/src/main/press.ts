@@ -46,9 +46,10 @@ interface Down {
   /** A report that came after REPORT_MS: it counts only for a person's write (`takeWrite`), and only when the main process was
    *  itself not running for the delay (`credit`: the stall it was credited at the time the report was handled). */
   late?: { frame: string; at: number; credit: number };
-  /** Another press was still waiting for its report when this one came, while the machine was stalling: a report that comes now
-   *  can't be told from the other press's, so no write takes this press. */
-  crowded?: boolean;
+  /** Another press, at this time, was still waiting for its report when this one came: a report that comes later can't be told from
+   *  that press's. Judged when a write takes this press (`judgeClick`), not here: it matters once the machine has stalled since
+   *  that earlier press, or when this press's report came late. */
+  openSince?: number;
   spent?: boolean;
 }
 
@@ -91,11 +92,10 @@ export class PressRecord {
   mouseDown(windowId: number, point?: { x: number; y: number }): void {
     const at = this.now();
     const was = this.downs.get(windowId);
-    // The press before this one is still waiting for its report while the machine is stalling: whichever report comes next
-    // could be its, so this press can't be told apart (a write refuses it; a machine that kept up never gets here).
-    const crowded = was !== undefined && !was.spent && was.frame === undefined && was.late === undefined && this.stalled(was.at, at) > 0
-      && at - was.at - this.stalled(was.at, at) <= REPORT_MS;
-    this.downs.set(windowId, { at, ...(point !== undefined ? { point } : {}), ...(crowded ? { crowded: true as const } : {}) });
+    // The press before this one is still waiting for its report (its report can still be taken: its age, less the machine's own stall since it, is within REPORT_MS):
+    // whichever report comes next could be its. Whether that matters is judged when a write takes this press.
+    const open = was !== undefined && !was.spent && was.frame === undefined && was.late === undefined && at - was.at - this.stalled(was.at, at) <= REPORT_MS;
+    this.downs.set(windowId, { at, ...(point !== undefined ? { point } : {}), ...(open ? { openSince: was!.at } : {}) });
     this.stalls?.arm(WATCH_MS);
   }
 
@@ -172,9 +172,9 @@ export class PressRecord {
       if (x === undefined) return undefined;
       if (x.spent === true) return `the ${kind} was already used`;
       const age = now - x.at;
-      if (kind === "click" && x.frame === undefined) return `no report from the page named a frame (the mouse down was ${age} ms ago${x.late !== undefined ? `; a report came ${x.late.at - x.at} ms after it, limit ${REPORT_MS}` : ""})`;
+      if (kind === "click" && x.frame === undefined) return `no report from the page named a frame; the mouse down was ${age} ms ago${x.late !== undefined ? `; a report came ${x.late.at - x.at} ms after it, limit ${REPORT_MS}` : ""}`;
       if (x.frame !== frame) return `the ${kind} landed in another frame`;
-      if (age > PRESS_MS) return `the answer came ${age - PRESS_MS} ms past the bound (${PRESS_MS})`;
+      if (age > PRESS_MS) return `the answer came ${age - PRESS_MS} ms past the bound of ${PRESS_MS}`;
       return undefined;
     };
     const click = why(d, "click");
@@ -184,8 +184,11 @@ export class PressRecord {
   }
 
   private judgeClick(d: Down, frame: string, now: number): WriteTake {
+    if (now < d.at) return { ok: false, check: "no press seen" };
     const stalledMs = this.stalled(d.at, now);
-    if (d.crowded === true) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
+    // An earlier press had no report when this one came, and the machine has stalled since it (or this press's report came late):
+    // the report this press holds may be that press's, so no write takes it. A machine that kept up is judged as it always was.
+    if (d.openSince !== undefined && (d.late !== undefined || this.stalled(d.openSince, now) > 0)) return { ok: false, check: "two presses close together on a stalled machine", stalledMs };
     const reported = d.frame ?? d.late?.frame;
     if (reported === undefined) return { ok: false, check: "no pointerdown report from this page", stalledMs, ...(now - d.at - stalledMs > PRESS_MS ? { overMs: now - d.at - stalledMs - PRESS_MS } : {}) };
     if (reported !== frame) return { ok: false, check: "the press landed in another frame", stalledMs };
@@ -199,6 +202,7 @@ export class PressRecord {
   }
 
   private judgeKey(k: Down, frame: string, now: number): WriteTake {
+    if (now < k.at) return { ok: false, check: "no press seen" };
     if (k.frame !== frame) return { ok: false, check: "the press landed in another frame" };
     const stalledMs = this.stalled(k.at, now);
     const over = now - k.at - stalledMs - PRESS_MS;

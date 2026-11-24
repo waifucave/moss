@@ -12,10 +12,10 @@ const A = "10:1";
 const B = "10:2";
 
 function rig() {
-  const c = { now: 9_000_000, cpu: 0, tick: undefined as (() => void) | undefined };
-  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
+  const c = { now: 9_000_000, cpu: 0, sw: 0, tick: undefined as (() => void) | undefined };
+  const watch = new StallWatch({ now: () => c.now, cpu: () => c.cpu, switches: () => c.sw, setTimer: (fn) => { c.tick = fn; return 1; }, clearTimer: () => { c.tick = undefined; } });
   const gate = new SendGate(() => c.now, watch);
-  const pass = (ms: number, cpu = 1, tick = true): void => { c.now += ms; c.cpu += cpu; if (tick) c.tick?.(); };
+  const pass = (ms: number, cpu = 1, tick = true, sw = 5): void => { c.now += ms; c.cpu += cpu; c.sw += sw; if (tick) c.tick?.(); };
   const calm = (ms: number): void => { for (let left = ms; left > 0; left -= STALL_TICK_MS) pass(Math.min(left, STALL_TICK_MS), 1); };
   /** A click the main process saw land in `frame`: the mouse down, then the frame's report. */
   const click = (frames: readonly string[] = [A], reportAfter = 10): void => { gate.press(WIN, { kind: "mouse", key: "left" }); calm(reportAfter); gate.seen(WIN, frames); };
@@ -132,8 +132,35 @@ describe("a genuine press while the machine stalled main", () => {
     expect(r.gate.takeIn(WIN, A)).toBe(true);
   });
 
+  test("press A in frame X with no report yet, press B in frame Y with no stall yet, then main stalls, then X's report: it is not B's", () => {
+    const r = rig();
+    r.gate.press(WIN, { kind: "mouse", key: "left" }); // A, in frame X: its report is slow
+    r.calm(100);
+    r.gate.press(WIN, { kind: "mouse", key: "left" }); // B, in frame Y: no stall yet
+    r.calm(20);
+    r.pass(STALL_TICK_MS + 4_000, 30, false); // then main stalls
+    expect(r.gate.seen(WIN, ["X:1"])).toBe(false); // A's report would name B's press
+    expect(r.gate.takeIn(WIN, "X:1")).toBe(false);
+    expect(r.gate.takeIn(WIN, "Y:1")).toBe(false);
+    expect(r.gate.whyNot(WIN, "X:1")).toContain("two presses close together on a stalled machine");
+    r.calm(2_000);
+    r.click(["Y:1"]); // the next press, alone
+    expect(r.gate.takeIn(WIN, "Y:1")).toBe(true);
+  });
+
+  test("the same two presses with no stall since A are as they were: the report in time is taken", () => {
+    const r = rig();
+    r.gate.press(WIN, { kind: "mouse", key: "left" });
+    r.calm(100);
+    r.gate.press(WIN, { kind: "mouse", key: "left" });
+    r.calm(20);
+    expect(r.gate.seen(WIN, ["Y:1"])).toBe(true);
+    expect(r.gate.takeIn(WIN, "Y:1")).toBe(true);
+  });
+
   test("a real stall of this process (sleeping), on the real clock and watch, between the report and the call", () => {
-    const gate = new SendGate(Date.now, new StallWatch());
+    let preempted = 0;
+    const gate = new SendGate(Date.now, new StallWatch({ switches: () => (preempted += 5) }));
     gate.press(WIN, { kind: "mouse", key: "left" });
     gate.seen(WIN, [A]);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_600); // main not running for 1.6 s; the call arrives in the same turn
