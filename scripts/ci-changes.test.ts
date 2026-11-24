@@ -69,7 +69,8 @@ describe("ci-changes", () => {
   });
 
   test("a service's change: its tests and the typecheck", () => {
-    expect(on(["services/forwarder/src/index.ts"])).toEqual(["workspaces", "typecheck"]);
+    // (and the scripts: the services' deploy tests read their wrangler configs)
+    expect(on(["services/forwarder/src/index.ts"])).toEqual(["workspaces", "typecheck", "scripts"]);
   });
 
   test("macOS: a merge-queue run takes three macOS jobs (its machine's, the sealed-core gate's and the one for core, cli, scripts and verify, which runs in legs); a pull request takes none (the local gate); Swift runs on demand only", () => {
@@ -429,13 +430,14 @@ describe("the path-to-area map", () => {
     { name: "the plugin SDK", files: ["packages/plugin-sdk/src/views.ts", "packages/plugin-sdk/generated/catalog.json"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "core", "cli", "scripts", "verify", "acceptance"], units: "all" },
     { name: "the engine's source", files: ["packages/core/src/agents/driver.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "scriptsmac", "verify", "adapters", "acceptance"], units: "all" },
     { name: "the engine's tests only", files: ["packages/core/test/fence/win-fenced.test.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify"], units: [] },
-    { name: "a service", files: ["services/push/src/index.ts", "services/push/wrangler.jsonc"], areas: ["workspaces", "typecheck"], units: [] },
+    { name: "a service", files: ["services/push/src/index.ts", "services/push/wrangler.jsonc"], areas: ["workspaces", "typecheck", "scripts"], units: [] },
     { name: "an app of the desktop's", files: ["apps/moss/src/main/press.ts", "apps/desktop/src/main/ui/brokers.ts"], areas: ["workspaces", "app", "packages", "typecheck", "core", "scripts", "acceptance"], units: "all" },
     { name: "an app's tests only", files: ["apps/moss/test/press-sequences.test.ts"], areas: ["workspaces", "app", "typecheck", "scripts"], units: [] },
     { name: "the SDK's examples directory", files: ["examples/sample-echo/src/index.ts"], areas: ["workspaces", "typecheck", "core"], units: [] },
     { name: "the Cowork launcher", files: ["apple/Cowork/WinterCoworkLauncher/Package.swift"], areas: ["core", "scripts", "scriptsmac", "cowork"], units: [] },
     { name: "the old Chrome extension's native host", files: ["apple/ComputerUse/WinterBrowserHost/Sources/Host.swift"], areas: ["core", "scripts", "swift"], units: [] },
     { name: "the rest of apple/ (the Computer Use core)", files: ["apple/ComputerUse/WinterCUCore/Package.swift"], areas: ["core","scripts"], units: [] },
+    { name: "the Android apps", files: ["apps/android/moss/build.gradle.kts", ".github/workflows/android.yml"], areas: ["core", "scripts"], units: [] },
     { name: "the brand assets and the release notes", files: ["assets/brand/lockup-on-dark.svg", "releases/notes/0.113.0.md"], areas: ["scripts"], units: [] },
   ];
 
@@ -449,13 +451,13 @@ describe("the path-to-area map", () => {
   }
 
   test("a path no area maps runs every area and every unit (fail closed), the inert ones run none", () => {
-    for (const f of ["newtop/x.ts", "apps/android/build.gradle", "native/newlib/src/lib.rs", "Makefile", "docs-but-not/x.md"]) {
+    for (const f of ["newtop/x.ts", "apps/watch/build.gradle", "native/newlib/src/lib.rs", "Makefile", "docs-but-not/x.md"]) {
       expect([f, isKnown(f)]).toEqual([f, false]);
       expect(on([f]), f).toEqual(EVERY);
       expect(acceptanceUnits([f]), f).toEqual([...ON_GITHUB]);
     }
     // One stray path in an otherwise small change: everything.
-    expect(on(["docs/a.md", "apps/android/x.kt"])).toEqual(EVERY);
+    expect(on(["docs/a.md", "apps/watch/x.kt"])).toEqual(EVERY);
     for (const f of ["docs/a/b.md", "README.md", "CONTRIBUTING.md", ".gitignore"]) expect([f, isKnown(f), on([f])]).toEqual([f, true, []]);
     // A change with no files (an empty diff) runs nothing; no diff to go on runs everything.
     expect(on([])).toEqual([]);
@@ -531,7 +533,7 @@ describe("regression list: the lanes of this week", () => {
     { lane: "Windows fence WS5/WS6", what: "WS: sandbox remove on Windows", files: ["packages/cli/src/main.ts","packages/core/src/fence/win-fenced.ts","packages/core/src/index.ts","packages/core/test/fence/win-fenced.e2e.test.ts","scripts/ci/windows-fence/remove.ps1","scripts/ci/windows-fence/hold-account.ts"],
       areas: ["workspaces","daemon","app","packages","typecheck","core","cli","scripts","scriptsmac","verify","acceptance"], units: "all", macos: true },
     { lane: "push service", what: "the push service's topics per phone app", files: ["services/push/wrangler.jsonc","services/push/src/apns.ts","services/push/src/env.ts","services/push/src/fcm.ts","services/push/src/index.ts","services/push/src/push-do.ts","services/push/test/fake-log.ts","services/push/test/node/fakes.ts","services/push/test/notifier-integration.test.ts","services/push/test/push.test.ts","services/push/test/routing.test.ts","services/push/vitest.config.ts"],
-      areas: ["workspaces","typecheck"], units: [], macos: true },
+      areas: ["workspaces","typecheck","scripts"], units: [], macos: true },
     { lane: "phone push routing", what: "the notifier, the registry and the engine's pairing record", files: ["plugins/moss/plugins/push/src/notifier.ts","packages/core/src/daemon.ts","packages/core/src/notify/core-updates.ts","packages/plugin-sdk/src/api/plugin-api.ts","packages/protocol/src/push-routing.ts","packages/protocol/test/push-routing.test.ts","plugins/moss/plugins/notifications/src/notifier.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/devices/registry.ts","packages/core/src/identity/sas.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/link-clients.test.ts","packages/plugin-sdk/src/views.ts","packages/protocol/generated/moss/core.json"],
       areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","scriptsmac","codegen","verify","link","acceptance"], units: "all", macos: true },
     { lane: "phone start", what: "a paired phone starts a coding session", files: ["packages/core/src/agents/tests/adapter-card.test.ts","packages/protocol/test/session-graph.test.ts","packages/core/test/ipc/link-clients.test.ts","packages/protocol/generated/moss/agents.json","packages/protocol/src/agents.ts","packages/protocol/test/remote-start.test.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/daemon.ts","packages/core/src/devices/tests/registry.test.ts"],
@@ -577,9 +579,9 @@ describe("the scope a run states", () => {
   });
 
   test("a path no area maps says so in the scope: the run is full because it could not be sure", () => {
-    const s = all(["apps/android/x.kt"]).scope;
+    const s = all(["apps/watch/x.kt"]).scope;
     expect(s).toContain("FULL RUN");
-    expect(s).toContain("1 changed path(s) no area maps, e.g. apps/android/x.kt (fail closed");
+    expect(s).toContain("1 changed path(s) no area maps, e.g. apps/watch/x.kt (fail closed");
   });
 
   test("an acceptance-only run says so", () => {

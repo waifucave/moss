@@ -59,6 +59,8 @@ const READ_BY_SCRIPTS: readonly Pattern[] = [
   // brand-icons.test.ts reads the theme and the sidebar's, the conversation's and the plugin index's marks; packaging.test.ts checks every bundled plugin's moss.json;
   // the release tests read the bundled plugins; the preview tests read the canvas and the theme
   "plugins/",
+  // the services' deploy tests read the services' wrangler configs and env example
+  "services/",
 ];
 const READ_BY_SCRIPTSMAC: readonly Pattern[] = [
   // the helper embed test reads the helper's own version, the Cowork bundle tests its pins and sources, the runtimes test the pins file and the core's runtime-sdk
@@ -101,7 +103,7 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // Also what sits beside the repo's own tests and has no job of its own: the iPhone apps, the phone core and the native helpers (their own
   // workflows build them), the brand assets, the relay's infrastructure files, the release notes and feed, and the vendored patches: the
   // scripts' tests (the brand icons, the release and packaging checks, the rename scan) read them, so a change to one runs that one Linux job.
-  scripts: ["scripts/", "packages/core/", "packages/cli/", "packages/*/src/**/*", "apps/desktop/", "apps/moss/", "apps/ios/", "apple/", "packaging/", "VERSION", "VERSIONS.json", ".github/",
+  scripts: ["scripts/", "packages/core/", "packages/cli/", "packages/*/src/**/*", "apps/desktop/", "apps/moss/", "apps/ios/", "apps/android/", "apple/", "packaging/", "VERSION", "VERSIONS.json", ".github/",
     "native/sandbox/", "native/input/", "native/link-sidecar/", "native/phone-core/", "native/README.md", "assets/", "infra/", "releases/", "vendor/", ...READ_BY_SCRIPTS],
   // the scripts' few macOS-only tests (scripts/**/*.darwin.test.ts, on a macOS runner): the scripts themselves only, so
   // a change under apple/ alone takes no macOS runner for them (a push to main still runs every area)
