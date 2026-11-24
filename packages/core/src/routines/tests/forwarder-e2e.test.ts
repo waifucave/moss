@@ -38,7 +38,7 @@ const stateDirExisted = existsSync(stateDir);
 const runs = process.platform !== "win32";
 
 const b64u = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64url");
-const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+const utf8 = (text: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(text);
 
 interface Harness {
   url: string;
