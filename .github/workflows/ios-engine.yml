@@ -101,14 +101,14 @@ jobs:
         env:
           TEST_RUNNER_MOSS_IW_ENGINE: "1"
         run: |
-          xcodebuild test-without-building -project MOSSPhone.xcodeproj -scheme MOSSEngineTests -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/moss.xcresult" 2>&1 | grep -E "Test Case|error|XCTAssert|skipped|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; test ${PIPESTATUS[0]} -eq 0
+          xcodebuild test-without-building -project MOSSPhone.xcodeproj -scheme MOSSEngineTests -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/moss.xcresult" 2>&1 | grep -E "Test Case|error|XCTAssert|skipped|Executed|TEST (SUCC|FAIL)|IW " | cut -c1-400 ; test ${PIPESTATUS[0]} -eq 0
       - name: MOSS Code on the real engine (hosted test)
         if: always()
         working-directory: apps/ios
         env:
           TEST_RUNNER_MOSS_IW_ENGINE: "1"
         run: |
-          xcodebuild test-without-building -project MOSSPhone.xcodeproj -scheme MOSSCodeEngineTests -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/code.xcresult" 2>&1 | grep -E "Test Case|error|XCTAssert|skipped|Executed|TEST (SUCC|FAIL)" | cut -c1-400 ; test ${PIPESTATUS[0]} -eq 0
+          xcodebuild test-without-building -project MOSSPhone.xcodeproj -scheme MOSSCodeEngineTests -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/code.xcresult" 2>&1 | grep -E "Test Case|error|XCTAssert|skipped|Executed|TEST (SUCC|FAIL)|IW " | cut -c1-400 ; test ${PIPESTATUS[0]} -eq 0
       - name: No test was skipped
         if: always()
         run: |
