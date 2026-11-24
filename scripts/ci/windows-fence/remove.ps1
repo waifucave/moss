@@ -2,19 +2,22 @@
 # profile folder and ProfileList key, its WFP filters, the marker, and the persistent grants. Fails on any leftover.
 . "$PSScriptRoot/lib.ps1"
 $pool = Get-Pool
-# A long command of a pool account (lane WS5, the WS4 reviewer's item 1): started the way the daemon starts one, still
-# running when remove begins. Remove must end it (no process of a pool account outlives remove) and not wait it out.
+# Long commands of pool accounts (lane WS5, the WS4 reviewer's item 1), started the way the daemon starts them and still
+# running when remove begins: a foreground one, and (lane WS7) a bot's background command, each on its own account.
+# Remove must end both (no process of a pool account outlives remove) and wait out neither; the background command's
+# end comes back to its session as a failed or stopped task, with its log.
 $holdOut = Join-Path $env:RUNNER_TEMP "moss-hold-result.json"
 Remove-Item -LiteralPath $holdOut -Force -ErrorAction SilentlyContinue
 $bunExe = (Get-Command bun).Source
 $hold = Start-Process -FilePath $bunExe -ArgumentList @("scripts/ci/windows-fence/hold-account.ts", $holdOut) -WorkingDirectory $Root -NoNewWindow -PassThru
 function PoolProcs { @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\moss-sb-*" }) }
 $sw = [Diagnostics.Stopwatch]::StartNew()
-while ((PoolProcs).Count -eq 0 -and $sw.Elapsed.TotalSeconds -lt 300) { Start-Sleep -Milliseconds 500 }
+function HeldAccounts { @(PoolProcs | ForEach-Object { ("$($_.UserName)" -split '\\')[-1] } | Sort-Object -Unique) }
+while ((HeldAccounts).Count -lt 2 -and $sw.Elapsed.TotalSeconds -lt 300) { Start-Sleep -Milliseconds 500 }
 $running = PoolProcs
-Write-Output "a pool account's command is running: $($running.Count) process(es) after $([int]$sw.Elapsed.TotalSeconds) s ($(($running | ForEach-Object { $_.UserName } | Sort-Object -Unique) -join ', '))"
-if ($running.Count -eq 0) { throw "the held command never started" }
-$heldAccount = ("$($running[0].UserName)" -split '\\')[-1]
+$heldAccounts = HeldAccounts
+Write-Output "pool accounts' commands are running: $($running.Count) process(es) after $([int]$sw.Elapsed.TotalSeconds) s ($($heldAccounts -join ', '))"
+if ($heldAccounts.Count -lt 2) { throw "the two held commands never both started (accounts: $($heldAccounts -join ', '))" }
 # The race remove must win (lane WS4): every account marked used and the reset task started (SYSTEM remakes each
 # profile, ~20 s apiece), then remove at once, while the rebuild runs.
 $poolState = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "MOSS Sandbox\pool\$Sid"
@@ -50,10 +53,12 @@ if ($rp.ExitCode -ne 0) {
   throw "remove round 1 exited $($rp.ExitCode)"
 }
 if ($null -eq $markerGone -or $null -eq $accountGone -or $markerGone -gt $accountGone) { throw "the marker was not gone before the first account (marker $markerGone s, account $accountGone s)" }
-# Remove ended the held command's processes itself (its own line names how many), before it deleted the account.
-$endedCount = 0
-foreach ($l in $removeSaid) { if ("$l" -match "sandbox remove: $([regex]::Escape($heldAccount)): ended (\d+)") { $endedCount += [int]$Matches[1] } }
-if ($endedCount -lt 1) { throw "remove did not say it ended the held account's ($heldAccount) processes" }
+# Remove ended each held command's processes itself (its own line names how many), before it deleted the account.
+foreach ($heldAccount in $heldAccounts) {
+  $endedCount = 0
+  foreach ($l in $removeSaid) { if ("$l" -match "sandbox remove: $([regex]::Escape($heldAccount)): ended (\d+)") { $endedCount += [int]$Matches[1] } }
+  if ($endedCount -lt 1) { throw "remove did not say it ended the held account's ($heldAccount) processes" }
+}
 $after = PoolProcs
 if ($after.Count -gt 0) { throw "a pool account's process outlived remove: $(($after | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')" }
 $hsw = [Diagnostics.Stopwatch]::StartNew()
@@ -64,6 +69,13 @@ $endedAfter = ($held.endedAt - $removeStartedAt) / 1000
 Write-Output ("the held command ended: kind {0}, code {1}, {2:N1} s after remove started (its account was gone at {3:N1} s)" -f $held.kind, $held.code, $endedAfter, $accountGone)
 if ("$($held.stdout)" -match "finished") { throw "the held command ran to its end" }
 if ($endedAfter -gt ($accountGone + 30)) { throw "the held command ended only $endedAfter s after remove started, past its account's removal ($accountGone s)" }
+$bg = $held.background
+$bgAfter = ($bg.endedAt - $removeStartedAt) / 1000
+Write-Output ("the held background command ended: told {0}, {1:N1} s after remove started; log: {2}" -f $bg.status, $bgAfter, (("$($bg.log)" -replace '\s+', ' ').Trim()))
+if ($bg.isError) { throw "the background command was not started: $($bg.answer)" }
+if (@("failed", "stopped") -notcontains $bg.status) { throw "the background command's end was told as $($bg.status), not failed or stopped" }
+if ("$($bg.log)" -notmatch "started" -or "$($bg.log)" -match "finished") { throw "the background command's log does not show it started and was cut short" }
+if ($bgAfter -gt ($accountGone + 30)) { throw "the background command ended only $bgAfter s after remove started, past its account's removal ($accountGone s)" }
 $code = Invoke-Limited "remove (round 2)" $Core @("sandbox", "remove") 900
 if ($code -ne 0) { throw "remove round 2 exited $code" }
 if (-not $hold.HasExited) { & taskkill.exe /T /F /PID $hold.Id | Out-Null }

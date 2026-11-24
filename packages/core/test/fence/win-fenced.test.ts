@@ -570,23 +570,27 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     }) };
     return { runs, release, spawner };
   };
-  const make = (spawner: FencedSpawner, session: string, wakes: unknown[]) => {
+  const make = (spawner: FencedSpawner, session: string, wakes: unknown[], allowWrite?: (moss: string, cwd: string) => string[]) => {
     const cwd = mkdtempSync(join(tmpdir(), "ws7-bg-"));
+    const moss = mkdtempSync(join(tmpdir(), "ws7-moss-"));
     const caller = { kind: "session", sessionId: session, sessionKind: "bot", bot: "luna" } as Extract<Caller, { kind: "session" }>;
     const t = Object.fromEntries(windowsShellTools({
-      spawner, caller, kind: "bot", cwd: () => cwd, sandbox: () => ({}), userHome: "C:\\h", temp: "C:\\t", mossHome: "C:\\h\\.moss",
+      spawner, caller, kind: "bot", cwd: () => cwd, userHome: "C:\\h", temp: "C:\\t", mossHome: moss,
+      sandbox: () => (allowWrite === undefined ? {} : { filesystem: { allowWrite: allowWrite(moss, cwd) } }),
       wake: async (w) => { wakes.push(w); },
     }).map((x) => [x.name, x]));
-    return { t, cwd };
+    return { t, cwd, moss };
   };
   test("it answers at once with its id and log; output is logged as it comes; its end is told; the lease is the run's", async () => {
     const s = slow();
     const wakes: { task: string; status: string; text: string }[] = [];
-    const { t } = make(s.spawner, "bg-a", wakes);
+    const { t, moss } = make(s.spawner, "bg-a", wakes);
     const r = await t.Bash!.run({ command: "long", run_in_background: true });
     expect(r.isError).toBe(false);
     const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
     const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    // The daemon's own folder, never the command's (which it could swap for a link to a file of the user's).
+    expect(log).toBe(join(moss, "logs", "background", "bg-a", `${id}.log`));
     expect(windowsBackgroundOf("bg-a")).toEqual([id]);
     expect(readFileSync(log, "utf8")).toBe("line one\nline two\n");
     expect(s.runs[0]!.timeoutMs).toBe(24 * 3_600_000);
@@ -626,6 +630,22 @@ describe("a background command on Windows (rule B, lane WS7)", () => {
     const esc = await t.Bash!.run({ command: "x", run_in_background: true, dangerouslyDisableSandbox: true });
     expect(esc).toMatchObject({ isError: true, text: expect.stringContaining("runs in the foreground") });
   });
+  test("never where the command may write: a write root that holds the log's folder refuses the start, and nothing runs", async () => {
+    for (const roots of [(moss: string) => [moss], (moss: string) => [join(moss, "logs")], (moss: string, cwd: string) => [cwd, join(moss, "logs", "background")]]) {
+      const s = slow();
+      const { t, moss } = make(s.spawner, "bg-d", [], roots);
+      const r = await t.Bash!.run({ command: "x", run_in_background: true });
+      expect(r).toMatchObject({ isError: true, text: expect.stringContaining("can't be kept where this command may write") });
+      expect(s.runs).toHaveLength(0);
+      expect(existsSync(join(moss, "logs", "background"))).toBe(false);
+    }
+    // The command's own folder as a root is fine: the log is not there.
+    const s = slow();
+    const { t } = make(s.spawner, "bg-e", [], (_m, cwd) => [cwd]);
+    const ok = await t.Bash!.run({ command: "x", run_in_background: true });
+    expect(ok.isError).toBe(false);
+    await stopWindowsBackground("bg-e", /win_bg_[0-9a-f]{8}/.exec(ok.text)![0]);
+  }, 30_000);
 });
 
 describe("the exclusions follow the fenced set (rule 8b, lane WS7)", () => {

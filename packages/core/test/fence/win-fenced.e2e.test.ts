@@ -448,11 +448,20 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
       "@(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\\moss-sb-*' }).Count"], { stdout: "pipe" }).stdout.toString().trim();
     wakes.length = 0;
     const started = Date.now();
-    const r = await call(bgTools.Bash!, { command: "for i in 1 2 3; do echo tick-$i; sleep 2; done; echo all-done", run_in_background: true });
+    // The command goes for its own log first (the daemon writes it, outside the sandbox): append to every log there,
+    // and plant a name in the logs' folder (where a link or junction would go). Neither may land.
+    const logs = join(moss, "logs", "background").replace(/\\/g, "/");
+    const planted = join(moss, "logs", "background", "planted");
+    rmSync(planted, { force: true });
+    const r = await call(bgTools.Bash!, {
+      command: `sleep 1; for f in '${logs}'/*/*.log; do echo INJECTED >> "$f"; done 2>/dev/null; touch '${logs}/planted' 2>/dev/null && echo PLANTED; for i in 1 2 3; do echo tick-$i; sleep 2; done; echo all-done`,
+      run_in_background: true,
+    });
     const answered = Date.now() - started;
     expect(r.isError).toBe(false);
     const id = /win_bg_[0-9a-f]{8}/.exec(r.text)![0];
     const log = /written to (\S+\.log)/.exec(r.text)![1]!;
+    expect(log).toBe(join(moss, "logs", "background", CALLER.sessionId, `${id}.log`));
     let midway = "";
     for (let i = 0; i < 600 && !midway.includes("tick-1"); i++) { await Bun.sleep(100); try { midway = readFileSync(log, "utf8"); } catch { /* not yet */ } }
     const sawEnd = () => wakes.some((w) => w.task === id);
@@ -461,7 +470,12 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     for (let i = 0; i < 1200 && !sawEnd(); i++) await Bun.sleep(100);
     const end = wakes.find((w) => w.task === id);
     expect(end).toMatchObject({ status: "completed" });
-    expect(readFileSync(log, "utf8")).toContain("all-done");
+    const whole = readFileSync(log, "utf8");
+    console.log(`[e2e] background: the command's own log written by it: ${whole.includes("INJECTED")}; a name planted beside the logs: ${existsSync(planted) || whole.includes("PLANTED")}`);
+    expect(whole).toContain("all-done");
+    expect(whole).not.toContain("INJECTED");
+    expect(whole).not.toContain("PLANTED");
+    expect(existsSync(planted)).toBe(false);
     // A long one: its account runs it (the lease is held) until TaskStop's stop ends it, with what it started.
     const long = await call(bgTools.Bash!, { command: "sleep 600 & sleep 600; echo never", run_in_background: true });
     const lid = /win_bg_[0-9a-f]{8}/.exec(long.text)![0];

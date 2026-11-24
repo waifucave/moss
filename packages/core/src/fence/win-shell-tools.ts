@@ -13,8 +13,8 @@
 // restart stops ... background commands"): the same fenced run as a foreground one, not awaited. It holds its pool
 // account's lease and its plan for as long as it lives (the spawner's own run), so `sandbox remove` ends it as it ends
 // any command, and the engine's exit ends it (the launcher's kill-on-close job). Its output is written as it comes to a
-// log in the session's folder (`.moss-background/<id>.log`, capped), the call answers at once with the task's id and
-// that path, `TaskStop` with the id stops it (`stopWindowsBackground`), and its end comes back to the conversation as a
+// log the daemon owns (`<MOSS home>/logs/background/<session>/<id>.log`, capped; see `startBackground` for why it is
+// never in the command's own folder), the call answers at once with the task's id and that path, `TaskStop` with the id stops it (`stopWindowsBackground`), and its end comes back to the conversation as a
 // background task's notification (`wake`). At most `WIN_SHELL_BACKGROUND_PER_SESSION` run at once in one session (the
 // pool is shared by every session), each for at most `WIN_SHELL_BACKGROUND_MAX_MS`; a command outside the sandbox
 // never runs in the background (the approval check refuses that pair before any card, and so does this tool).
@@ -23,8 +23,8 @@
 // TaskOutput over them (the bot reads the log with Read), and the working folder carried from one call to the next
 // (each call starts in the session's folder).
 import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { isAbsolute, join, relative, win32 } from "node:path";
 import type { SandboxSettingsConfig } from "@waifucave/clover-agent-sdk";
 import type { Caller } from "@waifucave/moss-protocol";
 import type { CoreToolDef, CoreToolResult } from "../runtime-sdk/turn-loop/servers";
@@ -168,11 +168,22 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
   /** Rule B: start a background command and answer at once (or with the refusal, when it comes within a second). */
   const startBackground = async (name: string, shell: "bash" | "powershell", command: string, cwd: string, sandbox: SandboxSettingsConfig): Promise<CoreToolResult> => {
     const id = `win_bg_${randomBytes(4).toString("hex")}`;
-    const dir = join(cwd, ".moss-background");
+    // The log is written by the daemon, outside the sandbox, while the command runs: in a folder the command can
+    // write (its own, say) the command could swap the log, or a folder above it, for a link or a junction and have the
+    // daemon append what it prints to any file of the user's. So the log lives in the daemon's own folder under the
+    // MOSS home (`logs/`: a bot's sessions read it, no sandboxed command writes it), a start is refused if any
+    // write root of this command holds that folder, and the file is made new (exclusive create, which never follows a
+    // link at its name) and written only through the handle that made it, never re-opened by its path.
+    const dir = join(o.mossHome, "logs", "background", o.caller.sessionId.replace(/[^A-Za-z0-9_-]/g, "_"));
     const log = join(dir, `${id}.log`);
-    try { mkdirSync(dir, { recursive: true }); writeFileSync(log, ""); } catch (e) {
+    const holds = (root: string) => { const rel = relative(root, dir); return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)); };
+    const root = (sandbox.filesystem?.allowWrite ?? []).find(holds);
+    if (root !== undefined) return { text: `${name}: a background command's log can't be kept where this command may write (${root}); run it in the foreground`, isError: true };
+    let fd: number;
+    try { mkdirSync(dir, { recursive: true }); fd = openSync(log, "ax"); } catch (e) {
       return { text: `${name}: the background command's log couldn't be made (${(e as Error).message})`, isError: true };
     }
+    const put = (text: string) => { try { writeSync(fd, text); } catch { /* the disk is full; the command runs on */ } };
     let written = 0;
     let dropped = false;
     const onOutput = (text: string) => {
@@ -180,24 +191,25 @@ export function windowsShellTools(o: WindowsShellToolsOptions): CoreToolDef[] {
       const bytes = Buffer.byteLength(text);
       if (written + bytes > WIN_SHELL_BACKGROUND_LOG_CAP) {
         dropped = true;
-        try { appendFileSync(log, `\n[moss: the log reached ${WIN_SHELL_BACKGROUND_LOG_CAP / 1048576} MB; later output is dropped]\n`); } catch { /* gone */ }
+        put(`\n[moss: the log reached ${WIN_SHELL_BACKGROUND_LOG_CAP / 1048576} MB; later output is dropped]\n`);
         return;
       }
       written += bytes;
-      try { appendFileSync(log, text); } catch { /* the folder went away */ }
+      put(text);
     };
     const abort = new AbortController();
     const run = o.spawner.run({
       command, cwd, env: { TMPDIR: win32.normalize(cwd) }, timeoutMs: WIN_SHELL_BACKGROUND_MAX_MS,
       who: { caller: o.caller }, shell, sandbox, signal: abort.signal, onOutput: (t) => onOutput(t),
-    });
+    }).catch((e: unknown) => ({ kind: "refused" as const, reason: e instanceof Error ? e.message : String(e) }));
     let settle!: () => void;
     const ended = new Promise<void>((res) => { settle = res; });
     background.set(id, { id, session: o.caller.sessionId, log, abort, ended });
     const finished = run.then(async (r) => {
       const status: "completed" | "failed" | "stopped" = abort.signal.aborted ? "stopped" : r.kind === "exited" && r.code === 0 ? "completed" : "failed";
       const how = r.kind === "refused" ? `was refused: ${r.reason}` : abort.signal.aborted ? "was stopped" : r.kind === "timeout" ? `ran past ${WIN_SHELL_BACKGROUND_MAX_MS / 3_600_000} hours and was ended` : `exited with code ${r.code}`;
-      try { appendFileSync(log, `\n[moss: the command ${how}]\n`); } catch { /* gone */ }
+      put(`\n[moss: the command ${how}]\n`);
+      try { closeSync(fd); } catch { /* closed */ }
       background.delete(id);
       settle();
       const tail = r.kind === "refused" ? "" : resultText(r).slice(-2_000);
