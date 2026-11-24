@@ -159,11 +159,12 @@ case "$cmd" in
     run="${1:-$(find_run)}"; [ -n "$run" ] || die "no run of $sha: scripts/ci/lane start first"
     say "waiting for run $run"
     # A dropped network connection is not the run ending: look again. One look a minute: several lanes waiting at once share
-    # one hourly API budget with everything else, and a look every 20 s from each of them used it up (2026-11-24).
+    # one hourly API budget with everything else, and a look every 20 s from each of them used it up (2026-11-24). With
+    # twenty lanes waiting, one look a minute each used it up again the same evening: one look every three minutes.
     while :; do
       st="$(gh run view "$run" --json status --jq .status 2>/dev/null || true)"
       [ "$st" = completed ] && break
-      sleep "${LANE_TEST_WAIT_POLL:-60}"
+      sleep "${LANE_TEST_WAIT_POLL:-180}"
     done
     conclusion="$(gh run view "$run" --json conclusion --jq '.conclusion' 2>/dev/null || true)"
     echo "url: $(gh run view "$run" --json url --jq .url 2>/dev/null)"

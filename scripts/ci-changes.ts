@@ -64,7 +64,7 @@ const READ_BY_CORE_LINUX: readonly Pattern[] = [
   // what only the core's Linux shards read (every core test file that is not darwin-only runs there and nowhere else): a change here starts
   // `core · linux` and no macOS leg. The plugins, the scripts and the examples are walked by the core's own scans (the plugin reach, the
   // daemon-spawn pin over scripts/, the SDK examples); the guides are three exact files (docs/claude/ has 18, tests pin these)
-  "plugins/", "scripts/", "examples/", "packages/", "!packages/core/", "!packages/protocol/", "!packages/plugin-sdk/", "!packages/update-feed/", "assets/brand/moss-code/", "services/shared/",
+  "plugins/", "scripts/", "examples/", "packages/", "!packages/core/", "!packages/protocol/", "!packages/plugin-sdk/", "!packages/update-feed/", "assets/brand/moss-code/", "services/shared/", "services/forwarder/",
   "docs/claude/release.md", "docs/claude/settings-and-migrations.md", "docs/claude/usage.md",
   "apps/desktop/package.json", "apps/desktop/src/main/browser/network.ts", "apps/desktop/src/main/ui/", "VERSION", "VERSIONS.json", ".github/workflows/",
 ];
