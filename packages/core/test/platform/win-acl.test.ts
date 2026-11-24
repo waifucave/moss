@@ -18,7 +18,7 @@ describe("an access list read back as SDDL", () => {
   test("another account's allow entry, Everyone, Users or Authenticated Users is refused", () => {
     expect(ownerOnlyProblemOfSddl(`O:${ME}D:PAI(A;OICI;FA;;;${ME})(A;OICI;0x1200a9;;;AU)`, ME)).toMatch(/grants access to AU/);
     expect(ownerOnlyProblemOfSddl(`O:${ME}D:P(A;;FA;;;WD)`, ME)).toMatch(/WD/);
-    expect(ownerOnlyProblemOfSddl(`O:${ME}D:P(A;;FA;;;S-1-5-32-545)`, ME)).toMatch(/S-1-5-32-545/);
+    expect(ownerOnlyProblemOfSddl(`O:${ME}D:P(A;;FA;;;S-1-5-32-545)`, ME)).toMatch(/BU|S-1-5-32-545/);
   });
   test("a folder owned by someone else is refused, however clean its list", () => {
     expect(ownerOnlyProblemOfSddl(`O:S-1-5-21-9-9-9-500D:P(A;;FA;;;${ME})`, ME)).toMatch(/owned by S-1-5-21-9-9-9-500/);
@@ -35,6 +35,6 @@ describe.skipIf(process.platform !== "win32")("the real access list of a folder 
     expect(icacls(dir, "/inheritance:r", "/grant:r", `*${me}:(OI)(CI)F`)).toBe(0);
     expect(ownerOnlyProblem(dir, me)).toBeNull();
     expect(icacls(dir, "/grant", "*S-1-5-32-545:(OI)(CI)R")).toBe(0); // BUILTIN\Users
-    expect(ownerOnlyProblem(dir, me)).toMatch(/S-1-5-32-545/);
+    expect(ownerOnlyProblem(dir, me)).toMatch(/BU|S-1-5-32-545/);
   });
 });
