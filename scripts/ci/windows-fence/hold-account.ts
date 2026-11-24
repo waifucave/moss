@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MossFence } from "../../../packages/core/src/fence/fence";
 import { fencedSpawner } from "../../../packages/core/src/fence/fenced-process";
-import type { Caller } from "@waifucave/moss-protocol";
+import type { FencedRun } from "../../../packages/core/src/fence/spawn";
 
 const out = process.argv[2]!;
 const home = process.env.USERPROFILE!;
@@ -16,6 +16,6 @@ const fence = new MossFence({ home, mossHome: moss });
 const started = Date.now();
 const r = await fencedSpawner({ fence }).run({
   command: "echo started; sleep 900; echo finished", cwd, env: {}, timeoutMs: 1_000_000, shell: "bash",
-  who: { caller: { kind: "session", sessionId: "hold", sessionKind: "coding" } as Caller },
+  who: { caller: { kind: "session", sessionId: "hold", sessionKind: "coding" } } as unknown as FencedRun["who"],
 });
 writeFileSync(out, JSON.stringify({ ...r, afterMs: Date.now() - started }));
