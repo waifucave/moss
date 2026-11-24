@@ -163,9 +163,16 @@ async fn stream(conn: Connection, mut send: SendStream, mut recv: RecvStream, id
                 let msg: Value = serde_json::from_slice(&f).unwrap();
                 let method = msg["method"].as_str().unwrap_or("").to_string();
                 calls.lock().unwrap().push((method.clone(), msg["params"].clone()));
+                // `slow`: this computer stops reading for a while, so the phone's next large write stalls part way.
+                if method == "slow" {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
                 let Reply::Result(r) = (b.rpc)(&method, &msg["params"]);
                 let frame = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": msg["id"], "result": r })).unwrap();
-                if write_frame(&mut send, &frame).await.is_err() {
+                // Written raw (length, then body), so a hostile computer can send past the link's own cap.
+                let mut raw = (frame.len() as u32).to_be_bytes().to_vec();
+                raw.extend_from_slice(&frame);
+                if send.write_all(&raw).await.is_err() {
                     return;
                 }
                 if method == "protocol.hello" {
@@ -213,11 +220,16 @@ fn opts() -> ConnectOptions {
 
 async fn until(conn: &moss_phone_core::Connection, what: &str, mut f: impl FnMut(&ConnEvent) -> bool) -> ConnEvent {
     let end = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut seen = vec![];
     loop {
-        let e = tokio::time::timeout_at(end, conn.next_event()).await.unwrap_or_else(|_| panic!("timed out waiting for {what}")).expect("open");
+        let e = match tokio::time::timeout_at(end, conn.next_event()).await {
+            Ok(e) => e.expect("open"),
+            Err(_) => panic!("timed out waiting for {what}; heard {seen:?}; state {:?}", conn.state()),
+        };
         if f(&e) {
             return e;
         }
+        seen.push(format!("{e:?}").chars().take(120).collect::<String>());
     }
 }
 
@@ -225,29 +237,32 @@ async fn until(conn: &moss_phone_core::Connection, what: &str, mut f: impl FnMut
 async fn a_swapped_or_rehashed_card_is_never_what_gets_signed() {
     let a = card("card_aaaaaaaa", "Card A");
     let b = card("card_bbbbbbbb", "Card B: another computer's");
+    let d = card("card_dddddddd", "Card D: resolved before it was listed");
     let a_changed = card("card_aaaaaaaa", "Card A, changed after it was shown");
     let bad = { let mut c = card("card_cccccccc", "tampered"); c["fields"]["title"]["text"] = json!("not what the hash covers"); c };
     let gets = Arc::new(AtomicUsize::new(0));
-    let (a2, b2, ac2, bad2, g2) = (a.clone(), b.clone(), a_changed.clone(), bad.clone(), gets.clone());
+    let (a2, b2, ac2, bad2, d2, g2) = (a.clone(), b.clone(), a_changed.clone(), bad.clone(), d.clone(), gets.clone());
     let fake = Fake::link(Behaviour {
         rpc: Arc::new(move |m, _p| match m {
-            "card.list" => Reply::Result(json!({ "cards": [a2, bad2] })),
+            "card.list" => Reply::Result(json!({ "cards": [a2, bad2, d2] })),
             // The first card.get for A answers with B (a swap), the next with a different card under A's id.
             "card.get" => Reply::Result(json!({ "card": if g2.fetch_add(1, Ordering::SeqCst) == 0 { b2.clone() } else { ac2.clone() } })),
             "card.answer" => Reply::Result(json!({ "accepted": true })),
             _ => Reply::Result(json!({})),
         }),
-        after_hello: vec![],
+        // D's resolution comes before the pending list that brings D.
+        after_hello: vec![br#"{"jsonrpc":"2.0","method":"core.event","params":{"type":"card_resolved","ts":1,"id":"card_dddddddd","outcome":"expired"}}"#.to_vec()],
         lane_after_hello: None,
     })
     .await;
-    let (core, storage) = phone_for(&[&fake]).await;
+    let other_computer = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![], lane_after_hello: None }).await;
+    let (core, storage) = phone_for(&[&fake, &other_computer]).await;
     let conn = core.clone().connect(fake.id.clone(), opts()).await.unwrap();
     let mut tampered_seen = false;
     let shown = loop {
         match until(&conn, "the pending cards", |e| matches!(e, ConnEvent::PendingCards { .. } | ConnEvent::TamperedCard { .. })).await {
-            ConnEvent::TamperedCard { id } => {
-                assert_eq!(id.as_deref(), Some("card_cccccccc"));
+            ConnEvent::TamperedCard { computers_id } => {
+                assert_eq!(computers_id.as_deref(), Some("card_cccccccc"));
                 tampered_seen = true;
             }
             ConnEvent::PendingCards { cards } => break cards,
@@ -255,14 +270,29 @@ async fn a_swapped_or_rehashed_card_is_never_what_gets_signed() {
         }
     };
     assert!(tampered_seen, "a card whose hash doesn't match is reported, not shown");
-    assert_eq!(shown.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["card_aaaaaaaa"]);
+    assert_eq!(shown.iter().map(|c| c.id()).collect::<Vec<_>>(), ["card_aaaaaaaa", "card_dddddddd"]);
     let shown_a = shown[0].clone();
+    // D was resolved before it was listed: it reads as resolved, and the core refuses to answer it.
+    let shown_d = shown[1].clone();
+    assert!(!shown_d.pending());
+    assert!(matches!(conn.answer_card(shown_d, "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
+    // A card issued by one computer's connection is never answered on another's.
+    let elsewhere = core.clone().connect(other_computer.id.clone(), opts()).await.unwrap();
+    until(&elsewhere, "the other link up", |e| matches!(e, ConnEvent::Up)).await;
+    assert!(matches!(elsewhere.answer_card(shown_a.clone(), "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
+    assert_eq!(other_computer.count("card.answer"), 0);
+    elsewhere.disconnect();
 
     // Asked for A, the computer answers with B: refused.
     assert!(matches!(conn.fetch_card("card_aaaaaaaa".into()).await, Err(CoreError::TamperedCard { .. })));
     // Asked again, it answers with a different card under A's id (its hash recomputed): that is what would be shown.
     let other = conn.fetch_card("card_aaaaaaaa".into()).await.unwrap();
-    assert_ne!(other.hash, shown_a.hash);
+    assert_ne!(other.hash(), shown_a.hash());
+    // An option or checkbox outside the card's (or the protocol's patterns) is refused before anything is signed.
+    let answers = fake.count("card.answer");
+    assert!(conn.answer_card(shown_a.clone(), "always".into(), vec![]).await.is_err());
+    assert!(conn.answer_card(shown_a.clone(), "approve".into(), vec!["../x".into()]).await.is_err());
+    assert_eq!(fake.count("card.answer"), answers);
 
     // The person taps Approve on A as displayed: nothing is fetched between the tap and the signature, and what is
     // signed is A's hash, from A's content.
@@ -277,16 +307,11 @@ async fn a_swapped_or_rehashed_card_is_never_what_gets_signed() {
     let signed = cards::card_answer_signing_input("card_aaaaaaaa", a["hash"].as_str().unwrap(), "approve", p["proof"]["at"].as_i64().unwrap(), &[]);
     assert!(verify_ed25519(&key.public(), signed.as_bytes(), &bytes::from_b64(p["proof"]["signature"].as_str().unwrap()).unwrap()));
 
-    // Handing back the changed card, or A's view with B's content, is refused: only the displayed card is signed.
-    let mixed = moss_phone_core::CardView { card_json: other.card_json.clone(), ..shown_a.clone() };
-    assert!(matches!(conn.answer_card(mixed, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
-    let b_as_a = moss_phone_core::CardView { card_json: b.to_string(), ..shown_a.clone() };
-    assert!(matches!(conn.answer_card(b_as_a, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
-    // An option or checkbox outside the card's (or the protocol's patterns) is refused before anything is signed.
-    let answers = fake.count("card.answer");
-    assert!(conn.answer_card(shown_a.clone(), "always".into(), vec![]).await.is_err());
-    assert!(conn.answer_card(shown_a.clone(), "approve".into(), vec!["../x".into()]).await.is_err());
-    assert_eq!(fake.count("card.answer"), answers);
+    // A is answered: neither A nor the changed card under A's id is answered again (app code can't make a CardView
+    // with other content; the type holds that).
+    assert!(!shown_a.pending());
+    assert!(matches!(conn.answer_card(other, "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
+    let _ = b;
     conn.disconnect();
 }
 
@@ -328,30 +353,82 @@ async fn a_hostile_lane_frame_closes_only_that_link_and_fast() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn client_frames_lone_surrogates_are_read_and_junk_or_oversize_closes_with_a_reason() {
+async fn client_frames_lone_surrogates_are_read_and_junk_closes_with_a_reason() {
     let note = br#"{"jsonrpc":"2.0","method":"core.event","params":{"type":"note","text":"a\ud800b"}}"#.to_vec();
     let junk = b"{this isn't json".to_vec();
     let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: vec![note, junk], lane_after_hello: None }).await;
-    let huge = Fake::link(Behaviour {
-        // A 5 MiB answer: over the phone's cap for one client message.
-        rpc: Arc::new(|m, p| if m == "bot.list" { Reply::Result(json!("x".repeat(5 << 20))) } else { honest(m, p) }),
-        after_hello: vec![],
-        lane_after_hello: None,
-    })
-    .await;
-    let (core, _) = phone_for(&[&f, &huge]).await;
+    let (core, _) = phone_for(&[&f]).await;
     let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
     let ConnEvent::Notification { params_json, .. } = until(&c, "the note", |e| matches!(e, ConnEvent::Notification { .. })).await else { unreachable!() };
     assert!(params_json.contains('\u{fffd}'), "a lone surrogate reads as U+FFFD: {params_json}");
     let ConnEvent::Down { reason } = until(&c, "down", |e| matches!(e, ConnEvent::Down { .. })).await else { unreachable!() };
     assert!(reason.contains("isn't JSON"), "{reason}");
     c.disconnect();
+}
 
-    let c = core.clone().connect(huge.id.clone(), opts()).await.unwrap();
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversize_answer_fails_only_its_call_and_the_link_stays() {
+    // A 5 MiB answer (over the phone's 4 MiB, within the engine's own 16 MiB) to one call, while another call is in
+    // flight; then a 17 MiB answer, past what the link allows at all.
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(|m, p| match m {
+            "bot.list" => Reply::Result(json!("x".repeat(5 << 20))),
+            "too.big" => Reply::Result(json!("x".repeat(17 << 20))),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
     until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
-    assert!(c.call("bot.list".into(), "{}".into()).await.is_err());
+    let (big, small) = tokio::join!(c.call("bot.list".into(), "{}".into()), c.call("models.list".into(), "{}".into()));
+    match big {
+        Err(CoreError::Refused { reason }) => assert!(reason.contains("5.0 MiB"), "{reason}"),
+        other => panic!("the oversize answer fails its call: {other:?}"),
+    }
+    small.expect("the other call completes");
+    c.call("bot.get".into(), "{}".into()).await.expect("the link is still up for the next call");
+    assert_eq!(c.state(), moss_phone_core::LinkState::Up);
+    assert!(c.call("too.big".into(), "{}".into()).await.is_err());
     let ConnEvent::Down { reason } = until(&c, "down", |e| matches!(e, ConnEvent::Down { .. })).await else { unreachable!() };
-    assert!(reason.contains("larger than the phone takes"), "{reason}");
+    assert!(reason.contains("16 MiB"), "{reason}");
+    c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_abandoned_mid_write_leaves_the_stream_whole_for_the_next_answer() {
+    let a = card("card_aaaaaaaa", "Card A");
+    let a2 = a.clone();
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| match m {
+            "card.list" => Reply::Result(json!({ "cards": [a2.clone()] })),
+            "card.answer" => Reply::Result(json!({ "accepted": true })),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    let ConnEvent::PendingCards { cards } = until(&c, "the cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await else { unreachable!() };
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    // The computer stops reading; a 6 MiB call is abandoned while its frame is part written.
+    let slow = tokio::spawn({
+        let c = c.clone();
+        async move { c.call("slow".into(), "{}".into()).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let big = json!({ "blob": "y".repeat(6 << 20) }).to_string();
+    assert!(tokio::time::timeout(Duration::from_millis(300), c.call("big.call".into(), big)).await.is_err(), "the call was abandoned mid-write");
+    // The person then answers a card: it reaches the computer whole and is taken.
+    let r = c.answer_card(cards[0].clone(), "approve".into(), vec![]).await.expect("the answer after an abandoned write");
+    assert!(r.accepted);
+    slow.await.unwrap().unwrap();
+    let methods: Vec<String> = f.calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect();
+    assert!(methods.ends_with(&["slow".into(), "big.call".into(), "card.answer".into()]), "{methods:?}");
     c.disconnect();
 }
 
@@ -500,4 +577,45 @@ async fn a_store_that_cant_answer_or_lost_a_key_never_gets_new_keys() {
     let fresh = Arc::new(MemStorage::default());
     let core = PhoneCore::new(fresh, CoreConfig { device_name: "  Kim's\u{202E}  phone \u{0007}".into(), ..config() }).unwrap();
     assert_eq!(core.identity().name, "Kim's phone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_is_staged_in_chunks_under_the_links_frame_limit() {
+    // The fake keeps what each chunk brings, as the engine's door does, and answers with the next offset.
+    let got: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let sizes: Arc<Mutex<Vec<usize>>> = Arc::default();
+    let (g2, s2) = (got.clone(), sizes.clone());
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| {
+            if m != "session.stageFile" {
+                return honest(m, p);
+            }
+            let chunk = bytes::from_b64(p["dataBase64"].as_str().unwrap()).unwrap();
+            s2.lock().unwrap().push(p["dataBase64"].as_str().unwrap().len());
+            let mut g = g2.lock().unwrap();
+            if p.get("name").is_some() {
+                g.clear();
+            } else {
+                assert_eq!(p["offset"].as_u64().unwrap() as usize, g.len());
+            }
+            g.extend_from_slice(&chunk);
+            let done = g.len() == 1_300_000;
+            Reply::Result(json!({ "upload": "up1", "received": g.len(), "done": done, "name": "notes \u{202E}.txt", "path": "bots/alpha/files/notes.txt" }))
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    let data: Vec<u8> = (0..1_300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let staged = c.stage_file("s_alpha".into(), "notes.txt".into(), data.clone()).await.unwrap();
+    assert_eq!(staged.path, "bots/alpha/files/notes.txt");
+    assert_eq!(staged.computers_name, "notes .txt", "the computer's name for it is cleaned");
+    assert_eq!(*got.lock().unwrap(), data);
+    let sizes = sizes.lock().unwrap().clone();
+    assert_eq!(sizes.len(), 3);
+    assert!(sizes.iter().all(|n| *n <= 699_052), "each chunk at most 512 KiB of bytes: {sizes:?}");
+    c.disconnect();
 }

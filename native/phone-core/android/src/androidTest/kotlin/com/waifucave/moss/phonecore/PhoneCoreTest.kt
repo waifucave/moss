@@ -139,13 +139,13 @@ class PhoneCoreTest {
                     is ConnEvent.CardRequested -> {
                         // The card as displayed is what is answered: no fetch between the tap and the signature.
                         val outcome = conn.answerCard(e.card, "approve", emptyList())
-                        Log.i(tag, "answered ${e.card.id}: $outcome")
+                        Log.i(tag, "answered ${e.card.id()}: $outcome")
                         assertTrue(outcome.accepted)
                         answered = true
                     }
                     is ConnEvent.PendingCards -> e.cards.firstOrNull()?.let { card ->
                         val outcome = conn.answerCard(card, "approve", emptyList())
-                        Log.i(tag, "answered pending ${card.id}: $outcome")
+                        Log.i(tag, "answered pending ${card.id()}: $outcome")
                         assertTrue(outcome.accepted)
                         answered = true
                     }

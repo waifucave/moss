@@ -151,9 +151,9 @@ async fn until_event(conn: &Connection, what: &str, mut f: impl FnMut(&ConnEvent
     }
 }
 
-fn card_event(e: &ConnEvent, card: &str) -> Option<moss_phone_core::CardView> {
+fn card_event(e: &ConnEvent, card: &str) -> Option<Arc<moss_phone_core::CardView>> {
     let ConnEvent::CardRequested { card: v } = e else { return None };
-    (v.id == card).then(|| v.clone())
+    (v.id() == card).then(|| v.clone())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -192,7 +192,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
         .unwrap();
     let pending = until_event(&conn, "the pending cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await;
     let ConnEvent::PendingCards { cards: listed_cards } = pending else { unreachable!() };
-    let waiting_view = listed_cards.iter().find(|c| c.id == waiting).expect("the waiting card is in the pending list").clone();
+    let waiting_view = listed_cards.iter().find(|c| c.id() == waiting).expect("the waiting card is in the pending list").clone();
     until_event(&conn, "up", |e| matches!(e, ConnEvent::Up)).await;
     assert_eq!(conn.state(), moss_phone_core::LinkState::Up);
 
@@ -208,47 +208,44 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     let card_id = engine.ok(json!({ "cmd": "raiseCard" })).await["cardId"].as_str().unwrap().to_string();
     let heard = until_event(&conn, "the card_requested event", |e| card_event(e, &card_id).is_some()).await;
     let card_view = card_event(&heard, &card_id).unwrap();
-    let card: Value = serde_json::from_str(&card_view.card_json).unwrap();
+    let card: Value = serde_json::from_str(&card_view.card_json()).unwrap();
     assert_eq!(cards::card_hash(&card).unwrap(), card["hash"].as_str().unwrap(), "the phone rebuilds the engine's hash");
     // The person answers the card as it was displayed: no fetch between the tap and the signature.
     let answered = conn.answer_card(card_view.clone(), "approve".into(), vec![]).await.unwrap();
-    assert_eq!(answered, moss_phone_core::AnswerOutcome { accepted: true, reason: None });
+    assert_eq!(answered, moss_phone_core::AnswerOutcome { accepted: true, computers_reason: None });
     let decision = engine.ok(json!({ "cmd": "decision", "cardId": card_id })).await;
     assert_eq!(decision["allowed"], true);
     assert_eq!(decision["by"], "card");
 
-    // Refusals. A replayed answer: the engine refuses the same card answered again.
-    let replay = conn.answer_card(card_view.clone(), "approve".into(), vec![]).await.unwrap();
-    assert!(!replay.accepted, "the engine refuses a replay");
-    // Resolved, the card reads as such.
+    // Refusals. Answered, the card is no longer pending: the core refuses a second answer itself.
+    assert!(!card_view.pending());
+    assert!(matches!(conn.answer_card(card_view.clone(), "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
+    // Resolved, the card reads as such when fetched again.
     let resolved = conn.fetch_card(card_id.clone()).await.unwrap();
-    assert!(!resolved.pending);
+    assert!(!resolved.pending());
+    // (A CardView is the core's own object: app code can't make one with other content, so a changed or swapped card
+    // can't be handed back; tests/hostile.rs holds what a hostile computer can do.)
 
-    // A card whose content was changed after display (its hash not recomputed): the phone signs nothing for it.
-    let mut tampered = card.clone();
-    tampered["fields"]["title"]["text"] = json!("something else");
-    let changed = moss_phone_core::CardView { card_json: tampered.to_string(), ..card_view.clone() };
-    assert!(matches!(conn.answer_card(changed, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
-    // And one changed with its hash recomputed is a different card than the one displayed: refused too.
-    let mut rehashed = tampered.clone();
-    rehashed["hash"] = json!(cards::card_hash(&tampered).unwrap());
-    let swapped = moss_phone_core::CardView { card_json: rehashed.to_string(), ..card_view.clone() };
-    assert!(matches!(conn.answer_card(swapped, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
-
-    // The waiting card: an answer signed for one card is no proof for another, nor for another hash.
-    let view = conn.fetch_card(waiting.clone()).await.unwrap();
-    assert!(view.pending);
-    assert_eq!(view, waiting_view);
     let answer_key = {
         let seed = storage.0.lock().unwrap().get("answer-key").unwrap().clone();
         Ed25519Key::from_seed_slice(&seed).unwrap()
     };
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let signed_for_other = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&card_id, &view.hash, "approve", at, &[]).as_bytes()));
-    let forged = |sig: &str, hash: &str| {
-        json!({ "id": waiting, "hash": hash, "option": "approve", "proof": { "via": "device", "device": me.device_id, "at": at, "signature": sig } }).to_string()
+    let forged_for = |id: &str, sig: &str, hash: &str| {
+        json!({ "id": id, "hash": hash, "option": "approve", "proof": { "via": "device", "device": me.device_id, "at": at, "signature": sig } }).to_string()
     };
-    let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged(&signed_for_other, &view.hash)).await.unwrap()).unwrap();
+    // A replayed answer, signed properly and sent anyway: the engine refuses it too.
+    let replay_sig = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&card_id, &card_view.hash(), "approve", at, &[]).as_bytes()));
+    let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged_for(&card_id, &replay_sig, &card_view.hash())).await.unwrap()).unwrap();
+    assert_eq!(r["accepted"], false, "the engine refuses a replay: {r}");
+
+    // The waiting card: an answer signed for one card is no proof for another, nor for another hash.
+    let view = conn.fetch_card(waiting.clone()).await.unwrap();
+    assert!(view.pending());
+    assert_eq!(view, waiting_view);
+    let signed_for_other = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&card_id, &view.hash(), "approve", at, &[]).as_bytes()));
+    let forged = |sig: &str, hash: &str| forged_for(&waiting, sig, hash);
+    let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged(&signed_for_other, &view.hash())).await.unwrap()).unwrap();
     assert_eq!(r["accepted"], false, "another card's signature is refused: {r}");
     let wrong_hash = "0".repeat(64);
     let signed_wrong = bytes::b64(&answer_key.sign(cards::card_answer_signing_input(&waiting, &wrong_hash, "approve", at, &[]).as_bytes()));

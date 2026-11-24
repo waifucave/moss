@@ -102,7 +102,8 @@ fn load_or_create(storage: &Arc<dyn SecretStorage>, name: &str, paired: bool) ->
         return Err(CoreError::storage(format!("the {name} is missing while computers are paired: nothing was replaced")));
     }
     let key = Ed25519Key::generate();
-    storage.save(name.into(), key.seed().to_vec())?;
+    // Moved out of its zeroizing holder into the call, no copy here; the FFI's copy for the host is the host store's.
+    storage.save(name.into(), std::mem::take(&mut *key.seed()))?;
     Ok(key)
 }
 

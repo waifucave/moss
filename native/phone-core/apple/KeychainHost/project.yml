@@ -1,0 +1,54 @@
+# The iPhone real-store proof (lane PC): a small simulator app with a Keychain entitlement, hosting a test that keeps
+# the core's keys in the Keychain. A SwiftPM test bundle has no entitlements, so there the Keychain isn't reachable.
+# Generated in CI with xcodegen (.github/workflows/phone-core.yml); the project file is never committed.
+name: KeychainHost
+options:
+  bundleIdPrefix: com.waifucave.moss.phonecore
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  MossPhoneCore:
+    path: ..
+targets:
+  KeychainHost:
+    type: application
+    platform: iOS
+    sources: [App]
+    info:
+      path: App/Info.plist
+      properties:
+        UILaunchScreen: {}
+    entitlements:
+      path: App/KeychainHost.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.waifucave.moss.phonecore.KeychainHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.phonecore.KeychainHost
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - package: MossPhoneCore
+  KeychainHostTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: KeychainHost
+      - package: MossPhoneCore
+    settings:
+      base:
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/KeychainHost.app/KeychainHost
+        BUNDLE_LOADER: $(TEST_HOST)
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+schemes:
+  KeychainHost:
+    build:
+      targets:
+        KeychainHost: all
+    test:
+      targets: [KeychainHostTests]

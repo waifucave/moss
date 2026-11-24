@@ -89,25 +89,61 @@ fn write(v: &Value, out: &mut String) {
     }
 }
 
-/// A card as the core hands it to the app to display, and as the app hands it back to answer it: the core signs
-/// only for a card in this form, recomputing its hash from `card_json` (the content the person saw) at the tap,
-/// with no fetch between the tap and the signature.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+/// A card's state as the core last heard it, shared by every view of that card from one connection: None while it
+/// waits for an answer, its outcome once resolved.
+pub type CardState = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+/// A card the core issued for display: only the core makes one (no constructor crosses the FFI), from a card a
+/// computer sent and the core checked. The app draws `card_json` and hands this same object back to answer it; the
+/// core signs only for a card it issued on that connection, recomputing the hash from the content the person saw,
+/// with no fetch between the tap and the signature, and refuses one no longer pending.
+#[derive(Debug, uniffi::Object)]
 pub struct CardView {
-    pub id: String,
-    /// Its hash, recomputed by the core from `card_json` and equal to the card's own.
-    pub hash: String,
-    /// The card, JSON: what the app draws.
-    pub card_json: String,
-    /// The option ids it offers, in order.
-    pub options: Vec<String>,
-    /// Still waiting for an answer, as far as the core was told.
-    pub pending: bool,
-    /// Its outcome, when the engine said it is resolved (`approved`, `denied`, `expired`, ...).
-    pub outcome: Option<String>,
+    pub(crate) id: String,
+    pub(crate) hash: String,
+    pub(crate) card_json: String,
+    pub(crate) options: Vec<String>,
+    pub(crate) state: CardState,
+    /// The connection that issued it.
+    pub(crate) issuer: u64,
 }
 
-fn is_card_id(s: &str) -> bool {
+#[uniffi::export]
+impl CardView {
+    pub fn id(&self) -> String {
+        self.id.clone()
+    }
+    /// Its hash, recomputed by the core from the content and equal to the card's own.
+    pub fn hash(&self) -> String {
+        self.hash.clone()
+    }
+    /// The card, JSON: what the app draws.
+    pub fn card_json(&self) -> String {
+        self.card_json.clone()
+    }
+    /// The option ids it offers, in order.
+    pub fn options(&self) -> Vec<String> {
+        self.options.clone()
+    }
+    /// Still waiting for an answer, as far as the core has heard.
+    pub fn pending(&self) -> bool {
+        self.state.lock().unwrap().is_none()
+    }
+    /// Its outcome once resolved (`approved`, `denied`, `expired`, `withdrawn`, `cancelled`, `answered`).
+    pub fn outcome(&self) -> Option<String> {
+        self.state.lock().unwrap().clone()
+    }
+}
+
+/// A checked card's parts, before the connection that got it makes it a `CardView`.
+pub struct Checked {
+    pub id: String,
+    pub hash: String,
+    pub card_json: String,
+    pub options: Vec<String>,
+}
+
+pub fn is_card_id(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("card_") else { return false };
     (6..=64).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -138,7 +174,7 @@ pub fn is_checkbox_id(s: &str) -> bool {
 
 /// A card the engine sent, checked for display: an object with a well-formed id, a hash that matches its content, and
 /// options with well-formed ids.
-pub fn view(card: &Value, outcome: Option<String>) -> Result<CardView, CoreError> {
+pub fn check(card: &Value) -> Result<Checked, CoreError> {
     let tampered = |r: &str| CoreError::TamperedCard { reason: r.to_string() };
     let id = card.get("id").and_then(Value::as_str).filter(|i| is_card_id(i)).ok_or_else(|| tampered("the card's id isn't a card id"))?;
     let hash = verify_card(card)?;
@@ -150,7 +186,7 @@ pub fn view(card: &Value, outcome: Option<String>) -> Result<CardView, CoreError
         .map(|o| o.get("id").and_then(Value::as_str).filter(|i| is_option_id(i)).map(str::to_string))
         .collect::<Option<_>>()
         .ok_or_else(|| tampered("an option's id isn't one"))?;
-    Ok(CardView { id: id.to_string(), hash, card_json: card.to_string(), options, pending: outcome.is_none(), outcome })
+    Ok(Checked { id: id.to_string(), hash, card_json: card.to_string(), options })
 }
 
 /// A card's hash as the engine computes it: SHA-256 hex over `cardHashInput` (the card without `hash`).

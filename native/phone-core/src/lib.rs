@@ -34,7 +34,7 @@ pub use computers::{PairedComputer, PhoneApp};
 pub use error::{CoreError, StorageError};
 pub use identity::{AnswerKeyHolder, PhoneIdentity, PhoneOs, SecretStorage};
 pub use cards::CardView;
-pub use link::{AnswerOutcome, ConnEvent, ConnectOptions, Connection, LinkState};
+pub use link::{AnswerOutcome, ConnEvent, ConnectOptions, Connection, LinkState, StagedFile};
 pub use net::RelayChoice;
 pub use pairing::Pairing;
 use tokio::sync::OnceCell;
