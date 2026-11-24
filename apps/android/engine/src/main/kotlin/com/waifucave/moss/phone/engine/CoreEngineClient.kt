@@ -14,10 +14,13 @@ import com.waifucave.moss.phonecore.ConnectOptions
 import com.waifucave.moss.phonecore.Connection
 import com.waifucave.moss.phonecore.CoreConfig
 import com.waifucave.moss.phonecore.CoreException
+import com.waifucave.moss.phonecore.ItemKind
 import com.waifucave.moss.phonecore.Pairing
 import com.waifucave.moss.phonecore.PhoneCore
 import com.waifucave.moss.phonecore.PhoneOs
 import com.waifucave.moss.phonecore.RelayChoice
+import com.waifucave.moss.phonecore.SessionItem
+import com.waifucave.moss.phonecore.visibleText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -34,23 +37,22 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 import java.util.TreeMap
 import java.util.UUID
-import com.waifucave.moss.phonecore.PairedComputer as CoreComputer
 import com.waifucave.moss.phonecore.PhoneApp as CoreApp
+import com.waifucave.moss.phonecore.StartRequest as CoreStart
 
 /**
  * The real engine client: the screens' [EngineClient] over the shared phone core (`native/phone-core`, its Kotlin binding).
  * One per app process ([Engines]). The core holds the keys (through [KeystoreStore]), pairs, keeps the link and its client
- * connection up (re-dialling by itself), signs the person's messages and card answers; this class maps each screen call to
- * the engine's call (`EngineCalls`, the one file that reads engine JSON) and the core's events to the screens' events.
+ * connection up (re-dialling by itself), signs the person's messages and card answers, and makes the engine's calls as typed
+ * calls with records; this class maps each screen call to the core's call ([Typed] maps the records) and the core's events
+ * to the screens' events. The few calls the core doesn't type yet are in `EngineCalls.kt`, the one file reading engine JSON.
  *
- * Cards: the screens see a [Card] decoded from a `CardView` the core issued (from `PendingCards`, `CardRequested`). The
- * view is kept by id; [answer] takes the card the screen drew, finds the view it was decoded from, requires that view to
- * decode to exactly that card, and hands that same `CardView` object back to the core, which signs only it. A card the core
- * did not issue, or one that changed, is never answered, and nothing is fetched between the tap and the signature.
+ * Cards: the screens see a [Card] drawn from a `CardView` the core issued (from `PendingCards`, `CardRequested`). The view
+ * is kept by id; [answer] takes the card the screen drew, finds the view it was drawn from, requires that view to draw to
+ * exactly that card, and hands that same `CardView` back to the core, which signs only it (and only while it is pending
+ * and was issued by this connection). Nothing is fetched between the tap and the signature.
  */
 class CoreEngineClient(
     context: Context,
@@ -73,11 +75,12 @@ class CoreEngineClient(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val coreApp = if (app == PhoneApp.moss) CoreApp.MOSS else CoreApp.CODE
     private val tag = "MossEngine"
+    /** The engine's one rule for the computer's text drawn outside a typed field. */
+    private val clean: (String) -> String = { visibleText(it, false) }
 
     private val lock = Mutex()
     private var core: PhoneCore? = null
     private var conn: Connection? = null
-    private var computer: CoreComputer? = null
     private var reader: Job? = null
     private var firstUp = CompletableDeferred<Unit>()
 
@@ -99,11 +102,12 @@ class CoreEngineClient(
     /** Per session: a message's time -> the smallest seq at that time (the screens page back by a message's time). */
     private val seqAt = HashMap<String, TreeMap<Long, Long>>()
 
-    private val calls = EngineCalls { method, params ->
-        val c = connection() ?: throw IllegalStateException("not paired")
-        val text = try { c.call(method, params.toString()) } catch (e: CoreException.Rpc) { throw EngineRpcError(e.code, e.computersWords) }
+    private suspend fun c(): Connection = connection() ?: throw IllegalStateException("not paired")
+
+    private val calls = EngineCalls({ method, params ->
+        val text = try { c().call(method, params.toString()) } catch (e: CoreException.Rpc) { throw EngineRpcError(e.code, e.computersWords) }
         Decode.parse(text)
-    }
+    }, clean)
 
     init {
         // A network change or a wake: the core re-dials at once instead of waiting out its backoff.
@@ -137,7 +141,6 @@ class CoreEngineClient(
         val areas = listOf("approvals", "sessions", "bots", "devices", "computers")
         val c = core.connect(mine.id, ConnectOptions(config.clientName, areas, config.callTimeoutMs.toULong()))
         conn = c
-        computer = mine
         reader = scope.launch { read(c) }
         c
     }
@@ -155,7 +158,10 @@ class CoreEngineClient(
         events.tryEmit(EngineEvent.Connection(s))
     }
 
-    private suspend fun handle(e: ConnEvent) {
+    /** The card a view draws: its JSON as the core checked it, its owner as the core read it. */
+    private fun cardOf(v: CardView): Card? = Decode.card(v.cardJson(), v.hash(), clean)?.copy(bot = v.bot(), session = v.session())
+
+    private fun handle(e: ConnEvent) {
         when (e) {
             is ConnEvent.Up -> {
                 lastUp = System.currentTimeMillis()
@@ -175,17 +181,33 @@ class CoreEngineClient(
                     issued.clear(); issued.putAll(now)
                 }
                 for (id in gone) events.tryEmit(EngineEvent.CardResolved(id))
-                for (v in fresh) Decode.card(v.cardJson(), v.hash())?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
+                for (v in fresh) cardOf(v)?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
             }
             is ConnEvent.CardRequested -> {
                 synchronized(this) { issued[e.card.id()] = e.card }
-                Decode.card(e.card.cardJson(), e.card.hash())?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
+                cardOf(e.card)?.let { events.tryEmit(EngineEvent.CardRequested(it)) }
             }
             is ConnEvent.CardResolved -> {
                 synchronized(this) { issued.remove(e.id) }
                 events.tryEmit(EngineEvent.CardResolved(e.id))
             }
-            is ConnEvent.Notification -> notification(e.method, e.paramsJson)
+            is ConnEvent.BotChanged -> {
+                val b = Typed.bot(e.bot)
+                remember(b)
+                events.tryEmit(EngineEvent.BotChanged(b))
+                events.tryEmit(EngineEvent.StatusLine(b.mainSession, if (b.state == BotState.thinking) "${b.name} is thinking" else null))
+            }
+            is ConnEvent.BotSummaryChanged -> events.tryEmit(EngineEvent.BotSummaryChanged(Typed.summary(e.summary)))
+            is ConnEvent.BotRemoved -> synchronized(this) { bots.remove(e.id) }
+            is ConnEvent.SessionChanged -> {
+                val s = Typed.session(e.session)
+                remember(s)
+                events.tryEmit(EngineEvent.SessionChanged(s))
+                // A coding session's one status line follows its state (a bot's follows the bot's).
+                if (s.bot == null) events.tryEmit(EngineEvent.StatusLine(s.id, if (s.motion == SessionMotion.running) "Working" else null))
+            }
+            is ConnEvent.SessionEvent -> sessionItem(e.item)
+            is ConnEvent.Notification -> if (e.method == "core.event" && e.paramsJson.contains("\"device_")) synchronized(this) { devices = null }
             is ConnEvent.Lagged -> scope.launch { afterUp() }
             is ConnEvent.TamperedCard, is ConnEvent.MessageDropped, is ConnEvent.Closed -> {}
         }
@@ -198,10 +220,10 @@ class CoreEngineClient(
             synchronized(this) { devices = null }
             val follow = synchronized(this) { followed.toMap() }
             for ((id, last) in follow) runCatching { calls.sessionAttach(id, last) }
-            val faces = runCatching { calls.botFaces() }.getOrDefault(emptyMap())
-            for (b in calls.botList(faces)) { remember(b); events.tryEmit(EngineEvent.BotChanged(b)) }
-            for (s in calls.botSummaries()) events.tryEmit(EngineEvent.BotSummaryChanged(s))
-            for (s in calls.sessionList()) { remember(s); events.tryEmit(EngineEvent.SessionChanged(s)) }
+            val conn = c()
+            for (b in conn.bots()) { val m = Typed.bot(b); remember(m); events.tryEmit(EngineEvent.BotChanged(m)) }
+            for (s in conn.botSummaries()) events.tryEmit(EngineEvent.BotSummaryChanged(Typed.summary(s)))
+            for (r in conn.sessions()) { val s = Typed.session(r); remember(s); events.tryEmit(EngineEvent.SessionChanged(s)) }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.w(tag, "re-reading after a connect failed: ${e.javaClass.simpleName}")
         }
@@ -210,57 +232,17 @@ class CoreEngineClient(
     private fun remember(b: Bot) = synchronized(this) { bots[b.id] = b; sessionKinds[b.mainSession] = "bot" }
     private fun remember(s: SessionRow) = synchronized(this) { sessionKinds[s.id] = s.kind; s.model?.let { sessionModels[s.id] = it } }
 
-    private fun notification(method: String, paramsJson: String) {
-        val p = Decode.parse(paramsJson) ?: return
-        when (method) {
-            "core.event" -> coreEvent(p)
-            "event" -> sessionEvent(p)
-        }
+    private fun isBot(session: String) = synchronized(this) { sessionKinds[session] } == "bot"
+
+    private fun sessionItem(i: SessionItem) {
+        synchronized(this) { if (i.session in followed) followed[i.session] = maxOf(followed[i.session] ?: 0, i.seq.toLong()) }
+        if (i.kind is ItemKind.TurnEnded) events.tryEmit(EngineEvent.StatusLine(i.session, null))
+        message(i)?.let { events.tryEmit(EngineEvent.Message(i.session, it)) }
     }
 
-    private fun coreEvent(p: JsonElement) {
-        when (p["type"].str()) {
-            "bot_changed" -> Decode.bot(p["bot"], synchronized(this) { bots.mapNotNull { (k, v) -> v.face?.let { k to it } }.toMap() })?.let { b ->
-                remember(b)
-                events.tryEmit(EngineEvent.BotChanged(b))
-                events.tryEmit(EngineEvent.StatusLine(b.mainSession, if (b.state == BotState.thinking) "${b.name} is thinking" else null))
-            }
-            "bot_record_changed" -> Decode.botRecord(p["bot"])?.let { b ->
-                // A new bot (its state comes with its `bot_changed`): only one this client doesn't know yet.
-                if (synchronized(this) { b.id !in bots }) { remember(b); events.tryEmit(EngineEvent.BotChanged(b)) }
-            }
-            "bot_summary_changed" -> Decode.summary(p["summary"])?.let { events.tryEmit(EngineEvent.BotSummaryChanged(it)) }
-            "session_changed" -> Decode.session(p["session"])?.let { s ->
-                remember(s)
-                events.tryEmit(EngineEvent.SessionChanged(s))
-            }
-            "device_changed", "device_removed" -> synchronized(this) { devices = null }
-        }
-    }
-
-    private fun kindOf(session: String): ConversationKind =
-        if (synchronized(this) { sessionKinds[session] } == "bot") ConversationKind.bot else ConversationKind.codingSession
-
-    private fun sessionEvent(p: JsonElement) {
-        val session = p["sessionId"].str() ?: return
-        val type = p["type"].str() ?: return
-        val seq = p["seq"].long()
-        // A streaming delta carries the log's last seq, not its own: never counted as heard.
-        if (seq != null && type != "assistant_delta") synchronized(this) { if (session in followed) followed[session] = maxOf(followed[session] ?: 0, seq) }
-        when (type) {
-            "turn_started" -> {
-                val bot = synchronized(this) { bots.values.firstOrNull { it.mainSession == session } }
-                events.tryEmit(EngineEvent.StatusLine(session, if (bot != null) "${bot.name} is thinking" else "Working"))
-            }
-            "turn_completed" -> events.tryEmit(EngineEvent.StatusLine(session, null))
-        }
-        message(p, session)?.let { events.tryEmit(EngineEvent.Message(session, it)) }
-    }
-
-    private fun message(e: JsonElement, session: String): ChatMessage? {
-        val m = Decode.message(e, kindOf(session), ::deviceName) ?: return null
-        val seq = e["seq"].long() ?: return m
-        synchronized(this) { seqAt.getOrPut(session) { TreeMap() }.merge(m.at, seq) { a, b -> minOf(a, b) } }
+    private fun message(i: SessionItem): ChatMessage? {
+        val m = Typed.message(i, isBot(i.session), ::deviceName) ?: return null
+        synchronized(this) { seqAt.getOrPut(i.session) { TreeMap() }.merge(m.at, i.seq.toLong()) { a, b -> minOf(a, b) } }
         return m
     }
 
@@ -271,7 +253,7 @@ class CoreEngineClient(
         return synchronized(this) { devices }?.firstOrNull { it.id == id }?.name ?: "another device"
     }
 
-    /** Follows a session live from now, before its page is handed over; at most a few at once (the oldest let go). */
+    /** Follows a session live, before its page is handed over; at most a few at once (the oldest let go). */
     private suspend fun follow(session: String, lastSeq: Long?) {
         val drop = synchronized(this) {
             val known = followed.remove(session)
@@ -279,7 +261,7 @@ class CoreEngineClient(
             if (followed.size > 8) followed.keys.first().also { followed.remove(it) } else null
         }
         try { calls.sessionAttach(session, null) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(tag, "following a session failed: ${e.javaClass.simpleName}") }
-        if (drop != null) scope.launch { runCatching { connection()?.call("session.detach", JsonObject(mapOf("id" to kotlinx.serialization.json.JsonPrimitive(drop))).toString()) } }
+        if (drop != null) scope.launch { runCatching { calls.sessionDetach(drop) } }
     }
 
     /** A message's time back to the seq the engine pages by (`before` is a seq there, a time on the screens). */
@@ -288,12 +270,10 @@ class CoreEngineClient(
         return synchronized(this) { seqAt[session]?.get(before) ?: seqAt[session]?.ceilingEntry(before)?.value }
     }
 
-    private suspend fun page(session: String?, p: EngineCalls.Page): MessagePage {
-        val s = p.session ?: session ?: ""
-        val msgs = p.events.mapNotNull { message(it, s) }
-        val last = p.events.lastOrNull()?.get("seq").long()
-        if (s.isNotEmpty()) follow(s, last)
-        return MessagePage(s, msgs, p.hasMore)
+    private suspend fun page(p: com.waifucave.moss.phonecore.MessagePage): MessagePage {
+        val msgs = p.items.mapNotNull { message(it) }
+        follow(p.session, p.items.lastOrNull()?.seq?.toLong())
+        return MessagePage(p.session, msgs, p.hasMore)
     }
 
     // Pairing
@@ -326,7 +306,7 @@ class CoreEngineClient(
         val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) { throw e } catch (e: Exception) { throw pairingError(e) }
         val id = UUID.randomUUID().toString()
         synchronized(this) { pairings[id] = pairing }
-        return PairingProposal(id, pairing.computerName(), pairing.words())
+        return PairingProposal(id, visibleText(pairing.computerName(), true), pairing.words())
     }
 
     override suspend fun confirmPairing(proposal: PairingProposal): PairedComputer {
@@ -343,49 +323,47 @@ class CoreEngineClient(
 
     // Bots
 
-    override suspend fun bots(): List<Bot> {
-        val faces = runCatching { calls.botFaces() }.getOrDefault(emptyMap())
-        return calls.botList(faces).onEach { remember(it) }
-    }
-    override suspend fun botSummaries(): List<BotSummary> = calls.botSummaries()
+    override suspend fun bots(): List<Bot> = c().bots().map { Typed.bot(it).also(::remember) }
+    override suspend fun botSummaries(): List<BotSummary> = c().botSummaries().map(Typed::summary)
 
     override suspend fun conversation(bot: String, before: Long?, limit: Int): MessagePage {
-        val main = synchronized(this) { bots[bot]?.mainSession } ?: calls.botGet(bot)?.also { remember(it) }?.mainSession
+        val main = synchronized(this) { bots[bot]?.mainSession }
         main?.let { synchronized(this) { sessionKinds[it] = "bot" } }
-        return page(main, calls.botConversation(bot, beforeSeq(main, before), limit))
+        val p = c().conversation(bot, beforeSeq(main, before), limit.coerceIn(1, 500).toUInt())
+        synchronized(this) { sessionKinds[p.session] = "bot" }
+        return page(p)
     }
 
-    override suspend fun markRead(bot: String) = calls.botMarkRead(bot, System.currentTimeMillis())
+    override suspend fun markRead(bot: String) = c().markRead(bot, System.currentTimeMillis())
 
     // Sessions
 
-    override suspend fun sessions(): List<SessionRow> = calls.sessionList().onEach { remember(it) }
+    override suspend fun sessions(): List<SessionRow> = c().sessions().map { Typed.session(it).also(::remember) }
     override suspend fun history(session: String, before: Long?, limit: Int): MessagePage =
-        page(session, calls.sessionHistory(session, beforeSeq(session, before), limit))
+        page(c().history(session, beforeSeq(session, before), limit.coerceIn(1, 500).toUInt()))
 
     override suspend fun send(session: String, text: String, clientMessageId: String, images: List<String>, files: List<String>) {
-        val c = connection() ?: throw IllegalStateException("not paired")
         // Signed by the core with this phone's answer key; the same client id makes a resend the same message.
-        c.sendMessage(session, text, clientMessageId, images, files)
+        c().sendMessage(session, text, clientMessageId, images, files)
     }
 
-    override suspend fun stop(session: String) = calls.sessionInterrupt(session)
+    override suspend fun stop(session: String) = c().stop(session)
 
     // Cards
 
     override suspend fun cards(): List<Card> {
-        if (connection() == null) throw IllegalStateException("not paired")
+        c()
         // The pending cards come with the connection (`PendingCards`): wait for it to be up once.
         withTimeoutOrNull(15_000) { firstUp.await() } ?: throw IllegalStateException("not connected")
         val views = synchronized(this) { issued.values.toList() }
-        return views.filter { it.pending() }.mapNotNull { Decode.card(it.cardJson(), it.hash()) }
+        return views.filter { it.pending() }.mapNotNull(::cardOf)
     }
 
     override suspend fun answer(card: Card, option: CardOption) {
-        val c = connection() ?: throw IllegalStateException("not paired")
+        val c = c()
         val view = synchronized(this) { issued[card.id] } ?: throw CardAnswerException(CardAnswerError.answeredElsewhere)
-        // The card the screen drew must be exactly what this view says: same hash, same content, the option one of its own.
-        if (view.hash() != card.hash || Decode.card(view.cardJson(), view.hash()) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
+        // The card the screen drew must be exactly what this view draws: same hash, same content, the option one of its own.
+        if (view.hash() != card.hash || cardOf(view) != card) throw IllegalStateException("the card on screen isn't the one the core issued")
         if (option.id !in view.options() || card.options.none { it == option }) throw IllegalArgumentException("not one of the card's options")
         if (!view.pending()) throw CardAnswerException(if (view.outcome() == "expired") CardAnswerError.expired else CardAnswerError.answeredElsewhere)
         val outcome = c.answerCard(view, option.id, emptyList())
@@ -404,8 +382,8 @@ class CoreEngineClient(
 
     /**
      * Which cards this app shows (the engine's routing rule, `push-routing.ts`): a card belongs to MOSS when a bot's
-     * conversation raised it, to MOSS Code when a coding or agent session did. Each app shows its own, and the other app's
-     * too when no phone of that app is paired with the computer (so a card is never shown nowhere).
+     * conversation raised it, to MOSS Code when a coding or agent session did (the core says whose it is). Each app shows its
+     * own, and the other app's too when no phone of that app is paired with the computer (so a card is never shown nowhere).
      */
     override suspend fun shows(card: Card, app: PhoneApp): Boolean {
         val kind = card.session?.let { synchronized(this) { sessionKinds[it] } }
@@ -423,13 +401,14 @@ class CoreEngineClient(
 
     // Starting a session
 
-    override suspend fun backends(): List<AgentBackend> = calls.agentBackends(treeName)
-    override suspend fun startOptions(backend: String): BackendOptions = calls.agentOptions(backend)
-    override suspend fun recentStart(): RecentStart = calls.agentRecent()
+    override suspend fun backends(): List<AgentBackend> = c().backends().mapNotNull { Typed.backend(it, treeName) }
+    override suspend fun startOptions(backend: String): BackendOptions = Typed.options(c().startOptions(backend, treeName))
+    override suspend fun recentStart(): RecentStart = Typed.recent(c().recentStart())
     override suspend fun startSession(request: StartRequest): String = try {
-        calls.agentStart(request).also { synchronized(this) { sessionKinds[it] = "coding" } }
-    } catch (e: EngineRpcError) {
-        val w = e.words.lowercase()
+        c().startSession(CoreStart(request.backend, request.computer, request.root, request.model, request.effort, null))
+            .also { synchronized(this) { sessionKinds[it] = "coding" } }
+    } catch (e: CoreException.Rpc) {
+        val w = e.computersWords.lowercase()
         throw when {
             "install" in w -> StartException(StartError.notInstalled)
             "folder" in w || "fence" in w || "home" in w || "root" in w -> StartException(StartError.folderRefused)
@@ -440,17 +419,15 @@ class CoreEngineClient(
     // The composer
 
     override suspend fun composerOffers(session: String, kind: ConversationKind): ComposerOffers = try {
-        calls.composerOffers(session) ?: ComposerOffers()
-    } catch (e: NotAvailableYet) {
-        // An engine without lane PH's door: what the doors on today's remote list offer. Pictures (`session.stageImage`),
-        // the plugins' commands, and a coding session's models; no Files row.
-        val commands = runCatching { calls.commandList() }.getOrDefault(emptyList())
+        Typed.offers(c().composerOffers(session))
+    } catch (e: CoreException.Rpc) {
+        // -32601: not served; -32010: not on the remote role's list. An engine without lane PH's door gets what the doors on
+        // today's remote list offer: pictures, the plugins' commands, a coding session's models; no Files row.
+        if (e.code != -32601L && e.code != -32010L) throw e
+        val commands = runCatching { c().commands().map { PluginCommand(it.name, it.description) } }.getOrDefault(emptyList())
         if (kind == ConversationKind.bot) ComposerOffers(pictures = true, commands = commands)
         else {
-            val models = runCatching { calls.modelsList(session) }.getOrNull()
-            val choices = models["models"].arr().filter { it["signedIn"].bool() != false }.mapNotNull { m ->
-                m["id"].str()?.let { ModelChoice(it, Decode.text(m["name"]) ?: it, m["efforts"].arr().mapNotNull { x -> x.str() }) }
-            }
+            val choices = runCatching { Typed.choices(c().models(session)) }.getOrDefault(emptyList())
             val current = synchronized(this) { sessionModels[session] }
             ComposerOffers(pictures = true, commands = commands, models = choices, model = current,
                 efforts = choices.firstOrNull { it.id == current }?.efforts ?: emptyList())
@@ -459,39 +436,29 @@ class CoreEngineClient(
 
     override suspend fun setModel(session: String, model: String?, effort: String?) {
         val m = model ?: synchronized(this) { sessionModels[session] } ?: throw IllegalStateException("no model to keep")
-        calls.sessionSetModel(session, m, effort)
+        c().setModel(session, m, effort)
         synchronized(this) { sessionModels[session] = m }
     }
 
-    override suspend fun stageImage(session: String, data: ByteArray): String {
-        val c = connection() ?: throw IllegalStateException("not paired")
-        return c.stageImage(session, mediaType(data), data)
-    }
+    override suspend fun stageImage(session: String, data: ByteArray): String = c().stageImage(session, mediaType(data), data)
 
     override suspend fun stageFile(session: String, name: String, data: ByteArray): StagedFile {
-        val c = connection() ?: throw IllegalStateException("not paired")
         if (data.size > STAGE_FILE_MAX_BYTES) throw FileTooLarge(STAGE_FILE_MAX_BYTES)
-        val f = c.stageFile(session, name, data)
-        return StagedFile(f.path, f.computersName, data.size.toLong())
+        val f = c().stageFile(session, name, data)
+        return StagedFile(f.path, visibleText(f.computersName, true), data.size.toLong())
     }
 
-    override suspend fun newBotOptions(): NewBotOptions = calls.newBotOptions()
+    override suspend fun newBotOptions(): NewBotOptions = Typed.newBot(c().models(null))
 
-    override suspend fun createBot(name: String, model: String?): Bot {
-        val made = calls.botCreate(name, model)
-        val full = runCatching { calls.botGet(made.id) }.getOrNull() ?: made
-        remember(full)
-        return full
-    }
+    override suspend fun createBot(name: String, model: String?): Bot = Typed.bot(c().createBot(name, model)).also(::remember)
 
-    override suspend fun runCommand(session: String, command: String) = calls.commandRun(command)
+    override suspend fun runCommand(session: String, command: String) = c().runCommand(command)
 
-    override suspend fun pendingQuestion(session: String): AskQuestion? = Decode.openQuestion(calls.sessionHistory(session, null, 200).events)
+    override suspend fun pendingQuestion(session: String): AskQuestion? = Typed.question(c().pendingQuestion(session))
 
     override suspend fun answerQuestion(session: String, question: AskQuestion, answers: Map<String, String>) {
         // The engine keys an answer by the question's text (the screens key it by its header when it has one).
-        val value = answers.values.firstOrNull() ?: ""
-        calls.sessionAnswer(session, question.callId, mapOf(question.text to value))
+        c().answerQuestion(session, question.callId, mapOf(question.text to (answers.values.firstOrNull() ?: "")))
     }
 
     // The link
@@ -505,7 +472,7 @@ class CoreEngineClient(
      */
     override suspend fun unpair() {
         lock.withLock {
-            conn?.disconnect(); conn = null; reader?.cancel(); reader = null; computer = null
+            conn?.disconnect(); conn = null; reader?.cancel(); reader = null
             core?.let { c ->
                 withContext(Dispatchers.IO) { runCatching { c.pairedComputers().forEach { pc -> c.forgetComputer(pc.id) } } }
                 runCatching { c.shutdown() }
@@ -546,3 +513,6 @@ class CoreEngineClient(
         }
     }
 }
+
+/** An RPC error as the engine answered it, for the calls the core doesn't type yet. */
+class EngineRpcError(val code: Long, val words: String) : Exception("rpc error $code")

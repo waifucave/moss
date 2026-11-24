@@ -8,7 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The decoders against the protocol's own generated fixtures, and what they must never do: crash on what they don't know. */
+/** What the Android side still reads from engine JSON (a card to draw, the device list), against the protocol's fixtures. */
 class DecodeTest {
     private fun fixture(name: String) = Decode.parse(File("../../../packages/protocol/generated/moss/fixtures/$name.json").readText())!!
 
@@ -44,54 +44,19 @@ class DecodeTest {
     }
 
     @Test
-    fun botsSessionsAndSummariesFromTheFixtures() {
-        val b = Decode.bot(fixture("bot_changed")["bot"])!!
-        assertEquals(Bot("alpha", "Alpha", "fireworks/kimi-k3", "medium", null, BotState.idle, "Studio", "s_alpha"), b)
-        val s = Decode.session(fixture("session_changed")["session"])!!
-        assertEquals("agent", s.kind)
-        assertEquals(SessionStatus.prompting, s.status)
-        assertEquals("project1", s.project)
-        val sum = Decode.summary(fixture("bot_summary_changed")["summary"])!!
-        assertEquals(BotSummary.From.bot, sum.last!!.from)
-        assertTrue(sum.unread)
+    fun everyStringOfACardGoesThroughTheCleaner() {
+        val card = fixture("card_requested")["card"]!!
+        val c = Decode.card(card.toString(), "h") { "[$it]" }!!
+        assertEquals("[Run a command?]", c.title)
+        assertEquals(SealedValue.Code("[rm -rf build/]", "[sh]"), c.fields["command"])
+        assertEquals("[Allow]", c.options[0].label)
+        assertEquals("card_0a1b2c3d", c.id)
     }
 
     @Test
-    fun unknownValuesAreReadAsTheirPlainMeaningNeverACrash() {
-        val b = Decode.bot(Decode.parse("""{"id":"x","name":{"en":"X","fr":"Xe"},"state":"dreaming","mainSession":"s_x","new":[1,2]}"""))!!
-        assertEquals("X", b.name)
-        assertNull(b.state)
-        val s = Decode.session(Decode.parse("""{"id":"s","kind":"future","computer":"C","status":"levitating","startedAt":1,"updatedAt":2}"""))!!
-        assertEquals(SessionStatus.idle, s.status)
-        assertNull(Decode.bot(Decode.parse("[]")))
-        assertNull(Decode.session(Decode.parse("\"s\"")))
-    }
-
-    @Test
-    fun aSessionsEventsAsMessages() {
-        val user = Decode.parse("""{"type":"user_message","seq":3,"sessionId":"s_a","ts":10,"threadId":"main","text":"hi","clientName":"x","device":"d_other"}""")
-        val m = Decode.message(user, ConversationKind.bot) { if (it == "d_other") "Laptop" else null }!!
-        assertEquals(ChatMessage("s_a#3", MessageRole.user, "hi", 10, device = "Laptop"), m)
-        val reply = Decode.parse("""{"type":"assistant_message","seq":4,"sessionId":"s_a","ts":11,"threadId":"main","text":"hello"}""")
-        assertEquals(MessageRole.bot, Decode.message(reply, ConversationKind.bot)!!.role)
-        assertEquals(MessageRole.agent, Decode.message(reply, ConversationKind.codingSession)!!.role)
-        assertNull(Decode.message(Decode.parse("""{"type":"tool_call","seq":5,"sessionId":"s_a","ts":12}"""), ConversationKind.bot))
-        assertNull(Decode.message(Decode.parse("""{"type":"assistant_delta","seq":4,"sessionId":"s_a","ts":12,"delta":"x"}"""), ConversationKind.bot))
-        assertNotNull(Decode.message(fixture("note"), ConversationKind.bot))
-    }
-
-    @Test
-    fun theOpenQuestionIsTheLastOneNotResolved() {
-        val events = listOf(
-            """{"type":"question_asked","callId":"c1","questions":[{"question":"One?","options":[],"multiSelect":false}]}""",
-            """{"type":"question_resolved","callId":"c1","answers":{},"by":"user"}""",
-            """{"type":"question_asked","callId":"c2","questions":[{"question":"Two?","header":"Pick","options":[{"label":"A"},{"label":"B","description":"b"}],"multiSelect":true}]}""",
-        ).map { Decode.parse(it)!! }
-        val q = Decode.openQuestion(events)!!
-        assertEquals("c2", q.callId)
-        assertEquals(listOf(AskQuestion.Option("A"), AskQuestion.Option("B", "b")), q.options)
-        assertTrue(q.multiSelect)
-        assertNull(Decode.openQuestion(events.take(2)))
+    fun devicesSayWhichAppEachPhoneIs() {
+        val d = Decode.devices(Decode.parse("""{"devices":[{"id":"a","name":"Studio","kind":"desktop"},{"id":"b","name":"Pixel","kind":"phone","app":"code"},{"id":"c","kind":"phone","app":"other"},{"name":"no id"}]}"""))
+        assertEquals(listOf(Decode.Device("a", "Studio", false, null), Decode.Device("b", "Pixel", true, PhoneApp.code), Decode.Device("c", "c", true, null)), d)
     }
 
     @Test
