@@ -1,5 +1,7 @@
 import Foundation
 
+// Debug only: a Release build carries no fake and no sample data (see Roots.swift `Fake`).
+#if DEBUG
 /// The engine client the screens run on until lane PC's core exists: in memory, serving `SampleData`, and
 /// deterministic. It sleeps never; a turn it starts is finished by `finishTurn` (the apps call it after a short
 /// delay, tests call it directly).
@@ -380,3 +382,4 @@ public actor FakeEngineClient: EngineClient {
     }
     private func drop(_ id: UUID) { continuations[id] = nil }
 }
+#endif

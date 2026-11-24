@@ -38,8 +38,10 @@ public struct PairingScreen: View {
                     VStack(spacing: 10) {
                         Image(systemName: "qrcode.viewfinder").font(.system(size: 64, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1).foregroundStyle(.secondary)
                         Text("No camera here.").font(.footnote).foregroundStyle(.secondary)
+                        #if DEBUG
                         Button("Use a sample code") { Task { await model.scanned("moss-pair:sample") } }
                             .buttonStyle(.bordered).tint(Theme.accent)
+                        #endif
                     }
                 } else {
                     CameraScanner { code in Task { await model.scanned(code) } }

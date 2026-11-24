@@ -415,7 +415,9 @@ public struct AskQuestion: Identifiable, Hashable, Sendable {
     public struct Option: Hashable, Sendable {
         public var label: String
         public var detail: String?
-        public init(label: String, detail: String? = nil) { self.label = label; self.detail = detail }
+        /// A preview the option carries (a diff, a scheme): the computer's text, drawn in its own box.
+        public var preview: String?
+        public init(label: String, detail: String? = nil, preview: String? = nil) { self.label = label; self.detail = detail; self.preview = preview }
     }
     public var callId: String
     public var header: String?

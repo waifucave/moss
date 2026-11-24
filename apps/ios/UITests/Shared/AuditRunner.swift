@@ -14,7 +14,7 @@ enum AuditRunner {
         "com.waifucave.moss.code.ios": [
             ("sessions", ["-screen", "sessions"]), ("session", ["-screen", "session"]), ("cards", ["-screen", "cards"]),
             ("pairScan", ["-screen", "pairScan"]), ("pairWords", ["-screen", "pairWords"]), ("settings", ["-screen", "settings"]),
-            ("newSession", ["-screen", "newSession"]), ("unreachable", ["-screen", "sessions", "-scenario", "unreachable"]),
+            ("newSession", ["-screen", "newSession"]), ("longQuestion", ["-screen", "session", "-open", "c5"]), ("unreachable", ["-screen", "sessions", "-scenario", "unreachable"]),
             ("empty", ["-screen", "sessions", "-scenario", "empty"]),
         ],
     ]

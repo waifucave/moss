@@ -1,0 +1,267 @@
+import Foundation
+import MossPhoneKit
+import Security
+import XCTest
+@testable import MossEngineClient
+
+// The client over a fake link (no core): the card shelf's rule, the Keychain's status mapping, the decoding of the
+// engine's payloads and events, and the unpair's wipe.
+
+private func cardJSON(_ id: String, hash: String = "h", fields: String = #"{"title":{"type":"text","text":"T"}}"#,
+                      options: String = #"[{"id":"approve","kind":"approve","label":"Allow"},{"id":"deny","kind":"deny","label":"Deny"}]"#,
+                      bot: String? = nil, expires: String = "null") -> String {
+    #"{"id":"\#(id)","kind":"change","computer":null,"origin":"user","issuedAt":1,"expiresAt":\#(expires),"hash":"\#(hash)","fields":\#(fields),"options":\#(options)\#(bot.map { #","bot":"\#($0)""# } ?? "")}"#
+}
+private func shown(_ id: String, hash: String = "h", json: String? = nil) -> ShownCard {
+    ShownCard(id: id, hash: hash, cardJSON: json ?? cardJSON(id, hash: hash), handle: NSObject())
+}
+
+final class CardShelfTests: XCTestCase {
+    func testOnlyTheIssuedCardAsDrawnIsAnswerable() throws {
+        var shelf = CardShelf(decode: { Doors.card($0) })
+        let s = shown("card_aaaaaa")
+        let card = try XCTUnwrap(shelf.issue(s))
+        XCTAssertEqual(card.expiresAt, Int64.max, "no expiry: it waits")
+        XCTAssertTrue(shelf.shown(for: card) === s)
+        var altered = card
+        altered.fields["title"] = .text("Something else")
+        XCTAssertNil(shelf.shown(for: altered), "a card that isn't the one drawn is never signed")
+        shelf.resolve(card.id)
+        XCTAssertNil(shelf.shown(for: card), "a resolved card isn't answered from here")
+    }
+
+    func testACardThePhoneCantDrawWholeIsNotShown() {
+        var shelf = CardShelf(decode: { Doors.card($0) })
+        XCTAssertNil(shelf.issue(shown("card_bbbbbb", json: cardJSON("card_bbbbbb", fields: #"{"title":{"type":"chart","x":1}}"#))))
+        XCTAssertNil(shelf.issue(shown("card_cccccc", json: cardJSON("card_cccccc", options: #"[{"id":"x","kind":"maybe","label":"?"}]"#))))
+        XCTAssertNil(shelf.issue(shown("card_dddddd", hash: "other", json: cardJSON("card_dddddd", hash: "h"))), "the issue's hash and the drawn one agree")
+        XCTAssertTrue(shelf.cards.isEmpty)
+    }
+
+    func testAnUnknownFieldOfTheCardIsIgnored() throws {
+        // (The core types the rest of the engine's payloads; a card's JSON is what the client still reads.)
+        let json = cardJSON("card_eeeeee").replacingOccurrences(of: #""kind":"change""#, with: #""kind":"change","newThing":{"a":[1,2]},"children":[]"#)
+        XCTAssertNotNil(Doors.card(json))
+    }
+
+    /// Generated sequences of issues, re-lists and resolutions: the shelf answers for a card exactly when the last thing
+    /// it heard of that id was an issue (on its own, or in the latest pending list) of that same content.
+    func testGeneratedSequencesKeepTheRule() {
+        var rng = SystemRandomNumberGenerator()
+        let ids = (0..<5).map { "card_seq00\($0)" }
+        for _ in 0..<300 {
+            var shelf = CardShelf(decode: { Doors.card($0) })
+            var model: [String: ShownCard] = [:]
+            for _ in 0..<40 {
+                let id = ids.randomElement(using: &rng)!
+                switch Int.random(in: 0..<4, using: &rng) {
+                case 0, 1:
+                    let s = shown(id, hash: "h\(Int.random(in: 0..<3, using: &rng))")
+                    _ = shelf.issue(s); model[id] = s
+                case 2:
+                    shelf.resolve(id); model[id] = nil
+                default:
+                    let list = ids.filter { _ in Bool.random(using: &rng) }.map { shown($0, hash: "h\(Int.random(in: 0..<3, using: &rng))") }
+                    _ = shelf.replacePending(list)
+                    model = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+                }
+                for id in ids {
+                    let expect = model[id]
+                    let card = expect.flatMap { Doors.card($0.cardJSON) }
+                    if let card { XCTAssertTrue(shelf.shown(for: card) === expect) }
+                    XCTAssertEqual(shelf.cards.contains { $0.id == id }, expect != nil)
+                }
+            }
+        }
+    }
+}
+
+final class KeychainMappingTests: XCTestCase {
+    private func items(read: OSStatus = errSecSuccess, update: OSStatus = errSecSuccess, add: OSStatus = errSecSuccess, log: Log = Log()) -> KeychainItems {
+        KeychainItems(service: "t", api: .init(
+            copyMatching: { _, out in if read == errSecSuccess { out?.pointee = Data([7]) as CFData }; return read },
+            add: { _ in log.calls.append("add"); return add },
+            update: { _, _ in log.calls.append("update"); return update },
+            delete: { _ in log.calls.append("delete"); return errSecSuccess }))
+    }
+    final class Log: @unchecked Sendable { var calls: [String] = [] }
+
+    func testNotFoundIsNilAndALockedKeychainIsNotAvailable() {
+        XCTAssertNil(try items(read: errSecItemNotFound).load("x"))
+        XCTAssertEqual(try items().load("x"), Data([7]))
+        XCTAssertThrowsError(try items(read: errSecInteractionNotAllowed).load("x")) { XCTAssertEqual($0 as? KeychainItems.Failure, .notAvailable("the Keychain is locked")) }
+        XCTAssertThrowsError(try items(read: errSecMissingEntitlement).load("x")) {
+            guard case .failed = $0 as? KeychainItems.Failure else { return XCTFail("a missing entitlement isn't 'not found'") }
+        }
+    }
+
+    func testASaveUpdatesInPlaceAndNeverDeletesFirst() throws {
+        let log = Log()
+        try items(log: log).save("x", Data([1]))
+        XCTAssertEqual(log.calls, ["update"])
+        let log2 = Log()
+        try items(update: errSecItemNotFound, log: log2).save("x", Data([1]))
+        XCTAssertEqual(log2.calls, ["update", "add"])
+        XCTAssertThrowsError(try items(update: errSecInteractionNotAllowed).save("x", Data([1]))) { XCTAssertEqual($0 as? KeychainItems.Failure, .notAvailable("the Keychain is locked")) }
+    }
+}
+
+// MARK: The client over a fake link
+
+final class FakeConnection: ConnectionLink, @unchecked Sendable {
+    var answers: [String: String] = [:]
+    var calls: [(String, String)] = []
+    var answered: [(ShownCard, String)] = []
+    var accept = true
+    var botList: [Bot] = []
+    var offersOffered = false
+    private var queue: [LinkEvent] = []
+    private var waiter: CheckedContinuation<LinkEvent?, Never>?
+    private let lock = NSLock()
+    func push(_ e: LinkEvent) {
+        lock.lock()
+        if let w = waiter { waiter = nil; lock.unlock(); w.resume(returning: e); return }
+        queue.append(e); lock.unlock()
+    }
+    private func notOffered() -> LinkError { .rpc(code: -32001, words: "remote role may not call it", dataJSON: nil) }
+    func call(_ method: String, _ paramsJSON: String) async throws -> String {
+        lock.withLock { calls.append((method, paramsJSON)) }
+        if let a = answers[method] { return a }
+        throw LinkError.rpc(code: -32601, words: "no such method", dataJSON: nil)
+    }
+    func nextEvent() async -> LinkEvent? {
+        await withCheckedContinuation { k in
+            lock.lock()
+            if !queue.isEmpty { let e = queue.removeFirst(); lock.unlock(); k.resume(returning: e) } else { waiter = k; lock.unlock() }
+        }
+    }
+    func fetchCard(_ id: String) async throws -> ShownCard { shown(id) }
+    func answer(_ card: ShownCard, option: String, children: [String]) async throws -> (accepted: Bool, reason: String?) {
+        answered.append((card, option)); return (accept, accept ? nil : "the card was already answered, or its time ran out")
+    }
+    var sent: [(String, String, [String])] = []
+    func sendMessage(session: String, text: String, clientMessageId: String, images: [String], files: [String]) async throws -> UInt64 { sent.append((session, text, images)); return 1 }
+    func stageFile(session: String, name: String, data: Data) async throws -> (name: String, path: String) { (name, "bots/a/\(name)") }
+    func stageImage(session: String, mediaType: String, data: Data) async throws -> String { "staged/1.png" }
+    func bots() async throws -> [Bot] { botList }
+    func botSummaries() async throws -> [BotSummary] { [] }
+    func conversation(bot: String, beforeSeq: Int64?, limit: UInt32) async throws -> LinkPage {
+        LinkPage(session: "s1", items: [(3, .message(ChatMessage(id: "s1#3", role: .agent, text: "Hi", at: 1))), (4, .turnEnded)], hasMore: true)
+    }
+    func markRead(bot: String, at: Int64) async throws {}
+    func createBot(name: String, model: String?) async throws -> Bot { throw notOffered() }
+    func sessions() async throws -> [SessionRow] { [] }
+    func history(session: String, beforeSeq: Int64?, limit: UInt32) async throws -> LinkPage { LinkPage(session: session, items: [], hasMore: false) }
+    func stop(session: String) async throws {}
+    func setModel(session: String, model: String, effort: String?) async throws {}
+    func composerOffers(session: String) async throws -> ComposerOffers {
+        if offersOffered { return ComposerOffers(pictures: true) }
+        throw notOffered()
+    }
+    func pendingQuestion(session: String) async throws -> AskQuestion? { nil }
+    func answerQuestion(session: String, callId: String, answers: [String: String]) async throws {}
+    func backends() async throws -> [AgentBackend] { [] }
+    func startOptions(backend: String, computer: String?) async throws -> BackendOptions { BackendOptions(backend: backend, models: []) }
+    func recentStart() async throws -> RecentStart { RecentStart() }
+    func startSession(_ request: StartRequest) async throws -> String { "c1" }
+    func models(session: String?) async throws -> NewBotOptions { NewBotOptions(models: []) }
+    func runCommand(name: String) async throws {}
+    func state() -> LinkState { .up }
+    func networkChanged() {}
+    func disconnect() {}
+}
+
+final class FakeCore: CoreLink, @unchecked Sendable {
+    let conn: FakeConnection
+    var computers: [LinkComputer]
+    init(_ conn: FakeConnection, computers: [LinkComputer]) { self.conn = conn; self.computers = computers }
+    var deviceName: String { "iPhone" }
+    func pairedComputers() throws -> [LinkComputer] { computers }
+    func beginPairing(qr: String, app: LinkApp) async throws -> PairingLink { throw LinkError.invalid("not a code") }
+    func connect(computerId: String, clientName: String, areas: [String]) async throws -> ConnectionLink { conn }
+    func forgetComputer(_ id: String) throws { computers.removeAll { $0.id == id } }
+    func shutdown() async {}
+}
+
+final class ClientTests: XCTestCase {
+    private func client(_ conn: FakeConnection, wiped: @escaping @Sendable () -> Void = {}) -> (CoreEngineClient, FakeCore) {
+        let core = FakeCore(conn, computers: [LinkComputer(id: "c1", name: "Studio", app: .moss, pairedAt: 1)])
+        return (CoreEngineClient(factory: CoreFactory(make: { core }, wipeStore: wiped, visible: { $0.replacingOccurrences(of: "\u{202E}", with: "\\u202E") }), app: .moss), core)
+    }
+
+    func testCardsComeFromTheCoresIssueAndAreAnsweredWithIt() async throws {
+        let conn = FakeConnection()
+        let (c, _) = client(conn)
+        let stream = await c.events()
+        _ = await c.pairedComputer
+        let s = shown("card_ffffff", json: cardJSON("card_ffffff", fields: #"{"title":{"type":"text","text":"a\u202Eb"}}"#))
+        conn.push(.up)
+        conn.push(.pendingCards([s]))
+        var it = stream.makeAsyncIterator()
+        var got: Card?
+        while got == nil, let e = await it.next() { if case .cardRequested(let card) = e { got = card } }
+        let card = try XCTUnwrap(got)
+        XCTAssertEqual(card.title, "a\\u202Eb", "a computer's text is drawn through the core's visible-text rule")
+        try await c.answer(card: card, option: card.options[0])
+        XCTAssertTrue(conn.answered.first?.0 === s, "the very object the core issued goes back")
+        do { try await c.answer(card: card, option: card.options[0]); XCTFail("answered twice") } catch is CardNotShown {}
+    }
+
+    func testTypedEventsBecomeMessagesAndTheStatusLine() async throws {
+        let conn = FakeConnection()
+        conn.botList = [Bot(id: "alpha", name: "Alpha", mainSession: "s1")]
+        let (c, _) = client(conn)
+        let stream = await c.events()
+        _ = try await c.bots()
+        conn.push(.up)
+        conn.push(.sessionItem(session: "s1", seq: 4, item: .turnStarted))
+        conn.push(.sessionItem(session: "s1", seq: 5, item: .message(ChatMessage(id: "s1#5", role: .agent, text: "Hi", at: 11))))
+        conn.push(.sessionItem(session: "s1", seq: 6, item: .other))
+        conn.push(.sessionItem(session: "s1", seq: 7, item: .turnEnded))
+        var seen: [EngineEvent] = []
+        var it = stream.makeAsyncIterator()
+        while seen.filter({ if case .statusLine = $0 { return true }; return false }).count < 2, let e = await it.next() { seen.append(e) }
+        XCTAssertTrue(seen.contains(.statusLine(subject: "s1", line: "Alpha is thinking")))
+        XCTAssertTrue(seen.contains(.message(subject: "s1", ChatMessage(id: "s1#5", role: .bot, text: "Hi", at: 11))), "a bot's words are the bot's")
+        XCTAssertTrue(seen.contains(.statusLine(subject: "s1", line: nil)))
+    }
+
+    func testPagesByPlaceForTheScreensTime() async throws {
+        let conn = FakeConnection()
+        conn.botList = [Bot(id: "alpha", name: "Alpha", mainSession: "s1")]
+        let (c, _) = client(conn)
+        let page = try await c.conversation(bot: "alpha", before: nil, limit: 60)
+        XCTAssertEqual(page.messages.map(\.role), [.bot])
+        XCTAssertTrue(page.hasMore)
+        XCTAssertTrue(conn.calls.contains { $0.0 == "session.attach" }, "the conversation is followed live")
+    }
+
+    func testASendNamesItsAttachmentsInTheText() async throws {
+        let conn = FakeConnection()
+        let (c, _) = client(conn)
+        try await c.send(session: "s1", text: "Look", clientMessageId: "m1", images: ["staged/1.png"], files: ["bots/a/f.pdf"])
+        XCTAssertEqual(conn.sent.first?.1, "Look [Image #1] [File #1]")
+    }
+
+    func testUnpairForgetsEveryComputerAndWipesTheStore() async throws {
+        let conn = FakeConnection()
+        final class Flag: @unchecked Sendable { var wiped = false }
+        let flag = Flag()
+        let (c, core) = client(conn, wiped: { flag.wiped = true })
+        _ = await c.pairedComputer
+        await c.unpair()
+        XCTAssertTrue(core.computers.isEmpty)
+        XCTAssertTrue(flag.wiped, "the device's own keys go too")
+    }
+
+    func testAnEngineWithoutThePhoneDoorsSaysSo() async throws {
+        let conn = FakeConnection()
+        let (c, _) = client(conn)
+        let offers = try await c.composerOffers(session: "s1", kind: .bot)
+        XCTAssertTrue(offers.isEmpty, "no rows where the engine offers nothing")
+        do { _ = try await c.createBot(name: "N", model: nil); XCTFail("no such door here") } catch let e as NotAvailableYet { XCTAssertEqual(e.method, "bot.create") }
+        conn.offersOffered = true
+        let offered = try await c.composerOffers(session: "s1", kind: .bot)
+        XCTAssertTrue(offered.pictures)
+    }
+}

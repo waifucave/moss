@@ -1,5 +1,7 @@
 import Foundation
 
+// Debug only: a Release build carries no fake and no sample data (see Roots.swift `Fake`).
+#if DEBUG
 /// Sample data shaped like the engine's payloads (`packages/protocol/generated/moss/fixtures`). Not real people, bots or paths.
 public enum SampleData {
     /// A fixed "now" (2026-11-24 10:00 UTC) so pictures and tests never depend on the clock.
@@ -81,6 +83,10 @@ public enum SampleData {
 
     /// Questions waiting in a conversation, by session id.
     public static let questions: [String: AskQuestion] = [
+        // A tall question with a long preview: the options and Submit stay on screen (the reviewer's rule for computer text).
+        "c5": AskQuestion(callId: "ask_3", header: "Header", text: (1...10).map { "Line \($0) of a question that runs on and on, as a computer may send it." }.joined(separator: "\n"),
+                          options: [.init(label: "Keep the old header", detail: "Nothing changes", preview: (1...40).map { "- old line \($0)\n+ new line \($0)" }.joined(separator: "\n")),
+                                    .init(label: "Use the new header")]),
         "c4": AskQuestion(callId: "ask_1", header: "Tag colour", text: "Which colour should the new tag have?",
                           options: [.init(label: "Green", detail: "Matches the success states"), .init(label: "Amber", detail: "Stands out on the white page"), .init(label: "Grey", detail: "Quiet, like the other tags")]),
         "s_luna": AskQuestion(callId: "ask_2", header: "Receipts", text: "Which folder should I keep this week's receipts in?",
@@ -180,3 +186,4 @@ public enum SampleData {
         byBackend: [.init(backend: "claude-code", model: "claude-sonnet", effort: "medium"), .init(backend: "codex", model: "gpt-5-codex", effort: "high")],
         roots: ["home/Studio/moss", "home/Studio/website", "home/Studio/tools"])
 }
+#endif

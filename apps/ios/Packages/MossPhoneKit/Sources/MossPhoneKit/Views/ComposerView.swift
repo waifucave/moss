@@ -376,7 +376,10 @@ struct QuestionComposerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let h = question.header { Text(h).font(.footnote.weight(.semibold)).foregroundStyle(.secondary) }
-            Text(question.text).font(.body).fixedSize(horizontal: false, vertical: true)
+            // The computer's text, each part in its own box and none of it read as markup: a tall question scrolls in
+            // its box, so it can never push the options or Submit off the screen or pass itself off as an option.
+            ScrollView { Text(verbatim: question.text).font(.body).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true) }
+                .frame(maxHeight: 140).scrollBounceBehavior(.basedOnSize)
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(question.options.indices, id: \.self) { i in
                     if i > 0 { Divider() }
@@ -386,8 +389,13 @@ struct QuestionComposerView: View {
                     } label: {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(question.options[i].label).font(.body)
-                                if let d = question.options[i].detail { Text(d).font(.footnote).foregroundStyle(.secondary) }
+                                Text(verbatim: question.options[i].label).font(.body).lineLimit(3)
+                                if let d = question.options[i].detail { Text(verbatim: d).font(.footnote).foregroundStyle(.secondary).lineLimit(4) }
+                                if let p = question.options[i].preview {
+                                    ScrollView([.vertical, .horizontal]) { Text(verbatim: p).font(.caption.monospaced()).fixedSize().padding(8) }
+                                        .frame(maxHeight: 96).background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                                        .accessibilityLabel("Preview: \(p)")
+                                }
                             }
                             Spacer(minLength: 8)
                             Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
@@ -405,7 +413,8 @@ struct QuestionComposerView: View {
                 Spacer()
                 Button {
                     submitting = true
-                    Task { _ = await onSubmit([question.header ?? question.text: answer]); submitting = false }
+                    // The engine keys an answer by the question's own text (never its header).
+                    Task { _ = await onSubmit([question.text: answer]); submitting = false }
                 } label: {
                     Text("Submit").font(.body.weight(.semibold)).foregroundStyle(Color(uiColor: .systemBackground))
                         .padding(.horizontal, 20).frame(height: 44).background(Color.primary, in: Capsule())

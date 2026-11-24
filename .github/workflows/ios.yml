@@ -4,7 +4,7 @@ name: iOS apps
 # workflow, and its job may fail without holding a merge.
 on:
   push:
-    branches: ["lane-int/**", "lane/ia-**"]
+    branches: ["lane-int/**", "lane/ia-**", "lane/iw-**"]
     paths: ["apps/ios/**", "packages/protocol/generated/**", "packages/plugin-sdk/src/ui/faces/**", ".github/workflows/ios.yml"]
   pull_request:
     paths: ["apps/ios/**", "packages/protocol/generated/**", "packages/plugin-sdk/src/ui/faces/**", ".github/workflows/ios.yml"]
@@ -55,7 +55,14 @@ jobs:
               if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qx -e "$A"; then echo "release build of $(basename "$APP") reads launch argument $A"; FOUND=1; fi
             done
           done
-          [ "$FOUND" = 0 ] && echo "no launch argument in either Release build"
+          # Nor the fake engine client or its sample data: a scenario name, a sample bot, the sample pairing code.
+          for APP in "$RUNNER_TEMP"/dd-rel/Build/Products/Release-iphonesimulator/*.app; do
+            BIN="$APP/$(basename "$APP" .app)"
+            for W in FakeEngineClient SampleData midTurn cardStates sendFails botLimit moss-pair:sample "Use a sample code" Juniper Marlow Sorrel; do
+              if strings -a "$BIN" "$APP"/*.debug.dylib 2>/dev/null | grep -qF -e "$W"; then echo "release build of $(basename "$APP") carries the fake's '$W'"; FOUND=1; fi
+            done
+          done
+          [ "$FOUND" = 0 ] && echo "no launch argument, fake or sample data in either Release build"
           exit $FOUND
       - name: Accessibility audits at the default and the largest text size (MOSS)
         continue-on-error: true

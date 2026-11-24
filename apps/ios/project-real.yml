@@ -1,0 +1,90 @@
+# The apps on the REAL engine (lane IW): what a person runs. The same targets as project.yml, plus the phone core under
+# them (MossEngineCore over native/phone-core/apple, whose XCFramework Scripts/build-core.sh or CI builds first), the
+# Keychain entitlement each app keeps the core's items under (its own access group), and the engine tests, hosted in each
+# app so the Keychain is real. project.yml stays the fake-only project (pictures, UI tests, no core needed).
+include: [project.yml]
+packages:
+  MossEngineClient:
+    path: Packages/MossEngineClient
+  MossEngineCore:
+    path: Packages/MossEngineCore
+targetTemplates:
+  RealEngine:
+    dependencies:
+      - package: MossEngineCore
+    settings:
+      base:
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MOSS_REAL_ENGINE
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+targets:
+  MOSS:
+    templates: [RealEngine]
+    entitlements:
+      path: Apps/MOSS/MOSS.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.waifucave.moss.ios
+  MOSSCode:
+    templates: [RealEngine]
+    entitlements:
+      path: Apps/MOSSCode/MOSSCode.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.waifucave.moss.code.ios
+  MOSSEngineTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [EngineTests/Shared, EngineTests/MOSS]
+    dependencies:
+      - target: MOSS
+      # Importable from the test, linked only into the host app (one copy of each type).
+      - package: MossEngineCore
+        link: false
+      - package: MossEngineClient
+        link: false
+      - package: MossPhoneKit
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.ios.enginetests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/MOSS.app/MOSS
+        BUNDLE_LOADER: $(TEST_HOST)
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+  MOSSCodeEngineTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [EngineTests/Shared, EngineTests/MOSSCode]
+    dependencies:
+      - target: MOSSCode
+      # Importable from the test, linked only into the host app (one copy of each type).
+      - package: MossEngineCore
+        link: false
+      - package: MossEngineClient
+        link: false
+      - package: MossPhoneKit
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.waifucave.moss.code.ios.enginetests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/MOSS Code.app/MOSS Code
+        BUNDLE_LOADER: $(TEST_HOST)
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+schemes:
+  MOSSEngineTests:
+    build: {targets: {MOSSEngineTests: all}}
+    test:
+      targets: [MOSSEngineTests]
+  MOSSCodeEngineTests:
+    build: {targets: {MOSSCodeEngineTests: all}}
+    test:
+      targets: [MOSSCodeEngineTests]

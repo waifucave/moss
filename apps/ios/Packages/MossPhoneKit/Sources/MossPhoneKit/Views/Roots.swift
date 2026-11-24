@@ -5,8 +5,15 @@ import SwiftUI
 public struct AppLaunch {
     public enum Screen: String { case home, conversation, cards, pairScan, pairWords, sessions, session, settings, newSession }
     public var screen: Screen = .home
+    #if DEBUG
     public var scenario: FakeEngineClient.Scenario = .idle
     public init(screen: Screen = .home, scenario: FakeEngineClient.Scenario = .idle) { self.screen = screen; self.scenario = scenario }
+    var unpaired: Bool { scenario == .unpaired }
+    #else
+    // A Release build has no fake and no scenario: it runs on the engine it was given.
+    public init(screen: Screen = .home) { self.screen = screen }
+    var unpaired: Bool { false }
+    #endif
 
     public static func fromProcess(_ args: [String] = ProcessInfo.processInfo.arguments) -> AppLaunch {
         #if DEBUG
@@ -37,6 +44,7 @@ public struct AppLaunch {
         l.composer.focus = args.contains("-focus"); l.composer.picker = args.contains("-picker")
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
+        l.explicit = args.contains("-screen") || args.contains("-scenario")
         return l
         #else
         return AppLaunch()
@@ -56,12 +64,40 @@ public struct AppLaunch {
     /// Types a name and presses Create, for the picture of a refusal.
     public var newBotTry = false
     public var composer = ComposerPreset()
+    /// A picture or a test asked for a screen or a scenario: the app runs on the fake, whatever engine it was given.
+    public var explicit = false
+    #if DEBUG
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
+    #else
+    var sendsOnOpen: String? { nil }
+    #endif
+}
+
+/// The fake and its sample data, for pictures and UI tests: compiled into a Debug build only. A Release build has neither,
+/// so it can't be switched to canned data and carries no sample conversation.
+enum Fake {
+    #if DEBUG
+    static func client(_ l: AppLaunch) -> any EngineClient { FakeEngineClient(scenario: l.scenario) }
+    static var pinned: [String] { SampleData.pinned }
+    static var now: Int64 { SampleData.now }
+    static var computerName: String { SampleData.computerName }
+    static var phoneName: String { SampleData.phoneName }
+    static var bots: [Bot] { SampleData.bots }
+    static var sessions: [SessionRow] { SampleData.sessions }
+    #else
+    static func client(_ l: AppLaunch) -> any EngineClient { NoEngineClient() }
+    static var pinned: [String] { [] }
+    static var now: Int64 { 0 }
+    static var computerName: String { "" }
+    static var phoneName: String { "" }
+    static var bots: [Bot] { [] }
+    static var sessions: [SessionRow] { [] }
+    #endif
 }
 
 /// The MOSS app: the bots, and what needs the person. The apps hold only this view; the rest is shared.
 public struct MossRoot: View {
-    @State private var client: FakeEngineClient
+    @State private var client: any EngineClient
     @State private var bots: BotsListModel
     @State private var cards: CardsModel
     @State private var pairing: PairingModel
@@ -72,25 +108,37 @@ public struct MossRoot: View {
     @State private var showCards = false
     @State private var showNewBot = false
     @State private var newBot: NewBotModel
+    @State private var checked: Bool
     private let launch: AppLaunch
+    /// On the real engine (lane IW): what the person runs. Otherwise the fake, for pictures and UI tests.
+    private let real: Bool
 
-    public init(launch: AppLaunch = .fromProcess()) {
+    /// `engine`: the real client; the fake runs when none is given, or when the launch asks for a screen or a scenario.
+    public init(launch: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
         self.launch = launch
-        let c = FakeEngineClient(scenario: launch.scenario)
+        // Release: always the engine given (the real client); Debug: the fake when none is given or a picture asks.
+        #if DEBUG
+        let real = engine != nil && !launch.explicit
+        #else
+        let real = true
+        #endif
+        self.real = real
+        _checked = State(initialValue: !real)
+        let c: any EngineClient = real ? (engine ?? NoEngineClient()) : Fake.client(launch)
         _client = State(initialValue: c)
-        _bots = State(initialValue: BotsListModel(client: c, store: MemoryPinStore(SampleData.pinned)))
+        _bots = State(initialValue: BotsListModel(client: c, store: real ? DefaultsPinStore() : MemoryPinStore(Fake.pinned)))
         let nb = NewBotModel(client: c)
         if launch.newBotTry { nb.name = "Hazel"; Task { await nb.load(); _ = await nb.create() } }
         _newBot = State(initialValue: nb)
         _showNewBot = State(initialValue: launch.newBot)
-        _cards = State(initialValue: CardsModel(client: c, app: .moss, now: { SampleData.now }))
+        _cards = State(initialValue: real ? CardsModel(client: c, app: .moss) : CardsModel(client: c, app: .moss, now: { Fake.now }))
         _pairing = State(initialValue: PairingModel(client: c))
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
         _settings = State(initialValue: st)
-        _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
+        _paired = State(initialValue: real || launch.unpaired ? nil : PairedComputer(name: Fake.computerName, deviceName: Fake.phoneName))
         _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
-        if launch.screen == .conversation, let alpha = SampleData.bots.first(where: { $0.id == (launch.openID ?? "alpha") }) { _path = State(initialValue: [alpha]) }
+        if launch.screen == .conversation, let alpha = Fake.bots.first(where: { $0.id == (launch.openID ?? "alpha") }) { _path = State(initialValue: [alpha]) }
     }
 
     public var body: some View {
@@ -107,7 +155,7 @@ public struct MossRoot: View {
                     SettingsScreen(model: settings, appName: "MOSS", onUnpaired: { showSettings = false; self.paired = nil; pairing.retry() }, onDone: { showSettings = false })
                 }
                 .sheet(isPresented: $showCards) {
-                    NeedsYouSheet(cards: cards, who: { c in c.bot.flatMap { id in SampleData.bots.first { $0.id == id }?.name } ?? "A bot" }, onDone: { showCards = false })
+                    NeedsYouSheet(cards: cards, who: { c in c.bot.flatMap { id in (real ? bots.rows.map(\.bot) : Fake.bots).first { $0.id == id }?.name } ?? "A bot" }, onDone: { showCards = false })
                 }
                 .sheet(isPresented: $showNewBot) {
                     NewBotSheet(model: newBot, computer: paired.name, onCreated: { bot in
@@ -115,25 +163,32 @@ public struct MossRoot: View {
                         Task { await bots.load(); path.append(bot) }
                     }, onCancel: { showNewBot = false })
                 }
+            } else if !checked {
+                ProgressView()
             } else {
-                PairingScreen(model: pairing, appName: "MOSS", simulatedCamera: true) { paired = $0 }
+                PairingScreen(model: pairing, appName: "MOSS", simulatedCamera: !real) { paired = $0 }
             }
         }
         .tint(Theme.accent)
-        .environment(\.nowMs, SampleData.now)
+        .environment(\.nowMs, real ? nil : Fake.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
         .environment(\.conversationScrollTo, launch.scrollTo)
         .environment(\.composerPreset, launch.composer)
-        .task { await cards.load(); cards.start() }
+        .task {
+            if real { paired = await client.pairedComputer; checked = true }
+            await cards.load(); cards.start()
+        }
         .task(id: launch.screen) {
+            #if DEBUG
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
+            #endif
         }
     }
 }
 
 /// The MOSS Code app: the sessions with coding agents, and what needs the person.
 public struct MossCodeRoot: View {
-    @State private var client: FakeEngineClient
+    @State private var client: any EngineClient
     @State private var sessions: SessionsListModel
     @State private var cards: CardsModel
     @State private var pairing: PairingModel
@@ -144,23 +199,34 @@ public struct MossCodeRoot: View {
     @State private var newSession: NewSessionModel
     @State private var path: [SessionRow] = []
     @State private var showCards = false
+    @State private var checked: Bool
     private let launch: AppLaunch
+    private let real: Bool
 
-    public init(launch: AppLaunch = .fromProcess()) {
+    public init(launch: AppLaunch = .fromProcess(), engine: (any EngineClient)? = nil) {
         self.launch = launch
-        let c = FakeEngineClient(scenario: launch.scenario)
+        // Release: always the engine given (the real client); Debug: the fake when none is given or a picture asks.
+        #if DEBUG
+        let real = engine != nil && !launch.explicit
+        #else
+        let real = true
+        #endif
+        self.real = real
+        _checked = State(initialValue: !real)
+        let c: any EngineClient = real ? (engine ?? NoEngineClient()) : Fake.client(launch)
         _client = State(initialValue: c)
         _sessions = State(initialValue: SessionsListModel(client: c))
-        _cards = State(initialValue: CardsModel(client: c, app: .code, now: { SampleData.now }))
+        _cards = State(initialValue: real ? CardsModel(client: c, app: .code) : CardsModel(client: c, app: .code, now: { Fake.now }))
         _pairing = State(initialValue: PairingModel(client: c))
         let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
         _settings = State(initialValue: st)
-        _newSession = State(initialValue: NewSessionModel(client: c, computer: SampleData.computerName))
-        _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
+        // On the real engine the client names the computer it is linked to.
+        _newSession = State(initialValue: NewSessionModel(client: c, computer: real ? "" : Fake.computerName))
+        _paired = State(initialValue: real || launch.unpaired ? nil : PairedComputer(name: Fake.computerName, deviceName: Fake.phoneName))
         _showCards = State(initialValue: launch.screen == .cards)
         _showSettings = State(initialValue: launch.screen == .settings)
         _showNew = State(initialValue: launch.screen == .newSession)
-        if launch.screen == .session, let s = SampleData.sessions.first(where: { $0.id == (launch.openID ?? "c2") }) { _path = State(initialValue: [s]) }
+        if launch.screen == .session, let s = Fake.sessions.first(where: { $0.id == (launch.openID ?? "c2") }) { _path = State(initialValue: [s]) }
     }
 
     public var body: some View {
@@ -173,7 +239,7 @@ public struct MossCodeRoot: View {
                         }
                 }
                 .sheet(isPresented: $showCards) {
-                    NeedsYouSheet(cards: cards, who: { c in c.session.flatMap { id in SampleData.sessions.first { $0.id == id }?.title } ?? "A session" }, onDone: { showCards = false })
+                    NeedsYouSheet(cards: cards, who: { c in c.session.flatMap { id in (real ? sessions.sessions : Fake.sessions).first { $0.id == id }?.title } ?? "A session" }, onDone: { showCards = false })
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsScreen(model: settings, appName: "MOSS Code", onUnpaired: { showSettings = false; self.paired = nil; pairing.retry() }, onDone: { showSettings = false })
@@ -187,18 +253,25 @@ public struct MossCodeRoot: View {
                         }
                     }, onCancel: { showNew = false })
                 }
+            } else if !checked {
+                ProgressView()
             } else {
-                PairingScreen(model: pairing, appName: "MOSS Code", simulatedCamera: true) { paired = $0 }
+                PairingScreen(model: pairing, appName: "MOSS Code", simulatedCamera: !real) { paired = $0 }
             }
         }
         .tint(Theme.accent)
-        .environment(\.nowMs, SampleData.now)
+        .environment(\.nowMs, real ? nil : Fake.now)
         .environment(\.conversationStartsAtTop, launch.scrollTop)
         .environment(\.conversationScrollTo, launch.scrollTo)
         .environment(\.composerPreset, launch.composer)
-        .task { await cards.load(); cards.start() }
+        .task {
+            if real { paired = await client.pairedComputer; checked = true }
+            await cards.load(); cards.start()
+        }
         .task(id: launch.screen) {
+            #if DEBUG
             if launch.screen == .pairWords { await pairing.scanned("moss-pair:sample") }
+            #endif
             if launch.startNew {
                 await newSession.load()
                 if let id = await newSession.start() { await sessions.load(); if let row = sessions.sessions.first(where: { $0.id == id }) { path = [row] } }
