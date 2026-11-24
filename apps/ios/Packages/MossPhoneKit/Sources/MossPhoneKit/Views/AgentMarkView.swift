@@ -5,8 +5,8 @@ import UIKit
 /// its name on its colour.
 public struct AgentMarkView: View {
     let backend: String?
-    let size: CGFloat
-    public init(backend: String?, size: CGFloat = 28) { self.backend = backend; self.size = size }
+    @ScaledMetric private var size: CGFloat
+    public init(backend: String?, size: CGFloat = 28) { self.backend = backend; _size = ScaledMetric(wrappedValue: size, relativeTo: .body) }
 
     public var body: some View {
         let look = AgentLook.of(backend)

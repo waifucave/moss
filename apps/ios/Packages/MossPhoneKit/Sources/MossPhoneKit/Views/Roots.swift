@@ -23,11 +23,13 @@ public struct AppLaunch {
             }
         }
         l.startNew = args.contains("-startNew")
+        l.confirmUnpair = args.contains("-confirmUnpair")
         if l.screen == .pairScan || l.screen == .pairWords { l.scenario = .unpaired }
         return l
     }
     /// Opens the new-session sheet, fills nothing, and starts with the preselected choices (for the picture of the result).
     public var startNew = false
+    public var confirmUnpair = false
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
 
@@ -51,7 +53,8 @@ public struct MossRoot: View {
         _bots = State(initialValue: BotsListModel(client: c, store: MemoryPinStore(SampleData.pinned)))
         _cards = State(initialValue: CardsModel(client: c, app: .moss, now: { SampleData.now }))
         _pairing = State(initialValue: PairingModel(client: c))
-        _settings = State(initialValue: SettingsModel(client: c, version: SettingsModel.bundleVersion()))
+        let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
+        _settings = State(initialValue: st)
         _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
         _tab = State(initialValue: launch.screen == .cards ? 1 : 0)
         _showSettings = State(initialValue: launch.screen == .settings)
@@ -113,7 +116,8 @@ public struct MossCodeRoot: View {
         _sessions = State(initialValue: SessionsListModel(client: c))
         _cards = State(initialValue: CardsModel(client: c, app: .code, now: { SampleData.now }))
         _pairing = State(initialValue: PairingModel(client: c))
-        _settings = State(initialValue: SettingsModel(client: c, version: SettingsModel.bundleVersion()))
+        let st = SettingsModel(client: c, version: SettingsModel.bundleVersion()); st.confirmingUnpair = launch.confirmUnpair
+        _settings = State(initialValue: st)
         _newSession = State(initialValue: NewSessionModel(client: c, computer: SampleData.computerName))
         _paired = State(initialValue: launch.scenario == .unpaired ? nil : PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName))
         _tab = State(initialValue: launch.screen == .cards ? 1 : 0)

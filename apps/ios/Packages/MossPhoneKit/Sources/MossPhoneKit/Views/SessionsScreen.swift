@@ -48,20 +48,21 @@ public struct SessionsScreen: View {
 }
 
 struct SessionListRow: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let session: SessionRow
     let now: Int64
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            AgentMarkView(backend: session.backend, size: 32)
+            AgentMarkView(backend: session.backend, size: typeSize.isAccessibilitySize ? 28 : 32)
             VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(session.title ?? "Untitled").font(.headline).lineLimit(2)
-                    Spacer(minLength: 8)
+                (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
+                    Text(session.title ?? "Untitled").font(.headline)
+                    if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
                     Text(TimeText.short(at: session.updatedAt, now: now)).font(.caption).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 6) {
+                (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))) {
                     if session.badge != .none { Badge(session.badge) }
-                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(detail).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
         }

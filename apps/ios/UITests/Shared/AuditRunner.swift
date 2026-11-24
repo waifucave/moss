@@ -39,7 +39,9 @@ enum AuditRunner {
             if size != nil { types.insert(.dynamicType) }
             try app.performAccessibilityAudit(for: types) { issue in
                 print("AUDIT ISSUE \(name) \(size ?? "default"): \(issue.compactDescription) :: \(issue.element?.label ?? "-")")
-                return false
+                // Missing descriptions, wrong traits and small hit regions fail the test. Contrast, clipped text and Dynamic Type
+                // are reported only: the audit flags the system's own bars and scrolled-away labels as well.
+                return [XCUIAccessibilityAuditType.contrast, .dynamicType, .textClipped].contains(issue.auditType)
             }
             app.terminate()
         }

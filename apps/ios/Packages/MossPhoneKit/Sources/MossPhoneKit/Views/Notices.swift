@@ -11,7 +11,7 @@ public struct UnreachableNotice: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Can't reach \(computer ?? "your computer")", systemImage: "wifi.exclamationmark").font(.headline)
+            Label("Can't reach \(computer ?? "your computer")", systemImage: "wifi.exclamationmark").font(.headline).fixedSize(horizontal: false, vertical: true)
             Text("Check that it is on and awake, and that it has a network connection. This phone and your computer don't need to be on the same network.")
                 .font(.subheadline).foregroundStyle(.secondary)
             if let since {

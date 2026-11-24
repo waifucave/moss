@@ -4,6 +4,7 @@ import SwiftUI
 public struct BotsScreen: View {
     @Bindable var model: BotsListModel
     @Environment(\.nowMs) private var nowOverride
+    @Environment(\.dynamicTypeSize) private var typeSize
     let computer: String?
     let onSettings: () -> Void
 
@@ -18,7 +19,7 @@ public struct BotsScreen: View {
             }
             if !model.pinned.isEmpty {
                 Section {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 160), spacing: 12)], spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: typeSize.isAccessibilitySize ? 150 : 100, maximum: 200), spacing: 12)], spacing: 14) {
                         ForEach(model.pinned) { row in
                             NavigationLink(value: row.bot) { PinnedFace(row: row) }
                                 .buttonStyle(.plain)
@@ -64,9 +65,9 @@ struct PinnedFace: View {
                         .accessibilityHidden(true)
                 }
             }
-            Text(row.bot.name).font(.subheadline.weight(.medium)).lineLimit(1)
+            Text(row.bot.name).font(.subheadline.weight(.medium)).multilineTextAlignment(.center)
             if let line = row.statusLine {
-                Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text(line).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
         }
         .frame(maxWidth: .infinity)
@@ -78,15 +79,16 @@ struct PinnedFace: View {
 }
 
 struct BotListRow: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let row: BotRow
     let now: Int64
     var body: some View {
         HStack(spacing: 12) {
-            BotFaceView(name: row.bot.name, face: row.bot.face, mood: row.statusLine != nil ? .working : (row.bot.state ?? .idle).faceMood, size: 48)
+            BotFaceView(name: row.bot.name, face: row.bot.face, mood: row.statusLine != nil ? .working : (row.bot.state ?? .idle).faceMood, size: typeSize.isAccessibilitySize ? 40 : 48)
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
+                (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout())) {
                     Text(row.bot.name).font(.headline)
-                    Spacer()
+                    if !typeSize.isAccessibilitySize { Spacer() }
                     if row.lastAt > 0 { Text(TimeText.short(at: row.lastAt, now: now)).font(.caption).foregroundStyle(.secondary) }
                 }
                 Text(line).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)

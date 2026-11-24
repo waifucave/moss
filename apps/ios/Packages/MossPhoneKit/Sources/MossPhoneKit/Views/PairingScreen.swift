@@ -36,7 +36,7 @@ public struct PairingScreen: View {
                 RoundedRectangle(cornerRadius: 28, style: .continuous).fill(.background.secondary)
                 if simulatedCamera {
                     VStack(spacing: 10) {
-                        Image(systemName: "qrcode.viewfinder").font(.system(size: 64, weight: .thin)).foregroundStyle(.secondary)
+                        Image(systemName: "qrcode.viewfinder").font(.system(size: 64, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1).foregroundStyle(.secondary)
                         Text("No camera here.").font(.footnote).foregroundStyle(.secondary)
                         Button("Use a sample code") { Task { await model.scanned("moss-pair:sample") } }
                             .buttonStyle(.bordered).tint(Theme.accent)
@@ -51,9 +51,9 @@ public struct PairingScreen: View {
             .padding(.horizontal, 32)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Camera for the pairing code")
-            Spacer()
         }
-        .padding(.top, 16)
+        .padding(.top, 16).padding(.bottom, 16)
+        .scrollable()
     }
 
     private func wordsStep(_ p: PairingProposal) -> some View {
@@ -75,38 +75,44 @@ public struct PairingScreen: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("The four words: \(p.words.joined(separator: ", "))")
             Text("Only confirm if all four are the same.").font(.footnote).foregroundStyle(.secondary)
-            Spacer()
+        }
+        .padding(.top, 20).padding(.bottom, 16)
+        .scrollable()
+        .safeAreaInset(edge: .bottom) {
             VStack(spacing: 10) {
                 Button { Task { await model.confirm() } } label: { Text("They match").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                     .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large)
                 Button { Task { await model.cancel() } } label: { Text("They don't match").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).tint(.secondary).controlSize(.large)
             }
-            .padding(.horizontal, 24).padding(.bottom, 12)
+            .padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }
-        .padding(.top, 20)
     }
 
     private func pairedStep(_ c: PairedComputer) -> some View {
         VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "checkmark.circle").font(.system(size: 64, weight: .thin))
+            Spacer(minLength: 40)
+            Image(systemName: "checkmark.circle").font(.system(size: 64, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1)
             Text("Paired with \(c.name)").font(.title2.weight(.semibold))
             Text("This phone can now see \(appName) and answer cards from it.").foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
-            Spacer()
+        }
+        .scrollable()
+        .safeAreaInset(edge: .bottom) {
             Button { onPaired(c) } label: { Text("Done").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
-                .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.bottom, 12)
+                .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }
     }
 
     private func failedStep(_ e: PairingError) -> some View {
         VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "exclamationmark.circle").font(.system(size: 56, weight: .thin)).foregroundStyle(.secondary)
+            Spacer(minLength: 40)
+            Image(systemName: "exclamationmark.circle").font(.system(size: 56, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1).foregroundStyle(.secondary)
             Text(e.message).multilineTextAlignment(.center).padding(.horizontal, 32)
-            Spacer()
+        }
+        .scrollable()
+        .safeAreaInset(edge: .bottom) {
             Button { model.retry() } label: { Text("Try again").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
-                .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.bottom, 12)
+                .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.vertical, 12).background(.bar)
         }
     }
 }
@@ -125,7 +131,7 @@ struct CameraScanner: View {
             case .authorized: Scanner(onScan: onScan)
             case .notDetermined:
                 VStack(spacing: 12) {
-                    Image(systemName: "camera").font(.system(size: 40, weight: .thin)).foregroundStyle(.secondary)
+                    Image(systemName: "camera").font(.system(size: 40, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1).foregroundStyle(.secondary)
                     Text("The camera is only used to read the code. Nothing is recorded.").font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary)
                     Button("Continue") { AVCaptureDevice.requestAccess(for: .video) { ok in Task { @MainActor in authorization = ok ? .authorized : .denied } } }
                         .buttonStyle(.bordered).tint(Theme.accent)
@@ -141,7 +147,7 @@ struct CameraScanner: View {
     }
     private func note(_ text: String, icon: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 40, weight: .thin)).foregroundStyle(.secondary)
+            Image(systemName: icon).font(.system(size: 40, weight: .thin)).dynamicTypeSize(...DynamicTypeSize.accessibility1).foregroundStyle(.secondary)
             Text(text).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary)
         }.padding()
     }
@@ -169,4 +175,9 @@ struct CameraScanner: View {
             }
         }
     }
+}
+
+extension View {
+    /// Scrolls when the content is taller than the screen (the largest text sizes), stays put otherwise.
+    func scrollable() -> some View { ScrollView { self }.scrollBounceBehavior(.basedOnSize) }
 }

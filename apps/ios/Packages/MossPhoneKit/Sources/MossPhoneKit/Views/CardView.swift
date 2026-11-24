@@ -9,6 +9,7 @@ public struct CardView: View {
     let onSettle: () -> Void
     @State private var expanded = Set<String>()
     @Environment(\.nowMs) private var nowOverride
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// `note` says why the card can't be answered (expired, answered elsewhere, failed); `onSettle` then dismisses it (or, after a failure, lets the person try again).
     public init(card: Card, busy: Bool = false, note: CardNote? = nil, onAnswer: @escaping (CardOption) -> Void, onSettle: @escaping () -> Void = {}) {
@@ -49,7 +50,8 @@ public struct CardView: View {
             }
         }
         .padding(14)
-        .background(Color(uiColor: .secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
         .opacity(note == nil || note == .failed ? 1 : 0.75)
         .accessibilityElement(children: .contain)
     }
@@ -69,7 +71,7 @@ public struct CardView: View {
                 .font(.system(.footnote, design: .monospaced))
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .list(let items):
             labelled(name) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -82,10 +84,10 @@ public struct CardView: View {
         case .rows(let rows):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
-                    HStack(alignment: .firstTextBaseline) {
+                    (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
                         Text(Sealed.visible(r.label)).foregroundStyle(.secondary)
-                        Spacer(minLength: 12)
-                        Text(Sealed.visible(r.value)).multilineTextAlignment(.trailing)
+                        if !typeSize.isAccessibilitySize { Spacer(minLength: 12) }
+                        Text(Sealed.visible(r.value)).multilineTextAlignment(typeSize.isAccessibilitySize ? .leading : .trailing)
                     }.font(.callout)
                 }
             }
@@ -113,9 +115,9 @@ public struct CardView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 6) {
+        (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))) {
             if case .text(let c)? = card.fields["computer"] { Label("on \(Sealed.visible(c))", systemImage: "desktopcomputer") }
-            Spacer()
+            if !typeSize.isAccessibilitySize { Spacer() }
             if let left = secondsLeft { Text("Expires in \(left / 60) min") }
         }
         .font(.caption).foregroundStyle(.secondary)
@@ -135,19 +137,23 @@ public struct CardsScreen: View {
     public init(model: CardsModel, who: @escaping (Card) -> String, onRetry: @escaping () -> Void = {}) { self.model = model; self.who = who; self.onRetry = onRetry }
 
     public var body: some View {
-        List {
-            if model.loadFailed { Section { UnreachableNotice(onRetry: { Task { await model.load() } }) } }
-            ForEach(model.cards.sorted { $0.issuedAt > $1.issuedAt }) { card in
-                Section {
-                    CardView(card: card, busy: model.answering.contains(card.id), note: model.note(for: card),
-                             onAnswer: { option in Task { await model.answer(card, with: option) } },
-                             onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowBackground(Color.clear)
-                } header: { Text(who(card)) }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                if model.loadFailed { UnreachableNotice(onRetry: { Task { await model.load() } }).padding(14).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.14), lineWidth: 0.5)) }
+                ForEach(model.cards.sorted { $0.issuedAt > $1.issuedAt }) { card in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(who(card)).font(.footnote).foregroundStyle(.secondary).padding(.leading, 6)
+                            .accessibilityAddTraits(.isHeader)
+                        CardView(card: card, busy: model.answering.contains(card.id), note: model.note(for: card),
+                                 onAnswer: { option in Task { await model.answer(card, with: option) } },
+                                 onSettle: { model.note(for: card) == .failed ? model.clearFailure(card) : model.dismiss(card) })
+                    }
+                }
             }
+            .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
         }
-        .listStyle(.insetGrouped)
+        .background(Color(uiColor: .systemGroupedBackground))
         .overlay {
             if !model.loaded { ProgressView("Loading").controlSize(.large) }
             else if model.cards.isEmpty && !model.loadFailed {
