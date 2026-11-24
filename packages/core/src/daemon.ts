@@ -4619,7 +4619,11 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       sideUp: (side) => {
         // A bot-built plugin's OK card names its builder as the user sees the bot (the workshop rule, §5.6).
         partsRegistry?.folders.setBotNames((id) => (side.bots.has(id) ? plainText(side.bots.effective(id).name) : undefined));
-        const offBots = side.bots.onEvent((e) => { if (e.type === "bot_removed") shellGrants?.forgetBot(e.id); });
+        const offBots = side.bots.onEvent((e) => {
+          if (e.type === "bot_removed") shellGrants?.forgetBot(e.id);
+          // The person deleted a bot: its saved rules go too, so a bot made later with its id starts with none.
+          if (e.type === "bot_deleted") { shellGrants?.forgetBot(e.id); void partsBroker.then((b) => b?.forgetBot(e.id)); }
+        });
         const offEnded = side.host.watch((view) => { if (view.status === "stopped" || view.status === "failed") shellGrants?.forgetSession(view.id); });
         // The core's own updates for the notifiers (a bot's message, an agent's report, a routine's result, a card or a
         // question that waits), through the notify service (`notify/core-updates.ts`).

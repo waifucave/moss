@@ -50,6 +50,7 @@ import { DEFAULT_BOT_ID } from "./default-bot";
 import { registerBotOwnership } from "../runtime-sdk/turn-loop/only-backends";
 import { brokerCardOpener, type CardOpener } from "../devices/rpc";
 import { sessionDeletionMethods } from "../deletion/session-rpc";
+import { botDeletionMethods } from "../deletion/bot-rpc";
 import { finishSessionDeletions } from "../deletion/session-files";
 import { mossSessions } from "../runtime-sdk/sessions";
 
@@ -410,6 +411,11 @@ export function createBotSide(o: BotSideOptions): BotSide {
       ...botRecordMethods({ bots, host, capHome: { home: o.home, now: () => o.clock.now() }, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
       // The deletion lane: the person deletes a session or a bot's conversation (`session.delete`).
       ...sessionDeletionMethods({ home: o.home, host, bots, openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) }),
+      // And a bot, listed or archived (`bot.delete`), beside the archive.
+      ...botDeletionMethods({
+        home: o.home, openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}),
+        bots: { nameOf: (id) => bots.deletableName(id), deleteBot: (id, before) => bots.deleteBot(id, before), sessionRemoved: (id) => bots.sessionRemoved(id) },
+      }),
       };
     },
     start: async () => {

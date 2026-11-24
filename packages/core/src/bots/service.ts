@@ -158,6 +158,8 @@ export type BotServiceEvent =
   | { type: "session_changed"; ts: number; session: SessionView }
   /** The person deleted a session (`session.delete`). */
   | { type: "session_removed"; ts: number; id: string }
+  /** The person deleted a bot (`bot.delete`): what is kept by its id elsewhere (saved rules, shell grants) goes too. */
+  | { type: "bot_deleted"; ts: number; id: string }
   | { type: "bots_paused"; ts: number; paused: boolean }
   // Bots as engine data (lane BT; protocol bots.ts), with records as the source.
   | { type: "bot_record_changed"; ts: number; bot: BotRecordView }
@@ -642,6 +644,32 @@ export class BotService {
       await store.remove(id);
     });
     await this.settled();
+  }
+
+  /**
+   * `bot.delete` (the deletion lane, item 4; the person's alone): a live bot is archived first (its sessions let go, as
+   * `bot.remove` does), then the archive's copy and everything kept by its id go for good (`deleteArchived`). Returns
+   * every session of it, for what is kept beside each (driver state, runtime transcripts, staged images).
+   */
+  async deleteBot(id: string, before?: (sessions: string[]) => void): Promise<string[]> {
+    const store = this.#need();
+    const live = store.has(id) ? this.#o.host.list({ bot: id }).map((s) => s.id) : [];
+    if (store.has(id)) await this.archiveBot(id);
+    if (!store.archived().some((a) => a.id === id)) throw new ContractError("not_found", `no bot ${id}`);
+    const archived = await this.#serial(() => store.deleteArchived(id, (s) => before?.([...new Set([...live, ...s])])));
+    await this.settled();
+    this.#events.emit({ type: "bot_deleted", ts: this.#o.clock.now(), id });
+    return [...new Set([...live, ...archived])];
+  }
+
+  /** The name of a bot `deleteBot` can delete (a record, listed or archived), as the person sees it; undefined if none. */
+  deletableName(id: string): string | undefined {
+    const store = this.#records;
+    if (store === undefined) return undefined;
+    const rec = store.get(id);
+    if (rec !== undefined) return plainText(rec.name);
+    const archived = store.archived().find((a) => a.id === id);
+    return archived === undefined ? undefined : plainText(archived.name);
   }
 
   /** `bot.restore`: the bot back from the archive, its conversation picked up where it was. */

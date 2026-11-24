@@ -203,6 +203,15 @@ export const BOTS_METHODS = {
     result: Ok,
     doc: "Archives a bot: its whole folder moves to the home's archive, from which bot.restore brings it back; nothing is deleted.",
   }),
+  botDelete: defineMethod({
+    /** The person only (the deletion lane, item 4): from an app on the engine's sealed card naming what goes, in their own
+     *  terminal with `confirm: true`. Never a bot (no bot deletes a bot), an agent, a plugin, a routine, a phone, the
+     *  web page or another computer. Works on a bot that is listed or archived. */
+    name: "bot.delete", owner: "BT", roles: ["app", "cli"], userOnly: true, change: "sensitive",
+    params: z.object({ id: BotId, confirm: z.literal(true).optional() }),
+    result: ChangeResult,
+    doc: "Deletes a bot for good, listed or archived: its record, instructions, conversation and side threads, memory, scratch files, agents' transcripts, routines, the user's changes to it, its plugin settings' values and the rules saved for it. Archive (`bot.remove`) keeps it instead.",
+  }),
   botArchived: defineMethod({
     name: "bot.archived", owner: "BT", roles: ["app", "cli"],
     params: z.object({}),

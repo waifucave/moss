@@ -103,8 +103,9 @@ interface ArchiveMark {
   id: string;
   name: Text;
   archivedAt: number;
-  /** `archiving`: the folders are on their way into the archive; `archived`: all in; `restoring`: on their way back. */
-  state: "archiving" | "archived" | "restoring";
+  /** `archiving`: the folders are on their way into the archive; `archived`: all in; `restoring`: on their way back;
+   *  `deleting`: the person deleted it (`bot.delete`), and what is left of it goes at the next start. */
+  state: "archiving" | "archived" | "restoring" | "deleting";
   /** Archived by the move itself (its plugin was off): the plugin it came from. */
   movedFrom?: string;
 }
@@ -487,6 +488,9 @@ export class BotRecordStore implements BotRecords {
           this.#moveParts(m.id, false);
           rmSync(join(root, name), { recursive: true, force: true });
           continue;
+        } else if (m.state === "deleting") {
+          this.#deleteArchived(m.id);
+          continue;
         }
       } catch (err) {
         this.#warn(`finishing ${m.id}'s ${m.state === "restoring" ? "restore" : "archive"} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -514,6 +518,53 @@ export class BotRecordStore implements BotRecords {
     this.#records.delete(id);
     this.#archive.set(id, { ...mark, state: "archived" });
     for (const [pid, p] of this.#proposals) if (p.maker === id) this.#proposals.delete(pid);
+    this.#listeners.emit({ removed: id });
+  }
+
+  /**
+   * The person deletes an archived bot for good (`bot.delete`; the bot service archives a live one first): the mark says
+   * `deleting` before anything goes, so a stop in the middle is finished at the next start. Its whole archive folder
+   * (record, instructions, memory, agents' transcripts, conversation, routines) goes, and what was kept by its id outside
+   * it: its scratch folder, the user's layer, and its values of plugins' bot-scoped settings. Returns the ids of its
+   * sessions (read from their metas before they go), for what is kept beside each.
+   */
+  async deleteArchived(id: string, before?: (sessions: string[]) => void): Promise<string[]> {
+    const mark = this.#archive.get(id);
+    if (!mark) throw new ContractError("not_found", `no archived bot ${id}`);
+    const sessions = this.#archivedSessionIds(id);
+    // The caller journals what is kept beside its sessions first, so a stop from here on loses none of it.
+    before?.(sessions);
+    writeJsonAtomic(this.#markPath(id), { ...mark, state: "deleting" } satisfies ArchiveMark);
+    this.#deleteArchived(id);
+    for (const { pluginId, settings } of this.#o.pluginSettings?.declared() ?? []) {
+      for (const st of settings) {
+        if (st.scope !== "bot") continue;
+        if (this.#o.pluginSettings!.value(id, pluginId, st.key).set) await this.#o.pluginSettings!.set(id, pluginId, st.key, null).catch(() => undefined);
+      }
+    }
+    return sessions;
+  }
+
+  /** The ids of an archived bot's sessions, from the metas in its archived transcripts. */
+  #archivedSessionIds(id: string): string[] {
+    const dir = join(archiveDir(this.#home, id), "transcripts");
+    const out: string[] = [];
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { return out; }
+    for (const n of names) {
+      if (!n.endsWith(".meta.json")) continue;
+      const meta = readJson(join(dir, n)) as { id?: unknown } | undefined;
+      if (typeof meta?.id === "string") out.push(meta.id);
+    }
+    return out;
+  }
+
+  /** Removes what is left of a bot being deleted: never following a link (each path is removed as itself). */
+  #deleteArchived(id: string): void {
+    const seg = botSegment(id);
+    for (const p of [join(this.#home, "scratch", seg), join(this.#home, "user-layers", `${seg}.json`), join(this.#home, "sync", "memory", `${seg}.json`)]) rmSync(p, { recursive: true, force: true });
+    rmSync(archiveDir(this.#home, id), { recursive: true, force: true });
+    this.#archive.delete(id);
     this.#listeners.emit({ removed: id });
   }
 

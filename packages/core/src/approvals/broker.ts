@@ -303,6 +303,19 @@ export class MossApprovalBroker implements ApprovalBroker {
     return removed;
   }
 
+  /** A bot the person deleted (`bot.delete`): every rule saved for it goes, so a bot made later with the same id starts
+   *  with none. Returns how many went. */
+  forgetBot(bot: string): number {
+    const before = this.#rules.length;
+    for (let i = this.#rules.length - 1; i >= 0; i--) if (this.#rules[i]!.bot === bot) this.#rules.splice(i, 1);
+    const removed = before - this.#rules.length;
+    if (removed > 0) {
+      const stored: StoredRule[] = this.#rules.map((r) => ({ keyHash: r.keyHash, display: r.display, computers: [...r.computers], cardId: r.cardId, savedAt: r.savedAt, ...(r.bot === undefined ? {} : { bot: r.bot }) }));
+      try { this.#store?.save(stored); } catch { this.#log("[approvals] saving the rules failed; the change holds until the daemon restarts"); }
+    }
+    return removed;
+  }
+
   watch(fn: (e: ApprovalEvent) => void): Unsubscribe { return this.#listeners.add(fn); }
 
   /** Where the broker reads a bot's name (the bot side, which starts after it): a card's headline names the bot as
