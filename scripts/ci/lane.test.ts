@@ -167,6 +167,20 @@ describe("lane start", () => {
     } finally { sh(["git", "checkout", "lane/x"], repo); }
   });
 
+  test("a branch cut before the path-map check existed is told to merge the tip; one that has the check is not", () => {
+    writeFileSync(join(dir, "gh.log"), "");
+    writeFileSync(join(fixDir, "runlist.json"), "[]");
+    const without = lane(["start"]);
+    expect(without.err).toContain("cut before the path-map check");
+    mkdirSync(join(repo, "scripts", "ci"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "ci", "test-reads.test.ts"), "// the check\n");
+    sh(["git", "add", "scripts/ci/test-reads.test.ts"], repo);
+    sh(["git", "commit", "-q", "-m", "the check"], repo);
+    try {
+      expect(lane(["start"]).err).not.toContain("cut before the path-map check");
+    } finally { sh(["git", "reset", "-q", "--hard", "HEAD~1"], repo); }
+  });
+
   test("lane wait warns loudly over a run that counted zero changed files", () => {
     fixtures({ scope: "SCOPED RUN: 1 of 22 areas ran, 21 skipped as untouched; 0 of 25 acceptance units (0 file(s) changed since abc; a manual scoped run)" });
     const r = lane(["wait", "100"]);

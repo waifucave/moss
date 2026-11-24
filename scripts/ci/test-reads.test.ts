@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { areasFor } from "../ci-changes";
-import { allReads, ALWAYS_ON, asChange, ownersOf, readsOf, ROOT, tracked, type Tracked } from "./test-reads";
+import { allReads, ALWAYS_ON, asChange, importsOf, ownersOf, readsOf, ROOT, tracked, type Tracked } from "./test-reads";
 
 const fake = (files: string[]): Tracked => {
   const set = new Set(files);
@@ -58,6 +58,15 @@ describe("the map starts the job that runs each test when a file the test reads 
     }
     // Each line: the area(s) that run the test, the path it reads, and the first tests that read it. Add the path to the area in scripts/ci-changes.ts (READ_BY_*).
     expect([...uncovered].map(([k, ts]) => `${k}  (${ts.slice(0, 2).join(", ")})`)).toEqual([]);
+  });
+
+  test("what a macOS-run core test imports from outside the core starts the macOS legs too (a direct import runs there)", () => {
+    const on = (p: string): string[] => Object.entries(areasFor([p])).filter(([, v]) => v).map(([k]) => k);
+    expect(on("scripts/cowork-native-lib.ts")).toContain("core");
+    expect(on("packages/cli/src/client.ts")).toContain("core");
+    const t = tracked();
+    expect([...importsOf('import { x } from "../../../../scripts/cowork-native-lib";\nimport y from "./local";\nconst z = await import("../../../cli/src/client");', "packages/core/test/ipc/a.test.ts", t)].sort())
+      .toEqual(["packages/cli/src/client.ts", "scripts/cowork-native-lib.ts"]);
   });
 
   test("the named cases: the theme's colours and the marks start `scripts`, a bundled plugin's manifest too, the live-gates page the app's tests, a Cowork source the macOS script tests", () => {

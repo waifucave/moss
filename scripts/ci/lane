@@ -105,6 +105,11 @@ case "$cmd" in
         if [ "$only" = all ]; then
           git fetch origin "${base_ref#origin/}" >/dev/null 2>&1 || say "note: could not refresh $base_ref; counting from the copy here"
           mb="$(git merge-base HEAD "$base_ref" 2>/dev/null)" || mb=""
+          # A branch cut before the path-map check existed (scripts/ci/test-reads.test.ts, run by the always-on `names` job) cannot have it run on its own
+          # new tests: a test of yours that reads a path no area selects meets the check on the integration tip, for every lane. Merge the tip first.
+          if ! git cat-file -e HEAD:scripts/ci/test-reads.test.ts 2>/dev/null; then
+            say "note: this branch was cut before the path-map check (scripts/ci/test-reads.test.ts) existed, so its own run cannot check that a test of yours reads only paths an area selects: merge $base_ref into it first"
+          fi
           # A shallow checkout (a depth-limited fetch writes .git/shallow) has a cut-off history: a merge-base found in it can be wrong,
           # and the diff from it too small. No merge-base, or a shallow one, is every job.
           if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then

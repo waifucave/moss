@@ -58,6 +58,8 @@ const READ_BY_CORE_MAC: readonly Pattern[] = [
   // the launcher's code identity, the app's file grants, the entitlements; and, on purpose, all of apple/ and the Cowork specs and notes (Cowork is
   // paused: nothing reaches a macOS leg by accident, a Cowork read keeps the leg it had)
   "apple/", "apps/desktop/src/main/ui/file-grants.ts", "packaging/macos/entitlements.mac.plist",
+  // and what a macOS-run test IMPORTS from outside the core (scripts/ci/test-reads.ts: importsOf): the Cowork native helper script, the CLI's client
+  "scripts/cowork-native-lib.ts", "packages/cli/src/client.ts",
   "docs/RELEASE-NOTES-cowork-schema.md", "docs/cowork-execution-contracts.md", "docs/cowork-host-protocol.md", "docs/cowork-implementation.md", "docs/cowork-native-worker.md", "docs/cowork-spec.md",
 ];
 const READ_BY_CORE_LINUX: readonly Pattern[] = [
@@ -106,13 +108,12 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   typecheck: ["packages/", "apps/desktop/", "apps/moss/", "plugins/", "services/", "examples/", "scripts/", "**/tsconfig*.json"],
   lockfiles: ["**/package.json"],
   extension: ["extensions/", ...READ_BY_EXTENSION],
-  // lane A's model plugins: the core's catalog and generator check reads them; the core's account tests import the
-  // services' shared account-token check and the harness's sign-in stub
+  // the core's sources and what its macOS tests read: `core · linux` and the three macOS legs
   core: [...CORE, ...READ_BY_CORE_MAC],
-  // the Linux-only part of the core's reads: `core · linux` alone, no macOS leg (lane A's model plugins and the harness's sign-in stub
-  // are read by the core's account and catalog tests, which run on Linux only)
+  // the Linux-only part of the core's reads: `core · linux` alone, no macOS leg (lane A's model plugins, which the core's catalog and
+  // generator check reads, and the rest of READ_BY_CORE_LINUX: the account tests' services/shared and sign-in stub, the forwarder's Worker)
   corelinux: ["plugins/moss/plugins/model-*/**/*", ...READ_BY_CORE_LINUX],
-  // the Windows jobs' own files: `windows-fence` and `machine-windows`, on Windows runners; nothing on macOS
+  // the Windows fence's own files: the `windows-fence` job, on a Windows runner; nothing on macOS (`machine-windows` has no step for them)
   windows: [...WINDOWS_CI],
   cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
@@ -267,7 +268,12 @@ export function scopeOf(input: { changed: readonly string[] | undefined; areas: 
   const files = `${input.changed.length} file(s) changed${input.base !== undefined ? ` since ${input.base}` : ""}`;
   if (stray.length > 0) return { scope: `FULL RUN: every area, ${units}: ${stray.length} changed path(s) no area maps, e.g. ${stray.slice(0, 3).join(", ")} (fail closed; ${files}${note})`, ran, skipped };
   if (full) return { scope: `FULL RUN: every area, ${units}, as the ${files} touched them all (${input.why}${note})`, ran, skipped };
-  return { scope: `SCOPED RUN: ${ran.length} of ${CI_AREA_NAMES.length} areas ran, ${skipped.length} skipped as untouched; ${units} (${files}; ${input.why})`, ran, skipped };
+  // Two areas are narrower than their names: said in the line, so a reader never takes `corelinux` for the core's whole suite or `windows` for the Windows legs.
+  const narrow = [
+    input.areas.corelinux && !input.areas.core ? "corelinux: core · linux only, no macOS leg" : "",
+    input.areas.windows ? "windows: windows-fence only" : "",
+  ].filter((n) => n !== "");
+  return { scope: `SCOPED RUN: ${ran.length} of ${CI_AREA_NAMES.length} areas ran, ${skipped.length} skipped as untouched; ${units} (${files}; ${input.why}${narrow.length > 0 ? `; ${narrow.join("; ")}` : ""})`, ran, skipped };
 }
 
 if (import.meta.main) {

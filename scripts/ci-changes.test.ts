@@ -566,6 +566,15 @@ describe("regression list: the lanes of this week", () => {
 describe("the scope a run states", () => {
   const all = (changed: string[] | undefined) => { const areas = areasFor(changed); return scopeOf({ changed, areas, units: areas.acceptance ? acceptanceUnits(changed) : [], why: "a manual scoped run", base: "8ce5aef0b" }); };
 
+  test("a run whose areas are narrower than their names says so: corelinux without core is the Linux shards only, windows is the fence only", () => {
+    expect(all([".github/workflows/queue-sweep.yml"]).scope).toContain("corelinux: core · linux only, no macOS leg");
+    expect(all(["docs/claude/usage.md"]).scope).toContain("corelinux: core · linux only, no macOS leg");
+    expect(all([".github/workflows/windows-fence.yml"]).scope).toContain("windows: windows-fence only");
+    // the core's own sources run the macOS legs too: no such note
+    expect(all(["packages/core/src/daemon.ts"]).scope).not.toContain("no macOS leg");
+    expect(all(["scripts/cowork-native-lib.ts"]).scope).not.toContain("no macOS leg");
+  });
+
   test("a scoped run says SCOPED RUN, how many areas ran and were skipped, and the acceptance units; a full one says FULL RUN", () => {
     const s = all(["apps/ios/project.yml"]);
     expect(s.scope).toBe("SCOPED RUN: 1 of 24 areas ran, 23 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");

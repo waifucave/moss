@@ -105,6 +105,20 @@ export function readsOf(src: string, t: Tracked): Set<string> {
 export const asChange = (read: string): string => (read.endsWith("/") ? `${read}__any__` : read);
 
 /** Every (test file, path it reads) pair the CI jobs run, for tests with an owner. */
+/** The files a test imports from outside its own package (`../../../../plugins/x/y`, with or without an extension): a macOS-run test runs the code it
+ *  imports, so those files are inputs of the macOS legs as much as a file it reads. Direct imports only (not what they import in turn). */
+export function importsOf(src: string, testFile: string, t: Tracked): Set<string> {
+  const out = new Set<string>();
+  const pkg = testFile.split("/").slice(0, 2).join("/") + "/";
+  for (const m of src.matchAll(/(?:\bfrom\s+|\bimport\(\s*|\brequire\(\s*)(["'])(\.{1,2}\/[^"']+)\1/g)) {
+    const resolved = join("/r", testFile, "..", m[2]!).replace(/^\/r\//, "");
+    if (resolved.startsWith("..") || resolved.startsWith(pkg)) continue;
+    const hit = [resolved, `${resolved}.ts`, `${resolved}.tsx`, `${resolved}.js`, `${resolved}.mjs`, `${resolved}/index.ts`].find((c) => t.files.has(c));
+    if (hit !== undefined) out.add(hit);
+  }
+  return out;
+}
+
 export function allReads(root = ROOT): Array<{ test: string; owners: string[]; read: string }> {
   const t = tracked(root);
   const out: Array<{ test: string; owners: string[]; read: string }> = [];
@@ -113,7 +127,9 @@ export function allReads(root = ROOT): Array<{ test: string; owners: string[]; r
     const src = readFileSync(join(root, f), "utf8");
     const owners = ownersOf(f, src);
     if (owners === null) continue;
-    for (const read of readsOf(src, t)) if (read !== f) out.push({ test: f, owners, read });
+    const reads = readsOf(src, t);
+    if (f.startsWith("packages/core/") && runsOnMacos(f, src)) for (const i of importsOf(src, f, t)) reads.add(i);
+    for (const read of reads) if (read !== f) out.push({ test: f, owners, read });
   }
   return out;
 }
