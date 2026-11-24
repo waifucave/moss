@@ -128,7 +128,13 @@ describe("the order, for the light jobs", () => {
   test("a provider that doesn't serve the light model (an aggregator row without it, a retired one): no light model, and the job does not run on the default", () => {
     // `deepseek-anthropic` and friends vendor the family but a plan's catalog may carry no flash row.
     const noFlash = { families: catalog.families, models: catalog.models.filter((m) => !(m.providerId === "deepseek" && m.canonicalModelId === "deepseek-flash")) };
-    expect(lightModelOn(noFlash, "deepseek", "deepseek")).toBeUndefined();
+    // 2026-11-24: a provider that serves the family default but not its light model runs the jobs on that default (was: none).
+    expect(lightModelOn(noFlash, "deepseek", "deepseek")?.tag).toBe("deepseek/deepseek-v4-pro");
+    const neither = { families: catalog.families, models: noFlash.models.filter((m) => !(m.providerId === "deepseek" && m.canonicalModelId === "deepseek-v4-pro")) };
+    expect(lightModelOn(neither, "deepseek", "deepseek")).toBeUndefined();
+    // The two real cases: Cerebras (gpt-oss-120b, no 20b) and the Qwen Coding Plan (qwen3.7-plus, no Flash).
+    expect(lightModelOn(catalog, "cerebras", "gpt-oss")?.tag).toBe("cerebras/gpt-oss-120b");
+    for (const p of ["qwen-coding", "qwen-coding-anthropic", "qwen-coding-cn", "qwen-coding-cn-anthropic"]) expect(lightModelOn(catalog, p, "qwen")?.tag).toBe(`${p}/qwen3.7-plus`);
     expect(lightModelOn(catalog, "deepseek", "deepseek")?.tag).toBe("deepseek/deepseek-flash");
   });
 

@@ -160,7 +160,7 @@ import { SessionMessaging } from "./agent/session-messaging";
 import { McpAppsService } from "./mcp-apps/service";
 import { mcpAppMethods } from "./mcp-apps/methods";
 import { readProviders, SetupService, setupMethods } from "./setup-state";
-import { defaultEffortFor, recommended } from "./default-model";
+import { defaultEffortFor, recommended, setNoDefaultModelContext } from "./default-model";
 import { clearProviderModel, relayChoiceFrom, sidecarRelayOf, loadSettings, saveSettings, describeInternalJobModels, setupDismissedFrom, providerBaseUrlFor, loadPermissionDirs, effortRefusalFor, hooksEnabledFrom, lspAutoDiagnosticsEnabledFrom, cleanerEnabledFrom, retiredRuntimeSettingKeys, winterLegDisabledKeys, mossOptionsFromSettings, ownProviderFor, pinsFor, stdioMcpServersFor, computerUseEnabledFrom, computerUseLegacyComputerFrom, lspEnabledFrom, sdkAllowRules, sdkAutoMemory, sdkLocalMcpServers, sdkOutputStyle, sdkUserMcpServers, liveSettingsView, type Settings } from "./settings";
 import { ProjectSettingsResolver } from "./project-settings";
 import { memoryDirFor, globalMemoryDirFor, assistantMemoryDirFor, memoryProjectKeyFor } from "./agent/memory-dir";
@@ -3487,6 +3487,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     emit: (state) => void mossServer?.coreEvent({ type: "setup_changed", setup: state }),
     log: (line) => console.error(line),
   });
+  // A turn refused for want of a model names the weak-only case on its own (default-model.ts).
+  setNoDefaultModelContext(() => ({ catalog: activeCatalog(), present: setup.present() }));
   const liveModel = liveSelection && liveProvider
     ? () => (setup.defaultModel() ?? "") as ModelTag
     : undefined;

@@ -15,7 +15,12 @@
 // The 2026-11-24 catalog audit (lane CT) moved: gemini 3.7 Flash -> 3.8 Flash (Google routes 3.7 Flash to 3.8 Flash and
 // no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
 // Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
-// published catalog yet); gemma and llama dropped (weak).
+// published catalog yet); gemma and llama dropped (weak); grok 4.6 -> 4.7.
+// WAITING FOR THE AGENT SDK RELEASE THAT CARRIES THE ROWS (clover-sdk PR #89; this file may name only ids the pinned
+// catalog has): gemini -> gemini-4-hydrogen (Google's everyday tier; 3.8 Flash is "previous-generation" and its price rises
+// to Hydrogen's on 2027-01-01; Hydrogen takes low/medium/high/xhigh, so medium is sent); mistral -> mistral-large-4 (GA
+// since 2026-10-05; Large 3 is deprecated since 2026-10-31 and retires 2027-04-30, https://docs.mistral.ai/models);
+// hunyuan -> hy4 (Hy4 Preview retires 2026-12-07); muse light -> muse-ember-1.0.
 //
 // THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
 // declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
@@ -36,7 +41,7 @@ export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
   gemini: { model: "gemini-3.8-flash", effort: "medium" },
-  grok: { model: "grok-4.6", effort: "medium" },
+  grok: { model: "grok-4.7", effort: "medium" }, // xAI's current model (https://docs.x.ai/docs/release-notes.md, September 2026), same price as 4.6
   deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium
   kimi: { model: "kimi-k3.1-pro", effort: "high" }, // rows take low, high, max: no medium
   qwen: { model: "qwen3.7-plus", effort: "medium" },
@@ -93,7 +98,7 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   "gpt-oss": { model: "gpt-oss-20b", effort: "low" },
   minimax: { model: "minimax-m3.1-flash", effort: "low" },
   // One tier, or tiers that differ in speed or purpose rather than size: the default is the light model.
-  grok: { model: "grok-4.6", effort: "low" },
+  grok: { model: "grok-4.7", effort: "low" },
   kimi: { model: "kimi-k3.1-pro", effort: "low" },
   command: { model: "command-a-03-2025", effort: "low" },
   ernie: { model: "ernie-5.1", effort: "low" },

@@ -56,7 +56,7 @@ import type { SessionHub } from "../sessions/hub";
 import type { SessionStore } from "../sessions/store";
 import { mainTurnOpenInLog } from "../sessions/turn-origins";
 import { turnOriginIndexFor } from "../sessions/turn-origin-index";
-import { NO_DEFAULT_MODEL_CODE, NO_DEFAULT_MODEL_REASON } from "../default-model";
+import { NO_DEFAULT_MODEL_CODE, noDefaultModelReason } from "../default-model";
 import { CLAUDE_FIRST_PARTY_PROVIDER_IDS, effortRefusalFor, effortToSpendForRole, ownProviderFor, permittedProviders, pinsFor, providerBaseUrlFor, sdkAllowRules, sdkDenyRules, mossOptionsFromSettings, type Settings } from "../settings";
 import { d30DefaultModel } from "./advisor-reviewer";
 import { canUseToolFor, type BridgedApprovalRequest } from "./approval-bridge";
@@ -1024,7 +1024,7 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       // `ModelTagSchema`/`resolveModelSelection` before the write, so a value that reaches here
       // already satisfies the shape this cast asserts.
       const chosen = mode === "dispatch" ? (live.model as ModelTag | undefined ?? pinsFor(settings).dispatch) : (live.model as ModelTag | undefined ?? settings?.provider?.model);
-      if (chosen === undefined) throw new MossLegRefusal("runtime_selection_refused", NO_DEFAULT_MODEL_REASON, NO_DEFAULT_MODEL_CODE);
+      if (chosen === undefined) throw new MossLegRefusal("runtime_selection_refused", noDefaultModelReason(), NO_DEFAULT_MODEL_CODE);
       const model: ModelTag = chosen;
       // 2026-09-17: the dispatch pin's fixed tier is IMPLICIT — mapped onto the pin row's vocabulary
       // (`implicitEffortFor`), never sent to a row that does not declare it. A per-session effort stays explicit.
@@ -1431,7 +1431,7 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       const settings = deps.settings();
       const model = mode === "dispatch" ? (live.model ?? pinsFor(settings).dispatch) : (live.model ?? settings?.provider?.model);
       // No model for this session and no default (2026-11-20): refused, typed, with the sentence that leads on.
-      if (model === undefined) throw new MossLegRefusal("runtime_selection_refused", NO_DEFAULT_MODEL_REASON, NO_DEFAULT_MODEL_CODE);
+      if (model === undefined) throw new MossLegRefusal("runtime_selection_refused", noDefaultModelReason(), NO_DEFAULT_MODEL_CODE);
       // R.1 ruling 1: a model the catalog RETIRED with no rename (a tag stored before the upgrade) is a
       // typed refusal here, before any child — never a silent fallback to another model, and never the
       // child's own mid-turn "not in provider's catalog" error. No key makes it runnable, so it is judged
@@ -1468,7 +1468,7 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
       if (apiKeyProviderIsUnauthenticated(selection.providerId, credentials.byProvider[selection.providerId] !== undefined)) {
         // The default model's provider isn't one the person has (an older build's written default, or a provider
         // removed): that is no default, said as such.
-        if (live.model === undefined && mode !== "dispatch") throw new MossLegRefusal("runtime_selection_refused", NO_DEFAULT_MODEL_REASON, NO_DEFAULT_MODEL_CODE);
+        if (live.model === undefined && mode !== "dispatch") throw new MossLegRefusal("runtime_selection_refused", noDefaultModelReason(), NO_DEFAULT_MODEL_CODE);
         throw new MossLegRefusal("runtime_selection_refused", missingCredentialDetail(selection.providerId), "no-credential");
       }
     };
@@ -1679,7 +1679,7 @@ export function createMossSessionDrivers(deps: MossLegDeps): MossSessionDrivers 
     // literal string "unstated" as its model.
     if (effectiveTag === UNSTATED_TAG) {
       // No model named and no default model (2026-11-20): the plain sentence, before a record names no provider.
-      if (mode !== "dispatch") throw new MossLegRefusal("runtime_selection_refused", NO_DEFAULT_MODEL_REASON, NO_DEFAULT_MODEL_CODE);
+      if (mode !== "dispatch") throw new MossLegRefusal("runtime_selection_refused", noDefaultModelReason(), NO_DEFAULT_MODEL_CODE);
       throw new MossLegRefusal(
         "runtime_selection_refused",
         `dispatch has no runnable model: pins.dispatch resolves to no known slot for this daemon's own provider (${ownProviderFor(settings)}) — set settings.pins.dispatch explicitly to a tag naming a provider this daemon can serve, or configure settings.provider.model to a provider whose catalog serves the terra slot`,

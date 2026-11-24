@@ -39,11 +39,16 @@ export function familyOfModel(catalog: CatalogView, providerId: string, modelKey
 }
 
 /** The family's light model as this provider serves it (an aggregator's own row counts: it is that provider's offering): a row of that provider with the family's canonical id that isn't
- *  blocked or deprecated. Absent where the provider doesn't offer it (an OAuth sign-in's or an aggregator's catalog may not). */
+ *  blocked or deprecated. Where the provider doesn't serve the light model but does serve the family's DEFAULT (2026-11-24, the
+ *  controller's ask: Cerebras serves gpt-oss-120b and not 20b, https://inference-docs.cerebras.ai/models/overview; the Qwen Coding
+ *  Plan serves qwen3.7-plus and no Flash, "Models not listed above are not supported", https://www.alibabacloud.com/help/en/model-studio/coding-plan),
+ *  the jobs run on that default there rather than not at all; the light effort still goes with it. Absent where it serves neither. */
 export function lightModelOn(catalog: CatalogView, providerId: string, familyId: string): LightChoice | undefined {
   const light = FAMILY_LIGHT_MODELS[familyId];
   if (light === undefined) return undefined;
-  const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === light.model && m.status !== "blocked" && m.status !== "deprecated");
+  const usable = (m: { providerId: string; status: string }) => m.providerId === providerId && m.status !== "blocked" && m.status !== "deprecated";
+  const row = catalog.models.find((m) => usable(m) && m.canonicalModelId === light.model)
+    ?? (FAMILY_DEFAULTS[familyId] !== undefined ? catalog.models.find((m) => usable(m) && m.canonicalModelId === FAMILY_DEFAULTS[familyId]!.model) : undefined);
   if (row === undefined) return undefined;
   return { tag: row.key, family: familyId, ...(light.effort !== undefined ? { effort: light.effort } : {}) };
 }

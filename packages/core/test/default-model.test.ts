@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { catalogFromModelPlugins, loadCatalog, type ModelEntry } from "@waifucave/clover-provider-catalog";
-import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
+import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, NO_RECOMMENDED_DEFAULT_REASON, noDefaultModelReason, onlyWeakFamilies, setNoDefaultModelContext, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
 import { FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
 import { BUNDLED_CHILDREN_DIR, modelPluginFolder, modelPluginId } from "../src/runtime-sdk/model-plugins/bundled";
 
@@ -57,6 +57,23 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(recommended(built, "google")?.model).toBe("google/gemini-3.8-flash");
     expect(recommended(built, "deepseek")?.model).toBeDefined();
     expect(recommended(built, "deepinfra")).toBeUndefined(); // Llama, whose vendors serve only weak models
+  });
+  test("a home whose only providers serve weak models (DeepInfra, Together: Llama) gets its own plain sentence; an aggregator or none gets the general one (2026-11-24)", () => {
+    expect(onlyWeakFamilies(catalog, new Set(["deepinfra"]))).toBe(true);
+    expect(onlyWeakFamilies(catalog, new Set(["together"]))).toBe(true);
+    expect(onlyWeakFamilies(catalog, new Set(["deepinfra", "anthropic"]))).toBe(false);
+    expect(onlyWeakFamilies(catalog, new Set(["openrouter"]))).toBe(false);
+    expect(onlyWeakFamilies(catalog, new Set())).toBe(false);
+    try {
+      setNoDefaultModelContext(() => ({ catalog, present: new Set(["deepinfra"]) }));
+      expect(noDefaultModelReason()).toBe(NO_RECOMMENDED_DEFAULT_REASON);
+      expect(NO_RECOMMENDED_DEFAULT_REASON).toMatch(/not recommended as a default/);
+      expect(NO_RECOMMENDED_DEFAULT_REASON).toMatch(/still pick one/);
+      setNoDefaultModelContext(() => ({ catalog, present: new Set() }));
+      expect(noDefaultModelReason()).toBe(NO_DEFAULT_MODEL_REASON);
+    } finally {
+      setNoDefaultModelContext(undefined);
+    }
   });
   test("a declared effort is one the family's vendor rows take (2026-11-24: a declaration no row takes was silently dropped)", () => {
     for (const [family, def] of Object.entries(FAMILY_DEFAULTS)) {

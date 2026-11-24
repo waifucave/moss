@@ -176,5 +176,32 @@ export function setupMissing(present: ReadonlySet<string>, answer: DefaultAnswer
  *  a model. */
 export const NO_DEFAULT_MODEL_REASON = "There's no model to answer with yet: add a model provider (a key or a sign-in), sign in again to your default model's provider, or pick a default model, in Settings or the setup guide.";
 
+/** The sentence for a home whose every provider serves only models that are no family's default because they are weak
+ *  (a Llama-only host: DeepInfra, Together; 2026-11-24): nothing was recommended, and the person can still pick one. */
+export const NO_RECOMMENDED_DEFAULT_REASON = "No default model was picked for you: the models your provider serves are not recommended as a default (each is marked weak, less reliable when it acts for you). You can still pick one as your default in Settings or the setup guide, or add another provider.";
+
+/** Whether every provider the person has belongs only to families that declare no default (their vendors serve only weak
+ *  models), so nothing is recommended for that reason and not because the provider is an aggregator or a local server. */
+export function onlyWeakFamilies(catalog: Pick<WinterCatalog, "families">, present: ReadonlySet<string>): boolean {
+  if (present.size === 0) return false;
+  for (const p of present) {
+    const fams = (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(p));
+    if (fams.length === 0 || fams.some((f) => FAMILY_DEFAULTS[f.id] !== undefined)) return false;
+  }
+  return true;
+}
+
+let noDefaultContext: (() => { catalog: Pick<WinterCatalog, "families">; present: ReadonlySet<string> } | undefined) | undefined;
+/** The engine says where the person's providers are read from (the setup service), so a refusal names the right case. */
+export function setNoDefaultModelContext(fn: typeof noDefaultContext): void {
+  noDefaultContext = fn;
+}
+
+/** The plain sentence a turn with no model is refused with: the weak-only case its own, else the general one. */
+export function noDefaultModelReason(): string {
+  const c = noDefaultContext?.();
+  return c !== undefined && onlyWeakFamilies(c.catalog, c.present) ? NO_RECOMMENDED_DEFAULT_REASON : NO_DEFAULT_MODEL_REASON;
+}
+
 /** The refusal's code, on the `agent_error` and the driver's typed refusal. */
 export const NO_DEFAULT_MODEL_CODE = "no_default_model";
