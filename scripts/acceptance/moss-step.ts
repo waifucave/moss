@@ -1359,7 +1359,7 @@ async function questionRow(s: UnitState): Promise<string> {
 
   // 1. The bot asks: the question is drawn where it was asked, whole, and she needs the person.
   const t = tag("ASK");
-  await sendInMoss(s, "MOSS", ask(t));
+  await sendInMoss(s, "MOSS", `${t} ${ask(t)}`);
   await s.w.waitFor("the question drawn in her conversation, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(t)}))`, 120_000);
   // The Agent tool the bot is offered is MOSS's own (packages/core/src/agents/tools.ts, shadowing the runtime's built-in one). The
   // runtime puts one family's aliases (fable, opus, sonnet, haiku) into the `model` property of any tool named Agent, so MOSS's takes
@@ -1406,7 +1406,7 @@ async function questionRow(s: UnitState): Promise<string> {
 
   // 4. A second question, and the person stops the turn from the composer: it is withdrawn, and nothing waits.
   const u = tag("STOP");
-  await sendInMoss(s, "MOSS", ask(u));
+  await sendInMoss(s, "MOSS", `${u} ${ask(u)}`);
   await s.w.waitFor("the second question, pending", `[...document.querySelectorAll(${JSON.stringify(pendingSel)})].some((q) => q.textContent.includes(${JSON.stringify(u)}))`, 120_000);
   await s.w.click("[data-composer] [data-stop]");
   await s.w.waitFor("the second question withdrawn", `[...document.querySelectorAll('.messages [data-kind=question]')].some((q) => q.textContent.includes(${JSON.stringify(u)}) && q.getAttribute('data-state') === 'withdrawn') ? 'withdrawn' : null`, 60_000)
