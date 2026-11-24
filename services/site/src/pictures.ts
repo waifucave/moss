@@ -28,16 +28,22 @@ export interface PictureSpec {
   density?: number;
 }
 
+/** Pictures cut to one part of the app (a card, a step of the setup guide, a plugin's settings), which bring their own
+ *  frame: drawn bare, on the page's own colour, which is the app's. */
+const BARE = new Set(["moss-card", "moss-setup", "moss-setup-model", "moss-plugins"]);
+/** Pictures rendered at 2x (public/pictures/SOURCES.md), drawn at half their pixel width. */
+const DENSITY: Readonly<Record<string, number>> = { "moss-setup": 2, "moss-setup-model": 2 };
+
 export function picture(p: PictureSpec): Html {
   const file = (theme: string, narrow = false) => `${p.name}${narrow ? "-narrow" : ""}-${theme}.png`;
   for (const t of ["light", "dark"]) if (!existsSync(join(DIR, file(t)))) throw new Error(`public/pictures/${file(t)} is missing`);
   const narrow = existsSync(join(DIR, file("light", true))) && existsSync(join(DIR, file("dark", true)));
   const size = pngSize(join(DIR, file("light")));
-  const density = p.density ?? (size.width > 2000 ? 2 : 1);
+  const density = p.density ?? DENSITY[p.name] ?? 1;
   const w = Math.round(size.width / density), h = Math.round(size.height / density);
   const ns = narrow ? pngSize(join(DIR, file("light", true))) : undefined;
   const nw = ns === undefined ? 0 : Math.round(ns.width / density), nh = ns === undefined ? 0 : Math.round(ns.height / density);
-  return html`<figure class="pic${p.small === true ? " pic--small" : ""}">
+  return html`<figure class="pic${p.small === true || BARE.has(p.name) ? " pic--bare" : ""}">
 <picture>
 ${narrow ? html`<source media="(max-width: 700px) and (prefers-color-scheme: dark)" srcset="/pictures/${file("dark", true)}" width="${nw}" height="${nh}">
 <source media="(max-width: 700px)" srcset="/pictures/${file("light", true)}" width="${nw}" height="${nh}">` : ""}

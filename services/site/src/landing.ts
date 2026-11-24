@@ -45,7 +45,7 @@ const ROWS: readonly Row[] = [
 
 /** The eight moods (spec §6.9), in the app's words (apps/moss/src/shared/view.ts MOOD_WORDS). */
 const MOODS: readonly (readonly [Mood, string, string])[] = [
-  ["idle", "Idle", "Pebble"], ["listening", "Listening", "Wren"], ["thinking", "Thinking", "Sage"], ["working", "Working", "Ember"],
+  ["idle", "Idle", "Iris"], ["listening", "Listening", "Basil"], ["thinking", "Thinking", "Maple"], ["working", "Working", "Vale"],
   ["asking", "Needs you", "Kite"], ["stuck", "Stuck", "Cobalt"], ["done", "Done", "Fern"], ["asleep", "Asleep", "Onyx"],
 ];
 
@@ -148,14 +148,14 @@ function canDo(): Html {
 <h2 id="can-do-title">What a bot can do</h2>
 <p class="lead">Ask it in your own words. It picks the tools.</p>
 </div>
-<ul class="can">
-<li><strong>Your files.</strong> Read them, sort them, write new ones, in the folders you use.</li>
-<li><strong>Commands.</strong> Run them on your computer, inside a sandbox.</li>
-<li><strong>The web.</strong> Search it and read pages.</li>
-<li><strong>A browser of its own.</strong> It works in the background, and you can watch it in the bot's side panel.</li>
-<li><strong>Routines.</strong> Jobs on a schedule, or when a webhook arrives.</li>
-<li><strong>Other bots and coding agents.</strong> It can message your other bots, and hand a coding job to an agent.</li>
-<li><strong>Talking.</strong> With a voice plugin and your own key for it, it speaks its replies and listens while you hold the talk button.</li>
+<ul class="rows">
+<li><strong>Your files</strong><span>Read them, sort them, write new ones, in the folders you use.</span></li>
+<li><strong>Commands</strong><span>Run them on your computer, inside a sandbox.</span></li>
+<li><strong>The web</strong><span>Search it and read pages.</span></li>
+<li><strong>A browser of its own</strong><span>It works in the background, and you can watch it in the bot's side panel.</span></li>
+<li><strong>Routines</strong><span>Jobs on a schedule, or when a webhook arrives.</span></li>
+<li><strong>Other bots, coding agents</strong><span>It can message your other bots, and hand a coding job to an agent.</span></li>
+<li><strong>Talking</strong><span>With a voice plugin and your own key for it, it speaks its replies and listens while you hold the talk button.</span></li>
 </ul>
 <p class="note">Not in the first release: controlling your screen. It will come later, as a plugin.</p>
 </section>`;
@@ -164,7 +164,7 @@ function canDo(): Html {
 const LEVELS: readonly (readonly [string, string])[] = [
   ["Read only", "It can look at things. It changes nothing and runs nothing."],
   ["Ask before every action", "Every change, command or page it opens waits for your OK."],
-  ["Ask before risky actions", "The default. It works on its own inside its sandbox and your ordinary folders. Deleting, buying, and anything MOSS's safety check isn't sure of, ask you first."],
+  ["Ask before risky actions", "It works on its own inside its sandbox and your ordinary folders. Deleting, buying, and anything MOSS's safety check isn't sure of, ask you first."],
   ["Ask before risky actions, edits allowed", "The same, and it may also change and move files in sensitive places, like the settings files in your home folder, without asking."],
   ["Fully automatic", "It never asks. Changes to MOSS's own settings, levels and plugins still do."],
 ];
@@ -176,18 +176,18 @@ function approvals(): Html {
 <p class="lead">When a bot wants to do something its level doesn't let it do alone, it stops and asks you on a card. The card says who wants to do what, and where. Only a real press on its button answers it: a bot can't answer its own card.</p>
 </div>
 <div class="split">
-${picture({ name: "moss-card", alt: "A card in MOSS: Juniper wants to click Book on example-air.test. Submit the booking form? On the computer called Studio. Press Book: 8:05 nonstop to Lisbon, seat 14A, $312.40. A link: Show everything this approves. Buttons: Not now, Book it.", caption: "A card, as MOSS draws it.", small: true })}
+<div class="split__side">
+${picture({ name: "moss-card", alt: "A card in MOSS: Juniper wants to click Book on example-air.test. Submit the booking form? On the computer called Studio. Press Book: 8:05 nonstop to Lisbon, seat 14A, $312.40. A link: Show everything this approves. Buttons: Not now, Book it.", caption: "A card, as MOSS draws it." })}
+<div class="fact"><h3>Commands run in a sandbox</h3><p>At the default level a command can write only to the bot's own folders and the temporary folder, and can't reach the network. When it needs more, it asks for that folder on a card.</p></div>
+<div class="fact"><h3>The card finds you</h3><p>It shows in the MOSS window when you're there, and on a small island at the top of your screen when you're in another app. When the phone apps are out, it reaches your phone too.</p></div>
+</div>
 <div class="levels">
 <h3>You choose how much it does alone</h3>
 <dl class="levels__list">
-${LEVELS.map(([name, what]) => html`<div class="level"><dt>${name}</dt><dd>${what}</dd></div>`)}
+${LEVELS.map(([name, what], i) => html`<div class="level${i === 2 ? " level--default" : ""}"><dt>${name}${i === 2 ? html`<span class="level__tag">Default</span>` : ""}</dt><dd>${what}</dd></div>`)}
 </dl>
-<p class="note">You set the level for each of your computers, in Settings. Changing it asks you on a card first.</p>
+<p class="note">You set the level for each of your computers, in Settings. Changing it asks you on a card first. <a href="/docs/approvals/">What each level allows</a>.</p>
 </div>
-</div>
-<div class="facts facts--two">
-<div class="fact"><h3>Commands run in a sandbox</h3><p>At the default level a command can write only to the bot's own folders and the temporary folder, and can't reach the network. When it needs more, it asks for that folder on a card.</p></div>
-<div class="fact"><h3>The card finds you</h3><p>It shows in the MOSS window when you're there, and on a small island at the top of your screen when you're in another app. When the phone apps are out, it reaches your phone too.</p></div>
 </div>
 </section>`;
 }
@@ -195,21 +195,18 @@ ${LEVELS.map(([name, what]) => html`<div class="level"><dt>${name}</dt><dd>${wha
 /** The canvas sketch: blocks and lines in the page's own style. It is a drawing of what MOSS Code's start page shows,
  *  not a picture of the app, and its caption says so. */
 function canvasSketch(): Html {
-  const block = (cls: string, title: string, agent: string, state: string, motion: "running" | "waiting" | "still") =>
-    html`<div class="cblock ${cls} cblock--${motion}"><span class="cblock__mark" aria-hidden="true">${agent.slice(0, 1)}</span><span class="cblock__text"><span class="cblock__title">${title}</span><span class="cblock__agent">${agent}</span><span class="cblock__state"><span class="cblock__dot" aria-hidden="true"></span>${state}</span></span></div>`;
+  const block = (id: string, title: string, agent: string, state: string, motion: "running" | "waiting" | "still") =>
+    html`<div class="cblock c-${id} cblock--${motion}" data-block="${id}"><span class="cblock__mark" aria-hidden="true">${agent.slice(0, 1)}</span><span class="cblock__text"><span class="cblock__title">${title}</span><span class="cblock__agent">${agent}</span><span class="cblock__state"><span class="cblock__dot" aria-hidden="true"></span>${state}</span></span></div>`;
+  // The lines join a session to the one that started it; the page's script draws them between the blocks as laid out.
   return html`<figure class="sketch">
-<div class="canvas" role="img" aria-label="A sketch of MOSS Code's canvas: four coding sessions as blocks, Fix the flaky upgrade test on Claude Code, running; its helper Read the logs, done; API refactor on Codex, waiting on two background jobs; Port the parser to Rust on OpenCode, running. MOSS, a bot, has started a fifth, Weekly usage report on MOSS's own coding agent. Lines join each session to the one that started it.">
-<svg class="canvas__lines" viewBox="0 0 1000 420" preserveAspectRatio="none" aria-hidden="true">
-<path d="M330 92 C 420 92, 420 92, 560 92"/>
-<path d="M200 140 L 200 250" class="dash"/>
-<path d="M330 352 C 450 352, 460 330, 600 330"/>
-</svg>
-${block("c1", "Fix the flaky upgrade test", "Claude Code", "Running, editing run.ts", "running")}
-${block("c2", "Read the logs", "Claude Code, a helper", "Done, report sent", "still")}
-${block("c3", "API refactor", "Codex", "Waiting on 2 background jobs", "waiting")}
-${block("c4", "Port the parser to Rust", "OpenCode", "Running, cargo check", "running")}
-<div class="cblock cblock--bot c5">${face({ name: "MOSS", pins: MOSS_PINS, mood: "working", size: "block" })}<span class="cblock__text"><span class="cblock__title">MOSS</span><span class="cblock__agent">a bot</span></span></div>
-${block("c6", "Weekly usage report", "MOSS's coding agent", "Running, writing report.md", "running")}
+<div class="canvas" role="img" aria-label="A sketch of MOSS Code's canvas. Fix the flaky upgrade test, on Claude Code, is running, and a line joins it to the helper it started, Read the logs, which is done. API refactor, on Codex, is waiting on two background jobs. MOSS, a bot, has started two sessions, joined to it by lines: Weekly usage report on MOSS's own coding agent, and Port the parser to Rust on OpenCode, both running." data-canvas>
+<svg class="canvas__lines" aria-hidden="true"><path data-link="fix>logs"/><path data-link="moss>report"/><path data-link="moss>port"/></svg>
+${block("fix", "Fix the flaky upgrade test", "Claude Code", "Running, editing run.ts", "running")}
+${block("logs", "Read the logs", "Claude Code, a helper", "Done, report sent", "still")}
+${block("api", "API refactor", "Codex", "Waiting on 2 background jobs", "waiting")}
+<div class="cblock cblock--bot c-moss" data-block="moss">${face({ name: "MOSS", pins: MOSS_PINS, mood: "working", size: "block" })}<span class="cblock__text"><span class="cblock__title">MOSS</span><span class="cblock__agent">a bot</span></span></div>
+${block("report", "Weekly usage report", "MOSS's coding agent", "Running, writing report.md", "running")}
+${block("port", "Port the parser to Rust", "OpenCode", "Running, cargo check", "running")}
 </div>
 <figcaption>A sketch of MOSS Code's canvas, drawn for this page. A picture of the app will take its place.</figcaption>
 </figure>`;
@@ -236,12 +233,15 @@ function plugins(): Html {
 <h2 id="plugins-title">Almost everything is a plugin</h2>
 <p class="lead">Models, tools, voices and coding agents all come as plugins, and so does most of MOSS Code's window. A plugin is just a folder of files.</p>
 </div>
-<ul class="can can--two">
-<li><strong>Nothing new runs without your OK.</strong> When a plugin arrives, a card says what it is and what it may do, and it waits for you.</li>
-<li><strong>Each tool, your way.</strong> Turn any plugin's tool off, keep it on demand, or always on.</li>
-<li><strong>Bring what you have.</strong> Add an MCP server, a skill folder or a Claude Code plugin, and MOSS wraps it as a plugin for you.</li>
-<li><strong>Change the window.</strong> In MOSS Code, plugins can restyle and rearrange the window itself. MOSS keeps its own plain window.</li>
+<div class="split split--pic">
+${picture({ name: "moss-plugins", alt: "MOSS's Plugins page: a field to add a plugin from a link or a file, which runs only after you OK its card; then the MOSS Browser plugin's tools, Click, Fill, Open and Read, each with two settings: whether bots get it (Off, On demand, Always on) and what happens when a bot uses it (Always allow, Ask, Always block).", caption: "MOSS's Plugins page, with the browser's tools." })}
+<ul class="rows rows--narrow">
+<li><strong>Nothing new runs without your OK</strong><span>When a plugin arrives, a card says what it is and what it may do, and it waits for you.</span></li>
+<li><strong>Each tool, your way</strong><span>Off, on demand, or always on; and when a bot uses it, always allow, ask, or always block.</span></li>
+<li><strong>Bring what you have</strong><span>Add an MCP server, a skill folder or a Claude Code plugin, and MOSS wraps it as a plugin for you.</span></li>
+<li><strong>Change the window</strong><span>In MOSS Code, plugins can restyle and rearrange the window itself. MOSS keeps its own plain window.</span></li>
 </ul>
+</div>
 </section>`;
 }
 
@@ -299,11 +299,24 @@ function open(): Html {
 </section>`;
 }
 
+/** MOSS Code's mark, the Shards mark's single-colour cut (assets/brand/moss-code/mark/shards-mark-white.svg), drawn in
+ *  the text's colour: on this page only the bots' faces have colour. */
+const SHARDS_PATH = "M674.7 145.6 L645.8 131.9 L603.5 119.2 L574.1 112.4 L542.8 107.8 L508.5 106.8 L481 108.3 L441 112.9 L406.2 120.5 L361.7 135.1 L324.2 153.4 L289.4 172.8 L265 191 L229.9 222.6 L200.3 254.4 L170.8 293.9 L150.8 329.2 L131.1 371.9 L129.6 376.8 L400.4 478.2 Z M863.3 365.3 L842.6 319 L827.8 292.2 L803.6 256.6 L776.5 225.2 L749 198.3 L717.6 175.1 L698.5 163.9 L424.9 491.1 L447.6 499.7 L830 702.2 L841.4 682.1 L859.3 643 L874 598.2 L880.5 572.7 L885.3 525.4 L887 491.1 L884.7 458.4 L877.8 412.9 Z M396.4 875.9 L419.4 881.5 L451.4 886.7 L485.5 888.8 L537.2 887.4 L579.8 881.4 L622.6 869.1 L669.7 850.7 L704.5 832.7 L735.6 811.6 L762.6 789.5 L786.1 766 L807.4 741.7 L818.7 726.7 L605.8 614.7 Z M125.1 402.1 L124.7 403.3 L117.3 433 L111.2 476.4 L109.5 502.5 L111 536.3 L114.1 565.2 L121.6 605.3 L131.1 633.7 L139.5 657.4 L153 685.3 L172.4 716 L195.1 746.7 L220.7 775.9 L257.4 807.5 L288.9 827.8 L322 847.6 L348.6 859.6 L364.8 865.3 L581.3 601.6 L441.2 525.9 Z";
+
+function appMark(app: "moss" | "code"): Html {
+  return app === "moss"
+    ? face({ name: "MOSS", pins: MOSS_PINS, size: "app" })
+    : html`<svg class="appmark" viewBox="86 86 828 828" aria-hidden="true"><path fill="currentColor" d="${SHARDS_PATH}"/></svg>`;
+}
+
+function appHead(a: { app: "moss" | "code"; name: string; what: string }): Html {
+  return html`<div class="app__head">${appMark(a.app)}<div><h3>${a.name}</h3><p class="app__what">${a.what}</p></div></div>`;
+}
+
 function downloadReleased(config: SiteConfig, apps: DownloadApp[]): Html {
   return html`<div class="dl" data-downloads>
-${apps.map((a) => html`<div class="dl__app">
-<h3>${a.name}</h3>
-<p class="dl__what">${a.what}</p>
+${apps.map((a) => html`<div class="app">
+${appHead(a)}
 <ul class="dl__systems">
 ${a.systems.map((s) => html`<li class="dl__system" data-system="${s.key}">
 <span class="dl__sys"><span class="dl__name">${s.name}</span><span class="dl__detail">${s.detail}</span></span>
@@ -319,16 +332,21 @@ ${config.release.winget ? html`<p class="dl__pm">With winget: <code>${a.winget}<
 
 function download(config: SiteConfig): Html {
   const released = config.release.state === "released";
+  const apps = [
+    { app: "moss" as const, name: "MOSS", what: "The app for your bots." },
+    { app: "code" as const, name: "MOSS Code", what: "The app for your coding agents." },
+  ];
   return html`<section class="band band--download" id="download" aria-labelledby="download-title">
 <div class="band__head">
 <h2 id="download-title">${released ? `Download MOSS ${config.release.version}` : "Download"}</h2>
 ${released
-    ? html`<p class="lead">Pick the app and your system. The button for the system you're on comes first.</p>`
-    : html`<p class="lead">MOSS isn't released yet. The first release brings both apps, MOSS and MOSS Code, to macOS, Windows and Linux at the same time. Until then, the code is on GitHub, and the docs say what to expect.</p>`}
+    ? html`<p class="lead">Pick the app and your system. The system you're on comes first.</p>`
+    : html`<p class="lead">MOSS isn't released yet. The first release brings both apps to macOS, Windows and Linux at the same time. Until then, the code is on GitHub, and the docs say what to expect.</p>`}
 </div>
 ${released
     ? downloadReleased(config, downloads(config.release.version, config.repository))
-    : html`<div class="actions"><a class="button" href="${config.repository}">See it on GitHub</a><a class="button button--quiet" href="/docs/install/">How installing will work</a></div>`}
+    : html`<div class="dl dl--soon">${apps.map((a) => html`<div class="app">${appHead(a)}<p class="app__soon">Not released yet</p></div>`)}</div>
+<div class="actions"><a class="button" href="${config.repository}">See it on GitHub</a><a class="button button--quiet" href="/docs/install/">How installing will work</a></div>`}
 </section>`;
 }
 

@@ -106,6 +106,7 @@ interface Shot {
 }
 
 const requests: Record<string, string[]> = {};
+const overflow: string[] = [];
 
 async function shoot(cdp: Cdp, s: Shot): Promise<void> {
   const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
@@ -122,8 +123,16 @@ async function shoot(cdp: Cdp, s: Shot): Promise<void> {
   const loaded = new Promise<void>((ok) => { const o = cdp.on((m) => { if (m.sessionId === sessionId && m.method === "Page.loadEventFired") { o(); ok(); } }); });
   await send("Page.navigate", { url: s.url });
   await loaded;
-  // Pictures below the fold load lazily: load them all, and wait for them and for the faces' first frames.
-  await send("Runtime.evaluate", { awaitPromise: true, expression: `(async () => { for (const i of document.images) i.loading = "eager"; await Promise.all([...document.images].map((i) => i.decode().catch(() => {}))); await new Promise((r) => setTimeout(r, 700)); })()` });
+  // A page wider than the screen is a fault: say so.
+  const over = await send<{ result: { value: number } }>("Runtime.evaluate", { returnByValue: true, expression: "document.documentElement.scrollWidth - innerWidth" });
+  if (over.result.value > 0) overflow.push(`${s.file}: ${over.result.value}px wider than the screen`);
+  // The whole page in the viewport at once, so every face is on screen and alive (the kit rests faces it can't see),
+  // and every lazy picture loads; then wait for the pictures and for the faces to settle into their moods.
+  if (s.height === undefined) {
+    const full = await send<{ result: { value: number } }>("Runtime.evaluate", { returnByValue: true, expression: "document.documentElement.scrollHeight" });
+    await send("Emulation.setDeviceMetricsOverride", { width: s.width, height: Math.min(full.result.value, 16000), deviceScaleFactor: scale, mobile: s.width <= 820 });
+  }
+  await send("Runtime.evaluate", { awaitPromise: true, expression: `(async () => { for (const i of document.images) i.loading = "eager"; await Promise.all([...document.images].map((i) => i.decode().catch(() => {}))); await new Promise((r) => setTimeout(r, 1600)); })()` });
   let clip: { x: number; y: number; width: number; height: number; scale: number };
   if (s.element !== undefined) {
     const r = await send<{ result: { value: { x: number; y: number; width: number; height: number } } }>("Runtime.evaluate", { returnByValue: true, expression: `(() => { const e = document.querySelector(${JSON.stringify(s.element)}); e.scrollIntoView(); const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, width: b.width, height: b.height }; })()` });
@@ -204,6 +213,8 @@ figure{margin:0}figcaption{margin-top:6px;opacity:.7}img{display:block;border:1p
   for (const f of Object.keys(requests)) if (f.startsWith("contact-sheet-")) delete requests[f];
   for (const list of Object.values(requests)) for (const u of list) hosts.add(new URL(u).host);
   writeFileSync(join(OUT, "requests.json"), JSON.stringify({ hosts: [...hosts].sort(), byPicture: requests }, null, 2));
+  if (overflow.length > 0) console.log(`render: pages wider than the screen:\n  ${overflow.join("\n  ")}`);
+  else console.log("render: no page is wider than its screen");
   console.log(`render: hosts any page asked for: ${[...hosts].sort().join(", ")}`);
 } finally {
   cdp.close();

@@ -34,7 +34,7 @@ function wakeFaces(): void {
     const h = mount(canvas, name, {
       ...pinsOf(el),
       mood: (el.getAttribute("data-mood") ?? "idle") as Mood,
-      scale: 1.2,
+      scale: Number(el.getAttribute("data-scale") ?? "1.2") || 1.2,
       dark: darkQuery.matches,
       surface: surfaceOf(el),
       follow: lively,
@@ -91,11 +91,15 @@ function tryName(): void {
       last = name;
       const h = handles.get(faceEl);
       if (name === "") { note.textContent = "Type a name to see its bot."; return; }
-      const bot = makeBot(name);
+      // MOSS, the default bot, wears the face the app pins for her (spec §6.2), not the one her name would make.
+      const isMoss = name.toLowerCase() === "moss";
+      const bot = isMoss ? makeBot(name, { shape: "tile", color: "coral", eyes: "round" }) : makeBot(name);
       h?.setBot(bot);
       h?.poke();
       const shown = name.length > 24 ? `${name.slice(0, 24)}…` : name;
-      note.textContent = `${shown} is ${/^[aeiou]/.test(COLOR_WORDS[bot.colorName] ?? "") ? "an" : "a"} ${COLOR_WORDS[bot.colorName] ?? "coloured"} ${bot.shape}. Every bot called ${shown} looks like this.`;
+      note.textContent = isMoss
+        ? "MOSS, the bot you meet first, is pinned to this face: the coral tile on the app's icon."
+        : `${shown} is ${/^[aeiou]/.test(COLOR_WORDS[bot.colorName] ?? "") ? "an" : "a"} ${COLOR_WORDS[bot.colorName] ?? "coloured"} ${bot.shape}. Every bot called ${shown} looks like this.`;
     };
     input.addEventListener("input", show);
     last = input.value.trim();
@@ -120,6 +124,29 @@ function yourSystem(): void {
   const main = document.querySelector<HTMLAnchorElement>("[data-get-main]");
   const names: Record<string, string> = { mac: "macOS", win: "Windows", "linux-x64": "Linux", "linux-arm64": "Linux" };
   if (main !== null) main.textContent = `Download for ${names[key]}`;
+}
+
+/** The MOSS Code sketch's lines, drawn between its blocks as they are laid out (a curve from one block's right edge to
+ *  the other's left edge), again whenever the sketch changes size. On a narrow screen the blocks stack and the lines hide. */
+function canvasLines(): void {
+  const canvas = document.querySelector<HTMLElement>("[data-canvas]");
+  const svg = canvas?.querySelector("svg");
+  if (!canvas || !svg) return;
+  const draw = () => {
+    const box = canvas.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
+    for (const path of svg.querySelectorAll("path[data-link]")) {
+      const [from, to] = (path.getAttribute("data-link") ?? "").split(">");
+      const a = canvas.querySelector(`[data-block="${from}"]`)?.getBoundingClientRect();
+      const b = canvas.querySelector(`[data-block="${to}"]`)?.getBoundingClientRect();
+      if (!a || !b) continue;
+      const x1 = a.right - box.left, y1 = a.top + a.height / 2 - box.top, x2 = b.left - box.left, y2 = b.top + b.height / 2 - box.top;
+      const bend = Math.max(24, (x2 - x1) / 2);
+      path.setAttribute("d", `M${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
+    }
+  };
+  new ResizeObserver(draw).observe(canvas);
+  draw();
 }
 
 /** Copy buttons on the docs' code blocks. */
@@ -234,6 +261,7 @@ wakeFaces();
 liveList();
 tryName();
 yourSystem();
+canvasLines();
 copyButtons();
 docNav();
 search();

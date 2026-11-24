@@ -17,7 +17,7 @@ export interface FaceSlot {
   pins?: BotOptions;
   mood?: Mood;
   /** The class that sizes it (site.css: face--logo, face--row, face--mood, face--block, face--big). */
-  size: "logo" | "row" | "mood" | "block" | "big";
+  size: "logo" | "row" | "mood" | "block" | "app" | "big";
   /** The colour behind it, which a sleeping bot fades toward: the page's own, or the list's grey. */
   surface?: "page" | "list";
   /** Follow the pointer with its eyes, and jump when tapped (the large ones). */
@@ -26,17 +26,20 @@ export interface FaceSlot {
   data?: Record<string, string>;
 }
 
-const PIXELS: Record<FaceSlot["size"], number> = { logo: 28, row: 44, mood: 56, block: 40, big: 200 };
+const PIXELS: Record<FaceSlot["size"], number> = { logo: 28, row: 44, mood: 56, block: 40, app: 56, big: 200 };
+/** The large face jumps when tapped, so it is drawn smaller in its square, to leave it room. */
+const SCALE: Record<FaceSlot["size"], number> = { logo: FACE_SCALE, row: FACE_SCALE, mood: FACE_SCALE, block: FACE_SCALE, app: FACE_SCALE, big: 1 };
 
 export function face(slot: FaceSlot): Html {
   const pins = slot.pins ?? {};
   const bot = makeBot(slot.name, pins);
   const mood = slot.mood ?? "idle";
-  const still = botSVG(bot, { size: PIXELS[slot.size], scale: FACE_SCALE, life: wake(bot, mood), label: "" });
+  const still = botSVG(bot, { size: PIXELS[slot.size], scale: SCALE[slot.size], life: wake(bot, mood), label: "" });
   const attrs: Record<string, string> = {
     "data-face": slot.name,
     "data-mood": mood,
     "data-surface": slot.surface ?? "page",
+    "data-scale": String(SCALE[slot.size]),
     ...(pins.shape !== undefined ? { "data-shape": pins.shape } : {}),
     ...(pins.color !== undefined ? { "data-color": String(pins.color) } : {}),
     ...(pins.eyes !== undefined ? { "data-eyes": pins.eyes } : {}),
