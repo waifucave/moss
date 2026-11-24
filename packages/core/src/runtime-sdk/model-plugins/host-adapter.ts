@@ -28,8 +28,10 @@ export interface PluginAdapterRef {
 }
 
 /** Asks the plugin's adapter who it is. Refuses an adapter on another interface version than this core's. */
-export async function describeModelAdapter(host: PluginHost, ref: PluginAdapterRef): Promise<ModelAdapterDescription> {
-  const d = await host.invoke<ModelAdapterDescription>({ pluginId: ref.pluginId, handler: ref.handler, method: "describe", args: undefined, caller: { kind: "core" } });
+export async function describeModelAdapter(host: PluginHost, ref: PluginAdapterRef, opts: { timeoutMs?: number } = {}): Promise<ModelAdapterDescription> {
+  // The call's limit covers starting the plugin's worker too, which on the first start after an install is cold (a
+  // new tree, every bundled plugin starting at once): the caller gives it room.
+  const d = await host.invoke<ModelAdapterDescription>({ pluginId: ref.pluginId, handler: ref.handler, method: "describe", args: undefined, caller: { kind: "core" }, ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) });
   if (d === null || typeof d !== "object" || typeof d.id !== "string" || typeof d.version !== "string") throw new ContractError("failed", `${ref.pluginId}'s adapter did not describe itself`);
   if (d.interfaceVersion !== MODEL_ADAPTER_INTERFACE_VERSION) throw new ContractError("failed", `${ref.pluginId}'s adapter speaks model adapter interface ${String(d.interfaceVersion)}, and this core speaks ${MODEL_ADAPTER_INTERFACE_VERSION}`);
   return d;

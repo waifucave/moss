@@ -21,7 +21,8 @@ import type { Caller } from "@waifucave/moss-protocol";
 import type { HostServedAdapter, ModelProvidersOption } from "@waifucave/clover-agent-sdk";
 import { createHostModelAdapterServer, createShippedAdapters, hostServedProviderAdapter, ProviderRequestError, type HostModelAdapter, type ModelAdapterDescription, type ProviderAdapter } from "@waifucave/clover-provider-runtime";
 import { loadCatalog, type WinterCatalog } from "@waifucave/clover-provider-catalog";
-import type { Unsubscribe } from "../../contracts/common";
+import type { Clock, TimerHandle } from "../../contracts/clock";
+import { isContractError, type Unsubscribe } from "../../contracts/common";
 import type { PluginHost } from "../../contracts/plugin-host";
 import type { PluginRegistry } from "../../contracts/plugin-registry";
 import { describeModelAdapter, pluginHostModelAdapter } from "./host-adapter";
@@ -42,7 +43,11 @@ export interface ModelPluginRefusalView {
   provider: string;
   code: string;
   message: string;
+  /** Set on an adapter that didn't answer: it is asked again later. */
+  retryable?: boolean;
 }
+
+class IdentityMismatch extends Error {}
 
 export interface ModelPluginsOptions {
   registry: PluginRegistry;
@@ -56,6 +61,12 @@ export interface ModelPluginsOptions {
   connectionFor?: (pluginId: string, connection: HostModelAdapterContextConnection) => HostModelAdapterContextConnection | Promise<HostModelAdapterContextConnection>;
   readFile?: (path: string) => string;
   log?: (line: string) => void;
+  /** The clock the retry of a left-out adapter waits on (a test's `FakeClock`); the machine's timers otherwise. */
+  clock?: Clock;
+  /** How long a code adapter has to describe itself, its plugin's start included. Default `DESCRIBE_LIMIT_MS`. */
+  describeLimitMs?: number;
+  /** When a left-out adapter is asked again after a build, in order (one entry per attempt). Default `DESCRIBE_RETRY_MS`. */
+  retryAfterMs?: readonly number[];
   /** False when the plugin API can't carry a code plugin's keyed `net.fetch` (a host without `addApiHandlers`) or
    *  serving is turned off: no code adapter is served, so every code provider stays on the compiled path
    *  (`mergeWithCompiled`). */
@@ -130,6 +141,13 @@ export function mergeWithCompiled(set: ModelPluginSet, served: ReadonlyMap<strin
   return { ...set.catalog, providers, models };
 }
 
+/** A code adapter's `describe` limit. The plugin host's default (10 s) counts from the call, and the call waits for the
+ *  plugin's worker to start: after an install the whole bundled tree is new and starts cold at once, and that took longer
+ *  (the owner's log: "ran past 10000 ms", at the first start after each of four installs). */
+export const DESCRIBE_LIMIT_MS = 60_000;
+/** A left-out adapter is asked again after these waits (each build that still leaves one out arms the next). */
+export const DESCRIBE_RETRY_MS: readonly number[] = [15_000, 60_000, 180_000, 600_000];
+
 /** How many catalog files are kept: the current one and the one before it, which a session starting during a rebuild may still be reading. */
 const KEPT_CATALOG_FILES = 2;
 
@@ -139,6 +157,8 @@ export class ModelPlugins {
   #pending: Promise<ModelPluginsSnapshot> | undefined;
   #dirty = false;
   #off: Unsubscribe | undefined;
+  #retryTimer: TimerHandle | ReturnType<typeof setTimeout> | undefined;
+  #retries = 0;
 
   constructor(opts: ModelPluginsOptions) {
     this.#o = opts;
@@ -170,6 +190,7 @@ export class ModelPlugins {
   async start(): Promise<ModelPluginsSnapshot> {
     this.#off ??= this.#o.registry.watch((change) => {
       if (change.type === "entries" && change.point !== "models") return;
+      this.#retries = 0;
       void this.refresh().catch((err: unknown) => this.#o.log?.(`model plugins: rebuild failed (${err instanceof Error ? err.message : String(err)})`));
     });
     return this.refresh();
@@ -178,6 +199,40 @@ export class ModelPlugins {
   stop(): void {
     this.#off?.();
     this.#off = undefined;
+    this.#cancelRetry();
+  }
+
+  #cancelRetry(): void {
+    if (this.#retryTimer === undefined) return;
+    if (this.#o.clock !== undefined) this.#o.clock.clearTimeout(this.#retryTimer as TimerHandle);
+    else clearTimeout(this.#retryTimer as ReturnType<typeof setTimeout>);
+    this.#retryTimer = undefined;
+  }
+
+  /** After a build that left an adapter out because it didn't answer (not because it says it is another one), asks again
+   *  later: a slow start costs the person a provider only until it has come up, not until the engine restarts. */
+  #armRetry(snap: ModelPluginsSnapshot): void {
+    this.#cancelRetry();
+    if (this.#off === undefined) return; // stopped
+    if (!snap.refused.some((r) => r.code === "adapter-unavailable" && r.retryable === true)) {
+      this.#retries = 0;
+      return;
+    }
+    const waits = this.#o.retryAfterMs ?? DESCRIBE_RETRY_MS;
+    const wait = waits[this.#retries];
+    if (wait === undefined) return;
+    this.#retries++;
+    const fire = () => {
+      this.#retryTimer = undefined;
+      this.#o.log?.(`model plugins: asking the adapters left out again (attempt ${this.#retries} of ${waits.length})`);
+      void this.refresh().catch((err: unknown) => this.#o.log?.(`model plugins: retry failed (${err instanceof Error ? err.message : String(err)})`));
+    };
+    if (this.#o.clock !== undefined) this.#retryTimer = this.#o.clock.setTimeout(fire, wait);
+    else {
+      const t = setTimeout(fire, wait);
+      (t as { unref?: () => void }).unref?.();
+      this.#retryTimer = t;
+    }
   }
 
   /** Rebuilds from the registry. Calls made while one runs are folded into one more run after it. */
@@ -195,6 +250,7 @@ export class ModelPlugins {
         } while (this.#dirty);
         this.#snapshot = snap;
         this.#o.changed?.();
+        this.#armRetry(snap);
         return snap;
       } finally {
         this.#pending = undefined;
@@ -208,16 +264,33 @@ export class ModelPlugins {
     const set = buildModelPluginSet(readModelPlugins(this.#o.registry, this.#o.readFile));
     const refused: ModelPluginRefusalView[] = set.refused.map((r) => ({ pluginId: r.pluginId, provider: r.provider, code: r.code, message: r.message }));
     const served = new Map<string, ServedModelAdapter>();
-    for (const [provider, a] of set.adapters) {
-      if (a.handler === undefined || this.#o.serveCodeAdapters === false) continue;
-      // A third party's code adapter is served as a bundled one's: its keyed fetch reaches only its own declared hosts
-      // with only its own stored keys (plugin-api.ts), and its processes are fenced to those hosts (B's 2f, 2g).
+    // All at once: each is its own plugin's worker, and the start of one never waits for another's (a cold start of
+    // several, one after the other, cost the sum of their waits). A third party's code adapter is served as a bundled
+    // one's: its keyed fetch reaches only its own declared hosts with only its own stored keys (plugin-api.ts), and its
+    // processes are fenced to those hosts (B's 2f, 2g).
+    const limit = this.#o.describeLimitMs ?? DESCRIBE_LIMIT_MS;
+    const now = (): number => (this.#o.clock !== undefined ? this.#o.clock.monotonic() : performance.now());
+    const asked = [...set.adapters].filter(([, a]) => a.handler !== undefined && this.#o.serveCodeAdapters !== false);
+    const answers = await Promise.all(asked.map(async ([provider, a]) => {
+      const began = now();
       try {
-        const description = await describeModelAdapter(this.#o.host, { pluginId: a.pluginId, handler: a.handler });
-        if (description.id !== a.adapterId) throw new Error(`its adapter says it is ${description.id}, and its catalog file names ${a.adapterId}`);
-        served.set(a.adapterId, { adapterId: a.adapterId, pluginId: a.pluginId, provider, handler: a.handler, description });
+        const description = await describeModelAdapter(this.#o.host, { pluginId: a.pluginId, handler: a.handler! }, { timeoutMs: limit });
+        if (description.id !== a.adapterId) throw new IdentityMismatch(`its adapter says it is ${description.id}, and its catalog file names ${a.adapterId}`);
+        const took = Math.round(now() - began);
+        if (took >= 2000) this.#o.log?.(`model plugins: ${a.pluginId} described its adapter in ${took} ms`);
+        return { provider, a, description } as const;
       } catch (err) {
-        refused.push({ pluginId: a.pluginId, provider, code: "adapter-unavailable", message: err instanceof Error ? err.message : String(err) });
+        return { provider, a, err, took: Math.round(now() - began) } as const;
+      }
+    }));
+    for (const r of answers) {
+      if (!("err" in r)) {
+        served.set(r.a.adapterId, { adapterId: r.a.adapterId, pluginId: r.a.pluginId, provider: r.provider, handler: r.a.handler!, description: r.description });
+      } else {
+        // An adapter that answered as another one, or on another interface version, stays out until its plugin changes;
+        // one that didn't answer in time or whose worker failed to start is asked again (`#armRetry`).
+        const permanent = r.err instanceof IdentityMismatch || (isContractError(r.err) && r.err.code === "failed" && /adapter (interface|did not describe)/.test(r.err.message));
+        refused.push({ pluginId: r.a.pluginId, provider: r.provider, code: "adapter-unavailable", message: `${r.err instanceof Error ? r.err.message : String(r.err)} (after ${r.took} ms)`, retryable: !permanent });
       }
     }
     for (const r of refused) this.#o.log?.(`model plugins: ${r.pluginId} (${r.provider}) left out: ${r.code}: ${r.message}`);
