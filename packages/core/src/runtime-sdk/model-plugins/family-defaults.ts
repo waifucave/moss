@@ -32,7 +32,9 @@
 // serves it, and the same page puts it among "Models available for at least 12 months after release": released
 // "September 2, 2026", retiring "September 2, 2027 or later", so not before spring. Argon is the other strong model Vertex
 // serves, but it is the Pro tier: $4 / $20 per million tokens on Google's own API against 3.8 Flash's $0.75 / $3.75 (the
-// catalog's google rows; every vertex row is unpriced), not an everyday default.
+// catalog's google rows; every vertex row is unpriced), not an everyday default. The Vertex row is in clover-sdk PR #91
+// (no effort declared there: Vertex's card says `thinking_budget` returns 400); when an SDK release carries it, Vertex
+// recommends Hydrogen and the Vertex pin test in `default-model.test.ts` moves with it.
 //
 // THE GEMINI 4 EFFORT (2026-11-24). Hydrogen is the default with NO effort, so no thinking budget is sent and the model
 // thinks at its own default (high). The agent SDK's Google adapter turns an effort into `thinkingConfig.thinkingBudget`
