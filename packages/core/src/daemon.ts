@@ -1,4 +1,6 @@
 import { ReadElements } from "./approvals/browser-words";
+import { homeEraseMethods } from "./deletion/erase-rpc";
+import { eraseHome } from "./deletion/erase-home";
 import { pluginToolContained, pluginToolReadOnly, pluginWebTool } from "./registry/read-only-tools";
 import { bundledManifest, bundledPluginsDir, loadBundledManifest, type BundledManifest } from "./bundled-plugins-dir";
 import { buildDevBundledPlugins, devBundledSource, stageBundledPlugins, stagedBotChoice, stagedBundledDir, stagedManifest } from "./registry/bundled-stage";
@@ -463,6 +465,10 @@ export interface RunningDaemon {
    *  UPDATE_RESTART_EXIT_CODE, which `moss-core supervise` answers by starting the installed copy (`stopOnSignals`, and
    *  the CLI's `daemon run`). */
   releaseRestart: Promise<void>;
+  /** The deletion lane: what runs after the daemon has stopped and before the process exits. It erases the home when the
+   *  person said yes on `home.erase`'s card (and does nothing otherwise). `stopOnSignals` and the CLI's `daemon run`
+   *  call it. */
+  afterStop(): Promise<void>;
   /** M-M2: a server install's own update (`moss-core daemon run` sets it), which `update.status` and `update.apply`
    *  then serve. */
   setSelfUpdate(self: SelfUpdate): void;
@@ -3531,6 +3537,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // The device id is a stand-in, stable per home, until lane H's device key (H-M1).
   let resolvePairStopped!: (why: string) => void;
   const pairStopped = new Promise<string>((r) => { resolvePairStopped = r; });
+  // The deletion lane: set by the person's yes on `home.erase`'s card, never by anything else; read by `afterStop`.
+  let eraseArmed = false;
   let stopping = false;
   let mossServer: MossServer | undefined;
   // lane HS: start. The background host's supervision (below, once the socket listens); read by the server's door.
@@ -4407,6 +4415,17 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // daemon's one broker once the parts are up (`pluginsBroker`); before, they wait for it, bounded.
       ...pluginRegistryMethods({ beforeRemove: (id) => askCloudComputers(id, "remove"), beforeDisable: (id) => askCloudComputers(id, "switch-off"), componentInstalls: (door) => { componentInstall = door; }, onRestart: (id) => notices.userRestarted(id), opened, host: pluginHost.host, home: mossHome, secrets: contractSecrets, os: hostOs(), openCard: brokerCardOpener(pluginsBroker), emit: (event) => void mossServer?.coreEvent(event), log: (line) => console.error(line), ...(pluginIndexes ? { indexes: pluginIndexes } : {}), ...(opened.updater ? { updater: opened.updater } : {}), ...(pluginReviews ? { reviews: pluginReviews } : {}) }),
       ...pluginUiParts.methods,
+      // The deletion lane: Settings › Erase everything (`home.erase`): on the person's yes the apps quit, the engine stops,
+      // and `afterStop` erases.
+      ...homeEraseMethods({
+        home: mossHome, openCard: brokerCardOpener(pluginsBroker),
+        arm: () => {
+          eraseArmed = true;
+          console.error("[erase] the person said yes: the apps quit and the engine stops, then everything is erased");
+          if (pairSide) pairSide.pair.quit("quit");
+          else resolvePairStopped("quit");
+        },
+      }),
     };
     const host = pluginHost;
     // A-M2 on B-M2's host: the model plugins load through it once the store answers, links or not, every session
@@ -5290,6 +5309,25 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     mossParts: { ready: partsReady, links: () => daemonLinks?.links ?? undefined, node: () => daemonParts?.node, bots: () => daemonParts?.bots, agents: () => daemonParts?.agents, broker: () => daemonParts?.broker },
     updateGate,
     releaseRestart,
+    afterStop: async () => {
+      if (!eraseArmed) return;
+      // The login item first, so nothing starts the engine again into an empty home: through this engine's own binary
+      // (`moss-core autostart remove`), only from a compiled engine (a test or source daemon has none of its own).
+      if (!/[\\/]bun(\.exe)?$/.test(process.execPath)) {
+        try {
+          const child = Bun.spawn([process.execPath, "autostart", "remove"], { stdout: "ignore", stderr: "ignore" });
+          await child.exited;
+        } catch {
+          console.error("[erase] MOSS's login item couldn't be taken away");
+        }
+      }
+      try {
+        const out = await eraseHome({ home: mossHome, secrets: contractSecrets, log: (l) => console.error(l) });
+        process.stderr.write(`[erase] erased ${out.home} and ${out.secrets} saved key(s)\n`);
+      } catch (err) {
+        process.stderr.write(`[erase] ${err instanceof Error ? err.message : "failed"}\n`);
+      }
+    },
     setSelfUpdate(self) { selfUpdate = self; },
     dispatchChildren,
     wakes: computerUseRuntime.wakes,
@@ -5458,7 +5496,7 @@ export function stopOnSignals(daemon: RunningDaemon): void {
   // AWAITED (P8a Task 12): `stop()`'s tail drains the queued runtime-state deletions and releases
   // the lock — which unlinks the socket. Exiting without awaiting would leave a stale socket file,
   // the exact regression the CLI's own `daemon run` handler was written to prevent.
-  const shutdown = async () => { await stopWithin(daemon); process.exit(0); };
+  const shutdown = async () => { await stopWithin(daemon); await daemon.afterStop(); process.exit(0); };
   void daemon.pairStopped.then(shutdown);
   // A newer app brought its engine in (RL): stop as for a signal, and exit so `moss-core supervise` starts the installed copy.
   void daemon.releaseRestart.then(async () => { await stopWithin(daemon, undefined, { keepApp: true }); process.exit(UPDATE_RESTART_EXIT_CODE); });

@@ -147,6 +147,57 @@
         "additionalProperties": false
       }
     },
+    "home.erase": {
+      "doc": "Erases everything MOSS keeps on this computer, after the person's yes on the engine's card: the home's conversations, bots, memory, settings, plugins and logs, MOSS's saved keys, and the login item. The apps themselves, projects and files written elsewhere stay.",
+      "owner": "M",
+      "direction": "to-daemon",
+      "roles": [
+        "app"
+      ],
+      "userOnly": true,
+      "change": "sensitive",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "applied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "boolean",
+                "const": false
+              },
+              "card": {
+                "type": "string",
+                "pattern": "^card_[A-Za-z0-9_-]{6,64}$"
+              }
+            },
+            "required": [
+              "applied",
+              "card"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
     "app.open": {
       "doc": "The user's own navigation of this computer's app from a terminal: shows a bot's tab, a plugin's page, Settings, Plugins, Archive or the coding side in the main window by the route its own sidebar uses, waits until it shows, and says where the window is and its frames; never shows, raises, focuses, moves or resizes a window, and never clicks or types in a page. A local user's CLI only.",
       "owner": "D",

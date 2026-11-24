@@ -9,6 +9,7 @@ import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss
 import { Secret } from "../../contracts/secret-store";
 import { eraseHome, recogniseMossHome } from "../erase-home";
 import { runErase } from "../erase-command";
+import { homeEraseMethods } from "../erase-rpc";
 
 const made: string[] = [];
 afterEach(() => {
@@ -144,5 +145,48 @@ describe("moss-core erase: only the person, in their terminal, with MOSS quit", 
     expect(r.loginItem()).toBe(1);
     expect(existsSync(w.home)).toBe(false);
     expect(r.lines.join("\n")).toContain("doesn't remove");
+  });
+});
+
+describe("home.erase: only the person's yes on the engine's card", () => {
+  const setup = (answer: boolean) => {
+    const w = world();
+    let armed = 0;
+    const cards: { change?: string }[] = [];
+    const m = homeEraseMethods({
+      home: w.home, userHome: w.user, arm: () => void armed++,
+      openCard: async (req) => {
+        cards.push(req as { change?: string });
+        return { card: "card_erase123", allowed: Promise.resolve(answer) };
+      },
+    });
+    return { w, cards, armed: () => armed, call: (caller: unknown) => m["home.erase"]!({}, { caller } as never) };
+  };
+
+  for (const [who, caller] of [
+    ["a bot's session", { kind: "session", sessionId: "b_alpha" }],
+    ["a plugin", { kind: "plugin", pluginId: "acme/thing" }],
+    ["a peer computer", { kind: "peer", device: "x" }],
+  ] as const) {
+    test(`${who} is refused: no card, nothing armed`, async () => {
+      const t = setup(true);
+      await expect(t.call(caller)).rejects.toBeDefined();
+      expect(t.cards).toHaveLength(0);
+      expect(t.armed()).toBe(0);
+    });
+  }
+
+  test("the person's no arms nothing; their yes arms the erase (the engine erases after it stops)", async () => {
+    const no = setup(false);
+    expect(await no.call({ kind: "user", client: "app" })).toEqual({ applied: false, card: "card_erase123" });
+    await Bun.sleep(10);
+    expect(no.armed()).toBe(0);
+    expect(no.cards[0]?.change).toBe("home-erase");
+    const yes = setup(true);
+    await yes.call({ kind: "user", client: "app" });
+    await Bun.sleep(10);
+    expect(yes.armed()).toBe(1);
+    // Arming erases nothing by itself.
+    expect(existsSync(yes.w.home)).toBe(true);
   });
 });

@@ -257,6 +257,15 @@ export const APP_METHODS = {
     result: McpAppReply,
     doc: "One JSON-RPC message from the page's frame (the MCP Apps bridge): the engine answers it, or refuses it, under the approvals every tool call gets.",
   }),
+  homeErase: defineMethod({
+    /** The person only (the deletion lane, item 5), from an app's Settings: the engine raises its sealed card naming
+     *  what goes and what stays, and only its yes erases. Never a bot, an agent, a plugin, a phone, the web page or
+     *  another computer; the person's own terminal uses `moss-core erase` with MOSS quit instead. On the yes the engine
+     *  tells the apps to quit (`app.quit`), stops, and erases last. */
+    name: "home.erase", owner: "M", roles: ["app"], userOnly: true, change: "sensitive",
+    params: Empty, result: ChangeResult,
+    doc: "Erases everything MOSS keeps on this computer, after the person's yes on the engine's card: the home's conversations, bots, memory, settings, plugins and logs, MOSS's saved keys, and the login item. The apps themselves, projects and files written elsewhere stay.",
+  }),
   appOpen: defineMethod({
     name: "app.open", owner: "D", roles: ["cli"], userOnly: true,
     params: AppOpenParams, result: AppOpenResult,

@@ -71,6 +71,7 @@
       "events.subscribe",
       "events.unsubscribe",
       "hold.list",
+      "home.erase",
       "host.exiting",
       "host.menu",
       "host.ready",
