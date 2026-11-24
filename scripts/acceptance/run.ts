@@ -6596,7 +6596,7 @@ async function upgradeRun(app: { exe: string; args: string[] }): Promise<void> {
   // 10: MOSS's own plugin this build can't run yet, which the old build ran: listed off as not available, its switch
   // as the old run left it (on), never forgotten, and no card raised for it.
   try {
-    const id = "moss/forwarder";
+    const id = "moss/companion-web";
     const got = await c.request<{ plugin?: { state?: string; reason?: string; enabled?: boolean } }>("plugin.get", { id });
     if (got.plugin === undefined) fail(`plugin.get ${id}: not listed`);
     if (got.plugin!.state !== "off" || got.plugin!.reason !== NOT_AVAILABLE_YET) fail(`${id} is ${got.plugin!.state}${got.plugin!.reason ? ` (${got.plugin!.reason})` : ""}, not off as not available`);
