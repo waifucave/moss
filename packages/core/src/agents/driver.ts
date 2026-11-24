@@ -140,7 +140,9 @@ export class AgentDriver implements SessionDriver {
     if (this.#stopping || this.#ended || this.#session || this.#starting) return;
     const ok = await this.#ensure(true).then(() => true, () => false);
     // Nobody has typed: it is let go after `WARM_IDLE_MS` if no turn has begun by then.
-    if (ok && this.#origin === undefined && !this.#announced && this.#opts.after !== undefined) {
+    // Never after a stop or the daemon's close (`detach`): the Clock has no unref, so a timer armed then would hold the
+    // engine's event loop for the whole wait. `stop`, `detach` and the first turn cancel it.
+    if (ok && !this.#stopping && !this.#ended && this.#origin === undefined && !this.#announced && this.#opts.after !== undefined) {
       this.#idleOff?.();
       this.#idleOff = this.#opts.after(this.#opts.warmIdleMs ?? WARM_IDLE_MS, () => {
         this.#idleOff = undefined;

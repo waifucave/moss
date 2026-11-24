@@ -124,6 +124,32 @@ describe("an agent started early does not wait for ever", () => {
   });
 });
 
+describe("the engine's shutdown with an early-started agent waiting", () => {
+  test("close() ends its process at once and leaves no timer on the clock", async () => {
+    const w = (world = new World({ script: [[{ say: "one" }]] }));
+    const base = w.clock.pending();
+    await w.manager.start({ caller: USER(1), backend: "fake", prompt: "", root: "home/Studio/project1" });
+    await waitFor(() => w.report("started").length === 1 || undefined, "the agent up");
+    await waitFor(() => w.clock.pending() > base || undefined, "the idle timer armed");
+    const pid = pidOf(w);
+    const began = performance.now();
+    await w.manager.close();
+    expect(performance.now() - began).toBeLessThan(5000);
+    await waitFor(() => !alive(pid) || undefined, "the process gone");
+    expect(w.clock.pending()).toBe(base);
+  });
+
+  test("a close while the early start is still running leaves no timer behind", async () => {
+    const w = (world = new World({ script: [[{ say: "one" }]] }));
+    const base = w.clock.pending();
+    await w.manager.start({ caller: USER(1), backend: "fake", prompt: "", root: "home/Studio/project1" });
+    await w.manager.close(); // no wait: the start may still be running
+    await new Promise((res) => setTimeout(res, 800));
+    expect(w.clock.pending()).toBe(base);
+    for (let i = 0; i < w.report("started").length; i++) await waitFor(() => !alive(pidOf(w, i)) || undefined, "no process left");
+  });
+});
+
 describe("a start probes the program once", () => {
   test("admission and the backend's start share one detection (one program probe), unless a card waited in between", async () => {
     const w = (world = new World({ script: [[{ say: "one" }]], warmStart: false }));
