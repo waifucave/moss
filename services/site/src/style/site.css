@@ -342,6 +342,7 @@ figcaption { font-size: 0.875rem; color: var(--muted); }
 /* Download */
 .dl { display: grid; gap: 40px; }
 @media (min-width: 960px) { .dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 56px; } }
+.dl--soon { gap: 16px; }
 @media (min-width: 700px) { .dl--soon { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; } }
 .app { display: grid; gap: 14px; align-content: start; }
 .dl--soon .app { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); }
@@ -390,6 +391,7 @@ figcaption { font-size: 0.875rem; color: var(--muted); }
 /* ---------------------------------------------------------------- docs */
 
 .is-docs .top__nav { margin-left: 0; }
+.is-docs .top__in, .is-docs .foot__in { max-width: calc(1240px + 2 * var(--gutter)); }
 .is-docs .top__in { gap: 24px; }
 .search { position: relative; margin-left: auto; width: min(320px, 42vw); }
 .search__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -463,6 +465,8 @@ figcaption { font-size: 0.875rem; color: var(--muted); }
 .prose th, .prose td { text-align: left; vertical-align: top; padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line); }
 .prose th { font-weight: 650; font-size: 0.875rem; color: var(--muted); }
 .prose td:first-child { font-weight: 600; }
+.prose td .note { font-weight: 400; font-size: 0.875rem; }
+.prose td code { white-space: nowrap; }
 .prose blockquote { margin: 0; padding: 14px 18px; border-radius: 12px; background: var(--field); display: grid; gap: 8px; }
 .prose blockquote p { font-size: 0.9688rem; }
 .prose .pic { margin: 8px 0; max-width: 100%; }

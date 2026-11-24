@@ -27,8 +27,9 @@ export interface FaceSlot {
 }
 
 const PIXELS: Record<FaceSlot["size"], number> = { logo: 28, row: 44, mood: 56, block: 40, app: 56, big: 200 };
-/** The large face jumps when tapped, so it is drawn smaller in its square, to leave it room. */
-const SCALE: Record<FaceSlot["size"], number> = { logo: FACE_SCALE, row: FACE_SCALE, mood: FACE_SCALE, block: FACE_SCALE, app: FACE_SCALE, big: 1 };
+/** How much of its square each face fills: the large face jumps when tapped, so it leaves itself room; the logo and the
+ *  app's mark in the download area fill their square, as the app's icon does. */
+const SCALE: Record<FaceSlot["size"], number> = { logo: 1.4, row: FACE_SCALE, mood: FACE_SCALE, block: FACE_SCALE, app: 1.5, big: 1 };
 
 export function face(slot: FaceSlot): Html {
   const pins = slot.pins ?? {};
