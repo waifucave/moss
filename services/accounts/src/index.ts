@@ -20,6 +20,7 @@ import { bearerToken } from "../../shared/account-token";
 import { b64u, fromB64, fromB64u } from "../../shared/encoding";
 import { errorResponse, json, readJsonObject } from "../../shared/http";
 import { addressKey } from "../../shared/web";
+import { deletionUnavailable } from "./deletion";
 import type { DeviceInput, Reply } from "./account-do";
 import type { Env } from "./env";
 import { memorySigner, NotConfigured, signerFor } from "./keys";
@@ -174,6 +175,8 @@ async function signedByDevice(request: Request, env: Env, account: string, what:
   if (typeof dev !== "string" || !DEVICE_ID_RE.test(dev) || typeof sig !== "string" || !SIG_RE.test(sig)) return errorResponse(400, "bad_request");
   const now = Date.now();
   if (!withinWindow(t, now)) return errorResponse(400, "bad_time");
+  // A deletion this Worker could never finish is refused before anything is deleted.
+  if (what === "delete" && deletionUnavailable(env) !== undefined) return errorResponse(503, "deletion_unavailable");
   const object = accountObject(env, account);
   return answer(what === "leave" ? await object.leave(account, dev, t, sig) : await object.deleteAccount(account, dev, t, sig, now));
 }

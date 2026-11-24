@@ -2,6 +2,7 @@
 // archived bot goes for good with everything kept by its id (record, instructions, conversation, memory, scratch,
 // agents' transcripts, routines, the user's layer, its sessions' driver state); archive keeps working beside it; a stop
 // in the middle is finished at the next start; and a bot made later with its name starts with nothing of the old one.
+import { isDeletedBot } from "../tombstones";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -60,6 +61,9 @@ describe("deleting a bot", () => {
     expect(w.b.bots.has("nova")).toBe(false);
     expect(w.b.bots.archivedBots().some((a) => a.id === "nova")).toBe(false);
     expect(w.b.bots.has("orbit")).toBe(true);
+    // Sync never brings it back here (its memory and sessions are refused from any computer).
+    expect(isDeletedBot(w.home, "nova")).toBe(true);
+    expect(isDeletedBot(w.home, "orbit")).toBe(false);
     await w.b.shutdown();
   });
 
@@ -80,7 +84,10 @@ describe("deleting a bot", () => {
     const w = await world();
     await madeNova(w);
     await w.call("bot.delete", { id: "nova", confirm: true });
-    await w.call("bot.create", { name: "Nova" });
+    const made = (await w.call("bot.create", { name: "Nova" })) as { bot?: { id?: string }; id?: string };
+    // Never the deleted bot's id: what the person's other computers still hold of it can't reach the new one.
+    expect(w.b.bots.has("nova")).toBe(false);
+    expect(JSON.stringify(made)).not.toContain('"nova"');
     expect(existsSync(join(botPaths(w.home, "nova").memory, "pets.md"))).toBe(false);
     expect(existsSync(join(botPaths(w.home, "nova").scratch, "draft.txt"))).toBe(false);
     await w.b.shutdown();

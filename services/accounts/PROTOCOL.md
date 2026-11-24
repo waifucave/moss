@@ -100,7 +100,7 @@ The token is a JWS (compact JWT), signed EdDSA or ES256 under a key of the JWKS:
 
 ## Deleting the account
 
-`POST /v1/account/delete` deletes the account. It takes the account's Supabase session and the signature of a device the account lists and hasn't revoked, over the delete statement, with `t` within 10 minutes: as strong as a mint, the most protected call. What happens, in order:
+`POST /v1/account/delete` deletes the account. It takes the account's Supabase session and the signature of a device the account lists and hasn't revoked, over the delete statement, with `t` within 10 minutes: as strong as a mint, the most protected call. A Worker that could never finish it (no `AUTH_SERVICE_ROLE_KEY`, no `AUTH_URL`, or `AUDIENCES` without its three hosts) answers 503 `deletion_unavailable` before anything is deleted. What happens, in order:
 
 1. At once: every row of the account here goes (devices, revoked ids, mint records), and a mark refuses every later call of the account with 410 `account_deleted` (list, register, mint, revoke, leave). No device can get a token from then on.
 2. The account service tells each other service to forget the account, with an **erase token** it mints for itself: `sub` the account, `dev` `account-erase`, `erase: true`, 5 minutes. A service takes an erase token on its account wipe alone, and refuses it everywhere else; a device's own token is refused there.
@@ -109,9 +109,9 @@ The token is a JWS (compact JWT), signed EdDSA or ES256 under a key of the JWKS:
    - the handshake: `DELETE /v1/accounts/self` (the account scope's sealed records, waiting messages, the lease).
    Each keeps only a mark that refuses the account's tokens until the last one minted before the deletion has ended, then forgets the account.
 3. Last, once the three have confirmed: the person's sign-in, with the project's service-role key (`AUTH_SERVICE_ROLE_KEY`, a secret): GoTrue's admin delete, `DELETE <AUTH_URL>/auth/v1/admin/users/<account>`. 404 counts as done.
-4. When every step is confirmed the account's object forgets everything, the mark included.
+4. When every step is confirmed the account's object forgets everything but one timestamp, when it ended, which keeps refusing the account with 410 (a request that passed its sign-in check just before the sign-in went finds nothing to write into). The account's id is the sign-in project's, never given again.
 
-A step that fails is retried by the object's alarm (after 1 minute, 10 minutes, an hour, then every 6 hours) until it is confirmed: the deletion finishes without the device that asked. Asking again while it runs answers how far it got (the rows being gone, any session of the account may ask) and tries the pending steps at once. The answer's `pending` names the steps not confirmed yet: `hooks`, `push`, `handshake`, `sign-in`. Until `sign-in` is done the person's Supabase account exists but every call of it here is refused; with no service-role key set it stays pending.
+A step that fails is retried by the object's alarm (after 1 minute, 10 minutes, an hour, then every 6 hours) until it is confirmed: the deletion finishes without the device that asked. Asking again while it runs answers how far it got (the rows being gone, any session of the account may ask) and tries the pending steps at once. The answer's `pending` names the steps not confirmed yet: `hooks`, `push`, `handshake`, `sign-in`. Until `sign-in` is done the person's Supabase account exists but every call of it here is refused.
 
 Where the wipes go: the service bindings `HOOKS_SERVICE`, `PUSH_SERVICE` and `HANDSHAKE_SERVICE` when set, else `HOOKS_URL`, `PUSH_URL` and `HANDSHAKE_URL`, else `https://<host>` for the three hosts of `AUDIENCES`, in their order (hooks, push, handshake). Each erase token's `aud` is that service's entry in `AUDIENCES`. A service that can't be reached stays pending.
 

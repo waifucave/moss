@@ -18,6 +18,7 @@ import { runtimeStderrPath } from "../../runtime-sdk/turn-loop/runtime-stderr";
 import { deleteSession, sessionDeletionMethods } from "../session-rpc";
 import { finishSessionDeletions, journalSessionDeletion } from "../session-files";
 import { receivedRootOf } from "../../bots/staged-files";
+import { isDeletedSession } from "../tombstones";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -124,9 +125,11 @@ describe("deleting a session", () => {
     expect(named(w.home, "c_other1112222").length).toBeGreaterThan(0);
     // No journal left behind.
     expect(existsSync(join(w.home, "transcripts", "deleting.json"))).toBe(false);
-    // Nor a file whose contents still name it.
+    // Nor a file whose contents still name it, but the tombstone that keeps sync from bringing it back (ids only).
     await w.host.close();
-    for (const id of gone) expect([id, contentsNaming(w.home, id)]).toEqual([id, []]);
+    for (const id of gone) expect([id, contentsNaming(w.home, id)]).toEqual([id, ["deleted.json"]]);
+    for (const id of gone) expect(isDeletedSession(w.home, id)).toBe(true);
+    expect(isDeletedSession(w.home, "c_other1112222")).toBe(false);
   });
 
   test("a session the host refuses to delete stays off the journal: a start never removes its files", async () => {
@@ -147,6 +150,14 @@ describe("deleting a session", () => {
     await again.close();
   });
 
+  test("a journal entry not shaped as the engine writes it is dropped at replay, never turned into a path", async () => {
+    const w = world();
+    mkdirSync(join(w.home, "transcripts"), { recursive: true });
+    writeFileSync(join(w.home, "transcripts", "deleting.json"), JSON.stringify([{ id: "../../outside", kind: "coding" }, { id: "c_x", bot: "../evil", kind: "bot" }, { id: 5 }]));
+    expect(await finishSessionDeletions({ home: w.home })).toBe(0);
+    expect(readFileSync(join(w.outside, "keep.txt"), "utf8")).toBe("the person's file");
+  });
+
   test("half done: what the journal names is finished at the next start", async () => {
     const w = world();
     writeSideFiles(w.home, "c_cccc11112222", w.outside);
@@ -163,6 +174,8 @@ describe("session.delete: who may ask", () => {
     ["a bot's or an agent's session", { kind: "session", sessionId: "b_alpha" }],
     ["a plugin", { kind: "plugin", pluginId: "acme/thing" }],
     ["a peer computer", { kind: "peer", device: "x" }],
+    ["a paired phone", { kind: "user", client: "ios", device: "x" }],
+    ["the web page", { kind: "user", client: "web" }],
   ];
   for (const [who, caller] of callers) {
     test(`${who} is refused, and nothing is deleted`, async () => {
@@ -174,6 +187,15 @@ describe("session.delete: who may ask", () => {
       expect(w.host.get("c_dddd11112222")).toBeDefined();
     });
   }
+
+  test("a session another computer runs is deleted there, not here", async () => {
+    const w = world();
+    w.host.open({ id: "c_hhhh11112222", kind: "coding", computer: "Laptop" }, new FakeSessionDriver());
+    const m = sessionDeletionMethods({ ...w.deps, computer: () => "Studio" });
+    await expect(m["session.delete"]!({ id: "c_hhhh11112222", confirm: true }, { caller: { kind: "user", client: "cli" } } as MethodContext)).rejects.toThrow("delete it there");
+    expect(w.host.get("c_hhhh11112222")).toBeDefined();
+    expect(isDeletedSession(w.home, "c_hhhh11112222")).toBe(false);
+  });
 
   test("the person's terminal needs its own confirmation", async () => {
     const w = world();
@@ -199,6 +221,9 @@ describe("session.delete: who may ask", () => {
     expect(res).toEqual({ applied: false, card: "card_abc123" });
     expect(asked?.change).toBe("session-delete");
     expect(asked?.fields?.detail?.rows[0]?.value).toBe("Plans");
+    // The id beside the title (a title is anyone's to write), and what the other computers keep.
+    expect(asked?.fields?.detail?.rows[1]?.value).toBe("c_ffff11112222");
+    expect(asked?.fields?.detail?.rows.some((r) => r.value.includes("other computers keep their copies"))).toBe(true);
     await Bun.sleep(10);
     expect(w.host.get("c_ffff11112222")).toBeDefined();
   });

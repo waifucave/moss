@@ -97,7 +97,7 @@ describe("deleting the account", () => {
     expect(ended).toBe(1);
   });
 
-  test("with the sign-in itself deleted (production), the other computer's refused refresh ends the account there too: its account-only peers are forgotten", async () => {
+  test("with the sign-in itself deleted (production), the other computer's refused refresh is checked with the sign-in project: the user is gone, so its account-only peers are forgotten", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
     const laptop = await device(s, "Laptop");
@@ -113,52 +113,94 @@ describe("deleting the account", () => {
     const res = await fetch(`${s.auth.url}/auth/v1/admin/users/${sub}`, { method: "DELETE", headers: { apikey: s.auth.serviceRoleKey, authorization: `Bearer ${s.auth.serviceRoleKey}` } });
     expect(res.status).toBe(200);
     await syncAccountDevices({ registry: laptop.registry, account: laptop.account, device: laptop.key, boxKey: laptop.boxKey }).catch(() => undefined);
-    expect(ends).toEqual(["sign-in-refused"]);
+    expect(ends).toEqual(["deleted"]);
     expect(await laptop.account.status()).toEqual({ signedIn: false });
     expect(laptop.registry.get(studio.key.id)).toBeUndefined();
   });
 
-    test("half done: a crash after the marker and before the answer is finished at the next start", async () => {
+  test("a refresh refused for any other reason (signed out everywhere on the web) only signs this computer out: the devices the account added stay", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
-    const sub = (await studio.account.accountId())!;
-    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now() });
-    const out = await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock });
-    expect(out?.pending).toEqual([]);
-    expect(s.service.deleted.has(sub)).toBe(true);
-    expect(await studio.account.status()).toEqual({ signedIn: false });
-    expect(await studio.account.deletionMark()).toBeNull();
+    const laptop = await device(s, "Laptop");
+    const ends: string[] = [];
+    laptop.account.whenEnded((why) => {
+      ends.push(why);
+      laptop.registry.forgetAccountDevices();
+    });
+    // The user is still there; only every session ended (the stub's global logout, as the web's "sign out everywhere").
+    const token = await laptop.account.accessToken();
+    expect((await fetch(`${s.auth.url}/auth/v1/logout?scope=global`, { method: "POST", headers: { apikey: s.auth.anonKey, authorization: `Bearer ${token}` } })).ok).toBe(true);
+    await syncAccountDevices({ registry: laptop.registry, account: laptop.account, device: laptop.key, boxKey: laptop.boxKey }).catch(() => undefined);
+    expect(ends).toEqual([]);
+    expect(laptop.registry.get(studio.key.id)).toBeDefined();
   });
 
-  test("half done: the service answered but this computer stopped before its own part; the next start finishes it", async () => {
+  test("half done: the service accepted but this computer stopped before its own part; the next start finishes it here and sends nothing", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
     s.service.pendingOnDelete = ["sign-in"];
     const sub = (await studio.account.accountId())!;
-    // The service got it (as if the answer was lost on the way back).
     await studio.account.deleteAccount();
-    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now() });
+    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now(), answeredAt: Date.now() });
+    const asked = s.service.deleteCalls;
     const out = await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock });
-    expect(out?.pending).toEqual(["sign-in"]);
+    expect(out?.pending).toEqual([]);
+    expect(s.service.deleteCalls).toBe(asked);
     expect(await studio.account.status()).toEqual({ signedIn: false });
+    expect(await studio.account.deletionMark()).toBeNull();
   });
 
-  test("the service can't be reached: nothing here changes, and the marker stays for the next try", async () => {
+  test("the service can't be reached: nothing here changes and no marker is left; the next start sends nothing", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
     s.service.stop();
     await expect(deleteAccount({ home: studio.home, account: studio.account, registry: studio.registry, clock })).rejects.toBeDefined();
     expect((await studio.account.status()).signedIn).toBe(true);
-    expect(await studio.account.deletionMark()).not.toBeNull();
+    expect(await studio.account.deletionMark()).toBeNull();
+    expect(await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock })).toBeUndefined();
+    expect((await studio.account.status()).signedIn).toBe(true);
+  });
+
+  test("a marker the service never accepted (an older build's) is cleared at start without sending", async () => {
+    const s = stack();
+    const studio = await device(s, "Studio");
+    const sub = (await studio.account.accountId())!;
+    await studio.account.setDeletionMark({ account: sub, askedAt: Date.now() });
+    expect(await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock })).toBeUndefined();
+    expect(s.service.deleted.size).toBe(0);
+    expect(s.service.deleteCalls).toBe(0);
+    expect((await studio.account.status()).signedIn).toBe(true);
+    expect(await studio.account.deletionMark()).toBeNull();
+  });
+
+  test("account A's marker never touches account B: a sign-out and a sign-in each clear it, and a marker naming another account is dropped at start", async () => {
+    const s = stack();
+    s.auth.addUser({ email: "other@example.invalid", password: "battery staple" });
+    const studio = await device(s, "Studio");
+    const a = (await studio.account.accountId())!;
+    await studio.account.setDeletionMark({ account: a, askedAt: Date.now(), answeredAt: Date.now() });
+    await studio.account.signOut();
+    expect(await studio.account.deletionMark()).toBeNull();
+    await studio.account.setDeletionMark({ account: a, askedAt: Date.now(), answeredAt: Date.now() });
+    await studio.account.signInWithPassword("other@example.invalid", new Secret("battery staple"));
+    expect(await studio.account.deletionMark()).toBeNull();
+    const b = (await studio.account.accountId())!;
+    expect(b).not.toBe(a);
+    // Even one written behind the sign-in's back: dropped, and B stays signed in and undeleted.
+    await studio.account.setDeletionMark({ account: a, askedAt: Date.now(), answeredAt: Date.now() });
+    expect(await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock })).toBeUndefined();
+    expect(s.service.deleteCalls).toBe(0);
+    expect(await studio.account.accountId()).toBe(b);
+    expect(await studio.account.deletionMark()).toBeNull();
   });
 
   test("a marker file planted in the home (a plugin can write there) never sends a deletion", async () => {
     const s = stack();
     const studio = await device(s, "Studio");
     const sub = (await studio.account.accountId())!;
-    writeFileSync(join(studio.home, "account-deletion.json"), JSON.stringify({ v: 1, account: sub, askedAt: Date.now() }));
+    writeFileSync(join(studio.home, "account-deletion.json"), JSON.stringify({ v: 1, account: sub, askedAt: Date.now(), answeredAt: Date.now() }));
     expect(await resumeAccountDeletion({ home: studio.home, account: studio.account, registry: studio.registry, clock })).toBeUndefined();
-    expect(s.service.deleted.size).toBe(0);
+    expect(s.service.deleteCalls).toBe(0);
     expect((await studio.account.status()).signedIn).toBe(true);
   });
 });
@@ -181,10 +223,14 @@ describe("account.delete: who may ask", () => {
     ["a bot's session", { kind: "session", sessionId: "b_alpha" }],
     ["a plugin", { kind: "plugin", pluginId: "acme/thing" }],
     ["a peer computer", { kind: "peer", device: "x" }],
+    // The person, but through a paired phone or the web page: refused at the function too, not only by the role lists.
+    ["a paired phone", { kind: "user", client: "ios", device: "x" }],
+    ["an Android phone", { kind: "user", client: "android", device: "x" }],
+    ["the web page", { kind: "user", client: "web" }],
   ] as const) {
     test(`${who} is refused, and nothing is deleted`, async () => {
       const t = await methods();
-      const err = await t.call({ confirm: true }, { caller: caller as unknown as MethodContext["caller"] }).catch((e: unknown) => e);
+      const err = await t.call({ confirm: true, typed: "DELETE" }, { caller: caller as unknown as MethodContext["caller"] }).catch((e: unknown) => e);
       expect((err as { code?: number }).code).toBe(MOSS_ERR.NOT_THE_USER);
       expect(t.s.service.deleted.size).toBe(0);
       expect(t.cards).toHaveLength(0);
@@ -197,9 +243,16 @@ describe("account.delete: who may ask", () => {
     expect(t.s.service.deleted.size).toBe(0);
   });
 
-  test("the person's terminal with its confirmation deletes at once", async () => {
+  test("the person's terminal with confirm alone, or a wrong word: nothing happens (a script must state the word)", async () => {
     const t = await methods();
-    expect(await t.call({ confirm: true }, user("cli"))).toEqual({ applied: true, pending: [] });
+    await expect(t.call({ confirm: true }, user("cli"))).rejects.toBeDefined();
+    await expect(t.call({ confirm: true, typed: "delete" }, user("cli"))).rejects.toBeDefined();
+    expect(t.s.service.deleteCalls).toBe(0);
+  });
+
+  test("the person's terminal with its confirmation and the typed word deletes at once", async () => {
+    const t = await methods();
+    expect(await t.call({ confirm: true, typed: "DELETE" }, user("cli"))).toEqual({ applied: true, pending: [] });
     expect(t.s.service.deleted.size).toBe(1);
   });
 

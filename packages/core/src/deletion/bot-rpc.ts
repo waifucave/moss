@@ -8,6 +8,9 @@
 import { BOTS_METHODS, ERR } from "@waifucave/moss-protocol";
 import { handler, MethodError, type CardOpener, type MethodHandler } from "../devices/rpc";
 import { byThePerson } from "./person";
+import { ONLY_HERE } from "./session-rpc";
+import { mainSessionIdFor } from "../sessions/ids";
+import { tombstoneBot, tombstoneConversation, tombstoneSessions } from "./tombstones";
 import { journalSessionDeletion, removeSessionFiles, type SessionFileDeps } from "./session-files";
 
 export interface BotDeletionMethodsDeps {
@@ -20,13 +23,22 @@ export interface BotDeletionMethodsDeps {
   };
   openCard: CardOpener;
   files?: Omit<SessionFileDeps, "home">;
+  now?(): number;
   log?(line: string): void;
 }
 
 export async function deleteBot(deps: BotDeletionMethodsDeps, id: string): Promise<void> {
   const as = (ids: string[]) => ids.map((s) => ({ id: s, bot: id, kind: "bot" }));
+  const at = deps.now?.() ?? Date.now();
+  // Before anything goes: sync never brings back its memory or its sessions; its main conversation's id is reused by a
+  // bot made again with this id, so there only what was written before now is refused.
+  tombstoneBot(deps.home, id, at);
+  tombstoneConversation(deps.home, mainSessionIdFor(id), at);
   // Journaled before the bot's copy goes (`before`), so a stop in the middle still removes what is kept beside them.
-  const sessions = await deps.bots.deleteBot(id, (ids) => journalSessionDeletion(deps.home, as(ids)));
+  const sessions = await deps.bots.deleteBot(id, (ids) => {
+    tombstoneSessions(deps.home, ids.filter((s) => s !== mainSessionIdFor(id)), at);
+    journalSessionDeletion(deps.home, as(ids));
+  });
   const listed = as(sessions);
   await removeSessionFiles({ home: deps.home, ...(deps.files ?? {}), ...(deps.log ? { log: deps.log } : {}) }, listed);
   for (const s of sessions) deps.bots.sessionRemoved(s);
@@ -46,8 +58,10 @@ export function botDeletionMethods(deps: BotDeletionMethodsDeps): Record<string,
           what: "This deletes the bot from this computer for good. It can't be undone. Archive keeps it instead.",
           rows: [
             { label: "The bot", value: name },
+            { label: "Its id", value: p.id },
             { label: "Deleted", value: "its instructions and settings, its conversation and side threads, its memory, its scratch files, its agents' transcripts, its routines, your changes to it, and the rules you saved for it" },
             { label: "Stays", value: "files it wrote in your folders, and other bots" },
+            { label: "Your other computers", value: ONLY_HERE },
           ],
         },
         run: async () => {

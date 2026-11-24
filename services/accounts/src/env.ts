@@ -40,6 +40,6 @@ export interface Env {
   PUSH_SERVICE?: Fetcher;
   HANDSHAKE_SERVICE?: Fetcher;
   /** Secret: the Supabase project's service-role key, for the one call that deletes the person's sign-in
-   *  (`DELETE <AUTH_URL>/auth/v1/admin/users/<id>`). Unset, that step stays pending and the account stays refused here. */
+   *  (`DELETE <AUTH_URL>/auth/v1/admin/users/<id>`). Unset, a deletion is refused (503) before anything is deleted. */
   AUTH_SERVICE_ROLE_KEY?: string;
 }

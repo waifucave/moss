@@ -5,6 +5,7 @@ import { SESSIONS_METHODS, type SessionView } from "@waifucave/moss-protocol";
 import { ContractError } from "../contracts/common";
 import { handler, type CardOpener, type MethodHandler } from "../devices/rpc";
 import { byThePerson } from "./person";
+import { tombstoneConversation, tombstoneSessions } from "./tombstones";
 import { journalSessionDeletion, removeSessionFiles, unjournalSessions, type SessionFileDeps } from "./session-files";
 
 export interface SessionDeletionMethodsDeps {
@@ -23,8 +24,14 @@ export interface SessionDeletionMethodsDeps {
   };
   openCard: CardOpener;
   files?: Omit<SessionFileDeps, "home">;
+  /** This computer's tree name: a session another computer runs is deleted there, not here. */
+  computer?(): string;
+  now?(): number;
   log?(line: string): void;
 }
+
+/** What this deletion means across the person's computers, in the card's words. */
+export const ONLY_HERE = "Your other computers keep their copies until you delete it there too. This computer never takes them back.";
 
 const isMain = (deps: SessionDeletionMethodsDeps, v: SessionView): boolean => {
   if (v.kind !== "bot" || v.bot === undefined || !deps.bots) return false;
@@ -40,6 +47,11 @@ export async function deleteSession(deps: SessionDeletionMethodsDeps, id: string
   const v = deps.host.get(id);
   if (!v) throw new ContractError("not_found", `no session ${id}`);
   const main = isMain(deps, v) ? v.bot : undefined;
+  const at = deps.now?.() ?? Date.now();
+  // Before anything goes: sync never brings it back (a conversation reopens empty under its id, so only what was
+  // written before now is refused there).
+  if (main !== undefined) tombstoneConversation(deps.home, id, at);
+  else tombstoneSessions(deps.home, [id], at);
   // The journal first: a stop from here on is finished at the next start.
   journalSessionDeletion(deps.home, [{ id, ...(v.bot === undefined ? {} : { bot: v.bot }), kind: v.kind }]);
   let removed: { id: string; bot?: string; kind: string }[];
@@ -50,6 +62,7 @@ export async function deleteSession(deps: SessionDeletionMethodsDeps, id: string
     unjournalSessions(deps.home, [id]);
     throw err;
   }
+  tombstoneSessions(deps.home, removed.map((s) => s.id).filter((s) => s !== id), at);
   journalSessionDeletion(deps.home, removed);
   await removeSessionFiles({ home: deps.home, ...(deps.files ?? {}), ...(deps.log ? { log: deps.log } : {}) }, removed);
   for (const s of removed) deps.bots?.sessionRemoved(s.id);
@@ -67,6 +80,9 @@ export function sessionDeletionMethods(deps: SessionDeletionMethodsDeps): Record
       if (main && v.bot !== undefined && deps.bots?.botsRunHere !== undefined && !deps.bots.botsRunHere().includes(v.bot)) {
         throw new ContractError("refused", `${v.bot}'s conversation runs on another computer: delete it there, where the copy the others follow is kept`);
       }
+      if (!main && deps.computer !== undefined && v.computer !== undefined && v.computer !== deps.computer()) {
+        throw new ContractError("refused", `this session runs on ${v.computer}: delete it there`);
+      }
       const name = (v.title ?? "").trim() || (main ? (v.bot ?? p.id) : p.id);
       const res = await byThePerson(ctx, {
         what: "delete a session", confirm: p.confirm, openCard: deps.openCard,
@@ -76,8 +92,11 @@ export function sessionDeletionMethods(deps: SessionDeletionMethodsDeps): Record
           what: "This deletes it from this computer for good. It can't be undone.",
           rows: [
             { label: main ? "The conversation" : "The session", value: name },
+            // A title is anyone's to write (a bot's too): the id beside it is the engine's own.
+            { label: "Its id", value: p.id },
             { label: "Deleted", value: "its messages, the files staged for it or sent to it, its outputs, the side threads and agents it started with their transcripts, and its runtime state and logs" },
             { label: "Stays", value: main ? "the bot, its memory and its files; the conversation starts again, empty" : "files it wrote in your folders, and the bot it belongs to" },
+            { label: "Your other computers", value: ONLY_HERE },
           ],
         },
         run: async () => {

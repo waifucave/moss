@@ -50,6 +50,7 @@ import { sealToBoxKey } from "../identity/box-key";
 import { type Bytes, fromBase64, fromBase64Url, fromUtf8, toBase64, toBase64Url, utf8 } from "../identity/bytes";
 import { readJson, writeJsonAtomic } from "../sessions/atomic-file";
 import { botSegment } from "../sessions/ids";
+import { isDeletedBot } from "../deletion/tombstones";
 import { MAIL_MAX_PIECE, type SyncMailbox } from "./mailbox";
 import { listMemory, memoryPath, readMemoryFile, removeMemoryFile, sha256Hex, writeMemoryFile } from "./memory-files";
 import { ContentKeyRing, contentAad, type SharedContentKey } from "./memory-keys";
@@ -196,7 +197,7 @@ export class MemorySync {
   /** Lane J's `memoryChanged(bot, rel)`: something in the bot's memory changed on disk here. The whole folder is
    *  looked at again (cheaply: unchanged files by size and mtime), so a change any tool made is caught alike. */
   changed(bot: string, _rel?: string): void {
-    if (this.#closed || !isAnyPluginId(bot)) return;
+    if (this.#closed || !isAnyPluginId(bot) || this.#deleted(bot)) return;
     if (this.#scanSoon.size === 0) {
       queueMicrotask(() => {
         const bots = [...this.#scanSoon];
@@ -205,6 +206,22 @@ export class MemorySync {
       });
     }
     this.#scanSoon.add(bot);
+  }
+
+  /** A bot the person deleted on this computer (`deletion/tombstones.ts`): nothing of its memory is kept, sent or taken
+   *  here again, from any computer, by any door. */
+  #deleted(bot: string): boolean {
+    return isDeletedBot(this.#o.home, bot);
+  }
+
+  /** The bot was deleted here: forget what this sync held of it (its versions, counters and pending sends). Its folder
+   *  and state file are the deletion's to remove. */
+  forgetBot(bot: string): void {
+    this.#state.delete(bot);
+    this.#signed.delete(bot);
+    this.#dirty.delete(bot);
+    this.#scanSoon.delete(bot);
+    for (const per of this.#mail.values()) per.delete(bot);
   }
 
   /** Looks at every bot's memory folder now, and sends what changed. */
@@ -316,6 +333,7 @@ export class MemorySync {
         this.#mustBeComputer(from);
         const bot = botOf(raw.stream);
         if (!bot) throw new ContractError("invalid", "sync.pull: bad params");
+        if (this.#deleted(bot)) throw new ContractError("refused", "that bot was deleted here");
         if (!this.#entitled(from, bot)) throw new ContractError("refused", "that computer doesn't keep this bot's memory");
         const after = typeof raw.after === "string" ? raw.after : "";
         const limit = Math.min(Math.max(1, Math.floor(typeof raw.limit === "number" ? raw.limit : this.#limits.pushEntries)), this.#limits.pushEntries);
@@ -393,6 +411,10 @@ export class MemorySync {
    *  computer passes on are skipped), for counters past the bound (B2) or a time ahead of the shared clock is skipped
    *  and logged, and the rest are taken. Keys come in only for the kids the checked entries use (B1). */
   async #take(bot: string, raw: unknown, from: string, keys?: unknown): Promise<PushResult> {
+    if (this.#deleted(bot)) {
+      this.forgetBot(bot);
+      return { ok: false, reason: "refused", detail: "that bot was deleted here" };
+    }
     if (!Array.isArray(raw)) return { ok: false, reason: "refused" };
     if (raw.length > this.#limits.pushEntries) return { ok: false, reason: "too_many", detail: `more than ${this.#limits.pushEntries} entries` };
     // Every entry is checked before any is taken: first what needs no key (its path, its writer and signature, its
@@ -639,6 +661,7 @@ export class MemorySync {
   }
 
   #scanAndMark(bot: string): void {
+    if (this.#deleted(bot)) return;
     try {
       for (const key of this.#scan(bot)) this.#mark(bot, key, undefined);
     } catch (e) {
@@ -677,6 +700,11 @@ export class MemorySync {
     this.#dirty.clear();
     const up = this.#o.transport.links().filter((l) => l.up && this.#isComputer(l.peer)).map((l) => l.peer);
     for (const [bot, keys] of batches) {
+      // A bot deleted here sends nothing more, not even its deletion: the other computers keep their copies.
+      if (this.#deleted(bot)) {
+        this.forgetBot(bot);
+        continue;
+      }
       for (const peer of up) {
         if (!this.#entitled(peer, bot)) continue;
         const send = [...keys].filter(([, from]) => from !== peer).map(([key]) => key);
@@ -762,6 +790,7 @@ export class MemorySync {
       const kid = (await this.#ring.sealingKey([peer])).kid;
       const keys = this.#ring.sharedWith(peer, [kid]);
       for (const [bot, wanted] of bots) {
+        if (this.#deleted(bot)) continue;
         // Pieces are cut by their sealed size, measured (#232's review, B4): what isn't kept stays queued and goes
         // again, so nothing is lost to a refused piece.
         for (const piece of this.#mailPieces(peer, to, bot, [...wanted], kid, keys)) {
@@ -924,7 +953,7 @@ export class MemorySync {
     } catch {
       // nothing synced yet
     }
-    return [...out].sort();
+    return [...out].filter((b) => !this.#deleted(b)).sort();
   }
 
   #digest(bot: string): string {

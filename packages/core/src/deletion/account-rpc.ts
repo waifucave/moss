@@ -39,12 +39,12 @@ export function accountDeletionMethods(deps: AccountDeletionMethodsDeps): Record
       if (!account) throw new MethodError(ERR.INVALID_REQUEST, "accounts aren't set up on this computer");
       if ((await account.accountId()) === null) throw new ContractError("refused", "this computer isn't signed in to an account");
       return byThePerson(ctx, {
-        what: "delete the account", confirm: p.confirm, openCard: deps.openCard, card: ACCOUNT_DELETE_CARD,
+        what: "delete the account", confirm: p.confirm, typed: { want: "DELETE", got: p.typed }, openCard: deps.openCard, card: ACCOUNT_DELETE_CARD,
         run: async () => {
           const out = await deleteAccount({ home: deps.home, account, ...(deps.registry ? { registry: deps.registry } : {}), clock: deps.clock, ...(deps.log ? { log: deps.log } : {}) });
           return { pending: out.pending };
         },
-        onError: (err) => deps.log?.(`[account] the deletion asked on the card didn't finish (${err instanceof Error ? err.name : "error"}): it is finished at the next start`),
+        onError: (err) => deps.log?.(`[account] the deletion asked on the card didn't go through (${err instanceof Error ? err.name : "error"}): nothing was deleted; ask again`),
       });
     }),
   };

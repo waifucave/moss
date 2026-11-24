@@ -86,6 +86,9 @@ export interface SessionRecordSyncOptions {
   /** The first wait before set-aside records the writer couldn't take are sent again (default 1 s, doubling to a
    *  minute). */
   lateRetryMs?: number;
+  /** A session the person deleted here, or one of a bot deleted here (`deletion/tombstones.ts`): its records are never
+   *  taken again from any computer. */
+  deleted?(id: string, bot?: string, oldestTs?: number): boolean;
   log?(line: string): void;
 }
 
@@ -183,7 +186,7 @@ export class SessionRecordSync {
     let taken = 0;
     for (const [stream, head] of Object.entries(heads)) {
       const id = sessionOf(stream);
-      if (!id) continue;
+      if (!id || this.#o.deleted?.(id, undefined, Number.POSITIVE_INFINITY)) continue;
       // This computer holds more than the writer: the record at the writer's head tells whether it's the same log
       // (the epoch first, then the record itself); what follows it here is this computer's own, a fork.
       const have = this.#o.host.head(id);
@@ -305,6 +308,8 @@ export class SessionRecordSync {
     // Entries start at or before this computer's last record, so at least that one overlaps and the host compares it
     // (a different one is a fork); never after it. Entries that don't reach back to it are asked again from history.
     if (entries.length === 0) return { ok: true, head: head - 1 };
+    const oldest = entries.reduce<number | undefined>((m, e) => (typeof e?.ts === "number" && (m === undefined || e.ts < m) ? e.ts : m), undefined);
+    if (this.#o.deleted?.(id, entries.find((e) => e?.payload?.view)?.payload.view?.bot ?? this.#o.host.get(id)?.bot, oldest)) return { ok: false, reason: "refused" };
     const v = this.#writerView(id, from, entries.find((e) => e?.payload?.view)?.payload.view);
     if (v === undefined) return this.#o.host.get(id) || entries[0]?.payload?.view ? { ok: false, reason: "not_writer" } : { ok: false, reason: "refused" };
     if (base > (head > 0 ? head - 2 : -1) || base < -1) return { ok: false, reason: "stale_base" };

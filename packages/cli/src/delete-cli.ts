@@ -76,9 +76,9 @@ export async function runDelete(argv: readonly string[], env: DeleteCliEnv): Pro
     return 1;
   }
   try {
-    const r = (await env.request(plan.method, { ...plan.params, confirm: true })) as { applied?: boolean; pending?: string[] };
+    const r = (await env.request(plan.method, { ...plan.params, confirm: true, ...(plan.method === "account.delete" ? { typed: DELETE_WORD } : {}) })) as { applied?: boolean; pending?: string[] };
     const pending = r.pending ?? [];
-    env.out(pending.length > 0 ? `Deleted. waifucave still confirms: ${pending.join(", ")}; it finishes on its own.` : "Deleted.");
+    env.out(pending.length > 0 ? `Deleted. waifucave is still confirming: ${pending.join(", ")}; it keeps trying until each one does.` : "Deleted.");
     return 0;
   } catch (err) {
     env.err(err instanceof Error ? err.message : "the deletion failed");

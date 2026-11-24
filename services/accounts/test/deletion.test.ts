@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import type { AccountDO } from "../src/account-do";
-import { ERASE_DEVICE } from "../src/deletion";
+import { deletionUnavailable, ERASE_DEVICE } from "../src/deletion";
 import { deleteStatement, leaveStatement, LIMITS, mintStatement } from "../src/wire";
 import { call, mintFor, newDevice, register, registration, signIn, type Session, type TestDevice } from "./helpers";
 
@@ -63,13 +63,31 @@ describe("deleting the account", () => {
       expect(Number(e.claims.exp) - Number(e.claims.iat)).toBeLessThanOrEqual(300);
     }
     expect(sent.slice(0, 3).map((e) => e.claims.aud)).toEqual(["hooks.waifucave.com", "push.waifucave.com", "handshake.waifucave.com"]);
-    // The sign-in is gone, so the session is refused; and the object kept nothing.
+    // The sign-in is gone, so the session is refused; and the object kept nothing but when it ended.
     expect((await call("GET", "/v1/devices", { session })).status).toBe(401);
     const left = await runInDurableObject(env.ACCOUNTS.getByName(session.account), (_o: AccountDO, state) => ({
       devices: state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n,
-      meta: state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM meta").one().n,
+      meta: state.storage.sql.exec<{ k: string }>("SELECT k FROM meta").toArray().map((r) => r.k),
     }));
-    expect(left).toEqual({ devices: 0, meta: 0 });
+    expect(left).toEqual({ devices: 0, meta: ["ended"] });
+  });
+
+  test("a registration that passed its sign-in check just before the sign-in went finds the emptied object refusing it", async () => {
+    const { session, studio } = await account();
+    expect((await askDelete(session, await deleteBody(session, studio))).status).toBe(200);
+    const late = await newDevice();
+    const reply = await runInDurableObject(env.ACCOUNTS.getByName(session.account), (o: AccountDO) =>
+      o.register({ id: late.id, publicKey: late.publicKey, boxKey: late.boxKey, name: "late", kind: "desktop" }, Date.now(), Date.now()));
+    expect(reply.status).toBe(410);
+  });
+
+  test("a Worker that could never finish a deletion refuses it before deleting anything", () => {
+    const ok = { AUTH_URL: "https://auth.example.test", AUTH_SERVICE_ROLE_KEY: "dummy", AUDIENCES: "hooks.example.test,push.example.test,handshake.example.test" };
+    expect(deletionUnavailable(ok)).toBeUndefined();
+    const { AUTH_SERVICE_ROLE_KEY: _key, ...noKey } = ok;
+    expect(deletionUnavailable(noKey)).toBeDefined();
+    expect(deletionUnavailable({ ...ok, AUTH_URL: "" })).toBeDefined();
+    expect(deletionUnavailable({ ...ok, AUDIENCES: "hooks.example.test" })).toBeDefined();
   });
 
   test("an ordinary mint never carries the erase claim", async () => {

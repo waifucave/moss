@@ -12,10 +12,11 @@
 // * inside it, every entry is removed as itself: a link is unlinked, never followed out of the home, and a hard link
 //   only loses this name;
 // * beside it, the folder of files paired phones sent to coding sessions (`<home>-received`) goes too, as itself.
-import { existsSync, lstatSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, parse, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import type { SecretMeta, SecretRef } from "../contracts/secret-store";
+import { ContractError } from "../contracts/common";
 import { TOKEN_NAMES } from "../auth/tokens";
 import { osStoreItemNames } from "../secrets/file-backend";
 import { bunVault, type Vault } from "../secrets/moss-secret-store";
@@ -23,6 +24,36 @@ import { OLD_INSTALL_HOME_DIR, otherInstallHome } from "../other-installs";
 import { receivedRootOf } from "../bots/staged-files";
 
 /** What erase leaves, said to the person every time. */
+/** The erase's outcome, beside the home (the home itself is gone): `<home>-erase.json`. An erase started from an app runs
+ *  after the engine stopped, where nothing can answer the app, and its log is erased with the home; the app reads this
+ *  file at its next open, shows it, and removes it (apps/moss `erase-outcome.ts`). No secret, name or content: whether
+ *  it worked, how many saved keys could not be deleted, the engine's reason when it didn't, and what stays. */
+export const ERASE_OUTCOME_SUFFIX = "-erase.json";
+
+export function eraseOutcomePath(home: string): string {
+  const h = resolve(home);
+  return join(dirname(h), `${basename(h)}${ERASE_OUTCOME_SUFFIX}`);
+}
+
+export interface EraseOutcome {
+  v: 1;
+  at: number;
+  ok: boolean;
+  /** Saved keys that couldn't be deleted (the person removes them by hand). */
+  secretsLeft?: number;
+  /** The engine's own words on why nothing (or not everything) was erased. */
+  error?: string;
+  keeps: readonly string[];
+}
+
+export function writeEraseOutcome(home: string, o: Omit<EraseOutcome, "v" | "keeps">): void {
+  try {
+    writeFileSync(eraseOutcomePath(home), `${JSON.stringify({ v: 1, ...o, keeps: ERASE_KEEPS } satisfies EraseOutcome)}\n`, { mode: 0o600 });
+  } catch {
+    // Nowhere to write it: the CLI's own erase prints instead.
+  }
+}
+
 export const ERASE_KEEPS = [
   "the MOSS and MOSS Code apps themselves (uninstall them the usual way)",
   "the apps' own folders: their browser cookies and the key that signs your approvals",
@@ -109,7 +140,7 @@ export interface EraseOutcome {
 /** Erases the home and MOSS's secrets. Throws, before anything is removed, for a home that isn't one. */
 export async function eraseHome(deps: EraseDeps): Promise<EraseOutcome> {
   const check = recogniseMossHome(deps.home, deps.userHome);
-  if (!check.ok) throw new Error(`erase refused: ${check.why}; nothing was removed`);
+  if (!check.ok) throw new ContractError("refused", `erase refused: ${check.why}; nothing was removed`);
   let secrets = 0;
   let secretsLeft = 0;
   if (deps.secrets) {

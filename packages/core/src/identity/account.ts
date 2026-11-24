@@ -56,7 +56,7 @@ export const leaveStatement = (account: string, device: string, t: number): Uint
  *  it retries on its own. */
 export type AccountDeletionStep = "hooks" | "push" | "handshake" | "sign-in";
 /** Why the account ended here without a sign-out (`whenEnded`). */
-export type AccountEnd = "deleted" | "sign-in-refused";
+export type AccountEnd = "deleted";
 export interface AccountDeletion {
   deletedAt: number;
   pending: AccountDeletionStep[];
@@ -129,8 +129,8 @@ export class AccountClient {
   }
 
   /** The account ended here without the person signing out: it was deleted on another device (a 410 from the account
-   *  service), or its sign-in was refused (the sign-in itself deleted, or ended at the project): either way the account
-   *  can't vouch for anything any more. Told once, after the session here is gone; the daemon then removes what the account
+   *  service, or a refused refresh whose user the sign-in project says no longer exists). A refusal for any other reason
+   *  only signs this computer out; the devices the account brought in stay. Told once, after the session here is gone; the daemon then removes what the account
    *  put here. */
   whenEnded(fn: (why: AccountEnd) => void): Unsubscribe {
     return this.#ends.add(fn);
@@ -184,7 +184,7 @@ export class AccountClient {
         }
         try {
           const session = await this.#token("pkce", { auth_code: code, code_verifier: verifier }, provider);
-          await this.#save(session);
+          await this.#signedIn(session);
           finish(await this.status());
           return new Response("Signed in to MOSS. You can close this tab.", { headers: { "content-type": "text/plain; charset=utf-8" } });
         } catch (err) {
@@ -217,7 +217,7 @@ export class AccountClient {
   /** Email and password, for tests and a headless server's terminal. */
   async signInWithPassword(email: string, password: Secret): Promise<AccountView> {
     const session = await this.#token("password", { email, password: password.reveal() }, "email");
-    await this.#save(session);
+    await this.#signedIn(session);
     return this.status();
   }
 
@@ -232,6 +232,7 @@ export class AccountClient {
       await this.#auth("POST", "/auth/v1/logout?scope=local", undefined, s.accessToken).catch(() => undefined);
     }
     await this.#o.store.delete(ACCOUNT_SESSION_REF);
+    await this.clearDeletionMark();
     this.#session = null;
     this.#listeners.emit({ signedIn: false });
     return { left };
@@ -364,6 +365,13 @@ export class AccountClient {
     return this.#session;
   }
 
+  /** A sign-in: a deletion marker left from before (another account's, or a deletion the person was told failed) never
+   *  outlives it. */
+  async #signedIn(s: StoredSession): Promise<void> {
+    await this.clearDeletionMark();
+    await this.#save(s);
+  }
+
   async #save(s: StoredSession): Promise<void> {
     await this.#o.store.set(ACCOUNT_SESSION_REF, new Secret(JSON.stringify(s)), { synced: false });
     this.#session = s;
@@ -381,10 +389,13 @@ export class AccountClient {
         return next;
       } catch (err) {
         if (err instanceof ContractError && err.code === "refused") {
+          // A refused refresh is not by itself the account's end: a password change, a sign-out everywhere on the web or
+          // a refresh race refuse it too. Only the sign-in project saying the user no longer exists is.
+          const deleted = await this.#userGone(s.accessToken);
           await this.#o.store.delete(ACCOUNT_SESSION_REF);
           this.#session = null;
           this.#listeners.emit({ signedIn: false });
-          this.#ends.emit("sign-in-refused");
+          if (deleted) this.#ends.emit("deleted");
           return null;
         }
         throw err;
@@ -419,6 +430,24 @@ export class AccountClient {
     if (res.ok) return res;
     // Never the body: it may echo what was sent.
     throw new ContractError(res.status === 400 || res.status === 401 || res.status === 403 ? "refused" : "failed", `the sign-in service answered ${res.status}`);
+  }
+
+  /** Whether the sign-in project says this session's user no longer exists (GoTrue's `user_not_found`, read from the
+   *  user endpoint with the last access token). Anything else (an expired token, a session ended, no answer) is not. */
+  async #userGone(accessToken: string): Promise<boolean> {
+    try {
+      const res = await this.#fetch(new Request(`${this.#o.config.authUrl.replace(/\/+$/, "")}/auth/v1/user`, {
+        method: "GET", headers: { apikey: this.#o.config.anonKey, authorization: `Bearer ${accessToken}` }, redirect: "error",
+      }));
+      if (res.ok || (res.status !== 403 && res.status !== 404)) {
+        await res.body?.cancel();
+        return false;
+      }
+      const j = (await res.json().catch(() => ({}))) as { error_code?: unknown };
+      return j.error_code === "user_not_found";
+    } catch {
+      return false;
+    }
   }
 
   /** The account ended elsewhere (a 410): the session goes and `onEnded` is told, once. */

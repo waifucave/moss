@@ -18,6 +18,7 @@
 // is finished at the next start (`finishSessionDeletions`); nothing here follows a link (each path is removed as itself).
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { BotId, SessionId } from "@waifucave/moss-protocol";
 import { sessionScratchDir } from "../bots/paths";
 import { transcriptPaths } from "../agents/transcript";
 import { sessionTmpDirPath } from "../agent/session-tmp";
@@ -49,7 +50,9 @@ const driverStem = (id: string) => id.replace(/[^A-Za-z0-9._-]/g, "_");
 function readJournal(home: string): DeletedSession[] {
   try {
     const v = JSON.parse(readFileSync(journalPath(home), "utf8")) as unknown;
-    return Array.isArray(v) ? (v as DeletedSession[]).filter((x) => x && typeof x.id === "string") : [];
+    // Only entries shaped as the engine writes them: a session id, and a bot id when there is one. A hand-made or
+    // damaged entry is dropped, never turned into paths.
+    return Array.isArray(v) ? (v as DeletedSession[]).filter((x) => x && SessionId.safeParse(x.id).success && (x.bot === undefined || BotId.safeParse(x.bot).success) && typeof x.kind === "string") : [];
   } catch {
     return [];
   }

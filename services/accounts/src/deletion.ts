@@ -34,6 +34,19 @@ const SERVICES: Record<Exclude<DeletionStep, "sign-in">, ServiceStep> = {
 
 const AUD_RE = /^[a-z0-9.-]{1,253}$/;
 
+/**
+ * Why this Worker can't finish an account's deletion, or undefined when it can: the sign-in's deletion needs the
+ * project's URL and service-role key, and each service's wipe its audience. Checked before anything is deleted, so a
+ * deletion never half-starts on a Worker that could never finish it (the request answers 503).
+ */
+export function deletionUnavailable(env: Pick<Env, "AUTH_URL" | "AUTH_SERVICE_ROLE_KEY" | "AUDIENCES">): string | undefined {
+  if (!env.AUTH_SERVICE_ROLE_KEY) return "the sign-in project's service-role key isn't set";
+  if (!env.AUTH_URL || !fetchableUrl(env.AUTH_URL)) return "the sign-in project's URL isn't set";
+  const auds = (env.AUDIENCES ?? "").split(",").map((a) => a.trim());
+  if (auds.length < 3 || auds.slice(0, 3).some((a) => !AUD_RE.test(a))) return "the three services' audiences aren't set";
+  return undefined;
+}
+
 /** Runs one step; true once the service confirms it (or says there was nothing of the account to forget). */
 export async function runDeletionStep(env: Env, account: string, step: DeletionStep): Promise<boolean> {
   try {

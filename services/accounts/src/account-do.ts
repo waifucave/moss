@@ -104,6 +104,18 @@ export class AccountDO extends DurableObject<Env> {
 
   private static readonly GONE: Reply<never> = { status: 410, error: "account_deleted" };
 
+  /** When the deletion finished: the only thing this object keeps afterwards (one timestamp, under the account's id,
+   *  which the sign-in project never gives again), so a request that passed its sign-in check just before the sign-in
+   *  went can't write a row into the emptied object. */
+  private ended(): number | undefined {
+    const v = this.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'ended'").toArray()[0]?.v;
+    return v === undefined ? undefined : Number(v);
+  }
+
+  private gone(): boolean {
+    return this.deleting() !== undefined || this.ended() !== undefined;
+  }
+
   /**
    * Deletes the account, asked by a listed device that isn't revoked with its signature over the delete statement and a
    * `t` newer than its last deletion's. Every row here goes at once and the account is refused from then on; the other
@@ -111,6 +123,8 @@ export class AccountDO extends DurableObject<Env> {
    * being gone), it answers how far it got and tries the pending steps again.
    */
   async deleteAccount(account: string, device: string, t: number, sig: string, now: number): Promise<Reply<{ deletion: DeletionView }>> {
+    const endedAt = this.ended();
+    if (endedAt !== undefined) return { status: 200, body: { deletion: { deletedAt: endedAt, pending: [] } } };
     const running = this.deleting();
     if (running) {
       await this.runDeletion(account);
@@ -148,6 +162,7 @@ export class AccountDO extends DurableObject<Env> {
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       this.migrate();
+      this.sql.exec("INSERT INTO meta (k, v) VALUES ('ended', ?)", String(d.since));
       return;
     }
     d.next = Date.now() + retryDelayMs(d.tries);
@@ -192,7 +207,7 @@ export class AccountDO extends DurableObject<Env> {
   /** A device leaving at sign-out: its own signature over the leave statement, with a `t` newer than its registration's.
    *  Its row goes, so it can register again; a revoked device can't leave (its revoke stays). Again: nothing to do. */
   async leave(account: string, device: string, t: number, sig: string): Promise<Reply> {
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     const existing = this.row(device);
     if (!existing) return { status: 204 };
     if (existing.revoked_at !== null) return { status: 403, error: "revoked" };
@@ -212,7 +227,7 @@ export class AccountDO extends DurableObject<Env> {
 
   /** Adds the device, or updates its name, kind, system and box key (a signed statement newer than its last). */
   async register(device: DeviceInput, t: number, now: number): Promise<Reply<{ device: AccountDevice }>> {
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     this.trimRevoked(now);
     if (this.sql.exec("SELECT 1 AS x FROM revoked_ids WHERE id = ?", device.id).toArray().length > 0) return { status: 403, error: "revoked" };
     const existing = this.row(device.id);
@@ -241,14 +256,14 @@ export class AccountDO extends DurableObject<Env> {
   }
 
   async list(now: number = Date.now()): Promise<Reply<{ devices: AccountDevice[] }>> {
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     this.trimRevoked(now);
     return { status: 200, body: { devices: this.sql.exec<DeviceRow>("SELECT * FROM devices ORDER BY added_at, id").toArray().map(view) } };
   }
 
   /** Revokes a device of the account; revoking again changes nothing. One whose row was trimmed is still revoked. */
   async revoke(id: string, now: number): Promise<Reply> {
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     const existing = this.row(id);
     if (!existing) return this.sql.exec("SELECT 1 AS x FROM revoked_ids WHERE id = ?", id).toArray().length > 0 ? { status: 204 } : { status: 404, error: "not_found" };
     if (existing.revoked_at === null) this.sql.exec("UPDATE devices SET revoked_at = ? WHERE id = ?", now, id);
@@ -259,14 +274,14 @@ export class AccountDO extends DurableObject<Env> {
 
   /** Whether `device` may have a token for `aud` now: listed, not revoked, its signature good and its `t` new. */
   async allowMint(account: string, device: string, aud: string, t: number, sig: string): Promise<Reply> {
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     const existing = this.row(device);
     if (!existing || existing.revoked_at !== null) return { status: 403, error: "not_member" };
     const key = fromB64(existing.public_key);
     if (!(await verifyEd25519(key, fromB64u(sig), mintStatement(account, aud, device, t)))) return { status: 403, error: "bad_signature" };
     // Everything from here runs without a pause, so a revoke or another mint can't slip in between the check and the
     // write; the revoke is looked at again, since it may have come during the signature check.
-    if (this.deleting()) return AccountDO.GONE;
+    if (this.gone()) return AccountDO.GONE;
     if (this.row(device)?.revoked_at !== null) return { status: 403, error: "not_member" };
     const last = this.sql.exec<{ last_t: number }>("SELECT last_t FROM mints WHERE device = ? AND aud = ?", device, aud).toArray()[0];
     if (last && t <= last.last_t) return { status: 409, error: "replay" };

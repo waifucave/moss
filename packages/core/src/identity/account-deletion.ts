@@ -1,21 +1,21 @@
 // Deleting the waifucave account from this computer (the deletion lane, item 1; spec §14.2 item 27). The order:
 //
-//   1. A marker (the account id and when, nothing else) says a deletion was asked for, before anything is sent, so a crash
-//      or a quit in the middle is finished at the next start (`resume`). It is a device item in the secret store, not a
-//      file in the home: a plugin can write the home, and a marker it planted must never send a deletion.
-//   2. The account service is asked (`AccountClient.deleteAccount`, signed by this device). From its answer on, the
-//      account is refused everywhere at waifucave and the service finishes the rest itself (the other services, then
-//      the sign-in), retrying until each confirms. Asked again it answers how far that got.
+//   1. The account service is asked (`AccountClient.deleteAccount`, signed by this device). A request that never reached
+//      it, or that it refused, leaves nothing behind: the person is told it failed and asks again. Nothing here ever
+//      sends a deletion the person didn't just ask for.
+//   2. From the service's answer on, the account is refused everywhere at waifucave and the service finishes the rest
+//      itself (the other services, then the sign-in), retrying until each confirms. A marker (the account id and when the
+//      service accepted, nothing else) is then kept as a device item in the secret store, not a file a plugin could plant
+//      in the home, so a stop before 3 is finished at the next start.
 //   3. What the account put on this computer goes (`endAccountHere`): the sign-in session, the devices the account
 //      alone brought in (forgotten, not revoked: they stay the person's, and can be paired again), and the revoke
 //      steps that would tell the account's services. What stays: everything else in the home (conversations, bots,
 //      memory, settings, files, keys of providers) and the devices paired by code.
-//   4. The marker goes.
+//   4. The marker goes. Signing out or signing in clears it too.
 //
-// A deletion that half happened: before 2's answer, the account is untouched and the marker makes the next start (or
-// the next ask) send it again; after it, the service owns the rest, and only 3 is left here. Once the sign-in itself is
-// deleted the service answers 401 to this device's session, which (with the marker saying it was sent) is the
-// deletion done, never a reason to ask again.
+// At start (`resume`) a marker finishes only the local part (3), and only while the account it names is the one signed in
+// here, or none is: a marker naming another account is cleared and nothing else happens (that account's session was
+// already replaced by the sign-in that put the other one here). A marker the service never accepted is cleared unused.
 import { ContractError } from "../contracts/common";
 import type { FileDeviceRegistry } from "../devices/registry";
 import type { AccountClient, AccountDeletionStep } from "./account";
@@ -51,46 +51,52 @@ export async function endAccountHere(deps: Pick<AccountDeletionDeps, "account" |
   return forgotten;
 }
 
-/** Deletes the account (or finishes a deletion begun before), then what it put here. */
+/** Deletes the account the person just asked to delete, then what it put here. */
 export async function deleteAccount(deps: AccountDeletionDeps): Promise<AccountDeletionOutcome> {
   const account = await deps.account.accountId();
-  let marker: Marker | null = await deps.account.deletionMark();
+  const marker: Marker | null = await deps.account.deletionMark();
   if (account === null) {
-    // Signed out: only a deletion begun before can be finished, here alone (the service owns the rest, or the session
-    // that could ask it is gone).
-    if (!marker) throw new ContractError("refused", "this computer isn't signed in to an account");
-    const forgotten = await endAccountHere(deps);
-    await deps.account.clearDeletionMark();
-    return { pending: [], forgotten };
-  }
-  if (!marker || marker.account !== account) {
-    marker = { account, askedAt: deps.clock.now() };
-    await deps.account.setDeletionMark(marker);
+    // Signed out: only a deletion the service already accepted can be finished, here alone.
+    if (!marker || marker.answeredAt === undefined) throw new ContractError("refused", "this computer isn't signed in to an account");
+    return finishHere(deps);
   }
   let pending: AccountDeletionStep[];
   try {
     pending = (await deps.account.deleteAccount()).pending;
   } catch (err) {
-    // The service answered before and the sign-in is gone now: the deletion is done there.
-    const signInGone = err instanceof ContractError && err.code === "refused" && marker.answeredAt !== undefined;
-    if (!signInGone) throw err;
+    // The service accepted this account's deletion before and its sign-in is gone now: done there.
+    const accepted = marker !== null && marker.account === account && marker.answeredAt !== undefined;
+    if (!(accepted && err instanceof ContractError && err.code === "refused")) throw err;
     pending = [];
   }
-  await deps.account.setDeletionMark({ ...marker, answeredAt: marker.answeredAt ?? deps.clock.now() });
-  const forgotten = await endAccountHere(deps);
-  await deps.account.clearDeletionMark();
-  return { pending, forgotten };
+  const now = deps.clock.now();
+  await deps.account.setDeletionMark({ account, askedAt: marker?.account === account ? marker.askedAt : now, answeredAt: marker?.account === account && marker.answeredAt !== undefined ? marker.answeredAt : now });
+  const out = await finishHere(deps);
+  return { pending, forgotten: out.forgotten };
 }
 
-/** At start: a deletion the last run began is finished. Never throws; a failure leaves the marker for the next try. */
+async function finishHere(deps: AccountDeletionDeps): Promise<AccountDeletionOutcome> {
+  const forgotten = await endAccountHere(deps);
+  await deps.account.clearDeletionMark();
+  return { pending: [], forgotten };
+}
+
+/** At start: the local part of a deletion the service accepted before a stop. Never sends anything; never throws. */
 export async function resumeAccountDeletion(deps: AccountDeletionDeps): Promise<AccountDeletionOutcome | undefined> {
-  if ((await deps.account.deletionMark().catch(() => null)) === null) return undefined;
   try {
-    const out = await deleteAccount(deps);
-    deps.log?.(`[account] finished the account's deletion begun before${out.pending.length > 0 ? `; waifucave still confirms: ${out.pending.join(", ")}` : ""}`);
+    const marker = await deps.account.deletionMark();
+    if (marker === null) return undefined;
+    const account = await deps.account.accountId();
+    if (marker.answeredAt === undefined || (account !== null && account !== marker.account)) {
+      await deps.account.clearDeletionMark();
+      deps.log?.("[account] dropped a deletion marker that can't apply here (not accepted by the service, or another account is signed in)");
+      return undefined;
+    }
+    const out = await finishHere(deps);
+    deps.log?.("[account] finished, on this computer, the account's deletion the service had accepted before a stop");
     return out;
   } catch (err) {
-    deps.log?.(`[account] the account's deletion begun before isn't finished yet (${err instanceof Error ? err.name : "error"}): tried again at the next start or ask`);
+    deps.log?.(`[account] the account's deletion isn't finished on this computer yet (${err instanceof Error ? err.name : "error"}): tried again at the next start`);
     return undefined;
   }
 }

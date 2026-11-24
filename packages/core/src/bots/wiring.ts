@@ -410,10 +410,10 @@ export function createBotSide(o: BotSideOptions): BotSide {
       // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
       ...botRecordMethods({ bots, host, capHome: { home: o.home, now: () => o.clock.now() }, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
       // The deletion lane: the person deletes a session or a bot's conversation (`session.delete`).
-      ...sessionDeletionMethods({ home: o.home, host, bots, openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) }),
+      ...sessionDeletionMethods({ home: o.home, host, bots, computer: () => o.computer, now: () => o.clock.now(), openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}) }),
       // And a bot, listed or archived (`bot.delete`), beside the archive.
       ...botDeletionMethods({
-        home: o.home, openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}),
+        home: o.home, now: () => o.clock.now(), openCard: deletionCards(o.approvals), files: deletionFiles(o.home), ...(o.warn ? { log: o.warn } : {}),
         bots: { nameOf: (id) => bots.deletableName(id), deleteBot: (id, before) => bots.deleteBot(id, before), sessionRemoved: (id) => bots.sessionRemoved(id) },
       }),
       };

@@ -397,7 +397,7 @@ function BotPage(props: { bot: BotRow }) {
       <Card title="Archive" id="archive" note={`Archiving puts ${rec.name} away: nothing is deleted. Its conversation, memory and routines come back with it from Settings.`}>
         <button type="button" className="text-button" data-archive-bot={rec.id} onClick={() => void bridge().archiveBot(rec.id).then((ok) => { if (!ok) setNote("The engine didn't archive the bot."); })}>Archive {rec.name}</button>
       </Card>
-      <Card title="Delete" id="delete" note={`Deleting is for good. You confirm on a card that says what goes and what stays.`}>
+      <Card title="Delete" id="delete" note={`Deleting is for good, on this computer. Your other computers keep their copies until you delete it there too; this computer never takes them back. You confirm on a card that says what goes and what stays.`}>
         <button type="button" className="text-button" data-delete-conversation={rec.id} onClick={() => void bridge().deleteConversation(rec.id).then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete the conversation."); })}>Delete the conversation with {rec.name}</button>
         <button type="button" className="text-button text-button--danger" data-delete-bot={rec.id} onClick={() => void bridge().deleteBot(rec.id).then((ok) => { if (!ok) setNote("The engine didn't take the ask to delete the bot."); })}>Delete {rec.name}</button>
       </Card>

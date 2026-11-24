@@ -22,6 +22,8 @@ export interface FakeAccountService {
   readonly deleted: Map<string, { deletedAt: number; pending: string[] }>;
   /** What a deletion answers as still pending (the real service's steps at the other services and the sign-in). */
   pendingOnDelete: string[];
+  /** Every deletion request that reached it, accepted or not. */
+  readonly deleteCalls: number;
   stop(): void;
 }
 
@@ -33,7 +35,7 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
   const accounts = new Map<string, AccountDevice[]>();
   const mints: { aud: string; dev: string }[] = [];
   const deleted = new Map<string, { deletedAt: number; pending: string[] }>();
-  const state = { pendingOnDelete: [] as string[] };
+  const state = { pendingOnDelete: [] as string[], deleteCalls: 0 };
   const ttl = Math.min(opts.tokenTtlSeconds ?? 300, 300);
   let issuer = "";
 
@@ -56,6 +58,7 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
     port: 0,
     fetch: async (req) => {
       const url = new URL(req.url);
+      if (url.pathname === "/v1/account/delete" && req.method === "POST") state.deleteCalls += 1;
       if (url.pathname === "/.well-known/jwks.json") return new Response(jwks, { headers: { "content-type": "application/json" } });
       const sub = await user(req);
       if (!sub) return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -130,6 +133,9 @@ export function startFakeAccountService(opts: { authUrl: string; anonKey: string
     devices: (account) => (accounts.get(account) ?? []).map((d) => ({ ...d })),
     mints,
     deleted,
+    get deleteCalls() {
+      return state.deleteCalls;
+    },
     get pendingOnDelete() {
       return state.pendingOnDelete;
     },

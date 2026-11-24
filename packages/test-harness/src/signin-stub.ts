@@ -162,9 +162,10 @@ export function startSignInStub(opts: { accessTokenTtlSeconds?: number } = {}): 
     const claims = verifyHs256(token, jwtSecret);
     if (claims === undefined || claims.role !== "authenticated") return fail(401, "bad_jwt", "invalid JWT: unable to parse or verify signature");
     if (typeof claims.exp !== "number" || claims.exp <= now()) return fail(401, "bad_jwt", "invalid JWT: token is expired");
-    if (typeof claims.session_id !== "string" || !sessions.has(claims.session_id)) return fail(403, "session_not_found", "Session from session_id claim in JWT does not exist");
+    // GoTrue loads the user from the claim before the session: a deleted user's token answers user_not_found.
     const user = users.find((u) => u.id === claims.sub);
     if (user === undefined) return fail(403, "user_not_found", "User from sub claim in JWT does not exist");
+    if (typeof claims.session_id !== "string" || !sessions.has(claims.session_id)) return fail(403, "session_not_found", "Session from session_id claim in JWT does not exist");
     return { user, claims };
   };
 

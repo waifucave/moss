@@ -17,6 +17,7 @@ import { MAIL_MAX_PIECE, MemoryMailRelay, type SyncMailbox } from "../mailbox";
 import { keyCommit, keyStatement } from "../memory-keys";
 import { COUNTER_STEP, type MemoryEntry, type MemoryLimits, MemorySync, type PushResult, type SkipReason, versionStatement } from "../memory";
 import { memoryPath, readMemoryFile, removeMemoryFile, writeMemoryFile } from "../memory-files";
+import { tombstoneBot } from "../../deletion/tombstones";
 
 const clock = new SystemClock();
 // A link cut and healed again re-dials with its backoff: give those tests room.
@@ -151,6 +152,34 @@ describe("a bot's memory across computers", () => {
     await w.at("Laptop").restart();
     w.at("Laptop").sync.scanAll();
     expect(w.at("Laptop").sync.versions(BOT)).toEqual(before);
+  });
+
+  test("a bot deleted on one computer never gets its memory back from the other: live pushes, catch-up and a restart all refused; the other keeps its copy", async () => {
+    const w = await world(["Studio", "Laptop"]);
+    await w.linkAll();
+    w.at("Studio").write("MEMORY.md", "# Memory\n- tea\n");
+    await waitFor(() => w.at("Laptop").read("MEMORY.md") === "# Memory\n- tea\n");
+    // The person deletes the bot on the Studio (bot-rpc's order: the tombstone first, then its folders, then the sync
+    // forgets it).
+    const studio = w.at("Studio");
+    tombstoneBot(studio.home, BOT, Date.now());
+    rmSync(botPaths(studio.home, BOT).root, { recursive: true, force: true });
+    rmSync(join(studio.home, "sync", "memory"), { recursive: true, force: true });
+    studio.sync.forgetBot(BOT);
+    // The laptop keeps writing to its copy, and pushes it.
+    w.at("Laptop").write("MEMORY.md", "# Memory\n- tea\n- green\n");
+    w.at("Laptop").write("more.md", "more\n");
+    expect(await push(w.at("Laptop"), studio, [])).toMatchObject({ ok: false, reason: "refused" });
+    await Bun.sleep(200);
+    expect(existsSync(botPaths(studio.home, BOT).memory)).toBe(false);
+    // A catch-up after a restart takes nothing of it either, and the Studio's heads never offer it.
+    await studio.restart();
+    await studio.sync.catchUpFrom(w.at("Laptop").d.id).catch(() => 0);
+    studio.sync.scanAll();
+    expect(existsSync(botPaths(studio.home, BOT).memory)).toBe(false);
+    expect(studio.sync.versions(BOT)).toEqual({});
+    // The other computer keeps its copy: the deletion was this computer's.
+    expect(w.at("Laptop").read("more.md")).toBe("more\n");
   });
 
   test("a write while a computer is off reaches it when it comes back, from the writer or from another computer", async () => {

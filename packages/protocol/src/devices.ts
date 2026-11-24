@@ -283,10 +283,11 @@ export const DEVICES_METHODS = {
   }),
   accountDelete: defineMethod({
     /** The person only (the deletion lane, item 1): from an app the engine raises its sealed card naming what goes and
-     *  what stays, and deletes on its yes alone; in their own terminal `confirm: true` is the CLI's own typed
-     *  confirmation. Never a bot, an agent, a plugin, a phone, the web page or another computer. */
+     *  what stays, and deletes on its yes alone; in their own terminal `confirm: true` and `typed: "DELETE"` are the
+     *  CLI's own typed confirmation. Never a bot, an agent, a plugin, a phone, the web page or another computer: that is
+     *  the engine's caller check, not the typing. */
     name: "account.delete", owner: "H", roles: ["app", "cli"], userOnly: true, change: "sensitive",
-    params: z.object({ confirm: z.literal(true).optional() }),
+    params: z.object({ confirm: z.literal(true).optional(), typed: z.string().max(16).optional() }),
     result: z.union([
       z.object({ applied: z.literal(true), pending: z.array(AccountDeletionStep).max(4) }),
       z.object({ applied: z.literal(false), card: CardId }),

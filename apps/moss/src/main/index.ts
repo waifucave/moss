@@ -15,6 +15,7 @@ import { InstallGate, MOSS_APP_FEED_PREFIX, startUpdater, type Updater } from "@
 import { AppLog, appLogPath, LineLimiter, MOSS_APP_LOG_FILE } from "@waifucave/moss-app-release/app-log";
 import { appOwnLoad, StallWatch } from "@waifucave/moss-app-release/stall-watch";
 import { fileLine } from "./file-log";
+import { takeEraseOutcome } from "./erase-outcome";
 import { daemonEndpoint, dial, type DaemonClient } from "./client";
 import { bundlePathOf, carriesHost, writeOwnRecord } from "./install-record";
 import { EngineConnection, locateEngine, tokenPath, type ConnectionState } from "./connection";
@@ -459,7 +460,11 @@ async function openWindow(): Promise<BrowserWindow> {
     pushPresence();
   });
   win.once("ready-to-show", () => {
-    if (!headless) win.show();
+    if (headless) return;
+    win.show();
+    // An "Erase everything" the person said yes to ran after the engine stopped: what it came to, shown once.
+    const erased = takeEraseOutcome(home);
+    if (erased) void dialog.showMessageBox(win, { type: erased.ok ? "info" : "warning", message: erased.message, detail: erased.detail });
   });
   // A headless run puts nothing on the screen: should anything ever show this window, it says so (the tests look for it).
   win.on("show", () => { if (headless) log("window: shown while headless"); });

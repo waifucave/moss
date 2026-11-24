@@ -24,7 +24,7 @@ describe("moss account|session|bot delete", () => {
   test("typed DELETE: the engine's method with confirm, and what stays is said", async () => {
     const t = env({ answer: { applied: true, pending: ["sign-in"] } });
     expect(await runDelete(["account", "delete"], t.e)).toBe(0);
-    expect(t.sent).toEqual([{ method: "account.delete", params: { confirm: true } }]);
+    expect(t.sent).toEqual([{ method: "account.delete", params: { confirm: true, typed: "DELETE" } }]);
     expect(t.lines.join("\n")).toContain("Stays:");
     expect(t.lines.join("\n")).toContain("sign-in");
     const s = env();

@@ -822,6 +822,10 @@
           "confirm": {
             "type": "boolean",
             "const": true
+          },
+          "typed": {
+            "type": "string",
+            "maxLength": 16
           }
         }
       },

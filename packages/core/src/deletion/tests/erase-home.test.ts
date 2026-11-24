@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { KeychainValues, memoryVault, MossSecretStore } from "../../secrets/moss-secret-store";
 import { Secret } from "../../contracts/secret-store";
 import { OLD_INSTALL_HOME_DIR } from "../../other-installs";
-import { dropMossOsItems, eraseHome, recogniseMossHome } from "../erase-home";
+import { dropMossOsItems, eraseHome, eraseOutcomePath, recogniseMossHome, writeEraseOutcome } from "../erase-home";
 import { osStoreItemNames } from "../../secrets/file-backend";
 import { runErase } from "../erase-command";
 import { homeEraseMethods } from "../erase-rpc";
@@ -119,7 +119,17 @@ describe("erase: what goes and what stays", () => {
     expect(vaults.get("com.example.other")!.items.size).toBe(1);
   });
 
-    test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
+    test("the outcome is left beside the home for the app's next open: no secret, only whether it worked and what stays", () => {
+    const w = world();
+    writeEraseOutcome(w.home, { at: 1, ok: false, error: "erase refused: not a MOSS home; nothing was removed" });
+    const o = JSON.parse(readFileSync(eraseOutcomePath(w.home), "utf8")) as { ok: boolean; error: string; keeps: string[] };
+    expect(eraseOutcomePath(w.home)).toBe(`${w.home}-erase.json`);
+    expect(o.ok).toBe(false);
+    expect(o.error).toContain("nothing was removed");
+    expect(o.keeps.length).toBeGreaterThan(0);
+  });
+
+  test("a home given as a link: the folder it names goes, then the link; nothing beside them", async () => {
     const w = world();
     const link = join(w.user, "moss-link");
     symlinkSync(w.home, link);
