@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { catalogFromModelPlugins, loadCatalog, type ModelEntry } from "@waifucave/clover-provider-catalog";
-import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, NO_RECOMMENDED_DEFAULT_REASON, noDefaultModelReason, onlyWeakFamilies, setNoDefaultModelContext, providerOfTag, recommended, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
-import { FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
+import { defaultEffortFor, effectiveDefault, isWeak, LEGACY_DEFAULT_MODEL, NO_DEFAULT_MODEL_REASON, NO_RECOMMENDED_DEFAULT_REASON, noDefaultModelReason, onlyWeakFamilies, setNoDefaultModelContext, providerOfTag, recommended, recommendedFor, recommendedModel, settledDefault, setupMissing } from "../src/default-model";
+import { choicesOf, FAMILY_DEFAULTS } from "../src/runtime-sdk/model-plugins/family-defaults";
+import { toolsRefusedFor } from "../src/runtime-sdk/provider-selection";
 import { BUNDLED_CHILDREN_DIR, modelPluginFolder, modelPluginId } from "../src/runtime-sdk/model-plugins/bundled";
 
 const catalog = loadCatalog();
@@ -20,16 +21,18 @@ describe("the recommended default: the family's one default, as the provider ser
     }
   });
   test("every family default names a model the catalog has, and a family's vendors serve it or recommend nothing", () => {
-    for (const [family, def] of Object.entries(FAMILY_DEFAULTS)) {
+    for (const [family, entry] of Object.entries(FAMILY_DEFAULTS)) {
       expect(catalog.families!.some((f) => f.id === family)).toBe(true);
-      expect(catalog.models.some((m) => m.canonicalModelId === def.model)).toBe(true);
+      for (const def of choicesOf(entry)) expect({ family, model: def.model, known: catalog.models.some((m) => m.canonicalModelId === def.model) }).toEqual({ family, model: def.model, known: true });
     }
   });
   test("a weak model is never a default: every family default is strong or medium on each vendor row that serves it (2026-11-24)", () => {
-    for (const [family, def] of Object.entries(FAMILY_DEFAULTS)) {
-      const served = catalog.models.filter((m) => m.canonicalModelId === def.model && (catalog.families!.find((f) => f.id === family)!.vendorProviders ?? []).includes(m.providerId));
-      expect({ family, served: served.length > 0 }).toEqual({ family, served: true });
-      for (const m of served) expect({ key: m.key, weak: isWeak(m) }).toEqual({ key: m.key, weak: false });
+    for (const [family, entry] of Object.entries(FAMILY_DEFAULTS)) {
+      for (const def of choicesOf(entry)) {
+        const served = catalog.models.filter((m) => m.canonicalModelId === def.model && (catalog.families!.find((f) => f.id === family)!.vendorProviders ?? []).includes(m.providerId));
+        expect({ family, model: def.model, served: served.length > 0 }).toEqual({ family, model: def.model, served: true });
+        for (const m of served) expect({ key: m.key, weak: isWeak(m) }).toEqual({ key: m.key, weak: false });
+      }
     }
   });
   test("a family whose every model is weak (Gemma, Llama) declares no default, so its vendors recommend nothing there", () => {
@@ -37,6 +40,29 @@ describe("the recommended default: the family's one default, as the provider ser
     expect(FAMILY_DEFAULTS.llama).toBeUndefined();
     expect(rec("deepinfra")).toBeUndefined(); // deepinfra is a vendor of llama only
     expect(catalog.models.find((m) => m.key === recM("google"))?.canonicalModelId).toBe("gemini-4-hydrogen"); // google serves gemini and gemma (agent SDK 0.0.85: Hydrogen)
+  });
+  test("every provider that serves a non-weak model of a family recommends one for it (the controller's ruling, 2026-11-24: a catalog refresh cannot silently drop a provider's default)", () => {
+    const holes: string[] = [];
+    for (const family of catalog.families ?? []) {
+      if (FAMILY_DEFAULTS[family.id] === undefined) continue;
+      for (const p of family.vendorProviders ?? []) {
+        const runnable = catalog.models.some((m) => m.providerId === p && m.modelFamily === family.id
+          && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m) && !isWeak(m));
+        if (runnable && recommendedFor(catalog, p, family.id) === undefined) holes.push(`${family.id} on ${p}`);
+      }
+    }
+    expect(holes).toEqual([]);
+  });
+  test("Vertex's Gemini: Hydrogen isn't served there, so the first fallback, 3.8 Flash at medium; Google keeps Hydrogen", () => {
+    // Agent SDK 0.0.85 has no vertex/gemini-4-hydrogen row (Vertex's model-versions page lists it): when one lands, Vertex
+    // moves to Hydrogen and this pin moves with it.
+    expect(catalog.models.some((m) => m.providerId === "vertex" && m.canonicalModelId === "gemini-4-hydrogen")).toBe(false);
+    expect(recommendedFor(catalog, "vertex", "gemini")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
+    expect(rec("vertex")).toEqual({ model: "vertex/gemini-3.8-flash", effort: "medium" });
+    expect(recommendedFor(catalog, "google", "gemini")).toEqual({ model: "google/gemini-4-hydrogen", effort: "medium" });
+    // A weak fallback is never chosen: with 3.8 Flash reclassed weak, Vertex recommends nothing for Gemini.
+    const weakFlash = { families: catalog.families, models: catalog.models.map((m) => (m.key === "vertex/gemini-3.8-flash" ? { ...m, strength: "weak" as const } : m)) };
+    expect(recommendedFor(weakFlash, "vertex", "gemini")).toBeUndefined();
   });
   test("a weak row is never recommended, whatever the table says; a row with no class is weak", () => {
     const row = catalog.models.find((m) => m.key === recM("anthropic"))!;

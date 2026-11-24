@@ -6,7 +6,7 @@ import { legacyImportOn } from "./migration/legacy-imports";
 import { z } from "zod";
 import { activeCatalog, activeCatalogGeneration } from "./runtime-sdk/model-plugins/catalog-source";
 import { familyOfModel, lightModelForJob, type LightChoice } from "./runtime-sdk/model-plugins/light-model";
-import { FAMILY_LIGHT_MODELS } from "./runtime-sdk/model-plugins/family-defaults";
+import { choicesOf, FAMILY_LIGHT_MODELS } from "./runtime-sdk/model-plugins/family-defaults";
 import { ensureGlobalGitignore, MOSS_PERSONAL_IGNORES } from "./global-gitignore";
 import { consoleProfileCredentialFile } from "./runtime-sdk/anthropic-paths";
 import { canonicalModelTag, facingNameToTag, isModelTag, splitTag, UNSTATED_TAG, MOSS_TEST_PREFIX, type ModelTag } from "./runtime-sdk/model-tag";
@@ -2474,7 +2474,7 @@ export function describeInternalJobModels(settings: Settings | null | undefined,
       const defaultsFamily = familyOfModel(activeCatalog(), ownProviderFor(settings) ?? "", settings?.provider?.model ?? "");
       why = fam === defaultsFamily ? `the light model of the default's ${fam} family` : `the ${fam} family's light model: the default's own family has none on its provider`;
       const row = activeCatalog().models.find((m) => m.key === internalRoleLight(settings, role, snapshot)!.choice.tag);
-      if (row !== undefined && row.canonicalModelId !== FAMILY_LIGHT_MODELS[fam]?.model) why = `the ${fam} family's default: its provider serves no family's light model`;
+      if (row !== undefined && !choicesOf(FAMILY_LIGHT_MODELS[fam]).some((c) => c.model === row.canonicalModelId)) why = `the ${fam} family's default: its provider serves no family's light model`;
     }
     parts.push(`${label[role]} on ${tag ?? "nothing"} (${why})`);
   }

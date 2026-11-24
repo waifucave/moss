@@ -11,16 +11,28 @@
 // reads: `weak` is a model that must have read what it edits; the owner's ruling of 2026-11-12 sets it by hand per model).
 // A default must be `strong` or `medium` on every vendor row that serves it; `recommended()` also skips a weak row, so a
 // row the catalog reclasses later stops being recommended without an edit here. A family whose vendors serve only weak
-// models (Gemma, Llama in agent SDK 0.0.84) declares no default: its vendors recommend nothing there and the person picks.
+// models (Gemma, Llama in agent SDK 0.0.85) declares no default: its vendors recommend nothing there and the person picks.
 // The 2026-11-24 catalog audit (lane CT) moved: gemini 3.7 Flash -> 3.8 Flash (Google routes 3.7 Flash to 3.8 Flash and
 // no longer lists it, https://aistudio.google.com/docs/deprecations); mistral Medium 3.5 -> Large 3 (`mistral-large-2512`:
 // Medium 3.5 is deprecated, retiring 2027-03-05, https://docs.mistral.ai/models; its named successor, Large 4, is in no
 // published catalog yet); gemma and llama dropped (weak); grok 4.6 -> 4.7.
 // With agent SDK 0.0.85 (2026-11-24): gemini -> gemini-4-hydrogen at medium (Google's everyday tier; 3.8 Flash is
-// "previous-generation" and its price rises to Hydrogen's on 2027-01-01; no Vertex row yet, so Vertex recommends nothing for
-// Gemini until one is published); mistral -> mistral-large-4 (GA since 2026-10-05; Large 3 deprecated 2026-10-31, retiring
+// "previous-generation" and its price rises to Hydrogen's on 2027-01-01), then 3.8 Flash (see THE FALLBACKS); mistral -> mistral-large-4 (GA since 2026-10-05; Large 3 deprecated 2026-10-31, retiring
 // 2027-04-30, https://docs.mistral.ai/models); hunyuan -> hy4, light hy4-flash (Hy4 Preview goes offline 2026-12-07); muse
-// light -> muse-ember-1.0.
+// light -> muse-ember-1.0 (see the light table).
+//
+// THE FALLBACKS (the controller's ruling, 2026-11-24: a person must not lose yesterday's default because the newest row is
+// not on their provider yet). A family's entry may name fallbacks (`then`), in order; a provider recommends the FIRST of
+// the default and its fallbacks that it serves (not blocked, not deprecated, tools not refused, never weak). The same holds
+// for the light table. A test holds every family and provider: one that serves a non-weak model of a family recommends one
+// for it, so a catalog refresh cannot silently drop a provider's default.
+// Gemini: Hydrogen, then 3.8 Flash. Vertex has no Hydrogen row in agent SDK 0.0.85, though its model-versions page lists
+// it (https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions, read 2026-11-24: released
+// "November 12, 2026", in "Models available for shorter availability periods"). 3.8 Flash is yesterday's default, Vertex
+// serves it, and the same page puts it among "Models available for at least 12 months after release": released
+// "September 2, 2026", retiring "September 2, 2027 or later", so not before spring. Argon is the other strong model Vertex
+// serves, but it is the Pro tier: $4 / $20 per million tokens on Google's own API against 3.8 Flash's $0.75 / $3.75 (the
+// catalog's google rows; every vertex row is unpriced), not an everyday default.
 //
 // THE EFFORT STATES WHAT IS SENT (2026-11-24): `recommended()` drops a declared effort the row does not list, so a
 // declaration the rows cannot take was a promise nobody got. Where every vendor row's vocabulary is low/high/max
@@ -35,12 +47,23 @@ export interface FamilyDefault {
   model: string;
   /** The effort written with it; dropped for a row whose effort list doesn't hold it. */
   effort?: string;
+  /** Fallbacks, in order, for a provider that doesn't serve `model` (THE FALLBACKS above). */
+  then?: readonly FamilyChoice[];
+}
+
+/** One entry of a family's ordered list: a model and its effort. */
+export type FamilyChoice = Omit<FamilyDefault, "then">;
+
+/** A family's ordered list: the entry itself, then its fallbacks. Empty for a family with no entry. */
+export function choicesOf(entry: FamilyDefault | undefined): FamilyChoice[] {
+  if (entry === undefined) return [];
+  return [{ model: entry.model, ...(entry.effort !== undefined ? { effort: entry.effort } : {}) }, ...(entry.then ?? [])];
 }
 
 export const FAMILY_DEFAULTS: Readonly<Record<string, FamilyDefault>> = {
   claude: { model: "claude-opus-5.5", effort: "medium" }, // the owner's
   gpt: { model: "gpt-6.2-sol", effort: "medium" }, // the owner's
-  gemini: { model: "gemini-4-hydrogen", effort: "medium" }, // Gemini 4's everyday tier (agent SDK 0.0.85); not on Vertex yet
+  gemini: { model: "gemini-4-hydrogen", effort: "medium", then: [{ model: "gemini-3.8-flash", effort: "medium" }] }, // 3.8 Flash where Hydrogen isn't served (Vertex)
   grok: { model: "grok-4.7", effort: "medium" }, // xAI's current model (https://docs.x.ai/docs/release-notes.md, September 2026), same price as 4.6
   deepseek: { model: "deepseek-v4-pro", effort: "high" }, // rows take low, high, max: no medium
   kimi: { model: "kimi-k3.1-pro", effort: "high" }, // rows take low, high, max: no medium
@@ -103,7 +126,10 @@ export const FAMILY_LIGHT_MODELS: Readonly<Record<string, FamilyDefault>> = {
   command: { model: "command-a-03-2025", effort: "low" },
   ernie: { model: "ernie-5.1", effort: "low" },
   hunyuan: { model: "hy4-flash", effort: "low" },
-  muse: { model: "muse-ember-1.0", effort: "low" }, // Meta's "efficient execution model" (agent SDK 0.0.85)
+  // Meta's "efficient execution model" (agent SDK 0.0.85). The catalog rates it WEAK; it is Muse's light model, and so the
+  // command safety reviewer on Meta runs on it, by the owner's decision (2026-11-21: each family's light model does the
+  // titles and the command safety check; 2026-11-24: "a weak model per every family").
+  muse: { model: "muse-ember-1.0", effort: "low" },
   nemotron: { model: "nemotron-3-super-120b-a12b", effort: "low" },
   // Its vendors serve only weak models, so no default; the light model is the family's own (a person who picks one gets its jobs on it).
   gemma: { model: "gemma-4-31b-it", effort: "low" },

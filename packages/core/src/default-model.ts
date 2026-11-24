@@ -19,13 +19,13 @@
 //
 // The recommended model is the provider's family's ONE default (a model and an effort, `FAMILY_DEFAULTS`, the owner's
 // for Claude and GPT) as that provider serves it: a family whose `vendorProviders` names the provider, in catalog order,
-// and in it a row of that provider whose canonical id is the family's default, which a session can run and which is not
-// weak (a weak model is never a default: `family-defaults.ts`). A provider
-// that is no family's vendor (an aggregator, a local server), or that doesn't serve its family's default, recommends
-// nothing, and the person picks.
+// and in it a row of that provider whose canonical id is the family's default, or else the first of its fallbacks
+// (`then`, 2026-11-24), which a session can run and which is not weak (a weak model is never a default:
+// `family-defaults.ts`). A provider that is no family's vendor (an aggregator, a local server), or that serves none of its
+// family's list, recommends nothing, and the person picks.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
 import { effortVocabularyOf, toolsRefusedFor } from "./runtime-sdk/provider-selection";
-import { FAMILY_DEFAULTS, type FamilyDefault } from "./runtime-sdk/model-plugins/family-defaults";
+import { choicesOf, FAMILY_DEFAULTS } from "./runtime-sdk/model-plugins/family-defaults";
 
 /** The harness's provider-less test doubles (`winter-test/*`): always "had", they need no key. */
 const TEST_PREFIX = "winter-test/";
@@ -48,9 +48,9 @@ export interface Recommendation {
   effort?: string;
 }
 
-/** The family a model row belongs to (whose `vendorProviders` names its provider), and that family's default. */
-function familyOf(catalog: Pick<WinterCatalog, "families">, providerId: string): { id: string; def: FamilyDefault }[] {
-  return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => ({ id: f.id, def: FAMILY_DEFAULTS[f.id]! }));
+/** The families whose `vendorProviders` name this provider and that declare a default, in catalog order. */
+function familiesOf(catalog: Pick<WinterCatalog, "families">, providerId: string): string[] {
+  return (catalog.families ?? []).filter((f) => (f.vendorProviders ?? []).includes(providerId) && FAMILY_DEFAULTS[f.id] !== undefined).map((f) => f.id);
 }
 
 /** A weak model is never recommended (`family-defaults.ts`): the catalog's hand-set class, and a row that states none
@@ -59,14 +59,24 @@ export function isWeak(row: { strength?: string }): boolean {
   return row.strength !== "strong" && row.strength !== "medium";
 }
 
-/** A provider's recommended default from its family's (see the header), or none. */
-export function recommended(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string): Recommendation | undefined {
-  for (const { def } of familyOf(catalog, providerId)) {
+/** A family's recommendation on this provider: the FIRST of its default and fallbacks (`choicesOf`) the provider serves,
+ *  not blocked, not deprecated, tools not refused, never weak; or none. */
+export function recommendedFor(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string, familyId: string): Recommendation | undefined {
+  for (const def of choicesOf(FAMILY_DEFAULTS[familyId])) {
     const row = catalog.models.find((m) => m.providerId === providerId && m.canonicalModelId === def.model
       && m.status !== "blocked" && m.status !== "deprecated" && !toolsRefusedFor(m) && !isWeak(m));
     if (row === undefined) continue;
     const efforts = effortVocabularyOf(row) ?? [];
     return { model: row.key, ...(def.effort !== undefined && efforts.includes(def.effort) ? { effort: def.effort } : {}) };
+  }
+  return undefined;
+}
+
+/** A provider's recommended default from its families' (see the header), the first family in catalog order that has one. */
+export function recommended(catalog: Pick<WinterCatalog, "families" | "models">, providerId: string): Recommendation | undefined {
+  for (const familyId of familiesOf(catalog, providerId)) {
+    const r = recommendedFor(catalog, providerId, familyId);
+    if (r !== undefined) return r;
   }
   return undefined;
 }

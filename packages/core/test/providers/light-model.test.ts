@@ -13,7 +13,7 @@ import { loadCatalog } from "@waifucave/clover-provider-catalog";
 import { openaiChatFake } from "@waifucave/clover-provider-conformance/fakes";
 import { FileSecretStore } from "../../src/auth/secret-store";
 import { clearCredentialMaterial, writeCredentialMaterial } from "../../src/auth/credential-material";
-import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "../../src/runtime-sdk/model-plugins/family-defaults";
+import { choicesOf, FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "../../src/runtime-sdk/model-plugins/family-defaults";
 import { familyOfModel, lightFamiliesOf, lightModelForJob, lightModelOn, lightModelsServedOn } from "../../src/runtime-sdk/model-plugins/light-model";
 import { effortVocabularyOf } from "../../src/runtime-sdk/provider-selection";
 import { internalWireEffortFor } from "../../src/providers/internal-provider";
@@ -144,7 +144,7 @@ describe("the order, for the light jobs", () => {
 
 describe("where a provider doesn't serve its family's light model (2026-11-24: another family's light model, the reviewer alone may take the default)", () => {
   const usable = (m: { status: string }) => m.status !== "blocked" && m.status !== "deprecated";
-  const defaults = new Set(Object.values(FAMILY_DEFAULTS).map((d) => d.model));
+  const defaults = new Set(Object.values(FAMILY_DEFAULTS).flatMap((d) => choicesOf(d).map((c) => c.model)));
   const lights = new Set(Object.values(FAMILY_LIGHT_MODELS).map((d) => d.model));
   // Every provider and family pair the catalog has where the family's own light model is not served there.
   const pairs: { provider: string; family: string }[] = [];

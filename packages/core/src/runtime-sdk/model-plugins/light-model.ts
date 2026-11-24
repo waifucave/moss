@@ -2,7 +2,7 @@
 // Nothing here reads a key, a setting or the credential store; `settings.ts` decides WHICH provider, this answers WHAT the
 // provider offers.
 import type { WinterCatalog } from "@waifucave/clover-provider-catalog";
-import { FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "./family-defaults";
+import { choicesOf, FAMILY_DEFAULTS, FAMILY_LIGHT_MODELS } from "./family-defaults";
 
 type CatalogView = Pick<WinterCatalog, "families" | "models">;
 
@@ -30,9 +30,7 @@ export function familyOfModel(catalog: CatalogView, providerId: string, modelKey
   for (const f of catalog.families ?? []) {
     if (FAMILY_LIGHT_MODELS[f.id] === undefined) continue;
     const canonical = new Set<string>(f.slots.map((s) => s.canonicalModelId));
-    const d = FAMILY_DEFAULTS[f.id];
-    if (d !== undefined) canonical.add(d.model);
-    canonical.add(FAMILY_LIGHT_MODELS[f.id]!.model);
+    for (const c of [...choicesOf(FAMILY_DEFAULTS[f.id]), ...choicesOf(FAMILY_LIGHT_MODELS[f.id])]) canonical.add(c.model);
     if (canonical.has(row.canonicalModelId)) return f.id;
   }
   return undefined;
@@ -41,14 +39,15 @@ export function familyOfModel(catalog: CatalogView, providerId: string, modelKey
 /** A row this provider serves for jobs: not blocked, not deprecated (a deprecated or blocked light row counts as not served). */
 const served = (m: { providerId: string; status: string }, providerId: string): boolean => m.providerId === providerId && m.status !== "blocked" && m.status !== "deprecated";
 
-/** The family's light model as this provider serves it (an aggregator's own row counts: it is that provider's offering): a row of that provider with the family's canonical id that isn't
- *  blocked or deprecated. Absent where the provider doesn't offer it (an OAuth sign-in's or an aggregator's catalog may not). */
+/** The family's light model as this provider serves it (an aggregator's own row counts: it is that provider's offering): the
+ *  first of the light entry and its fallbacks (`choicesOf`) with a row of that provider that isn't blocked or deprecated.
+ *  Absent where the provider offers none of them (an OAuth sign-in's or an aggregator's catalog may not). */
 export function lightModelOn(catalog: CatalogView, providerId: string, familyId: string): LightChoice | undefined {
-  const light = FAMILY_LIGHT_MODELS[familyId];
-  if (light === undefined) return undefined;
-  const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === light.model);
-  if (row === undefined) return undefined;
-  return { tag: row.key, family: familyId, ...(light.effort !== undefined ? { effort: light.effort } : {}) };
+  for (const light of choicesOf(FAMILY_LIGHT_MODELS[familyId])) {
+    const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === light.model);
+    if (row !== undefined) return { tag: row.key, family: familyId, ...(light.effort !== undefined ? { effort: light.effort } : {}) };
+  }
+  return undefined;
 }
 
 /** Every family's light model this provider serves, in THE FIXED PREFERENCE ORDER: cheapest input price first (a row with no
@@ -82,8 +81,9 @@ export function lightModelForJob(catalog: CatalogView, providerId: string, famil
   const other = lightModelsServedOn(catalog, providerId)[0];
   if (other !== undefined) return other;
   if (job !== "reviewer") return undefined;
-  const def = FAMILY_DEFAULTS[familyId];
-  if (def === undefined) return undefined;
-  const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === def.model);
-  return row === undefined ? undefined : { tag: row.key, family: familyId };
+  for (const def of choicesOf(FAMILY_DEFAULTS[familyId])) {
+    const row = catalog.models.find((m) => served(m, providerId) && m.canonicalModelId === def.model);
+    if (row !== undefined) return { tag: row.key, family: familyId };
+  }
+  return undefined;
 }
