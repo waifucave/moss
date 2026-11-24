@@ -724,6 +724,9 @@ importers:
       '@types/bun':
         specifier: 1.4.4
         version: 1.4.4
+      '@waifucave/moss-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../../packages/plugin-sdk
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -1179,6 +1182,9 @@ importers:
       '@types/bun':
         specifier: 1.4.4
         version: 1.4.4
+      '@waifucave/moss-plugin-sdk':
+        specifier: workspace:*
+        version: link:../../../../packages/plugin-sdk
       typescript:
         specifier: 5.9.3
         version: 5.9.3
