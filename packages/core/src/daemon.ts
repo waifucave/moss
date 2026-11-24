@@ -5084,6 +5084,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       ...(opts.links ?? {}),
     });
     daemonLinks = started;
+    console.error(`[parts] the links part is up (${started.links ? "with links" : "local-only"}); waiting for the plugin registry`);
     if (partsStopping) return void (await closeStarted());
     if (!started.links) {
       setPluginMain(undefined);
@@ -5092,11 +5093,13 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     const links = started.links;
     if (opts.cloudJoin !== undefined) startCloudJoin(links, opts.cloudJoin.dir);
     const pluginRegistry = await pluginsStarted;
+    console.error(`[parts] the plugin registry is ${pluginRegistry === undefined ? "absent" : "up"}; making the bot side`);
     if (partsStopping) return void (await closeStarted());
     // A node or bot side that can't start leaves the links up (their methods answer), and says why.
     try {
       const p = opts.parts ?? {};
       const bots = p.bots === false ? false : p.bots ?? (pluginRegistry !== undefined ? await daemonBots(pluginRegistry) : false);
+      console.error("[parts] the bot side is made; starting the computer node, the browser and the agents");
       if (partsStopping) return void (await closeStarted());
       // The tree folder only for the default home: a dev or test daemon never makes the shared one.
       const treeRoot = opts.secrets === undefined && isDefaultMossHome(home, profile) ? (() => { try { return defaultTreeRoot(); } catch { return undefined; } })() : undefined;
@@ -5182,6 +5185,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
         },
         log: (line) => console.error(line),
       });
+      console.error("[parts] the computer node, the browser and the agents are up");
       const cloudPoint = daemonParts.node?.cloud;
       if (cloudPoint) beforeCloudPluginRemoved = (id, action) => cloudPoint.guardRemoval(id, action);
       okTicks.flush();
