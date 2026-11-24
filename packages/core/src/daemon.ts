@@ -92,7 +92,7 @@ import { bunRunner } from "./platform/login/live";
 declare const __MOSS_TEST_BUILD__: string | false | undefined;
 import { claimDaemonChildren } from "./platform/daemon-children";
 import { MossSecretStore, KeychainValues, memoryVault, openMossSecretStore, secretStoreWarning } from "./secrets/moss-secret-store";
-import { defaultDeviceName, refuseUntilBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
+import { defaultDeviceName, openOnBroker, startDaemonLinks, type DaemonLinks, type DaemonLinksInput } from "./ipc/device-links";
 import { botApprovalCheck, runsLaterPlace, type BundledToolKind } from "./approvals/bot-check";
 import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
@@ -5063,7 +5063,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       // A paired phone's or browser's MOSS connection over its link (C-M3 item 3).
       clients: { server: mossServer, tokens: mossTokens },
       // A sensitive device change asks on the daemon's one broker once the parts are up (C-M3); before, it's refused.
-      openCard: (req) => (daemonParts?.broker ? brokerCardOpener(daemonParts.broker)(req) : refuseUntilBroker(req)),
+      openCard: openOnBroker(() => daemonParts?.broker),
       onRegistry: (r) => { ownDevices = r; },
       sidecar: { relay: sidecarRelayOf(relayChoiceFrom(settings)) },
       emit: (event) => void mossServer?.coreEvent(event as Parameters<MossServer["coreEvent"]>[0]),

@@ -23,6 +23,7 @@ import { PairingService } from "../../links/pairing";
 import { peerCall } from "../../links/peer-call";
 import { answerKeyStatement, FileDeviceRegistry } from "../registry";
 import { brokerCardOpener, devicesEvents, devicesMethods, type CardOpener, type MethodError } from "../rpc";
+import { openOnBroker } from "../../ipc/device-links";
 
 const clock = new SystemClock();
 let stops: (() => unknown)[] = [];
@@ -169,6 +170,36 @@ describe("pairing's edges", () => {
     expect(a.broker.cards()).toHaveLength(0);
     expect(a.registry.get(c.key.id)).toBeUndefined();
   });
+
+  // The phone's way (native/phone-core/tests/engine.rs): the computer's pairing is begun by its app, the other device joins over the link with
+  // no card of its own (a terminal-like joiner), confirms its side, and the computer's person then types wrong words.
+  for (const joinerConfirmsFirst of [true, false]) {
+    test(`a remote joiner ${joinerConfirmsFirst ? "has confirmed" : "has not yet confirmed"} when the computer's person types wrong words: the pairing fails and NO add card is left, a press on it later adds nothing (through the daemon's opener)`, async () => {
+      const net = new MemoryNetwork();
+      const box: { broker?: FakeApprovalBroker } = {};
+      // The daemon's own wiring (`openOnBroker`, ipc/device-links.ts), with the broker the computer is given a moment after.
+      const a = await computer(net, "Studio", undefined, undefined, { openCard: openOnBroker(() => box.broker) });
+      box.broker = a.broker;
+      const phone = await computer(net, "Phone");
+      const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+      await phone.call("device.pair.join", { code: view.qr }, terminal);
+      await waitFor(() => a.broker.cards().length === 1);
+      const card = a.broker.cards()[0]!;
+      const frame = a.broker.frameChannel(card.id)!;
+      const words = a.pairing.get(view.pairingId)!.view.words!;
+      const phoneSide = joinerConfirmsFirst ? phone.pairing.confirm(view.pairingId, words, { terminal: true }).catch((e: Error) => e) : undefined;
+      if (joinerConfirmsFirst) await new Promise((r) => setTimeout(r, 50));
+      await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
+      await new Promise((r) => setTimeout(r, 500));
+      // A press on the card that outlived it (if one did) is refused, and nothing is added.
+      const r = await a.broker.answer(card.id, { optionId: "approve", hash: card.hash, proof: { via: "sealed-frame", frame, input: "click", at: Date.now() } }, { role: "app" }).catch(() => "refused");
+      expect(r).not.toBe("accepted");
+      await phoneSide;
+      await new Promise((r2) => setTimeout(r2, 100));
+      expect([a.pairing.get(view.pairingId)?.status, a.broker.cards().length]).toEqual(["failed", 0]);
+      expect(a.registry.get(phone.key.id)).toBeUndefined();
+    });
+  }
 
   test("a card for a pairing the person cancelled is withdrawn on both sides, and a late yes adds nothing", async () => {
     const net = new MemoryNetwork();

@@ -31,7 +31,8 @@ import { SntpTimeSource } from "../clock/shared-clock";
 import { waifucaveAccount, type WaifucaveAccount } from "../identity/account-config";
 import { DIST_BUILD } from "../build-kind";
 import { ContractError } from "../contracts/common";
-import { devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
+import { brokerCardOpener, devicesEvents, devicesMethods, mountMainChoiceRequests, type CardOpener, type DevicesMethodsDeps } from "../devices/rpc";
+import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { UpdateRestartGate } from "../lease/main";
 import { safeDeviceName } from "../devices/names";
 import { HandshakeClient } from "../links/handshake";
@@ -45,6 +46,14 @@ import { mountMossRemoteClients, type MossRemoteClientsOptions } from "./link-cl
 
 /** Until C-M3's broker: no card can be raised, so a change that needs one is refused. */
 export const refuseUntilBroker: CardOpener = async () => ({ allowed: Promise.resolve(false) });
+
+/** The daemon's card opener for the device changes: the broker's once the parts are up (`broker()` is undefined before), else a refusal.
+ *  The caller's options (`signal`: a pairing that ends withdraws its add card) go through to the broker: a wrapper that drops them leaves the
+ *  card of a failed pairing up for the person to press. */
+export const openOnBroker = (broker: () => Pick<ApprovalBroker, "request" | "watch"> | undefined): CardOpener => (req, opts) => {
+  const b = broker();
+  return b ? brokerCardOpener(b)(req, opts) : refuseUntilBroker(req, opts);
+};
 
 /** Until C-M3's sealed cards: no call's card can be rebuilt, so a signed answer never checks out. */
 export const renderNothing: CallCardRenderer = () => undefined;
