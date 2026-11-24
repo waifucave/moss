@@ -29,6 +29,7 @@ function view(over: Partial<MossView> = {}): MossView {
 }
 
 let retried: string[] = [];
+let opened: string[] = [];
 let messageTo: ((bot: string, m: import("../src/shared/view").Message) => void)[] = [];
 let viewTo: ((v: MossView) => void)[] = [];
 let pendingBot: { bot: string } | undefined;
@@ -49,6 +50,7 @@ function stub(v: MossView, page: ConversationPage | { waiting: true }): MossBrid
     botRecord: async () => ({ waiting: true }), botInstructions: async () => ({ waiting: true }), editBot: async () => false, models: async () => ({ waiting: true }),
     setup: async () => ({ waiting: true }), setupProviders: async () => ({ waiting: true }), openTerms: async () => false, setDefaultModel: async () => ({ ok: false, why: "no" }), skipSetup: async () => false,
     archiveBot: async () => false, archivedBots: async () => [], restoreBot: async () => false, retry: async (bot) => { retried.push(bot); return { ok: true }; }, pictureInput: () => {},
+    openLink: async (url) => { opened.push(url); return true; },
   };
 }
 
@@ -77,13 +79,60 @@ describe("MOSS's window", () => {
     const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [{ id: "1", from: "bot", text: EVIL, at: Date.now() }, { id: "2", from: "user", text: "<i>me</i>", at: Date.now() }] });
     const bubbles = [...r.container.querySelectorAll("[data-bubble]")];
     expect(bubbles.length).toBe(2);
+    // The reply is Markdown: its one paragraph holds the raw HTML as the text it is (no element came from it).
     expect(bubbles[0]?.textContent).toBe(EVIL);
-    for (const b of bubbles) expect(b.children.length).toBe(0);
+    expect([...bubbles[0]!.children].map((c) => c.tagName)).toEqual(["P"]);
+    expect(bubbles[0]!.querySelector("p")!.children.length).toBe(0);
+    // The person's own words stay plain text.
+    expect(bubbles[1]?.textContent).toBe("<i>me</i>");
+    expect(bubbles[1]?.children.length).toBe(0);
     // The list's last line too.
     expect(r.container.querySelector("[data-bot-row=juniper] .row__last")?.textContent).toBe(EVIL);
     expect(r.container.querySelector("[data-bot-row=juniper] .row__last")?.children.length).toBe(0);
     expect(r.container.querySelectorAll("img, b, i, script").length).toBe(0);
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+    r.unmount();
+  });
+
+  test("a bot's reply is drawn as Markdown: list, bold, italics, inline code, a code block and a link, never raw", async () => {
+    opened = [];
+    const REPLY = [
+      "Here is what I can do for you:",
+      "",
+      "- **Start a coding agent for you.** You tell me what to build and where, and I start it.",
+      "- **Look things up.** I search the web and read `notes.txt` for you.",
+      "",
+      "Then _you_ decide. Run it with:",
+      "",
+      "```sh",
+      "npm test",
+      "```",
+      "",
+      "See [the docs](https://example.com/docs), [mail me](mailto:a@example.com), [a script](javascript:alert(1)) and <b>raw</b>.",
+    ].join("\n");
+    const r = await draw(view(), { bot: "juniper", hasMore: false, messages: [{ id: "1", from: "bot", text: REPLY, at: Date.now() }] });
+    const bubble = r.container.querySelector("[data-bubble=bot]")!;
+    // No dash or asterisk of the Markdown is left on the screen.
+    expect(bubble.textContent).not.toContain("**");
+    expect(bubble.textContent).not.toMatch(/^\s*- /m);
+    expect(bubble.textContent).not.toContain("```");
+    const items = [...bubble.querySelectorAll("ul > li")];
+    expect(items.length).toBe(2);
+    expect(items[0]!.querySelector("strong")?.textContent).toBe("Start a coding agent for you.");
+    expect(items[1]!.querySelector("strong")?.textContent).toBe("Look things up.");
+    expect(items[1]!.querySelector("code")?.textContent).toBe("notes.txt");
+    expect(bubble.querySelector("em")?.textContent).toBe("you");
+    expect(bubble.querySelector("pre code")?.textContent).toBe("npm test\n");
+    // Raw HTML in a reply is the text it is.
+    expect(bubble.querySelector("b")).toBeNull();
+    expect(bubble.textContent).toContain("<b>raw</b>");
+    // Links: http(s) and mailto open in the person's browser through main, on a click; a script address is no link at all.
+    const links = [...bubble.querySelectorAll("a")];
+    expect(links.map((a) => a.textContent)).toEqual(["the docs", "mail me"]);
+    await act(async () => { links[0]!.click(); links[1]!.click(); await new Promise((res) => setTimeout(res, 10)); });
+    expect(opened).toEqual(["https://example.com/docs", "mailto:a@example.com"]);
+    expect([...bubble.querySelectorAll("[data-blocked]")].map((a) => a.textContent)).toEqual(["a script"]);
+    expect(r.container.querySelector("script")).toBeNull();
     r.unmount();
   });
 

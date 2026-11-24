@@ -51,6 +51,10 @@ cpSync(join(root, "src", "window", "index.html"), join(windowOut, "index.html"))
 cpSync(join(root, "src", "window", "window.css"), join(windowOut, "window.css"));
 // The pages' own styles (lane MA2's: the side panel, Plugins and Settings), after the window's.
 cpSync(join(root, "src", "window", "pages.css"), join(windowOut, "pages.css"));
+// The conversation parts MOSS reuses from MOSS Code's conversation (a reply's Markdown, a bot's question): its own stylesheet, copied
+// as it is, and the tokens it wears given MOSS's colours (parts.css, last).
+cpSync(join(root, "..", "..", "plugins", "moss", "plugins", "conversation", "client", "styles.css"), join(windowOut, "conversation.css"));
+cpSync(join(root, "src", "window", "parts.css"), join(windowOut, "parts.css"));
 
 // The screen add-on (macOS; native/input/macos/screen.mm, lane RT's): the overlap check's window list (`windowsAbove`,
 // `bundleOf`), built as MOSS Code's build does, with clang alone. Where it can't be built (no Xcode tools) MOSS runs

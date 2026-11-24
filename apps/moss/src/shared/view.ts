@@ -123,7 +123,8 @@ export interface Attachment {
 export interface Message {
   id: string;
   from: "user" | "bot" | "note";
-  /** Plain text: the window shows it as text, never as markup. */
+  /** The person's and a note's words are drawn as text; the bot's reply as Markdown (bold, lists, code, links), never as
+   *  HTML: nothing a model wrote reaches the page as markup. */
   text: string;
   at: number;
   files?: Attachment[];
@@ -349,6 +350,8 @@ export interface MossBridge {
   /** Try again on the bot's failed latest turn (`session.resend`): the engine sends the same words once more, after the
    *  person's own press. */
   retry(bot: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Opens a link of a bot's reply in the person's browser: http, https or mailto, after the person's own click. */
+  openLink(url: string): Promise<boolean>;
   /** The person tried to act on a bot's screen (a click, a key, a scroll): it is watch only, and main says so. */
   pictureInput(kind: "pointer" | "key" | "wheel"): void;
   models(): Promise<ModelRow[] | { waiting: true }>;

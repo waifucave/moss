@@ -4,9 +4,12 @@
 // ("Message <bot>") with attach and the microphone. The header has the bot's face, its name, its mood in words and the
 // button that opens the side panel.
 //
-// Everything a bot wrote is plain text drawn as React text nodes (with line breaks kept by CSS), never parsed as markup:
-// no `dangerouslySetInnerHTML`, no HTML from a message reaches the page.
+// What the person typed, and every note, is plain text drawn as React text nodes (line breaks kept by CSS). The bot's reply is
+// Markdown, drawn by the same renderer MOSS Code's conversation uses (bold, italics, lists, inline code, code blocks, links):
+// raw HTML in it stays the text it is, links open only as http, https or mailto in the person's browser, and an image is a link
+// that never loads. No `dangerouslySetInnerHTML`, no HTML from a message reaches the page.
 import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { MarkdownText } from "../../../../../plugins/moss/plugins/conversation/client/Markdown";
 import { Face, MoodWords } from "../faces/Face";
 import { bridge, shortTime } from "../bridge";
 import { CardFrame } from "../cards/CardFrame";
@@ -187,11 +190,16 @@ const Bubble = memo(function Bubble(props: { m: Message; showTime: boolean; /** 
           </span>
         </div>
       ))}
-      {m.text !== "" ? <div className={`bubble bubble--${m.from}`} data-bubble={m.from}>{m.text}</div> : null}
+      {m.text !== "" && m.from === "bot"
+        ? <div className="bubble bubble--bot cl-conv-md" data-bubble="bot"><MarkdownText text={m.text} onOpenLink={openLink} /></div>
+        : m.text !== "" ? <div className={`bubble bubble--${m.from}`} data-bubble={m.from}>{m.text}</div> : null}
       {props.showTime ? <span className="bubble__time">{shortTime(m.at)}</span> : null}
     </div>
   );
 });
+
+/** A link of a bot's reply: main opens it in the person's browser after their click (http, https or mailto only). */
+const openLink = (url: string): void => { void bridge().openLink(url); };
 
 /** The status line: one line of plain words, a soft highlight moving across it. Not a control (no hover, no click, no
  *  focus stop); a polite live status for a screen reader, told at most once every few seconds, not on every change. */

@@ -850,6 +850,15 @@ function wireBridge(): void {
     if (!personPressed(w)) return { ok: false, why: "Try again goes only right after your own click." };
     return engine.retry(bot);
   });
+  // A link in a bot's reply: the person's own click, an http, https or mailto address only, opened in their browser.
+  handle("moss:open-link", (w, a) => {
+    const url = str(a.url, 4_000);
+    if (url === undefined || !/^(https?:\/\/|mailto:)/i.test(url) || !personPressed(w)) return false;
+    try { new URL(url); } catch { return false; }
+    // A headless run opens nothing on the screen.
+    if (!headless) void shell.openExternal(url);
+    return true;
+  });
   handle("moss:restore-bot", (w, a) => {
     const id = str(a.id, 64);
     if (id === undefined || !personPressed(w)) return false;
