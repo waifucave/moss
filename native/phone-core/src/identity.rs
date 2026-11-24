@@ -14,6 +14,10 @@ use crate::{
 
 /// Where the host app keeps the core's items. Values are opaque bytes; the core names each item. Seeds pass through
 /// here and nowhere else. A host keeps them in its OS's secret store, as device-only items that never sync.
+///
+/// `load` answers `Ok(None)` ONLY when the item is not there. When the store can't be read now (the iOS Keychain
+/// before the first unlock after a restart, the Android Keystore while the user is locked out) it answers
+/// `Err(NotAvailable)`, and any other failure `Err(Failed)`: the core then fails the call and keeps every key as it is.
 #[uniffi::export(with_foreign)]
 pub trait SecretStorage: Send + Sync {
     fn load(&self, name: String) -> Result<Option<Vec<u8>>, StorageError>;
@@ -24,22 +28,23 @@ pub trait SecretStorage: Send + Sync {
 pub const DEVICE_KEY: &str = "device-key";
 pub const ANSWER_KEY: &str = "answer-key";
 
-/// Where the host keeps the answer key (`AnswerKeyHolder`). The core holds an Ed25519 seed in memory, so only the OS
-/// secret stores that keep such a seed are offered: never `secure-enclave` (that names a P-256 key the enclave signs
-/// with, which this core does not hold).
+/// Where the host keeps the answer key's seed (`AnswerKeyHolder` on the wire). The core holds an Ed25519 seed in
+/// memory, so it never says `secure-enclave` (a P-256 key the enclave itself signs with).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum AnswerKeyHolder {
-    /// The iOS Keychain (a device-only item).
+    /// The seed is a device-only iOS Keychain item. Wire value `keychain`.
     Keychain,
-    /// The Android Keystore (the seed wrapped by a Keystore key).
-    Keystore,
+    /// The seed is stored encrypted under an Android Keystore key: the Keystore holds the wrapping key, not the answer
+    /// key itself, which is in the app's memory while it signs. Wire value `keystore`, the nearest the engine's enum
+    /// has (it has no value for a Keystore-wrapped seed; a question for the engine's lane).
+    KeystoreWrapped,
 }
 
 impl AnswerKeyHolder {
     pub fn wire(self) -> &'static str {
         match self {
             AnswerKeyHolder::Keychain => "keychain",
-            AnswerKeyHolder::Keystore => "keystore",
+            AnswerKeyHolder::KeystoreWrapped => "keystore",
         }
     }
 }
@@ -86,10 +91,15 @@ impl std::fmt::Debug for Identity {
     }
 }
 
-fn load_or_create(storage: &Arc<dyn SecretStorage>, name: &str) -> Result<Ed25519Key, CoreError> {
+fn load_or_create(storage: &Arc<dyn SecretStorage>, name: &str, paired: bool) -> Result<Ed25519Key, CoreError> {
     if let Some(seed) = storage.load(name.into())? {
         let seed = zeroize::Zeroizing::new(seed);
         return Ed25519Key::from_seed_slice(&seed).ok_or_else(|| CoreError::storage(format!("the stored {name} isn't an Ed25519 seed")));
+    }
+    // A key that is gone while computers are paired is never replaced here: the computers know the old one, and a new
+    // one would only hide that the store lost it.
+    if paired {
+        return Err(CoreError::storage(format!("the {name} is missing while computers are paired: nothing was replaced")));
     }
     let key = Ed25519Key::generate();
     storage.save(name.into(), key.seed().to_vec())?;
@@ -97,9 +107,12 @@ fn load_or_create(storage: &Arc<dyn SecretStorage>, name: &str) -> Result<Ed2551
 }
 
 impl Identity {
+    /// `name` is the phone's own name as its OS gives it: made safe as the engine makes its own (`safe_device_name`).
     pub fn load_or_create(storage: &Arc<dyn SecretStorage>, name: String, holder: AnswerKeyHolder, os: PhoneOs) -> Result<Self, CoreError> {
-        let device = load_or_create(storage, DEVICE_KEY)?;
-        let answer = load_or_create(storage, ANSWER_KEY)?;
+        let name = crate::names::safe_device_name(&name, "Phone");
+        let paired = storage.load(crate::computers::COMPUTERS.into())?.is_some_and(|v| v.len() > 2);
+        let device = load_or_create(storage, DEVICE_KEY, paired)?;
+        let answer = load_or_create(storage, ANSWER_KEY, paired)?;
         let id = device_id_for(&device.public());
         Ok(Identity { device, answer, id, name, holder, os })
     }

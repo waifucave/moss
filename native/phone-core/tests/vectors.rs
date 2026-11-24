@@ -111,6 +111,15 @@ fn the_phone_core_builds_the_engines_bytes() {
     assert_eq!(cards::user_message_hash("Hi \"there\"\n😀", &["bots/a/staged/1.png".into()], &["home/notes.md".into(), "bots/a/x.txt".into()]), s("userMessageHash"));
     assert_eq!(cards::user_message_signing_input("s_alpha", "m-1", "ab", 1781270000123), s("userMessageInput"));
 
+    // The device-name rule (devices/names.ts): the same verdict on every edge case, and the same cleaned name.
+    for n in v["names"].as_array().unwrap() {
+        let name = n["name"].as_str().unwrap();
+        assert_eq!(moss_phone_core::names::clean_name(name), n["ok"].as_bool().unwrap(), "name {name:?}");
+    }
+    for n in v["safeNames"].as_array().unwrap() {
+        assert_eq!(moss_phone_core::names::safe_device_name(n["raw"].as_str().unwrap(), "Phone"), n["safe"].as_str().unwrap(), "safe name of {:?}", n["raw"]);
+    }
+
     // Strict points: the same verdict on each.
     for (name, p) in v["points"].as_object().unwrap() {
         assert_eq!(is_strict_point(&unhex(p["hex"].as_str().unwrap())), p["strict"].as_bool().unwrap(), "point {name}");

@@ -87,16 +87,87 @@ struct HostSide {
     account: Option<String>,
 }
 
-fn read_host_side(m: &Cbor, key: &[u8; 32]) -> Option<HostSide> {
-    let d = m.get("device")?;
-    let id = d.get("id")?.as_str()?;
-    let name = d.get("name")?.as_str()?;
-    let kind = d.get("kind")?.as_str()?;
-    let runs_core = d.get("runsCore")?.as_bool()?;
-    let public_key = d.get("publicKey")?.as_str()?;
-    if public_key != b64(key) {
-        return None;
+/// Why a computer's record is turned away: the engine's closed set (`PairRefusal`), so what is shown is always the
+/// core's own words, never text the other device wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Name,
+    Kind,
+    Os,
+    App,
+    Record,
+}
+
+impl Refusal {
+    fn from_code(code: &str) -> Option<Self> {
+        Some(match code {
+            "name" => Refusal::Name,
+            "kind" => Refusal::Kind,
+            "os" => Refusal::Os,
+            "app" => Refusal::App,
+            "record" => Refusal::Record,
+            _ => return None,
+        })
     }
+    /// The words when the computer turned this phone away for this reason.
+    fn joiner_words(self) -> &'static str {
+        match self {
+            Refusal::Name => "the computer turned this phone away: this phone's name isn't one MOSS takes (1 to 63 characters with something that shows, no hidden or direction-changing characters). Rename it and try again",
+            Refusal::Kind => "the computer turned this phone away: it doesn't know this kind of device",
+            Refusal::Os => "the computer turned this phone away: it doesn't know this phone's system",
+            Refusal::App => "the computer turned this phone away: it doesn't know this phone app",
+            Refusal::Record => "the computer turned this phone away: what this phone sent about itself doesn't match its key",
+        }
+    }
+    /// The words when this phone turned the computer away.
+    fn host_words(self) -> &'static str {
+        match self {
+            Refusal::Name => "this phone turned the computer away: its name isn't one MOSS takes",
+            Refusal::Kind => "this phone turned the computer away: it isn't a computer MOSS pairs a phone with",
+            Refusal::Os => "this phone turned the computer away: it says it runs on a system MOSS doesn't know",
+            Refusal::App => "this phone turned the computer away: it names a phone app, and it isn't a phone",
+            Refusal::Record => "this phone turned the computer away: what it sent about itself doesn't match its key",
+        }
+    }
+}
+
+/// The engine's `DeviceKind` values a phone pairs with (a computer that runs MOSS's core), and `DeviceOs`.
+const COMPUTER_KINDS: [&str; 3] = ["desktop", "server", "cloud"];
+const DEVICE_OS: [&str; 4] = ["macos", "windows", "linux", "ios"];
+
+/// The computer's record as its welcome sent it, checked as the engine checks a peer's (`#readSide`).
+fn read_host_side(m: &Cbor, key: &[u8; 32]) -> Result<HostSide, Refusal> {
+    use Refusal::*;
+    let d = m.get("device").ok_or(Record)?;
+    let (Some(id), Some(name), Some(kind), Some(runs_core), Some(public_key)) = (
+        d.get("id").and_then(Cbor::as_str),
+        d.get("name").and_then(Cbor::as_str),
+        d.get("kind").and_then(Cbor::as_str),
+        d.get("runsCore").and_then(Cbor::as_bool),
+        d.get("publicKey").and_then(Cbor::as_str),
+    ) else {
+        return Err(Record);
+    };
+    if crate::names::name_problem(name).is_some() {
+        return Err(Name);
+    }
+    if !COMPUTER_KINDS.contains(&kind) || !runs_core {
+        return Err(Kind);
+    }
+    let os = match d.get("os") {
+        None | Some(Cbor::Undefined) => None,
+        Some(Cbor::Text(o)) if DEVICE_OS.contains(&o.as_str()) => Some(o.clone()),
+        _ => return Err(Os),
+    };
+    let computer = match d.get("computer") {
+        None | Some(Cbor::Undefined) => None,
+        Some(Cbor::Text(c)) if crate::names::clean_name(c) => Some(c.clone()),
+        _ => return Err(Name),
+    };
+    if public_key != b64(key) {
+        return Err(Record);
+    }
+    let record_inner = || -> Option<HostSide> {
     let pair_key: [u8; 32] = m.get("pairKey")?.as_bytes()?.try_into().ok()?;
     let group_key: [u8; 32] = m.get("groupKey")?.as_bytes()?.try_into().ok()?;
     if !is_strict_point(&pair_key) || !is_strict_point(&group_key) {
@@ -127,30 +198,33 @@ fn read_host_side(m: &Cbor, key: &[u8; 32]) -> Option<HostSide> {
         }
         answer_key = Some((pk.to_string(), held.to_string(), (alg == AnswerKeyAlg::P256).then(|| "p256".to_string())));
     }
-    // An app on the computer's record is refused as the engine refuses one on any device that isn't a phone.
-    let app = match d.get("app") {
-        None | Some(Cbor::Undefined) => None,
-        Some(Cbor::Text(a)) if (a == "moss" || a == "code") && kind == "phone" => Some(a.clone()),
-        _ => return None,
-    };
-    let opt_s = |k: &str| d.get(k).and_then(Cbor::as_str).map(str::to_string);
+    // A group id is the computer's text: bounded here (its storage item is named by a hash of it).
+    if group.as_str().is_some_and(|g| g.is_empty() || g.len() > 128) {
+        return None;
+    }
     Some(HostSide {
         record: RecordFields {
             id: id.into(),
             name: name.into(),
             kind: kind.into(),
-            os: opt_s("os"),
+            os: os.clone(),
             runs_core,
-            computer: opt_s("computer"),
+            computer: computer.clone(),
             has_display: d.get("hasDisplay").and_then(Cbor::as_bool),
             public_key: public_key.into(),
             answer_key,
-            app,
+            app: None,
         },
         pair_key,
         group_key,
         account: account.as_str().map(str::to_string),
     })
+    };
+    // A computer is never a phone, so any app on its record is refused (the engine refuses an app on a non-phone).
+    if !matches!(d.get("app"), None | Some(Cbor::Undefined)) {
+        return Err(App);
+    }
+    record_inner().ok_or(Record)
 }
 
 fn device_map(r: &RecordFields) -> Cbor {
@@ -214,14 +288,20 @@ async fn next_msg(recv: &mut RecvStream, timeout: Duration) -> Result<Cbor, Core
     }
 }
 
+/// The core's own words for a computer's refusal: its code when it is one of the engine's closed set, otherwise a fixed
+/// sentence. The computer's own `reason` text is never shown.
 fn reason_of(m: &Cbor) -> String {
-    m.as_array().and_then(|a| a.get(1)).and_then(|x| x.get("reason")).and_then(Cbor::as_str).unwrap_or("refused").chars().take(200).collect()
+    let code = m.as_array().and_then(|a| a.get(1)).and_then(|x| x.get("code")).and_then(Cbor::as_str);
+    match code.and_then(Refusal::from_code) {
+        Some(r) => r.joiner_words().to_string(),
+        None => "the computer refused the pairing (it isn't showing this pairing any more, or this phone is paired or was removed there already)".to_string(),
+    }
 }
 
 /// Dials the computer the QR names and runs the exchange up to the words.
 pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dyn SecretStorage>, qr: &str, app: PhoneApp) -> Result<Pairing, CoreError> {
     let offer = parse_qr(qr)?;
-    if offer.expires_at <= now_ms() {
+    if !(offer.expires_at > now_ms()) {
         return Err(CoreError::refused("the pairing has expired"));
     }
     if offer.host_key == identity.device.public() {
@@ -275,7 +355,13 @@ pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dy
         CoreError::protocol("the computer answered something that isn't a pairing")
     };
     let Some(w) = reply.as_array().filter(|a| kind == Some("welcome") && a.len() >= 2).map(|a| &a[1]) else { return Err(protocol(&conn)) };
-    let Some(host) = read_host_side(w, &offer.host_key) else { return Err(protocol(&conn)) };
+    let host = match read_host_side(w, &offer.host_key) {
+        Ok(h) => h,
+        Err(r) => {
+            fail(&conn, CLOSE_PROTOCOL, "record");
+            return Err(CoreError::refused(r.host_words()));
+        }
+    };
     if device_id_for(&offer.host_key) != host.record.id {
         return Err(protocol(&conn));
     }
@@ -283,7 +369,7 @@ pub async fn begin(ep: &iroh::Endpoint, identity: Arc<Identity>, storage: Arc<dy
         return Err(protocol(&conn));
     };
     // The computer's `t` dates the statements both sign, its admit of this phone among them: an old one is refused.
-    if (t - now_ms()).abs() > STATEMENT_FRESH_MS {
+    if !((t - now_ms()).abs() <= STATEMENT_FRESH_MS) {
         fail(&conn, CLOSE_PROTOCOL, "stale t");
         return Err(CoreError::refused("the computer's clock is too far off (or it replayed an old pairing)"));
     }
@@ -371,7 +457,7 @@ async fn confirm(mut s: Agreed, storage: Arc<dyn SecretStorage>, identity: Arc<I
         // The computer closed the pairing (its words differed, its card was denied): say why, in its own short words.
         Ok(Err(e)) => {
             return Err(match s.conn.close_reason() {
-                Some(c) => CoreError::refused(format!("the computer ended the pairing: {}", net::close_of(&c).1.chars().take(200).collect::<String>())),
+                Some(_) => CoreError::refused("the computer ended the pairing (its person said the words differ, or said no)"),
                 None => e,
             })
         }
@@ -399,10 +485,12 @@ async fn confirm(mut s: Agreed, storage: Arc<dyn SecretStorage>, identity: Arc<I
             return Err(CoreError::refused("the computer's group admission is wrong"));
         }
     }
-    storage.save(format!("pair-key:{pair_id}"), s.pair_key.seed().to_vec())?;
-    storage.save(format!("pair-secret:{pair_id}"), pair_secret.to_vec())?;
+    // Pairing the same computer again replaces what the last pairing kept, leaving nothing of it behind.
+    computers::forget(&storage, &s.host.record.id)?;
+    storage.save(computers::pair_key_item(&pair_id), s.pair_key.seed().to_vec())?;
+    storage.save(computers::pair_secret_item(&pair_id), pair_secret.to_vec())?;
     if group_exchange {
-        storage.save(format!("group-key:{}", s.group), s.group_key.seed().to_vec())?;
+        storage.save(computers::group_key_item(&s.group), s.group_key.seed().to_vec())?;
     }
     let computer = PairedComputer {
         id: s.host.record.id.clone(),

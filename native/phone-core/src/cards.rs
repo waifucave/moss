@@ -89,6 +89,70 @@ fn write(v: &Value, out: &mut String) {
     }
 }
 
+/// A card as the core hands it to the app to display, and as the app hands it back to answer it: the core signs
+/// only for a card in this form, recomputing its hash from `card_json` (the content the person saw) at the tap,
+/// with no fetch between the tap and the signature.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct CardView {
+    pub id: String,
+    /// Its hash, recomputed by the core from `card_json` and equal to the card's own.
+    pub hash: String,
+    /// The card, JSON: what the app draws.
+    pub card_json: String,
+    /// The option ids it offers, in order.
+    pub options: Vec<String>,
+    /// Still waiting for an answer, as far as the core was told.
+    pub pending: bool,
+    /// Its outcome, when the engine said it is resolved (`approved`, `denied`, `expired`, ...).
+    pub outcome: Option<String>,
+}
+
+fn is_card_id(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("card_") else { return false };
+    (6..=64).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// `CARD_OPTION_ID_RE`: `^[a-z0-9_-]{1,64}$`.
+pub fn is_option_id(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// One part of a plugin id (`PLUGIN_ID_PATTERN`, 2 to 40 characters).
+fn is_plugin_part(s: &str) -> bool {
+    let b = s.as_bytes();
+    (2..=40).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+}
+
+/// `OkCheckboxId`: a plugin id (`a` or `a/b`), or a plugin's app parts (`<id>#app`).
+pub fn is_checkbox_id(s: &str) -> bool {
+    let id = s.strip_suffix("#app").unwrap_or(s);
+    let mut parts = id.split('/');
+    let first = parts.next().unwrap_or("");
+    let second = parts.next();
+    parts.next().is_none() && is_plugin_part(first) && second.map_or(true, is_plugin_part)
+}
+
+/// A card the engine sent, checked for display: an object with a well-formed id, a hash that matches its content, and
+/// options with well-formed ids.
+pub fn view(card: &Value, outcome: Option<String>) -> Result<CardView, CoreError> {
+    let tampered = |r: &str| CoreError::TamperedCard { reason: r.to_string() };
+    let id = card.get("id").and_then(Value::as_str).filter(|i| is_card_id(i)).ok_or_else(|| tampered("the card's id isn't a card id"))?;
+    let hash = verify_card(card)?;
+    let options: Vec<String> = card
+        .get("options")
+        .and_then(Value::as_array)
+        .ok_or_else(|| tampered("the card has no options"))?
+        .iter()
+        .map(|o| o.get("id").and_then(Value::as_str).filter(|i| is_option_id(i)).map(str::to_string))
+        .collect::<Option<_>>()
+        .ok_or_else(|| tampered("an option's id isn't one"))?;
+    Ok(CardView { id: id.to_string(), hash, card_json: card.to_string(), options, pending: outcome.is_none(), outcome })
+}
+
 /// A card's hash as the engine computes it: SHA-256 hex over `cardHashInput` (the card without `hash`).
 pub fn card_hash(card: &Value) -> Result<String, CoreError> {
     let Value::Object(m) = card else { return Err(CoreError::TamperedCard { reason: "a card is an object".into() }) };

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::{error::CoreError, identity::SecretStorage};
 
-const COMPUTERS: &str = "computers";
+pub const COMPUTERS: &str = "computers";
 
 /// Which phone app a pairing is for (the owner's decision 2026-11-24: MOSS and MOSS Code pair on their own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -70,6 +70,34 @@ fn from_json(v: &Value) -> Option<PairedComputer> {
         app: PhoneApp::from_wire(v["app"].as_str()?)?,
         paired_at: v["pairedAt"].as_i64()?,
     })
+}
+
+/// The storage items a pairing keeps for one computer. The group's id comes from the computer, so its item is named
+/// by a hash of it, never by the text itself.
+pub fn pair_key_item(pair_id: &str) -> String {
+    format!("pair-key:{pair_id}")
+}
+pub fn pair_secret_item(pair_id: &str) -> String {
+    format!("pair-secret:{pair_id}")
+}
+pub fn group_key_item(group: &str) -> String {
+    format!("group-key:{}", &crate::bytes::hex(&crate::keys::sha256(group.as_bytes()))[..32])
+}
+
+/// Removes a computer and every item its pairing kept (its pair key and pair secret, and its group's key unless
+/// another kept computer is in that group). Returns the record removed.
+pub fn forget(storage: &Arc<dyn SecretStorage>, id: &str) -> Result<Option<PairedComputer>, CoreError> {
+    let Some(c) = remove(storage, id)? else { return Ok(None) };
+    if let Some(p) = &c.pair_id {
+        storage.delete(pair_key_item(p))?;
+        storage.delete(pair_secret_item(p))?;
+    }
+    if let Some(g) = &c.group {
+        if !list(storage)?.iter().any(|x| x.group.as_deref() == Some(g.as_str())) {
+            storage.delete(group_key_item(g))?;
+        }
+    }
+    Ok(Some(c))
 }
 
 pub fn list(storage: &Arc<dyn SecretStorage>) -> Result<Vec<PairedComputer>, CoreError> {

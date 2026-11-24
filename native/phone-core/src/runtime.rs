@@ -17,9 +17,27 @@ pub fn handle() -> &'static tokio::runtime::Handle {
     RT.handle()
 }
 
-/// Runs `fut` on the core's runtime and waits for it. A panic in it comes back as a panic here.
+/// Aborts the task when the call awaiting it is dropped before it finished.
+struct AbortOnDrop(Option<tokio::task::AbortHandle>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            h.abort();
+        }
+    }
+}
+
+/// Runs `fut` on the core's runtime and waits for it. When the caller stops awaiting (a Swift task or a Kotlin
+/// coroutine cancelled), the work is aborted at its next await point, never finished unseen: a pairing a cancelled
+/// `confirm` was running keeps nothing on the phone, and an answer not yet sent is not sent. A panic in it comes back
+/// as a panic here.
 pub async fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> T {
-    match RT.spawn(fut).await {
+    let task = RT.spawn(fut);
+    let mut guard = AbortOnDrop(Some(task.abort_handle()));
+    let r = task.await;
+    guard.0 = None;
+    match r {
         Ok(v) => v,
         Err(e) => std::panic::resume_unwind(e.into_panic()),
     }

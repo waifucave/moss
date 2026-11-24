@@ -15,10 +15,21 @@ The phone apps' shared core (spec §8, §5.5, §10; lane PC): one Rust library t
   - The phone re-dials with the engine's backoff, and at once on `network_changed`. It stops only when the computer revokes it.
   - On each connect it runs `protocol.hello`, then `events.subscribe`, then `card.list`.
 - **Messages:** `send_message(session, text, client_message_id, images, files)` signs the person's message with the answer key over `userMessageSigningInput`, as the desktop app does. The hash covers the attachments.
-- **Cards** (`protocol/src/approvals.ts`):
-  - It fetches a card and rebuilds its hash: SHA-256 over canonical JSON, with keys sorted in UTF-16 order and numbers and escapes written as JS writes them.
-  - It refuses a card whose hash differs from its content.
-  - It signs `cardAnswerSigningInput` with the answer key.
+- **Cards** (`protocol/src/approvals.ts`): every card reaches the app as a checked `CardView`, from `CardRequested`, `PendingCards` or `fetch_card(id)`. The core has rebuilt its hash from its content (SHA-256 over canonical JSON, keys in UTF-16 order, numbers and escapes as JS writes them). It is refused (`TamperedCard`) when the hash differs, or when `fetch_card` gets back another card than the one asked for.
+  - `answer_card(card, option, children)` signs only the card the app displayed. It recomputes the hash from that `CardView`'s content and requires the same id and hash. Nothing is fetched between the tap and the signature, and the option and checkboxes must match the card and the protocol's patterns.
+- **What a computer sends is bounded**:
+  - a lane frame is at most 1 MiB, and its CBOR at most 4096 items and 32 levels deep, with repeated keys found in linear time;
+  - a client message is at most 4 MiB;
+  - queued events are capped in count and in bytes.
+
+  Anything malformed closes that one link, with a reason in the core's own words, never the computer's text, and the core re-dials. A lone surrogate in the engine's JSON reads as U+FFFD, as JS's `toWellFormed` makes it.
+- **The computer's record** is checked as the engine checks a peer's:
+  - its name by the engine's name rule (`src/names.rs`, a port of `devices/names.ts`);
+  - its kind must be a computer (`desktop`, `server` or `cloud`), its os from `DeviceOs`, and it may carry no phone app.
+
+  Refusals use the engine's closed codes, in the core's words. The phone's own name is made safe as the engine makes its own.
+- **Storage:** `load` answers `None` only for "no such item". A store that can't be read now answers `NotAvailable`. The core never makes keys over keys it couldn't read, nor while computers are paired. Group-key item names are a hash of the computer's group id. `forget_computer`, and a re-pairing, delete every item of that computer.
+- **Cancellation:** a call the app abandons aborts its work at the next await. `next_event` takes an event off the queue only when it returns it.
 - **Bindings:** UniFFI 0.32. Swift and Kotlin come from one definition, the `#[uniffi::export]` items. Every async call runs on the core's own tokio runtime, so it completes whatever executor awaits it.
 
 ## Byte for byte

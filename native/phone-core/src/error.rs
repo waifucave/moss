@@ -51,9 +51,15 @@ impl CoreError {
     }
 }
 
-/// What the host app's storage reports when it fails (its own words; the core passes them on as `Storage`).
+/// What the host app's storage reports when it can't answer. "No such item" is not an error: `load` answers `None`
+/// for it. Anything else that keeps an item from being read is an error, so the core never takes "can't read" for
+/// "isn't there" (and never makes new keys over keys it couldn't read).
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum StorageError {
+    /// The store can't be read right now (the Keychain before the first unlock, the Keystore while the user is locked
+    /// out): try again later.
+    #[error("not available now: {reason}")]
+    NotAvailable { reason: String },
     #[error("{reason}")]
     Failed { reason: String },
 }

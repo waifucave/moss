@@ -12,6 +12,11 @@
 //!   on `network_changed`, and stops for good only when the computer says it revoked this phone.
 //! * On every connect: the link's hello, then `protocol.hello`, `events.subscribe` and `card.list`, in that order, so a
 //!   card raised during the connect is heard as an event and one already waiting comes in the list.
+//!
+//! What the computer sends is bounded and never trusted: a lane frame is at most `LANE_FRAME_MAX` and its CBOR within
+//! `cbor::LANE_LIMITS`; a client frame at most `RPC_FRAME_MAX`; queued events at most `MAX_EVENTS` and
+//! `MAX_EVENT_BYTES`. Anything malformed closes that connection with a reason in the core's own words (never the
+//! computer's text), and the core dials again. A card is signed only as the app displayed it (`answer_card`).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -26,14 +31,14 @@ use iroh::endpoint::{Connection as QuicConn, RecvStream, SendStream, VarInt};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, watch, Mutex, Notify};
 
+pub use crate::cards::CardView;
 use crate::{
-    bytes,
-    cards,
-    cbor::{decode, encode, Cbor},
+    bytes, cards,
+    cbor::{decode_with, encode, Cbor, LANE_LIMITS},
     computers::PairedComputer,
     error::CoreError,
     identity::Identity,
-    net::{self, Target, ALPN_LINK, CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SHUTDOWN, CLOSE_SUPERSEDED, CLOSE_UNPAIRED, MAX_FRAME, RESET_NOT_FOUND},
+    net::{self, Target, ALPN_LINK, CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SHUTDOWN, CLOSE_SUPERSEDED, CLOSE_UNPAIRED, RESET_NOT_FOUND},
     pairing::now_ms,
 };
 
@@ -47,7 +52,13 @@ const IDLE: Duration = Duration::from_secs(20);
 /// The engine's redial backoff (`redialBackoffMs`).
 const BACKOFF_MS: [u64; 7] = [0, 250, 1_000, 2_000, 5_000, 10_000, 30_000];
 const MAX_SEQ_JUMP: u64 = 1_000_000;
+/// A lane carries the link's own small messages (hellos, pings, the computer's link requests): 1 MiB is far above any.
+pub const LANE_FRAME_MAX: usize = 1024 * 1024;
+/// One JSON-RPC message from the engine (a history page, a card list): 4 MiB. Larger answers are refused.
+pub const RPC_FRAME_MAX: usize = 4 * 1024 * 1024;
+/// Events queued and not yet read: at most this many, and this many bytes of their JSON; the oldest go first.
 const MAX_EVENTS: usize = 4096;
+const MAX_EVENT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct ConnectOptions {
@@ -66,11 +77,15 @@ pub enum ConnEvent {
     Connecting { attempt: u32 },
     /// The link and the client connection are up: hello'd and subscribed.
     Up,
-    /// The cards pending when the connection came up (`card.list`'s `cards`, JSON).
-    PendingCards { cards_json: String },
-    /// A notification from the engine: `core.event` (params is the event) or a session's `event`.
+    /// The cards pending when the connection came up (`card.list`), each checked for display.
+    PendingCards { cards: Vec<CardView> },
+    /// A card raised now (`card_requested`), checked for display.
+    CardRequested { card: CardView },
+    /// A card the computer sent whose hash doesn't match what it says, or that isn't a card: not shown, never signed.
+    TamperedCard { id: Option<String> },
+    /// Any other notification from the engine: `core.event` (params is the event) or a session's `event`.
     Notification { method: String, params_json: String },
-    /// The link dropped; the core re-dials by itself.
+    /// The link dropped (`reason` in the core's own words); the core re-dials by itself.
     Down { reason: String },
     /// The computer doesn't know this phone (yet): it keeps trying, as just after a pairing.
     Unpaired,
@@ -78,26 +93,19 @@ pub enum ConnEvent {
     Revoked,
     /// Events were dropped because nobody read them.
     Lagged { dropped: u32 },
-    /// `close` was called: the last event.
+    /// `disconnect` was called: the last event.
     Closed,
 }
 
-#[derive(Clone, Debug, uniffi::Record)]
-pub struct CardView {
-    /// The card as the engine sent it, JSON.
-    pub card_json: String,
-    /// Its hash, rebuilt here and matching the card's own.
-    pub hash: String,
-    /// Still waiting for an answer (no outcome yet).
-    pub pending: bool,
-    /// The outcome, once resolved (`approved`, `denied`, `expired`, ...).
-    pub outcome: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct AnswerOutcome {
-    pub accepted: bool,
-    pub reason: Option<String>,
+impl ConnEvent {
+    fn weight(&self) -> usize {
+        match self {
+            ConnEvent::Notification { params_json, .. } => params_json.len(),
+            ConnEvent::CardRequested { card } => card.card_json.len(),
+            ConnEvent::PendingCards { cards } => cards.iter().map(|c| c.card_json.len()).sum(),
+            _ => 0,
+        }
+    }
 }
 
 /// The link's state now, for a screen that asks rather than listens.
@@ -114,41 +122,62 @@ pub enum LinkState {
     Closed,
 }
 
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct AnswerOutcome {
+    pub accepted: bool,
+    /// The engine's reason when it didn't take the answer (`already-answered`, `bad-time`, ...).
+    pub reason: Option<String>,
+}
+
+struct Queue {
+    q: VecDeque<ConnEvent>,
+    bytes: usize,
+    dropped: u32,
+    closed: bool,
+}
+
 struct Events {
-    q: StdMutex<(VecDeque<ConnEvent>, u32, bool)>,
+    q: StdMutex<Queue>,
     notify: Notify,
 }
 
 impl Events {
     fn push(&self, e: ConnEvent) {
         let mut g = self.q.lock().unwrap();
-        if g.2 {
+        if g.closed {
             return;
         }
-        if g.0.len() >= MAX_EVENTS {
-            g.0.pop_front();
-            g.1 += 1;
+        let w = e.weight();
+        while !g.q.is_empty() && (g.q.len() >= MAX_EVENTS || g.bytes + w > MAX_EVENT_BYTES) {
+            let old = g.q.pop_front().unwrap();
+            g.bytes -= old.weight();
+            g.dropped += 1;
         }
         if matches!(e, ConnEvent::Closed) {
-            g.2 = true;
+            g.closed = true;
         }
-        g.0.push_back(e);
+        g.bytes += w;
+        g.q.push_back(e);
         drop(g);
         self.notify.notify_one();
     }
+
+    /// The next event. An event is taken off the queue only in the same step that returns it, so a call the app
+    /// abandons (a cancelled task) never loses one.
     async fn next(&self) -> Option<ConnEvent> {
         loop {
             let notified = self.notify.notified();
             {
                 let mut g = self.q.lock().unwrap();
-                if g.1 > 0 {
-                    let dropped = std::mem::take(&mut g.1);
+                if g.dropped > 0 {
+                    let dropped = std::mem::take(&mut g.dropped);
                     return Some(ConnEvent::Lagged { dropped });
                 }
-                if let Some(e) = g.0.pop_front() {
+                if let Some(e) = g.q.pop_front() {
+                    g.bytes -= e.weight();
                     return Some(e);
                 }
-                if g.2 {
+                if g.closed {
                     return None;
                 }
             }
@@ -171,6 +200,8 @@ struct Session {
     started: Instant,
     last_in: AtomicU64,
     last_out: AtomicU64,
+    /// Why this side closed it, in the core's own words, for `Down`.
+    failure: StdMutex<Option<&'static str>>,
 }
 
 impl Session {
@@ -179,6 +210,11 @@ impl Session {
     }
     fn heard(&self) {
         self.last_in.store(self.now(), Ordering::Relaxed);
+    }
+    /// Closes the connection because of what the computer sent; the reason is shown as `Down`'s.
+    fn fail(&self, why: &'static str) {
+        self.failure.lock().unwrap().get_or_insert(why);
+        self.conn.close(VarInt::from_u32(CLOSE_PROTOCOL), why.as_bytes());
     }
     async fn lane_send(&self, m: &Cbor) -> Result<(), CoreError> {
         self.last_out.store(self.now(), Ordering::Relaxed);
@@ -214,6 +250,10 @@ impl Session {
             None => answer.await,
         }
     }
+    async fn rpc_send_header(&self) -> Result<(), CoreError> {
+        let header = Cbor::Array(vec![Cbor::text("S"), Cbor::text(REMOTE_RPC_LABEL), Cbor::text("control"), Cbor::Null]);
+        net::write_frame(&mut *self.rpc.lock().await, &encode(&header)).await
+    }
 }
 
 struct Inner {
@@ -230,30 +270,7 @@ struct Inner {
     state: StdMutex<LinkState>,
 }
 
-impl Inner {
-    /// An event for the UI, and the state it implies.
-    fn emit(&self, e: ConnEvent) {
-        let s = match &e {
-            ConnEvent::Connecting { .. } => Some(LinkState::Connecting),
-            ConnEvent::Up => Some(LinkState::Up),
-            ConnEvent::Down { .. } => Some(LinkState::Down),
-            ConnEvent::Unpaired => Some(LinkState::Unpaired),
-            ConnEvent::Revoked => Some(LinkState::Revoked),
-            ConnEvent::Closed => Some(LinkState::Closed),
-            _ => None,
-        };
-        if let Some(s) = s {
-            let mut g = self.state.lock().unwrap();
-            // Revoked and Closed are final: a revoked link stays Revoked when it closes after it.
-            if !matches!(*g, LinkState::Revoked | LinkState::Closed) {
-                *g = s;
-            }
-        }
-        self.events.push(e);
-    }
-}
-
-/// A paired computer's link and client connection, kept up by the core until `close`.
+/// A paired computer's link and client connection, kept up by the core until `disconnect`.
 #[derive(uniffi::Object)]
 pub struct Connection {
     inner: Arc<Inner>,
@@ -282,7 +299,7 @@ pub fn start(ep: iroh::Endpoint, identity: Arc<Identity>, computer: PairedComput
         identity,
         options,
         session: watch::channel(None).0,
-        events: Events { q: StdMutex::new((VecDeque::new(), 0, false)), notify: Notify::new() },
+        events: Events { q: StdMutex::new(Queue { q: VecDeque::new(), bytes: 0, dropped: 0, closed: false }), notify: Notify::new() },
         closed: AtomicBool::new(false),
         wake: Notify::new(),
         last_seq: AtomicU64::new(0),
@@ -293,7 +310,39 @@ pub fn start(ep: iroh::Endpoint, identity: Arc<Identity>, computer: PairedComput
     Ok(Arc::new(Connection { inner }))
 }
 
+/// A close code in the core's own words (the computer's reason text is never shown).
+fn close_words(code: u32) -> &'static str {
+    match code {
+        0 => "the computer closed the link",
+        1 => "the computer replaced the link with a newer one",
+        4 => "the computer saw a protocol error",
+        6 => "the computer is shutting down",
+        _ => "the link was lost",
+    }
+}
+
 impl Inner {
+    /// An event for the UI, and the state it implies.
+    fn emit(&self, e: ConnEvent) {
+        let s = match &e {
+            ConnEvent::Connecting { .. } => Some(LinkState::Connecting),
+            ConnEvent::Up => Some(LinkState::Up),
+            ConnEvent::Down { .. } => Some(LinkState::Down),
+            ConnEvent::Unpaired => Some(LinkState::Unpaired),
+            ConnEvent::Revoked => Some(LinkState::Revoked),
+            ConnEvent::Closed => Some(LinkState::Closed),
+            _ => None,
+        };
+        if let Some(s) = s {
+            let mut g = self.state.lock().unwrap();
+            // Revoked and Closed are final: a revoked link stays Revoked when it closes after it.
+            if !matches!(*g, LinkState::Revoked | LinkState::Closed) {
+                *g = s;
+            }
+        }
+        self.events.push(e);
+    }
+
     async fn run(self: Arc<Self>) {
         let mut attempt: u32 = 0;
         loop {
@@ -327,14 +376,17 @@ impl Inner {
         self.emit(ConnEvent::Closed);
     }
 
-    fn end_of(&self, conn: &QuicConn, fallback: String) -> End {
+    fn end_of(&self, conn: &QuicConn, failure: Option<&'static str>, fallback: String) -> End {
         if self.closed.load(Ordering::Acquire) {
             return End::Shutdown;
         }
-        match conn.close_reason().map(|c| net::close_of(&c)) {
-            Some((CLOSE_REVOKED, _)) => End::Revoked,
-            Some((CLOSE_UNPAIRED, _)) => End::Unpaired,
-            Some((code, reason)) => End::Lost(format!("closed ({code}): {}", reason.chars().take(200).collect::<String>())),
+        if let Some(why) = failure {
+            return End::Lost(why.to_string());
+        }
+        match conn.close_reason().map(|c| net::close_of(&c).0) {
+            Some(CLOSE_REVOKED) => End::Revoked,
+            Some(CLOSE_UNPAIRED) => End::Unpaired,
+            Some(code) => End::Lost(close_words(code).to_string()),
             None => End::Lost(fallback),
         }
     }
@@ -342,14 +394,19 @@ impl Inner {
     async fn session_once(self: Arc<Self>) -> End {
         let conn = match net::dial(&self.ep, &self.target, ALPN_LINK, DIAL_TIMEOUT).await {
             Ok(c) => c,
-            Err(e) => return End::Lost(e.to_string()),
+            Err(_) => return End::Lost("the computer can't be reached".into()),
         };
-        match self.clone().hello(&conn).await {
+        let failure: Arc<StdMutex<Option<&'static str>>> = Arc::default();
+        match self.clone().hello(&conn, failure.clone()).await {
             Ok(s) => self.serve(s).await,
             Err(e) => {
                 // The computer's door closes an unknown or revoked key at once: that close is the answer.
                 let _ = tokio::time::timeout(Duration::from_millis(500), conn.closed()).await;
-                let end = self.end_of(&conn, e.to_string());
+                let why = *failure.lock().unwrap();
+                let end = self.end_of(&conn, why, match e {
+                    CoreError::Timeout { .. } => "the computer didn't answer the link's hello".into(),
+                    _ => "the link's hello failed".into(),
+                });
                 conn.close(VarInt::from_u32(CLOSE_PROTOCOL), b"hello failed");
                 end
             }
@@ -357,7 +414,7 @@ impl Inner {
     }
 
     /// The link's hello, the client stream and its hello, the subscription and the pending cards.
-    async fn hello(self: Arc<Self>, conn: &QuicConn) -> Result<Arc<Session>, CoreError> {
+    async fn hello(self: Arc<Self>, conn: &QuicConn, failure: Arc<StdMutex<Option<&'static str>>>) -> Result<Arc<Session>, CoreError> {
         let (control, control_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no lane: {e}")))?;
         let _ = control.set_priority(3);
         let (rpc, rpc_recv) = conn.open_bi().await.map_err(|e| CoreError::offline(format!("no client stream: {e}")))?;
@@ -372,7 +429,13 @@ impl Inner {
             started: Instant::now(),
             last_in: AtomicU64::new(0),
             last_out: AtomicU64::new(0),
+            failure: StdMutex::new(None),
         });
+        // A failure seen before the session is handed out is reported through this too.
+        let report = {
+            let s = s.clone();
+            move || *s.failure.lock().unwrap()
+        };
         let (hello_tx, hello_rx) = oneshot::channel::<Cbor>();
         let hello_tx = Arc::new(StdMutex::new(Some(hello_tx)));
         // The computer's streams: its lanes (its answers and requests), and any stream it opens (refused: a phone
@@ -386,47 +449,61 @@ impl Inner {
                 }
             });
         }
-        let proposed = self.last_seq.load(Ordering::Acquire) + 1;
-        s.lane_send(&Cbor::Array(vec![Cbor::text("L")])).await?;
-        let hello = Cbor::map(vec![
-            ("protocolVersion", Cbor::Uint(PROTOCOL_VERSION)),
-            ("device", Cbor::text(&self.identity.id)),
-            ("epoch", Cbor::Uint(0)),
-            ("features", Cbor::Array(vec![])),
-            ("connSeq", Cbor::Uint(proposed)),
-        ]);
-        s.lane_send(&Cbor::Array(vec![Cbor::text("q"), Cbor::Uint(0), Cbor::text("peer.hello"), hello])).await?;
-        let answer = tokio::time::timeout(HELLO_TIMEOUT, hello_rx).await.map_err(|_| CoreError::Timeout { reason: "no hello answer".into() })?.map_err(|_| CoreError::offline("the link dropped in its hello"))?;
-        let a = answer.as_array().unwrap_or(&[]);
-        let ok = a.get(2).and_then(Cbor::as_f64) == Some(1.0);
-        let v = a.get(3).cloned().unwrap_or(Cbor::Null);
-        let seq = v.get("connSeq").and_then(Cbor::as_f64);
-        let version = v.get("protocolVersion").and_then(Cbor::as_f64);
-        let seq_ok = seq.is_some_and(|q| q.fract() == 0.0 && q >= 0.0 && q <= (proposed - 1 + MAX_SEQ_JUMP) as f64);
-        if !ok || v.get("device").and_then(Cbor::as_str) != Some(self.computer.id.as_str()) || !seq_ok || !version.is_some_and(|x| x.fract() == 0.0 && x >= 1.0) {
-            conn.close(VarInt::from_u32(CLOSE_PROTOCOL), b"a bad hello answer");
-            return Err(CoreError::protocol("a bad hello answer"));
+        let result: Result<(), CoreError> = async {
+            let proposed = self.last_seq.load(Ordering::Acquire) + 1;
+            s.lane_send(&Cbor::Array(vec![Cbor::text("L")])).await?;
+            let hello = Cbor::map(vec![
+                ("protocolVersion", Cbor::Uint(PROTOCOL_VERSION)),
+                ("device", Cbor::text(&self.identity.id)),
+                ("epoch", Cbor::Uint(0)),
+                ("features", Cbor::Array(vec![])),
+                ("connSeq", Cbor::Uint(proposed)),
+            ]);
+            s.lane_send(&Cbor::Array(vec![Cbor::text("q"), Cbor::Uint(0), Cbor::text("peer.hello"), hello])).await?;
+            let answer = tokio::time::timeout(HELLO_TIMEOUT, hello_rx).await.map_err(|_| CoreError::Timeout { reason: "no hello answer".into() })?.map_err(|_| CoreError::offline("the link dropped in its hello"))?;
+            let a = answer.as_array().unwrap_or(&[]);
+            let ok = a.get(2).and_then(Cbor::as_f64) == Some(1.0);
+            let v = a.get(3).cloned().unwrap_or(Cbor::Null);
+            let seq = v.get("connSeq").and_then(Cbor::as_f64);
+            let version = v.get("protocolVersion").and_then(Cbor::as_f64);
+            let seq_ok = seq.is_some_and(|q| q.fract() == 0.0 && q >= 0.0 && q <= (proposed - 1 + MAX_SEQ_JUMP) as f64);
+            if !ok || v.get("device").and_then(Cbor::as_str) != Some(self.computer.id.as_str()) || !seq_ok || !version.is_some_and(|x| x.fract() == 0.0 && x >= 1.0) {
+                s.fail("the computer's link hello isn't one");
+                return Err(CoreError::protocol("a bad hello answer"));
+            }
+            self.last_seq.fetch_max(seq.unwrap() as u64, Ordering::AcqRel);
+            // The client stream: its header, then JSON-RPC.
+            s.rpc_send_header().await?;
+            tokio::spawn(self.clone().rpc_reader(s.clone(), rpc_recv));
+            tokio::spawn(keepalive(s.clone()));
+            let timeout = Some(Duration::from_secs(30));
+            s.request(
+                "protocol.hello",
+                json!({ "protocolVersion": MOSS_PROTOCOL_VERSION, "role": "remote", "clientName": self.options.client_name, "features": [] }),
+                timeout,
+            )
+            .await?;
+            if !self.options.areas.is_empty() {
+                s.request("events.subscribe", json!({ "areas": self.options.areas }), timeout).await?;
+            }
+            if self.options.areas.iter().any(|a| a == "approvals") {
+                let r = s.request("card.list", json!({}), timeout).await?;
+                let mut shown = vec![];
+                for c in r.get("cards").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    match cards::view(&c, None) {
+                        Ok(v) => shown.push(v),
+                        Err(_) => self.emit(ConnEvent::TamperedCard { id: c.get("id").and_then(Value::as_str).map(|s| s.chars().take(80).collect()) }),
+                    }
+                }
+                self.emit(ConnEvent::PendingCards { cards: shown });
+            }
+            Ok(())
         }
-        self.last_seq.fetch_max(seq.unwrap() as u64, Ordering::AcqRel);
-        // The client stream: its header, then JSON-RPC.
-        s.rpc_send_header().await?;
-        tokio::spawn(self.clone().rpc_reader(s.clone(), rpc_recv));
-        tokio::spawn(keepalive(s.clone()));
-        let timeout = Some(Duration::from_secs(30));
-        s.request(
-            "protocol.hello",
-            json!({ "protocolVersion": MOSS_PROTOCOL_VERSION, "role": "remote", "clientName": self.options.client_name, "features": [] }),
-            timeout,
-        )
-        .await?;
-        if !self.options.areas.is_empty() {
-            s.request("events.subscribe", json!({ "areas": self.options.areas }), timeout).await?;
+        .await;
+        if let Some(why) = report() {
+            *failure.lock().unwrap() = Some(why);
         }
-        if self.options.areas.iter().any(|a| a == "approvals") {
-            let cards = s.request("card.list", json!({}), timeout).await?;
-            self.emit(ConnEvent::PendingCards { cards_json: cards.get("cards").cloned().unwrap_or(json!([])).to_string() });
-        }
-        Ok(s)
+        result.map(|_| s)
     }
 
     async fn serve(self: Arc<Self>, s: Arc<Session>) -> End {
@@ -434,35 +511,37 @@ impl Inner {
         self.emit(ConnEvent::Up);
         let why = s.conn.closed().await;
         s.fail_all("the link dropped");
-        let (code, reason) = net::close_of(&why);
-        self.end_of(&s.conn, format!("closed ({code}): {}", reason.chars().take(200).collect::<String>()))
+        let failure = *s.failure.lock().unwrap();
+        self.end_of(&s.conn, failure, close_words(net::close_of(&why).0).to_string())
     }
 
     /// One stream the computer opened: a lane (its answers, requests, notifications and pings), or a stream it wants
     /// this phone to serve, which is refused.
     async fn incoming(self: Arc<Self>, s: Arc<Session>, mut send: SendStream, mut recv: RecvStream, hello: Arc<StdMutex<Option<oneshot::Sender<Cbor>>>>) {
-        let protocol = |s: &Session, why: &'static str| s.conn.close(VarInt::from_u32(CLOSE_PROTOCOL), why.as_bytes());
-        let first = match net::read_frame(&mut recv, MAX_FRAME).await {
+        let first = match net::read_frame(&mut recv, LANE_FRAME_MAX).await {
             Ok(Some(f)) => f,
-            _ => return,
+            Ok(None) => return,
+            Err(_) => return s.fail("the computer sent a frame larger than a lane takes"),
         };
         s.heard();
-        match decode(&first).ok().as_ref().and_then(Cbor::as_array).and_then(|a| a.first()).and_then(Cbor::as_str) {
+        match decode_with(&first, LANE_LIMITS).ok().as_ref().and_then(Cbor::as_array).and_then(|a| a.first()).and_then(Cbor::as_str) {
             Some("L") => {}
             Some("S") => {
                 let _ = send.reset(VarInt::from_u32(RESET_NOT_FOUND));
                 let _ = recv.stop(VarInt::from_u32(RESET_NOT_FOUND));
                 return;
             }
-            _ => return protocol(&s, "a stream of an unknown kind"),
+            _ => return s.fail("the computer opened a stream of an unknown kind"),
         }
         loop {
-            let f = match net::read_frame(&mut recv, MAX_FRAME).await {
+            let f = match net::read_frame(&mut recv, LANE_FRAME_MAX).await {
                 Ok(Some(f)) => f,
-                Ok(None) | Err(_) => return,
+                Ok(None) => return,
+                Err(CoreError::Protocol { .. }) => return s.fail("the computer sent a frame larger than a lane takes"),
+                Err(_) => return,
             };
             s.heard();
-            let Ok(Cbor::Array(m)) = decode(&f) else { return protocol(&s, "a malformed message") };
+            let Ok(Cbor::Array(m)) = decode_with(&f, LANE_LIMITS) else { return s.fail("the computer sent a link message that isn't one (or one too large)") };
             match m.first().and_then(Cbor::as_str) {
                 Some("p") | Some("n") => {}
                 Some("r") => {
@@ -474,23 +553,26 @@ impl Inner {
                 }
                 Some("q") => {
                     // A phone serves no link methods; the answer goes back on this side's control lane.
-                    let Some(id) = m.get(1).cloned() else { return protocol(&s, "a malformed request") };
+                    let Some(id) = m.get(1).cloned().filter(|i| i.as_f64().is_some()) else { return s.fail("the computer sent a malformed link request") };
                     let err = Cbor::map(vec![("code", Cbor::text("not_found")), ("message", Cbor::text("a phone serves no link methods"))]);
                     let _ = s.lane_send(&Cbor::Array(vec![Cbor::text("r"), id, Cbor::Uint(0), err])).await;
                 }
-                _ => return protocol(&s, "an unknown message"),
+                _ => return s.fail("the computer sent an unknown link message"),
             }
         }
     }
 
     async fn rpc_reader(self: Arc<Self>, s: Arc<Session>, mut recv: RecvStream) {
         loop {
-            let f = match net::read_frame(&mut recv, MAX_FRAME).await {
+            let f = match net::read_frame(&mut recv, RPC_FRAME_MAX).await {
                 Ok(Some(f)) => f,
-                _ => break,
+                Ok(None) => break,
+                Err(CoreError::Protocol { .. }) => return s.fail("the computer sent a message larger than the phone takes (4 MiB)"),
+                Err(_) => break,
             };
             s.heard();
-            let Ok(msg) = serde_json::from_slice::<Value>(&f) else { continue };
+            // A message that can't be read ends the connection with a reason the app can show: never a silent drop.
+            let Ok(msg) = crate::json::parse(&f) else { return s.fail("the computer sent a message that isn't JSON") };
             let method = msg.get("method").and_then(Value::as_str);
             let id = msg.get("id").and_then(Value::as_u64);
             match (method, id) {
@@ -506,10 +588,7 @@ impl Inner {
                     };
                     let _ = tx.send(r);
                 }
-                (Some(m), None) => self.emit(ConnEvent::Notification {
-                    method: m.into(),
-                    params_json: msg.get("params").cloned().unwrap_or(Value::Null).to_string(),
-                }),
+                (Some(m), None) => self.notification(m, msg.get("params").cloned().unwrap_or(Value::Null)),
                 (Some(_), Some(_)) => {
                     // The daemon sends a `remote` client no requests of its own; answered so it isn't left waiting.
                     let reply = json!({ "jsonrpc": "2.0", "id": msg["id"], "error": { "code": -32601, "message": "not handled by this phone" } });
@@ -520,6 +599,19 @@ impl Inner {
         }
         // The client stream ended: the engine closed this client connection, so the link goes too and is re-dialled.
         s.conn.close(VarInt::from_u32(CLOSE_SUPERSEDED), b"the client stream ended");
+    }
+
+    /// A card raised now arrives checked for display; every other notification as it came.
+    fn notification(&self, method: &str, params: Value) {
+        if method == "core.event" && params.get("type").and_then(Value::as_str) == Some("card_requested") {
+            let card = params.get("card").cloned().unwrap_or(Value::Null);
+            match cards::view(&card, None) {
+                Ok(v) => self.emit(ConnEvent::CardRequested { card: v }),
+                Err(_) => self.emit(ConnEvent::TamperedCard { id: card.get("id").and_then(Value::as_str).map(|s| s.chars().take(80).collect()) }),
+            }
+            return;
+        }
+        self.emit(ConnEvent::Notification { method: method.into(), params_json: params.to_string() });
     }
 
     async fn session(&self, wait: Duration) -> Result<Arc<Session>, CoreError> {
@@ -540,31 +632,38 @@ impl Inner {
         s.request(method, params, (t > 0).then(|| Duration::from_millis(t))).await
     }
 
+    /// A card for display, by its id: the engine's answer must be that card (the same id), with a hash that matches it.
     async fn fetch_card(&self, id: &str) -> Result<CardView, CoreError> {
         let r = self.call("card.get", json!({ "id": id })).await?;
         let card = r.get("card").cloned().ok_or_else(|| CoreError::protocol("card.get answered no card"))?;
-        let hash = cards::verify_card(&card)?;
-        let outcome = r.get("outcome").and_then(Value::as_str).map(str::to_string);
-        Ok(CardView { card_json: card.to_string(), hash, pending: outcome.is_none(), outcome })
+        let outcome = r.get("outcome").and_then(Value::as_str).map(|s| s.chars().take(32).collect());
+        let view = cards::view(&card, outcome)?;
+        if view.id != id {
+            return Err(CoreError::TamperedCard { reason: "the computer answered with another card than the one asked for".into() });
+        }
+        Ok(view)
     }
 
-    /// Checks the card it was given (its hash, the option, the children) and signs and sends the answer.
-    async fn answer(&self, card: &Value, option: &str, children: Vec<String>) -> Result<AnswerOutcome, CoreError> {
-        let hash = cards::verify_card(card)?;
-        let id = card.get("id").and_then(Value::as_str).ok_or_else(|| CoreError::TamperedCard { reason: "the card has no id".into() })?;
-        let has_option = card.get("options").and_then(Value::as_array).is_some_and(|o| o.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(option)));
-        if !has_option {
+    /// Signs and sends the person's answer to the card exactly as the app displayed it: the hash is recomputed from
+    /// the content the app holds, the id is that content's, and nothing is fetched between the tap and the signature.
+    async fn answer(&self, shown: &CardView, option: &str, children: Vec<String>) -> Result<AnswerOutcome, CoreError> {
+        let card: Value = serde_json::from_str(&shown.card_json).map_err(|_| CoreError::TamperedCard { reason: "the card isn't JSON".into() })?;
+        let view = cards::view(&card, None)?;
+        if view.id != shown.id || view.hash != shown.hash {
+            return Err(CoreError::TamperedCard { reason: "the card answered isn't the one displayed".into() });
+        }
+        if !cards::is_option_id(option) || !view.options.iter().any(|o| o == option) {
             return Err(CoreError::refused("the card has no such option"));
         }
         let known: Vec<&str> = card.get("children").and_then(Value::as_array).map(|c| c.iter().filter_map(|x| x.get("id").and_then(Value::as_str)).collect()).unwrap_or_default();
-        if children.iter().any(|c| !known.contains(&c.as_str())) {
+        if children.iter().any(|c| !cards::is_checkbox_id(c) || !known.contains(&c.as_str())) {
             return Err(CoreError::refused("the card has no such checkbox"));
         }
         let at = now_ms() as i64;
-        let input = cards::card_answer_signing_input(id, &hash, option, at, &children);
+        let input = cards::card_answer_signing_input(&view.id, &view.hash, option, at, &children);
         let signature = bytes::b64(&self.identity.answer.sign(input.as_bytes()));
         let mut params = json!({
-            "id": id, "hash": hash, "option": option,
+            "id": view.id, "hash": view.hash, "option": option,
             "proof": { "via": "device", "device": self.identity.id, "at": at, "signature": signature },
         });
         if !children.is_empty() {
@@ -573,7 +672,7 @@ impl Inner {
         let r = self.call("card.answer", params).await?;
         Ok(AnswerOutcome {
             accepted: r.get("accepted").and_then(Value::as_bool).unwrap_or(false),
-            reason: r.get("reason").and_then(Value::as_str).map(|s| s.chars().take(500).collect()),
+            reason: r.get("reason").and_then(Value::as_str).map(|s| s.chars().take(200).collect()),
         })
     }
 
@@ -604,13 +703,6 @@ impl Inner {
     }
 }
 
-impl Session {
-    async fn rpc_send_header(&self) -> Result<(), CoreError> {
-        let header = Cbor::Array(vec![Cbor::text("S"), Cbor::text(REMOTE_RPC_LABEL), Cbor::text("control"), Cbor::Null]);
-        net::write_frame(&mut *self.rpc.lock().await, &encode(&header)).await
-    }
-}
-
 async fn keepalive(s: Arc<Session>) {
     let mut tick = tokio::time::interval(Duration::from_millis(1_000));
     loop {
@@ -620,6 +712,7 @@ async fn keepalive(s: Arc<Session>) {
         }
         let now = s.now();
         if now.saturating_sub(s.last_in.load(Ordering::Relaxed)) > IDLE.as_millis() as u64 {
+            s.failure.lock().unwrap().get_or_insert("nothing heard from the computer for 20 s");
             s.conn.close(VarInt::from_u32(CLOSE_SUPERSEDED), b"nothing heard from the peer");
             return;
         }
@@ -642,36 +735,23 @@ impl Connection {
         crate::runtime::spawn(async move { inner.call(&method, params).await.map(|v| v.to_string()) }).await
     }
 
-    /// The next event, waiting for one; None once the connection is closed and every event was read.
+    /// The next event, waiting for one; None once the connection is closed and every event was read. Safe to
+    /// abandon: an event leaves the queue only when this call returns it.
     pub async fn next_event(&self) -> Option<ConnEvent> {
-        let inner = self.inner.clone();
-        crate::runtime::spawn(async move { inner.events.next().await }).await
+        self.inner.events.next().await
     }
 
-    /// Fetches a card and checks its hash against what it says (`TamperedCard` when they differ).
+    /// A card to display, by its id (from `card_requested`'s id, a list, a notification): refused when the computer
+    /// answers with another card or one whose hash doesn't match it.
     pub async fn fetch_card(&self, id: String) -> Result<CardView, CoreError> {
         let inner = self.inner.clone();
         crate::runtime::spawn(async move { inner.fetch_card(&id).await }).await
     }
 
-    /// Fetches the card, checks it, and answers it with this phone's answer key.
-    pub async fn answer_card(&self, id: String, option: String, children: Vec<String>) -> Result<AnswerOutcome, CoreError> {
-        let inner = self.inner.clone();
-        crate::runtime::spawn(async move {
-            let view = inner.fetch_card(&id).await?;
-            if !view.pending {
-                return Err(CoreError::refused("the card was already answered"));
-            }
-            let card: Value = serde_json::from_str(&view.card_json).expect("JSON");
-            inner.answer(&card, &option, children).await
-        })
-        .await
-    }
-
-    /// Answers a card the app already holds (from `card_requested` or `PendingCards`): checked here first, exactly as
-    /// `answer_card` checks a fetched one.
-    pub async fn answer_card_json(&self, card_json: String, option: String, children: Vec<String>) -> Result<AnswerOutcome, CoreError> {
-        let card: Value = serde_json::from_str(&card_json).map_err(|_| CoreError::TamperedCard { reason: "the card isn't JSON".into() })?;
+    /// The person's answer to the card the app displayed, as the core handed it over (`CardView`): signed with this
+    /// phone's answer key over the hash of that content. `option` is one of its `options`; `children` the plugin
+    /// checkboxes the person left checked (a plugin OK's), empty otherwise.
+    pub async fn answer_card(&self, card: CardView, option: String, children: Vec<String>) -> Result<AnswerOutcome, CoreError> {
         let inner = self.inner.clone();
         crate::runtime::spawn(async move { inner.answer(&card, &option, children).await }).await
     }

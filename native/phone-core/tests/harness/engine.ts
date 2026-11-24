@@ -222,6 +222,18 @@ if (flag("--auto")) {
   if (opt("--qr-port")) Bun.listen({ hostname: "127.0.0.1", port: Number(opt("--qr-port")), socket: { open(s) { s.write(qr); s.end(); }, data() {} } });
   log("pairing shown; QR ready");
   let words: string[] | undefined;
+  // The words the engine's person read on the add card, for the phone's test to compare with its own (`--words-port`,
+  // loopback only; they are public once both sides show them).
+  if (opt("--words-port")) {
+    Bun.listen({ hostname: "127.0.0.1", port: Number(opt("--words-port")), socket: {
+      async open(s) {
+        await until("the words to hand over", () => words !== undefined, 30 * 60_000).catch(() => undefined);
+        s.write((words ?? []).join(" "));
+        s.end();
+      },
+      data() {},
+    } });
+  }
   await until("the phone's words", () => (words = wordsOf(v.pairingId)) !== undefined, 30 * 60_000);
   log("words shown; confirming");
   await run({ cmd: "confirm", pairingId: v.pairingId, words });

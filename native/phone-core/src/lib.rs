@@ -7,7 +7,8 @@
 //!   `SecretStorage` (the Keychain, the Keystore); the core keeps no file of its own.
 //! * `begin_pairing(qr, app)` → `Pairing`: `words()` to show, then `confirm()` (→ the `PairedComputer`) or `reject()`.
 //! * `connect(computer_id, options)` → `Connection`: `call(method, params_json)`, `next_event()`, `fetch_card`,
-//!   `answer_card`, `answer_card_json`, `send_message` (signed), `state`, `network_changed`, `disconnect`. It re-dials by itself until closed or revoked.
+//!   `answer_card(card_view, option, children)` (signs only the card as displayed), `send_message` (signed), `state`,
+//!   `network_changed`, `disconnect`. Events bring cards as checked `CardView`s. It re-dials by itself until closed or revoked.
 //! * `card_hash(card_json)`: a card's hash as the engine computes it.
 
 uniffi::setup_scaffolding!();
@@ -18,8 +19,10 @@ pub mod cbor;
 pub mod computers;
 pub mod error;
 pub mod identity;
+pub mod json;
 pub mod keys;
 pub mod link;
+pub mod names;
 pub mod net;
 pub mod pairing;
 pub mod runtime;
@@ -30,7 +33,8 @@ use std::sync::Arc;
 pub use computers::{PairedComputer, PhoneApp};
 pub use error::{CoreError, StorageError};
 pub use identity::{AnswerKeyHolder, PhoneIdentity, PhoneOs, SecretStorage};
-pub use link::{AnswerOutcome, CardView, ConnEvent, ConnectOptions, Connection, LinkState};
+pub use cards::CardView;
+pub use link::{AnswerOutcome, ConnEvent, ConnectOptions, Connection, LinkState};
 pub use net::RelayChoice;
 pub use pairing::Pairing;
 use tokio::sync::OnceCell;
@@ -95,15 +99,10 @@ impl PhoneCore {
         computers::list(&self.storage)
     }
 
-    /// Forgets a computer here and the pair's secrets with it (the computer keeps its own record until it revokes).
+    /// Forgets a computer here with every item its pairing kept (the computer keeps its own record until it revokes
+    /// this phone).
     pub fn forget_computer(&self, id: String) -> Result<(), CoreError> {
-        if let Some(c) = computers::remove(&self.storage, &id)? {
-            if let Some(p) = c.pair_id {
-                self.storage.delete(format!("pair-key:{p}"))?;
-                self.storage.delete(format!("pair-secret:{p}"))?;
-            }
-        }
-        Ok(())
+        computers::forget(&self.storage, &id).map(|_| ())
     }
 
     /// Starts pairing with the computer whose QR was scanned, for one of the two phone apps. Returns once both sides

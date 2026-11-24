@@ -151,10 +151,9 @@ async fn until_event(conn: &Connection, what: &str, mut f: impl FnMut(&ConnEvent
     }
 }
 
-fn card_event(e: &ConnEvent, card: &str) -> Option<Value> {
-    let ConnEvent::Notification { method, params_json } = e else { return None };
-    let p: Value = serde_json::from_str(params_json).ok()?;
-    (method == "core.event" && p["type"] == "card_requested" && p["card"]["id"] == card).then(|| p["card"].clone())
+fn card_event(e: &ConnEvent, card: &str) -> Option<moss_phone_core::CardView> {
+    let ConnEvent::CardRequested { card: v } = e else { return None };
+    (v.id == card).then(|| v.clone())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -192,8 +191,8 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
         .await
         .unwrap();
     let pending = until_event(&conn, "the pending cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await;
-    let ConnEvent::PendingCards { cards_json } = pending else { unreachable!() };
-    assert!(cards_json.contains(&waiting), "the waiting card is in the pending list");
+    let ConnEvent::PendingCards { cards: listed_cards } = pending else { unreachable!() };
+    let waiting_view = listed_cards.iter().find(|c| c.id == waiting).expect("the waiting card is in the pending list").clone();
     until_event(&conn, "up", |e| matches!(e, ConnEvent::Up)).await;
     assert_eq!(conn.state(), moss_phone_core::LinkState::Up);
 
@@ -208,27 +207,38 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     // A card raised now arrives as an event; the phone answers it and the engine takes the signature.
     let card_id = engine.ok(json!({ "cmd": "raiseCard" })).await["cardId"].as_str().unwrap().to_string();
     let heard = until_event(&conn, "the card_requested event", |e| card_event(e, &card_id).is_some()).await;
-    let card = card_event(&heard, &card_id).unwrap();
+    let card_view = card_event(&heard, &card_id).unwrap();
+    let card: Value = serde_json::from_str(&card_view.card_json).unwrap();
     assert_eq!(cards::card_hash(&card).unwrap(), card["hash"].as_str().unwrap(), "the phone rebuilds the engine's hash");
-    let answered = conn.answer_card(card_id.clone(), "approve".into(), vec![]).await.unwrap();
+    // The person answers the card as it was displayed: no fetch between the tap and the signature.
+    let answered = conn.answer_card(card_view.clone(), "approve".into(), vec![]).await.unwrap();
     assert_eq!(answered, moss_phone_core::AnswerOutcome { accepted: true, reason: None });
     let decision = engine.ok(json!({ "cmd": "decision", "cardId": card_id })).await;
     assert_eq!(decision["allowed"], true);
     assert_eq!(decision["by"], "card");
 
-    // Refusals. A replayed answer: the same card again is not taken (locally, and by the engine when sent anyway).
-    assert!(matches!(conn.answer_card(card_id.clone(), "approve".into(), vec![]).await, Err(CoreError::Refused { .. })));
-    let replay = conn.answer_card_json(card.to_string(), "approve".into(), vec![]).await.unwrap();
+    // Refusals. A replayed answer: the engine refuses the same card answered again.
+    let replay = conn.answer_card(card_view.clone(), "approve".into(), vec![]).await.unwrap();
     assert!(!replay.accepted, "the engine refuses a replay");
+    // Resolved, the card reads as such.
+    let resolved = conn.fetch_card(card_id.clone()).await.unwrap();
+    assert!(!resolved.pending);
 
-    // A tampered card: the phone signs nothing for it.
+    // A card whose content was changed after display (its hash not recomputed): the phone signs nothing for it.
     let mut tampered = card.clone();
     tampered["fields"]["title"]["text"] = json!("something else");
-    assert!(matches!(conn.answer_card_json(tampered.to_string(), "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
+    let changed = moss_phone_core::CardView { card_json: tampered.to_string(), ..card_view.clone() };
+    assert!(matches!(conn.answer_card(changed, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
+    // And one changed with its hash recomputed is a different card than the one displayed: refused too.
+    let mut rehashed = tampered.clone();
+    rehashed["hash"] = json!(cards::card_hash(&tampered).unwrap());
+    let swapped = moss_phone_core::CardView { card_json: rehashed.to_string(), ..card_view.clone() };
+    assert!(matches!(conn.answer_card(swapped, "approve".into(), vec![]).await, Err(CoreError::TamperedCard { .. })));
 
     // The waiting card: an answer signed for one card is no proof for another, nor for another hash.
     let view = conn.fetch_card(waiting.clone()).await.unwrap();
     assert!(view.pending);
+    assert_eq!(view, waiting_view);
     let answer_key = {
         let seed = storage.0.lock().unwrap().get("answer-key").unwrap().clone();
         Ed25519Key::from_seed_slice(&seed).unwrap()
@@ -245,7 +255,7 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     let r: Value = serde_json::from_str(&conn.call("card.answer".into(), forged(&signed_wrong, &wrong_hash)).await.unwrap()).unwrap();
     assert_eq!(r["accepted"], false, "an answer for a changed card is refused: {r}");
     // And the honest deny is taken.
-    assert!(conn.answer_card(waiting.clone(), "deny".into(), vec![]).await.unwrap().accepted);
+    assert!(conn.answer_card(waiting_view.clone(), "deny".into(), vec![]).await.unwrap().accepted);
     assert_eq!(engine.ok(json!({ "cmd": "decision", "cardId": waiting })).await["allowed"], false);
 
     // The link is lost (the engine's sidecar dies and comes back): the phone sees it go down, dials back by itself, and
@@ -263,6 +273,11 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     assert_eq!(conn.state(), moss_phone_core::LinkState::Revoked);
     assert!(matches!(conn.call("bot.list".into(), "{}".into()).await, Err(_)));
     conn.disconnect();
+    // Forgetting the computer deletes every item its pairing kept (the group key's item named by a hash of the id).
+    assert!(storage.0.lock().unwrap().keys().any(|k| k.starts_with("group-key:") && k.len() == "group-key:".len() + 32));
+    core.forget_computer(computer.id.clone()).unwrap();
+    let left: Vec<String> = storage.0.lock().unwrap().keys().cloned().collect();
+    assert!(left.iter().all(|k| k == "device-key" || k == "answer-key" || k == "computers"), "left behind: {left:?}");
     core.shutdown().await;
     engine.stop().await;
 }

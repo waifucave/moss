@@ -5,10 +5,25 @@
 //! indefinite lengths, nesting past 128, lengths past the payload, non-text map keys, unknown simple values and bytes
 //! left over. Tags (the engine's dates, bignums, maps, sets and typed arrays) never appear in what a phone reads and
 //! are refused.
+//!
+//! What a computer sends is bounded before it costs anything: a cap on the items in one value (every array element
+//! and map entry counted) and on its nesting, repeated map keys found in linear time, and nothing allocated from a
+//! length on the wire beyond what the payload still holds.
 
 use crate::error::CoreError;
 
 pub const MAX_DEPTH: usize = 128;
+
+/// What one decoded value may hold.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Array elements and map entries, counted across the whole value.
+    pub max_items: usize,
+    pub max_depth: usize,
+}
+
+/// A pairing message or a link lane's message: a few hundred items at most in anything the engine sends.
+pub const LANE_LIMITS: Limits = Limits { max_items: 4096, max_depth: 32 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cbor {
@@ -168,6 +183,8 @@ fn write(out: &mut Vec<u8>, v: &Cbor) {
 struct Reader<'a> {
     b: &'a [u8],
     at: usize,
+    items: usize,
+    limits: Limits,
 }
 
 fn bad(why: &str) -> CoreError {
@@ -206,8 +223,15 @@ impl<'a> Reader<'a> {
         }
         Ok(n as usize)
     }
+    fn count(&mut self, n: usize) -> Result<(), CoreError> {
+        self.items = self.items.saturating_add(n);
+        if self.items > self.limits.max_items {
+            return Err(bad("too many items"));
+        }
+        Ok(())
+    }
     fn value(&mut self, depth: usize) -> Result<Cbor, CoreError> {
-        if depth > MAX_DEPTH {
+        if depth > MAX_DEPTH.min(self.limits.max_depth) {
             return Err(bad("nested too deeply"));
         }
         let first = self.u8()?;
@@ -225,6 +249,8 @@ impl<'a> Reader<'a> {
             }
             4 => {
                 let n = self.len(info, 1)?;
+                self.count(n)?;
+                // `len` held n to what the payload still has, and `count` to the item cap.
                 let mut a = Vec::with_capacity(n);
                 for _ in 0..n {
                     a.push(self.value(depth + 1)?);
@@ -233,15 +259,19 @@ impl<'a> Reader<'a> {
             }
             5 => {
                 let n = self.len(info, 2)?;
+                self.count(n)?;
                 let mut m: Vec<(String, Cbor)> = Vec::with_capacity(n);
+                let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::with_capacity(n);
                 for _ in 0..n {
                     let Cbor::Text(k) = self.value(depth + 1)? else { return Err(bad("an object key must be text")) };
                     let v = self.value(depth + 1)?;
                     // A repeated key replaces the earlier one, as the engine's decoder does.
-                    if let Some(slot) = m.iter_mut().find(|(x, _)| *x == k) {
-                        slot.1 = v;
-                    } else {
-                        m.push((k, v));
+                    match at.get(&k) {
+                        Some(&i) => m[i].1 = v,
+                        None => {
+                            at.insert(k.clone(), m.len());
+                            m.push((k, v));
+                        }
                     }
                 }
                 Cbor::Map(m)
@@ -279,7 +309,11 @@ fn f16(h: u16) -> f64 {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Cbor, CoreError> {
-    let mut r = Reader { b: bytes, at: 0 };
+    decode_with(bytes, LANE_LIMITS)
+}
+
+pub fn decode_with(bytes: &[u8], limits: Limits) -> Result<Cbor, CoreError> {
+    let mut r = Reader { b: bytes, at: 0, items: 0, limits };
     let v = r.value(0)?;
     if r.left() != 0 {
         return Err(bad("bytes left over"));
@@ -313,5 +347,28 @@ mod tests {
         let mut deep = vec![0x81; 200];
         deep.push(0x00);
         assert!(decode(&deep).is_err());
+    }
+
+    /// A 16 MiB frame of 2.8 million distinct map keys: refused at the item cap at once, never a quadratic scan.
+    #[test]
+    fn a_huge_map_is_refused_fast() {
+        let n: u32 = 2_800_000;
+        let mut b = vec![0xba];
+        b.extend_from_slice(&n.to_be_bytes());
+        for i in 0..n {
+            b.push(0x64);
+            b.extend_from_slice(&i.to_be_bytes());
+            b.push(0xf6);
+        }
+        let t = std::time::Instant::now();
+        assert!(decode(&b).is_err());
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "took {:?}", t.elapsed());
+        // Under the cap, repeated keys are still linear: 4000 entries of one key decode at once, the last one kept.
+        let mut d = vec![0xb9, 0x0f, 0xa0];
+        for i in 0..4000u16 {
+            d.extend_from_slice(&[0x61, b'k', 0x19]);
+            d.extend_from_slice(&i.to_be_bytes());
+        }
+        assert_eq!(decode(&d).unwrap(), Cbor::map(vec![("k", Cbor::Uint(3999))]));
     }
 }

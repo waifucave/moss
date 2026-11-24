@@ -13,6 +13,18 @@ const { pairStatement, admitStatement } = await import(join(core, "links/handsha
 const { answerKeyStatement } = await import(join(core, "devices/registry"));
 const { canonicalJson, cardHashInput, cardAnswerSigningInput, userMessageHashInput, userMessageSigningInput } = await import(Bun.resolveSync("@waifucave/moss-protocol", core));
 const { createHash } = await import("node:crypto");
+const { nameProblem, safeDeviceName } = await import(join(core, "devices/names"));
+
+// The device-name rule's edge cases (devices/names.ts): every class it refuses, the joiners' places, the lengths.
+const NAMES = [
+  "Studio", "Kim's phone", "a", "x".repeat(63), "x".repeat(64), "😀".repeat(31) + "x", "😀".repeat(32), "", " ", "   ",
+  "a\u202Eb", "a\u200Bb", "\u00ADab", "a\u2028b", "a\u2029b", "a\u0007b", "\u2800", "\u3164", "a\uFFA0", "a\u115F", "\u17B4a",
+  "\u0301a", "a\u0301", "a\u0301\u0301\u0301\u0301", "a\u0301\u0301\u0301\u0301\u0301", " \u0301", "a \u0301",
+  "👩\u200D💻", "👩🏽\u200D💻", "🏳\uFE0F\u200D🌈", "می\u200Cخواهم", "\u200Da", "a\u200D", "a\u200D\u200Db", "a \u200Db", "a\u200D b",
+  "🏴\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F", "🇯🇵", "a\u00A0b", "\u00A0", "\u3000x",
+  "Ⅻ", "ﬁ", "\uFFF9a", "a\u180Eb", "\uFEFFa", "\u061C", "e\u0308\u0332", "\u{1F600}\u{1F3FB}", "ab\u{E0001}",
+];
+const RAW_NAMES = ["  My\u0007  Phone  ", "\u202E", "", "x".repeat(70), "😀".repeat(40), "a\u0301\u0301\u0301\u0301\u0301\u0301b", " \u0301 Lab ", "iPhone\u2028(2)"];
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 const fill = (n: number, v: number) => new Uint8Array(n).fill(v);
@@ -85,5 +97,7 @@ console.log(JSON.stringify({
   userMessageHash: createHash("sha256").update(userMessageHashInput({ text: "Hi \"there\"\n😀", images: [{ n: 1, path: "bots/a/staged/1.png" }], files: [{ n: 1, path: "home/notes.md" }, { n: 2, path: "bots/a/x.txt" }] })).digest("hex"),
   userMessageInput: userMessageSigningInput({ session: "s_alpha", clientMessageId: "m-1", hash: "ab", sentAt: 1781270000123 }),
   signingInput: cardAnswerSigningInput({ id: "card_x", hash: "ab", option: "approve", at: 1781270000000, children: ["zeta", "Alpha", "beta", "", "😀"] }),
+  names: NAMES.map((n) => ({ name: n, ok: nameProblem(n) === null })),
+  safeNames: RAW_NAMES.map((n) => ({ raw: n, safe: safeDeviceName(n, "Phone") })),
   points: Object.fromEntries(Object.entries(points).map(([k, v]) => [k, { hex: v, strict: isStrictEd25519Point(Uint8Array.from(Buffer.from(v, "hex"))) }])),
 }));
