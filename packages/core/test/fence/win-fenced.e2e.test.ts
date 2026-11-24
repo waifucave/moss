@@ -351,6 +351,30 @@ describe.skipIf(!run)("the Windows fence, end to end (windows-latest)", () => {
     expect(readFileSync(join(scratch, "b.txt"), "utf8").trim()).toBe("b-done"); // B's write root held to its end
   }, 900_000);
 
+  test("can a pool account start a process that outlives its command (outside the launcher's kill-on-close job)? recorded", async () => {
+    // Lane WS6 (the WS5 reviewer's question): a fenced PowerShell command tries three ways to start a process that
+    // outlives it, each tagged with its own marker in the command line: WMI's Win32_Process.Create (made by the WMI
+    // provider host), the Shell.Application object (an out-of-process COM server when one is there), and plain
+    // Start-Process (the control: inside the job). After the command has ended, the test's own process (an
+    // administrator) lists every process whose command line carries a marker, and ends what it finds (processes
+    // this test made). Recorded, not asserted: what it finds is the answer to the question.
+    const tag = `moss-outlive-${process.pid}`;
+    const ping = (how: string) => `cmd.exe /c title ${tag}-${how} & ping -n 90 127.0.0.1`;
+    const r = await call(tools.PowerShell!, { command: [
+      `try { $w = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${ping("wmi")}' } -ErrorAction Stop; 'wmi=' + $w.ReturnValue } catch { 'wmi=REFUSED ' + $_.Exception.Message }`,
+      `try { (New-Object -ComObject Shell.Application).ShellExecute('cmd.exe', '/c title ${tag}-shell & ping -n 90 127.0.0.1', '', 'open', 0); 'shell=started' } catch { 'shell=REFUSED ' + $_.Exception.Message }`,
+      `try { Start-Process -FilePath cmd.exe -ArgumentList '/c title ${tag}-start & ping -n 90 127.0.0.1' -WindowStyle Hidden -ErrorAction Stop; 'start=started' } catch { 'start=REFUSED ' + $_.Exception.Message }`,
+    ].join("; ") });
+    console.log(`[e2e] outlive probe, inside the command: ${r.text.replace(/\s+/g, " ").slice(0, 600)}`);
+    await Bun.sleep(5_000);
+    const list = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+      `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${tag}*' } | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; "$($_.ProcessId) $($o.Domain)\\$($o.User) $($_.CommandLine)" }`],
+      { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+    const survivors = list.split(/\r?\n/).filter((l) => l.trim() !== "" && !l.includes("Get-CimInstance"));
+    console.log(`[e2e] outlive probe, after the command ended: ${survivors.length === 0 ? "nothing outlived it" : survivors.join(" | ")}`);
+    for (const l of survivors) { const pid = Number(l.split(" ")[0]); if (pid > 0) Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"]); }
+  }, 900_000);
+
   test("a stop reaches the command: it ends at once, with what it started, never waiting for its time limit", async () => {
     const marker = join(scratch, "late-abort.txt");
     const began = join(scratch, "began-abort.txt");

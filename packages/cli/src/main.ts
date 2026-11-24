@@ -1687,6 +1687,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
     registerResetTaskArgs,
     unregisterResetTaskArgs,
     endAccountProcessesArgs,
+    endAccountUntilGone,
     netUserState,
     SRT_SESSIONS_RUNNING_EXIT,
     PROFILE_IN_USE_EXIT,
@@ -1991,16 +1992,27 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
          *  the lease go), then its lock (`<p>.lock`, which the daemon holds for a command's whole run and the reset for
          *  a remake) is waited for, up to 3 minutes. Still held then: `held` (the account is left as it is, and remove
          *  fails, saying to stop MOSS first). No pool state (removed already): `free`, nothing can hold it. */
+        /** Every process of the account ended, and none left (the WS5 reviewer's should-fix 1): `endAccountProcessesArgs`
+         *  exits 4 when one still runs after `Stop-Process` (one outside the launcher's kill-on-close job, or one started
+         *  between its scan and its kill), so it is run again, up to three times a second apart; any other failure
+         *  counts as not ended too. False: a process of the account still lives, and the account is not removed. */
+        const endAccount = (principal: string): Promise<boolean> =>
+          endAccountUntilGone(run, principal, { sleep: (ms) => Bun.sleep(ms), say: (l) => console.error(`sandbox remove: ${l}`) });
+        /** Under the account's lock nothing starts as it (the daemon and the reset both take that lock first, and the marker
+         *  is gone), so the processes ended and checked HERE, right before the uninstall, stay ended: a process that still
+         *  lives refuses the member as a lock held for 3 minutes does. */
         const memberLock = async (principal: string): Promise<{ release(): void } | "free" | "held"> => {
-          const ended = await run([...endAccountProcessesArgs(principal)]);
-          console.error(`sandbox remove: ${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
-          if (locks === null) return "free";
-          for (let i = 0; i < 360; i++) {
-            const g = locks.tryLock(poolStateFiles(poolDir, principal).lock);
-            if (g !== null) return g;
-            await Bun.sleep(500);
+          await endAccount(principal);
+          let g: { release(): void } | null = null;
+          if (locks !== null) {
+            for (let i = 0; i < 360 && g === null; i++) {
+              g = locks.tryLock(poolStateFiles(poolDir, principal).lock);
+              if (g === null) await Bun.sleep(500);
+            }
+            if (g === null) return "held";
           }
-          return "held";
+          if (!(await endAccount(principal))) { g?.release(); return "held"; }
+          return g ?? "free";
         };
         // srt-win refuses to uninstall ANY member while a sandbox session of this machine is live (exit 22, "Nothing was
         // changed": a daemon's command holds grants), so every pool account's commands are ended before the first
@@ -2026,7 +2038,7 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           if (principalSid !== null) sids.push(principalSid);
           // Held while this member is removed: a reset remaking it finishes first, and none starts on it meanwhile.
           const held = await memberLock(principal);
-          if (held === "held") { fail(`${principal} is still in use after 3 minutes (a command of MOSS's, or the profile reset); stop MOSS and run remove again`); break; }
+          if (held === "held") { fail(`${principal} is still in use (a command of MOSS's or the profile reset after 3 minutes, or a process of the account that couldn't be ended); stop MOSS and run remove again`); break; }
           const guard = held === "free" ? null : held;
           try {
           // The profile for the reset below, resolved before the uninstall.
@@ -2035,10 +2047,14 @@ async function runSandboxCommand(sub: string | undefined, rest: readonly string[
           // A session still ending (its daemon revokes its grants only when its broker has returned) makes srt-win
           // refuse with exit 22 and change nothing: every account's commands are ended again and the uninstall tried
           // again, for up to a minute.
+          // The wait stays inside this member's lock: let go, a reset still running from before the task was
+          // unregistered could take the account and start a process as it, which would have to be ended again; the
+          // marker is gone, so no daemon can lease it either way. Before each try this account is checked once more.
           let { code, out } = await run([...removeArgs(launcher, sublayer, principal)]);
           for (let i = 0; code === SRT_SESSIONS_RUNNING_EXIT && i < 12; i++) {
             await endAll();
             await Bun.sleep(5_000);
+            if (!(await endAccount(principal))) break;
             ({ code, out } = await run([...removeArgs(launcher, sublayer, principal)]));
           }
           if (code !== 0) {

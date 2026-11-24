@@ -532,14 +532,20 @@ const grantedRoots = new Map<string, string>();
  *  record is seeded from that list once per process and launcher, before any command's plan is drawn. A seed that
  *  fails is not kept: the next command reads it again. */
 const rootsSeeded = new Map<string, Promise<boolean>>();
-/** The persistent roots srt-win lists for the calling user, as plain paths; [] when the JSON isn't readable. */
-export function parsePersistentRoots(stdout: string): string[] {
-  try {
-    const o = JSON.parse(stdout) as { persistent_grants?: { roots?: unknown; pending?: unknown } };
-    const g = o.persistent_grants ?? {};
-    return [...(Array.isArray(g.roots) ? g.roots : []), ...(Array.isArray(g.pending) ? g.pending : [])]
-      .filter((x): x is string => typeof x === "string" && x.length > 0).map((x) => x.replace(/^\\\\\?\\/, ""));
-  } catch { return []; }
+/** The persistent roots srt-win lists for the calling user, as plain paths (`persistent_grants.roots`, and `pending`
+ *  when present); null when the output isn't that shape (not JSON, no `persistent_grants` object, `roots` not a list
+ *  of strings, `pending` present but not one): the seed then counts as failed, never as an empty list (the WS5
+ *  reviewer's should-fix 2). */
+export function parsePersistentRoots(stdout: string): string[] | null {
+  let o: unknown;
+  try { o = JSON.parse(stdout); } catch { return null; }
+  if (typeof o !== "object" || o === null) return null;
+  const g = (o as { persistent_grants?: unknown }).persistent_grants;
+  if (typeof g !== "object" || g === null) return null;
+  const { roots, pending } = g as { roots?: unknown; pending?: unknown };
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
+  if (!strings(roots) || (pending !== undefined && !strings(pending))) return null;
+  return [...roots, ...(pending ?? [])].map((x) => x.replace(/^\\\\\?\\/, ""));
 }
 /** The roots this process granted that lie strictly under one of `denyRead` without being denied by name there, and
  *  under none of the command's own folders (`own`): each gets a read deny of its own for the command. */
@@ -661,21 +667,25 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
   // runner); a command that comes before it ends waits for it, as before.
   if (o.grantAhead !== false) setTimeout(() => { if (!("why" in install())) void grantProfile(); }, 0);
   /** Rule 3c's seed (`rootsSeeded`): srt-win's own list of this user's persistent roots, once per process. */
-  const seedRoots = async (): Promise<void> => {
+  // No command runs until the seed has succeeded (the WS5 reviewer's should-fix 2): without it, a root granted before
+  // this engine started could open another caller's folder to a running command. A failed read is not kept: the
+  // next command reads it again. True when seeded.
+  const seedRoots = async (): Promise<boolean> => {
     let p = rootsSeeded.get(deps.launcher);
     if (p === undefined) {
       p = (async () => {
         const st = await deps.exec([deps.launcher, ...USER_STATUS_ARGS], { timeoutMs: 30_000 });
         if (st.code !== 0) return false;
-        let parsed: unknown;
-        try { parsed = JSON.parse(st.stdout); } catch { return false; }
-        if (typeof parsed !== "object" || parsed === null) return false;
-        for (const x of parsePersistentRoots(st.stdout)) grantedRoots.set(fold(x), x);
+        const roots = parsePersistentRoots(st.stdout);
+        if (roots === null) return false;
+        for (const x of roots) grantedRoots.set(fold(x), x);
         return true;
       })();
       rootsSeeded.set(deps.launcher, p);
     }
-    if (!(await p)) rootsSeeded.delete(deps.launcher);
+    const ok = await p;
+    if (!ok) rootsSeeded.delete(deps.launcher);
+    return ok;
   };
   return {
     get available() { return !("why" in install()); },
@@ -742,7 +752,7 @@ export function winFencedSpawner(o: { fence: MossFence; deps: WinFencedDeps; bot
         // under one of this plan's read denies, is denied by name for this command (`strayRoots`).
         const own = uniq([...plan.writeRoots, ...plan.readGrants]);
         const literalDenies = plan.denyRead.filter((d) => !GLOB.test(d));
-        await seedRoots();
+        if (!(await seedRoots())) return refuse("the sandbox's list of folders it already opened (srt-win user status) couldn't be read; try again in a moment");
         const stray = strayRoots(grantedRoots.values(), literalDenies, own);
         // Only what is granted opens anything: the roots that exist (a missing one isn't granted) and the read grants.
         flight = { caller: callerKey(r.who.caller), opens: uniq([...roots, ...plan.readGrants]), denyRead: [...literalDenies, ...stray] };

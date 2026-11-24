@@ -61,6 +61,7 @@ import {
   poolSublayerGuid,
   sandboxPool,
   endAccountProcessesArgs,
+  endAccountUntilGone,
   netUserState,
   userStatusArgs,
   sandboxLeasesDir,
@@ -944,5 +945,21 @@ describe("sandbox remove's helpers (the WS4 reviewer's item 1 and nit)", () => {
     expect(netUserState(2, "The user name could not be found.\r\n\r\nMore help is available by typing NET HELPMSG 2221.")).toBe("gone");
     expect(netUserState(2, "System error 5 has occurred.\r\n\r\nAccess is denied.")).toBe("unknown");
     expect(netUserState(1, "")).toBe("unknown");
+  });
+});
+
+describe("an account whose process can't be ended is not removed (the WS5 reviewer's should-fix 1)", () => {
+  const runs = (codes: number[]) => { const seen: number[] = []; return { seen, run: async () => { const c = codes[seen.length] ?? codes[codes.length - 1]!; seen.push(c); return { code: c, out: `ended 1, left ${c === 4 ? 1 : 0}` }; } }; };
+  const sleep = async () => {};
+  test("exit 4 (a process still lives after the kill) is tried again, and still alive after three tries is false", async () => {
+    const a = runs([4, 4, 4]);
+    expect(await endAccountUntilGone(a.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(a.seen).toEqual([4, 4, 4]);
+    const b = runs([4, 0]);
+    expect(await endAccountUntilGone(b.run, "moss-sb-abcdef-1", { sleep })).toBe(true);
+    expect(b.seen).toEqual([4, 0]);
+    const c = runs([1, 1, 1]); // PowerShell itself failed: never read as ended
+    expect(await endAccountUntilGone(c.run, "moss-sb-abcdef-1", { sleep })).toBe(false);
+    expect(await endAccountUntilGone(runs([0]).run, "moss-sb-abcdef-1", { sleep })).toBe(true);
   });
 });

@@ -189,6 +189,25 @@ export function endAccountProcessesArgs(principal: string): readonly string[] {
   ].join("; "));
 }
 
+/** `sandbox remove`'s check that an account's processes are all ended (the WS5 reviewer's should-fix 1): the ending
+ *  script run up to `tries` times, `pauseMs` apart, until it exits 0; it exits 4 while a process of the account still
+ *  runs after its `Stop-Process` (one outside the launcher's kill-on-close job, or one started between its scan and its
+ *  kill), and any other failure counts as not ended too. False: a process still lives, and the account must not be
+ *  removed. Each try's output goes to `say`. */
+export async function endAccountUntilGone(
+  run: (argv: readonly string[]) => Promise<{ code: number; out: string }>, principal: string,
+  o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<void>; say?: (line: string) => void } = {},
+): Promise<boolean> {
+  const tries = o.tries ?? 3;
+  for (let i = 0; i < tries; i++) {
+    const ended = await run(endAccountProcessesArgs(principal));
+    o.say?.(`${principal}: ${ended.code === 0 ? "" : "its processes couldn't all be ended: "}${ended.out.trim().slice(0, 300)}`);
+    if (ended.code === 0) return true;
+    if (i + 1 < tries) await (o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))))(o.pauseMs ?? 1_000);
+  }
+  return false;
+}
+
 /** `srt-win uninstall`'s exit while a sandbox session or command of this machine is live (its holders listed on stdout):
  *  nothing was changed. */
 export const SRT_SESSIONS_RUNNING_EXIT = 22;

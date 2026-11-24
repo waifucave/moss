@@ -1,7 +1,7 @@
 // The Windows leg of the fenced spawner, its pure half and its refusals, on every OS (lane WS). The real launches run
 // in win-fenced.e2e.test.ts on windows-latest.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Caller } from "@waifucave/moss-protocol";
@@ -145,7 +145,7 @@ const GEN1 = "1".repeat(32), GEN2 = "2".repeat(32);
 
 /** Fake machine: a launcher that is (or isn't) pinned, a marker, the pool's state files (each principal's generation
  *  and used record; by default both remade since their last command) and an in-memory lease store. */
-function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<string, string> } = {}) {
+function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<string, string>; roots?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "moss-winfenced-"));
   const home = join(root, "home");
   mkdirSync(join(home, ".moss"), { recursive: true });
@@ -169,6 +169,7 @@ function machine(o: { pinned?: boolean; marker?: string | null; files?: Record<s
     async exec(argv) {
       execs.push(argv);
       if (argv[0] === "reg" && argv[2] === "HKLM\\SOFTWARE\\sandbox-runtime") return { code: 0, stdout: "    SandboxUserSid    REG_SZ    S-1-5-21-1002\r\n", stderr: "" };
+      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "none", roots: o.roots ?? [], pending: [] } }), stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
     readFile: (p) => (p.endsWith("S-1-5-21-1.json") ? marker : files[win32.basename(p)] ?? null),
@@ -459,8 +460,14 @@ describe("rule 3c across an engine restart (the WS4 reviewer's item 2)", () => {
   test("srt-win's own list of this user's persistent roots, long-path prefix off, pending ones too; nothing from bad JSON", () => {
     const st = JSON.stringify({ persistent_grants: { state: "present", roots: ["\\\\?\\C:\\h\\.moss\\outputs\\a", "C:\\proj"], pending: ["E:\\x"] } });
     expect(parsePersistentRoots(st)).toEqual(["C:\\h\\.moss\\outputs\\a", "C:\\proj", "E:\\x"]);
-    expect(parsePersistentRoots("nope")).toEqual([]);
-    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none" } }))).toEqual([]);
+    // Any other shape is a failed read (the WS5 reviewer's should-fix 2), never an empty list.
+    expect(parsePersistentRoots("nope")).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none" } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: "C:\\x" } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: [1] } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { roots: [], pending: {} } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants_v2: { roots: [] } }))).toBeNull();
+    expect(parsePersistentRoots(JSON.stringify({ persistent_grants: { state: "none", roots: [], pending: [] } }))).toEqual([]);
   });
   test("a new engine reads that list before its first command draws a plan, once; a read that failed is tried again", async () => {
     const m = machine();
@@ -489,5 +496,54 @@ describe("rule 3c across an engine restart (the WS4 reviewer's item 2)", () => {
     m.files["moss-sb-aaaaaa-1.used"] = ""; m.files["moss-sb-aaaaaa-2.used"] = "";
     await s.run(runOf(m.home));
     expect(statusCalls()).toBe(2); // read once it succeeded
+  });
+});
+
+describe("the roots seed gates every command (the WS5 reviewer's should-fix 2)", () => {
+  /** A launcher that records its argv, one argument a line, and exits 0: what the command was launched with. */
+  const recorder = (dir: string) => {
+    const file = join(dir, "argv.txt");
+    const launcher = join(dir, "fake-srt.sh");
+    writeFileSync(launcher, `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${file}'\nexit 0\n`);
+    chmodSync(launcher, 0o755);
+    return { launcher, argv: () => (existsSync(file) ? readFileSync(file, "utf8").split("\n") : null) };
+  };
+  const coding = (cwd: string): FencedRun => ({ command: "echo hi", cwd, env: {}, timeoutMs: 10_000, who: { caller: { kind: "session", sessionId: "c1", sessionKind: "coding" } as Caller } });
+  test("a root from srt-win's list under the plan's denied folder is stamped as a by-name read deny", async () => {
+    const m = machine();
+    const moss = join(m.home, ".moss");
+    mkdirSync(join(moss, "elsewhere", "root1"), { recursive: true });
+    const root = realpathSync(join(moss, "elsewhere", "root1")); // a folder the plan doesn't name: only the seed can
+    const cwd = join(moss, "outputs", "c1");
+    mkdirSync(cwd, { recursive: true });
+    const rec = recorder(mkdtempSync(join(tmpdir(), "ws6-rec-")));
+    const exec = m.deps.exec;
+    const deps: WinFencedDeps = { ...m.deps, launcher: rec.launcher, async exec(argv, o) {
+      if (argv[1] === "user" && argv[2] === "status") return { code: 0, stdout: JSON.stringify({ persistent_grants: { state: "present", roots: [`\\\\?\\${root}`], pending: [] } }), stderr: "" };
+      return exec(argv, o);
+    } };
+    const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(coding(cwd));
+    const argv = rec.argv();
+    expect(r).not.toMatchObject({ kind: "refused" });
+    expect(argv).not.toBeNull();
+    const same = (a: string | undefined) => a !== undefined && win32.normalize(a).toLowerCase() === win32.normalize(root).toLowerCase();
+    const at = argv!.findIndex((a, i) => a === "--deny-read" && same(argv![i + 1]));
+    expect(at).toBeGreaterThanOrEqual(0);
+  });
+  test("a seed that fails or has another shape refuses the command, which never launches", async () => {
+    for (const answer of [{ code: 1, stdout: "" }, { code: 0, stdout: "not json" }, { code: 0, stdout: JSON.stringify({ persistent_grants: { roots: "x" } }) }]) {
+      const m = machine();
+      const cwd = join(m.home, ".moss", "outputs", "c1");
+      mkdirSync(cwd, { recursive: true });
+      const rec = recorder(mkdtempSync(join(tmpdir(), "ws6-rec-")));
+      const exec = m.deps.exec;
+      const deps: WinFencedDeps = { ...m.deps, launcher: rec.launcher, async exec(argv, o) {
+        if (argv[1] === "user" && argv[2] === "status") return { ...answer, stderr: "" };
+        return exec(argv, o);
+      } };
+      const r = await winFencedSpawner({ fence: m.fence, deps, grantAhead: false }).run(coding(cwd));
+      expect(r).toMatchObject({ kind: "refused", reason: expect.stringContaining("couldn't be read") });
+      expect(rec.argv()).toBeNull();
+    }
   });
 });
