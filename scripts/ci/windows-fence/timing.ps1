@@ -87,6 +87,28 @@ Write-Output ("timing: acl revoke {0} ms" -f $sw.ElapsedMilliseconds)
 Remove-Item -Recurse -Force $probeDir -ErrorAction SilentlyContinue
 
 
+# 6b. Lane WS7: where a read deny's cost comes from. srt-win stamps a deny on the target and a FILE_DELETE_CHILD deny on
+#     its parent, each written with SetSecurityInfo, which carries inheritable entries down the whole tree below: a
+#     target in the home's top level puts that write on the home itself. Measured on new folders, without the profile
+#     grant here and with it below, at the home's top, one level down, deep under a small folder, and outside the home.
+function Measure-Deny([string]$Label, [string]$Path, [string]$Flag = "--deny-read") {
+  New-Item -ItemType Directory -Force -Path $Path | Out-Null
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $out = & $Srt exec --user $m3 --write-restricted-token $Flag $Path -- $cmd /d /c "exit 0" 2>&1
+  $sw.Stop()
+  Write-Output ("timing: {0} {1} ms (exit {2}); {3}" -f $Label, $sw.ElapsedMilliseconds, $LASTEXITCODE, (($out | Where-Object { "$_" -like "srt-win:*" }) -join " | "))
+}
+$homeCount = (Get-ChildItem -LiteralPath $env:USERPROFILE -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+Write-Output "timing-note: the home holds $homeCount entries"
+$where = @(
+  @("a new folder at the home's top", (Join-Path $env:USERPROFILE "ws7-new-top")),
+  @("a new folder one level down (Documents)", (Join-Path $env:USERPROFILE "Documents\ws7-new-doc")),
+  @("a new folder deep under a small folder", (Join-Path $env:USERPROFILE "ws7-small\a\b\c")),
+  @("a new folder outside the home", "C:\ws7-outside\x")
+)
+foreach ($w in $where) { Measure-Deny "exec, one read deny on $($w[0]), no profile grant" $w[1] }
+Measure-Deny "exec, one write deny on a new folder at the home's top, no profile grant" (Join-Path $env:USERPROFILE "ws7-new-top-w") "--deny-write"
+
 # 7. The profile read grant (the daemon's first command pays it once), then once more.
 Measure-Step "profile grant (first)" { & $Srt profile grant --quiet --json }
 Measure-Step "profile grant (again)" { & $Srt profile grant --quiet --json }
@@ -99,6 +121,10 @@ foreach ($d in @("AppData", ".ssh")) {
   $sw.Stop()
   Write-Output ("timing: exec, one read deny on ~\{0} with the profile grant {1} ms (exit {2}); {3}" -f $d, $sw.ElapsedMilliseconds, $LASTEXITCODE, (($out | Where-Object { "$_" -like "srt-win:*" }) -join " | "))
 }
+foreach ($w in $where) { Measure-Deny "exec, one read deny on $($w[0]), with the profile grant" "$($w[1])-g" }
+Measure-Deny "exec, one write deny on a new folder at the home's top, with the profile grant" (Join-Path $env:USERPROFILE "ws7-new-top-wg") "--deny-write"
+foreach ($w in $where) { Remove-Item -Recurse -Force -LiteralPath $w[1], "$($w[1])-g" -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force -LiteralPath (Join-Path $env:USERPROFILE "ws7-new-top-w"), (Join-Path $env:USERPROFILE "ws7-new-top-wg"), (Join-Path $env:USERPROFILE "ws7-small"), "C:\ws7-outside" -ErrorAction SilentlyContinue
 Measure-Step "profile forget" { & $Srt profile forget }
 
 # The probe used every principal: all marked used, then the reset (elevated here; the task runs it as SYSTEM) remakes
