@@ -129,6 +129,20 @@ and `org.freedesktop.portal.Desktop` on that bus. Every refusal is checked again
 paired with the same call made outside the fence, which succeeds. So a refusal is the fence's, not a missing daemon.
 The unit tests in `linux-secret-broker.test.ts` drive the broker over the pipes with a fake keyring, on any OS.
 
+What the e2e shows, on ubuntu-24.04:
+
+- Inside the fence, with the run's two grants: git's libsecret helper (and `git credential fill`) gets the github.com
+  login and nothing for gitlab.com. `gh auth token` gets its token from the keyring (go-keyring over godbus, which
+  speaks TCP). Without gh's grant, gh gets nothing.
+- MOSS's items are refused when asked for by exact attributes, including the one written by `Bun.secrets`, even with
+  grants that name them.
+- `busctl --user` to systemd1 and to the portal, `systemd-run --user` and the bus's name list get the broker's
+  refusal. Owning a name gets AccessDenied. Each works outside.
+- A run without grants has no bus address at all.
+- Garbage, many connections and a 5 MB flood on the port leave the command's next lookup working.
+- GDBus (libsecret) and sd-bus (busctl, systemd-run) both accept the `tcp:` address and the broker's EXTERNAL or
+  ANONYMOUS answer, so the transport needs nothing from the clients.
+
 ## Questions for the owner
 
 1. **The card for a saved login.** Options: (a) a new card kind `credential`, per item and per session, with
