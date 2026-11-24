@@ -32,7 +32,7 @@ export const MOSS_TOOLS_STEP = "MOSS's Plugins page: a plugin's tool set off the
 export const MOSS_INSTRUCTIONS_STEP = "MOSS's Settings: MOSS's instructions shown as they are now, edited in place and saved by the person with no card (instructionsEditRule: the person's own edit is free); her next turn is given them";
 export const MOSS_MAKE_STEP = "MOSS: a bot made from the list's + (the person's bot.create, on a model chosen there from the ones the person has set up) opens on its own conversation and answers; that bot's MakeBot raises the person's OK card in MOSS naming the maker, and once pressed the new bot is listed, made by it";
 export const MOSS_EDITOR_STEP = "MOSS's Settings, a bot's own page (the bot editor, MOSS Code's old rows 14 and 15): its name, model and instructions edited there are kept: the engine's record has them, the list shows the new name, and the page opened again shows all three";
-export const MOSS_QUESTION_STEP = "MOSS: a bot's question (AskUserQuestion) is drawn in her conversation in MOSS's window with its header, text and options, and the bot's \"Needs you\" shows in the list and the header; it is still shown when the window's page is opened again; a press on an option and Send answer answers it (session.answer, the person's own press), the model's next request carries the answer, and the card reads answered with what was chosen and \"Needs you\" goes; a second question stopped with the composer's Stop is withdrawn";
+export const MOSS_QUESTION_STEP = "MOSS: a bot's question (AskUserQuestion) is drawn in her conversation in MOSS's window with its header, text and options, and the bot's \"Needs you\" shows in the list and the header; it is still shown when the window's page is opened again; a press on an option and Send answer answers it (session.answer, the person's own press), the model's next request carries the answer, and the card reads answered with what was chosen and \"Needs you\" goes; a second question stopped with the composer's Stop is withdrawn, and a Write asked for next in the same conversation raises its card, is approved by a press and writes its file";
 export const MOSS_TRY_AGAIN_STEP = "MOSS: a turn that fails in MOSS's conversation shows Try again; one press sends the same words once more (session.resend), the next turn completes, and the button goes";
 export const MOSS_ARCHIVE_STEP = "MOSS's Settings: a bot archived leaves the list and is listed under Archived bots; brought back, it is in the list again with its conversation whole";
 export const MOSS_LONG_STEP = "MOSS: a long conversation the home already holds (a bot whose one conversation has 20,000 events, as the upgrade's copy brings the owner's): it opens on its latest page, scrolling up with the wheel reads the pages before it from the engine with the message under the eye kept in place, and the oldest message is reached by scrolling; its first paint and its page loads are timed";
@@ -47,7 +47,7 @@ export const MOSS_GLASS_STEP = "MOSS's glass: where the window has a material, a
 export const MOSS_BOTH_KEYS_STEP = "MOSS beside MOSS Code on one computer: with MOSS Code's own answer key registered too, MOSS still answers its card with its own key (program moss), and MOSS Code's connection can't answer a card MOSS draws, even signed with MOSS Code's own key";
 
 /** The unit's rows, in the order it runs them. */
-export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP, MOSS_QUESTION_STEP];
+export const MOSS_STEPS: readonly string[] = [MOSS_LIST_STEP, MOSS_MESSAGE_STEP, MOSS_STATUS_STEP, MOSS_QUESTION_STEP, MOSS_CARD_STEP, MOSS_AWAY_STEP, MOSS_PANEL_STEP, MOSS_TOOLS_STEP, MOSS_INSTRUCTIONS_STEP, MOSS_MAKE_STEP, MOSS_EDITOR_STEP, MOSS_TRY_AGAIN_STEP, MOSS_ARCHIVE_STEP, MOSS_LONG_STEP, MOSS_ROUTINE_RUN_STEP, MOSS_ROUTINE_PAUSE_STEP, MOSS_ROUTINE_EDIT_STEP, MOSS_MEMORY_STEP, MOSS_ROUTINE_FAIL_STEP, MOSS_DROP_STEP, MOSS_GLASS_STEP, MOSS_BOTH_KEYS_STEP];
 
 /** The unit's daemon: the bots as engine data (lane MC1 makes it the default; until then the unit sets it). */
 export const MOSS_ENV: Readonly<Record<string, string>> = { MOSS_BOT_SOURCE: "records" };
@@ -143,6 +143,7 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_MESSAGE_STEP, () => messageRow(s));
     // Before any row that fails a session: the engine's feed keeps a bot "stuck" while any of its sessions has failed.
     await row(MOSS_STATUS_STEP, () => statusRow(s));
+    await row(MOSS_QUESTION_STEP, () => questionRow(s));
     await row(MOSS_CARD_STEP, () => cardRow(s));
     await row(MOSS_AWAY_STEP, () => awayRow(s));
     await row(MOSS_PANEL_STEP, () => panelRow(s));
@@ -162,8 +163,6 @@ export async function mossUnit(x: MossUnitCtx): Promise<void> {
     await row(MOSS_GLASS_STEP, () => glassRow(s));
     // Last: it registers MOSS Code's key, so the home is no longer one where only MOSS has run.
     await row(MOSS_BOTH_KEYS_STEP, () => bothKeysRow(s));
-    // Last: it stops a turn and opens the window's page again, which no row after it should have to meet.
-    await row(MOSS_QUESTION_STEP, () => questionRow(s));
   } catch (err) {
     const why = `MOSS couldn't be started and driven: ${x.why(err)}`;
     for (const name of MOSS_STEPS) if (!done.has(name)) x.record(name, x.statusOf(err), why);
@@ -1422,7 +1421,13 @@ async function questionRow(s: UnitState): Promise<string> {
     const v = await s.c.request<{ session: { state?: string; needsYou?: { questions: number } } }>("session.get", { id: a.mainSession }).catch(() => undefined);
     return v !== undefined && (v.session.needsYou?.questions ?? 0) === 0 && /^(idle|done|ready)$/i.test(String(v.session.state ?? "idle")) ? true : undefined;
   }, 500);
-  return `the bot's question (header Model, three options with their descriptions, a box of the person's own) was drawn in her conversation, with "Needs you" in the list and the header and Stop on the composer; it was still there after the page was opened again; a press on "Use opus" and on Send answer was answered by the person (the log's resolution by user), the model's next request carried "Use opus", the card read answered and "Needs you" went ("${said.slice(0, 40)}"); a second question stopped from the composer was withdrawn (resolved by aborted) with nothing waiting`;
+  // 5. After the Stop, a new message that makes the bot Write: the Write's approval card is raised and drawn in her conversation, the person's press approves it, the file is written.
+  const wrote = join(s.x.userHome, ".acceptance", `moss-after-stop-${randomBytes(3).toString("hex")}.txt`);
+  const afterStop = await turnInMoss(s, "MOSS", a.mainSession, callText("Write", { file_path: wrote, content: "after the stop\n" }), "ACCEPTANCE-DONE", 150_000)
+    .catch(async (err) => s.x.fail(`${s.x.why(err)}: after the stopped question, a new message that Writes got no approval card or no reply [the engine's log for her session holds: ${(await events()).slice(-6).map((e) => String(e.type)).join(", ")}]`));
+  if (afterStop.cards.length === 0) s.x.fail("the Write after the stop raised no approval card");
+  if (!existsSync(wrote) || readFileSync(wrote, "utf8") !== "after the stop\n") s.x.fail(`the file the Write after the stop was to make isn't written (${wrote})`);
+  return `the bot's question (header Model, three options with their descriptions, a box of the person's own) was drawn in her conversation, with "Needs you" in the list and the header and Stop on the composer; it was still there after the page was opened again; a press on "Use opus" and on Send answer was answered by the person (the log's resolution by user), the model's next request carried "Use opus", the card read answered and "Needs you" went ("${said.slice(0, 40)}"); a second question stopped from the composer was withdrawn (resolved by aborted) with nothing waiting, and the next message, a Write, raised its approval card in the same conversation, was approved by a press and wrote its file`;
 }
 
 async function tryAgainRow(s: UnitState): Promise<string> {
