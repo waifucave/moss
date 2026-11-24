@@ -5091,6 +5091,7 @@ async function hostIdleRun(app: { exe: string; args: string[] }): Promise<void> 
   } finally {
     hostCdp?.close();
     await endStartedHosts();
+    unregisterRunApps();
   }
 }
 
