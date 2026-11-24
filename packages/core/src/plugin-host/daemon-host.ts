@@ -281,9 +281,20 @@ export function currentPlatform(os: NodeJS.Platform = process.platform, arch: st
  *  `blocked`. */
 const STARTABLE = new Set(["running", "waiting", "stopped"]);
 
+/** The capability that shows a plugin this device's id (`api.plugin.device`): the one that already shows it every paired
+ *  device's id (`devices.list`), so the id tells a holder nothing new, and a plugin without it never learns a stable
+ *  id for this device. */
+export const DEVICE_ID_CAPABILITY = "devices.read";
+
+/** `api.plugin.device` for a plugin: this device's id when the user's OK granted it `devices.read`, else nothing. */
+export function deviceIdFor(record: Pick<PluginRecord, "granted"> | undefined, device: string | undefined): string | undefined {
+  return device !== undefined && record !== undefined && record.granted.includes(DEVICE_ID_CAPABILITY) ? device : undefined;
+}
+
 /** The core's record of a plugin it may start, from the registry's: undefined when it isn't installed, isn't OK'd and
- *  on, or has no host code. */
-export function hostedRecordOf(registry: Pick<PluginRegistry, "get">, home: string, pluginId: string, verified?: ReadonlyMap<string, string>, platform: Platform | undefined = currentPlatform()): HostedRecord | undefined {
+ *  on, or has no host code. `device` is this device's id (`DeviceRecord.id`), which only a plugin granted
+ *  `devices.read` is told (`deviceIdFor`). */
+export function hostedRecordOf(registry: Pick<PluginRegistry, "get">, home: string, pluginId: string, verified?: ReadonlyMap<string, string>, platform: Platform | undefined = currentPlatform(), device?: string): HostedRecord | undefined {
   const r = registry.get(pluginId);
   const host = r?.manifest?.host;
   if (r === undefined || host === undefined || !r.enabled || !STARTABLE.has(r.state)) return undefined;
@@ -299,7 +310,7 @@ export function hostedRecordOf(registry: Pick<PluginRegistry, "get">, home: stri
     entry: host.entry,
     dataFolder: pluginDataFolder(home, pluginId),
     // What `api.plugin` says in its worker, as data.
-    self: { namespace: r.namespace ?? pluginId.split("/")[0]!, version: r.version ?? "0.0.0" },
+    self: { namespace: r.namespace ?? pluginId.split("/")[0]!, version: r.version ?? "0.0.0", ...(deviceIdFor(r, device) === undefined ? {} : { device: deviceIdFor(r, device)! }) },
     // A bundled plugin runs only the entry bytes its staging verified (S2); with no digest recorded, it doesn't run.
     ...(r.source === "bundled" ? { verified: verifiedTree(verified, top?.folder ?? r.folder) } : {}),
   };
@@ -442,13 +453,21 @@ export async function startPluginHost(o: StartPluginHostOptions): Promise<Daemon
     return { ...l, cmd: spawned.cmd, env: spawned.env, ...(spawned.cwd !== undefined ? { cwd: spawned.cwd } : {}) };
   };
   let closed = false;
+  /** This device's id, once the device links are up (read at each start; a host half started before has none). */
+  const thisDevice = (): string | undefined => {
+    try {
+      return o.areas?.links()?.registry.self().id;
+    } catch {
+      return undefined;
+    }
+  };
 
   const pluginLog = pluginLogWriter({ dir: join(o.home, "logs", "plugins"), log, now: () => Date.now() });
 
   const host = new CorePluginHost({
     clock: o.clock ?? new SystemClock(),
     computer: o.computer,
-    record: (id) => hostedRecordOf(o.registry, o.home, id, o.bundledDigests),
+    record: (id) => hostedRecordOf(o.registry, o.home, id, o.bundledDigests, currentPlatform(), thisDevice()),
     connect(process: HostProcess, pluginId: string): RpcPeer {
       if (closed) throw new ContractError("cancelled", "the plugin host is closing");
       if (process === "own" && o.registry.get(pluginId)?.manifest?.host?.runtime === "node") {
