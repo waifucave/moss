@@ -167,6 +167,14 @@ async fn stream(conn: Connection, mut send: SendStream, mut recv: RecvStream, id
                 if method == "slow" {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
                 }
+                // `stall`: this computer stops reading for `ms` (it still pings: its lanes are another stream).
+                if method == "stall" {
+                    tokio::time::sleep(Duration::from_millis(msg["params"]["ms"].as_u64().unwrap_or(0))).await;
+                }
+                // A staged file's later chunks to session `s_slow` are slow to answer.
+                if method == "session.stageFile" && msg["params"]["id"] == "s_slow" && msg["params"].get("offset").is_some() {
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                }
                 let Reply::Result(r) = (b.rpc)(&method, &msg["params"]);
                 let frame = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": msg["id"], "result": r })).unwrap();
                 // Written raw (length, then body), so a hostile computer can send past the link's own cap.
@@ -421,14 +429,20 @@ async fn a_call_abandoned_mid_write_leaves_the_stream_whole_for_the_next_answer(
         async move { c.call("slow".into(), "{}".into()).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let big = json!({ "blob": "y".repeat(6 << 20) }).to_string();
-    assert!(tokio::time::timeout(Duration::from_millis(300), c.call("big.call".into(), big)).await.is_err(), "the call was abandoned mid-write");
+    // Calls of 900 KiB each, abandoned after 300 ms while the computer doesn't read: one is cut mid-write.
+    for _ in 0..3 {
+        let big = json!({ "blob": "y".repeat(900 << 10) }).to_string();
+        assert!(tokio::time::timeout(Duration::from_millis(300), c.call("big.call".into(), big)).await.is_err(), "the call was abandoned");
+    }
     // The person then answers a card: it reaches the computer whole and is taken.
     let r = c.answer_card(cards[0].clone(), "approve".into(), vec![]).await.expect("the answer after an abandoned write");
     assert!(r.accepted);
     slow.await.unwrap().unwrap();
     let methods: Vec<String> = f.calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect();
-    assert!(methods.ends_with(&["slow".into(), "big.call".into(), "card.answer".into()]), "{methods:?}");
+    // Every frame read whole (the fake parses each), the answer last; calls abandoned before their write began never came.
+    assert!(methods.contains(&"slow".to_string()), "{methods:?}");
+    assert_eq!(methods.last().map(String::as_str), Some("card.answer"), "{methods:?}");
+    assert!(methods.iter().filter(|m| *m == "big.call").count() >= 1, "{methods:?}");
     c.disconnect();
 }
 
@@ -612,10 +626,164 @@ async fn a_file_is_staged_in_chunks_under_the_links_frame_limit() {
     let data: Vec<u8> = (0..1_300_000u32).map(|i| (i * 7 % 251) as u8).collect();
     let staged = c.stage_file("s_alpha".into(), "notes.txt".into(), data.clone()).await.unwrap();
     assert_eq!(staged.path, "bots/alpha/files/notes.txt");
-    assert_eq!(staged.computers_name, "notes .txt", "the computer's name for it is cleaned");
+    assert_eq!(staged.computers_name, "notes U+202E.txt", "the computer's name for it shows its hidden character");
     assert_eq!(*got.lock().unwrap(), data);
     let sizes = sizes.lock().unwrap().clone();
     assert_eq!(sizes.len(), 3);
     assert!(sizes.iter().all(|n| *n <= 699_052), "each chunk at most 512 KiB of bytes: {sizes:?}");
     c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolutions_of_cards_never_issued_take_no_memory() {
+    // A hostile computer streams `card_resolved` for 20 000 ids the phone was never shown: the core keeps a bounded table.
+    let resolved: Vec<Vec<u8>> = (0..20_000)
+        .map(|i| format!(r#"{{"jsonrpc":"2.0","method":"core.event","params":{{"type":"card_resolved","ts":1,"id":"card_{i:08x}","outcome":"expired"}}}}"#).into_bytes())
+        .collect();
+    let f = Fake::link(Behaviour { rpc: Arc::new(honest), after_hello: resolved, lane_after_hello: None }).await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    // The last one has been read once a call made after them is answered (one stream, in order).
+    c.call("bot.list".into(), "{}".into()).await.unwrap();
+    assert!(c.tracked_cards() <= 1024, "the card table holds {}", c.tracked_cards());
+    c.disconnect();
+}
+
+fn short_opts(ms: u64) -> ConnectOptions {
+    ConnectOptions { call_timeout_ms: ms, ..opts() }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computer_that_stops_reading_bounds_every_call() {
+    let a = card("card_aaaaaaaa", "Card A");
+    let a2 = a.clone();
+    let f = Fake::link(Behaviour {
+        rpc: Arc::new(move |m, p| match m {
+            "card.list" => Reply::Result(json!({ "cards": [a2.clone()] })),
+            "card.answer" => Reply::Result(json!({ "accepted": true })),
+            _ => honest(m, p),
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    })
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), short_opts(1500)).await.unwrap();
+    let ConnEvent::PendingCards { cards } = until(&c, "the cards", |e| matches!(e, ConnEvent::PendingCards { .. })).await else { unreachable!() };
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    // The computer stops reading for 15 s but keeps its link alive.
+    assert!(matches!(c.call("stall".into(), json!({ "ms": 15000 }).to_string()).await, Err(CoreError::Timeout { .. })));
+    // A call whose frame can't be written in time ends at its timeout: the timeout covers the write.
+    // Calls whose frames fill the computer's window: each ends at its timeout, the write's wait included.
+    for _ in 0..4 {
+        let t = Instant::now();
+        let big = json!({ "blob": "y".repeat(900 << 10) }).to_string();
+        // A timeout, or (once frames being written fill the queue) a plain refusal: never a hang.
+        let r = c.call("big.stuck".into(), big).await;
+        assert!(matches!(r, Err(CoreError::Timeout { .. } | CoreError::Refused { .. })), "a stuck call ends: {r:?}");
+        assert!(t.elapsed() < Duration::from_millis(2500), "took {:?}", t.elapsed());
+    }
+    // A message over the link's 1 MiB is refused at once (the engine would drop it).
+    assert!(matches!(c.call("too.big".into(), json!({ "blob": "y".repeat(1 << 20) }).to_string()).await, Err(CoreError::Refused { .. })));
+    // Queued writes are bounded by bytes: calls that would overfill the queue fail at once, in plain words.
+    let tasks: Vec<_> = (0..8)
+        .map(|i| {
+            let c = c.clone();
+            tokio::spawn(async move { c.call(format!("queued.{i}"), json!({ "blob": "z".repeat(900 << 10) }).to_string()).await })
+        })
+        .collect();
+    let mut rs = vec![];
+    for t in tasks {
+        rs.push(t.await.unwrap());
+    }
+    assert!(rs.iter().any(|r| matches!(r, Err(CoreError::Refused { .. }))), "a full queue refuses a call: {rs:?}");
+    // An answer abandoned before its write started is never sent.
+    assert!(tokio::time::timeout(Duration::from_millis(300), c.answer_card(cards[0].clone(), "approve".into(), vec![])).await.is_err());
+    // Once the computer reads again, the link works and no answer arrived.
+    let end = Instant::now() + Duration::from_secs(30);
+    while c.call("bot.get".into(), "{}".into()).await.is_err() {
+        assert!(Instant::now() < end, "the link never came back");
+    }
+    assert_eq!(f.count("card.answer"), 0, "an abandoned answer that never started is not sent");
+    c.disconnect();
+}
+
+fn stager(answer: impl Fn(&Value, usize) -> Value + Send + Sync + 'static) -> Behaviour {
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Behaviour {
+        rpc: Arc::new(move |m, p| {
+            if m != "session.stageFile" {
+                return honest(m, p);
+            }
+            if p.get("cancel").is_some() {
+                return Reply::Result(json!({ "upload": "up1", "received": 0, "done": false }));
+            }
+            Reply::Result(answer(p, n.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
+        }),
+        after_hello: vec![],
+        lane_after_hello: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computer_cant_keep_a_file_uploading_for_ever() {
+    let data = vec![7u8; 1_300_000];
+    // It never takes a byte, or goes backwards: the upload ends with an error, and the computer is told to drop it.
+    for (name, b) in [
+        ("never", stager(|_, _| json!({ "upload": "up1", "received": 0, "done": false }))),
+        ("backwards", stager(|_, i| json!({ "upload": "up1", "received": if i == 0 { 524_288 } else { 100 }, "done": false }))),
+        ("stuck", stager(|_, _| json!({ "upload": "up1", "received": 524_288, "done": false }))),
+    ] {
+        let f = Fake::link(b).await;
+        let (core, _) = phone_for(&[&f]).await;
+        let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+        until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+        let r = tokio::time::timeout(Duration::from_secs(10), c.stage_file("s_alpha".into(), "n.txt".into(), data.clone())).await;
+        assert!(matches!(r, Ok(Err(_))), "{name}: {r:?}");
+        assert!(f.count("session.stageFile") <= 5, "{name}: {} rounds", f.count("session.stageFile"));
+        assert_eq!(cancels_within(&f, Duration::from_secs(3)).await, 1, "{name}: the upload is dropped at the computer");
+        c.disconnect();
+    }
+    // The caller stops waiting part way: the computer is told to drop the upload.
+    let f = Fake::link(stager(|p, _| {
+        let at = p.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let n = bytes::from_b64(p["dataBase64"].as_str().unwrap()).unwrap().len();
+        json!({ "upload": "up1", "received": at + n, "done": false })
+    }))
+    .await;
+    let (core, _) = phone_for(&[&f]).await;
+    let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+    until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+    assert!(tokio::time::timeout(Duration::from_millis(400), c.stage_file("s_slow".into(), "n.txt".into(), data)).await.is_err());
+    assert_eq!(cancels_within(&f, Duration::from_secs(4)).await, 1, "a cancelled upload is dropped at the computer");
+    c.disconnect();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_staged_path_the_phone_would_sign_differently_is_refused_not_rewritten() {
+    for path in ["bots/alpha/files/a\tb.txt", "bots/alpha/files/a  b.txt", "bots/alpha/files/a\u{202e}b.txt"] {
+        let p2 = path.to_string();
+        let f = Fake::link(stager(move |_, _| json!({ "upload": "up1", "received": 10, "done": true, "name": "a.txt", "path": p2 }))).await;
+        let (core, _) = phone_for(&[&f]).await;
+        let c = core.clone().connect(f.id.clone(), opts()).await.unwrap();
+        until(&c, "up", |e| matches!(e, ConnEvent::Up)).await;
+        match c.stage_file("s_alpha".into(), "a.txt".into(), vec![1; 10]).await {
+            Ok(s) => assert_eq!(s.path, path, "a path is given as it came or refused"),
+            Err(_) => {}
+        }
+        c.disconnect();
+    }
+}
+
+
+/// The cancels of an upload the fake heard, waiting up to `t` for the first (the core sends it from a task of its own).
+async fn cancels_within(f: &Fake, t: Duration) -> usize {
+    let count = || f.calls.lock().unwrap().iter().filter(|(m, p)| m == "session.stageFile" && p.get("cancel").is_some()).count();
+    let end = Instant::now() + t;
+    while count() == 0 && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    count()
 }

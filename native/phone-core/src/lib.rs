@@ -27,6 +27,7 @@ pub mod net;
 pub mod pairing;
 pub mod runtime;
 pub mod sas;
+pub mod visible;
 
 use std::sync::Arc;
 
