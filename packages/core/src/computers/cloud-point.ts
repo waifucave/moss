@@ -86,9 +86,16 @@ export function providerEntryIds(registry: PluginRegistry, pluginId: string): st
 /** What stops a plugin that provides cloud computers from being removed or switched off while this computer's cloud
  *  computers aren't running: its machines could not be asked about, and would be left billing unasked. `undefined` for a
  *  plugin that provides none. Used until the computer node is up, and for good on a computer whose node never started. */
-export function cloudNotRunningRefusal(registry: PluginRegistry, pluginId: string, action: "remove" | "switch-off" = "remove"): ContractError | undefined {
-  if (providerEntryIds(registry, pluginId).length === 0) return undefined;
-  return new ContractError("refused", `${pluginId} provides cloud computers, and this computer's cloud computers aren't running (still starting, or this computer's node didn't start), so what to do with their machines can't be asked yet: ${action === "remove" ? "remove" : "switch"} it ${action === "remove" ? "" : "off "}once they are running`.replace("  ", " "));
+export function cloudNotRunningRefusal(
+  registry: PluginRegistry, pluginId: string, action: "remove" | "switch-off" = "remove", machinesOf: (providerIds: string[]) => string[] = () => [],
+): ContractError | undefined {
+  const ids = providerEntryIds(registry, pluginId);
+  if (ids.length === 0) return undefined;
+  // This computer's own record lists no machine of these providers: nothing can be left billing, so nothing to ask.
+  const machines = machinesOf(ids);
+  if (machines.length === 0) return undefined;
+  const verb = action === "remove" ? "remove it" : "switch it off";
+  return new ContractError("refused", `${pluginId} provides cloud computers (${machines.join(", ")}), and this computer's cloud computers aren't running (still starting, or they did not start: see the daemon log), so what to do with the machines can't be asked: wait a minute or restart MOSS and ${verb} again, or ${verb} on the main computer if another computer is the main`);
 }
 
 /** The question before a plugin goes (removed or switched off), whichever state this computer's cloud computers are in:
@@ -96,9 +103,10 @@ export function cloudNotRunningRefusal(registry: PluginRegistry, pluginId: strin
  *  never started, where a plugin that provides cloud computers is refused. */
 export function askBeforeProviderGoes(
   point: CloudPoint | undefined, registry: PluginRegistry | undefined, pluginId: string, action: "remove" | "switch-off",
+  machinesOf?: (providerIds: string[]) => string[],
 ): Promise<{ commit: () => Promise<void>; note: string } | undefined> {
   if (point) return point.guardRemoval(pluginId, action);
-  const refusal = registry ? cloudNotRunningRefusal(registry, pluginId, action) : undefined;
+  const refusal = registry ? cloudNotRunningRefusal(registry, pluginId, action, machinesOf) : undefined;
   return refusal ? Promise.reject(refusal) : Promise.resolve(undefined);
 }
 

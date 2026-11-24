@@ -155,7 +155,9 @@ export class FileCloudStateStore implements CloudStateStore {
   load(): CloudState {
     try {
       const v = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<CloudState>;
-      return { vms: Array.isArray(v.vms) ? v.vms : [], kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
+      // A name is shown in the engine's own sentences (the removal question and its note): a hand-edited file can't put text in them.
+      const vms = Array.isArray(v.vms) ? v.vms.filter((m) => typeof m?.name === "string" && COMPUTER_NAME_RE.test(m.name)) : [];
+      return { vms, kept: Array.isArray(v.kept) ? v.kept : [], tokens: Array.isArray(v.tokens) ? v.tokens : [] };
     } catch {
       return structuredClone(EMPTY);
     }
@@ -731,7 +733,9 @@ export class CloudComputers {
       return {
         note: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} kept, and keep billing until you delete ${names.length === 1 ? "it" : "them"} in the provider's own console.`,
         commit: async () => {
-          for (const v of mine()) this.#keep(v.label);
+          // Keeping on a switch-off is doing nothing: the machines are marked kept only when their provider goes for good. A
+          // kept mark made now would outlast switching it on again and hide a machine whose folder was removed meanwhile.
+          if (action === "remove") for (const v of mine()) this.#keep(v.label);
           this.#save();
           this.#o.log?.(`cloud computers ${names.join(", ")}: kept; once the provider is removed MOSS can no longer manage them and they keep billing until you delete them in the provider's own console`);
           return "kept" as const;

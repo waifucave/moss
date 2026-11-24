@@ -106,6 +106,7 @@ import { AgentStarts, agentStartPolicy } from "./agents/start-policy";
 import { computerNameFor } from "./devices/registry";
 import { joinCloudComputerUntilPaired } from "./computers/cloud-join";
 import { askBeforeProviderGoes } from "./computers/cloud-point";
+import { FileCloudStateStore } from "./computers/cloud";
 import { readCloudJoinFiles } from "./computers/image";
 import { startPluginHost, type DaemonPluginHost, type MainHere } from "./plugin-host/daemon-host";
 import { pluginBotSettings } from "./bots/plugin-bot-settings";
@@ -4139,7 +4140,9 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   // about and would be left billing unasked.
   const askCloudComputers = async (id: string, action: "remove" | "switch-off"): Promise<{ commit: () => Promise<void>; note: string } | undefined> => {
     if (beforeCloudPluginRemoved) return beforeCloudPluginRemoved(id, action);
-    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action);
+    // Its own record of machines (`cloud.json`), read now: the parts that keep it aren't up.
+    const machinesOf = (ids: string[]) => new FileCloudStateStore(mossHome).load().vms.filter((v) => ids.includes(v.provider)).map((v) => v.name);
+    return askBeforeProviderGoes(undefined, pluginHost?.registry, id, action, machinesOf);
   };
   // The main computer, for a host half whose `host.start` is `main`: not known until the links and the parts are up
   // (the lease), so such a host half waits; with no links, this computer is its own main.

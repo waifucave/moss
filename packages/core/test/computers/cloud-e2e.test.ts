@@ -153,10 +153,16 @@ describe("what can reach a provider's handler", () => {
   test("before the computers run, or on a computer whose node never started, removing or switching off a provider plugin is refused with a plain reason; a plugin that provides nothing goes", async () => {
     const { rig } = await boot("hetzner");
     for (const action of ["remove", "switch-off"] as const) {
-      const e = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action).catch((x) => x);
+      // Machines listed in this computer's record: refused, saying which and what the person can do.
+      const e = await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, () => ["Cloud1"]).catch((x) => x);
       expect(isContractError(e, "refused")).toBe(true);
-      expect((e as Error).message).toContain("cloud computers aren't running");
+      expect((e as Error).message).toContain("aren't running");
+      expect((e as Error).message).toContain("Cloud1");
+      expect((e as Error).message).toContain("on the main computer");
       expect((e as Error).message).toContain(rig.pluginId);
+      // Its record lists none: nothing can be left billing, so it goes (it could otherwise never be removed when the parts never start).
+      expect(await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action, () => [])).toBeUndefined();
+      expect(await askBeforeProviderGoes(undefined, rig.registry, rig.pluginId, action)).toBeUndefined();
     }
     expect(await askBeforeProviderGoes(undefined, rig.registry, "someone/else", "remove")).toBeUndefined();
     // No registry at all (nothing to look in): nothing to refuse.
