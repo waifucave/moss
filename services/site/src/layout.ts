@@ -67,7 +67,7 @@ ${f.body}
 </main>
 <footer class="foot">
 <div class="foot__in">
-<p class="foot__made">MOSS is made by WaifuCave and is open source under the Apache 2.0 license.</p>
+<p class="foot__made">MOSS is made by WaifuCave. Its code is open source under the Apache 2.0 license.</p>
 <nav class="foot__nav" aria-label="More">
 <a href="/docs/">Docs</a>
 <a href="${repo}">Source code</a>

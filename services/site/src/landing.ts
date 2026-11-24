@@ -254,15 +254,18 @@ function privacy(): Html {
 <div class="split split--wide">
 ${picture({ name: "moss-setup", alt: "MOSS's setup guide, step 1 of 3: Welcome to MOSS. MOSS needs a model to talk to. Add a provider: sign in to a subscription you have, or paste an API key. A list of providers: Codex, Grok, OpenAI, Anthropic, Google Gemini API, OpenRouter, xAI.", caption: "The setup guide that greets you on first open." })}
 <div class="connects">
-<h3>What connects, and to where</h3>
+<h3>What it connects to</h3>
 <ul class="connects__list">
 <li><strong>Your messages</strong> go to the model provider you picked. With a voice turned on, the replies it speaks go to your voice provider.</li>
 <li><strong>Web searches</strong> go to Exa. Pages are fetched straight from your computer.</li>
 <li><strong>Updates</strong> are checked against this project's releases on GitHub.</li>
 <li><strong>Your devices</strong> find each other through a small WaifuCave service. When two can't connect directly, a relay carries their traffic: n0's public relays unless you pick your own. Both pass only encrypted data, though a relay does see which of your devices are online.</li>
+<li><strong>The time</strong> is checked with Cloudflare's and Google's public time servers, so all your devices agree on it.</li>
+<li><strong>Downloads you OK</strong> come from where the card says: Claude Code's and Codex's adapters from npm, a plugin from the address you gave.</li>
+<li><strong>Your account</strong>, if you make one, signs in at waifucave.com.</li>
 <li><strong>Your keys</strong> stay in your system's secret store, and travel only to your own devices, encrypted end to end.</li>
 </ul>
-<p class="note">No telemetry and no analytics. An account is optional: it only helps your devices find each other. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
+<p class="note">No telemetry and no analytics. A plugin you add reaches the hosts its card names. An account is optional: it only helps your devices find each other. Claude subscriptions can't be used in MOSS; an Anthropic Console sign-in, billed to your API account, can.</p>
 </div>
 </div>
 </section>`;
@@ -274,7 +277,7 @@ function devices(): Html {
 <h2 id="devices-title">On all your computers, and soon your phone</h2>
 </div>
 <div class="facts">
-<div class="fact"><h3>Pair with four words</h3><p>Connect your computers with a code or a QR code, then check that the same four words show on both screens. The link between them is encrypted end to end.</p></div>
+<div class="fact"><h3>Pair them once</h3><p>Connect your computers with a code or a QR code, then check that the same four words show on both screens. The link between them is encrypted end to end.</p></div>
 <div class="fact"><h3>One bot, every computer</h3><p>A bot can then work on any of them. Its files and commands run on the computer that holds them, under that computer's own level.</p></div>
 <div class="fact"><h3>Phone apps, being built</h3><p>MOSS and MOSS Code for iPhone and Android are being built now: your bots, your sessions and your cards in your pocket. They are not out yet.</p></div>
 </div>
@@ -285,7 +288,7 @@ function open(): Html {
   return html`<section class="band" id="open" aria-labelledby="open-title">
 <div class="band__head">
 <h2 id="open-title">Open source, on three systems</h2>
-<p class="lead">All of MOSS is open source under the Apache 2.0 license: both apps, the engine, the command line and the plugins it ships. Read the code, build it yourself, or tell us what's wrong.</p>
+<p class="lead">MOSS's code is open source under the Apache 2.0 license: both apps, the engine and the command line. Read the code, build it yourself, or tell us what's wrong.</p>
 </div>
 <table class="systems">
 <caption class="visually-hidden">The systems MOSS runs on</caption>
