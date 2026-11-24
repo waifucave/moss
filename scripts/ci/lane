@@ -46,11 +46,12 @@ case "$cmd" in
   wait)
     run="${1:-$(find_run)}"; [ -n "$run" ] || die "no run of $sha: scripts/ci/lane start first"
     say "waiting for run $run"
-    # A dropped network connection is not the run ending: look again.
+    # A dropped network connection is not the run ending: look again. One look a minute: several lanes waiting at once share
+    # one hourly API budget with everything else, and a look every 20 s from each of them used it up (2026-11-24).
     while :; do
       st="$(gh run view "$run" --json status --jq .status 2>/dev/null || true)"
       [ "$st" = completed ] && break
-      sleep 20
+      sleep 60
     done
     conclusion="$(gh run view "$run" --json conclusion --jq '.conclusion' 2>/dev/null || true)"
     # An unfinished job has no end time (0001-01-01): its time reads "-".
