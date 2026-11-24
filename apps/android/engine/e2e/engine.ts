@@ -151,7 +151,8 @@ const newWords = (): string[] | undefined => {
   return undefined;
 };
 const advertise = (qr: string): string => {
-  const prefix = "clover-pair:1:";
+  // The engine's own prefix, up to the last colon (the encoded part is base64url, which has none).
+  const prefix = qr.slice(0, qr.lastIndexOf(":") + 1);
   const v = decode(Buffer.from(qr.slice(prefix.length), "base64url")) as unknown[];
   const port = (a: string) => a.slice(a.lastIndexOf(":") + 1);
   const all = [...(v[4] as string[]), ...(v[5] as string[])];

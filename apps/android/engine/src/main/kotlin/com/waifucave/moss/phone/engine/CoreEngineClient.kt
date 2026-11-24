@@ -310,8 +310,9 @@ class CoreEngineClient(
     )
 
     override suspend fun beginPairing(code: String): PairingProposal = io {
+        // The core reads the code and refuses anything that isn't a pairing QR (`Invalid` -> unreadable).
         val qr = code.trim()
-        if (!qr.startsWith("clover-pair:")) throw PairingException(PairingError.unreadableCode)
+        if (qr.isEmpty()) throw PairingException(PairingError.unreadableCode)
         val pairing = try { phoneCore().beginPairing(qr, coreApp) } catch (e: CancellationException) { throw e } catch (e: Exception) { throw pairingError(e) }
         val id = UUID.randomUUID().toString()
         synchronized(this) { pairings[id] = pairing }
