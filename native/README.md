@@ -9,5 +9,6 @@ MOSS's per-OS helpers (plan §7), one area per folder. Each area is built by its
 | `mounts/` | the folder tree's mounts | J |
 | `link-sidecar/` | the link's transport, if Bun can't load iroh | H |
 | `link/` | `moss-link`, the link sidecar the core ships with (iroh, spike S1's choice) | H |
+| `phone-core/` | the phone apps' shared core: keys, pairing, the link and its RPC, card answers (Swift and Kotlin bindings) | PC |
 
 Each area arrives with its lane; until then its folder may be missing or hold only its README.

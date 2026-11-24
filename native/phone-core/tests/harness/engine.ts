@@ -171,6 +171,14 @@ async function run(cmd: Record<string, unknown>): Promise<unknown> {
       decisions.set(cardId, decision);
       return { cardId };
     }
+    case "bounce": {
+      // The link sidecar this engine started dies (its own child, by its pid); the engine starts it again on the same
+      // address, and the phone must notice the loss and dial back.
+      const pid = daemon.mossParts.links()?.sidecarPid();
+      if (!pid) throw new Error("no link sidecar");
+      process.kill(pid, "SIGKILL");
+      return { pid };
+    }
     case "decision":
       return decisions.get(cmd.cardId as string);
     case "revoke": {

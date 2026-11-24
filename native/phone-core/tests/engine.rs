@@ -55,12 +55,17 @@ struct Engine {
 
 impl Engine {
     async fn start() -> Engine {
+        Self::start_with(&[]).await
+    }
+
+    async fn start_with(args: &[String]) -> Engine {
         let bun = std::env::var("MOSS_PC_BUN").map(PathBuf::from).unwrap_or_else(|_| repo().join("scripts/pinned-bun"));
         // The core tests' own preload: a per-process temp root, the throwaway keychain service, no login shell.
         let mut child = tokio::process::Command::new(bun)
             .arg("--preload")
             .arg(repo().join("packages/core/test/preload.ts"))
             .arg(repo().join("native/phone-core/tests/harness/engine.ts"))
+            .args(args)
             .current_dir(repo())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -157,7 +162,9 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     if !enabled() {
         return;
     }
-    let mut engine = Engine::start().await;
+    // A fixed loopback port, so the engine's sidecar comes back where the phone paired with it after `bounce`.
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut engine = Engine::start_with(&["--bind".into(), format!("127.0.0.1:{port}")]).await;
     let storage = Arc::new(MemStorage::default());
     let core = phone(storage.clone());
     let (paired, _) = pair(&mut engine, &core, None, true).await;
@@ -240,6 +247,15 @@ async fn pairs_calls_hears_and_answers_cards_then_is_revoked() {
     // And the honest deny is taken.
     assert!(conn.answer_card(waiting.clone(), "deny".into(), vec![]).await.unwrap().accepted);
     assert_eq!(engine.ok(json!({ "cmd": "decision", "cardId": waiting })).await["allowed"], false);
+
+    // The link is lost (the engine's sidecar dies and comes back): the phone sees it go down, dials back by itself, and
+    // after the hello, the subscription and the pending list again, calls work.
+    engine.ok(json!({ "cmd": "bounce" })).await;
+    until_event(&conn, "the link down", |e| matches!(e, ConnEvent::Down { .. })).await;
+    until_event(&conn, "the pending cards again", |e| matches!(e, ConnEvent::PendingCards { .. })).await;
+    until_event(&conn, "up again", |e| matches!(e, ConnEvent::Up)).await;
+    assert_eq!(conn.state(), moss_phone_core::LinkState::Up);
+    conn.call("bot.list".into(), "{}".into()).await.expect("a call after the reconnect");
 
     // Revoked on the computer: the link is cut and the phone stops dialling.
     engine.ok(json!({ "cmd": "revoke", "device": me.device_id })).await;
