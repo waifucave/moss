@@ -29,6 +29,7 @@ Write-Output "the reset task is $((Get-ScheduledTask -TaskName "MOSS Sandbox Res
 $first = $pool[0].principal
 $rOut = [System.IO.Path]::GetTempFileName(); $rErr = [System.IO.Path]::GetTempFileName()
 $rsw = [Diagnostics.Stopwatch]::StartNew()
+$removeStartedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $rp = Start-Process -FilePath $Core -ArgumentList @("sandbox", "remove") -NoNewWindow -PassThru -RedirectStandardOutput $rOut -RedirectStandardError $rErr
 $markerGone = $null; $accountGone = $null
 while (-not $rp.HasExited -and $rsw.Elapsed.TotalSeconds -lt 900) {
@@ -39,7 +40,8 @@ while (-not $rp.HasExited -and $rsw.Elapsed.TotalSeconds -lt 900) {
 if (-not $rp.HasExited) { & taskkill.exe /T /F /PID $rp.Id | Out-Null; throw "remove round 1 timed out" }
 $rp.WaitForExit()
 if ($null -eq $accountGone -and -not (Get-LocalUser -Name $first -ErrorAction SilentlyContinue)) { $accountGone = $rsw.Elapsed.TotalSeconds }
-Get-Content $rOut, $rErr | Where-Object { $_ -ne "" } | Write-Output
+$removeSaid = @(Get-Content $rOut, $rErr | Where-Object { $_ -ne "" })
+$removeSaid | Write-Output
 Write-Output ("remove round 1: exit {0} in {1:N1} s; marker gone at {2} s, {3} gone at {4} s" -f $rp.ExitCode, $rsw.Elapsed.TotalSeconds, $markerGone, $first, $accountGone)
 if ($rp.ExitCode -ne 0) {
   Write-Output "pool account processes now: $((PoolProcs | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')"
@@ -47,15 +49,20 @@ if ($rp.ExitCode -ne 0) {
   throw "remove round 1 exited $($rp.ExitCode)"
 }
 if ($null -eq $markerGone -or $null -eq $accountGone -or $markerGone -gt $accountGone) { throw "the marker was not gone before the first account (marker $markerGone s, account $accountGone s)" }
-if ($rsw.Elapsed.TotalSeconds -ge 180) { throw "remove waited the held command out ($([int]$rsw.Elapsed.TotalSeconds) s) instead of ending it" }
+# Remove ended the held command's processes itself (its own line names how many), before it deleted the account.
+$endedLine = $removeSaid | Where-Object { $_ -match "sandbox remove: $([regex]::Escape($first)): ended (\d+)" } | Select-Object -First 1
+$endedCount = if ($null -ne $endedLine -and "$endedLine" -match "ended (\d+)") { [int]$Matches[1] } else { 0 }
+if ($endedCount -lt 1) { throw "remove did not say it ended the held account's processes: $endedLine" }
 $after = PoolProcs
 if ($after.Count -gt 0) { throw "a pool account's process outlived remove: $(($after | ForEach-Object { "$($_.ProcessName)#$($_.Id) $($_.UserName)" }) -join '; ')" }
 $hsw = [Diagnostics.Stopwatch]::StartNew()
 while (-not (Test-Path -LiteralPath $holdOut) -and $hsw.Elapsed.TotalSeconds -lt 120) { Start-Sleep -Milliseconds 500 }
 if (-not (Test-Path -LiteralPath $holdOut)) { throw "the held command's caller never heard back" }
 $held = Get-Content -Raw -LiteralPath $holdOut | ConvertFrom-Json
-Write-Output "the held command ended: kind $($held.kind), code $($held.code), after $([int]($held.afterMs / 1000)) s"
+$endedAfter = ($held.endedAt - $removeStartedAt) / 1000
+Write-Output ("the held command ended: kind {0}, code {1}, {2:N1} s after remove started (its account was gone at {3:N1} s)" -f $held.kind, $held.code, $endedAfter, $accountGone)
 if ("$($held.stdout)" -match "finished") { throw "the held command ran to its end" }
+if ($endedAfter -gt ($accountGone + 30)) { throw "the held command ended only $endedAfter s after remove started, past its account's removal ($accountGone s)" }
 $code = Invoke-Limited "remove (round 2)" $Core @("sandbox", "remove") 900
 if ($code -ne 0) { throw "remove round 2 exited $code" }
 if (-not $hold.HasExited) { & taskkill.exe /T /F /PID $hold.Id | Out-Null }

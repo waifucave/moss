@@ -18,4 +18,4 @@ const r = await fencedSpawner({ fence }).run({
   command: "echo started; sleep 900; echo finished", cwd, env: {}, timeoutMs: 1_000_000, shell: "bash",
   who: { caller: { kind: "session", sessionId: "hold", sessionKind: "coding" } } as unknown as FencedRun["who"],
 });
-writeFileSync(out, JSON.stringify({ ...r, afterMs: Date.now() - started }));
+writeFileSync(out, JSON.stringify({ ...r, afterMs: Date.now() - started, endedAt: Date.now() }));
