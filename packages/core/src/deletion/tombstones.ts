@@ -28,6 +28,8 @@ interface TombstoneFile {
 }
 
 const ID_RE = /^[A-Za-z0-9_./:@-]{1,200}$/;
+/** A session's or a bot's id as the engine makes them: the characters above, and no empty, `.` or `..` part. */
+const validId = (id: string): boolean => ID_RE.test(id) && !id.split("/").some((p) => p === "" || p === "." || p === "..");
 const cache = new Map<string, { mtimeMs: number; size: number; file: TombstoneFile }>();
 
 export function tombstonePath(home: string): string {
@@ -52,7 +54,7 @@ function read(home: string): TombstoneFile {
   }
   const clean = (o: unknown): Record<string, number> => {
     const out: Record<string, number> = {};
-    if (o && typeof o === "object" && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) if (ID_RE.test(k) && typeof v === "number") out[k] = v;
+    if (o && typeof o === "object" && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) if (validId(k) && typeof v === "number") out[k] = v;
     return out;
   };
   const file: TombstoneFile = { v: 1, bots: clean(raw?.bots), sessions: clean(raw?.sessions), conversations: clean(raw?.conversations) };
@@ -67,7 +69,7 @@ export function tombstoneProblem(home: string): string | undefined {
 
 /** Throws before anything is deleted: an id the record can't hold, or a damaged record. */
 function writable(home: string, ids: readonly string[]): TombstoneFile {
-  for (const id of ids) if (!ID_RE.test(id)) throw new ContractError("invalid", "that id can't be recorded as deleted; nothing was deleted");
+  for (const id of ids) if (!validId(id)) throw new ContractError("invalid", "that id can't be recorded as deleted; nothing was deleted");
   const f = read(home);
   if (f.damaged) throw new ContractError("failed", "the record of what was deleted here can't be read (moss doctor says more); nothing was deleted");
   return f;
