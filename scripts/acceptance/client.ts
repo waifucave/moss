@@ -92,12 +92,18 @@ export class MossClient {
 
 /** Connects and says hello in `role`; the client is closed again when the hello is refused. */
 export async function hello(path: string, role: "app" | "cli" | "layer", token: string, clientName: string, protocolVersion: number, extra: Record<string, unknown> = {}): Promise<{ client: MossClient; result: Record<string, unknown> }> {
-  const client = await MossClient.connect(path);
-  try {
-    const result = await client.request("protocol.hello", { protocolVersion, role, token, clientName, features: ["app.quit"], ...extra }, 10_000);
-    return { client, result };
-  } catch (err) {
-    client.close();
-    throw err;
+  // Windows: the core names a pipe client by scanning its own handles, and when two connections arrive together from different programs it cannot tell
+  // them apart: it refuses (-32012) or closes the connection (the client connects again, as its own comment says). A second try is the answer.
+  for (let attempt = 0; ; attempt++) {
+    const client = await MossClient.connect(path);
+    try {
+      const result = await client.request("protocol.hello", { protocolVersion, role, token, clientName, features: ["app.quit"], ...extra }, 10_000);
+      return { client, result };
+    } catch (err) {
+      client.close();
+      const again = process.platform === "win32" && attempt < 8 && /-32012|the connection closed/.test(String(err));
+      if (!again) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
 }
