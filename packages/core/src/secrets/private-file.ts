@@ -35,7 +35,7 @@ export interface PrivateFileDeps {
 
 /** Windows' own tools by full path: a bare `whoami` or `icacls` on PATH may be Git's (Git Bash's coreutils `whoami` takes no
  *  `/user`), and a program a user's PATH names first is not to be trusted with an ACL. */
-function system32(run: Runner): Runner {
+export function system32(run: Runner): Runner {
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   return (argv) => {
     const [first, ...rest] = argv;

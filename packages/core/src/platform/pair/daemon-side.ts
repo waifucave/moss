@@ -6,6 +6,7 @@ import { bunRunner, windowsUserSid, type Runner } from "../login/live";
 import type { MossProfile } from "../../profile";
 import type { DaemonPlatform } from "../transport";
 import { appStarter, resolveAppLauncher, type AppLauncher } from "./launch";
+import { system32 } from "../../secrets/private-file";
 import { DaemonPair, type DaemonPairOptions, type PairStopReason } from "./policy";
 import { lockRunDir, markAppKept, mintAppToken, removeAppToken, takeAppKept } from "./run-files";
 
@@ -55,7 +56,9 @@ const realAfter = (ms: number, fn: () => void): (() => void) => {
 /** Mint the token, find the app, and start the policy (on a desktop, the 2 s grace for the app). */
 export async function startDaemonPairSide(input: DaemonPairSideInput): Promise<DaemonPairSide> {
   const run = input.run ?? bunRunner;
-  const userSid = input.os === "win32" ? await windowsUserSid(run) : undefined;
+  // `whoami` by its System32 path (as the secrets files do): the one on PATH may be Git Bash's coreutils, which takes no `/user`, and
+  // then the run folder and the app token are not locked to the user (a Windows user who starts the engine from Git Bash or MSYS).
+  const userSid = input.os === "win32" ? await windowsUserSid(system32(run)) : undefined;
   const files = { os: input.os, run, ...(userSid ? { userSid } : {}) };
   await lockRunDir(input.runDir, files);
   const appToken = await mintAppToken(input.runDir, files);

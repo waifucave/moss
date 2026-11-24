@@ -46,7 +46,14 @@ import { fileURLToPath } from "node:url";
 // Through require, never an ESM import: the plugin's own ESM imports of it then see the wrapped Worker below (measured
 // on Bun 1.4.4; an ESM import here would fix its named exports before the wrap).
 const workerThreads = createRequire(import.meta.url)("node:worker_threads");
-const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+// On Windows the native realpath, which also expands an 8.3 short name (RUNNER~1, a long user name's TEMP), as the long form Bun gives
+// its main file and its modules is compared with: the plain one leaves it short and refuses the host's own entry (measured on a runner).
+const rp = process.platform === "win32" ? realpathSync.native : realpathSync;
+const real = (p) => { try { return rp(p); } catch { return p; } };
+// Bun hands a loaded file's path to the filter in the form the importer spelled it (the short one on Windows), so every
+// root is held in both forms, which are one where there is no short name.
+const plain = (p) => { try { return realpathSync(p); } catch { return p; } };
+const forms = (p) => [...new Set([plain(p), real(p)])];
 const fail = (why) => { throw new Error("moss: " + why); };
 // What this thread was started with, pinned before any plugin code runs: a worker gets these, never process.env's.
 // Never Bun's "be Bun" switch in a plugin's process, whatever started it (#234's check 5, K2).
@@ -84,8 +91,9 @@ if (noNatives && !hostThread) {
   Object.freeze(ffi);
 }
 const root = hostThread ? undefined : realpathSync(rootEnv);
+const rootNative = hostThread ? undefined : rp(rootEnv);
 // The guard's own folder (its run files) loads too: a worker preloads the guard from there.
-const shared = [...JSON.parse(sharedEnv), dirname(guardFile)].map(real);
+const shared = [...JSON.parse(sharedEnv), dirname(guardFile)].flatMap(forms);
 const inside = (p, r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
 // No Bun macros, in every thread (#289): a macro runs its module's code while the file importing it is transpiled. The
 // process's --no-macros (and a bunfig's) holds its main thread only: a Worker runs a macro whatever the process was
@@ -113,14 +121,14 @@ for (let d = dirname(root); ; d = dirname(d)) {
   if (found && !shared.some((s) => inside(s, real(nm)))) fail("a node_modules folder at " + nm + " is above the plugin's folder; remove or move it (or move the plugin)");
   if (dirname(d) === d) break;
 }
-const allowed = (p) => { const r = real(p); return inside(r, root) || shared.some((s) => inside(r, s)); };
+const allowed = (p) => [plain(p), real(p)].some((r) => inside(r, root) || (rootNative !== undefined && inside(r, rootNative)) || shared.some((s) => inside(r, s)));
 const refuse = (p) => fail("refused to load " + p + ": it is outside the plugin's own folder");
 // The filter matches every file outside the plugin's root and the shared roots, whatever its name or the loader asked
 // for (Bun hands it the resolved real path), so onLoad runs only to refuse, and the plugin's own files load as Bun
 // loads them (contents onLoad returns lose CommonJS interop, as measured on Bun 1.4.4). Case-sensitive: a case-folded
 // prefix would let a sibling folder through on Linux.
 const esc = (s) => Array.from(s, (c) => ("\\^$.*+?()[]{}|/".includes(c) ? "\\" + c : c)).join("");
-const roots = [root, ...shared].map((r) => esc(r.endsWith(sep) ? r : r + sep)).join("|");
+const roots = [...new Set([root, rootNative, ...shared])].filter((r) => r !== undefined).map((r) => esc(r.endsWith(sep) ? r : r + sep)).join("|");
 // "bun -e" and "--print": the command's own code (its arguments, which the plugin's OK card named), loaded as
 // "<working folder>/[eval]", never a file. Bun sends it through onLoad when a folder on the way has a dot in its name
 // (measured on Bun 1.4.4: the data folder under ~/.moss, so every pasted "bun -e" server was refused at start);
@@ -398,7 +406,11 @@ export function ensurePluginRunFiles(dir: string, o: { mossHome: string }): Plug
   // The guard is only as good as its file: the folder must be a real one of this user's that no one else can write.
   const st = lstatSync(folder);
   const uid = process.getuid?.();
-  if (!st.isDirectory() || (uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0) {
+  // Windows reports every folder as 0o777 and has no owner uid, so the mode test refused every Windows home ("not a private folder")
+  // and no plugin process ever started there. What keeps this folder private there is the ACL on its parent, the run folder
+  // (`lockRunDir`, platform/pair/run-files.ts: the user's SID alone, inheritance removed), which a folder made inside it inherits.
+  const windows = process.platform === "win32";
+  if (!st.isDirectory() || (!windows && ((uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0))) {
     throw new Error(`${folder} is not a private folder of this user's; plugin processes can't start`);
   }
   // Always named by the caller, never `~/.moss` by default: a fenced process's temp and data folders are made under
