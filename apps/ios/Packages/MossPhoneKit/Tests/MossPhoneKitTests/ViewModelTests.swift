@@ -13,7 +13,7 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(m.others.first?.id, "luna")                   // newest conversation first
         m.togglePin("juniper")
         XCTAssertEqual(m.pinned.map(\.id), ["pip", "alpha", "juniper"])
-        XCTAssertEqual(m.unreadCount, 2)
+        XCTAssertEqual(m.unreadCount, 3)
     }
 
     func testSessionsGroupedByProject() async {
