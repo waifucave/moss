@@ -106,6 +106,27 @@ describe("what the fake acts on: the newest directive in the user text", () => {
         ] }),
       });
       expect(JSON.stringify(await both.json())).toContain("ACCEPTANCE-REPLY-OK ACCEPTANCE-TAG-11223344");
+      // The result the runtime really writes for a call a stop cut off ("[interrupted]"), then words with no directive word in them
+      // (a call line): a new message, so the call is made, not the stop's result answered back as a continuation.
+      const cutOff = await fetch(`${fake.url}/v1/messages`, {
+        method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 10, tools: [{ name: "mcp__echo__Echo", input_schema: { type: "object" } }], messages: [
+          { role: "user", content: [{ type: "text", text: "ACCEPTANCE-HOLDTOOL-AB12CD keep going" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__echo__Echo", input: { text: "acceptance-hold" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "[interrupted]" }, { type: "text", text: 'ACCEPTANCE-CALL Echo {"text":"after the stop"}' }] },
+        ] }),
+      });
+      expect(JSON.stringify(await cutOff.json())).toContain('"tool_use"');
+      // Any other text after a result is the runtime's own: still a continuation.
+      const note = await fetch(`${fake.url}/v1/messages`, {
+        method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 10, tools: [{ name: "mcp__echo__Echo", input_schema: { type: "object" } }], messages: [
+          { role: "user", content: [{ type: "text", text: "ACCEPTANCE-HOLDTOOL-AB12CD keep going" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__echo__Echo", input: { text: "acceptance-hold" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }, { type: "text", text: "a note the runtime added" }] },
+        ] }),
+      });
+      expect(JSON.stringify(await note.json())).toContain("ACCEPTANCE-DONE");
       // The same with the runtime's tool changes after it (a `system` message last): still the message, never the call again.
       const trailing = await fetch(`${fake.url}/v1/messages`, {
         method: "POST", headers: { "x-api-key": "dummy-key", "content-type": "application/json" },
@@ -124,7 +145,7 @@ describe("what the fake acts on: the newest directive in the user text", () => {
       expect(fake.requests.at(-1)!.answered).toBe("text");
       const abort = new AbortController();
       const held = send("ACCEPTANCE-SLOW-AB12CD keep going", abort.signal).catch(() => undefined);
-      for (let i = 0; i < 50 && fake.requests.length < 4; i++) await Bun.sleep(20);
+      for (let i = 0; i < 50 && fake.requests.length < 6; i++) await Bun.sleep(20);
       expect(fake.requests.at(-1)!.answered).toBe("slow");
       abort.abort();
       await held;
