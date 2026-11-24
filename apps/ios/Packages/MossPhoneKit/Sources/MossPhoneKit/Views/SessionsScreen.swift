@@ -79,8 +79,8 @@ struct SessionListRow: View {
     let now: Int64
     let waiting: Bool
     var body: some View {
-        HStack(spacing: 14) {
-            AgentMarkView(backend: session.backend, size: 44)
+        HStack(spacing: 13) {
+            AgentMarkView(backend: session.backend, size: 48)
             VStack(alignment: .leading, spacing: 2) {
                 (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline))) {
                     Text(session.title ?? "Untitled").font(.body.weight(.semibold)).lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
@@ -94,7 +94,7 @@ struct SessionListRow: View {
                 }
             }
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 15)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(session.title ?? "Untitled"). \(AgentLook.of(session.backend).name)\(session.model.map { ", " + $0 } ?? ""). \(waiting || session.badge == .needsYou ? "Needs you" : (session.badge == .none ? "" : session.badge.rawValue))")
     }

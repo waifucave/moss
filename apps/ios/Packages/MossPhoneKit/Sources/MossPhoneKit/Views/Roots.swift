@@ -190,7 +190,7 @@ struct BotTitle: View {
     let bot: Bot
     var body: some View {
         HStack(spacing: 8) {
-            BotFaceView(name: bot.name, face: bot.face, mood: (bot.state ?? .idle).faceMood, size: 30)
+            BotFaceView(name: bot.name, face: bot.face, mood: (bot.state ?? .idle).faceMood, size: 22)
             Text(bot.name).font(.headline)
         }
         .accessibilityElement(children: .ignore)

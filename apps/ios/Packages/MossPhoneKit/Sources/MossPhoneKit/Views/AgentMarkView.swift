@@ -16,7 +16,7 @@ public struct AgentMarkView: View {
                     .renderingMode(look.template ? .template : .original)
                     .resizable().scaledToFit()
                     .foregroundStyle(look.colorHex.map(Theme.color(hex:)) ?? Color.primary)
-                    .padding(size * 0.14)
+                    .padding(size * 0.03)
             } else {
                 Text(look.initial)
                     .font(.system(size: size * 0.5, weight: .semibold, design: .rounded))

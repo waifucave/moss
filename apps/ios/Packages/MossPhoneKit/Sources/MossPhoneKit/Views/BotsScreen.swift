@@ -57,7 +57,7 @@ public struct BotsScreen: View {
                             .contextMenu { Button("Unpin", systemImage: "pin.slash") { model.togglePin(row.id) } }
                     }
                 }
-                .listRow(top: 12, bottom: 8)
+                .listRow(top: 22, bottom: 8)
             }
             ForEach(searchingNow ? found : model.others) { row in
                 NavigationLink(value: row.bot) { BotListRow(row: row, now: now, waiting: waiting.contains(row.id)) }
@@ -99,9 +99,9 @@ struct PinnedFace: View {
     var body: some View {
         VStack(spacing: 8) {
             BotFaceView(name: row.bot.name, face: row.bot.face, mood: mood, size: 76)
-                .overlay(alignment: .bottomTrailing) { if row.unread { UnreadDot(size: 14) } }
-                .overlay(alignment: .topTrailing) { if waiting { Circle().fill(Theme.waiting).frame(width: 14, height: 14).overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2)).accessibilityHidden(true) } }
-            Text(row.bot.name).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                .overlay(alignment: .bottomTrailing) { if row.unread { UnreadDot(size: 12).padding(2) } }
+                .overlay(alignment: .topTrailing) { if waiting { Circle().fill(Theme.waiting).frame(width: 12, height: 12).overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2)).padding(2).accessibilityHidden(true) } }
+            Text(row.bot.name).font(.footnote).foregroundStyle(.secondary).lineLimit(1).padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
@@ -117,9 +117,9 @@ struct BotListRow: View {
     let now: Int64
     let waiting: Bool
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 13) {
             BotFaceView(name: row.bot.name, face: row.bot.face, mood: row.statusLine != nil ? .working : (row.bot.state ?? .idle).faceMood, size: typeSize.isAccessibilitySize ? 40 : 48)
-                .overlay(alignment: .bottomTrailing) { if row.unread { UnreadDot(size: 13).offset(x: 2, y: 2) } }
+                .overlay(alignment: .bottomTrailing) { if row.unread { UnreadDot(size: 11).padding(1) } }
             VStack(alignment: .leading, spacing: 2) {
                 (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout())) {
                     Text(row.bot.name).font(.body.weight(.semibold)).lineLimit(1)
@@ -132,7 +132,7 @@ struct BotListRow: View {
                 }
             }
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 15)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(row.bot.name). \(waiting ? "Needs you. " : "")\(line)\(row.unread ? ". Unread" : "")")
     }

@@ -40,7 +40,12 @@ struct TopBar: View {
     let onPlus: () -> Void
     var body: some View {
         HStack(spacing: 6) {
-            RoundButton(symbol: "person.fill", label: "Settings", action: onSettings)
+            Button(action: onSettings) {
+                Text("Y").font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(uiColor: .systemBackground))
+                    .frame(width: 40, height: 40).background(Color.primary, in: Circle())
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel("Settings")
             Spacer(minLength: 8)
             if waiting > 0 { RoundButton(symbol: "bell", label: waiting == 1 ? "1 thing needs you" : "\(waiting) things need you", badge: waiting, action: onBell) }
             RoundButton(symbol: "magnifyingglass", label: "Search", action: onSearch)
