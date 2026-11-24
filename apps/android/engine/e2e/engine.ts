@@ -111,7 +111,10 @@ async function boot(): Promise<void> {
     parts: {
       userHome,
       node: { terminals: { launch: () => ({ cmd: ["/bin/cat"], env: {} }) } },
-      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => () => new EchoDriver(), defaultModel: () => ({ model: "winter-test/calls" }) },
+      bots: { registry: new FakePluginRegistry({ catalog: catalogPointDecl, plugins: [] }), drivers: () => () => new EchoDriver(), defaultModel: () => ({ model: "winter-test/calls" }),
+        // The composer's door for a phone (`session.composerOffers`), as the daemon wires it by default: no model plugins
+        // here, so no Model row; pictures and files as the engine's own rules decide.
+        composerModels: async () => ({ models: [] }) },
       agents: false,
     },
   });
