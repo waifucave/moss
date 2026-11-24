@@ -18,6 +18,7 @@
 //! `MAX_EVENT_BYTES`. Anything malformed closes that connection with a reason in the core's own words (never the
 //! computer's text), and the core dials again. A card is signed only as the app displayed it (`answer_card`).
 
+use std::sync::PoisonError;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -125,10 +126,21 @@ pub enum ConnEvent {
 impl ConnEvent {
     /// What an event costs the queue: the size of everything it holds, as decoded (escapes included), so the byte cap
     /// holds for every kind.
+    /// Written out per kind (`size` of each record), so a new field is counted where it is added; never formatted.
     fn weight(&self) -> usize {
-        match self {
-            ConnEvent::Connecting { .. } | ConnEvent::Up | ConnEvent::Unpaired | ConnEvent::Revoked | ConnEvent::Closed | ConnEvent::Lagged { .. } => 16,
-            e => format!("{e:?}").len(),
+        16 + match self {
+            ConnEvent::Connecting { .. } | ConnEvent::Up | ConnEvent::Unpaired | ConnEvent::Revoked | ConnEvent::Closed | ConnEvent::Lagged { .. } | ConnEvent::MessageDropped { .. } => 0,
+            ConnEvent::PendingCards { cards } => cards.iter().map(|c| c.size()).sum(),
+            ConnEvent::CardRequested { card } => card.size(),
+            ConnEvent::CardResolved { id, outcome } => id.len() + outcome.len(),
+            ConnEvent::TamperedCard { computers_id } => computers_id.as_ref().map_or(0, String::len),
+            ConnEvent::BotChanged { bot } => bot.size(),
+            ConnEvent::BotSummaryChanged { summary } => summary.size(),
+            ConnEvent::BotRemoved { id } => id.len(),
+            ConnEvent::SessionChanged { session } => session.size(),
+            ConnEvent::SessionEvent { item } => item.size(),
+            ConnEvent::Notification { method, params_json } => method.len() + params_json.len(),
+            ConnEvent::Down { reason } => reason.len(),
         }
     }
 }
@@ -165,7 +177,10 @@ pub struct StagedFile {
 pub const STAGE_FILE_CHUNK_BYTES: usize = 512 * 1024;
 /// The chunk sizes a computer may ask for: from 4 KiB to what, as base64 in its request, fits one 1 MiB link frame.
 const STAGE_CHUNK_MIN: usize = 4 * 1024;
-const STAGE_CHUNK_MAX: usize = 768 * 1024 - 4096;
+/// Under 1 MiB of base64 with room for the request's envelope and a 1024-unit name escaped as JSON (6 bytes a unit).
+const STAGE_CHUNK_MAX: usize = 768 * 1024 - 16 * 1024;
+/// A staged file's name, in UTF-16 units (`session.stageFile`'s `name`).
+const STAGE_NAME_MAX: usize = 1024;
 /// One file at most (`STAGE_FILE_MAX_BYTES`).
 pub const STAGE_FILE_MAX_BYTES: usize = 50 * 1024 * 1024;
 /// One picture at most (`STAGE_IMAGE_MAX_BYTES`: the desktop's line cap less its headroom, as bytes).
@@ -204,7 +219,7 @@ struct Events {
 
 impl Events {
     fn push(&self, e: ConnEvent) {
-        let mut g = self.q.lock().unwrap();
+        let mut g = self.q.lock().unwrap_or_else(PoisonError::into_inner);
         if g.closed {
             return;
         }
@@ -229,7 +244,7 @@ impl Events {
         loop {
             let notified = self.notify.notified();
             {
-                let mut g = self.q.lock().unwrap();
+                let mut g = self.q.lock().unwrap_or_else(PoisonError::into_inner);
                 if g.dropped > 0 {
                     let dropped = std::mem::take(&mut g.dropped);
                     return Some(ConnEvent::Lagged { dropped });
@@ -305,7 +320,7 @@ impl Session {
     }
     /// Closes the connection because of what the computer sent; the reason is shown as `Down`'s.
     fn fail(&self, why: &'static str) {
-        self.failure.lock().unwrap().get_or_insert(why);
+        self.failure.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(why);
         self.conn.close(VarInt::from_u32(CLOSE_PROTOCOL), why.as_bytes());
         // Calls under way end now (the hello's among them), not at their timeouts.
         self.fail_all(why);
@@ -329,7 +344,7 @@ impl Session {
         self.queue.send(Job { frame, done, _room: permit }).map_err(|_| CoreError::offline("the link is closed"))
     }
     fn fail_all(&self, why: &str) {
-        for (_, tx) in self.pending.lock().unwrap().drain() {
+        for (_, tx) in self.pending.lock().unwrap_or_else(PoisonError::into_inner).drain() {
             let _ = tx.send(Err(CoreError::offline(why.to_string())));
         }
     }
@@ -346,12 +361,12 @@ impl Session {
     async fn request_untimed(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, CoreError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(id, tx);
         // Whatever ends this call (an answer, an error, a caller that stops waiting), its entry goes with it.
         struct Unregister<'a>(&'a Session, u64);
         impl Drop for Unregister<'_> {
             fn drop(&mut self) {
-                self.0.pending.lock().unwrap().remove(&self.1);
+                self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.1);
             }
         }
         let _unregister = Unregister(self, id);
@@ -397,9 +412,27 @@ impl Connection {
     pub fn tracked_cards(&self) -> usize {
         self.inner.tracked_cards()
     }
+    /// Poisons the event queue's and the pending calls' locks (a thread panics holding each), as a panic elsewhere
+    /// in the core would.
+    #[doc(hidden)]
+    pub fn poison_for_test(&self) {
+        let inner = self.inner.clone();
+        let _ = std::thread::spawn(move || {
+            let _q = inner.events.q.lock().unwrap_or_else(PoisonError::into_inner);
+            panic!("poisoning the event queue for a test");
+        })
+        .join();
+        if let Some(s) = self.inner.session.borrow().clone() {
+            let _ = std::thread::spawn(move || {
+                let _p = s.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                panic!("poisoning the pending calls for a test");
+            })
+            .join();
+        }
+    }
     #[doc(hidden)]
     pub fn queued_event_bytes(&self) -> usize {
-        self.inner.events.q.lock().unwrap().bytes
+        self.inner.events.q.lock().unwrap_or_else(PoisonError::into_inner).bytes
     }
 }
 
@@ -468,7 +501,7 @@ impl CardTable {
     }
     fn resolve(&mut self, id: &str, outcome: &str) {
         if let Some(s) = self.live.remove(id) {
-            *s.lock().unwrap() = Some(outcome.to_string());
+            *s.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome.to_string());
             self.live_order.retain(|x| x != id);
         }
         if self.resolved.insert(id.to_string(), outcome.to_string()).is_none() {
@@ -516,13 +549,13 @@ fn close_words(code: u32) -> &'static str {
 
 impl Inner {
     fn tracked_cards(&self) -> usize {
-        self.cards.lock().unwrap().len()
+        self.cards.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
     /// A checked card, issued for display from this connection.
     fn issue(&self, c: Checked, outcome: Option<String>) -> Arc<CardView> {
         let state = {
-            let mut t = self.cards.lock().unwrap();
+            let mut t = self.cards.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(o) = &outcome {
                 t.resolve(&c.id, o);
             }
@@ -548,7 +581,7 @@ impl Inner {
             _ => None,
         };
         if let Some(s) = s {
-            let mut g = self.state.lock().unwrap();
+            let mut g = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             // Revoked and Closed are final: a revoked link stays Revoked when it closes after it.
             if !matches!(*g, LinkState::Revoked | LinkState::Closed) {
                 *g = s;
@@ -616,7 +649,7 @@ impl Inner {
             Err(e) => {
                 // The computer's door closes an unknown or revoked key at once: that close is the answer.
                 let _ = tokio::time::timeout(Duration::from_millis(500), conn.closed()).await;
-                let why = *failure.lock().unwrap();
+                let why = *failure.lock().unwrap_or_else(PoisonError::into_inner);
                 let end = self.end_of(&conn, why, match e {
                     CoreError::Timeout { .. } => "the computer didn't answer the link's hello".into(),
                     _ => "the link's hello failed".into(),
@@ -652,7 +685,7 @@ impl Inner {
         // A failure seen before the session is handed out is reported through this too.
         let report = {
             let s = s.clone();
-            move || *s.failure.lock().unwrap()
+            move || *s.failure.lock().unwrap_or_else(PoisonError::into_inner)
         };
         let (hello_tx, hello_rx) = oneshot::channel::<Cbor>();
         let hello_tx = Arc::new(StdMutex::new(Some(hello_tx)));
@@ -692,7 +725,7 @@ impl Inner {
             self.last_seq.fetch_max(seq.unwrap() as u64, Ordering::AcqRel);
             // The client stream: its header, then JSON-RPC.
             s.rpc_send_header().await?;
-            let rx = s.queue_rx.lock().unwrap().take().expect("one writer");
+            let rx = s.queue_rx.lock().unwrap_or_else(PoisonError::into_inner).take().expect("one writer");
             tokio::spawn(writer(Arc::downgrade(&s), rx));
             tokio::spawn(self.clone().rpc_reader(s.clone(), rpc_recv));
             tokio::spawn(keepalive(s.clone()));
@@ -721,7 +754,7 @@ impl Inner {
         }
         .await;
         if let Some(why) = report() {
-            *failure.lock().unwrap() = Some(why);
+            *failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
         }
         result.map(|_| s)
     }
@@ -731,7 +764,7 @@ impl Inner {
         self.emit(ConnEvent::Up);
         let why = s.conn.closed().await;
         s.fail_all("the link dropped");
-        let failure = *s.failure.lock().unwrap();
+        let failure = *s.failure.lock().unwrap_or_else(PoisonError::into_inner);
         self.end_of(&s.conn, failure, close_words(net::close_of(&why).0).to_string())
     }
 
@@ -766,7 +799,7 @@ impl Inner {
                 Some("p") | Some("n") => {}
                 Some("r") => {
                     if m.get(1).and_then(Cbor::as_f64) == Some(0.0) {
-                        if let Some(tx) = hello.lock().unwrap().take() {
+                        if let Some(tx) = hello.lock().unwrap_or_else(PoisonError::into_inner).take() {
                             let _ = tx.send(Cbor::Array(m));
                         }
                     }
@@ -790,7 +823,7 @@ impl Inner {
                     // Over the phone's cap but within the engine's own: read to its end and dropped. An answer fails
                     // only its own call; any other message is reported as dropped. The link stays.
                     s.heard();
-                    match answered_id(&head).and_then(|id| s.pending.lock().unwrap().remove(&id)) {
+                    match answered_id(&head).and_then(|id| s.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id)) {
                         Some(tx) => {
                             let _ = tx.send(Err(CoreError::refused(format!("the computer's answer was {:.1} MiB, more than the phone takes (4 MiB)", len as f64 / (1u64 << 20) as f64))));
                         }
@@ -809,7 +842,7 @@ impl Inner {
             let id = msg.get("id").and_then(Value::as_u64);
             match (method, id) {
                 (None, Some(id)) => {
-                    let Some(tx) = s.pending.lock().unwrap().remove(&id) else { continue };
+                    let Some(tx) = s.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id) else { continue };
                     let r = match msg.get("error") {
                         Some(e) => Err(CoreError::Rpc {
                             code: e.get("code").and_then(Value::as_i64).unwrap_or(-32603),
@@ -870,7 +903,7 @@ impl Inner {
             let outcome = params.get("outcome").and_then(Value::as_str).map(|o| computers_words(o, 32));
             if let (Some(id), Some(outcome)) = (id, outcome) {
                 // Kept for a card not issued yet too (its event can come before the list that brings it), within bounds.
-                self.cards.lock().unwrap().resolve(id, &outcome);
+                self.cards.lock().unwrap_or_else(PoisonError::into_inner).resolve(id, &outcome);
                 self.emit(ConnEvent::CardResolved { id: id.to_string(), outcome });
             }
             return;
@@ -943,8 +976,8 @@ impl Inner {
         let r = self.call("card.answer", params).await?;
         let accepted = r.get("accepted").and_then(Value::as_bool).unwrap_or(false);
         if accepted {
-            *shown.state.lock().unwrap() = Some("answered".into());
-            self.cards.lock().unwrap().resolve(&shown.id, "answered");
+            *shown.state.lock().unwrap_or_else(PoisonError::into_inner) = Some("answered".into());
+            self.cards.lock().unwrap_or_else(PoisonError::into_inner).resolve(&shown.id, "answered");
         }
         Ok(AnswerOutcome { accepted, computers_reason: r.get("reason").and_then(Value::as_str).map(|s| computers_words(s, 200)) })
     }
@@ -1049,6 +1082,10 @@ impl Inner {
 
     /// Sends a file for a session's next message in chunks (`session.stageFile`).
     async fn stage_file(self: &Arc<Self>, session: &str, name: &str, data: &[u8]) -> Result<StagedFile, CoreError> {
+        let units = name.encode_utf16().count();
+        if units == 0 || units > STAGE_NAME_MAX {
+            return Err(CoreError::refused("a file's name is 1 to 1024 characters"));
+        }
         let mut first = serde_json::Map::new();
         first.insert("name".into(), json!(name));
         let limits = self.limits_for(session, "files", STAGE_FILE_MAX_BYTES).await?;
@@ -1099,7 +1136,7 @@ async fn keepalive(s: Arc<Session>) {
         }
         let now = s.now();
         if now.saturating_sub(s.last_in.load(Ordering::Relaxed)) > IDLE.as_millis() as u64 {
-            s.failure.lock().unwrap().get_or_insert("nothing heard from the computer for 20 s");
+            s.failure.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert("nothing heard from the computer for 20 s");
             s.conn.close(VarInt::from_u32(CLOSE_SUPERSEDED), b"nothing heard from the peer");
             return;
         }
@@ -1247,7 +1284,7 @@ impl Connection {
 
     /// The link's state now (`next_event` tells each change).
     pub fn state(&self) -> LinkState {
-        *self.inner.state.lock().unwrap()
+        *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The OS reported a network change or a wake: re-dial now instead of waiting out the backoff.
