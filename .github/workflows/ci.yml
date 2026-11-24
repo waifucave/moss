@@ -1519,12 +1519,6 @@ jobs:
         run: bun scripts/ci/acceptance-unit.ts ${{ matrix.unit }} "$RUNNER_TEMP/acceptance-windows-${{ matrix.unit }}"
 
       # What the plugin host's own tests say on this runner, beside the unit (the host exited at once in the unit's first runs).
-      - name: The plugin host's own process tests
-        if: ${{ !cancelled() && matrix.unit == 'chain' }}
-        continue-on-error: true
-        working-directory: packages/core
-        run: bun test src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/secrets/tests/windows-store.test.ts test/platform/win-acl.test.ts 2>&1 | grep -v "^$" | tail -150
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:

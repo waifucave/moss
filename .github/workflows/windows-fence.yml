@@ -167,6 +167,10 @@ jobs:
         working-directory: packages/core
         run: bun test --timeout 30000 test/platform/win-pipe.test.ts test/platform/win-job.test.ts test/fence/win-sandbox.test.ts test/fence/win-fenced.test.ts test/fence/fold-paths.test.ts
 
+      - name: Core · the plugin host's link, the plugin guard, the secrets store and the ACL read-back on Windows
+        working-directory: packages/core
+        run: bun test --timeout 60000 src/plugin-host/tests/process.test.ts src/plugin-host/tests/windows-link.test.ts src/registry/tests/plugin-guard-windows.test.ts src/secrets/tests/windows-store.test.ts test/platform/win-acl.test.ts
+
       - name: Core · a bot session on the embedded runtime, the fenced shell tools swapped in (agent SDK 0.0.85)
         working-directory: packages/core
         run: |

@@ -118,7 +118,9 @@ export const CI_AREAS: Readonly<Record<CiArea, readonly Pattern[]>> = {
   // generator check reads, and the rest of READ_BY_CORE_LINUX: the account tests' services/shared and sign-in stub, the forwarder's Worker)
   corelinux: ["plugins/moss/plugins/model-*/**/*", ...READ_BY_CORE_LINUX],
   // the Windows fence's own files: the `windows-fence` job, on a Windows runner; nothing on macOS (`machine-windows` has no step for them)
-  windows: [...WINDOWS_CI],
+  // (and the sources of the Windows-only tests that job runs: the plugin host's pipe link, the plugin guard's run folder, the ACL read-back, the secrets store)
+  windows: [...WINDOWS_CI, "packages/core/src/plugin-host/", "packages/core/src/registry/plugin-run.ts", "packages/core/src/platform/win-acl.ts", "packages/core/src/platform/caller-probe.ts",
+    "packages/core/src/secrets/", "packages/core/test/platform/win-acl.test.ts"],
   cli: [...CORE, "packages/cli/"],
   // the repo scripts' tests read the core, the CLI, the app, the release inputs and the workflows; its job also runs the
   // repo-wide source scans (the native channel's anti-wiring test reads every package's src/ and scripts/), so any

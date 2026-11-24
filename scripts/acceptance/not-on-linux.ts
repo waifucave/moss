@@ -4,6 +4,8 @@
 // Linux", never as a pass. Only the rows named here may say it (a marker on any other row is a problem), and a marker is never a way to
 // hide a fault: each reason names the macOS-only thing the row proves (a spec decision), not a thing that is broken on Linux.
 export const NOT_ON_LINUX = "NOT ON LINUX";
+/** The same for Windows (no plugin fence or window glass there either): the judge lists such a row as "not on Windows". */
+export const NOT_ON_WINDOWS_MARK = "NOT ON WINDOWS";
 
 /** The rows (by the start of their names) that may say it, with the reason the table prints. */
 export const NOT_ON_LINUX_ROWS: readonly { prefix: string; reason: string }[] = [
@@ -17,9 +19,9 @@ export const NOT_ON_LINUX_ROWS: readonly { prefix: string; reason: string }[] = 
 
 /** Whether this run is on Linux. */
 export const onLinux = (): boolean => process.platform === "linux";
-/** Whether this run is on an OS with no plugin fence or window glass: Linux, and Windows (plugin code runs as the user there too, spec §5.2 item 58). The marker
- *  and the judge are the same as Linux's and say "not on Linux"; each reason names the macOS-only thing the row proves. */
+/** Whether this run is on an OS with no plugin fence or window glass: Linux, and Windows (plugin code runs as the user there too, spec §5.2 item 58). Its rows say "NOT ON WINDOWS" there
+ *  (`notOnLinux` picks the marker by platform); each reason names the macOS-only thing the row proves. */
 export const onUnfencedOs = (): boolean => process.platform === "linux" || process.platform === "win32";
 
 /** A row's detail on Linux for what is macOS-only: the marker, the reason, and what was still checked here. */
-export const notOnLinux = (reason: string, checkedHere = ""): string => `${NOT_ON_LINUX}: ${reason}${checkedHere === "" ? "" : `; checked here: ${checkedHere}`}`;
+export const notOnLinux = (reason: string, checkedHere = ""): string => `${process.platform === "win32" ? NOT_ON_WINDOWS_MARK : NOT_ON_LINUX}: ${reason}${checkedHere === "" ? "" : `; checked here: ${checkedHere}`}`;

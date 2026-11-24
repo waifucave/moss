@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MEASURED_ON_MAC_ONLY, MEASURED_ROWS } from "../acceptance/measured";
-import { NOT_ON_LINUX, NOT_ON_LINUX_ROWS } from "../acceptance/not-on-linux";
+import { NOT_ON_LINUX, NOT_ON_LINUX_ROWS, NOT_ON_WINDOWS_MARK } from "../acceptance/not-on-linux";
 /** The engine's own words when it refuses MOSS's coding agent on Windows (packages/core/src/agents/sandbox/in-process.ts `notAvailableHere`). */
 const NOT_ON_WINDOWS_NOTICE = "isn't available on Windows yet";
 import { expandUnitIds, units, type UnitId } from "../acceptance/shards";
@@ -59,6 +59,7 @@ export function judge(input: { exit: number; table: string; progress: string; lo
   const notLinux: NonNullable<Verdict["notOnLinux"]> = [];
   const failed: Verdict["failed"] = [];
   const notWin: NonNullable<Verdict["notOnWindows"]> = [];
+  let markedWin = 0;
   for (const r of rows) {
     if (r.status === "PASS" && r.detail.startsWith(MEASURED_ON_MAC_ONLY)) {
       // Only the rows measured.ts names may leave their bar to the Mac; the marker on any other row is a problem.
@@ -68,6 +69,10 @@ export function judge(input: { exit: number; table: string; progress: string; lo
       // Only the rows not-on-linux.ts names may say so; the marker on any other row is a problem.
       if (NOT_ON_LINUX_ROWS.some((m) => r.name.startsWith(m.prefix))) notLinux.push({ n: r.n, name: r.name, reason: r.detail.slice(NOT_ON_LINUX.length).replace(/^: /, "") });
       else problems.push(`row ${r.n} "${r.name}" says it is not run on Linux, and is not one of the rows allowed to (scripts/acceptance/not-on-linux.ts)`);
+    } else if (r.status === "PASS" && r.detail.startsWith(NOT_ON_WINDOWS_MARK)) {
+      // The same rows, on Windows: no plugin fence or window glass there. Listed as not on Windows, never counted as a pass.
+      if (NOT_ON_LINUX_ROWS.some((m) => r.name.startsWith(m.prefix))) { notWin.push({ n: r.n, name: r.name, reason: r.detail.slice(NOT_ON_WINDOWS_MARK.length).replace(/^: /, "").slice(0, 300) }); markedWin++; }
+      else problems.push(`row ${r.n} "${r.name}" says it is not run on Windows, and is not one of the rows allowed to (scripts/acceptance/not-on-linux.ts)`);
     } else if (r.status !== "PASS" && r.detail.includes(NOT_ON_WINDOWS_NOTICE)) {
       // The row's own failure carries the engine's refusal to run MOSS's coding agent on Windows (agents/sandbox/in-process.ts): the row proves
       // a behaviour of an agent turn, which Windows has no sandbox for yet. Listed, never counted as a pass, and no problem (the product says it).
@@ -92,7 +97,7 @@ export function judge(input: { exit: number; table: string; progress: string; lo
   const exitProblem = `run.ts exited ${input.exit}`;
   const unexplainedRows = problems.filter((p) => p !== exitProblem).length > 0 || failed.length > 0;
   if (notWin.length > 0 && !unexplainedRows) problems.splice(problems.indexOf(exitProblem) >= 0 ? problems.indexOf(exitProblem) : problems.length, 1);
-  return { ok: problems.length === 0, problems, rows: rows.length, passed: rows.filter((r) => r.status === "PASS").length - macOnly.length - notLinux.length, macOnly, ...(notLinux.length > 0 ? { notOnLinux: notLinux } : {}), ...(notWin.length > 0 ? { notOnWindows: notWin } : {}), failed };
+  return { ok: problems.length === 0, problems, rows: rows.length, passed: rows.filter((r) => r.status === "PASS").length - macOnly.length - notLinux.length - markedWin, macOnly, ...(notLinux.length > 0 ? { notOnLinux: notLinux } : {}), ...(notWin.length > 0 ? { notOnWindows: notWin } : {}), failed };
 }
 
 /** The text of every `*.log` file under `dir` (kept logs: the daemons', the app's), at most 20 MiB each. */
