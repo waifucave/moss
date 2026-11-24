@@ -25,6 +25,8 @@
 // neither does with them). The static check (`loaderReach`) stays as `moss plugin validate`'s early error.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { currentUserSid } from "../platform/win-pipe";
+import { systemDirectory } from "../secrets/private-file";
 import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, type Stats } from "node:fs";
 import { RESERVED_ENV } from "@waifucave/moss-plugin-sdk";
 import { fencedCommand, fencedSpawn, pluginFenceAvailable, SPAWN_TRAMPOLINE_FILE, SPAWN_TRAMPOLINE_SOURCE, toolFence, type ProjectAccess } from "./plugin-fence";
@@ -121,7 +123,11 @@ for (let d = dirname(root); ; d = dirname(d)) {
   if (found && !shared.some((s) => inside(s, real(nm)))) fail("a node_modules folder at " + nm + " is above the plugin's folder; remove or move it (or move the plugin)");
   if (dirname(d) === d) break;
 }
-const allowed = (p) => [plain(p), real(p)].some((r) => inside(r, root) || (rootNative !== undefined && inside(r, rootNative)) || shared.some((s) => inside(r, s)));
+// What a file may be is judged on its fully resolved form (the native realpath: links, junctions and 8.3 names followed) against the roots'
+// resolved forms: the weaker of two spellings never decides. Both spellings of a root stay in the onLoad filter below, which only has to
+// match the path as Bun hands it, and refuses what is outside; whatever it lets through is then judged here.
+const sharedReal = shared.map(real);
+const allowed = (p) => { const r = real(p); return (rootNative !== undefined && inside(r, rootNative)) || sharedReal.some((s) => inside(r, s)); };
 const refuse = (p) => fail("refused to load " + p + ": it is outside the plugin's own folder");
 // The filter matches every file outside the plugin's root and the shared roots, whatever its name or the loader asked
 // for (Bun hands it the resolved real path), so onLoad runs only to refuse, and the plugin's own files load as Bun
@@ -395,6 +401,19 @@ export interface PluginRunGuard {
   picked?: (pluginId: string) => { read: readonly string[]; write: readonly string[] };
 }
 
+const lockedFolders = new Set<string>();
+/** Windows: the folder is the user's alone (inheritance removed, the user's SID granted full control, as `lockRunDir` does the run folder),
+ *  through System32's `icacls`. The guard and the `bin\\bun.exe` link inside are only as private as this folder is. Throws when it can't:
+ *  no plugin process starts in a folder anyone else may write. */
+function lockFolderToUser(folder: string): void {
+  if (lockedFolders.has(folder)) return;
+  const sid = currentUserSid();
+  if (sid === null) throw new Error(`plugin processes can't start: no user SID to lock ${folder} to`);
+  const r = spawnSync(`${systemDirectory()}\\icacls.exe`, [folder, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { stdio: "ignore", windowsHide: true });
+  if (r.status !== 0) throw new Error(`plugin processes can't start: icacls refused to lock ${folder} to this user`);
+  lockedFolders.add(folder);
+}
+
 /** Writes MOSS's bunfig and guard for plugin processes into `dir` (the daemon's run folder), and returns their paths.
  *  `BUN_OPTIONS` splits on spaces and takes no quotes (measured on Bun 1.4.4), so the run folder's path may have none:
  *  a MOSS home whose path has a space starts no plugin process, and says why. Never a folder in the shared temp
@@ -408,8 +427,11 @@ export function ensurePluginRunFiles(dir: string, o: { mossHome: string }): Plug
   const uid = process.getuid?.();
   // Windows reports every folder as 0o777 and has no owner uid, so the mode test refused every Windows home ("not a private folder")
   // and no plugin process ever started there. What keeps this folder private there is the ACL on its parent, the run folder
-  // (`lockRunDir`, platform/pair/run-files.ts: the user's SID alone, inheritance removed), which a folder made inside it inherits.
+  // (`lockRunDir`, platform/pair/run-files.ts: the user's SID alone, inheritance removed), which a folder made inside it inherits. That
+  // runs after this does, and not at all for a daemon with no pair, and a home on another drive inherits Authenticated Users:Modify,
+  // so the folder is locked here too, and a start that can't lock it fails closed (`lockFolderToUser`).
   const windows = process.platform === "win32";
+  if (windows && st.isDirectory()) lockFolderToUser(folder);
   if (!st.isDirectory() || (!windows && ((uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0))) {
     throw new Error(`${folder} is not a private folder of this user's; plugin processes can't start`);
   }
