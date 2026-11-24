@@ -23,6 +23,8 @@ public actor FakeEngineClient: EngineClient {
         case cardStates
         /// Paired; sending a message fails.
         case sendFails
+        /// This phone has already made the day's 5 bots: the next `createBot` is refused.
+        case botLimit
     }
 
     public struct Failure: Error, Equatable, Sendable { public var message: String; public init(_ m: String) { message = m } }
@@ -84,6 +86,9 @@ public actor FakeEngineClient: EngineClient {
             // The first card ran out of time; the third one is answered on another device.
             if let i = cardList.firstIndex(where: { $0.id == "card_0a1b2c3d" }) { cardList[i].expiresAt = SampleData.now - 60_000 }
             answeredElsewhereIDs = ["card_55aa66bb"]
+        case .botLimit:
+            paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
+            botsMadeToday = Self.botsPerDay
         case .sendFails: paired = PairedComputer(name: SampleData.computerName, deviceName: SampleData.phoneName)
         }
         if paired != nil, scenario != .unreachable, scenario != .empty { paired?.lastSeen = SampleData.now - 20_000 }
@@ -97,7 +102,10 @@ public actor FakeEngineClient: EngineClient {
         if let f = failNext { failNext = nil; throw f }
     }
 
-    private func emit(_ e: EngineEvent) { for c in continuations.values { c.yield(e) } }
+    private var muted = false
+    /// While muted the fake changes its data without telling the stream: the gap a reconnect has to close by listing again.
+    public func setMuted(_ m: Bool) { muted = m }
+    private func emit(_ e: EngineEvent) { if muted, case .connection = e {} else if muted { return }; for c in continuations.values { c.yield(e) } }
 
     // MARK: Pairing
 
@@ -188,7 +196,7 @@ public actor FakeEngineClient: EngineClient {
             let current = models[session] ?? row?.model ?? choices.first?.id
             let levels = choices.first { $0.id == current }?.efforts ?? choices.first?.efforts ?? []
             return ComposerOffers(pictures: true, commands: [PluginCommand(id: "tests.run", title: "Run the tests"), PluginCommand(id: "review.diff", title: "Review the diff")],
-                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current, files: true, fileLimit: Self.fileLimit, maxFiles: StagingLimits.maxFilesPerMessage)
+                                  efforts: levels, effort: efforts[session] ?? levels.first, models: choices, model: current, files: true, fileLimit: Self.fileLimit, maxFiles: StagingLimits.maxFilesPerMessage, fileKeptDays: 14)
         }
     }
     public func setModel(session: String, model: String?, effort: String?) async throws {
@@ -223,8 +231,15 @@ public actor FakeEngineClient: EngineClient {
         let models = SampleData.options(for: "moss-code").models.map { ModelChoice(id: $0.id, name: $0.name, efforts: $0.efforts) }
         return NewBotOptions(models: models, defaultModel: models.first?.id)
     }
+    /// How many bots this phone has made today; the engine allows 5 a day per device and says so in its own words.
+    public private(set) var botsMadeToday = 0
+    public static let botsPerDay = 5
     public func createBot(name: String, model: String?) async throws -> Bot {
         try await maybeFail()
+        if botsMadeToday >= Self.botsPerDay {
+            throw BotCreateRefused(message: "This phone has made \(Self.botsPerDay) bots today, the most a phone may make in a day. Try again tomorrow, or make it on \(SampleData.computerName).")
+        }
+        botsMadeToday += 1
         let id = "bot_" + String(name.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(12)) + "\(botsCreated.count)"
         let bot = Bot(id: id, name: name, model: model, state: .idle, computer: SampleData.computerName, mainSession: "s_" + id)
         botsCreated.append((name, model))
@@ -340,6 +355,7 @@ public actor FakeEngineClient: EngineClient {
     // MARK: Link
 
     public func connectionState() async -> ConnectionState { connection }
+    public func setBotsMadeToday(_ n: Int) { botsMadeToday = n }
     public func setConnection(_ c: ConnectionState) { connection = c; emit(.connection(c)) }
     public private(set) var unpairCount = 0
     public func unpair() async { unpairCount += 1; paired = nil }

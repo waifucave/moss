@@ -27,7 +27,7 @@ public struct SettingsScreen: View {
                 Section {
                     Button("Unpair \(model.computer?.name ?? "computer")", role: .destructive) { model.confirmingUnpair = true }
                         .disabled(model.computer == nil)
-                } footer: { Text("This phone forgets the computer. To use \(appName) again, pair it once more.") }
+                } footer: { Text("This phone forgets the computer. To use \(appName) again, pair it once more. To cut off a lost phone, remove it in the computer's Settings; unpairing here only affects this phone.") }
                 Section("About") {
                     LabeledContent("Version", value: model.version)
                 }

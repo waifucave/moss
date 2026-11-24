@@ -32,6 +32,7 @@ public final class NewBotModel {
         guard canCreate else { return nil }
         creating = true; defer { creating = false }
         do { let b = try await client.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), model: model); errorText = nil; return b }
+        catch let e as BotCreateRefused { errorText = e.message; return nil }
         catch { errorText = "The bot wasn't made. Check that your computer is on and try again."; return nil }
     }
 }

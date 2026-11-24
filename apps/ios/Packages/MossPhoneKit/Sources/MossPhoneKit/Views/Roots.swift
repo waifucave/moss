@@ -20,6 +20,7 @@ public struct AppLaunch {
             case "loading": l.scenario = .loading
             case "cardStates": l.scenario = .cardStates
             case "sendFails": l.scenario = .sendFails
+            case "botLimit": l.scenario = .botLimit
             default: break
             }
         }
@@ -28,7 +29,8 @@ public struct AppLaunch {
         l.scrollTop = args.contains("-scrollTop")
         if let i = args.firstIndex(of: "-open"), i + 1 < args.count { l.openID = args[i + 1] }
         if let i = args.firstIndex(of: "-draft"), i + 1 < args.count { l.composer.draft = args[i + 1] }
-        l.newBot = args.contains("-newBot")
+        l.newBot = args.contains("-newBot") || args.contains("-newBotTry")
+        l.newBotTry = args.contains("-newBotTry")
         l.composer.file = args.contains("-file")
         l.composer.focus = args.contains("-focus"); l.composer.picker = args.contains("-picker")
         if let i = args.firstIndex(of: "-scrollTo"), i + 1 < args.count { l.scrollTo = args[i + 1] }
@@ -46,6 +48,8 @@ public struct AppLaunch {
     public var openID: String?
     /// For pictures: open the new-bot sheet with a name typed.
     public var newBot = false
+    /// Types a name and presses Create, for the picture of a refusal.
+    public var newBotTry = false
     public var composer = ComposerPreset()
     var sendsOnOpen: String? { scenario == .sendFails ? "Can you also look at the invoice?" : nil }
 }
@@ -70,7 +74,9 @@ public struct MossRoot: View {
         let c = FakeEngineClient(scenario: launch.scenario)
         _client = State(initialValue: c)
         _bots = State(initialValue: BotsListModel(client: c, store: MemoryPinStore(SampleData.pinned)))
-        _newBot = State(initialValue: NewBotModel(client: c))
+        let nb = NewBotModel(client: c)
+        if launch.newBotTry { nb.name = "Hazel"; Task { await nb.load(); _ = await nb.create() } }
+        _newBot = State(initialValue: nb)
         _showNewBot = State(initialValue: launch.newBot)
         _cards = State(initialValue: CardsModel(client: c, app: .moss, now: { SampleData.now }))
         _pairing = State(initialValue: PairingModel(client: c))

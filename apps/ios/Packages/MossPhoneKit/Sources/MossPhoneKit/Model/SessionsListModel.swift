@@ -59,7 +59,11 @@ public final class SessionsListModel {
             guard let self else { return }
             let stream = await client.events()
             await self.load()
-            for await event in stream { self.apply(event) }
+            for await event in stream {
+                self.apply(event)
+                // Typed events carry no ordering, so after the link comes back the lists are read again rather than patched across the gap.
+                if case .connection(.connected) = event { await self.load() }
+            }
         }
     }
     public func stopListening() { listener?.cancel(); listener = nil }

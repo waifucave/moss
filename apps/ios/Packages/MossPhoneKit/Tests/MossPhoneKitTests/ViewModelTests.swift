@@ -313,6 +313,34 @@ final class ViewModelTests: XCTestCase {
         try await c.answer(card: ok, option: ok.options[0])
     }
 
+    func testNewBotShowsTheEnginesRefusalInItsOwnWords() async {
+        let c = fake(.botLimit)
+        let m = NewBotModel(client: c)
+        await m.load()
+        m.name = "Hazel"
+        let bot = await m.create()
+        XCTAssertNil(bot)
+        XCTAssertEqual(m.errorText, "This phone has made 5 bots today, the most a phone may make in a day. Try again tomorrow, or make it on \(SampleData.computerName).")
+    }
+
+    func testListsAreReadAgainWhenTheLinkComesBack() async throws {
+        let c = fake()
+        let bots = BotsListModel(client: c, store: MemoryPinStore())
+        let sessions = SessionsListModel(client: c)
+        let cards = CardsModel(client: c, app: .moss)
+        bots.start(); sessions.start(); cards.start()
+        try await Task.sleep(for: .milliseconds(200))
+        let before = bots.rows.count
+        await c.setMuted(true)
+        _ = try await c.createBot(name: "Gap", model: nil)      // changes while the link is down: no event reaches the app
+        await c.setConnection(.unreachable(since: nil))
+        await c.setMuted(false)
+        await c.setConnection(.connected)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(bots.rows.count, before + 1)
+        bots.stop(); sessions.stopListening(); cards.stopListening()
+    }
+
     func testNewBotPreselectsTheDefaultModelAndCreates() async throws {
         let c = fake()
         let m = NewBotModel(client: c)

@@ -386,8 +386,8 @@ public struct ComposerOffers: Equatable, Sendable {
     /// `session.setModel`'s model, for a coding session that lets it be changed. Empty: no Model row.
     public var models: [ModelChoice]
     public var model: String?
-    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil, maxFiles: Int? = nil) {
-        self.files = files; self.fileLimit = fileLimit; self.maxFiles = maxFiles
+    public init(pictures: Bool = false, commands: [PluginCommand] = [], efforts: [String] = [], effort: String? = nil, models: [ModelChoice] = [], model: String? = nil, files: Bool = false, fileLimit: Int64? = nil, maxFiles: Int? = nil, fileKeptDays: Int? = nil) {
+        self.files = files; self.fileLimit = fileLimit; self.maxFiles = maxFiles; self.fileKeptDays = fileKeptDays
         self.pictures = pictures; self.commands = commands; self.efforts = efforts; self.effort = effort; self.models = models; self.model = model
     }
     /// A file the person may send (`stageFile`), up to `fileLimit` bytes: the Files row. Nothing offered, no row.
@@ -395,6 +395,8 @@ public struct ComposerOffers: Equatable, Sendable {
     public var fileLimit: Int64?
     /// How many files one message may carry.
     public var maxFiles: Int?
+    /// A coding session keeps the files it received this many days.
+    public var fileKeptDays: Int?
     public var isEmpty: Bool { !pictures && !files && commands.isEmpty && efforts.isEmpty && models.isEmpty }
 }
 
@@ -444,6 +446,12 @@ public enum StagingLimits {
     public static func chunks(of data: Data) -> [Data] {
         stride(from: 0, to: data.count, by: chunkSize).map { data.subdata(in: $0..<min($0 + chunkSize, data.count)) }
     }
+}
+
+/// The engine refused `bot.create` and said why, in its own words (a phone may make 5 bots a day).
+public struct BotCreateRefused: Error, Equatable, Sendable {
+    public var message: String
+    public init(message: String) { self.message = message }
 }
 
 public struct TooManyFiles: Error, Equatable, Sendable {
