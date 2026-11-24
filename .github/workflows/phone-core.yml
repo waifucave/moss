@@ -206,7 +206,11 @@ jobs:
           xcodebuild test -scheme MossPhoneCore -destination "id=$sim" -skipPackagePluginValidation
       - name: The Keychain test in a host app with a Keychain entitlement (the iPhone real-store proof)
         run: |
-          brew install xcodegen
+          # xcodegen at a fixed release, from its own GitHub release (not Homebrew's moving formula).
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.47.0/xcodegen.zip
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          export PATH="$RUNNER_TEMP/xcodegen/xcodegen/bin:$PATH"
+          xcodegen --version
           cd native/phone-core/apple/KeychainHost
           xcodegen generate
           sim=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
