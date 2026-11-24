@@ -378,7 +378,9 @@ function configNamed(roots: readonly string[], o: { userHome: string; os: Os }):
 /** Whether the last look for repositories' configs went through everything under the roots (tests, the report). */
 export function scanComplete(): boolean | undefined { return scanCache?.complete; }
 
-const foldOf = (s: string, os: Os) => (os === "linux" ? s : s.toLowerCase());
+// Windows takes "/" for a backslash in a path (a bot writes `C:\Users\x/.moss/scratch/y`), so both are one separator there: left apart, a path
+// spelled with "/" is not inside its own root, and every judgement of it (a run-later place, a covered root) goes the wrong way.
+const foldOf = (s: string, os: Os) => (os === "linux" ? s : os === "windows" ? s.toLowerCase().replace(/\//g, "\\") : s.toLowerCase());
 /** Whether `root` holds `path` (strictly, or is it). */
 function holdsFolded(root: string, path: string, os: Os): boolean { return isInsideOrSame(path, root, os); }
 function isInsideOrSame(path: string, root: string, os: Os): boolean {
