@@ -1,10 +1,11 @@
 // scripts/ci-changes.ts: which CI jobs a change runs, for the kinds of change the lanes make.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { units } from "./acceptance/shards";
-import { NOT_ON_GITHUB } from "./ci/acceptance-units";
-import { areasFor, CI_AREA_NAMES, matches, type CiArea } from "./ci-changes";
+import { NOT_ON_GITHUB, ON_GITHUB } from "./ci/acceptance-units";
+import { planForFiles } from "./ci/plan";
+import { acceptanceUnits, areasFor, CI_AREA_NAMES, isKnown, matches, matchesAny, scopeOf, unmapped, type CiArea } from "./ci-changes";
 
 const on = (changed: string[]): CiArea[] => CI_AREA_NAMES.filter((a) => areasFor(changed)[a]);
 
@@ -26,15 +27,17 @@ describe("ci-changes", () => {
   });
 
   test("a change to MOSS's own plugins: their tests, the app that loads them, the gallery and the typecheck", () => {
-    expect(on(["plugins/moss/plugins/shell/src/a.tsx", "plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck"]);
-    expect(on(["plugins/moss/plugins/shell/package.json"])).toEqual(["workspaces", "app", "gallery", "typecheck", "lockfiles"]);
+    // (and the acceptance run, which loads the bundled plugins: any plugin file but a test file starts every unit)
+    expect(on(["plugins/moss/plugins/shell/src/a.tsx", "plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck", "acceptance"]);
+    expect(on(["plugins/moss/plugins/shell/test/a.test.ts"])).toEqual(["workspaces", "app", "gallery", "typecheck"]);
+    expect(on(["plugins/moss/plugins/shell/package.json"])).toEqual(["workspaces", "app", "gallery", "typecheck", "lockfiles", "acceptance"]);
     // Another top-level plugin (a bot's) is not loaded by the app's own build.
-    expect(on(["plugins/alpha/tab/theme.json"])).toEqual(["workspaces", "gallery", "typecheck"]);
+    expect(on(["plugins/alpha/tab/theme.json"])).toEqual(["workspaces", "gallery", "typecheck", "acceptance"]);
   });
 
   test("the packages: packaging/ and the app's builder config build and open the Linux packages; an app change does too", () => {
     expect(on(["packaging/linux/after-install.sh"])).toEqual(["packages", "installers", "scripts"]);
-    expect(on(["apps/desktop/electron-builder.yml"])).toEqual(["workspaces", "app", "packages", "installers", "typecheck", "scripts"]);
+    expect(on(["apps/desktop/electron-builder.yml"])).toEqual(["workspaces", "app", "packages", "installers", "typecheck", "scripts", "acceptance"]);
   });
 
   test("MOSS's packages and installers build when MOSS's builder config, host layout or icons change (not for its window's code alone)", () => {
@@ -166,7 +169,7 @@ describe("ci-changes", () => {
 
   test("the core: its own, the CLI's and the scripts' tests, the daemon, the packages that carry it, the compiled gates and the Swift kits (WinterKit runs its daemon); not the app", () => {
     const core = on(["packages/core/src/daemon.ts"]);
-    expect(core).toEqual(["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify"]);
+    expect(core).toEqual(["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify", "acceptance"]);
     expect(core).not.toContain("app");
   });
 
@@ -191,7 +194,8 @@ describe("ci-changes", () => {
   });
 
   test("the link job runs for the sidecar, the links, and the devices and identity under them; the sidecar's change builds the packages too", () => {
-    expect(on(["native/link/src/main.rs"])).toEqual(["workspaces", "packages", "link"]);
+    // (no workspace package lives in native/: the sidecar's change takes no machine for the workspaces' tests)
+    expect(on(["native/link/src/main.rs"])).toEqual(["packages", "link"]);
     for (const f of ["packages/core/src/links/sidecar-wire.ts", "packages/core/src/devices/registry.ts", "packages/core/src/identity/account.ts",
       "packages/core/src/contracts/link-transport.ts", "packages/core/src/clock/system-clock.ts", "packages/protocol/src/index.ts"]) expect(on([f]), f).toContain("link");
     expect(on(["packages/core/src/daemon.ts"])).not.toContain("link");
@@ -225,7 +229,8 @@ describe("ci-changes", () => {
 
   test("CI itself runs every area but the installers; the toolchain, the root manifest or a lockfile every area but the Swift kits and the installers; so does no diff", () => {
     for (const f of [".github/workflows/ci.yml", "scripts/ci-changes.ts"]) expect(on([f])).toEqual(CI_AREA_NAMES.filter((a) => a !== "installers"));
-    for (const f of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml"]) expect(on([f]), f).toEqual(CI_AREA_NAMES.filter((a) => a !== "swift" && a !== "installers"));
+    // (the Cowork launcher's Swift tests are CI's own definition's too, like the browser host's)
+    for (const f of [".bun-version", "package.json", "bun.lock", "pnpm-lock.yaml", ".npmrc", ".gitattributes"]) expect(on([f]), f).toEqual(CI_AREA_NAMES.filter((a) => a !== "swift" && a !== "installers" && a !== "cowork"));
     expect(CI_AREA_NAMES.filter((a) => areasFor(undefined)[a])).toEqual(CI_AREA_NAMES);
   });
 
@@ -251,7 +256,8 @@ describe("CI on a merge-queue group", () => {
   test("the changes job hands on every area: its outputs are exactly the areas ci-changes.ts writes", () => {
     // A job keyed to an area the outputs leave out reads an empty string, is skipped every time, and the gate passes.
     const outputs = ci.jobs.changes?.outputs ?? {};
-    expect(Object.keys(outputs).sort()).toEqual([...CI_AREA_NAMES].sort());
+    // …and the acceptance units the run starts and its scope, which the acceptance jobs' matrix and the lane gate read.
+    expect(Object.keys(outputs).sort()).toEqual([...CI_AREA_NAMES, "acceptance_units", "scope", "scope_ran", "scope_skipped"].sort());
     for (const [name, value] of Object.entries(outputs)) expect(value, name).toBe(`\${{ steps.areas.outputs.${name} }}`);
   });
 
@@ -271,7 +277,7 @@ describe("CI on a merge-queue group", () => {
 // The lane gate: lanes work on `lane-int/*` branches with no pull request, so CI runs on a push to them and by hand on a
 // lane's own branch, and `lane-gate` is the one result a lane reads: `gate` without the Windows jobs, plus the acceptance run.
 describe("CI for the lanes", () => {
-  type Job = { if?: string; needs?: string | string[]; "runs-on"?: string; uses?: string; strategy?: { matrix?: { unit?: string[]; include?: Array<{ runner: string }>; runner?: string[] } } };
+  type Job = { if?: string; needs?: string | string[]; "runs-on"?: string; uses?: string; strategy?: { matrix?: { unit?: string; include?: Array<{ runner: string }>; runner?: string[] } } };
   const ci = Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8")) as {
     on: { push?: { branches?: string[] }; workflow_dispatch?: { inputs?: Record<string, unknown> } };
     concurrency: { group: string; "cancel-in-progress": string };
@@ -283,14 +289,19 @@ describe("CI for the lanes", () => {
     ? Object.values((Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", j.uses.slice(2)), "utf8")) as { jobs: Record<string, Job> }).jobs).flatMap((c) => runnersOf(c))
     : [...(j["runs-on"] !== undefined && !j["runs-on"].includes("${{") ? [j["runs-on"]] : []), ...(j.strategy?.matrix?.include ?? []).map((r) => r.runner), ...(j.strategy?.matrix?.runner ?? [])].filter((r): r is string => typeof r === "string");
 
-  test("a push to an integration branch runs CI, a newer push or manual run on a ref cancels the one it supersedes, a merge group never does", () => {
+  test("a push to an integration branch runs CI, a newer push or manual run on a ref cancels the one it supersedes, a merge group never does, and a run of an integration branch is never cancelled while it runs", () => {
     expect(ci.on.push?.branches).toEqual(["lane-int/**"]);
     expect(Object.keys(ci.on)).toEqual(expect.arrayContaining(["pull_request", "merge_group", "push", "workflow_dispatch"]));
-    expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.event_name != 'merge_group' }}");
+    // A push is the integration branch's tip: the run that is running finishes, one newer push waits behind it and a still newer one
+    // replaces the waiting one (GitHub's concurrency without cancel-in-progress), so the tip gets whole runs. A pull request and a
+    // lane's own manual run still cancel the run they supersede.
+    expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.event_name != 'merge_group' && github.event_name != 'push' }}");
     expect(ci.concurrency.group).toContain("github.head_ref || github.ref");
     // A manual run of the acceptance alone is its own group.
     expect(ci.concurrency.group).toContain("github.event.inputs.only");
-    expect(Object.keys(ci.on.workflow_dispatch?.inputs ?? {})).toEqual(["only"]);
+    expect(Object.keys(ci.on.workflow_dispatch?.inputs ?? {})).toEqual(["only", "scope", "base"]);
+    // The scope input defaults to everything: only `scripts/ci/lane start` asks for a scoped run, with the base it counts from.
+    expect((ci.on.workflow_dispatch!.inputs!.scope as { default: string }).default).toBe("all");
   });
 
   test("the lane gate is the gate without the Windows jobs, plus the acceptance run", () => {
@@ -305,10 +316,18 @@ describe("CI for the lanes", () => {
     expect(ci.jobs.gate!.if).toBe("always()");
   });
 
-  test("the acceptance run is one macOS job per unit of the matrix, and every unit of shards.ts is in the matrix or says why not (NOT_ON_GITHUB)", () => {
+  test("the acceptance run is one macOS job per unit the run needs (the changes job's list, of ON_GITHUB), and every unit of shards.ts is on GitHub or says why not (NOT_ON_GITHUB)", () => {
     const acceptance = ci.jobs.acceptance!;
     expect(acceptance["runs-on"]).toBe("macos-latest");
-    const matrix = acceptance.strategy!.matrix!.unit!;
+    // The matrix is the changes job's list: the Linux run takes the same one, and both wait for the changes job and its `acceptance` area.
+    expect(acceptance.strategy!.matrix!.unit).toBe("${{ fromJSON(needs.changes.outputs.acceptance_units) }}");
+    expect(ci.jobs["acceptance-linux"]!.strategy!.matrix!.unit).toBe("${{ fromJSON(needs.changes.outputs.acceptance_units) }}");
+    for (const id of ["acceptance", "acceptance-linux"]) {
+      expect(needsOf(id), id).toEqual(["changes"]);
+      expect(ci.jobs[id]!.if, id).toContain("needs.changes.outputs.acceptance == 'true'");
+    }
+    // The units a run can start are ON_GITHUB: the line a new unit is added to.
+    const matrix = [...ON_GITHUB];
     const known = units().map((u) => u.id as string);
     // One name once, and one that exists.
     expect(new Set(matrix).size).toBe(matrix.length);
@@ -346,5 +365,204 @@ describe("CI for the lanes", () => {
     expect(proofSteps(jobs.macos!).map((x) => x.env?.MOSS_REAL_ADAPTERS)).toEqual(["1"]);
     expect(Object.entries(jobs).filter(([, j]) => proofSteps(j).length > 0).map(([id]) => id).sort()).toEqual(["agent-adapters", "macos"]);
     for (const gate of ["lane-gate", "gate"]) expect([gate, (jobs[gate]!.needs as string[]).includes("agent-adapters")]).toEqual([gate, true]);
+  });
+});
+
+describe("the path-to-area map", () => {
+  test("a `!` pattern takes paths back out of the patterns before it; an area's own list is the only place it is read", () => {
+    expect(matchesAny("scripts/embed-runtimes.sh", ["scripts/", "!scripts/ci/"])).toBe(true);
+    expect(matchesAny("scripts/ci/lane", ["scripts/", "!scripts/ci/"])).toBe(false);
+    expect(matchesAny("docs/a.md", ["scripts/", "!scripts/ci/"])).toBe(false);
+  });
+
+  // Each row: the files, the areas they start (every area is listed: a new area, or a path that starts one it should not, shows here),
+  // and the acceptance units. "all" is every unit of ON_GITHUB.
+  type Row = { name: string; files: string[]; areas: CiArea[]; units: string[] | "all" };
+  const ROWS: Row[] = [
+    { name: "a document", files: ["docs/moss-spec.md", "README.md", "follow_up.md", "LICENSE"], areas: [], units: [] },
+    // The iPhone apps and the phone core have their own workflows: no desktop job, no macOS runner, only the scripts' Linux tests.
+    { name: "the iPhone apps", files: ["apps/ios/project.yml", "apps/ios/Apps/MOSS/Assets.xcassets/AccentColor.colorset/Contents.json", "apps/ios/Packages/MossPhoneKit/Package.swift", "apps/ios/Scripts/make-icons.swift"], areas: ["scripts"], units: [] },
+    { name: "the iOS workflow", files: [".github/workflows/ios.yml"], areas: ["scripts"], units: [] },
+    { name: "the phone core (lane PC, when it lands)", files: ["native/phone-core/src/lib.rs", "native/phone-core/Cargo.toml"], areas: ["scripts"], units: [] },
+    { name: "the native helpers", files: ["native/sandbox/windows-probe.cs", "native/input/macos/Package.swift", "native/link-sidecar/src/main.rs"], areas: ["scripts"], units: [] },
+    { name: "the link sidecar", files: ["native/link/src/main.rs"], areas: ["packages", "link"], units: [] },
+    // The harness and its steps: a test file starts none, a step file its own unit, anything shared every unit.
+    { name: "a test of the acceptance harness", files: ["scripts/acceptance/sealed-press.test.ts"], areas: ["typecheck", "scripts"], units: [] },
+    { name: "one unit's step file", files: ["scripts/acceptance/canvas-step.ts"], areas: ["typecheck", "scripts", "acceptance"], units: ["canvas"] },
+    { name: "the acceptance driver", files: ["scripts/acceptance/run.ts"], areas: ["typecheck", "scripts", "acceptance"], units: "all" },
+    { name: "the window's steps", files: ["scripts/acceptance/ui-steps.ts"], areas: ["typecheck", "scripts", "acceptance"], units: "all" },
+    { name: "a fixture of the acceptance", files: ["scripts/acceptance/fixtures/acceptance-ui/moss.json"], areas: ["typecheck", "scripts", "acceptance"], units: "all" },
+    { name: "the unit runner", files: ["scripts/ci/acceptance-unit.ts"], areas: ["typecheck", "scripts", "acceptance"], units: "all" },
+    // CI's own scripts take no macOS leg of the scripts' darwin tests: none reads them.
+    { name: "the lane script", files: ["scripts/ci/lane"], areas: ["typecheck", "scripts"], units: [] },
+    { name: "the Windows fence's CI scripts", files: ["scripts/ci/windows-fence/hold-account.ts", "scripts/ci/windows-fence/remove.ps1"], areas: ["typecheck", "scripts"], units: [] },
+    { name: "a script the macOS tests read", files: ["scripts/embed-runtimes.sh"], areas: ["typecheck", "scripts", "scriptsmac"], units: [] },
+    // The shared packages start everything that builds on them.
+    { name: "the protocol", files: ["packages/protocol/src/agents.ts", "packages/protocol/generated/moss/agents.json"], areas: ["workspaces", "daemon", "packages", "gallery", "typecheck", "core", "cli", "scripts", "codegen", "verify", "link", "acceptance"], units: "all" },
+    { name: "the plugin SDK", files: ["packages/plugin-sdk/src/views.ts", "packages/plugin-sdk/generated/catalog.json"], areas: ["workspaces", "daemon", "app", "packages", "gallery", "typecheck", "core", "cli", "scripts", "verify", "acceptance"], units: "all" },
+    { name: "the engine's source", files: ["packages/core/src/agents/driver.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify", "adapters", "acceptance"], units: "all" },
+    { name: "the engine's tests only", files: ["packages/core/test/fence/win-fenced.test.ts"], areas: ["workspaces", "daemon", "packages", "typecheck", "core", "cli", "scripts", "verify"], units: [] },
+    { name: "a service", files: ["services/push/src/index.ts", "services/push/wrangler.jsonc"], areas: ["workspaces", "typecheck"], units: [] },
+    { name: "an app of the desktop's", files: ["apps/moss/src/main/press.ts", "apps/desktop/src/main/ui/brokers.ts"], areas: ["workspaces", "app", "packages", "typecheck", "scripts", "acceptance"], units: "all" },
+    { name: "an app's tests only", files: ["apps/moss/test/press-sequences.test.ts"], areas: ["workspaces", "app", "typecheck", "scripts"], units: [] },
+    { name: "the SDK's examples directory", files: ["examples/sample-echo/src/index.ts"], areas: ["workspaces", "typecheck"], units: [] },
+    { name: "the Cowork launcher", files: ["apple/Cowork/WinterCoworkLauncher/Package.swift"], areas: ["scripts", "swift", "cowork"], units: [] },
+    { name: "the brand assets and the release notes", files: ["assets/brand/lockup-on-dark.svg", "releases/notes/0.113.0.md"], areas: ["scripts"], units: [] },
+  ];
+
+  for (const row of ROWS) {
+    test(`${row.name}: ${row.areas.join(" ") || "no area"}; ${row.units === "all" ? "every acceptance unit" : row.units.length === 0 ? "no acceptance unit" : `the ${row.units.join(", ")} unit`}`, () => {
+      // Every area, in CI_AREA_NAMES' order.
+      expect(on(row.files)).toEqual(CI_AREA_NAMES.filter((a) => row.areas.includes(a)));
+      expect(acceptanceUnits(row.files)).toEqual(row.units === "all" ? [...ON_GITHUB] : ON_GITHUB.filter((u) => (row.units as string[]).includes(u)));
+      expect(unmapped(row.files)).toEqual([]);
+    });
+  }
+
+  test("a path no area maps runs every area and every unit (fail closed), the inert ones run none", () => {
+    for (const f of ["newtop/x.ts", "apps/android/build.gradle", "native/newlib/src/lib.rs", "Makefile", "docs-but-not/x.md"]) {
+      expect([f, isKnown(f)]).toEqual([f, false]);
+      expect(on([f]), f).toEqual([...CI_AREA_NAMES]);
+      expect(acceptanceUnits([f]), f).toEqual([...ON_GITHUB]);
+    }
+    // One stray path in an otherwise small change: everything.
+    expect(on(["docs/a.md", "apps/android/x.kt"])).toEqual([...CI_AREA_NAMES]);
+    for (const f of ["docs/a/b.md", "README.md", "CONTRIBUTING.md", ".gitignore"]) expect([f, isKnown(f), on([f])]).toEqual([f, true, []]);
+    // A change with no files (an empty diff) runs nothing; no diff to go on runs everything.
+    expect(on([])).toEqual([]);
+    expect(areasFor(undefined).acceptance).toBe(true);
+    expect(acceptanceUnits(undefined)).toEqual([...ON_GITHUB]);
+  });
+
+  test("every tracked file is mapped: no path of this checkout runs the whole table by accident", () => {
+    const tracked = Bun.spawnSync(["git", "ls-files"], { cwd: join(import.meta.dir, ".."), stdout: "pipe" }).stdout.toString().split("\n").filter(Boolean);
+    expect(unmapped(tracked)).toEqual([]);
+  });
+
+  test("a folder of native/ that holds a workspace package is covered by the workspaces' tests", () => {
+    for (const dir of readdirSync(join(import.meta.dir, "..", "native"), { withFileTypes: true })) {
+      if (dir.isDirectory() && existsSync(join(import.meta.dir, "..", "native", dir.name, "package.json"))) expect(areasFor([`native/${dir.name}/src/x.ts`]).workspaces, dir.name).toBe(true);
+    }
+  });
+
+  test("a rename counts both paths: a file moved out of one area into another is a change to both", () => {
+    // ci-changes reads `git diff --name-only --no-renames`: the old path is a change too (the source holds the flag).
+    expect(readFileSync(join(import.meta.dir, "ci-changes.ts"), "utf8")).toContain('"--no-renames"');
+  });
+
+  test("what builds on a package starts when the package changes: the jobs of a dependent's source are the jobs of the dependency's", () => {
+    const root = join(import.meta.dir, "..");
+    const dirs = ["packages", "services", "examples", "extensions"].flatMap((d) => readdirSync(join(root, d), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => `${d}/${e.name}`))
+      .concat(["apps/desktop", "apps/moss", "plugins/moss/plugins/shell"]);
+    const pkgs = new Map<string, { dir: string; deps: string[] }>();
+    for (const dir of dirs) {
+      const file = join(root, dir, "package.json");
+      if (!existsSync(file)) continue;
+      const p = JSON.parse(readFileSync(file, "utf8")) as { name: string; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+      pkgs.set(p.name, { dir, deps: Object.entries({ ...p.dependencies, ...p.devDependencies }).filter(([, v]) => v.startsWith("workspace:")).map(([k]) => k) });
+    }
+    const dependentsOf = (name: string, seen = new Set<string>()): Set<string> => {
+      for (const [other, p] of pkgs) if (p.deps.includes(name) && !seen.has(other)) { seen.add(other); dependentsOf(other, seen); }
+      return seen;
+    };
+    // The jobs a source file of a package starts on a lane's manual run (a test file starts no unit, so a source file stands for it).
+    const jobsOf = (dir: string): string[] => planForFiles([`${dir}/src/__probe.ts`]).jobs.map((j) => j.id).sort();
+    // What a dependency's change does NOT have to start of its dependent's: jobs behind the dependent's own files. (The engine's own
+    // test-harness is a dev dependency of the engine, whose suites run on the core's own areas; the services' account tests import
+    // the harness's stub, which the `core` area names itself: ci-changes.ts.)
+    const OWN: Record<string, string[]> = {
+      "packages/core": ["tree", "link", "adapters", "windows-fence"],
+      "packages/test-harness": ["core", "daemon", "verify", "cli", "macos", "sealed-core", "sealed-core-windows", "core-linux", "machine", "machine-windows", "packages", "windows-fence", "agent-adapters", "link", "tree", "link-windows", "tree-windows", "scripts", "acceptance", "gallery", "installers", "installers-windows", "linux-repo-signatures", "test-extension", "lockfiles", "codegen"],
+    };
+    const missing: string[] = [];
+    for (const [name, p] of pkgs) {
+      for (const dependent of dependentsOf(name)) {
+        const d = pkgs.get(dependent)!;
+        const need = jobsOf(d.dir).filter((j) => !jobsOf(p.dir).includes(j) && !(OWN[p.dir] ?? []).includes(j));
+        if (need.length > 0 && p.dir.startsWith("packages/")) missing.push(`${p.dir} -> ${d.dir}: ${need.join(" ")}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
+// The lanes merged into lane-int/moss between 2026-11-17 and 2026-11-24 (git log origin/main..origin/lane-int/moss): each one's real
+// changed files (trimmed to a file or two per folder), the areas a manual scoped run takes for them, the acceptance units and whether a
+// macOS runner starts. A lane that touched the engine or the app still takes the whole table, as it must; one that touched the iPhone apps,
+// a service, a CI script or an engine test file takes a few Linux jobs. A change to the map that moves one of these shows here.
+describe("regression list: the lanes of this week", () => {
+  type Lane = { lane: string; what: string; files: string[]; areas: CiArea[]; units: string[] | "all"; macos: boolean };
+  const LANES: Lane[] = [
+    { lane: "press under load", what: "PL: the main-process press gates, the stall watch, the app log", files: ["apps/desktop/src/main/index.ts","apps/desktop/test/send-gate-load.test.ts","apps/moss/src/main/index.ts","apps/moss/test/moss-app-log.test.ts","packages/app-release/src/app-log.ts","packages/app-release/src/stall-watch.ts","packages/app-release/test/app-log-safety.test.ts","packages/app-release/test/stall-watch.test.ts","apps/desktop/test/send-gate-sequences.test.ts","apps/moss/test/file-log.test.ts","apps/moss/test/press-load.test.ts","apps/moss/test/press-sequences.test.ts","apps/moss/src/window/conversation/Conversation.tsx","apps/moss/test/window.test.tsx"],
+      areas: ["workspaces","app","packages","typecheck","scripts","acceptance"], units: "all", macos: true },
+    { lane: "iOS apps", what: "IA: the two iPhone apps and their workflow", files: ["apps/ios/Packages/MossPhoneKit/Sources/MossPhoneKit/Views/PairingScreen.swift",".github/workflows/ios.yml","apps/ios/.gitignore","apps/ios/Apps/MOSS/Assets.xcassets/AccentColor.colorset/Contents.json","apps/ios/Apps/MOSSCode/Assets.xcassets/AccentColor.colorset/Contents.json","apps/ios/Scripts/make-icons.swift","apps/ios/project.yml"],
+      areas: ["scripts"], units: [], macos: false },
+    { lane: "devices and pairing settings", what: "DV: pairing by QR, device names, the relay choice", files: ["apps/moss/src/main/engine.ts","apps/moss/src/shared/view.ts","apps/moss/src/window/settings/SettingsPage.tsx","apps/moss/test/ma2-pages.test.tsx","docs/devices-map.md","packages/protocol/src/devices.ts","plugins/moss/plugins/settings/client/SettingsModal.tsx","packages/core/src/devices/names.ts","packages/core/src/ipc/device-links.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/device-links.test.ts","apps/desktop/src/main/ui/tree-calls.ts","apps/desktop/test/runtime.test.ts","apps/desktop/test/tree-calls.test.ts"],
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","codegen","verify","link","acceptance"], units: "all", macos: true },
+    { lane: "Windows fence WS5/WS6", what: "WS: sandbox remove on Windows", files: ["packages/cli/src/main.ts","packages/core/src/fence/win-fenced.ts","packages/core/src/index.ts","packages/core/test/fence/win-fenced.e2e.test.ts","scripts/ci/windows-fence/remove.ps1","scripts/ci/windows-fence/hold-account.ts"],
+      areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","verify","acceptance"], units: "all", macos: true },
+    { lane: "push service", what: "the push service's topics per phone app", files: ["services/push/wrangler.jsonc","services/push/src/apns.ts","services/push/src/env.ts","services/push/src/fcm.ts","services/push/src/index.ts","services/push/src/push-do.ts","services/push/test/fake-log.ts","services/push/test/node/fakes.ts","services/push/test/notifier-integration.test.ts","services/push/test/push.test.ts","services/push/test/routing.test.ts","services/push/vitest.config.ts"],
+      areas: ["workspaces","typecheck"], units: [], macos: true },
+    { lane: "phone push routing", what: "the notifier, the registry and the engine's pairing record", files: ["plugins/moss/plugins/push/src/notifier.ts","packages/core/src/daemon.ts","packages/core/src/notify/core-updates.ts","packages/plugin-sdk/src/api/plugin-api.ts","packages/protocol/src/push-routing.ts","packages/protocol/test/push-routing.test.ts","plugins/moss/plugins/notifications/src/notifier.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/devices/registry.ts","packages/core/src/identity/sas.ts","packages/core/src/links/pairing.ts","packages/core/test/ipc/link-clients.test.ts","packages/plugin-sdk/src/views.ts","packages/protocol/generated/moss/core.json"],
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","codegen","verify","link","acceptance"], units: "all", macos: true },
+    { lane: "phone start", what: "a paired phone starts a coding session", files: ["packages/core/src/agents/tests/adapter-card.test.ts","packages/protocol/test/session-graph.test.ts","packages/core/test/ipc/link-clients.test.ts","packages/protocol/generated/moss/agents.json","packages/protocol/src/agents.ts","packages/protocol/test/remote-start.test.ts","packages/core/src/contracts/device-registry.ts","packages/core/src/daemon.ts","packages/core/src/devices/tests/registry.test.ts"],
+      areas: ["workspaces","daemon","packages","gallery","typecheck","core","cli","scripts","codegen","verify","link","adapters","acceptance"], units: "all", macos: true },
+    { lane: "agents early start", what: "the idle timer of an early-started agent", files: ["packages/core/src/agents/driver.ts"],
+      areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","verify","adapters","acceptance"], units: "all", macos: true },
+    { lane: "CI lane wait", what: "scripts/ci/lane polls once a minute", files: ["scripts/ci/lane"],
+      areas: ["typecheck","scripts"], units: [], macos: false },
+    { lane: "composer model read", what: "the composer's model read and acceptance row 11", files: ["plugins/moss/plugins/composer/client/entry.tsx","scripts/acceptance/ui-steps.ts"],
+      areas: ["workspaces","app","gallery","typecheck","scripts","acceptance"], units: "all", macos: true },
+    { lane: "core test only", what: "one engine test file", files: ["packages/core/test/fence/win-fenced.test.ts"],
+      areas: ["workspaces","daemon","packages","typecheck","core","cli","scripts","verify"], units: [], macos: true },
+    { lane: "plugin-sdk views", what: "the SDK's generated views.ts", files: ["packages/plugin-sdk/src/views.ts"],
+      areas: ["workspaces","daemon","app","packages","gallery","typecheck","core","cli","scripts","verify","acceptance"], units: "all", macos: true },
+  ];
+  for (const l of LANES) {
+    test(`${l.lane} (${l.what}): ${l.areas.join(" ")}; ${l.units === "all" ? "every unit" : l.units.length === 0 ? "no unit" : l.units.join(" ")}; ${l.macos ? "macOS runners" : "no macOS runner"}`, () => {
+      expect(on(l.files)).toEqual(l.areas);
+      expect(acceptanceUnits(l.files)).toEqual(l.units === "all" ? [...ON_GITHUB] : l.units);
+      expect(planForFiles(l.files).macos > 0).toBe(l.macos);
+      expect(unmapped(l.files)).toEqual([]);
+    });
+  }
+});
+
+describe("the scope a run states", () => {
+  const all = (changed: string[] | undefined) => { const areas = areasFor(changed); return scopeOf({ changed, areas, units: areas.acceptance ? acceptanceUnits(changed) : [], why: "a manual scoped run", base: "8ce5aef0b" }); };
+
+  test("a scoped run says SCOPED RUN, how many areas ran and were skipped, and the acceptance units; a full one says FULL RUN", () => {
+    const s = all(["apps/ios/project.yml"]);
+    expect(s.scope).toBe("SCOPED RUN: 1 of 22 areas ran, 21 skipped as untouched; 0 of 25 acceptance units (1 file(s) changed since 8ce5aef0b; a manual scoped run)");
+    expect(s.ran).toEqual(["scripts"]);
+    expect(s.skipped).toContain("acceptance");
+    expect(all(undefined).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units");
+    // CI's own definition runs every area but the installers: still a scoped run, which says so.
+    expect(all([".github/workflows/ci.yml"]).scope).toStartWith("SCOPED RUN: 21 of 22 areas ran, 1 skipped as untouched; 25 of 25 acceptance units");
+    expect(all([".github/workflows/ci.yml", "packaging/linux/after-install.sh"]).scope).toStartWith("FULL RUN: every area, 25 of 25 acceptance units, as the 2 file(s) changed since 8ce5aef0b touched them all");
+  });
+
+  test("a path no area maps says so in the scope: the run is full because it could not be sure", () => {
+    const s = all(["apps/android/x.kt"]).scope;
+    expect(s).toContain("FULL RUN");
+    expect(s).toContain("1 changed path(s) no area maps, e.g. apps/android/x.kt (fail closed");
+  });
+
+  test("an acceptance-only run says so", () => {
+    const areas = Object.fromEntries(CI_AREA_NAMES.map((a) => [a, a === "acceptance"])) as Record<CiArea, boolean>;
+    expect(scopeOf({ changed: [], areas, units: ON_GITHUB, why: "a manual run of only: acceptance", onlyAcceptance: true }).scope).toBe("ACCEPTANCE ONLY: 25 of 25 acceptance units; no other area (a manual run of only: acceptance)");
+  });
+
+  test("the CLI prints the same lines the workflow's outputs carry", () => {
+    const run = (args: string[]) => Bun.spawnSync(["bun", join(import.meta.dir, "ci-changes.ts"), ...args], { stdout: "pipe", env: { ...process.env, GITHUB_OUTPUT: "" } }).stdout.toString();
+    const out = run(["--all", "--why", "a push to an integration branch runs everything"]);
+    expect(out).toContain("acceptance=true");
+    expect(out).toContain(`acceptance_units=${JSON.stringify([...ON_GITHUB])}`);
+    expect(out).toContain("scope=FULL RUN: every area, 25 of 25 acceptance units (a push to an integration branch runs everything)");
+    expect(run(["--only-acceptance", "--why", "x"])).toContain("workspaces=false\n");
+    // A base that cannot be read here runs every area, and the scope says why.
+    const bad = run(["--base", "0000000000000000000000000000000000000000", "--why", "a manual scoped run"]);
+    expect(bad).toContain("scope=FULL RUN: every area");
+    expect(bad).toContain("could not be read here: fail closed");
   });
 });

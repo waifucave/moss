@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { units } from "../acceptance/shards";
 import { MEASURED_ON_MAC_ONLY } from "../acceptance/measured";
 import { judge, parseRows, pressTimings } from "./acceptance-unit";
+import { ON_GITHUB } from "./acceptance-units";
 
 const TABLE = `
 MOSS acceptance (source)
@@ -71,7 +70,8 @@ describe("the acceptance unit's verdict", () => {
   });
 
   test("the units a lane's check runs (ci.yml's matrix) own their rows between them, once each; `main` is the chain and the window's three", () => {
-    const matrix = (Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", "..", ".github", "workflows", "ci.yml"), "utf8")) as { jobs: { acceptance: { strategy: { matrix: { unit: string[] } } } } }).jobs.acceptance.strategy.matrix.unit;
+    // The matrix is the changes job's list (ci.yml), of ON_GITHUB (acceptance-units.ts): scripts/ci-changes.test.ts holds ci.yml to that.
+    const matrix = [...ON_GITHUB];
     const mine = units().filter((u) => matrix.includes(u.id));
     expect(mine.map((u) => u.id as string).sort()).toEqual([...matrix].sort());
     const names = mine.flatMap((u) => u.rows);
