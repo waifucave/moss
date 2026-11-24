@@ -8,6 +8,14 @@
   "availability": { "status": "not-yet", "reason": "webhook-keys" },
   "host": { "entry": "host/index.ts", "runtime": "bun", "start": "each" },
   "capabilities": ["network:hooks.waifucave.com"],
+  "settings": {
+    "origin": {
+      "type": "string",
+      "title": { "en": "Forwarder address" },
+      "description": { "en": "For development profiles only: a local forwarder emulator." },
+      "scope": "device"
+    }
+  },
   "contributes": {
     "webhook.ingress": [
       {
