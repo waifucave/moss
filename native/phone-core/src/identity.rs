@@ -108,6 +108,18 @@ fn load_or_create(storage: &Arc<dyn SecretStorage>, name: &str, paired: bool) ->
 }
 
 impl Identity {
+    /// A new identity, saved over whatever keys the store held (their items are replaced, so the old seeds are gone
+    /// from it): for a phone that no longer has any computer paired.
+    pub fn renew(storage: &Arc<dyn SecretStorage>, name: String, holder: AnswerKeyHolder, os: PhoneOs) -> Result<Self, CoreError> {
+        let name = crate::names::safe_device_name(&name, "Phone");
+        let device = Ed25519Key::generate();
+        let answer = Ed25519Key::generate();
+        storage.save(DEVICE_KEY.into(), std::mem::take(&mut *device.seed()))?;
+        storage.save(ANSWER_KEY.into(), std::mem::take(&mut *answer.seed()))?;
+        let id = device_id_for(&device.public());
+        Ok(Identity { device, answer, id, name, holder, os })
+    }
+
     /// `name` is the phone's own name as its OS gives it: made safe as the engine makes its own (`safe_device_name`).
     pub fn load_or_create(storage: &Arc<dyn SecretStorage>, name: String, holder: AnswerKeyHolder, os: PhoneOs) -> Result<Self, CoreError> {
         let name = crate::names::safe_device_name(&name, "Phone");
