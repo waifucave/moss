@@ -12,7 +12,8 @@ const SHORT: Record<string, string> = { SY: SYSTEM_SID, BA: ADMINISTRATORS_SID, 
 /** The problem with an access list given as SDDL (owner and DACL), or null when only the user, SYSTEM and Administrators own it or may be
  *  allowed in it. Deny entries are harmless. Pure. */
 export function ownerOnlyProblemOfSddl(sddl: string, userSid: string): string | null {
-  const trusted = new Set([userSid.toUpperCase(), SYSTEM_SID, ADMINISTRATORS_SID]);
+  // "LA" is the machine's own Administrator account (RID 500: SDDL abbreviates it, and it is who owns what a runneradmin makes): an administrator, as trusted as Administrators.
+  const trusted = new Set([userSid.toUpperCase(), SYSTEM_SID, ADMINISTRATORS_SID, "LA"]);
   const sid = (t: string): string => (SHORT[t.toUpperCase()] ?? t).toUpperCase();
   const owner = /(?:^|[^A-Z])O:(.+?)(?=G:|D:|S:|$)/.exec(sddl)?.[1] ?? "";
   if (owner === "" || !trusted.has(sid(owner))) return `it is owned by ${owner === "" ? "no one it could read" : sid(owner)}, not the user, Administrators or SYSTEM`;

@@ -12,6 +12,7 @@ describe("an access list read back as SDDL", () => {
   test("the user, SYSTEM and Administrators alone: fine, whoever of them owns it", () => {
     expect(ownerOnlyProblemOfSddl(`O:${ME}G:DUD:PAI(A;OICI;FA;;;${ME})(A;OICI;FA;;;SY)`, ME)).toBeNull();
     expect(ownerOnlyProblemOfSddl(`O:BAG:DUD:PAI(A;OICI;FA;;;${ME})`, ME)).toBeNull();
+    expect(ownerOnlyProblemOfSddl(`O:LAG:DUD:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;SY)`, ME)).toBeNull(); // the local Administrator, written "LA"
     expect(ownerOnlyProblemOfSddl(`O:SYD:P(A;;GA;;;${ME})(A;;GA;;;BA)(D;;FA;;;WD)`, ME)).toBeNull();
   });
   test("another account's allow entry, Everyone, Users or Authenticated Users is refused", () => {
