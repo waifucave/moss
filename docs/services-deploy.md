@@ -10,16 +10,28 @@ only mode that runs without the owner's own flag is a dry run, and the dry run t
 ## The one command
 
 ```sh
-cp services/deploy.env.example ~/moss-services.env     # outside the repo; fill it in (names and where each value comes from are in it)
+install -m 600 services/deploy.env.example ~/moss-services.env   # mode 600, outside the repo; fill it in (it will hold keys)
+scripts/pinned-bun scripts/services/deploy.ts --generate all --out ~/moss-generated.env   # fresh values for the secrets we make up: a NEW mode-600 file, only the names are printed
+#   merge those lines into ~/moss-services.env, keep a copy of it somewhere safe, then delete ~/moss-generated.env
 scripts/pinned-bun scripts/services/deploy.ts --env-file ~/moss-services.env                  # the dry run: checks, builds, packages, prints the plan
-CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
-  scripts/pinned-bun scripts/services/deploy.ts --env-file ~/moss-services.env --deploy        # the real thing
-scripts/pinned-bun scripts/services/post-deploy.ts --env-file ~/moss-services.env --smoke      # the settings to apply, and a live check
+scripts/pinned-bun scripts/services/deploy.ts --env-file ~/moss-services.env --deploy         # the real thing: shows the plan, asks you to type "deploy <last 4 of the account id>"
+scripts/pinned-bun scripts/services/post-deploy.ts --env-file ~/moss-services.env --smoke     # the settings to apply, and a live check
 ```
 
-`--generate signing-jwks | tag-keys | random | vapid` prints a fresh value for each secret the product makes up itself (keep them in a
-password manager; `MOSS_ACCOUNT_ID_KEY` must never be lost or changed). `--only accounts,push` deploys part; `--skip-secrets` redeploys code
-only (secrets already in Cloudflare stay). `--strict` makes the dry run fail while a required name is unset.
+The Cloudflare token and account id go in the same env file (the two `CLOUDFLARE_` lines at its top), never on a command line: a value typed
+inline lands in the shell's history. The script refuses an env file that group or others can read (`chmod 600` it), and a dry run never passes
+the Cloudflare lines to wrangler.
+
+- **Secrets are put once.** A real deploy first reads each Worker's secret NAMES from Cloudflare (read-only), then deploys the code and only the
+  secrets that Worker lacks in one wrangler call (`--secrets-file`, read from standard input), so a Worker is never live without them and a re-run
+  never re-puts a secret already there, whatever the env file holds now. `--rotate MOSS_TAG_KEYS,...` replaces the named ones.
+  `MOSS_ACCOUNT_ID_KEY` names each account's object: a new value orphans every account's held webhooks for good, so replacing it needs
+  `--rotate MOSS_ACCOUNT_ID_KEY --rotate-account-id-key` and prints a warning.
+- **A failure stops everything at once** and says what was already deployed; run the same command again after fixing it.
+- `--only accounts,push` deploys part; `--skip-secrets` redeploys code only; `--strict` makes the dry run fail while a required name is unset.
+- **Wrangler's debug log** is pointed at a mode-700 folder this script removes at the end, so nothing of a real run stays under your home. Whether that log
+  would have held a secret's value is not known: after the first live run, search wrangler's own log folder (`~/Library/Preferences/.wrangler/logs`,
+  or `~/.wrangler/logs` / `$XDG_CONFIG_HOME/.wrangler/logs`) for the first characters of one secret, and delete anything that matches.
 
 ## What is deployed, in this order, and why
 
@@ -82,9 +94,9 @@ without an account (accounts' public keys, which must carry no private part; the
 
 ## What the owner must supply
 
-1. A Cloudflare account, and a domain whose DNS is on it (a zone). An API token with "Workers Scripts: Edit" and "DNS: Edit" on that zone, and the account id. Workers' SQLite Durable Objects, rate limits and custom domains exist on the Free plan to the best of my reading; check Cloudflare's current plan limits before the first deploy. Domain: whatever the registrar charges.
+1. A Cloudflare account, and a domain whose DNS is on it (a zone). An API token and the account id. The scopes the token needs are TO CONFIRM ON THE FIRST LIVE RUN: expected are Account > Workers Scripts: Edit, Zone > Workers Routes: Edit (the `/auth/*` route), Zone > DNS: Edit and Zone > Zone: Read (custom domains), and Account > Account Settings: Read for the secret lists; create the token with exactly those and add whichever the first run names as missing. Workers' SQLite Durable Objects, rate limits and custom domains exist on the Free plan to the best of my reading; check Cloudflare's current plan limits before the first deploy. Domain: whatever the registrar charges.
 2. A Supabase project (the sign-in: the accounts Worker asks it who a session belongs to): its URL and its public anon key. Its free tier is enough to start. (Sign-in providers and email templates are set up inside it.)
-3. For phone push: an Apple Developer Program membership (paid, per year) and an APNs auth key (.p8) with its key id and team id, and the two iPhone apps' bundle ids (MOSS's and MOSS Code's). Web Push needs nothing from anyone: `--generate vapid` makes the pair.
+3. For phone push: an Apple Developer Program membership (paid, per year) and an APNs auth key (.p8) with its key id and team id, and the two iPhone apps' bundle ids (MOSS's and MOSS Code's). Web Push needs nothing from anyone: `--generate all` makes the pair.
 4. Later, for Android: a Firebase project. `services/push/src/fcm.ts` is a stub today (`fcmConfig` returns null, a registration is refused `not_configured`), so FCM needs code as well as a project.
 5. The secrets the script makes for him: `--generate` for the signing keys, tag keys, account-id key and the two ticket secrets. He keeps them; the account-id key must never be lost.
 

@@ -7,6 +7,7 @@
 //       only our Worker would give) and says pass or fail for each. Exit 1 when one fails.
 //
 // Names come from the same environment as deploy.ts (services/deploy.env.example); no secret is read or printed.
+import { envFileProblem } from "./deploy";
 import { defaultWebPrefix, loadEnvFile, resolveSettings, type Env } from "./lib";
 import { BUILT_IN_ADDRESSES, PARKED_PLUGINS, SERVICES, type ServiceId, type Settings, type SmokeSpec } from "./manifest";
 
@@ -130,8 +131,14 @@ export async function main(argv: readonly string[], env: Env, io: Io = { out: co
     if (k === "--smoke") doSmoke = true;
     else if (k === "--domain") domain = argv[++i];
     else if (k === "--env-file") {
+      const path = argv[++i] ?? "";
+      const bad = path === "" || path.startsWith("--") ? "--env-file needs a value" : envFileProblem(path);
+      if (bad) {
+        io.err(`post-deploy: ${bad}`);
+        return 2;
+      }
       try {
-        merged = { ...loadEnvFile(argv[++i] ?? ""), ...Object.fromEntries(Object.entries(env).filter(([n, v]) => n.startsWith("MOSS_") && v)) };
+        merged = { ...loadEnvFile(path), ...Object.fromEntries(Object.entries(env).filter(([n, v]) => n.startsWith("MOSS_") && v)) };
       } catch {
         io.err("post-deploy: the env file can't be read");
         return 2;
