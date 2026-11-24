@@ -87,7 +87,8 @@ import { LayerError, surfaceSettingHolds, UiRuntime, type SealedAskOutcome } fro
 import { PluginKeys, keysMayRun, type HoldStep } from "./plugin-keys";
 import { WebViews, isWebViewContents, webSpec } from "./ui/web-views";
 import type { Os } from "./ui/spots";
-import { replacement, APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, windowShowsCard, type CardPlace, type PressSource } from "./card-place";
+import { CardReplacer } from "./card-replace";
+import { APP_EVENT_AREAS, previewMainState, mossFront, FrontWatcher, islandMayDraw, placeFromEngine, PlacementBook, PresenceReporter, pressMayBeTaken, placeLine, showingOf, subscribeThenListCards, windowShowsCard, pressWindowIsOpen, type CardPlace, type PressSource } from "./card-place";
 import { afterTap, afterTray, appIsRegular, mainWindowFront, surfaceShown, type MainWindowState, type PutAway } from "./front-rules";
 import { linuxSession, mainWindowPlan, surfaceDrawsOffscreen, surfaceWindowPlan, TITLE_BAR_HEIGHT, webPreferences, windowsHasAcrylic } from "./window";
 
@@ -431,7 +432,7 @@ async function ready(): Promise<void> {
   runtime = new UiRuntime({
     os, platform: process.platform, safeMode, log,
     sealed,
-    windowChanged: (windowId, closed) => cardsPlaceLost(windowId, closed),
+    windowChanged: (windowId, closed, document) => replacer.lost(windowId, closed, document),
     onGone: (mount) => {
       views.drop(mount);
       webViews.drop(mount);
@@ -645,8 +646,7 @@ async function ready(): Promise<void> {
       const cardOfPress = sealed.cardOf(token);
       // A press from a window that has closed since (a surface that went away as the press was made) is taken for nothing: the
       // card was placed again, and its buttons are where it is now.
-      const fromWin = from === undefined ? null : BrowserWindow.fromId(from);
-      if (from !== undefined && (fromWin === null || fromWin.isDestroyed())) {
+      if (!pressWindowIsOpen(from, (id) => { const w = BrowserWindow.fromId(id); return w !== null && !w.isDestroyed(); })) {
         log(`sealed: answer refused (a press from a window that has closed)`);
         return { accepted: false, reason: "this card's place has closed; it is shown where it is now" };
       }
@@ -1233,7 +1233,7 @@ function enginePlaced(cardId: string, place: CardPlacement, from: "event" | "sna
   else if (heldOffFallbacks.delete(cardId) && sealed.isPending(cardId)) void armFallback(cardId);
   if (cardPlaces.has(cardId)) placeCardNow(cardId);
   // A card's place changed: the buttons that showed it in the old place don't count in the new one.
-  if (from === "event" && sealed.isPending(cardId) && fallbacks.get(cardId)?.win === undefined && !fallbacks.has(cardId) && !buttonsInPlace(cardId) && fallbackHere(cardId)) void armFallback(cardId);
+  if (from === "event" && sealed.isPending(cardId) && !fallbacks.has(cardId) && !buttonsInPlace(cardId) && fallbackHere(cardId)) void armFallback(cardId);
   tellGuideAside();
   // The surfaces hear it only when the island's hold changes (their `mainFront`): a message on every placement made the
   // island measure itself again under the pointer.
@@ -1252,24 +1252,26 @@ function buttonsInPlace(cardId: string): boolean {
   const placed = enginePlaces.get(cardId);
   return sealed.buttonsVisible(cardId, (w) => windowShowsCard(placed, isIslandWindow(w)));
 }
-/** The place a pending card was shown on went away (a window closed: its frames' last words no longer hold; or one of a
- *  window's documents loaded again): the card is placed again by the same rule as its first place, at once, and the fallback's
- *  timer runs if no place shows its buttons. One place at a time (`placeCardNow` moves it), the card's own expiry unchanged
- *  (the store's, never restarted), and a press from the place that went is refused (its window is gone: `sealedAnswer`'s source). */
-function cardsPlaceLost(windowId: number, closed: boolean): void {
-  const held = closed ? sealed.windowGone(windowId, true) : sealed.pendingIds();
-  for (const id of held) replaceCard(id, closed ? "its surface closed" : "a document loaded again");
-}
-function replaceCard(cardId: string, why: string): void {
-  if (!sealed.isPending(cardId) || !cardArrived.has(cardId)) return;
-  log(`card: ${cardId} its place went away (${why}): placed again`);
-  cardPlaces.delete(cardId);
-  placeCardNow(cardId);
-  // The surfaces decide again who stands down (the island's drawer comes back, the others stay hidden).
-  restack();
-  const again = replacement({ placed: enginePlaces.get(cardId), front: mainWindowFront(mainState()), drawnInWindow: windowDraws.has(cardId), buttonsShown: buttonsInPlace(cardId), fallbackHere: fallbackHere(cardId), fallbackWindowOpen: fallbacks.get(cardId)?.win !== undefined });
-  if (again.armFallback) void armFallback(cardId);
-}
+/** The place a pending card was shown on went away (card-replace.ts): placed again by the same rule as its first place, the net
+ *  armed if none runs and no place shows the buttons. */
+const replacer = new CardReplacer({
+  cardsIn: (windowId, closed, document) => sealed.windowGone(windowId, closed, document === undefined ? undefined : `p:${document.processId}:${document.routingId}`),
+  isPending: (id) => sealed.isPending(id),
+  arrived: (id) => cardArrived.has(id),
+  placedOnce: (id) => cardPlaces.has(id),
+  place: (id) => { cardPlaces.delete(id); placeCardNow(id); },
+  restack: () => restack(),
+  engineplace: (id) => enginePlaces.get(id),
+  front: () => mainWindowFront(mainState()),
+  drawnInWindow: (id) => windowDraws.has(id),
+  buttonsShown: (id) => buttonsInPlace(id),
+  fallbackHere: (id) => fallbackHere(id),
+  fallbackRunning: (id) => fallbacks.has(id),
+  fallbackWindowOpen: (id) => fallbacks.get(id)?.win !== undefined,
+  armFallback: (id) => { void armFallback(id); },
+  showFallbackNow: (id) => { disarmFallback(id); void showFallbackCard(id); },
+  log,
+});
 const CONVERSATION_ASK_GRACE_MS = 400;
 function drawnInWindow(cardId: string): void {
   if (windowDraws.has(cardId)) return;
@@ -1548,7 +1550,7 @@ function makePair(): Pair {
         if (listed === undefined) return;
         const gone = sealed.dropUnlisted(knownBefore, listed);
         if (gone.length === 0) return;
-        for (const id of gone) { enginePlaces.delete(id); disarmFallback(id); heldOffFallbacks.delete(id); cardArrived.delete(id); cardPlaces.delete(id); windowDraws.delete(id); }
+        for (const id of gone) { enginePlaces.delete(id); replacer.forget(id); disarmFallback(id); heldOffFallbacks.delete(id); cardArrived.delete(id); cardPlaces.delete(id); windowDraws.delete(id); }
         log(`card: ${gone.length} card(s) resolved while the connection was down, dropped`);
         if (program === "host") tellSurfaces();
         restack();
@@ -1725,6 +1727,7 @@ function makePair(): Pair {
         restack(); // lane HS (R12): the overlays come back once no card is pending here
         cardArrived.delete(parsed.data.id);
         cardPlaces.delete(parsed.data.id);
+        replacer.forget(parsed.data.id);
         windowDraws.delete(parsed.data.id);
         tellGuideAside();
         // A replacement of this desktop's answer key waits on its card: on the yes, the app keeps the new key.
@@ -2750,7 +2753,7 @@ function syncSurfaces(): void {
     if (!s.win.isDestroyed()) s.win.destroy();
     log(`surface: ${ref} closed`);
     // A card placed there is placed again now, not when the window's own "closed" arrives (and its frames never answer again).
-    if (gone !== undefined) cardsPlaceLost(gone, true);
+    if (gone !== undefined) replacer.lost(gone, true);
     refreshTray();
   }
   for (const w of wanted) {

@@ -352,11 +352,15 @@ describe("a card's place going away (the surface closed, the document loaded aga
     expect(store.buttonsVisible(CARD.id)).toBe(false);
   });
 
-  test("a document loaded again keeps the window's frames (their own pagehide says they went); a card answered or resolved is not named", () => {
+  test("a document loaded again: only its own frames' marks clear, the window's other documents keep theirs; a card answered or resolved is not named", () => {
     const store = new SealedFrames();
     store.fromCore(CARD);
     const { approve } = showing(store, 1, at(1));
-    expect(store.isTokenVisible(approve)).toBe(true);
+    const other = store.mint(CARD.id, "button:allow_once", at(2), 1)!.token;
+    store.markVisible(other, true);
+    expect(store.windowGone(1, false, "p:100:1")).toEqual([CARD.id]);
+    expect(store.isTokenVisible(approve)).toBe(false);
+    expect(store.isTokenVisible(other)).toBe(true);
     store.resolvedOutcome(CARD.id, "approved");
     expect(store.windowGone(1, true)).toEqual([]);
   });

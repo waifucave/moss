@@ -83,6 +83,12 @@ export function replacement(i: { placed: CardPlacement | undefined; front: boole
   return { place: placeFromEngine(i.placed, { front: i.front, drawnInWindow: i.drawnInWindow }), armFallback: !i.buttonsShown && i.fallbackHere && !i.fallbackWindowOpen };
 }
 
+/** Whether the window a press was made in is still there: a press from one that has closed since is taken for nothing (the card
+ *  was placed again, and its buttons are where it is now). A frame minted for no window has none to ask. */
+export function pressWindowIsOpen(from: number | undefined, isLive: (windowId: number) => boolean): boolean {
+  return from === undefined || isLive(from);
+}
+
 /** What the window shows that a card can belong to, from the shell's state: a bot's tab, or a coding session's or an agent's
  *  (`agent`, its id the session's). Settings over the tab, or any other page, shows none. */
 export function showingOf(state: { tab: { kind: string; id?: string }; dialog?: string } | undefined): Showing | null {

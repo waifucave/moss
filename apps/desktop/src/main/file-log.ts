@@ -157,6 +157,7 @@ export const REDUCE: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [new RegExp(`^card: ${CARD} (frames asked|a button visible) in (${SURF}) (\\d{1,9}) ms after it arrived$`), "card: $1 in $2 $3 ms after it arrived"],
   [new RegExp(`^card: ${CARD} first ask in (${SURF}) (before it arrived|\\d{1,9} ms after it arrived) \\(([a-z ]{1,16})\\)$`), "card: first ask in $1 $2 ($3)"],
   [new RegExp(`^card: ${CARD} asks in (${SURF}) before the first made: (\\d{1,9}) not yet, (\\d{1,9}) refused$`), "card: asks in $1 before the first made: $2 not yet, $3 refused"],
+  [new RegExp(`^card: ${CARD} its place went away too often: the app's own card draws it$`), "card: its place went away too often: the app's own card draws it"],
   [new RegExp(`^card: ${CARD} its place went away \\((its surface closed|a document loaded again)\\): placed again$`), "card: its place went away ($1): placed again"],
   [new RegExp(`^card: ${CARD} pending told to (${REF})'s layer (before it arrived|\\d{1,9} ms after it arrived)$`), "card: pending told to $1's layer $2"],
   [new RegExp(`^card: ${CARD} both buttons visible in (${SURF}) (\\d{1,9}) ms after it arrived$`), "card: both buttons visible in $1 $2 ms after it arrived"],

@@ -312,15 +312,18 @@ export class SealedFrames {
     return approveSeen && denySeen;
   }
 
-  /** The frames of a window are gone (the window closed) or unknown until they report again (its document loaded again): what
-   *  they said of their visibility no longer holds, so no card counts them as showing a button. A closed window's channels
-   *  die with it (an answer carrying one is "unknown"). Returns the pending cards whose buttons this window showed. */
-  windowGone(windowId: number, closed: boolean): string[] {
+  /** The pending cards with frames in a window, and what they said no longer holds: a closed window's frames are gone (their
+   *  marks dropped, their channels die with it: an answer carrying one is unknown); a document of the window loaded again
+   *  (`documentKey`, the `p:process:routing` its button frames are bound under) has its frames' marks cleared, so an old
+   *  document whose page never said it left (a crashed renderer, a removed frame) is not counted as still showing a button. A
+   *  reload names every card that has a channel in the window. */
+  windowGone(windowId: number, closed: boolean, documentKey?: string): string[] {
     const held = new Set<string>();
     for (const [t, ch] of [...this.channels]) {
-      if (ch.windowId !== windowId) continue;
-      if (this.visible.delete(t) && this.isPending(ch.cardId)) held.add(ch.cardId);
-      if (closed) this.channels.delete(t);
+      if (ch.windowId !== windowId || !this.isPending(ch.cardId)) continue;
+      held.add(ch.cardId);
+      if (closed) { this.visible.delete(t); this.channels.delete(t); }
+      else if (documentKey !== undefined && ch.bound === documentKey) this.visible.delete(t);
     }
     return [...held];
   }
