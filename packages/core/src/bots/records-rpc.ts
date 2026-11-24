@@ -7,6 +7,7 @@ import { ContractError } from "../contracts/common";
 import type { DurableSessionHost } from "../sessions/durable-host";
 import { projectRecords, readsSealed, type WireEvent } from "../sessions/wire";
 import { handler, requireUser, type MethodHandler } from "../rpc/handler";
+import { requirePairedPhone, type PhoneMay } from "../rpc/phone-door";
 import type { PluginBotSettings } from "./plugin-bot-settings";
 import type { BotService } from "./service";
 
@@ -15,6 +16,9 @@ export interface BotRecordMethodsDeps {
   host: Pick<DurableSessionHost, "history" | "length">;
   /** Every plugin's bot-scoped settings for one bot, with their schema (`bot.pluginSettings`); without it, not served. */
   pluginSettingViews?: PluginBotSettings["views"];
+  /** Whether the paired phone `device` may act on this computer now (`mayStartSessions` over the device registry's record of it).
+   *  `bot.create` from a phone's connection (`remote`) is refused unless this says yes; without it none is let make a bot. */
+  phoneMay?: PhoneMay;
 }
 
 const SCAN_STEP = 200;
@@ -34,7 +38,10 @@ export function botRecordMethods(deps: BotRecordMethodsDeps): Record<string, Met
     ...status,
     [M.botRecords.name]: handler(M.botRecords, async () => ({ bots: store.list() })),
     [M.botCreate.name]: handler(M.botCreate, async ({ name, instructions, model, effort, face }, ctx) => {
-      requireUser(ctx, "make a bot");
+      const caller = requireUser(ctx, "make a bot");
+      // A phone's call (the owner's decision of 2026-11-24): the same call and the same checks below, from a phone that is
+      // still paired with an answer key now. It is the person's own act from that device, as the desktop's is from the app.
+      requirePairedPhone(caller, deps.phoneMay, "make a bot");
       const bot = await bots.createBot({
         name, ...(instructions === undefined ? {} : { instructions }), ...(model === undefined ? {} : { model }),
         ...(effort === undefined ? {} : { effort }), ...(face === undefined ? {} : { face }),

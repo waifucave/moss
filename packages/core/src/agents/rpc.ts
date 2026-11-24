@@ -11,6 +11,7 @@ import type { AgentBackend } from "../contracts/agent-backend";
 import type { PluginRegistry } from "../contracts/plugin-registry";
 import { ContractError } from "../contracts/common";
 import { MethodError, toMethodError } from "../rpc/handler";
+import { isPhoneCaller } from "../rpc/phone-door";
 import type { AgentManager } from "./manager";
 import { agentTaskText, type AgentDefinitionView } from "./tools";
 import type { BackendLook } from "./backend-look";
@@ -48,12 +49,6 @@ export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<
 /** How long a phone's `agent.backends` and `agent.options` answers are reused: each looks at programs on this computer (a
  *  version line, a model list command), and a phone's sheet may ask on every open. */
 export const PHONE_LOOK_TTL_MS = 30_000;
-
-/** A caller that is neither this computer's app nor its terminal: a paired phone's connection (`remote`). Tested the other
- *  way round so that a client label added later is held to the phone rules until someone says otherwise. */
-function isPhoneCaller(caller: Caller): boolean {
-  return caller.kind === "user" && caller.client !== "app" && caller.client !== "cli";
-}
 
 /** What a phone's sheet is shown of a backend: what it needs to draw the choice and to say what a start will ask. Left out: the
  *  program's version line (the program's own output, which a phone has no use for). Backends a person can't start are not listed. */

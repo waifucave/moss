@@ -176,11 +176,12 @@ export const BOTS_METHODS = {
     doc: "Every bot as engine data: its record, its main session and the size of its instructions.",
   }),
   botCreate: defineMethod({
-    /** The user's, in MOSS's window or the CLI. A bot making a bot is an open point (the lane map's undefined points). */
-    name: "bot.create", owner: "BT", roles: ["app", "cli"], userOnly: true,
+    /** The user's, in MOSS's window or the CLI, and from a paired phone (the owner's decision of 2026-11-24, as `agent.start`): a
+     *  phone with an answer key the registry still holds, checked at each call. A bot making a bot is an open point (the lane map's undefined points). */
+    name: "bot.create", owner: "BT", roles: ["app", "cli", "remote"], userOnly: true,
     params: z.object({ name: Text, instructions: utf16(200_000).optional(), model: utf16(200).optional(), effort: utf16(32).optional(), face: BotFace.optional() }),
     result: z.object({ bot: BotRecordView }),
-    doc: "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name.",
+    doc: "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name. From a paired phone it is the same call with the same checks (the name, the model a plugin that is on offers), only while the phone is paired with an answer key; the phone changes, archives, restores or removes no bot and sets no user layer.",
   }),
   botEdit: defineMethod({
     /** The app's and the user's terminal; a plugin's door to it (`bots.edit`, through the app's door for parts) is lane

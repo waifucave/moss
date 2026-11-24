@@ -232,12 +232,13 @@
       }
     },
     "bot.create": {
-      "doc": "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name.",
+      "doc": "Makes a bot: a folder under the home's bots/ with its record and instructions file; its id comes from its name. From a paired phone it is the same call with the same checks (the name, the model a plugin that is on offers), only while the phone is paired with an answer key; the phone changes, archives, restores or removes no bot and sets no user layer.",
       "owner": "BT",
       "direction": "to-daemon",
       "roles": [
         "app",
-        "cli"
+        "cli",
+        "remote"
       ],
       "userOnly": true,
       "params": {

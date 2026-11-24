@@ -271,7 +271,7 @@ import { DOWNLOAD_LIMITS, httpsFetch, INDEX_FETCH_TIMEOUT_MS } from "./registry/
 import { createPluginAuth, pluginAuthMethods, type PluginAuth } from "./runtime-sdk/plugin-auth";
 import { evictSessionsForCredential, evictSessionsForModelCatalog } from "./runtime-sdk/credentials";
 import { activeCatalog, installedModelPlugins, modelProviderKey, onModelCatalogChange } from "./runtime-sdk/model-plugins";
-import { catalogModelListings, contributedProviders, modelOffer, modelsMethods } from "./runtime-sdk/models-list";
+import { catalogModelListings, contributedProviders, listModels, modelOffer, modelsMethods, type ModelsListDeps } from "./runtime-sdk/models-list";
 import { coldResumeRunHomeFor, createMossSessionDrivers, sessionPermissionClassFor, type MossLegDeps, type MossSessionDrivers } from "./runtime-sdk/session-driver";
 import { linkedRouterSupportsRunHome, linkedRunHomeBuilder, runHomeHandleOf, runHomeReportSummary } from "./runtime-sdk/run-home-support";
 import { recoverRunRoots, rootRecoveryDetail, type RootReconcile } from "./runtime-state/root-recovery";
@@ -3610,7 +3610,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
     ...Object.keys((await credentialPresenceFrom(secrets)).byProvider),
     ...(await pluginAuth?.signedInProviders().catch(() => new Set<string>()) ?? []),
   ]);
-  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods({
+  const modelsDeps: ModelsListDeps = {
     signedIn: signedInNow,
     defaultModel: () => liveModel?.() || undefined,
     // An agent session's own models (lane MS): what its agent reported, else the agent's list as known; any other
@@ -3622,7 +3622,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       const options = selectableOptions(info.session, { modelOption: info.backend.quirks.config.modelOption, effortOption: info.backend.quirks.config.effortOption, ...(info.backend.readOnlyMode ? { readOnlyOption: info.backend.readOnlyMode.option } : {}) });
       return { kind: "own", models: await agentSessionListing(info.backend, info.options, lists), options };
     },
-  })));
+  };
+  Object.assign(mossLaneHandlers, laneMethodHandlers(modelsMethods(modelsDeps)));
   // The setup guide's questions (`setup.state`, `setup.dismiss`, `models.setDefault`), any client's.
   if (settings) Object.assign(mossLaneHandlers, laneMethodHandlers(setupMethods(setup)));
   // The relay the device links use (§8.3, the setup guide's relay page): n0's by default; the choice is kept in the settings and put to
@@ -4693,6 +4694,7 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
       pluginSettings: pluginBotSettings({ registry, backend: filePluginSettings(mossHome), settings: () => pluginHost?.settings }),
       // A bot's model is one a plugin that is on offers (as the picker lists it), or one whose plugin is on while the
       // model plugins are still taking it in (their start or a rebuild), which the session then reopens on.
+      composerModels: (session) => listModels(modelsDeps, { session }),
       modelOffer: (model) => modelOffer(model, {
         catalog: activeCatalog(),
         settling: installedModelPlugins() === undefined || installedModelPlugins()!.rebuilding,

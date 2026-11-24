@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import {
-  BotId, MOSS_ERR, ComputerName, DEVICES_METHODS, ERR, IMAGE_REFERENCE_INVALID, SESSIONS_METHODS, SessionId, utf16,
+  BotId, MOSS_ERR, ComputerName, DEVICES_METHODS, ERR, FILE_REFERENCE_INVALID, IMAGE_REFERENCE_INVALID, SESSIONS_METHODS, SessionId, utf16,
   type BotView, type Caller, type ChangeResult, type MemoryEntry, type MethodSpec, type SessionView, type UserMessageImageRef,
 } from "@waifucave/moss-protocol";
 import type { DeviceRegistry } from "../contracts/device-registry";
@@ -27,10 +27,12 @@ import { projectRecord, projectRecords, readsSealed, transientFor, type WireEven
 import { listMemory, readMemory } from "./memory";
 import { botPaths } from "./paths";
 import { StagedImages } from "./staged-images";
+import { FileStager, stageTargetOf, type StageLimits, type StageTarget } from "./staged-files";
 import { refuseWhileUpdating, type UpdateGateLike } from "./update-gate";
 import type { BotService } from "./service";
 import type { BotQuestions } from "./questions";
 import { fromPeer } from "../sessions/exchange-depth";
+import { isPhoneCaller, requirePairedPhone, type PhoneMay } from "../rpc/phone-door";
 
 // The handler helpers are shared with every lane's methods (rpc/handler.ts, H-M1's ask).
 export { MethodError, handler, requireUser, toMethodError, type MethodContext, type MethodHandler } from "../rpc/handler";
@@ -56,6 +58,13 @@ export interface SessionsMethodsDeps {
   questions?: Pick<BotQuestions, "answer">;
   /** A plugin's capabilities in force (its OK's), for what it may hear of `session.links`; without it a plugin hears none. */
   capabilitiesOf?(pluginId: string): readonly string[];
+  /** Whether the paired phone `device` may act on this computer now (`mayStartSessions` over the device registry's record of
+   *  it): `session.stageFile` and `session.composerOffers` from a phone's connection are refused unless this says yes. */
+  phoneMay?: PhoneMay;
+  /** The user's home folder, which the tree's `home/<Computer>/` is: where a coding session's folder is on disk, and what a staged file's tree path is counted from. */
+  userHome?: string;
+  /** TEST SEAM: the file door's limits, smaller than the real ones so a test can reach them. */
+  stageLimits?: Partial<StageLimits>;
 }
 
 /** How far back a bot conversation's messages are read for the staged copies they still name (never pruned). */
@@ -74,6 +83,8 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
   const isLocal = (caller: UserCaller) => (caller.client === "app" || caller.client === "cli") && (caller.device === undefined || caller.device === deps.localDevice);
   /** What each client off this computer staged, per session: the only images it may name (kept across restarts). */
   const staged = new StagedImages(deps.home, () => deps.clock.now());
+  /** The files a phone sends (`session.stageFile`), when the user's home is known: without it a phone's files are refused. */
+  const files = deps.userHome === undefined ? undefined : new FileStager({ home: deps.home, userHome: deps.userHome, computer: deps.computer, now: () => deps.clock.now(), ...(deps.stageLimits === undefined ? {} : { limits: deps.stageLimits }) });
   /** A client off this computer is known by its device; one that doesn't say which device it is attaches nothing. */
   const remoteKey = (id: string, caller: UserCaller): string => {
     if (caller.device === undefined) throw new MethodError(ERR.INVALID_PARAMS, "a client off this computer says which device it is to attach images", { code: IMAGE_REFERENCE_INVALID });
@@ -96,6 +107,25 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       if (err instanceof StageImageRefusal) throw new MethodError(err.internal ? ERR.INTERNAL : ERR.INVALID_PARAMS, err.message, { code: err.code, ...(err.n === undefined ? {} : { n: err.n }) });
       throw new MethodError(ERR.INTERNAL, "the message's images couldn't be checked", { code: IMAGE_REFERENCE_INVALID });
     }
+  };
+  /** A message's files. A client on this computer names what it always has (the desktop's drop goes through `user.send`, which
+   *  checks and copies it first). A client off it (the phone) names only files it staged itself for this session through
+   *  `session.stageFile`, each with its `[File #n]` in the text, at most as many as a dropped message takes; the staged ones are
+   *  marked sent once the message is accepted (`commit`). */
+  const checkedFiles = (caller: UserCaller, id: string, text: string, clientMessageId: string, refs: readonly { n: number; path: string }[] | undefined): { files: { n: number; path: string }[] | undefined; commit(): void } => {
+    if (refs === undefined || refs.length === 0) return { files: undefined, commit: () => {} };
+    if (isLocal(caller)) return { files: [...refs], commit: () => {} };
+    const invalidFile = (why: string, n?: number) => new MethodError(ERR.INVALID_PARAMS, why, { code: FILE_REFERENCE_INVALID, ...(n === undefined ? {} : { n }) });
+    if (caller.device === undefined) throw invalidFile("a client off this computer says which device it is to attach files");
+    if (files === undefined) throw invalidFile("this computer takes no files from a phone");
+    const seen = new Set<number>();
+    for (const ref of refs) {
+      if (seen.has(ref.n)) throw invalidFile(`[File #${ref.n}] is named more than once`, ref.n);
+      seen.add(ref.n);
+      if (!text.includes(`[File #${ref.n}]`)) throw invalidFile(`[File #${ref.n}] does not appear in the message`, ref.n);
+    }
+    const claim = files.claim({ device: caller.device!, client: caller.client }, id, clientMessageId, refs.map((r) => r.path));
+    return { files: [...refs], commit: () => claim.commit() };
   };
   const view = (id: string): SessionView => {
     const v = host.get(id);
@@ -120,7 +150,27 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
     return out;
   };
 
+  /** What a file may be staged for: a bot's main conversation that runs here, or a coding session on this computer, not ended. */
+  const stageTarget = (id: string): StageTarget => {
+    const t = stageTargetOf(reachable(id), bots, deps.computer);
+    if ("refusal" in t) throw new ContractError(t.code, t.refusal);
+    return t.target;
+  };
+
   return {
+    // A paired phone's file for a bot's conversation or a coding session (`session.stageFile`): chunks held aside, then placed where a
+    // dropped file would be, and named by the phone's next `session.send`. See `staged-files.ts` for what a phone can't do through it.
+    [M.sessionStageFile.name]: handler(M.sessionStageFile, async (p, ctx) => {
+      const caller = requireUser(ctx, "send a file");
+      refuseWhileUpdating(deps.updateGate);
+      // The desktop drops a file through `user.send`; this door is a phone's, and the one gate is the one `agent.start` has.
+      if (!isPhoneCaller(caller)) throw new ContractError("refused", "a file is sent from the app by dropping it on a conversation");
+      requirePairedPhone(caller, deps.phoneMay, "send a file");
+      if (files === undefined) throw new ContractError("refused", "this computer takes no files from a phone");
+      const target = stageTarget(p.id);
+      return files.stage({ device: caller.device!, client: caller.client }, target, "name" in p ? { name: p.name, size: p.size, dataBase64: p.dataBase64 } : "cancel" in p ? { upload: p.upload, cancel: true } : { upload: p.upload, offset: p.offset, dataBase64: p.dataBase64 });
+    }),
+
     [M.sessionStageImage.name]: handler(M.sessionStageImage, async ({ id, mediaType, dataBase64 }, ctx) => {
       const caller = requireUser(ctx, "attach an image");
       // Known before anything is written: a client off this computer must say which device it is.
@@ -237,6 +287,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
       reachable(id);
       if (message.text.trim() === "") throw new ContractError("invalid", "a message needs text");
       const images = checkedImages(caller, id, message.text, message.images);
+      const attached = checkedFiles(caller, id, message.text, message.clientMessageId, message.files);
       const v = view(id);
       const input = {
         text: message.text,
@@ -245,7 +296,7 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
         sentAt: message.sentAt ?? deps.clock.now(),
         clientMessageId: message.clientMessageId,
         ...(images === undefined ? {} : { images }),
-        ...(message.files === undefined ? {} : { files: message.files }),
+        ...(attached.files === undefined ? {} : { files: attached.files }),
       };
       // A bot's conversation runs on the computer running the bots, which may be another one (§6.4).
       if (v.kind === "bot" && v.bot !== undefined && bots.mainSession(v.bot) === id) {
@@ -253,9 +304,11 @@ export function sessionsMethods(deps: SessionsMethodsDeps): Record<string, Metho
           throw new MethodError(ERR.INVALID_PARAMS, "images reach only a bot whose conversation runs on this computer", { code: IMAGE_REFERENCE_INVALID });
         }
         const { seq } = await bots.sendUserTo(v.bot, input, message);
+        attached.commit();
         return { seq };
       }
       const { seq } = await host.sendUser(id, input);
+      attached.commit();
       return { seq };
     }),
 

@@ -8,6 +8,8 @@
 // `AgentManager.sessionHooks()`) feed `ListAgents`' agent rows, `session.setModel` for agents and coding sessions,
 // and the reattaching of a restart's dormant sessions; `close` ends their processes when the daemon shuts down.
 import { homedir } from "node:os";
+import { composerOffersMethods, type ComposerOffersDeps } from "../sessions/composer-offers";
+import { stageTargetOf } from "./staged-files";
 import { BUNDLED_ROOT_PLUGIN, topPluginIdOf, type Level, type SessionView } from "@waifucave/moss-protocol";
 import type { ApprovalBroker } from "../contracts/approval-broker";
 import type { Clock } from "../contracts/clock";
@@ -124,6 +126,9 @@ export interface BotSideOptions {
   warn?: (message: string) => void;
 }
 
+/** What the daemon gives the composer's offers beyond the bot side's own: the model list of a session and the plugins' commands. */
+export type ComposerSources = Pick<ComposerOffersDeps, "models" | "commands">;
+
 export interface BotSide {
   gate: BotGate;
   host: DurableSessionHost;
@@ -146,7 +151,7 @@ export interface BotSide {
   /** `SendMessage` and `ListAgents` for one bot's session (or an agent's, through the bridge), with K's agent rows. */
   tools(sessionId: string): CoreToolDef[];
   /** Lane D's sessions methods, with K's `setAgentModel`. */
-  methods(deps: Pick<SessionsMethodsDeps, "localDevice"> & Partial<Pick<SessionsMethodsDeps, "clock">>): Record<string, MethodHandler>;
+  methods(deps: Pick<SessionsMethodsDeps, "localDevice"> & Partial<Pick<SessionsMethodsDeps, "clock" | "phoneMay" | "stageLimits">> & { composer?: ComposerSources }): Record<string, MethodHandler>;
   /** Starts the bots (`BotService.start`). */
   start(): Promise<void>;
   /** Detaches everything, leaving it dormant on disk (a shutdown). */
@@ -362,15 +367,26 @@ export function createBotSide(o: BotSideOptions): BotSide {
         ...(hooks === undefined ? {} : { setAgentModel: (id: string, model: string, effort?: string) => hooks.setAgentModel(id, model, effort), ...(hooks.setAgentOption === undefined ? {} : { setAgentOption: (id: string, option: string, value: string) => hooks.setAgentOption!(id, option, value) }) }),
         questions,
         capabilitiesOf: (pluginId: string) => grantsInForce(o.registry.get(pluginId)),
+        ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }),
+        ...(deps.stageLimits === undefined ? {} : { stageLimits: deps.stageLimits }),
+        userHome: o.userHome ?? homedir(),
       });
       return {
       ...sessions,
+      // What a phone's composer offers in one conversation (`session.composerOffers`), from the doors above and the daemon's model list and commands.
+      ...(deps.composer === undefined ? {} : composerOffersMethods({
+        view: (id) => host.get(id),
+        heldHere: (v) => "target" in stageTargetOf(v, bots, o.computer),
+        botModel: (bot) => bots.get(bot)?.model,
+        models: deps.composer.models, commands: deps.composer.commands,
+        filesOpen: true, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }),
+      })),
       // Lane G's `user.send`: the Dispatch pill's words go through the same session.send as the composer's, and to a
       // `pill.target` entry's handler through the plugin host, when there is one.
       ...userSendMethods({ bots, sessions, sentAs: (id, clientMessageId) => host.sentAs(id, clientMessageId), files: { home: o.home, userHome: o.userHome ?? homedir(), computer: o.computer }, ...(o.pillTargets === undefined ? {} : { targets: { registry: o.registry, host: o.pillTargets } }) }),
       ...(routines === undefined ? {} : routineMethods({ routines })),
       // Bots as engine data (lane BT): `bot.move.status` always; the record methods with records as the source.
-      ...botRecordMethods({ bots, host, ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
+      ...botRecordMethods({ bots, host, ...(deps.phoneMay === undefined ? {} : { phoneMay: deps.phoneMay }), ...(o.pluginSettings?.views === undefined ? {} : { pluginSettingViews: o.pluginSettings.views.bind(o.pluginSettings) }) }),
       };
     },
     start: async () => {

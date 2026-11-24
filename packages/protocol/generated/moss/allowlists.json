@@ -592,6 +592,7 @@
       "agent.recent",
       "agent.start",
       "bot.conversation",
+      "bot.create",
       "bot.get",
       "bot.instructions.get",
       "bot.list",
@@ -621,6 +622,7 @@
       "routine.runs",
       "session.answer",
       "session.attach",
+      "session.composerOffers",
       "session.connectors",
       "session.context",
       "session.detach",
@@ -633,6 +635,7 @@
       "session.outputs",
       "session.send",
       "session.setModel",
+      "session.stageFile",
       "session.stageImage",
       "session.stop",
       "usage.summary"
