@@ -95,6 +95,21 @@ describe("the revocation sweep", () => {
     expect(store.peek()).toEqual({ known: [], pending: [] });
   });
 
+  test("a pending revocation from the store is tried only when the registry confirms it; an unconfirmed one is watched again", async () => {
+    const store = memoryStore();
+    await store.set({ known: [], pending: [PHONE, BROWSER] });
+    const tried: string[] = [];
+    const sweep = new RevocationSweep({
+      list: async () => [SELF, phone(BROWSER)],
+      revoked: async () => [{ id: PHONE, revokedAt: 1 }],
+      store,
+      revoke: async (id) => (tried.push(id), true),
+    });
+    await sweep.sweep();
+    expect(tried).toEqual([PHONE]);
+    expect(store.peek()).toEqual({ known: [BROWSER], pending: [] });
+  });
+
   test("ids from the store that aren't device ids are dropped, and at most 64 are kept", async () => {
     const store = memoryStore();
     await store.set({ known: ["../../v1/notify", 7 as unknown as string, PHONE], pending: ["a/b"] });

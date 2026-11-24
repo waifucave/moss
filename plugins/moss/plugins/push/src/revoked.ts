@@ -74,7 +74,21 @@ export class RevocationSweep {
     if (this.known === null) {
       const saved = (await this.options.store.get().catch(() => undefined)) as { known?: unknown; pending?: unknown } | undefined;
       this.known = new Set(ids(saved?.known));
-      for (const id of ids(saved?.pending)) this.pending.add(id);
+      // A pending revocation from the store is tried only once this computer's registry confirms it (one saved by an older
+      // build may not have been); an unconfirmed one goes back to being watched, so a later revocation still finds it.
+      const loaded = ids(saved?.pending);
+      if (loaded.length > 0) {
+        let confirmed = new Set<string>();
+        try {
+          confirmed = new Set((await this.options.revoked()).filter((r) => typeof r.revokedAt === "number").map((r) => r.id));
+        } catch {
+          // No answer: none is confirmed.
+        }
+        for (const id of loaded) {
+          if (confirmed.has(id)) this.pending.add(id);
+          else this.known.add(id);
+        }
+      }
     }
     let devices: readonly DeviceEntry[];
     try {
