@@ -263,10 +263,14 @@ describe("HookRunner.run", () => {
     "(m) C1: grandchild flooding stdout → readCapped caps output and bounds memory, never buffers unboundedly",
     async () => {
       const runner = new HookRunner();
+      // Whole-process RSS, so the garbage the earlier tests of this file left (collected at some point in the run, not at a fixed one) must
+      // not land inside the window: both ends are read after a full collection.
+      Bun.gc(true);
       const rssBefore = process.memoryUsage().rss;
       const start = Date.now();
       const result = await runner.run(mkSpec({ command: "yes x & echo start" }), mkPayload());
       const elapsed = Date.now() - start;
+      Bun.gc(true);
       const rssDelta = process.memoryUsage().rss - rssBefore;
 
       expect(result.status).toBe("ok");
