@@ -160,6 +160,59 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
     fields: { title: { type: "text", text: what }, detail: { type: "list", items: [device, ...more] } },
   });
 
+  // The add card (§5.5): the engine raises it, with its own four words and the other device's name, on every pairing an app began or
+  // joined (a page's included) the moment the words step is reached; the person compares the words on the card and presses it. A
+  // pairing the user's own terminal began is confirmed there instead (`device.pair.confirm` with the words typed). The card is
+  // raised once per pairing, and what a card says is the engine's, never a caller's.
+  const cardDriven = new Set<string>();
+  const asked = new Map<string, Promise<ChangeResult>>();
+  const askToAdd = (pairingId: string): Promise<ChangeResult> => {
+    const had = asked.get(pairingId);
+    if (had) return had;
+    const run = async (): Promise<ChangeResult> => {
+      const state = pairing.get(pairingId);
+      const real = state?.view.words;
+      if (!state || real === undefined || state.status !== "words") throw new MethodError(ERR.INVALID_REQUEST, "the pairing isn't showing its words");
+      const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
+      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
+        `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
+        `It joins ${registry.self().name}.`,
+      ]));
+      if (!opened.card) {
+        // Answered before its id was known: still a card's answer, never the user's terminal.
+        if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
+        await pairing.confirm(pairingId, real, { card: UNNAMED_CARD, allowed: Promise.resolve(true) });
+        return { applied: true };
+      }
+      void pairing.confirm(pairingId, real, { card: opened.card, allowed: opened.allowed }).catch(() => undefined);
+      return { applied: false, card: opened.card };
+    };
+    const once = run();
+    asked.set(pairingId, once);
+    // A failed ask is not kept: the pairing is over or never reached its words.
+    once.catch(() => asked.delete(pairingId));
+    return once;
+  };
+  /** Takes a pairing the engine raises the add card for. A joiner's words step is reached inside `join` itself, before its
+   *  caller has the id, so the step is looked at once here too. The pairing service is watched from the first one taken. */
+  let watching = false;
+  const drive = (id: string): void => {
+    if (!watching) {
+      watching = true;
+      pairing.watch((c) => {
+        if (c.type === "removed") {
+          cardDriven.delete(c.pairingId);
+          asked.delete(c.pairingId);
+          return;
+        }
+        const pid = c.pairing.view.pairingId;
+        if (c.pairing.status === "words" && cardDriven.has(pid)) void askToAdd(pid).catch(() => undefined);
+      });
+    }
+    cardDriven.add(id);
+    if (pairing.get(id)?.status === "words") void askToAdd(id).catch(() => undefined);
+  };
+
   return {
     [M.deviceList.name]: handler(M.deviceList, () => {
       const main = deps.main?.lease.state().main ?? null;
@@ -206,12 +259,19 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
 
     [M.devicePairBegin.name]: handler(M.devicePairBegin, async (_p, ctx) => {
       requireUser(ctx, "pair a device");
-      return pairing.begin();
+      const view = await pairing.begin();
+      if (!inTerminal(ctx)) drive(view.pairingId);
+      return view;
     }),
 
     [M.devicePairJoin.name]: handler(M.devicePairJoin, async (p, ctx) => {
       requireUser(ctx, "pair a device");
-      return pairing.join(p.code);
+      const view = await pairing.join(p.code);
+      if (inTerminal(ctx)) return view;
+      // An app (a page of its own included) is never given the four words: the engine draws them on the add card it raises itself.
+      drive(view.pairingId);
+      const { words: _words, ...rest } = view;
+      return rest;
     }),
 
     [M.devicePairConfirm.name]: handler(M.devicePairConfirm, async (p, ctx): Promise<ChangeResult> => {
@@ -222,27 +282,14 @@ export function devicesMethods(deps: DevicesMethodsDeps): Record<string, MethodH
         await pairing.confirm(p.pairingId, p.words, { terminal: true });
         return { applied: true };
       }
-      // The words the person compares are the engine's own, drawn in the card's sealed frame: a part that holds `devices.manage` hears
-      // them and hands them back here, so its own drawing of them proves nothing. Words that aren't the pairing's fail it at once, with
-      // no card.
+      // Words that aren't the pairing's fail it at once, with no card. A caller that has them (nothing a page can) gets the card
+      // the engine would have raised anyway.
       const real = state.view.words;
       if (real === undefined || p.words.length !== 4 || p.words.some((w, i) => w.toLowerCase() !== real[i])) {
         await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(false) });
         throw new MethodError(ERR.INVALID_REQUEST, "the words don't match: pair again");
       }
-      const name = state.peer ? `${state.peer.name} (${state.peer.kind})` : "a device";
-      const opened = await deps.openCard(changeCard("device-add", `Add ${state.peer?.name ?? "this device"}?`, name, [
-        `Check that these four words are the same on the other device's screen: ${real.join(" ")}`,
-        `It joins ${registry.self().name}.`,
-      ]));
-      if (!opened.card) {
-        // Answered before its id was known: still a card's answer, never the user's terminal.
-        if (!(await opened.allowed)) throw new MethodError(ERR.INVALID_REQUEST, "refused");
-        await pairing.confirm(p.pairingId, p.words, { card: UNNAMED_CARD, allowed: Promise.resolve(true) });
-        return { applied: true };
-      }
-      void pairing.confirm(p.pairingId, p.words, { card: opened.card, allowed: opened.allowed }).catch(() => undefined);
-      return { applied: false, card: opened.card };
+      return askToAdd(p.pairingId);
     }),
 
     [M.devicePairCancel.name]: handler(M.devicePairCancel, async (p, ctx) => {
@@ -482,6 +529,7 @@ export function devicesEvents(
     emit({
       type: "pairing_changed", ts: ts(), pairingId: c.pairing.view.pairingId, step,
       ...(step === "words" && c.pairing.view.words ? { words: c.pairing.view.words } : {}),
+      ...(c.pairing.peer ? { peerName: c.pairing.peer.name.slice(0, 63) } : {}),
       ...(c.pairing.error ? { reason: c.pairing.error } : {}),
     });
   }));

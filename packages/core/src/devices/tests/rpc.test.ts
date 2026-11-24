@@ -89,43 +89,105 @@ describe("devices methods", () => {
 const pluginCaller: Caller = { kind: "plugin", pluginId: "acme/pairer" } as Caller;
 const peerCaller: Caller = { kind: "peer", device: "dev_peer" } as Caller;
 
-async function showWords(a: Awaited<ReturnType<typeof computer>>, b: Awaited<ReturnType<typeof computer>>) {
-  const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
-  const joined = (await b.call("device.pair.join", { code: view.qr }, app)) as { pairingId: string; words: string[] };
-  await waitFor(() => a.pairing.get(view.pairingId)?.status === "words");
+/** A shows a code and B joins it, each begun as `who` (the user's terminal gets the four words back; an app never does). */
+async function showWords(a: Awaited<ReturnType<typeof computer>>, b: Awaited<ReturnType<typeof computer>>, who: Caller = terminal) {
+  const view = (await a.call("device.pair.begin", {}, who)) as { pairingId: string; qr: string };
+  const joined = (await b.call("device.pair.join", { code: view.qr }, who)) as { pairingId: string; words?: string[] };
+  // An app's pairing goes on to its card (`confirmed`) as soon as the words are there.
+  await waitFor(() => ["words", "confirmed"].includes(a.pairing.get(view.pairingId)?.status ?? ""));
   return { view, joined };
 }
+const answer = (c: Awaited<ReturnType<typeof computer>>, id: string, optionId: "approve" | "deny") => {
+  const card = c.broker.cards().find((x) => x.id === id)!;
+  return c.broker.answer(card.id, { optionId, hash: card.hash, proof: { via: "sealed-frame", frame: c.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" });
+};
 
 describe("pairing's edges", () => {
-  test("the add card carries the engine's own four words and where it joins; words handed back wrong fail the pairing with no card", async () => {
+  test("an app's pairing raises the add card itself, once, with the engine's own four words and where it joins; the app was never given the words", async () => {
     const net = new MemoryNetwork();
     const a = await computer(net, "Studio");
     const b = await computer(net, "Laptop");
-    const { view, joined } = await showWords(a, b);
-    // A part that hands back words it drew itself (not the pairing's): refused, the pairing failed, no card was raised.
-    await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
-    expect(a.broker.cards()).toHaveLength(0);
-    expect(a.pairing.get(view.pairingId)?.status).toBe("failed");
-    // A fresh pairing: the card names the engine's words, whatever the caller drew, and the computer it joins.
-    const second = await showWords(a, b);
-    const res = (await a.call("device.pair.confirm", { pairingId: second.view.pairingId, words: second.joined.words }, app)) as { applied: false; card: string };
-    const card = a.broker.cards().find((c) => c.id === res.card)!;
+    const { view, joined } = await showWords(a, b, app);
+    // The join's answer to an app carries no words; the engine's step to it carries none either (the daemon's sender checks the roles).
+    expect(joined.words).toBeUndefined();
+    // Nobody asked for a card: the engine raised one on each side as the words step came.
+    await waitFor(() => a.broker.cards().length === 1 && b.broker.cards().length === 1);
+    const words = a.pairing.get(view.pairingId)!.view.words!;
+    expect(words).toHaveLength(4);
+    const card = a.broker.cards()[0]!;
+    expect(card.change).toBe("device-add");
     const lines = JSON.stringify(card);
-    expect(lines).toContain(second.joined.words.join(" "));
+    expect(lines).toContain(words.join(" "));
     expect(lines).toContain("same on the other device's screen");
     expect(lines).toContain("It joins Studio.");
-    void joined;
+    expect(JSON.stringify(b.broker.cards()[0]!)).toContain(words.join(" "));
+    // Asking for it again (a caller that has the real words) is the same card, not a second one.
+    const again = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words }, app)) as { applied: false; card: string };
+    expect(again).toEqual({ applied: false, card: card.id });
+    expect(a.broker.cards()).toHaveLength(1);
+    // Neither side has the other until the person presses each card.
+    expect(a.registry.get(b.key.id)).toBeUndefined();
+    expect(await answer(a, card.id, "approve")).toBe("accepted");
+    expect(a.registry.get(b.key.id)).toBeUndefined();
+    expect(await answer(b, b.broker.cards()[0]!.id, "approve")).toBe("accepted");
+    await waitFor(() => a.registry.get(b.key.id) !== undefined && b.registry.get(a.key.id) !== undefined);
+  });
+
+  test("words handed back wrong: on a pairing with no card they fail it with none raised; on one that has its card they change nothing", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    // A terminal's pairing has no card; a part that hands back words it drew itself is refused and the pairing fails, with no card.
+    const t = await showWords(a, b, terminal);
+    await expect(a.call("device.pair.confirm", { pairingId: t.view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
+    expect(a.broker.cards()).toHaveLength(0);
+    expect(a.pairing.get(t.view.pairingId)?.status).toBe("failed");
+    // An app's pairing already has its card: wrong words are refused, no second card, the one card stands.
+    const c = await computer(net, "Tablet");
+    const { view } = await showWords(a, c, app);
+    await waitFor(() => a.broker.cards().length === 1);
+    await expect(a.call("device.pair.confirm", { pairingId: view.pairingId, words: ["one", "two", "three", "four"] }, app)).rejects.toThrow();
+    expect(a.broker.cards()).toHaveLength(1);
+    expect(a.pairing.get(view.pairingId)?.status).toBe("confirmed");
+  });
+
+  test("a card for a pairing the person cancelled adds nothing when it is approved late", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view } = await showWords(a, b, app);
+    await waitFor(() => a.broker.cards().length === 1 && b.broker.cards().length === 1);
+    await a.call("device.pair.cancel", { pairingId: view.pairingId }, app);
+    await answer(a, a.broker.cards()[0]!.id, "approve");
+    await answer(b, b.broker.cards()[0]!.id, "approve");
+    await new Promise((r) => setTimeout(r, 80));
+    expect(a.registry.get(b.key.id)).toBeUndefined();
+    expect(b.registry.get(a.key.id)).toBeUndefined();
+  });
+
+  test("a pairing the user's own terminal began has no card: the terminal confirms with the words it was given", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const { view, joined } = await showWords(a, b, terminal);
+    expect(joined.words).toHaveLength(4);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(a.broker.cards()).toHaveLength(0);
+    expect(b.broker.cards()).toHaveLength(0);
+    await b.call("device.pair.confirm", { pairingId: joined.pairingId, words: joined.words }, terminal);
+    expect(await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal)).toEqual({ applied: true });
+    await waitFor(() => a.registry.get(b.key.id) !== undefined && b.registry.get(a.key.id) !== undefined);
   });
 
   test("a refused add card leaves no device on either side", async () => {
     const net = new MemoryNetwork();
     const a = await computer(net, "Studio");
     const b = await computer(net, "Laptop");
-    const { view, joined } = await showWords(a, b);
+    const view = (await a.call("device.pair.begin", {}, app)) as { pairingId: string; qr: string };
+    const joined = (await b.call("device.pair.join", { code: view.qr }, terminal)) as { words: string[] };
+    await waitFor(() => a.broker.cards().length === 1);
     await b.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, terminal);
-    const res = (await a.call("device.pair.confirm", { pairingId: view.pairingId, words: joined.words }, app)) as { card: string };
-    const card = a.broker.cards().find((c) => c.id === res.card)!;
-    expect(await a.broker.answer(card.id, { optionId: "deny", hash: card.hash, proof: { via: "sealed-frame", frame: a.broker.frameChannel(card.id)!, input: "click", at: Date.now() } }, { role: "app" })).toBe("accepted");
+    expect(await answer(a, a.broker.cards()[0]!.id, "deny")).toBe("accepted");
     await waitFor(() => a.pairing.get(view.pairingId)?.status === "failed");
     await new Promise((r) => setTimeout(r, 50));
     expect(a.registry.get(b.key.id)).toBeUndefined();
@@ -145,6 +207,20 @@ describe("pairing's edges", () => {
       expect(await a.call("device.pair.confirm", { pairingId: x.view.pairingId, words: x.joined.words }, terminal)).toEqual({ applied: true });
     }
     await waitFor(() => a.registry.get(b.key.id) !== undefined && a.registry.get(c.key.id) !== undefined);
+  });
+
+  test("two app pairings at once raise two cards, each with its own words", async () => {
+    const net = new MemoryNetwork();
+    const a = await computer(net, "Studio");
+    const b = await computer(net, "Laptop");
+    const c = await computer(net, "Tablet");
+    const one = await showWords(a, b, app);
+    const two = await showWords(a, c, app);
+    await waitFor(() => a.broker.cards().length === 2);
+    for (const x of [one, two]) {
+      const words = a.pairing.get(x.view.pairingId)!.view.words!;
+      expect(a.broker.cards().filter((card) => JSON.stringify(card).includes(words.join(" ")))).toHaveLength(1);
+    }
   });
 
   test("an expired code can't be joined", async () => {
