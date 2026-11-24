@@ -10,7 +10,7 @@ import { phoneAppOf } from "../../src/contracts/device-registry";
 import { SystemClock } from "../../src/clock/system-clock";
 import { MossTokens, ERR_UNAUTHORIZED } from "../../src/auth/moss-tokens";
 import { SessionProcesses } from "../../src/auth/moss-caller";
-import { createMossServer } from "../../src/ipc/moss";
+import { createMossServer, laneMethodHandlers } from "../../src/ipc/moss";
 import { LINK_CONN_ID_BASE, linkClientServer, mountMossRemoteClients } from "../../src/ipc/link-clients";
 import { REMOTE_RPC_LABEL } from "../../src/links/remote-clients";
 import { makeLinkCluster } from "../../src/links/testing";
@@ -149,6 +149,33 @@ describe("remote clients over links, on the MOSS server", () => {
       clients.push([name, (r.conn.caller as { client: string }).client]);
     }
     expect(clients).toEqual([["android record", "android"], ["ios record", "ios"], ["no record", "ios"]]);
+  });
+
+  test("a phone's link connection may call agent.start, as the person's own call from its device, and nothing that creates, pairs or installs", async () => {
+    const tokens = new MossTokens({ appToken: "a".repeat(43), verifyCli: async () => false });
+    const calls: { method: string; caller: unknown; params: unknown }[] = [];
+    const record = (method: string) => async (params: unknown, ctx: { caller: unknown }) => { calls.push({ method, caller: ctx.caller, params }); return { session: "s_x" }; };
+    const s = createMossServer({
+      tokens, processes: new SessionProcesses(), serverVersion: "test", deviceId: "d".repeat(32),
+      deviceOs: (d) => (d === "a".repeat(32) ? "android" : "ios"),
+      handlers: laneMethodHandlers({ "agent.start": record("agent.start"), "bot.create": record("bot.create"), "agent.backends": record("agent.backends"), "plugin.install": record("plugin.install") }),
+    });
+    stops.push(() => s.dispose());
+    const open = async (device: string, id: number) => {
+      const hello = { protocolVersion: MOSS_PROTOCOL_VERSION, role: "remote", device, clientName: "x", token: tokens.mint({ role: "remote", device }) };
+      return (await s.linkHello(id, hello, { device, role: "remote" }, () => {})).conn;
+    };
+    const ios = await open("i".repeat(32), 60);
+    const android = await open("a".repeat(32), 61);
+    const start = { backend: "moss-code", computer: "Studio", root: "home/Studio/new", prompt: "go" };
+    await expect(s.handle(ios, "agent.start", start)).resolves.toEqual({ session: "s_x" });
+    await expect(s.handle(android, "agent.start", start)).resolves.toEqual({ session: "s_x" });
+    expect(calls.map((c) => c.caller)).toEqual([{ kind: "user", client: "ios", device: "i".repeat(32) }, { kind: "user", client: "android", device: "a".repeat(32) }]);
+    // What a phone could not do before it still cannot: the role's list does not name these.
+    for (const method of ["bot.create", "agent.backends", "plugin.install"]) {
+      await expect(s.handle(ios, method, {})).rejects.toMatchObject({ code: MOSS_ERR.ROLE_REFUSED });
+    }
+    expect(calls).toHaveLength(2);
   });
 
   test("each minted token is spent by its hello, and the server closes a link connection itself", async () => {

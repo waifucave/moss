@@ -178,7 +178,7 @@ export const AGENTS_METHODS = {
     doc: "Agent definitions from plugins, the presets `Agent` offers.",
   }),
   agentStart: defineMethod({
-    name: "agent.start", owner: "K", roles: ["app", "cli"], userOnly: true,
+    name: "agent.start", owner: "K", roles: ["app", "cli", "remote"], userOnly: true,
     params: z.object({
       backend: utf16(128, 1),
       computer: ComputerName,
@@ -190,7 +190,7 @@ export const AGENTS_METHODS = {
       prompt: utf16(1_000_000).optional(),
     }),
     result: z.object({ session: SessionId }),
-    doc: "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3). From a plugin part (`sessions.start`, the app's door) it takes the model, the effort and a first message too (§9.5).",
+    doc: "Starts a coding session the user drives directly, with no bot (`moss code`, §9.3). From a plugin part (`sessions.start`, the app's door) it takes the model, the effort and a first message too (§9.5). From a paired phone (`remote`, the owner's decision of 2026-11-24) it starts one on the computer the phone is linked to and no other, in any folder of that computer's home the desktop's own start accepts, by a phone that is still paired and holds an answer key; the cards the start raises are raised as for the desktop's, and answered on the phone.",
   }),
   agentOptions: defineMethod({
     name: "agent.options", owner: "CA", roles: ["app", "cli"],

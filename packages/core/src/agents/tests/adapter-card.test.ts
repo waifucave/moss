@@ -14,7 +14,8 @@ import { FAKE_REGISTRY, FakeRegistry, packageTarball, publishAdapter } from "../
 import { FAKE_AGENT_PATH, fakeLaunch, writeFakeAgent } from "../testing/harness";
 import { tarballUrl } from "../adapter/types";
 import { agentMethods } from "../rpc";
-import { fakeAdmissions, waitFor, World } from "./world";
+import { fakeAdmissions, waitFor, World, type WorldOptions } from "./world";
+import { pairedPhone } from "./phone";
 
 setDefaultTimeout(60_000);
 
@@ -46,10 +47,11 @@ interface Setup {
 /** A world whose manager also knows `claude-code`, an adapter backend: its adapter's run file is the scripted fake agent
  *  (what a published adapter package would hold); `claude` is a stand-in program on its PATH. `own`: the person's own
  *  adapter installed too (a program that is the same scripted agent, saying "OWN"). */
-function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "none"; versions?: string } = {}): Setup {
+function make(o: { own?: boolean; claude?: boolean; sandbox?: "protected" | "none"; versions?: string; verify?: WorldOptions["verify"] } = {}): Setup {
   const reg = new FakeRegistry();
   let setup!: Setup;
   const w = new World({
+    ...(o.verify ? { verify: o.verify } : {}),
     extraBackends: (wire, world) => {
       const bin = join(world.root, "bin");
       mkdirSync(bin, { recursive: true });
@@ -192,6 +194,28 @@ describe("the download card", () => {
     expect(n.text).toContain("claude isn't installed on this computer");
     expect(adapterCards(s.w)).toEqual([]);
     expect(s.reg.asked).toEqual([]);
+  });
+});
+
+describe("a phone's start", () => {
+  test("a phone's start of an agent whose adapter isn't in place raises the same download card, and nothing is fetched until the phone's signed yes", async () => {
+    let verify: WorldOptions["verify"];
+    const s = make({ verify: (card, answer, from) => (verify === undefined ? false : verify(card, answer, from)) });
+    const p = await pairedPhone(s.w.clock);
+    verify = p.verify;
+    const methods = agentMethods({ manager: s.w.manager, backends: () => [s.backend], computer: "Studio", localDevice: () => "l".repeat(32), phoneMayStart: p.mayStart });
+    const { session } = await methods["agent.start"]!({ backend: "claude-code", computer: "Studio", root: "home/Studio/project1", prompt: "Fix the tests." }, { caller: p.caller() }) as { session: string };
+    const card = await waitFor(() => adapterCards(s.w)[0], "the download card");
+    expect(card).toMatchObject({ kind: "change", change: "agent-adapter" });
+    expect(card.fields["title"]).toEqual({ type: "text", text: "Download Claude Code's adapter?" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(s.reg.asked).toEqual([]);
+    // The app's sealed frame is not the phone's answer; the phone answers with its answer key's signature.
+    expect(await s.w.approvals.answer(card.id, { optionId: card.options.find((o) => o.kind === "approve")!.id, hash: card.hash, proof: { via: "sealed-frame", frame: "forged", input: "click", at: s.w.clock.now() } }, { role: "remote", device: p.phone.id })).toBe("bad-origin");
+    expect(await p.answer(s.w, card, "approve")).toBe("accepted");
+    await waitFor(() => s.w.host.history(session).some((r) => r.type === "turn_ended") || undefined, "the turn's end");
+    expect(s.reg.asked.sort()).toEqual([tarballUrl(FAKE_REGISTRY, "@fake/claude-adapter", "1.0.0"), tarballUrl(FAKE_REGISTRY, "zod", "4.6.7")]);
+    expect(s.w.host.get(session)).toMatchObject({ kind: "coding", backend: "claude-code" });
   });
 });
 

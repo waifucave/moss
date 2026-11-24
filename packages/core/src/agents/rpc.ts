@@ -38,6 +38,9 @@ export interface AgentMethodsOptions {
    *  person's own `agent.start` is remembered through it). Without it neither method is served. */
   startOptions?: AgentStartOptions;
   now?: () => number;
+  /** Whether the paired phone `device` may start a session now (`mayStartSessions` over the device registry's record of it).
+   *  `agent.start` from a phone's connection (`remote`) is refused unless this says yes; without it none is let start. */
+  phoneMayStart?: (device: string) => boolean;
 }
 
 export type AgentMethod = (params: unknown, ctx: { caller: Caller }) => Promise<unknown>;
@@ -91,6 +94,14 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
     [AGENTS_METHODS.agentStart.name]: async (raw, ctx) => {
       const p = parse(AGENTS_METHODS.agentStart, raw);
       if (ctx.caller.kind !== "user") throw new ContractError("refused", "only the user starts a coding session");
+      // A phone's start (the owner's decision of 2026-11-24): the same call and the same checks below, with two more. The phone
+      // is still a paired phone with an answer key (read from the registry now, so a revocation ends it), and it names this
+      // computer, the one its link reaches: starting on another computer through this one is the desktop's door, not a phone's.
+      const fromPhone = ctx.caller.client === "ios" || ctx.caller.client === "android";
+      if (fromPhone) {
+        if (ctx.caller.device === undefined || o.phoneMayStart?.(ctx.caller.device) !== true) throw new ContractError("refused", "this phone isn't paired with an answer key any more, so it can't start a session here");
+        if (p.computer !== o.computer) throw new ContractError("refused", `a phone starts a session on the computer it is linked to (${o.computer}), not on ${p.computer.slice(0, 80)}`);
+      }
       if (o.backends().find((b) => b.id === p.backend)?.userStartable === false) throw new ContractError("refused", `${p.backend.slice(0, 64)} is not an agent a person opens a session with`);
       const def = p.definition === undefined ? undefined : o.definition?.(p.definition, p.backend);
       if (p.definition !== undefined && def === undefined) throw new ContractError("not_found", `no agent definition ${p.definition.slice(0, 120)} reaches a code session on ${p.backend.slice(0, 64)} (Glossary lists them as <plugin>:<id>)`);
@@ -105,8 +116,9 @@ export function agentMethods(o: AgentMethodsOptions): Record<string, AgentMethod
       });
       // The person's last start (never a bot's or a spawn's: only this method, only the user), kept by the engine for the
       // start page of any client. A first message is not kept; the model and effort are what the person chose.
+      // (Not a phone's: the desktop's start page remembers what the person chose at their computer.)
       try {
-        o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
+        if (!fromPhone) o.startOptions?.remember({ backend: p.backend, computer: p.computer, root: p.root, ...(p.model === undefined ? {} : { model: p.model }), ...(p.effort === undefined ? {} : { effort: p.effort }) }, (o.now ?? Date.now)());
       } catch { /* the start went ahead; the memory is a convenience */ }
       return { session: r.sessionId };
     },
@@ -150,12 +162,12 @@ export function pluginAgentDefinitions(registry: Pick<PluginRegistry, "entries">
  *  getter, and is refused while none run. A thrown `ContractError` becomes its JSON-RPC code (`toMethodError`). */
 export function lateAgentMethods(
   agents: () => RunningAgents | undefined,
-  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now">,
+  o: Pick<AgentMethodsOptions, "localDevice" | "definitions" | "definition" | "looks" | "startOptions" | "now" | "phoneMayStart">,
 ): Record<string, AgentMethod> {
   const made = new WeakMap<RunningAgents, Record<string, AgentMethod>>();
   const methodsOf = (a: RunningAgents): Record<string, AgentMethod> => {
     let m = made.get(a);
-    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}) })));
+    if (!m) made.set(a, (m = agentMethods({ manager: a.manager, backends: a.backends, computer: a.computer, localDevice: o.localDevice, ...(o.definitions ? { definitions: o.definitions } : {}), ...(o.definition ? { definition: o.definition } : {}), ...(o.looks ? { looks: o.looks } : {}), ...(o.startOptions ? { startOptions: o.startOptions } : {}), ...(o.now ? { now: o.now } : {}), ...(o.phoneMayStart ? { phoneMayStart: o.phoneMayStart } : {}) })));
     return m;
   };
   const names = [AGENTS_METHODS.agentBackends.name, AGENTS_METHODS.agentDefinitions.name, AGENTS_METHODS.agentStart.name, ...(o.startOptions ? [AGENTS_METHODS.agentOptions.name, AGENTS_METHODS.agentRecent.name] : [])];

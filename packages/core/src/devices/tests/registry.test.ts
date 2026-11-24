@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isContractError } from "../../contracts/common";
+import { mayStartSessions } from "../../contracts/device-registry";
 import { runDeviceRegistryConformance } from "../../contracts/conformance/device-registry";
 import { FakeClock } from "../../contracts/fakes/clock";
 import { MemorySecretStore } from "../../contracts/fakes/secret-store";
@@ -200,6 +201,21 @@ describe("FileDeviceRegistry", () => {
       expect(key.id).toBe(again.self().id);
       // Written into the file only as the record's own field; no secret beside it.
       expect(readFileSync(join(dir, "devices", "registry.json"), "utf8")).toContain("\"app\": \"code\"");
+    });
+
+    test("mayStartSessions reads the registry's record now: a paired phone with an answer key, and not a revoked one, a keyless one, a desktop or an unknown id", async () => {
+      const { registry } = await open();
+      const keyed = await phoneRecord({ answerKey: { publicKey: toBase64(generateEd25519().publicKey), held: "keychain" } });
+      const keyless = await phoneRecord();
+      await registry.add(keyed.record as never, { via: "terminal" });
+      await registry.add(keyless.record as never, { via: "terminal" });
+      const lap = await peer("Lap");
+      await registry.add(lap.record, { via: "terminal" });
+      expect([keyed, keyless].map((p) => mayStartSessions(registry.get(p.key.id)))).toEqual([true, false]);
+      expect([mayStartSessions(registry.get(lap.key.id)), mayStartSessions(registry.get("u".repeat(32))), mayStartSessions(undefined)]).toEqual([false, false, false]);
+      // A revocation is seen at the next call: the same record read again says no.
+      await registry.revoke(keyed.key.id, "lost");
+      expect(mayStartSessions(registry.get(keyed.key.id))).toBe(false);
     });
 
     test("add takes an app of the two on a phone only; a device with none records none", async () => {

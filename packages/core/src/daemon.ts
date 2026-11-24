@@ -98,6 +98,7 @@ import { builtCopy } from "./approvals/bundled-tools";
 import { sendMessageTarget } from "./bots/tools";
 import type { BotSessionContext } from "./bots/service";
 import { answerKeyMethods, brokerCardOpener } from "./devices/rpc";
+import { mayStartSessions } from "./contracts/device-registry";
 import type { FileDeviceRegistry } from "./devices/registry";
 import { agentDefinitionOf, GLOSSARY_TOOL_NAME } from "./runtime-sdk/turn-loop/glossary";
 import { partsServe } from "./runtime-sdk/turn-loop/only-backends";
@@ -3801,6 +3802,8 @@ async function startDaemonInner(onEmbeddedHost: (host: { shutdown(budgetMs?: num
   }), laneMethodHandlers(lateAgentMethods(() => daemonParts?.agents, {
     // A user's call made on this computer (the app or the terminal here) is this computer's device.
     localDevice: () => liveDeviceId,
+    // A paired phone starts a session here only while its record says it is a phone with an answer key (and not revoked).
+    phoneMayStart: (device) => mayStartSessions(ownDevices?.get(device)),
     startOptions,
     looks: (ids) => backendLooks.ofAll(ids),
     definitions: () => daemonParts?.agentDefinitions?.() ?? [],

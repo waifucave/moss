@@ -158,6 +158,14 @@ export function mayAnswerCards(d: Pick<DeviceRecord, "kind" | "publicKey" | "ans
   return answerKeyOf(d) !== undefined;
 }
 
+/** Whether a paired phone may start a coding session on this computer (`agent.start` over its link): it is a phone, it is
+ *  not revoked, and it holds an answer key, so the cards the session raises are ones it can answer. A phone with no answer
+ *  key could start a session it could never approve a step of; a revoked one is no phone of this person's at all. Read from
+ *  the registry's record of the device at each call, never from the connection, so a revocation that races the call ends it. */
+export function mayStartSessions(d: Pick<DeviceRecord, "kind" | "publicKey" | "answerKey" | "revokedAt"> | undefined): boolean {
+  return d !== undefined && d.kind === "phone" && answerKeyOf(d) !== undefined;
+}
+
 /** A device id: lowercase base32 of the first 20 bytes of SHA-256 over its public key; lane H may choose another
  *  encoding within `DeviceId`'s `^[a-z0-9]{16,64}$`. */
 export async function deviceIdFor(publicKey: Uint8Array): Promise<string> {

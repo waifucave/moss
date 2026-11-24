@@ -80,6 +80,8 @@ export interface WorldOptions {
   /** The scripted agent's sandbox: admitted by default, or one MOSS can't count on (so it needs the OK). */
   sandbox?: "protected" | "none";
   oks?: AgentOks;
+  /** How the broker checks a device's signed answer (a phone's), as `deviceProofVerifier` over a registry. None: no signed answer passes. */
+  verify?: ConstructorParameters<typeof FakeApprovalBroker>[0]["verify"];
   /** The plugins' parts for every session, and the backend's placement of them (Claude Code's). */
   pluginParts?: PluginPartsSource;
   place?: AcpBackendOptions["place"];
@@ -172,7 +174,7 @@ export class World {
     this.fence = new FakeFence({ home: this.userHome, mossHome: this.mossHome, temp: fenceTemp });
     const others = Object.fromEntries(Object.entries(o.otherComputers ?? {}).map(([name, home]) => [name, { home }]));
     this.tree = new FakeTree({ clock: this.clock, computers: { ...others, [this.computer]: { home: this.userHome } }, botComputer: () => "Studio" });
-    this.approvals = new FakeApprovalBroker({ clock: this.clock, levels: () => this.level, fence: () => this.fence });
+    this.approvals = new FakeApprovalBroker({ clock: this.clock, levels: () => this.level, fence: () => this.fence, ...(o.verify ? { verify: o.verify } : {}) });
     this.host = new FakeSessionHost({ clock: this.clock, approvals: this.approvals });
     this.host.open({ id: "s_alpha", kind: "bot", bot: "alpha", computer: "Studio" }, this.parentDriver);
     this.tokens = new BridgeTokens({ ...(o.table ? { table: o.table } : {}), ...(o.tokenTtlMs ? { ttlMs: o.tokenTtlMs, now: () => this.clock.now() } : {}) });
