@@ -111,3 +111,16 @@ After it he can: sign in once and see one account on two computers; pair a compu
 - **No health endpoint exists** in any Worker. The smoke check uses what exists (public keys, `/config.json`, `/v1/vapid`, a JSON 4xx refusal). A `GET /healthz` in each Worker would be cleaner; it changes six Workers and their tests, so it was left out.
 - **The `<domain>/auth/*` route** needs the apex name to have a proxied (orange-cloud) DNS record in the zone, or requests never reach the Worker. `MOSS_ACCOUNTS_HOST` gives accounts a host of its own as a custom domain instead (which Cloudflare creates the record for), but then the engine's built-in issuer differs.
 - The committed `env.production` profiles name `waifucave.com` as a default and leave `AUTH_URL`, `APNS_*` and `VAPID_PUBLIC_KEY` empty; the deploy script overrides all of them, and a test fails if a rendered configuration still names `waifucave`.
+
+## To do (not config-only): a revoked device reaches the forwarder and push
+
+`DELETE /v1/devices/:id` on the accounts Worker marks a device revoked in the account's list and stops minting it tokens, but nothing tells the
+forwarder or push. Each keeps that device's targets and held webhooks until the device's last account token (5 minutes) expires, and a device
+revoked by a path that skips a core stays listed there until then; each of those two services has its own `DELETE /v1/devices/:id` (an account
+token for its audience, `revokeDevice` in its Durable Object) that today only a core calls.
+
+Closing it takes code in the accounts Worker, not only a binding: after a revocation it would call the other two Workers' `DELETE /v1/devices/:id`
+with a token it signs for that audience (it already holds the signing keys) through two new service bindings (`wrangler.jsonc`, accounts) to the forwarder and push.
+That reverses the dependency the deploy order is built on (they bind to accounts, which is why accounts goes first), so it needs a rule for
+the first deploy (bind after the others exist, or call by their public addresses instead), a retry for a call that fails (the revocation itself must not wait
+on them), and a Miniflare test with the three Workers. Not done; the 5-minute window is the current behaviour.
