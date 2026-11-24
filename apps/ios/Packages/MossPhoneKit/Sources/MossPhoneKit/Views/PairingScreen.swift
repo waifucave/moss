@@ -77,7 +77,7 @@ public struct PairingScreen: View {
             Text("Only confirm if all four are the same.").font(.footnote).foregroundStyle(.secondary)
             Spacer()
             VStack(spacing: 10) {
-                Button { Task { await model.confirm() } } label: { Text("They match").frame(maxWidth: .infinity) }
+                Button { Task { await model.confirm() } } label: { Text("They match").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                     .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large)
                 Button { Task { await model.cancel() } } label: { Text("They don't match").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).tint(.secondary).controlSize(.large)
@@ -94,7 +94,7 @@ public struct PairingScreen: View {
             Text("Paired with \(c.name)").font(.title2.weight(.semibold))
             Text("This phone can now see \(appName) and answer cards from it.").foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
             Spacer()
-            Button { onPaired(c) } label: { Text("Done").frame(maxWidth: .infinity) }
+            Button { onPaired(c) } label: { Text("Done").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                 .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.bottom, 12)
         }
     }
@@ -105,7 +105,7 @@ public struct PairingScreen: View {
             Image(systemName: "exclamationmark.circle").font(.system(size: 56, weight: .thin)).foregroundStyle(.secondary)
             Text(e.message).multilineTextAlignment(.center).padding(.horizontal, 32)
             Spacer()
-            Button { model.retry() } label: { Text("Try again").frame(maxWidth: .infinity) }
+            Button { model.retry() } label: { Text("Try again").frame(maxWidth: .infinity).foregroundStyle(Color(uiColor: .systemBackground)) }
                 .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large).padding(.horizontal, 24).padding(.bottom, 12)
         }
     }
